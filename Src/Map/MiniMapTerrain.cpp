@@ -527,6 +527,32 @@ namespace
             return;
         }
 
+        auto* streamableTexture =
+            static_cast<SDK::UStreamableRenderAsset*>(
+                sourceTexture);
+
+        // ---------------------------------------------------------------------
+        // First allow any initialization or streaming work already associated
+        // with this texture to finish.
+        //
+        // StreamIn rejects a new request while pending work exists. This was
+        // observed at runtime: the first F8 press returned false while the same
+        // request succeeded shortly afterwards.
+        // ---------------------------------------------------------------------
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "waiting for existing texture initialization/streaming");
+
+        waitForPendingInitOrStreaming(
+            streamableTexture,
+            true,
+            true);
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "existing texture initialization/streaming completed");
+
         // ---------------------------------------------------------------------
         // Request exactly nine resident mips when possible.
         //
@@ -619,13 +645,9 @@ namespace
                 return;
             }
 
-            auto* streamableTexture =
-                static_cast<SDK::UStreamableRenderAsset*>(
-                    sourceTexture);
-
             LOG_INFO(
                 "MiniMap: F8 diagnostic: "
-                "waiting for pending texture transition");
+                "waiting for requested texture transition");
 
             waitForPendingInitOrStreaming(
                 streamableTexture,
@@ -634,7 +656,7 @@ namespace
 
             LOG_INFO(
                 "MiniMap: F8 diagnostic: "
-                "pending texture transition completed");
+                "requested texture transition completed");
 
             residentMips =
                 getNumResidentMips(
@@ -684,7 +706,7 @@ namespace
             return;
         }
 
-        if (residentMips <= targetResidentMips &&
+        if (residentMipsBefore <= targetResidentMips &&
             residentMipsAfter != targetResidentMips)
         {
             LOG_WARN(
