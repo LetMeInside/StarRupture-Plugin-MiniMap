@@ -1,0 +1,623 @@
+#include "Fingerprints.h"
+
+#include "../plugin_helpers.h"
+
+// ---------------------------------------------------------------------------
+// Native pattern resolution.
+//
+// This is the only place where MiniMap uses the AlienX pattern scanner.
+// Resolved native addresses remain valid after this callback; the scanner
+// itself must not be retained.
+//
+// Twelve native functions are currently resolved:
+//
+//   1.  FSoftObjectPtr::LoadSynchronous
+//   2.  UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D
+//   3.  UStreamableRenderAsset::SetForceMipLevelsToBeResident
+//   4.  UStreamableRenderAsset::WaitForStreaming
+//   5.  UTexture2D::GetNumResidentMips
+//   6.  UTexture2D::GetNumMipsAllowed
+//   7.  UTexture2D::GetNumMips
+//   8.  UTexture2D::StreamIn
+//   9.  UStreamableRenderAsset::WaitForPendingInitOrStreaming
+//   10. UWorld::GetFirstPlayerController
+//   11. AController::GetPawn<ACrCharacterPlayerBase>
+//   12. USceneComponent::K2_GetComponentLocation
+//
+// Each fingerprint is intentionally tied to native behavior MiniMap depends on.
+// If StarRupture changes an incompatible implementation or layout, resolution
+// should fail rather than allowing MiniMap to continue with stale assumptions.
+// ---------------------------------------------------------------------------
+
+namespace MiniMapFingerprints
+{
+    bool Resolve(
+        IPluginSelf* self,
+        IPluginHookScanner* scanner,
+        ResolvedAddresses& addresses)
+    {
+        addresses = {};
+
+        if (self == nullptr || scanner == nullptr)
+        {
+            return false;
+        }
+
+        // -------------------------------------------------------------------
+        // FSoftObjectPtr::LoadSynchronous
+        //
+        // Fingerprint the StarRupture terrain-loading call site in:
+        //
+        //   UCrUW_MapMenuTerrain::NativeConstruct
+        //
+        // NativeConstruct obtains the UCrMapMenuDevSettings class default
+        // object and passes CDO + 0x3C8 to FSoftObjectPtr::LoadSynchronous.
+        //
+        // AlienX follows the relative E8 call and returns the target function
+        // address.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest loadSynchronousRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        loadSynchronousRequest.hookName =
+            "MiniMap::FSoftObjectPtr::LoadSynchronous";
+
+        loadSynchronousRequest.pattern =
+            "48 8B 8B 10 01 00 00 "
+            "48 85 C9 "
+            "0F 84 ?? ?? ?? ?? "
+            "48 81 C1 C8 03 00 00 "
+            "48 89 7C 24 48 "
+            "E8 ?? ?? ?? ?? "
+            "48 8B F8 "
+            "48 85 C0";
+
+        loadSynchronousRequest.followRel32At = 0x1C;
+
+        loadSynchronousRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+
+        loadSynchronousRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t loadSynchronousAddress =
+            scanner->Resolve(
+                self,
+                &loadSynchronousRequest);
+
+        if (loadSynchronousAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.softObjectLoadSynchronous =
+            loadSynchronousAddress;
+
+        // -------------------------------------------------------------------
+        // UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D
+        //
+        // Verified current-build RVA:
+        //
+        //   0x04332AE0
+        // -------------------------------------------------------------------
+
+        PluginScanRequest brushTextureRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        brushTextureRequest.hookName =
+            "MiniMap::UWidgetBlueprintLibrary::"
+            "GetBrushResourceAsTexture2D";
+
+        brushTextureRequest.pattern =
+            "40 53 "
+            "48 83 EC ?? "
+            "48 8B 59 38 "
+            "48 85 DB "
+            "74 ?? "
+            "E8 ?? ?? ?? ?? "
+            "48 8B 53 10 "
+            "4C 8D 40 30 "
+            "48 63 40 38";
+
+        brushTextureRequest.flags = 0;
+
+        brushTextureRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t brushTextureAddress =
+            scanner->Resolve(
+                self,
+                &brushTextureRequest);
+
+        if (brushTextureAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getBrushResourceAsTexture2D =
+            brushTextureAddress;
+
+        // -------------------------------------------------------------------
+        // UStreamableRenderAsset::SetForceMipLevelsToBeResident
+        //
+        // Verified current-build RVA:
+        //
+        //   0x0528FA10
+        // -------------------------------------------------------------------
+
+        PluginScanRequest forceMipsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        forceMipsRequest.hookName =
+            "MiniMap::UStreamableRenderAsset::"
+            "SetForceMipLevelsToBeResident";
+
+        forceMipsRequest.pattern =
+            "48 89 5C 24 ?? "
+            "57 "
+            "48 83 EC ?? "
+            "48 8B 01 "
+            "41 8B F8 "
+            "0F 29 74 24 ?? "
+            "48 8B D9 "
+            "0F 28 F1 "
+            "FF 90 B0 02 00 00 "
+            "85 FF "
+            "74 ?? "
+            "85 C0 "
+            "78 ?? "
+            "48 98 "
+            "48 83 F8 20 "
+            "73 ??";
+
+        forceMipsRequest.flags = 0;
+
+        forceMipsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t forceMipsAddress =
+            scanner->Resolve(
+                self,
+                &forceMipsRequest);
+
+        if (forceMipsAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.setForceMipLevelsToBeResident =
+            forceMipsAddress;
+
+        // -------------------------------------------------------------------
+        // UStreamableRenderAsset::WaitForStreaming
+        //
+        // Verified current-build RVA:
+        //
+        //   0x0529DE10
+        // -------------------------------------------------------------------
+
+        PluginScanRequest waitForStreamingRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        waitForStreamingRequest.hookName =
+            "MiniMap::UStreamableRenderAsset::WaitForStreaming";
+
+        waitForStreamingRequest.pattern =
+            "48 89 5C 24 ?? "
+            "48 89 74 24 ?? "
+            "57 "
+            "48 83 EC ?? "
+            "41 0F B6 F8 "
+            "0F B6 F2 "
+            "48 8B D9 "
+            "E8 ?? ?? ?? ?? "
+            "83 BB B8 00 00 00 FF "
+            "74 ??";
+
+        waitForStreamingRequest.flags = 0;
+
+        waitForStreamingRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t waitForStreamingAddress =
+            scanner->Resolve(
+                self,
+                &waitForStreamingRequest);
+
+        if (waitForStreamingAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.waitForStreaming =
+            waitForStreamingAddress;
+
+        // -------------------------------------------------------------------
+        // UTexture2D::GetNumResidentMips
+        //
+        // Verified current-build RVA:
+        //
+        //   0x052DF460
+        // -------------------------------------------------------------------
+
+        PluginScanRequest residentMipsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        residentMipsRequest.hookName =
+            "MiniMap::UTexture2D::GetNumResidentMips";
+
+        residentMipsRequest.pattern =
+            "40 53 "
+            "48 83 EC ?? "
+            "48 8B D9 "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 "
+            "74 ?? "
+            "48 8B 03 "
+            "48 8B CB "
+            "FF 90 48 03 00 00 "
+            "84 C0 "
+            "74 ??";
+
+        residentMipsRequest.flags = 0;
+
+        residentMipsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t residentMipsAddress =
+            scanner->Resolve(
+                self,
+                &residentMipsRequest);
+
+        if (residentMipsAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getNumResidentMips =
+            residentMipsAddress;
+
+        // -------------------------------------------------------------------
+        // UTexture2D::GetNumMipsAllowed
+        //
+        // Verified current-build RVA:
+        //
+        //   0x052DF280
+        // -------------------------------------------------------------------
+
+        PluginScanRequest allowedMipsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        allowedMipsRequest.hookName =
+            "MiniMap::UTexture2D::GetNumMipsAllowed";
+
+        allowedMipsRequest.pattern =
+            "48 89 5C 24 ?? "
+            "57 "
+            "48 83 EC ?? "
+            "48 8B D9 "
+            "E8 ?? ?? ?? ?? "
+            "33 C9 "
+            "8B F8 "
+            "E8 ?? ?? ?? ?? "
+            "48 8B C8 "
+            "E8 ?? ?? ?? ?? "
+            "48 8B C8 "
+            "E8 ?? ?? ?? ?? "
+            "45 33 C0 "
+            "48 8B D3 "
+            "48 8B C8 "
+            "E8 ?? ?? ?? ??";
+
+        allowedMipsRequest.flags = 0;
+
+        allowedMipsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t allowedMipsAddress =
+            scanner->Resolve(
+                self,
+                &allowedMipsRequest);
+
+        if (allowedMipsAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getNumMipsAllowed =
+            allowedMipsAddress;
+
+        // -------------------------------------------------------------------
+        // UTexture2D::GetNumMips
+        //
+        // Verified current-build RVA:
+        //
+        //   0x052DF1E0
+        // -------------------------------------------------------------------
+
+        PluginScanRequest numMipsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        numMipsRequest.hookName =
+            "MiniMap::UTexture2D::GetNumMips";
+
+        numMipsRequest.pattern =
+            "40 53 "
+            "48 83 EC ?? "
+            "48 83 B9 50 01 00 00 00 "
+            "48 8B D9 "
+            "74 ?? "
+            "48 8B 01 "
+            "FF 90 48 03 00 00 "
+            "48 8B 9B 50 01 00 00";
+
+        numMipsRequest.flags = 0;
+
+        numMipsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t numMipsAddress =
+            scanner->Resolve(
+                self,
+                &numMipsRequest);
+
+        if (numMipsAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getNumMips =
+            numMipsAddress;
+
+        // -------------------------------------------------------------------
+        // UTexture2D::StreamIn
+        //
+        // Verified current-build RVA:
+        //
+        //   0x052E7420
+        //
+        // Signature:
+        //
+        //   bool UTexture2D::StreamIn(
+        //       int32 NewMipCount,
+        //       bool bHighPrio)
+        //
+        // The fingerprint includes the native game-thread check.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest streamInRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        streamInRequest.hookName =
+            "MiniMap::UTexture2D::StreamIn";
+
+        streamInRequest.pattern =
+            "40 53 "
+            "55 "
+            "56 "
+            "57 "
+            "41 54 "
+            "48 83 EC ?? "
+            "45 0F B6 E0 "
+            "8B EA "
+            "48 8B F9 "
+            "E8 ?? ?? ?? ?? "
+            "84 C0 "
+            "75 ??";
+
+        streamInRequest.flags = 0;
+
+        streamInRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t streamInAddress =
+            scanner->Resolve(
+                self,
+                &streamInRequest);
+
+        if (streamInAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.streamIn =
+            streamInAddress;
+
+        // -------------------------------------------------------------------
+        // UStreamableRenderAsset::WaitForPendingInitOrStreaming
+        //
+        // Verified current-build RVA:
+        //
+        //   0x0529DD40
+        //
+        // Signature:
+        //
+        //   void WaitForPendingInitOrStreaming(
+        //       bool bWaitForLODTransition,
+        //       bool bSendCompletionEvents)
+        // -------------------------------------------------------------------
+
+        PluginScanRequest waitPendingRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        waitPendingRequest.hookName =
+            "MiniMap::UStreamableRenderAsset::"
+            "WaitForPendingInitOrStreaming";
+
+        waitPendingRequest.pattern =
+            "48 89 5C 24 ?? "
+            "48 89 74 24 ?? "
+            "57 "
+            "48 83 EC ?? "
+            "41 0F B6 F0 "
+            "0F B6 FA "
+            "48 8B D9 "
+            "E8 ?? ?? ?? ?? "
+            "84 C0 "
+            "0F 84 ?? ?? ?? ??";
+
+        waitPendingRequest.flags = 0;
+
+        waitPendingRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t waitPendingAddress =
+            scanner->Resolve(
+                self,
+                &waitPendingRequest);
+
+        if (waitPendingAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.waitForPendingInitOrStreaming =
+            waitPendingAddress;
+
+        // -------------------------------------------------------------------
+        // UWorld::GetFirstPlayerController
+        //
+        // Verified current-build RVA:
+        //
+        //   0x05386A20
+        //
+        // Signature:
+        //
+        //   APlayerController*
+        //   UWorld::GetFirstPlayerController() const
+        // -------------------------------------------------------------------
+
+        PluginScanRequest firstControllerRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        firstControllerRequest.hookName =
+            "MiniMap::UWorld::GetFirstPlayerController";
+
+        firstControllerRequest.pattern =
+            "40 53 "
+            "48 83 EC ?? "
+            "83 B9 78 02 00 00 00 "
+            "48 8B D9 "
+            "7E ?? "
+            "48 63 81 78 02 00 00 "
+            "85 C0 "
+            "7F ??";
+
+        firstControllerRequest.flags = 0;
+
+        firstControllerRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t firstControllerAddress =
+            scanner->Resolve(
+                self,
+                &firstControllerRequest);
+
+        if (firstControllerAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getFirstPlayerController =
+            firstControllerAddress;
+
+        // -------------------------------------------------------------------
+        // AController::GetPawn<ACrCharacterPlayerBase>
+        //
+        // Verified current-build RVA:
+        //
+        //   0x097D9CA0
+        //
+        // The native helper validates the object stored in controller pawn
+        // storage as an ACrCharacterPlayerBase before returning it.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest playerPawnRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        playerPawnRequest.hookName =
+            "MiniMap::AController::"
+            "GetPawn<ACrCharacterPlayerBase>";
+
+        playerPawnRequest.pattern =
+            "40 53 "
+            "48 83 EC ?? "
+            "48 8D 99 F8 02 00 00 "
+            "48 83 3B 00 "
+            "74 ?? "
+            "E8 ?? ?? ?? ?? "
+            "48 8B D0 "
+            "48 8B CB "
+            "E8 ?? ?? ?? ?? "
+            "84 C0 "
+            "74 ?? "
+            "48 8B 03";
+
+        playerPawnRequest.flags = 0;
+
+        playerPawnRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t playerPawnAddress =
+            scanner->Resolve(
+                self,
+                &playerPawnRequest);
+
+        if (playerPawnAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getPlayerPawn =
+            playerPawnAddress;
+
+        // -------------------------------------------------------------------
+        // USceneComponent::K2_GetComponentLocation
+        //
+        // Verified current-build RVA:
+        //
+        //   0x049001F0
+        //
+        // This is an ordinary native leaf function despite its K2 name.
+        //
+        // It has no RUNTIME_FUNCTION entry, so PLUGIN_SCAN_FUNCTION_START
+        // would reject it. The unique signature is therefore validated as
+        // executable code with PLUGIN_SCAN_CODE.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest componentLocationRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        componentLocationRequest.hookName =
+            "MiniMap::USceneComponent::K2_GetComponentLocation";
+
+        componentLocationRequest.pattern =
+            "0F 10 81 10 02 00 00 "
+            "48 8B C2 "
+            "0F 10 89 20 02 00 00 "
+            "0F 11 02 "
+            "F2 0F 11 4A 10 "
+            "C3";
+
+        componentLocationRequest.flags = 0;
+
+        componentLocationRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t componentLocationAddress =
+            scanner->Resolve(
+                self,
+                &componentLocationRequest);
+
+        if (componentLocationAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getComponentLocation =
+            componentLocationAddress;
+
+        return true;
+    }
+}

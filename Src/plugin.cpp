@@ -2,8 +2,16 @@
 #include "plugin_helpers.h"
 #include "Config/Config.h"
 
+#ifdef MODLOADER_CLIENT_BUILD
+#include "Native/Fingerprints.h"
+#endif
+
 IPluginSelf* g_self = nullptr;
 IPluginSelf* GetSelf() { return g_self; }
+
+#ifdef MODLOADER_CLIENT_BUILD
+static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
+#endif
 
 #ifndef MODLOADER_BUILD_TAG
 #define MODLOADER_BUILD_TAG "0.1.0"
@@ -11,12 +19,78 @@ IPluginSelf* GetSelf() { return g_self; }
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/MiniMapUI.h"
+#include "Map/MiniMapTerrain.h"
 #endif
 
 #ifdef MODLOADER_SERVER_BUILD
 #define MINIMAP_EXPORTS_TARGET PLUGIN_TARGET_SERVER
 #else
 #define MINIMAP_EXPORTS_TARGET PLUGIN_TARGET_CLIENT
+#endif
+
+
+#ifdef MODLOADER_CLIENT_BUILD
+
+uintptr_t GetSoftObjectLoadSynchronousAddress()
+{
+    return g_resolvedAddresses.softObjectLoadSynchronous;
+}
+
+uintptr_t GetBrushResourceAsTexture2DAddress()
+{
+    return g_resolvedAddresses.getBrushResourceAsTexture2D;
+}
+
+uintptr_t GetSetForceMipLevelsToBeResidentAddress()
+{
+    return g_resolvedAddresses.setForceMipLevelsToBeResident;
+}
+
+uintptr_t GetWaitForStreamingAddress()
+{
+    return g_resolvedAddresses.waitForStreaming;
+}
+
+uintptr_t GetNumResidentMipsAddress()
+{
+    return g_resolvedAddresses.getNumResidentMips;
+}
+
+uintptr_t GetNumMipsAllowedAddress()
+{
+    return g_resolvedAddresses.getNumMipsAllowed;
+}
+
+uintptr_t GetNumMipsAddress()
+{
+    return g_resolvedAddresses.getNumMips;
+}
+
+uintptr_t GetStreamInAddress()
+{
+    return g_resolvedAddresses.streamIn;
+}
+
+uintptr_t GetWaitForPendingInitOrStreamingAddress()
+{
+    return g_resolvedAddresses.waitForPendingInitOrStreaming;
+}
+
+uintptr_t GetFirstPlayerControllerAddress()
+{
+    return g_resolvedAddresses.getFirstPlayerController;
+}
+
+uintptr_t GetPlayerPawnAddress()
+{
+    return g_resolvedAddresses.getPlayerPawn;
+}
+
+uintptr_t GetComponentLocationAddress()
+{
+    return g_resolvedAddresses.getComponentLocation;
+}
+
 #endif
 
 static PluginInfo s_pluginInfo = {
@@ -29,36 +103,71 @@ static PluginInfo s_pluginInfo = {
 };
 
 extern "C" __declspec(dllexport)
-void OnPluginLoadHooks(IPluginSelf* self, IPluginHookScanner* scanner)
+void OnPluginLoadHooks(
+    IPluginSelf* self,
+    IPluginHookScanner* scanner)
 {
+#ifdef MODLOADER_CLIENT_BUILD
+
+    g_resolvedAddresses = {};
+
+    if (!MiniMapFingerprints::Resolve(
+        self,
+        scanner,
+        g_resolvedAddresses))
+    {
+        LOG_ERROR(
+            "MiniMap: native fingerprint resolution failed");
+    }
+
+#else
+
     (void)self;
     (void)scanner;
+
+#endif
 }
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-static void OnWorldBeginPlay(
-    SDK::UWorld* world)
+static void OnWorldBeginPlay(SDK::UWorld* world)
 {
-    (void)world;
+    MiniMapTerrain::SetWorld(world);
 
     LOG_INFO(
-        "MiniMap: game world began");
+        "MiniMap: game world began: %p",
+        world);
 
     MiniMapUI::Show();
+}
+
+static void OnExperienceLoadComplete()
+{
+    LOG_INFO("MiniMap: OnExperienceLoadComplete");
+
+    if (!MiniMapTerrain::Initialize(g_self))
+    {
+        LOG_ERROR(
+            "MiniMap: terrain initialization failed after experience load");
+        return;
+    }
+
+    LOG_INFO(
+        "MiniMap: terrain initialization complete");
 }
 
 static void OnAfterWorldEndPlay(
     SDK::UWorld* world,
     const char* worldName)
 {
-    (void)world;
-
     LOG_INFO(
         "MiniMap: world ended: %s",
         worldName != nullptr ? worldName : "<null>");
 
     MiniMapUI::Hide();
+
+    MiniMapTerrain::SetWorld(nullptr);
+    MiniMapTerrain::Shutdown();
 }
 
 #endif
@@ -114,14 +223,94 @@ extern "C"
             return false;
         }
 
+        LOG_INFO(
+            "MiniMap: FSoftObjectPtr::LoadSynchronous = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.softObjectLoadSynchronous));
+
+        LOG_INFO(
+            "MiniMap: UWidgetBlueprintLibrary::"
+            "GetBrushResourceAsTexture2D = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getBrushResourceAsTexture2D));
+
+        LOG_INFO(
+            "MiniMap: UStreamableRenderAsset::"
+            "SetForceMipLevelsToBeResident = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.setForceMipLevelsToBeResident));
+
+        LOG_INFO(
+            "MiniMap: UStreamableRenderAsset::"
+            "WaitForStreaming = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.waitForStreaming));
+
+        LOG_INFO(
+            "MiniMap: UTexture2D::"
+            "GetNumResidentMips = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getNumResidentMips));
+
+        LOG_INFO(
+            "MiniMap: UTexture2D::"
+            "GetNumMipsAllowed = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getNumMipsAllowed));
+
+        LOG_INFO(
+            "MiniMap: UTexture2D::"
+            "GetNumMips = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getNumMips));
+
+        LOG_INFO(
+            "MiniMap: UTexture2D::"
+            "StreamIn = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.streamIn));
+
+        LOG_INFO(
+            "MiniMap: UStreamableRenderAsset::"
+            "WaitForPendingInitOrStreaming = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.waitForPendingInitOrStreaming));
+
+        LOG_INFO(
+            "MiniMap: UWorld::"
+            "GetFirstPlayerController = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getFirstPlayerController));
+
+        LOG_INFO(
+            "MiniMap: AController::"
+            "GetPawn<ACrCharacterPlayerBase> = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getPlayerPawn));
+
+        LOG_INFO(
+            "MiniMap: USceneComponent::"
+            "K2_GetComponentLocation = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getComponentLocation));
+
         g_self->hooks->World->RegisterOnWorldBeginPlay(
             &OnWorldBeginPlay);
 
         g_self->hooks->World->RegisterOnAfterWorldEndPlay(
             &OnAfterWorldEndPlay);
 
+        g_self->hooks->World->RegisterOnExperienceLoadComplete(
+            &OnExperienceLoadComplete);
+
         LOG_INFO(
             "MiniMap: registered world lifecycle callbacks");
+
+        if (!MiniMapTerrain::RegisterDiagnostics(g_self))
+        {
+            LOG_ERROR(
+                "MiniMap: failed to register terrain diagnostics");
+        }
 
 #endif
 
@@ -145,6 +334,9 @@ extern "C"
             g_self->hooks != nullptr &&
             g_self->hooks->World != nullptr)
         {
+            g_self->hooks->World->UnregisterOnExperienceLoadComplete(
+                &OnExperienceLoadComplete);
+
             g_self->hooks->World->UnregisterOnWorldBeginPlay(
                 &OnWorldBeginPlay);
 
@@ -152,6 +344,8 @@ extern "C"
                 &OnAfterWorldEndPlay);
         }
 
+        MiniMapTerrain::UnregisterDiagnostics();
+        MiniMapTerrain::Shutdown();
         MiniMapUI::Shutdown();
 
 #endif

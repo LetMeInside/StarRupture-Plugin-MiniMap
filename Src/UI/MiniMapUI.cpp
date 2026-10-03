@@ -1,4 +1,5 @@
 #include "MiniMapUI.h"
+#include "Map/MiniMapTerrain.h"
 
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -153,6 +154,25 @@ namespace
             rounding,
             PluginDrawFlags_RoundCornersAll);
 
+        PluginTextureHandle terrainTexture =
+            MiniMapTerrain::GetTerrainTexture();
+
+        if (terrainTexture != nullptr)
+        {
+            ui->DL_AddImage(
+                drawList,
+                terrainTexture,
+                windowX,
+                windowY,
+                windowX + windowWidth,
+                windowY + windowHeight,
+                0.0f,
+                0.0f,
+                1.0f,
+                1.0f,
+                0xFFFFFFFFu);
+        }
+
         ui->DL_AddRect(
             drawList,
             windowX,
@@ -164,33 +184,36 @@ namespace
             PluginDrawFlags_RoundCornersAll,
             1.0f);
 
-        constexpr const char* placeholderText =
-            "MiniMap";
+        if (terrainTexture == nullptr)
+        {
+            constexpr const char* placeholderText =
+                "MiniMap";
 
-        float textWidth = 0.0f;
-        float textHeight = 0.0f;
+            float textWidth = 0.0f;
+            float textHeight = 0.0f;
 
-        ui->CalcTextSize(
-            placeholderText,
-            &textWidth,
-            &textHeight,
-            false,
-            0.0f);
+            ui->CalcTextSize(
+                placeholderText,
+                &textWidth,
+                &textHeight,
+                false,
+                0.0f);
 
-        const float textX =
-            windowX +
-            (windowWidth - textWidth) * 0.5f;
+            const float textX =
+                windowX +
+                (windowWidth - textWidth) * 0.5f;
 
-        const float textY =
-            windowY +
-            (windowHeight - textHeight) * 0.5f;
+            const float textY =
+                windowY +
+                (windowHeight - textHeight) * 0.5f;
 
-        ui->DL_AddText(
-            drawList,
-            textX,
-            textY,
-            textColor,
-            placeholderText);
+            ui->DL_AddText(
+                drawList,
+                textX,
+                textY,
+                textColor,
+                placeholderText);
+        }
     }
 
     void OnToggleKeyPressed(
