@@ -44,6 +44,12 @@ namespace
 
         int GlobalChunkX = 0;
         int GlobalChunkY = 0;
+
+        // Resident chunks use 0 to mean "not scheduled for retirement".
+        // When non-zero, the texture may only be retired after the MiniMap
+        // render generation reaches this value while the chunk is still
+        // inactive.
+        uint64_t RetireAfterRenderGeneration = 0;
     };
 
 
@@ -79,6 +85,9 @@ namespace
     constexpr float kDefaultViewportPixelHeight =
         300.0f;
 
+    constexpr uint64_t kRetirementRenderGenerations =
+        3;
+
     std::mutex g_renderMutex;
 
     // Chunks currently referenced by the MiniMap render path.
@@ -88,6 +97,11 @@ namespace
     // leave the current viewport. Runtime reconciliation must not FreeTexture
     // these handles; revisiting a chunk reuses the existing handle.
     std::vector<LoadedChunk> g_residentChunks;
+
+    // Incremented only after a MiniMap terrain render callback completes
+    // while holding g_renderMutex. It is used as a render-progress marker,
+    // not as a game-frame counter.
+    uint64_t g_renderGeneration = 0;
 
     float g_viewportPixelWidth =
         kDefaultViewportPixelWidth;
@@ -202,6 +216,26 @@ namespace
 
         g_loadedChunks.clear();
         g_residentChunks.clear();
+        g_renderGeneration = 0;
+    }
+
+
+    bool ContainsIdentity(
+        const std::vector<LoadedChunk>& chunks,
+        const ChunkIdentity& identity)
+    {
+        for (const LoadedChunk& chunk :
+            chunks)
+        {
+            if (SameIdentity(
+                chunk.Identity,
+                identity))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 
@@ -807,9 +841,76 @@ namespace
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
 
-            // Runtime reconciliation only changes the active/rendered set.
-            // Resident texture handles remain owned so a chunk that leaves
-            // and later re-enters the viewport can be reused safely.
+            // First update retirement state against the exact active set that
+            // is about to become visible to the render thread.
+            for (LoadedChunk& residentChunk :
+                residentChunks)
+            {
+                const bool isActive =
+                    ContainsIdentity(
+                        nextChunks,
+                        residentChunk.Identity);
+
+                if (isActive)
+                {
+                    // Re-entering the viewport cancels retirement and reuses
+                    // the existing PluginTextureHandle.
+                    residentChunk.RetireAfterRenderGeneration =
+                        0;
+
+                    continue;
+                }
+
+                if (residentChunk.RetireAfterRenderGeneration ==
+                    0)
+                {
+                    residentChunk.RetireAfterRenderGeneration =
+                        g_renderGeneration +
+                        kRetirementRenderGenerations;
+                }
+            }
+
+            // A texture is only retired after it has remained absent from the
+            // active set for the configured number of complete MiniMap render
+            // generations. Holding g_renderMutex prevents a concurrent render
+            // callback from reintroducing the handle while it is being freed.
+            auto residentIt =
+                residentChunks.begin();
+
+            while (residentIt !=
+                residentChunks.end())
+            {
+                if (residentIt->
+                    RetireAfterRenderGeneration !=
+                    0 &&
+                    g_renderGeneration >=
+                    residentIt->
+                    RetireAfterRenderGeneration)
+                {
+                    LOG_INFO(
+                        "MiniMap: terrain: retired R%d grid=(%d, %d) "
+                        "chunk=(%d, %d) at render generation %llu",
+                        residentIt->Identity.RadiationLevel,
+                        residentIt->Identity.GridX,
+                        residentIt->Identity.GridY,
+                        residentIt->Identity.ChunkX,
+                        residentIt->Identity.ChunkY,
+                        static_cast<unsigned long long>(
+                            g_renderGeneration));
+
+                    FreeTexture(
+                        residentIt->Texture);
+
+                    residentIt =
+                        residentChunks.erase(
+                            residentIt);
+
+                    continue;
+                }
+
+                ++residentIt;
+            }
+
             g_loadedChunks =
                 std::move(
                     nextChunks);
@@ -1151,6 +1252,16 @@ namespace MiniMapTerrain
 
         std::lock_guard<std::mutex> lock(
             g_renderMutex);
+
+        struct RenderGenerationGuard
+        {
+            ~RenderGenerationGuard()
+            {
+                ++g_renderGeneration;
+            }
+        };
+
+        RenderGenerationGuard renderGenerationGuard;
 
         g_viewportPixelWidth =
             windowWidth;
