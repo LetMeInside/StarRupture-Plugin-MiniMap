@@ -11,6 +11,7 @@ namespace SDK
 namespace MiniMapMap
 {
     void SetWorld(SDK::UWorld* world);
+    SDK::UWorld* GetWorld();
     bool HasWorld();
 
     bool TryGetPlayerWorldPosition(

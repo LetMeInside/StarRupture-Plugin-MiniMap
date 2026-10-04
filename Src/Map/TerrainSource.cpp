@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainSource.h"
+#include "Map.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -134,6 +135,73 @@ namespace
 
         return true;
     }
+
+
+    bool TryGetCurrentRadiationLevel(
+        int& outRadiationLevel)
+    {
+        outRadiationLevel = 0;
+
+        SDK::UWorld* world =
+            MiniMapMap::GetWorld();
+
+        if (world == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: terrain source cannot read radiation level "
+                "because the active world is unavailable");
+
+            return false;
+        }
+
+        SDK::AGameStateBase* baseGameState =
+            world->GameState;
+
+        if (baseGameState == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: terrain source cannot read radiation level "
+                "because GameState is unavailable");
+
+            return false;
+        }
+
+        auto* gameState =
+            static_cast<SDK::ACrGameStateBase*>(
+                baseGameState);
+
+        SDK::ACrMapMenuDataReplicationHelper* helper =
+            gameState->MapMenuDataReplicationHelper;
+
+        if (helper == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: terrain source cannot read radiation level "
+                "because MapMenuDataReplicationHelper is unavailable");
+
+            return false;
+        }
+
+        outRadiationLevel =
+            helper->CurrentRadiationLevelReplicated;
+
+        return true;
+    }
+
+
+    const char* GetVariantName(
+        MiniMapTerrainSource::Variant variant)
+    {
+        switch (variant)
+        {
+        case MiniMapTerrainSource::Variant::Radiation2:
+            return "Radiation2";
+
+        case MiniMapTerrainSource::Variant::Ordinary:
+        default:
+            return "Ordinary";
+        }
+    }
 }
 
 
@@ -188,6 +256,19 @@ namespace MiniMapTerrainSource
 
             return false;
         }
+
+        int radiationLevel = 0;
+
+        if (!TryGetCurrentRadiationLevel(
+            radiationLevel))
+        {
+            return false;
+        }
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "current radiation level=%d",
+            radiationLevel);
 
         const auto& pivot =
             g_terrainData->MapTerrainTopLeftPivotPoint;
@@ -308,22 +389,55 @@ namespace MiniMapTerrainSource
             return false;
         }
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "selected terrain segment grid=(%d, %d)",
-            sourceSegment->
-            TerrainSegmentGridIndex.X,
-            sourceSegment->
-            TerrainSegmentGridIndex.Y);
+        Variant selectedVariant =
+            Variant::Ordinary;
 
         SDK::UTexture2D* sourceTexture =
-            native->texture.getBrushTexture(
-                sourceSegment->
-                TerrainSegmentTexture);
+            nullptr;
+
+        if (radiationLevel == 1)
+        {
+            sourceTexture =
+                native->texture.getBrushTexture(
+                    sourceSegment->
+                    TerrainSegmentTextureRadiation2);
+
+            if (sourceTexture != nullptr)
+            {
+                selectedVariant =
+                    Variant::Radiation2;
+            }
+            else
+            {
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "terrain grid=(%d, %d) has no usable "
+                    "Radiation2 texture; falling back to ordinary",
+                    gridX,
+                    gridY);
+            }
+        }
+
+        if (sourceTexture == nullptr)
+        {
+            sourceTexture =
+                native->texture.getBrushTexture(
+                    sourceSegment->
+                    TerrainSegmentTexture);
+
+            selectedVariant =
+                Variant::Ordinary;
+        }
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
-            "GetBrushResourceAsTexture2D returned %p",
+            "selected terrain segment grid=(%d, %d) "
+            "radiation-level=%d variant=%s texture=%p",
+            gridX,
+            gridY,
+            radiationLevel,
+            GetVariantName(
+                selectedVariant),
             sourceTexture);
 
         if (sourceTexture == nullptr)
@@ -347,6 +461,12 @@ namespace MiniMapTerrainSource
 
         outSourceTile.LocalV =
             localV;
+
+        outSourceTile.RadiationLevel =
+            radiationLevel;
+
+        outSourceTile.SelectedVariant =
+            selectedVariant;
 
         outSourceTile.Texture =
             sourceTexture;

@@ -4,6 +4,7 @@
 #include "Map.h"
 #include "TerrainChunks.h"
 #include "TerrainSource.h"
+#include "TerrainCache.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -435,71 +436,152 @@ namespace
             return;
         }
 
-        void* ownedMipZero = nullptr;
-
-        const auto copyStart =
-            std::chrono::steady_clock::now();
-
-        MiniMapNative::TextureAccess::CopyBulkData(
-            mipZero,
-            &ownedMipZero,
-            false);
-
-        const auto copyEnd =
-            std::chrono::steady_clock::now();
-
-        if (ownedMipZero == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "FBulkData::GetCopy returned a null allocation");
-
-            return;
-        }
-
-        const double copyMilliseconds =
-            std::chrono::duration<double, std::milli>(
-                copyEnd - copyStart).count();
-
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "mip0 GetCopy returned %p bytes=%lld time=%.3f ms",
-            ownedMipZero,
-            static_cast<long long>(mipZeroBulkSize),
-            copyMilliseconds);
-
         std::vector<uint8_t> compressedChunk;
         std::vector<uint8_t> rgbaChunk;
 
-        const auto extractStart =
-            std::chrono::steady_clock::now();
-
-        const bool extracted =
-            MiniMapTerrainChunks::ExtractBC1Chunk(
-                static_cast<const uint8_t*>(ownedMipZero),
+        bool loadedFromCache =
+            MiniMapTerrainCache::TryLoadChunk(
+                sourceTile.RadiationLevel,
+                gridX,
+                gridY,
                 expectedSourceWidth,
                 expectedSourceHeight,
+                platformData.PixelFormat,
+                platformData.SRGB,
                 chunkX,
                 chunkY,
                 compressedChunk);
 
-        MiniMapNative::TextureAccess::FreeBulkDataCopy(
-            ownedMipZero);
+        double copyMilliseconds = 0.0;
+        double extractMilliseconds = 0.0;
 
-        ownedMipZero = nullptr;
-
-        const auto extractEnd =
-            std::chrono::steady_clock::now();
-
-        if (!extracted)
+        if (!loadedFromCache)
         {
-            LOG_ERROR(
+            void* ownedMipZero = nullptr;
+
+            const auto copyStart =
+                std::chrono::steady_clock::now();
+
+            MiniMapNative::TextureAccess::CopyBulkData(
+                mipZero,
+                &ownedMipZero,
+                false);
+
+            const auto copyEnd =
+                std::chrono::steady_clock::now();
+
+            if (ownedMipZero == nullptr)
+            {
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: "
+                    "FBulkData::GetCopy returned a null allocation");
+
+                return;
+            }
+
+            copyMilliseconds =
+                std::chrono::duration<double, std::milli>(
+                    copyEnd - copyStart).count();
+
+            LOG_INFO(
                 "MiniMap: F8 diagnostic: "
-                "failed to extract BC1 MiniMap chunk=(%d, %d)",
+                "mip0 GetCopy returned %p bytes=%lld time=%.3f ms",
+                ownedMipZero,
+                static_cast<long long>(mipZeroBulkSize),
+                copyMilliseconds);
+
+            const auto cacheStart =
+                std::chrono::steady_clock::now();
+
+            const bool cacheWritten =
+                MiniMapTerrainCache::StoreSourceTile(
+                    sourceTile.RadiationLevel,
+                    gridX,
+                    gridY,
+                    expectedSourceWidth,
+                    expectedSourceHeight,
+                    platformData.PixelFormat,
+                    platformData.SRGB,
+                    static_cast<const uint8_t*>(
+                        ownedMipZero),
+                    static_cast<size_t>(
+                        mipZeroBulkSize));
+
+            const auto cacheEnd =
+                std::chrono::steady_clock::now();
+
+            if (!cacheWritten)
+            {
+                LOG_WARN(
+                    "MiniMap: F8 diagnostic: "
+                    "terrain cache write failed for R%d grid=(%d, %d)",
+                    sourceTile.RadiationLevel,
+                    gridX,
+                    gridY);
+            }
+            else
+            {
+                const double cacheMilliseconds =
+                    std::chrono::duration<double, std::milli>(
+                        cacheEnd - cacheStart).count();
+
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "terrain cache written for R%d grid=(%d, %d) "
+                    "time=%.3f ms",
+                    sourceTile.RadiationLevel,
+                    gridX,
+                    gridY,
+                    cacheMilliseconds);
+            }
+
+            const auto extractStart =
+                std::chrono::steady_clock::now();
+
+            const bool extracted =
+                MiniMapTerrainChunks::ExtractBC1Chunk(
+                    static_cast<const uint8_t*>(
+                        ownedMipZero),
+                    expectedSourceWidth,
+                    expectedSourceHeight,
+                    chunkX,
+                    chunkY,
+                    compressedChunk);
+
+            MiniMapNative::TextureAccess::FreeBulkDataCopy(
+                ownedMipZero);
+
+            ownedMipZero = nullptr;
+
+            const auto extractEnd =
+                std::chrono::steady_clock::now();
+
+            if (!extracted)
+            {
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: "
+                    "failed to extract BC1 MiniMap chunk=(%d, %d)",
+                    chunkX,
+                    chunkY);
+
+                return;
+            }
+
+            extractMilliseconds =
+                std::chrono::duration<double, std::milli>(
+                    extractEnd - extractStart).count();
+        }
+        else
+        {
+            LOG_INFO(
+                "MiniMap: F8 diagnostic: "
+                "using cached BC1 chunk for R%d terrain-grid=(%d, %d) "
+                "chunk=(%d, %d); FBulkData::GetCopy skipped",
+                sourceTile.RadiationLevel,
+                gridX,
+                gridY,
                 chunkX,
                 chunkY);
-
-            return;
         }
 
         const auto decodeStart =
@@ -524,22 +606,19 @@ namespace
             return;
         }
 
-        const double extractMilliseconds =
-            std::chrono::duration<double, std::milli>(
-                extractEnd - extractStart).count();
-
         const double decodeMilliseconds =
             std::chrono::duration<double, std::milli>(
                 decodeEnd - decodeStart).count();
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
-            "extracted BC1 chunk=(%d, %d) compressed=%zu bytes "
-            "RGBA=%zu bytes extract=%.3f ms decode=%.3f ms",
+            "BC1 chunk=(%d, %d) compressed=%zu bytes "
+            "RGBA=%zu bytes source=%s extract=%.3f ms decode=%.3f ms",
             chunkX,
             chunkY,
             compressedChunk.size(),
             rgbaChunk.size(),
+            loadedFromCache ? "cache" : "mip0",
             extractMilliseconds,
             decodeMilliseconds);
 

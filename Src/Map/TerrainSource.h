@@ -12,6 +12,13 @@ namespace SDK
 
 namespace MiniMapTerrainSource
 {
+    enum class Variant
+    {
+        Ordinary = 0,
+        Radiation2 = 1
+    };
+
+
     struct SourceTile
     {
         int GridX = 0;
@@ -19,6 +26,9 @@ namespace MiniMapTerrainSource
 
         double LocalU = 0.0;
         double LocalV = 0.0;
+
+        int RadiationLevel = 0;
+        Variant SelectedVariant = Variant::Ordinary;
 
         SDK::UTexture2D* Texture = nullptr;
     };

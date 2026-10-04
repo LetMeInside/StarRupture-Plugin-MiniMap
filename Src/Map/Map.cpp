@@ -1,12 +1,12 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map.h"
-#include "../Native/NativeApi.h"
-#include "../plugin.h"
-#include "../plugin_helpers.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
+
+#include "../Native/NativeApi.h"
+#include "../plugin_helpers.h"
 
 namespace
 {
@@ -27,6 +27,12 @@ namespace MiniMapMap
     }
 
 
+    SDK::UWorld* GetWorld()
+    {
+        return g_world;
+    }
+
+
     bool HasWorld()
     {
         return g_world != nullptr;
@@ -39,8 +45,7 @@ namespace MiniMapMap
         if (g_world == nullptr)
         {
             LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "active gameplay world is unavailable");
+                "MiniMap: active gameplay world is unavailable");
 
             return false;
         }
@@ -76,8 +81,7 @@ namespace MiniMapMap
         if (playerController == nullptr)
         {
             LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "first player controller was not found");
+                "MiniMap: first player controller is unavailable");
 
             return false;
         }
@@ -90,8 +94,7 @@ namespace MiniMapMap
         if (playerPawn == nullptr)
         {
             LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "local CrCharacterPlayerBase pawn was not found");
+                "MiniMap: local player pawn is unavailable");
 
             return false;
         }
@@ -102,8 +105,7 @@ namespace MiniMapMap
         if (rootComponent == nullptr)
         {
             LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "local player pawn has no RootComponent");
+                "MiniMap: local player root component is unavailable");
 
             return false;
         }
