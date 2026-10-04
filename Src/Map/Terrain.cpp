@@ -40,15 +40,8 @@ namespace
         ChunkIdentity Identity = {};
         PluginTextureHandle Texture = nullptr;
 
-        float X0 = 0.0f;
-        float Y0 = 0.0f;
-        float X1 = 0.0f;
-        float Y1 = 0.0f;
-
-        float U0 = 0.0f;
-        float V0 = 0.0f;
-        float U1 = 1.0f;
-        float V1 = 1.0f;
+        int GlobalChunkX = 0;
+        int GlobalChunkY = 0;
     };
 
 
@@ -83,6 +76,16 @@ namespace
 
     float g_viewportPixelHeight =
         kDefaultViewportPixelHeight;
+
+    bool g_hasViewportAnchor = false;
+
+    SDK::FVector g_viewportAnchorWorldPosition = {};
+
+    double g_viewportAnchorGlobalChunkX = 0.0;
+    double g_viewportAnchorGlobalChunkY = 0.0;
+
+    double g_playerGlobalChunkX = 0.0;
+    double g_playerGlobalChunkY = 0.0;
 
 
     bool SameIdentity(
@@ -489,20 +492,13 @@ namespace
     }
 
 
-    bool UpdateViewport()
+    bool ReconcileViewport(
+        const SDK::FVector& playerLocation)
     {
         if (g_terrainSelf == nullptr ||
             g_terrainSelf->hooks == nullptr ||
             g_terrainSelf->hooks->ImGuiTextures == nullptr ||
             !MiniMapMap::HasWorld())
-        {
-            return false;
-        }
-
-        SDK::FVector playerLocation = {};
-
-        if (!MiniMapMap::TryGetPlayerWorldPosition(
-            playerLocation))
         {
             return false;
         }
@@ -760,62 +756,6 @@ namespace
                     continue;
                 }
 
-                const double rawX0 =
-                    (static_cast<double>(
-                        globalChunkX) -
-                        viewportMinX) /
-                    viewportWidthInChunks;
-
-                const double rawX1 =
-                    (static_cast<double>(
-                        globalChunkX + 1) -
-                        viewportMinX) /
-                    viewportWidthInChunks;
-
-                const double rawY0 =
-                    (static_cast<double>(
-                        globalChunkY) -
-                        viewportMinY) /
-                    viewportHeightInChunks;
-
-                const double rawY1 =
-                    (static_cast<double>(
-                        globalChunkY + 1) -
-                        viewportMinY) /
-                    viewportHeightInChunks;
-
-                const double clippedX0 =
-                    std::clamp(
-                        rawX0,
-                        0.0,
-                        1.0);
-
-                const double clippedX1 =
-                    std::clamp(
-                        rawX1,
-                        0.0,
-                        1.0);
-
-                const double clippedY0 =
-                    std::clamp(
-                        rawY0,
-                        0.0,
-                        1.0);
-
-                const double clippedY1 =
-                    std::clamp(
-                        rawY1,
-                        0.0,
-                        1.0);
-
-                if (clippedX1 <=
-                    clippedX0 ||
-                    clippedY1 <=
-                    clippedY0)
-                {
-                    continue;
-                }
-
                 LoadedChunk renderChunk = {};
 
                 renderChunk.Identity =
@@ -824,49 +764,11 @@ namespace
                 renderChunk.Texture =
                     texture;
 
-                renderChunk.X0 =
-                    static_cast<float>(
-                        clippedX0);
+                renderChunk.GlobalChunkX =
+                    globalChunkX;
 
-                renderChunk.Y0 =
-                    static_cast<float>(
-                        clippedY0);
-
-                renderChunk.X1 =
-                    static_cast<float>(
-                        clippedX1);
-
-                renderChunk.Y1 =
-                    static_cast<float>(
-                        clippedY1);
-
-                renderChunk.U0 =
-                    static_cast<float>(
-                        (clippedX0 -
-                            rawX0) /
-                        (rawX1 -
-                            rawX0));
-
-                renderChunk.U1 =
-                    static_cast<float>(
-                        (clippedX1 -
-                            rawX0) /
-                        (rawX1 -
-                            rawX0));
-
-                renderChunk.V0 =
-                    static_cast<float>(
-                        (clippedY0 -
-                            rawY0) /
-                        (rawY1 -
-                            rawY0));
-
-                renderChunk.V1 =
-                    static_cast<float>(
-                        (clippedY1 -
-                            rawY0) /
-                        (rawY1 -
-                            rawY0));
+                renderChunk.GlobalChunkY =
+                    globalChunkY;
 
                 nextChunks.push_back(
                     renderChunk);
@@ -892,15 +794,74 @@ namespace
             g_loadedChunks =
                 std::move(
                     nextChunks);
+
+            g_viewportAnchorWorldPosition =
+                playerLocation;
+
+            g_viewportAnchorGlobalChunkX =
+                playerGlobalChunkX;
+
+            g_viewportAnchorGlobalChunkY =
+                playerGlobalChunkY;
+
+            g_playerGlobalChunkX =
+                playerGlobalChunkX;
+
+            g_playerGlobalChunkY =
+                playerGlobalChunkY;
+
+            g_hasViewportAnchor =
+                true;
         }
 
         return true;
     }
 
 
+    void UpdateFastViewportCenter(
+        const SDK::FVector& playerLocation)
+    {
+        std::lock_guard<std::mutex> lock(
+            g_renderMutex);
+
+        if (!g_hasViewportAnchor)
+        {
+            return;
+        }
+
+        g_playerGlobalChunkX =
+            g_viewportAnchorGlobalChunkX +
+            (playerLocation.X -
+                g_viewportAnchorWorldPosition.X) /
+            kChunkWorldUnits;
+
+        g_playerGlobalChunkY =
+            g_viewportAnchorGlobalChunkY +
+            (playerLocation.Y -
+                g_viewportAnchorWorldPosition.Y) /
+            kChunkWorldUnits;
+    }
+
+
     void OnTerrainTick(
         float deltaSeconds)
     {
+        if (!MiniMapMap::HasWorld())
+        {
+            return;
+        }
+
+        SDK::FVector playerLocation = {};
+
+        if (!MiniMapMap::TryGetPlayerWorldPosition(
+            playerLocation))
+        {
+            return;
+        }
+
+        UpdateFastViewportCenter(
+            playerLocation);
+
         g_updateAccumulator +=
             deltaSeconds;
 
@@ -913,7 +874,8 @@ namespace
         g_updateAccumulator =
             0.0f;
 
-        UpdateViewport();
+        ReconcileViewport(
+            playerLocation);
     }
 }
 
@@ -938,6 +900,23 @@ namespace MiniMapTerrain
 
             g_viewportPixelHeight =
                 kDefaultViewportPixelHeight;
+
+            g_hasViewportAnchor =
+                false;
+
+            g_viewportAnchorWorldPosition = {};
+
+            g_viewportAnchorGlobalChunkX =
+                0.0;
+
+            g_viewportAnchorGlobalChunkY =
+                0.0;
+
+            g_playerGlobalChunkX =
+                0.0;
+
+            g_playerGlobalChunkY =
+                0.0;
         }
 
         ReleaseLoadedChunks();
@@ -1018,6 +997,23 @@ namespace MiniMapTerrain
 
             g_viewportPixelHeight =
                 kDefaultViewportPixelHeight;
+
+            g_hasViewportAnchor =
+                false;
+
+            g_viewportAnchorWorldPosition = {};
+
+            g_viewportAnchorGlobalChunkX =
+                0.0;
+
+            g_viewportAnchorGlobalChunkY =
+                0.0;
+
+            g_playerGlobalChunkX =
+                0.0;
+
+            g_playerGlobalChunkY =
+                0.0;
         }
     }
 
@@ -1065,10 +1061,47 @@ namespace MiniMapTerrain
         g_viewportPixelHeight =
             windowHeight;
 
-        if (g_loadedChunks.empty())
+        if (g_loadedChunks.empty() ||
+            !g_hasViewportAnchor)
         {
             return;
         }
+
+        const double viewportWidthMeters =
+            static_cast<double>(
+                windowWidth) *
+            kDefaultMetersPerPixel;
+
+        const double viewportHeightMeters =
+            static_cast<double>(
+                windowHeight) *
+            kDefaultMetersPerPixel;
+
+        const double viewportWidthInChunks =
+            viewportWidthMeters /
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunkWorldSizeMeters);
+
+        const double viewportHeightInChunks =
+            viewportHeightMeters /
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunkWorldSizeMeters);
+
+        if (viewportWidthInChunks <= 0.0 ||
+            viewportHeightInChunks <= 0.0)
+        {
+            return;
+        }
+
+        const double viewportMinX =
+            g_playerGlobalChunkX -
+            viewportWidthInChunks *
+            0.5;
+
+        const double viewportMinY =
+            g_playerGlobalChunkY -
+            viewportHeightInChunks *
+            0.5;
 
         PluginDrawList drawList =
             ui->GetWindowDrawList();
@@ -1082,25 +1115,113 @@ namespace MiniMapTerrain
                 continue;
             }
 
+            const double rawX0 =
+                (static_cast<double>(
+                    chunk.GlobalChunkX) -
+                    viewportMinX) /
+                viewportWidthInChunks;
+
+            const double rawX1 =
+                (static_cast<double>(
+                    chunk.GlobalChunkX + 1) -
+                    viewportMinX) /
+                viewportWidthInChunks;
+
+            const double rawY0 =
+                (static_cast<double>(
+                    chunk.GlobalChunkY) -
+                    viewportMinY) /
+                viewportHeightInChunks;
+
+            const double rawY1 =
+                (static_cast<double>(
+                    chunk.GlobalChunkY + 1) -
+                    viewportMinY) /
+                viewportHeightInChunks;
+
+            const double clippedX0 =
+                std::clamp(
+                    rawX0,
+                    0.0,
+                    1.0);
+
+            const double clippedX1 =
+                std::clamp(
+                    rawX1,
+                    0.0,
+                    1.0);
+
+            const double clippedY0 =
+                std::clamp(
+                    rawY0,
+                    0.0,
+                    1.0);
+
+            const double clippedY1 =
+                std::clamp(
+                    rawY1,
+                    0.0,
+                    1.0);
+
+            if (clippedX1 <=
+                clippedX0 ||
+                clippedY1 <=
+                clippedY0)
+            {
+                continue;
+            }
+
             const float x0 =
                 windowX +
-                chunk.X0 *
+                static_cast<float>(
+                    clippedX0) *
                 windowWidth;
 
             const float y0 =
                 windowY +
-                chunk.Y0 *
+                static_cast<float>(
+                    clippedY0) *
                 windowHeight;
 
             const float x1 =
                 windowX +
-                chunk.X1 *
+                static_cast<float>(
+                    clippedX1) *
                 windowWidth;
 
             const float y1 =
                 windowY +
-                chunk.Y1 *
+                static_cast<float>(
+                    clippedY1) *
                 windowHeight;
+
+            const float u0 =
+                static_cast<float>(
+                    (clippedX0 -
+                        rawX0) /
+                    (rawX1 -
+                        rawX0));
+
+            const float u1 =
+                static_cast<float>(
+                    (clippedX1 -
+                        rawX0) /
+                    (rawX1 -
+                        rawX0));
+
+            const float v0 =
+                static_cast<float>(
+                    (clippedY0 -
+                        rawY0) /
+                    (rawY1 -
+                        rawY0));
+
+            const float v1 =
+                static_cast<float>(
+                    (clippedY1 -
+                        rawY0) /
+                    (rawY1 -
+                        rawY0));
 
             ui->DL_AddImage(
                 drawList,
@@ -1109,10 +1230,10 @@ namespace MiniMapTerrain
                 y0,
                 x1,
                 y1,
-                chunk.U0,
-                chunk.V0,
-                chunk.U1,
-                chunk.V1,
+                u0,
+                v0,
+                u1,
+                v1,
                 0xFFFFFFFFu);
         }
     }
