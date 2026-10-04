@@ -41,7 +41,8 @@ namespace MiniMapTerrainSource
 
     bool TryResolveSourceTile(
         const SDK::FVector& worldPosition,
-        SourceTile& outSourceTile);
+        SourceTile& outSourceTile,
+        bool verbose = false);
 }
 
 #endif

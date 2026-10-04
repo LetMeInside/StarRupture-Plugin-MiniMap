@@ -172,7 +172,8 @@ namespace
 
         if (!MiniMapTerrainSource::TryResolveSourceTile(
             playerLocation,
-            sourceTile))
+            sourceTile,
+            true))
         {
             return;
         }

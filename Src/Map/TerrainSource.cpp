@@ -15,7 +15,7 @@
 namespace
 {
     IPluginSelf* g_sourceSelf = nullptr;
-    SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
+    SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
 
 
     SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
@@ -83,13 +83,8 @@ namespace
     }
 
 
-    bool EnsureTerrainDataLoaded()
+    SDK::UCrMapMenuTerrainData* LoadTerrainData()
     {
-        if (g_terrainData != nullptr)
-        {
-            return true;
-        }
-
         const MiniMapNative::NativeApi* native =
             MiniMapNative::Get();
 
@@ -99,23 +94,26 @@ namespace
             LOG_ERROR(
                 "MiniMap: terrain source native API is unavailable");
 
-            return false;
+            return nullptr;
         }
 
-        SDK::UCrMapMenuDevSettings* devSettings =
-            FindMapMenuDevSettingsCDO();
-
-        if (devSettings == nullptr)
+        if (g_devSettings == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: CrMapMenuDevSettings CDO was not found");
+            g_devSettings =
+                FindMapMenuDevSettingsCDO();
 
-            return false;
+            if (g_devSettings == nullptr)
+            {
+                LOG_ERROR(
+                    "MiniMap: CrMapMenuDevSettings CDO was not found");
+
+                return nullptr;
+            }
         }
 
         void* terrainDataSoftPtr =
             static_cast<void*>(
-                &devSettings->TerrainData);
+                &g_devSettings->TerrainData);
 
         SDK::UObject* loadedObject =
             native->asset.loadSynchronous(
@@ -126,14 +124,11 @@ namespace
             LOG_ERROR(
                 "MiniMap: TerrainData could not be loaded");
 
-            return false;
+            return nullptr;
         }
 
-        g_terrainData =
-            static_cast<SDK::UCrMapMenuTerrainData*>(
-                loadedObject);
-
-        return true;
+        return static_cast<SDK::UCrMapMenuTerrainData*>(
+            loadedObject);
     }
 
 
@@ -211,7 +206,7 @@ namespace MiniMapTerrainSource
         IPluginSelf* self)
     {
         g_sourceSelf = self;
-        g_terrainData = nullptr;
+        g_devSettings = nullptr;
 
         if (g_sourceSelf == nullptr ||
             g_sourceSelf->hooks == nullptr)
@@ -229,18 +224,22 @@ namespace MiniMapTerrainSource
 
     void Shutdown()
     {
-        g_terrainData = nullptr;
+        g_devSettings = nullptr;
         g_sourceSelf = nullptr;
     }
 
 
     bool TryResolveSourceTile(
         const SDK::FVector& worldPosition,
-        SourceTile& outSourceTile)
+        SourceTile& outSourceTile,
+        bool verbose)
     {
         outSourceTile = {};
 
-        if (!EnsureTerrainDataLoaded())
+        SDK::UCrMapMenuTerrainData* terrainData =
+            LoadTerrainData();
+
+        if (terrainData == nullptr)
         {
             return false;
         }
@@ -265,32 +264,38 @@ namespace MiniMapTerrainSource
             return false;
         }
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "current radiation level=%d",
-            radiationLevel);
+        if (verbose)
+        {
+            LOG_INFO(
+                "MiniMap: F8 diagnostic: "
+                "current radiation level=%d",
+                radiationLevel);
+        }
 
         const auto& pivot =
-            g_terrainData->MapTerrainTopLeftPivotPoint;
+            terrainData->MapTerrainTopLeftPivotPoint;
 
         const auto& segmentSize =
-            g_terrainData->MapTerrainSegmentSize;
+            terrainData->MapTerrainSegmentSize;
 
         const int segmentCount =
-            g_terrainData->TerrainSegmentsData.Num();
+            terrainData->TerrainSegmentsData.Num();
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "TerrainData origin=(%.3f, %.3f, %.3f) "
-            "segment-size=(%.3f, %.3f, %.3f) "
-            "segments=%d",
-            pivot.X,
-            pivot.Y,
-            pivot.Z,
-            segmentSize.X,
-            segmentSize.Y,
-            segmentSize.Z,
-            segmentCount);
+        if (verbose)
+        {
+            LOG_INFO(
+                "MiniMap: F8 diagnostic: "
+                "TerrainData origin=(%.3f, %.3f, %.3f) "
+                "segment-size=(%.3f, %.3f, %.3f) "
+                "segments=%d",
+                pivot.X,
+                pivot.Y,
+                pivot.Z,
+                segmentSize.X,
+                segmentSize.Y,
+                segmentSize.Z,
+                segmentCount);
+        }
 
         const double worldTileWidth =
             100.0 *
@@ -347,14 +352,17 @@ namespace MiniMapTerrainSource
             static_cast<double>(
                 gridX);
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "player terrain grid=(%d, %d) "
-            "local-uv=(%.6f, %.6f)",
-            gridX,
-            gridY,
-            localU,
-            localV);
+        if (verbose)
+        {
+            LOG_INFO(
+                "MiniMap: F8 diagnostic: "
+                "player terrain grid=(%d, %d) "
+                "local-uv=(%.6f, %.6f)",
+                gridX,
+                gridY,
+                localU,
+                localV);
+        }
 
         const SDK::FCrTerrainSegmentData* sourceSegment =
             nullptr;
@@ -362,7 +370,7 @@ namespace MiniMapTerrainSource
         for (int i = 0; i < segmentCount; ++i)
         {
             const auto& segment =
-                g_terrainData->
+                terrainData->
                 TerrainSegmentsData[i];
 
             if (segment.TerrainSegmentGridIndex.X ==
@@ -409,12 +417,15 @@ namespace MiniMapTerrainSource
             }
             else
             {
-                LOG_INFO(
-                    "MiniMap: F8 diagnostic: "
-                    "terrain grid=(%d, %d) has no usable "
-                    "Radiation2 texture; falling back to ordinary",
-                    gridX,
-                    gridY);
+                if (verbose)
+                {
+                    LOG_INFO(
+                        "MiniMap: F8 diagnostic: "
+                        "terrain grid=(%d, %d) has no usable "
+                        "Radiation2 texture; falling back to ordinary",
+                        gridX,
+                        gridY);
+                }
             }
         }
 
@@ -429,16 +440,19 @@ namespace MiniMapTerrainSource
                 Variant::Ordinary;
         }
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "selected terrain segment grid=(%d, %d) "
-            "radiation-level=%d variant=%s texture=%p",
-            gridX,
-            gridY,
-            radiationLevel,
-            GetVariantName(
-                selectedVariant),
-            sourceTexture);
+        if (verbose)
+        {
+            LOG_INFO(
+                "MiniMap: F8 diagnostic: "
+                "selected terrain segment grid=(%d, %d) "
+                "radiation-level=%d variant=%s texture=%p",
+                gridX,
+                gridY,
+                radiationLevel,
+                GetVariantName(
+                    selectedVariant),
+                sourceTexture);
+        }
 
         if (sourceTexture == nullptr)
         {
