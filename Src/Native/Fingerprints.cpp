@@ -618,6 +618,292 @@ namespace MiniMapFingerprints
         addresses.getComponentLocation =
             componentLocationAddress;
 
+        // -------------------------------------------------------------------
+// UTexture2D::GetPlatformData
+//
+// Verified against:
+//
+//   ++Earth20+Neon-HF2.5-CL-126119
+//
+// Target RVA:
+//
+//   0x03824E90
+//
+// The target itself is only:
+//
+//   mov rax,[rcx+150h]
+//   ret
+//
+// That byte sequence is not unique, so fingerprint a verified call
+// site in IsTextureDataValid and follow its E8.
+//
+// ABI:
+//
+//   RCX = UTexture2D*
+//   RAX = FTexturePlatformData*
+//
+// The target is a leaf without unwind metadata, so validate it as
+// executable code rather than as a function start.
+// -------------------------------------------------------------------
+
+        PluginScanRequest getPlatformDataRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        getPlatformDataRequest.hookName =
+            "MiniMap::UTexture2D::GetPlatformData";
+
+        getPlatformDataRequest.pattern =
+            "8B FE "
+            "48 85 C9 "
+            "74 ?? "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 "
+            "74 ?? "
+            "48 8D 54 24 ?? "
+            "48 8B CB";
+
+        getPlatformDataRequest.followRel32At = 7;
+
+        getPlatformDataRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+
+        getPlatformDataRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t getPlatformDataAddress =
+            scanner->Resolve(
+                self,
+                &getPlatformDataRequest);
+
+        if (getPlatformDataAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getPlatformData =
+            getPlatformDataAddress;
+
+
+        // -------------------------------------------------------------------
+        // FBulkData::GetBulkDataSize
+        //
+        // Verified target RVA:
+        //
+        //   0x015C12B0
+        //
+        // ABI:
+        //
+        //   RCX = const FBulkData*
+        //   RAX = int64 byte size
+        //
+        // Leaf function without unwind metadata.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest getBulkDataSizeRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        getBulkDataSizeRequest.hookName =
+            "MiniMap::FBulkData::GetBulkDataSize";
+
+        getBulkDataSizeRequest.pattern =
+            "44 0F B6 49 0C "
+            "4C 8B C1 "
+            "0F B6 41 0B "
+            "0F B6 51 0A "
+            "0F B6 49 09 "
+            "49 C1 E1 08 "
+            "49 0B C1 "
+            "48 C1 E0 08 "
+            "48 0B C2";
+
+        getBulkDataSizeRequest.flags = 0;
+
+        getBulkDataSizeRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t getBulkDataSizeAddress =
+            scanner->Resolve(
+                self,
+                &getBulkDataSizeRequest);
+
+        if (getBulkDataSizeAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getBulkDataSize =
+            getBulkDataSizeAddress;
+
+
+        // -------------------------------------------------------------------
+        // FBulkData::CanLoadFromDisk
+        //
+        // Verified target RVA:
+        //
+        //   0x015BE710
+        //
+        // ABI:
+        //
+        //   RCX = const FBulkData*
+        //   AL  = bool
+        //
+        // Leaf function without unwind metadata.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest canLoadFromDiskRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        canLoadFromDiskRequest.hookName =
+            "MiniMap::FBulkData::CanLoadFromDisk";
+
+        canLoadFromDiskRequest.pattern =
+            "48 8B 51 18 "
+            "48 2B 15 ?? ?? ?? ?? "
+            "75 ?? "
+            "8B 51 20 "
+            "8B 05 ?? ?? ?? ?? "
+            "48 2B D0 "
+            "48 85 D2 "
+            "0F 95 C0 "
+            "C3";
+
+        canLoadFromDiskRequest.flags = 0;
+
+        canLoadFromDiskRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t canLoadFromDiskAddress =
+            scanner->Resolve(
+                self,
+                &canLoadFromDiskRequest);
+
+        if (canLoadFromDiskAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.canLoadFromDisk =
+            canLoadFromDiskAddress;
+
+
+        // -------------------------------------------------------------------
+        // FBulkData::GetCopy
+        //
+        // Verified target RVA:
+        //
+        //   0x015C12F0
+        //
+        // Signature:
+        //
+        //   void FBulkData::GetCopy(
+        //       void** Dest,
+        //       bool bDiscardInternalCopy)
+        //
+        // ABI:
+        //
+        //   RCX  = FBulkData*
+        //   RDX  = void** Dest
+        //   R8B  = bDiscardInternalCopy
+        //
+        // This has valid unwind metadata and is fingerprinted at the native
+        // function entry.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest getBulkDataCopyRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        getBulkDataCopyRequest.hookName =
+            "MiniMap::FBulkData::GetCopy";
+
+        getBulkDataCopyRequest.pattern =
+            "48 89 5C 24 ?? "
+            "55 "
+            "56 "
+            "57 "
+            "48 81 EC ?? ?? ?? ?? "
+            "48 8B 05 ?? ?? ?? ?? "
+            "48 33 C4 "
+            "48 89 84 24 ?? ?? ?? ?? "
+            "80 79 13 00 "
+            "41 0F B6 E8 "
+            "48 8B F2 "
+            "48 8B D9";
+
+        getBulkDataCopyRequest.flags = 0;
+
+        getBulkDataCopyRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t getBulkDataCopyAddress =
+            scanner->Resolve(
+                self,
+                &getBulkDataCopyRequest);
+
+        if (getBulkDataCopyAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getBulkDataCopy =
+            getBulkDataCopyAddress;
+
+
+        // -------------------------------------------------------------------
+        // FMemory::Free
+        //
+        // Verified target RVA:
+        //
+        //   0x01334660
+        //
+        // ABI:
+        //
+        //   RCX = allocation
+        //
+        // Allocation returned by FBulkData::GetCopy must be released through
+        // this function, not CRT free/delete[].
+        //
+        // This is a native function start with unwind metadata.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest memoryFreeRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        memoryFreeRequest.hookName =
+            "MiniMap::FMemory::Free";
+
+        memoryFreeRequest.pattern =
+            "48 85 C9 "
+            "74 ?? "
+            "53 "
+            "48 83 EC ?? "
+            "48 8B D9 "
+            "48 8B 0D ?? ?? ?? ?? "
+            "48 85 C9 "
+            "75 ?? "
+            "E8 ?? ?? ?? ?? "
+            "48 8B 0D ?? ?? ?? ?? "
+            "48 8B 01 "
+            "48 8B D3 "
+            "FF 50 48";
+
+        memoryFreeRequest.flags = 0;
+
+        memoryFreeRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t memoryFreeAddress =
+            scanner->Resolve(
+                self,
+                &memoryFreeRequest);
+
+        if (memoryFreeAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.memoryFree =
+            memoryFreeAddress;
+
         return true;
     }
 }

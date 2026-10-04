@@ -92,6 +92,31 @@ uintptr_t GetComponentLocationAddress()
     return g_resolvedAddresses.getComponentLocation;
 }
 
+uintptr_t GetPlatformDataAddress()
+{
+    return g_resolvedAddresses.getPlatformData;
+}
+
+uintptr_t GetBulkDataSizeAddress()
+{
+    return g_resolvedAddresses.getBulkDataSize;
+}
+
+uintptr_t GetCanLoadFromDiskAddress()
+{
+    return g_resolvedAddresses.canLoadFromDisk;
+}
+
+uintptr_t GetBulkDataCopyAddress()
+{
+    return g_resolvedAddresses.getBulkDataCopy;
+}
+
+uintptr_t GetMemoryFreeAddress()
+{
+    return g_resolvedAddresses.memoryFree;
+}
+
 #endif
 
 static PluginInfo s_pluginInfo = {
@@ -295,6 +320,36 @@ extern "C"
             "K2_GetComponentLocation = 0x%llX",
             static_cast<unsigned long long>(
                 g_resolvedAddresses.getComponentLocation));
+
+        LOG_INFO(
+            "MiniMap: UTexture2D::"
+            "GetPlatformData = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getPlatformData));
+
+        LOG_INFO(
+            "MiniMap: FBulkData::"
+            "GetBulkDataSize = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getBulkDataSize));
+
+        LOG_INFO(
+            "MiniMap: FBulkData::"
+            "CanLoadFromDisk = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.canLoadFromDisk));
+
+        LOG_INFO(
+            "MiniMap: FBulkData::"
+            "GetCopy = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getBulkDataCopy));
+
+        LOG_INFO(
+            "MiniMap: FMemory::"
+            "Free = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.memoryFree));
 
         g_self->hooks->World->RegisterOnWorldBeginPlay(
             &OnWorldBeginPlay);

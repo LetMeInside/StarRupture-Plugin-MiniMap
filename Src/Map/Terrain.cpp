@@ -13,7 +13,9 @@
 #include "../plugin_helpers.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <chrono>
 
 namespace
 {
@@ -21,6 +23,7 @@ namespace
     SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
 
     PluginTextureHandle g_terrainTexture = nullptr;
+    PluginTextureHandle g_referenceTerrainTexture = nullptr;
 
     std::atomic<bool> g_diagnosticPending = false;
 
@@ -29,6 +32,9 @@ namespace
 
     constexpr const char* kDiagnosticTextureName =
         "MiniMap_Terrain_Current";
+
+    constexpr const char* kDiagnosticChunkTextureName =
+        "MiniMap_Terrain_Current_Chunk";
 
     constexpr const char* kDiagnosticKey = "F8";
 
@@ -59,6 +65,411 @@ namespace
         void (*)(SDK::UStreamableRenderAsset*,
             bool,
             bool);
+
+    using GetPlatformDataFn =
+        void* (*)(SDK::UTexture2D*);
+
+    using GetBulkDataSizeFn =
+        int64_t(*)(const void*);
+
+    using CanLoadFromDiskFn =
+        bool (*)(const void*);
+
+    using GetBulkDataCopyFn =
+        void (*)(void*, void**, bool);
+
+    using MemoryFreeFn =
+        void (*)(void*);
+
+
+    struct NativeTexturePlatformDataLayout
+    {
+        int32_t SizeX;
+        int32_t SizeY;
+        uint32_t PackedData;
+        uint8_t PixelFormat;
+        uint8_t Padding0D[0x0B];
+        void** MipPointers;
+        int32_t MipCount;
+        int32_t MipCapacity;
+        void* VTData;
+        void* CPUCopy;
+    };
+
+    static_assert(
+        offsetof(
+            NativeTexturePlatformDataLayout,
+            MipPointers) == 0x18);
+
+    static_assert(
+        offsetof(
+            NativeTexturePlatformDataLayout,
+            VTData) == 0x28);
+
+    static_assert(
+        offsetof(
+            NativeTexturePlatformDataLayout,
+            CPUCopy) == 0x30);
+
+    static_assert(
+        sizeof(
+            NativeTexturePlatformDataLayout) == 0x38);
+
+
+    struct NativeTexture2DMipMapLayout
+    {
+        uint8_t DerivedData[0x20];
+        uint8_t BulkData[0x28];
+        uint16_t SizeX;
+        uint16_t SizeY;
+        uint16_t SizeZ;
+        uint16_t Padding4E;
+    };
+
+    static_assert(
+        offsetof(
+            NativeTexture2DMipMapLayout,
+            BulkData) == 0x20);
+
+    static_assert(
+        offsetof(
+            NativeTexture2DMipMapLayout,
+            SizeX) == 0x48);
+
+    static_assert(
+        sizeof(
+            NativeTexture2DMipMapLayout) == 0x50);
+
+
+    struct RGBA8
+    {
+        uint8_t R;
+        uint8_t G;
+        uint8_t B;
+        uint8_t A;
+    };
+
+
+    uint8_t Expand5To8(uint16_t value)
+    {
+        return static_cast<uint8_t>(
+            (value * 255u + 15u) / 31u);
+    }
+
+
+    uint8_t Expand6To8(uint16_t value)
+    {
+        return static_cast<uint8_t>(
+            (value * 255u + 31u) / 63u);
+    }
+
+
+    RGBA8 DecodeRGB565(uint16_t value)
+    {
+        RGBA8 color{};
+
+        color.R =
+            Expand5To8(
+                static_cast<uint16_t>(
+                    (value >> 11) & 0x1Fu));
+
+        color.G =
+            Expand6To8(
+                static_cast<uint16_t>(
+                    (value >> 5) & 0x3Fu));
+
+        color.B =
+            Expand5To8(
+                static_cast<uint16_t>(
+                    value & 0x1Fu));
+
+        color.A = 255;
+
+        return color;
+    }
+
+
+    RGBA8 InterpolateColor(
+        const RGBA8& a,
+        const RGBA8& b,
+        uint32_t aWeight,
+        uint32_t bWeight,
+        uint32_t divisor)
+    {
+        RGBA8 result{};
+
+        result.R = static_cast<uint8_t>(
+            (aWeight * a.R + bWeight * b.R) / divisor);
+
+        result.G = static_cast<uint8_t>(
+            (aWeight * a.G + bWeight * b.G) / divisor);
+
+        result.B = static_cast<uint8_t>(
+            (aWeight * a.B + bWeight * b.B) / divisor);
+
+        result.A = static_cast<uint8_t>(
+            (aWeight * a.A + bWeight * b.A) / divisor);
+
+        return result;
+    }
+
+
+    void DecodeBC1Block(
+        const uint8_t* block,
+        uint8_t* rgba,
+        int rgbaStrideBytes)
+    {
+        const uint16_t color0 =
+            static_cast<uint16_t>(
+                block[0] |
+                (static_cast<uint16_t>(block[1]) << 8));
+
+        const uint16_t color1 =
+            static_cast<uint16_t>(
+                block[2] |
+                (static_cast<uint16_t>(block[3]) << 8));
+
+        RGBA8 colors[4] = {};
+
+        colors[0] = DecodeRGB565(color0);
+        colors[1] = DecodeRGB565(color1);
+
+        if (color0 > color1)
+        {
+            colors[2] =
+                InterpolateColor(
+                    colors[0],
+                    colors[1],
+                    2,
+                    1,
+                    3);
+
+            colors[3] =
+                InterpolateColor(
+                    colors[0],
+                    colors[1],
+                    1,
+                    2,
+                    3);
+        }
+        else
+        {
+            colors[2] =
+                InterpolateColor(
+                    colors[0],
+                    colors[1],
+                    1,
+                    1,
+                    2);
+
+            colors[3] = { 0, 0, 0, 0 };
+        }
+
+        const uint32_t indices =
+            static_cast<uint32_t>(block[4]) |
+            (static_cast<uint32_t>(block[5]) << 8) |
+            (static_cast<uint32_t>(block[6]) << 16) |
+            (static_cast<uint32_t>(block[7]) << 24);
+
+        for (int y = 0; y < 4; ++y)
+        {
+            uint8_t* row =
+                rgba + y * rgbaStrideBytes;
+
+            for (int x = 0; x < 4; ++x)
+            {
+                const uint32_t pixelIndex =
+                    static_cast<uint32_t>(y * 4 + x);
+
+                const uint32_t colorIndex =
+                    (indices >> (pixelIndex * 2u)) & 0x3u;
+
+                const RGBA8& color =
+                    colors[colorIndex];
+
+                uint8_t* pixel =
+                    row + x * 4;
+
+                pixel[0] = color.R;
+                pixel[1] = color.G;
+                pixel[2] = color.B;
+                pixel[3] = color.A;
+            }
+        }
+    }
+
+
+    bool ExtractBC1Chunk(
+        const uint8_t* source,
+        int sourceWidth,
+        int sourceHeight,
+        int chunkX,
+        int chunkY,
+        std::vector<uint8_t>& compressedChunk)
+    {
+        constexpr int chunkSizePixels = 256;
+        constexpr int blockSizePixels = 4;
+        constexpr int bytesPerBlock = 8;
+
+        if (source == nullptr ||
+            sourceWidth <= 0 ||
+            sourceHeight <= 0 ||
+            sourceWidth % blockSizePixels != 0 ||
+            sourceHeight % blockSizePixels != 0)
+        {
+            return false;
+        }
+
+        const int sourceBlocksPerRow =
+            sourceWidth / blockSizePixels;
+
+        const int sourceBlockRows =
+            sourceHeight / blockSizePixels;
+
+        const int chunkBlocksPerAxis =
+            chunkSizePixels / blockSizePixels;
+
+        const int startBlockX =
+            chunkX * chunkBlocksPerAxis;
+
+        const int startBlockY =
+            chunkY * chunkBlocksPerAxis;
+
+        if (startBlockX < 0 ||
+            startBlockY < 0 ||
+            startBlockX + chunkBlocksPerAxis > sourceBlocksPerRow ||
+            startBlockY + chunkBlocksPerAxis > sourceBlockRows)
+        {
+            return false;
+        }
+
+        const size_t chunkRowBytes =
+            static_cast<size_t>(chunkBlocksPerAxis) *
+            bytesPerBlock;
+
+        const size_t chunkByteCount =
+            chunkRowBytes *
+            static_cast<size_t>(chunkBlocksPerAxis);
+
+        compressedChunk.resize(
+            chunkByteCount);
+
+        for (int blockRow = 0;
+            blockRow < chunkBlocksPerAxis;
+            ++blockRow)
+        {
+            const size_t sourceOffset =
+                (static_cast<size_t>(
+                    startBlockY + blockRow) *
+                    static_cast<size_t>(sourceBlocksPerRow) +
+                    static_cast<size_t>(startBlockX)) *
+                bytesPerBlock;
+
+            const size_t destinationOffset =
+                static_cast<size_t>(blockRow) *
+                chunkRowBytes;
+
+            std::memcpy(
+                compressedChunk.data() + destinationOffset,
+                source + sourceOffset,
+                chunkRowBytes);
+        }
+
+        return true;
+    }
+
+
+    bool DecodeBC1Chunk(
+        const std::vector<uint8_t>& compressedChunk,
+        std::vector<uint8_t>& rgbaChunk)
+    {
+        constexpr int chunkSizePixels = 256;
+        constexpr int blockSizePixels = 4;
+        constexpr int bytesPerBlock = 8;
+        constexpr int blocksPerAxis =
+            chunkSizePixels / blockSizePixels;
+
+        const size_t expectedCompressedBytes =
+            static_cast<size_t>(blocksPerAxis) *
+            static_cast<size_t>(blocksPerAxis) *
+            bytesPerBlock;
+
+        if (compressedChunk.size() !=
+            expectedCompressedBytes)
+        {
+            return false;
+        }
+
+        rgbaChunk.resize(
+            static_cast<size_t>(chunkSizePixels) *
+            static_cast<size_t>(chunkSizePixels) *
+            4u);
+
+        const int rgbaStrideBytes =
+            chunkSizePixels * 4;
+
+        for (int blockY = 0;
+            blockY < blocksPerAxis;
+            ++blockY)
+        {
+            for (int blockX = 0;
+                blockX < blocksPerAxis;
+                ++blockX)
+            {
+                const size_t blockIndex =
+                    static_cast<size_t>(blockY) *
+                    blocksPerAxis +
+                    static_cast<size_t>(blockX);
+
+                const uint8_t* sourceBlock =
+                    compressedChunk.data() +
+                    blockIndex * bytesPerBlock;
+
+                uint8_t* destinationPixel =
+                    rgbaChunk.data() +
+                    static_cast<size_t>(blockY * blockSizePixels) *
+                    rgbaStrideBytes +
+                    static_cast<size_t>(blockX * blockSizePixels) *
+                    4u;
+
+                DecodeBC1Block(
+                    sourceBlock,
+                    destinationPixel,
+                    rgbaStrideBytes);
+            }
+        }
+
+        return true;
+    }
+
+
+    const char* GetPixelFormatName(
+        uint8_t pixelFormat)
+    {
+        switch (pixelFormat)
+        {
+        case 2:
+            return "PF_B8G8R8A8";
+
+        case 5:
+            return "PF_DXT1";
+
+        case 7:
+            return "PF_DXT5";
+
+        case 23:
+            return "PF_BC5";
+
+        case 37:
+            return "PF_R8G8B8A8";
+
+        case 56:
+            return "PF_BC7";
+
+        default:
+            return "<other>";
+        }
+    }
 
 
     SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
@@ -191,13 +602,33 @@ namespace
         const uintptr_t waitPendingAddress =
             GetWaitForPendingInitOrStreamingAddress();
 
+        const uintptr_t getPlatformDataAddress =
+            GetPlatformDataAddress();
+
+        const uintptr_t getBulkDataSizeAddress =
+            GetBulkDataSizeAddress();
+
+        const uintptr_t canLoadFromDiskAddress =
+            GetCanLoadFromDiskAddress();
+
+        const uintptr_t getBulkDataCopyAddress =
+            GetBulkDataCopyAddress();
+
+        const uintptr_t memoryFreeAddress =
+            GetMemoryFreeAddress();
+
         if (loadSynchronousAddress == 0 ||
             getBrushTextureAddress == 0 ||
             getResidentMipsAddress == 0 ||
             getAllowedMipsAddress == 0 ||
             getNumMipsAddress == 0 ||
             streamInAddress == 0 ||
-            waitPendingAddress == 0)
+            waitPendingAddress == 0 ||
+            getPlatformDataAddress == 0 ||
+            getBulkDataSizeAddress == 0 ||
+            canLoadFromDiskAddress == 0 ||
+            getBulkDataCopyAddress == 0 ||
+            memoryFreeAddress == 0)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -233,6 +664,26 @@ namespace
         auto waitForPendingInitOrStreaming =
             reinterpret_cast<WaitForPendingInitOrStreamingFn>(
                 waitPendingAddress);
+
+        auto getPlatformData =
+            reinterpret_cast<GetPlatformDataFn>(
+                getPlatformDataAddress);
+
+        auto getBulkDataSize =
+            reinterpret_cast<GetBulkDataSizeFn>(
+                getBulkDataSizeAddress);
+
+        auto canLoadFromDisk =
+            reinterpret_cast<CanLoadFromDiskFn>(
+                canLoadFromDiskAddress);
+
+        auto getBulkDataCopy =
+            reinterpret_cast<GetBulkDataCopyFn>(
+                getBulkDataCopyAddress);
+
+        auto memoryFree =
+            reinterpret_cast<MemoryFreeFn>(
+                memoryFreeAddress);
 
         // ---------------------------------------------------------------------
         // Obtain the local pawn's physical world position.
@@ -388,6 +839,42 @@ namespace
             localU,
             localV);
 
+        constexpr int miniMapChunksPerAxis = 8;
+
+        const int chunkX =
+            static_cast<int>(
+                std::floor(
+                    localU *
+                    miniMapChunksPerAxis));
+
+        const int chunkY =
+            static_cast<int>(
+                std::floor(
+                    localV *
+                    miniMapChunksPerAxis));
+
+        if (chunkX < 0 ||
+            chunkX >= miniMapChunksPerAxis ||
+            chunkY < 0 ||
+            chunkY >= miniMapChunksPerAxis)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "local UV maps outside 8x8 MiniMap chunk grid "
+                "chunk=(%d, %d)",
+                chunkX,
+                chunkY);
+
+            return;
+        }
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "MiniMap chunk=(%d, %d) of 8x8 "
+            "(125m x 125m)",
+            chunkX,
+            chunkY);
+
         // ---------------------------------------------------------------------
         // Find the actual terrain record by TerrainSegmentGridIndex.
         // Do not assume array order matches grid order.
@@ -483,6 +970,323 @@ namespace
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
             "existing texture initialization/streaming completed");
+
+        // ---------------------------------------------------------------------
+        // Inspect the cooked texture metadata without requesting mip 0 or
+        // copying bulk bytes yet.
+        //
+        // These layouts are verified against the matching HF2.5 PDB. The
+        // generated SDK intentionally hides FTexturePlatformData, so this
+        // diagnostic keeps the native layout knowledge local to Terrain.
+        // ---------------------------------------------------------------------
+
+        void* platformDataRaw =
+            getPlatformData(
+                sourceTexture);
+
+        if (platformDataRaw == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "UTexture2D::GetPlatformData returned null");
+
+            return;
+        }
+
+        const auto* platformData =
+            reinterpret_cast<
+            const NativeTexturePlatformDataLayout*>(
+                platformDataRaw);
+
+        if (platformData->SizeX <= 0 ||
+            platformData->SizeY <= 0)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "invalid platform texture dimensions %dx%d",
+                platformData->SizeX,
+                platformData->SizeY);
+
+            return;
+        }
+
+        if (platformData->MipCount <= 0 ||
+            platformData->MipCount > 64 ||
+            platformData->MipPointers == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "invalid platform mip array "
+                "pointer=%p count=%d capacity=%d",
+                platformData->MipPointers,
+                platformData->MipCount,
+                platformData->MipCapacity);
+
+            return;
+        }
+
+        const uint8_t textureFlags =
+            *reinterpret_cast<const uint8_t*>(
+                reinterpret_cast<const uint8_t*>(
+                    sourceTexture) +
+                0x106);
+
+        const bool isSRGB =
+            (textureFlags & 0x01) != 0;
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "terrain platform data: "
+            "size=%dx%d packed=0x%08X "
+            "pixelFormat=%u (%s) sRGB=%s "
+            "mips=%d capacity=%d "
+            "VTData=%p CPUCopy=%p",
+            platformData->SizeX,
+            platformData->SizeY,
+            platformData->PackedData,
+            static_cast<unsigned int>(
+                platformData->PixelFormat),
+            GetPixelFormatName(
+                platformData->PixelFormat),
+            isSRGB ? "true" : "false",
+            platformData->MipCount,
+            platformData->MipCapacity,
+            platformData->VTData,
+            platformData->CPUCopy);
+
+        if (platformData->VTData != nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "terrain texture uses virtual-texture data; "
+                "this first bulk-data experiment does not support it");
+
+            return;
+        }
+
+        auto* mipZero =
+            reinterpret_cast<
+            const NativeTexture2DMipMapLayout*>(
+                platformData->MipPointers[0]);
+
+        if (mipZero == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "platform mip zero pointer is null");
+
+            return;
+        }
+
+        const void* bulkData =
+            static_cast<const void*>(
+                mipZero->BulkData);
+
+        const int64_t mipZeroBulkSize =
+            getBulkDataSize(
+                bulkData);
+
+        const bool mipZeroCanLoadFromDisk =
+            canLoadFromDisk(
+                bulkData);
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "mip0: size=%ux%ux%u "
+            "bulk=%p bulkSize=%lld "
+            "canLoadFromDisk=%s",
+            static_cast<unsigned int>(
+                mipZero->SizeX),
+            static_cast<unsigned int>(
+                mipZero->SizeY),
+            static_cast<unsigned int>(
+                mipZero->SizeZ),
+            bulkData,
+            static_cast<long long>(
+                mipZeroBulkSize),
+            mipZeroCanLoadFromDisk
+            ? "true"
+            : "false");
+
+        if (mipZero->SizeX == 0 ||
+            mipZero->SizeY == 0 ||
+            mipZero->SizeZ == 0 ||
+            mipZeroBulkSize <= 0)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "mip0 metadata is invalid");
+
+            return;
+        }
+
+
+        // ---------------------------------------------------------------------
+        // Obtain an independent owned copy of cooked mip zero and extract only
+        // the current 8x8 MiniMap chunk from its BC1 block stream.
+        //
+        // PF_DXT1 stores 4x4 texel blocks in eight bytes. A 256x256 chunk is
+        // therefore exactly 64x64 blocks = 32768 bytes.
+        // ---------------------------------------------------------------------
+
+        if (platformData->PixelFormat != 5)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "BC1 chunk experiment requires PF_DXT1; observed %u (%s)",
+                static_cast<unsigned int>(
+                    platformData->PixelFormat),
+                GetPixelFormatName(
+                    platformData->PixelFormat));
+
+            return;
+        }
+
+        const int expectedSourceWidth =
+            static_cast<int>(mipZero->SizeX);
+
+        const int expectedSourceHeight =
+            static_cast<int>(mipZero->SizeY);
+
+        if (expectedSourceWidth != platformData->SizeX ||
+            expectedSourceHeight != platformData->SizeY)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "mip0 dimensions do not match platform data "
+                "(%dx%d vs %dx%d)",
+                expectedSourceWidth,
+                expectedSourceHeight,
+                platformData->SizeX,
+                platformData->SizeY);
+
+            return;
+        }
+
+        const int64_t expectedBC1ByteCount =
+            static_cast<int64_t>(expectedSourceWidth / 4) *
+            static_cast<int64_t>(expectedSourceHeight / 4) *
+            8;
+
+        if (mipZeroBulkSize != expectedBC1ByteCount)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "unexpected PF_DXT1 mip0 byte count "
+                "(actual=%lld expected=%lld)",
+                static_cast<long long>(mipZeroBulkSize),
+                static_cast<long long>(expectedBC1ByteCount));
+
+            return;
+        }
+
+        void* ownedMipZero = nullptr;
+
+        const auto copyStart =
+            std::chrono::steady_clock::now();
+
+        getBulkDataCopy(
+            const_cast<void*>(bulkData),
+            &ownedMipZero,
+            false);
+
+        const auto copyEnd =
+            std::chrono::steady_clock::now();
+
+        if (ownedMipZero == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "FBulkData::GetCopy returned a null allocation");
+
+            return;
+        }
+
+        const double copyMilliseconds =
+            std::chrono::duration<double, std::milli>(
+                copyEnd - copyStart).count();
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "mip0 GetCopy returned %p bytes=%lld time=%.3f ms",
+            ownedMipZero,
+            static_cast<long long>(mipZeroBulkSize),
+            copyMilliseconds);
+
+        std::vector<uint8_t> compressedChunk;
+        std::vector<uint8_t> rgbaChunk;
+
+        const auto extractStart =
+            std::chrono::steady_clock::now();
+
+        const bool extracted =
+            ExtractBC1Chunk(
+                static_cast<const uint8_t*>(ownedMipZero),
+                expectedSourceWidth,
+                expectedSourceHeight,
+                chunkX,
+                chunkY,
+                compressedChunk);
+
+        memoryFree(
+            ownedMipZero);
+
+        ownedMipZero = nullptr;
+
+        const auto extractEnd =
+            std::chrono::steady_clock::now();
+
+        if (!extracted)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "failed to extract BC1 MiniMap chunk=(%d, %d)",
+                chunkX,
+                chunkY);
+
+            return;
+        }
+
+        const auto decodeStart =
+            std::chrono::steady_clock::now();
+
+        const bool decoded =
+            DecodeBC1Chunk(
+                compressedChunk,
+                rgbaChunk);
+
+        const auto decodeEnd =
+            std::chrono::steady_clock::now();
+
+        if (!decoded)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "failed to decode BC1 MiniMap chunk=(%d, %d)",
+                chunkX,
+                chunkY);
+
+            return;
+        }
+
+        const double extractMilliseconds =
+            std::chrono::duration<double, std::milli>(
+                extractEnd - extractStart).count();
+
+        const double decodeMilliseconds =
+            std::chrono::duration<double, std::milli>(
+                decodeEnd - decodeStart).count();
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "extracted BC1 chunk=(%d, %d) compressed=%zu bytes "
+            "RGBA=%zu bytes extract=%.3f ms decode=%.3f ms",
+            chunkX,
+            chunkY,
+            compressedChunk.size(),
+            rgbaChunk.size(),
+            extractMilliseconds,
+            decodeMilliseconds);
 
         // ---------------------------------------------------------------------
         // Request exactly nine resident mips when possible.
@@ -649,17 +1453,19 @@ namespace
         }
 
         // ---------------------------------------------------------------------
-        // Take the independent AlienX-owned GPU copy immediately.
+        // Keep the existing whole-tile AlienX copy as a reference, then upload
+        // the independently decoded 256x256 MiniMap chunk. The public UI getter
+        // returns the chunk handle so the viewport displays the new CPU path.
         // ---------------------------------------------------------------------
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
             "copying current player terrain grid=(%d, %d) "
-            "through AlienX",
+            "through AlienX as reference",
             gridX,
             gridY);
 
-        g_terrainTexture =
+        g_referenceTerrainTexture =
             g_terrainSelf->
             hooks->
             ImGuiTextures->
@@ -667,11 +1473,57 @@ namespace
                 sourceTexture,
                 kDiagnosticTextureName);
 
+        if (g_referenceTerrainTexture == nullptr)
+        {
+            LOG_WARN(
+                "MiniMap: F8 diagnostic: "
+                "AlienX reference terrain texture load returned null");
+
+            return;
+        }
+
+        int referenceWidth = 0;
+        int referenceHeight = 0;
+
+        g_terrainSelf->
+            hooks->
+            ImGuiTextures->
+            GetSize(
+                g_referenceTerrainTexture,
+                &referenceWidth,
+                &referenceHeight);
+
+        LOG_INFO(
+            "MiniMap: F8 diagnostic: "
+            "AlienX reference terrain texture loaded: "
+            "grid=(%d, %d) handle=%p size=%dx%d",
+            gridX,
+            gridY,
+            g_referenceTerrainTexture,
+            referenceWidth,
+            referenceHeight);
+
+        const auto uploadStart =
+            std::chrono::steady_clock::now();
+
+        g_terrainTexture =
+            g_terrainSelf->
+            hooks->
+            ImGuiTextures->
+            LoadFromRGBA(
+                rgbaChunk.data(),
+                256,
+                256,
+                kDiagnosticChunkTextureName);
+
+        const auto uploadEnd =
+            std::chrono::steady_clock::now();
+
         if (g_terrainTexture == nullptr)
         {
             LOG_WARN(
                 "MiniMap: F8 diagnostic: "
-                "AlienX terrain texture load returned null");
+                "AlienX decoded chunk texture load returned null");
 
             return;
         }
@@ -687,15 +1539,23 @@ namespace
                 &textureWidth,
                 &textureHeight);
 
+        const double uploadMilliseconds =
+            std::chrono::duration<double, std::milli>(
+                uploadEnd - uploadStart).count();
+
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
-            "AlienX terrain texture loaded: "
-            "grid=(%d, %d) handle=%p size=%dx%d",
+            "AlienX decoded chunk loaded: "
+            "terrain-grid=(%d, %d) chunk=(%d, %d) "
+            "handle=%p size=%dx%d upload=%.3f ms",
             gridX,
             gridY,
+            chunkX,
+            chunkY,
             g_terrainTexture,
             textureWidth,
-            textureHeight);
+            textureHeight,
+            uploadMilliseconds);
     }
 
 
@@ -876,6 +1736,31 @@ namespace MiniMapTerrain
         g_diagnosticPending.store(
             false,
             std::memory_order_release);
+
+        if (g_referenceTerrainTexture != nullptr)
+        {
+            if (g_terrainSelf != nullptr &&
+                g_terrainSelf->hooks != nullptr &&
+                g_terrainSelf->hooks->ImGuiTextures != nullptr)
+            {
+                g_terrainSelf->
+                    hooks->
+                    ImGuiTextures->
+                    FreeTexture(
+                        g_referenceTerrainTexture);
+
+                LOG_INFO(
+                    "MiniMap: reference terrain texture released");
+            }
+            else
+            {
+                LOG_WARN(
+                    "MiniMap: reference terrain texture handle could not "
+                    "be released because ImGuiTextures is unavailable");
+            }
+
+            g_referenceTerrainTexture = nullptr;
+        }
 
         if (g_terrainTexture != nullptr)
         {

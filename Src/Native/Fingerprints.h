@@ -23,6 +23,12 @@ namespace MiniMapFingerprints
         uintptr_t getFirstPlayerController = 0;
         uintptr_t getPlayerPawn = 0;
         uintptr_t getComponentLocation = 0;
+
+        uintptr_t getPlatformData = 0;
+        uintptr_t getBulkDataSize = 0;
+        uintptr_t canLoadFromDisk = 0;
+        uintptr_t getBulkDataCopy = 0;
+        uintptr_t memoryFree = 0;
     };
 
     bool Resolve(

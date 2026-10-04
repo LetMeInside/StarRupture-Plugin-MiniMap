@@ -22,6 +22,12 @@ uintptr_t GetWaitForPendingInitOrStreamingAddress();
 uintptr_t GetFirstPlayerControllerAddress();
 uintptr_t GetPlayerPawnAddress();
 uintptr_t GetComponentLocationAddress();
+
+uintptr_t GetPlatformDataAddress();
+uintptr_t GetBulkDataSizeAddress();
+uintptr_t GetCanLoadFromDiskAddress();
+uintptr_t GetBulkDataCopyAddress();
+uintptr_t GetMemoryFreeAddress();
 #endif
 
 extern "C"
