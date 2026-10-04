@@ -16,15 +16,43 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <vector>
 
 namespace
 {
-    IPluginSelf* g_terrainSelf = nullptr;
+    struct ChunkIdentity
+    {
+        int RadiationLevel = 0;
+        int GridX = 0;
+        int GridY = 0;
+        int ChunkX = 0;
+        int ChunkY = 0;
+    };
 
-    PluginTextureHandle g_terrainTexture = nullptr;
+
+    struct LoadedChunk
+    {
+        ChunkIdentity Identity = {};
+        PluginTextureHandle Texture = nullptr;
+
+        float X0 = 0.0f;
+        float Y0 = 0.0f;
+        float X1 = 0.0f;
+        float Y1 = 0.0f;
+
+        float U0 = 0.0f;
+        float V0 = 0.0f;
+        float U1 = 1.0f;
+        float V1 = 1.0f;
+    };
+
+
+    IPluginSelf* g_terrainSelf = nullptr;
 
     bool g_tickRegistered = false;
 
@@ -33,130 +61,192 @@ namespace
     constexpr float kUpdateIntervalSeconds =
         0.25f;
 
-    int g_loadedRadiationLevel = -1;
-    int g_loadedGridX = -1;
-    int g_loadedGridY = -1;
-    int g_loadedChunkX = -1;
-    int g_loadedChunkY = -1;
+    constexpr double kChunkWorldUnits =
+        static_cast<double>(
+            MiniMapTerrainChunks::kChunkWorldSizeMeters) *
+        100.0;
+
+    constexpr double kViewportWorldSizeMeters =
+        100.0;
+
+    constexpr double kViewportSizeInChunks =
+        kViewportWorldSizeMeters /
+        static_cast<double>(
+            MiniMapTerrainChunks::kChunkWorldSizeMeters);
+
+    constexpr double kViewportHalfSizeInChunks =
+        kViewportSizeInChunks *
+        0.5;
+
+    std::mutex g_renderMutex;
+    std::vector<LoadedChunk> g_loadedChunks;
 
 
-    void ResetLoadedChunkIdentity()
+    bool SameIdentity(
+        const ChunkIdentity& left,
+        const ChunkIdentity& right)
     {
-        g_loadedRadiationLevel = -1;
-        g_loadedGridX = -1;
-        g_loadedGridY = -1;
-        g_loadedChunkX = -1;
-        g_loadedChunkY = -1;
+        return
+            left.RadiationLevel ==
+            right.RadiationLevel &&
+            left.GridX ==
+            right.GridX &&
+            left.GridY ==
+            right.GridY &&
+            left.ChunkX ==
+            right.ChunkX &&
+            left.ChunkY ==
+            right.ChunkY;
     }
 
 
-    void ReleaseTerrainTexture()
+    int FloorDiv(
+        int value,
+        int divisor)
     {
-        if (g_terrainTexture == nullptr)
+        int quotient =
+            value /
+            divisor;
+
+        const int remainder =
+            value %
+            divisor;
+
+        if (remainder < 0)
+        {
+            --quotient;
+        }
+
+        return quotient;
+    }
+
+
+    int PositiveMod(
+        int value,
+        int divisor)
+    {
+        int remainder =
+            value %
+            divisor;
+
+        if (remainder < 0)
+        {
+            remainder +=
+                divisor;
+        }
+
+        return remainder;
+    }
+
+
+    void FreeTexture(
+        PluginTextureHandle texture)
+    {
+        if (texture == nullptr ||
+            g_terrainSelf == nullptr ||
+            g_terrainSelf->hooks == nullptr ||
+            g_terrainSelf->hooks->ImGuiTextures == nullptr)
         {
             return;
         }
 
-        if (g_terrainSelf != nullptr &&
-            g_terrainSelf->hooks != nullptr &&
-            g_terrainSelf->hooks->ImGuiTextures != nullptr)
+        g_terrainSelf->
+            hooks->
+            ImGuiTextures->
+            FreeTexture(
+                texture);
+    }
+
+
+    void ReleaseLoadedChunks()
+    {
+        std::lock_guard<std::mutex> lock(
+            g_renderMutex);
+
+        for (const LoadedChunk& chunk :
+            g_loadedChunks)
         {
-            g_terrainSelf->
-                hooks->
-                ImGuiTextures->
-                FreeTexture(
-                    g_terrainTexture);
+            FreeTexture(
+                chunk.Texture);
         }
 
-        g_terrainTexture = nullptr;
-
-        ResetLoadedChunkIdentity();
+        g_loadedChunks.clear();
     }
 
 
-    bool IsCurrentChunkLoaded(
+    PluginTextureHandle FindExistingTexture(
+        const std::vector<LoadedChunk>& existingChunks,
+        const ChunkIdentity& identity)
+    {
+        for (const LoadedChunk& chunk :
+            existingChunks)
+        {
+            if (chunk.Texture != nullptr &&
+                SameIdentity(
+                    chunk.Identity,
+                    identity))
+            {
+                return chunk.Texture;
+            }
+        }
+
+        return nullptr;
+    }
+
+
+    bool ContainsTexture(
+        const std::vector<LoadedChunk>& chunks,
+        PluginTextureHandle texture)
+    {
+        if (texture == nullptr)
+        {
+            return false;
+        }
+
+        for (const LoadedChunk& chunk :
+            chunks)
+        {
+            if (chunk.Texture ==
+                texture)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+    PluginTextureHandle LoadChunkTexture(
         const MiniMapTerrainSource::SourceTile& sourceTile,
         int chunkX,
-        int chunkY)
+        int chunkY,
+        bool& outLoadedFromCache)
     {
-        return
-            g_terrainTexture != nullptr &&
-            g_loadedRadiationLevel ==
-            sourceTile.RadiationLevel &&
-            g_loadedGridX ==
-            sourceTile.GridX &&
-            g_loadedGridY ==
-            sourceTile.GridY &&
-            g_loadedChunkX ==
-            chunkX &&
-            g_loadedChunkY ==
-            chunkY;
-    }
+        outLoadedFromCache =
+            false;
 
-
-    bool LoadCurrentChunk()
-    {
         if (g_terrainSelf == nullptr ||
             g_terrainSelf->hooks == nullptr ||
             g_terrainSelf->hooks->ImGuiTextures == nullptr ||
-            !MiniMapMap::HasWorld())
+            sourceTile.Texture == nullptr)
         {
-            return false;
-        }
-
-        SDK::FVector playerLocation = {};
-
-        if (!MiniMapMap::TryGetPlayerWorldPosition(
-            playerLocation))
-        {
-            return false;
-        }
-
-        MiniMapTerrainSource::SourceTile sourceTile = {};
-
-        if (!MiniMapTerrainSource::TryResolveSourceTile(
-            playerLocation,
-            sourceTile,
-            false))
-        {
-            return false;
-        }
-
-        int chunkX = 0;
-        int chunkY = 0;
-
-        if (!MiniMapTerrainChunks::TryGetChunkCoordinates(
-            sourceTile.LocalU,
-            sourceTile.LocalV,
-            chunkX,
-            chunkY))
-        {
-            return false;
-        }
-
-        if (IsCurrentChunkLoaded(
-            sourceTile,
-            chunkX,
-            chunkY))
-        {
-            return true;
+            return nullptr;
         }
 
         SDK::UTexture2D* sourceTexture =
             sourceTile.Texture;
 
-        if (sourceTexture == nullptr)
-        {
-            return false;
-        }
-
         const MiniMapNative::NativeApi* native =
             MiniMapNative::Get();
 
         if (native == nullptr ||
-            native->texture.waitForPendingInitOrStreaming == nullptr)
+            native->
+            texture.
+            waitForPendingInitOrStreaming ==
+            nullptr)
         {
-            return false;
+            return nullptr;
         }
 
         auto* streamableTexture =
@@ -180,7 +270,7 @@ namespace
                 "MiniMap: terrain: "
                 "failed to query source platform data");
 
-            return false;
+            return nullptr;
         }
 
         if (platformData.PixelFormat != 5 ||
@@ -204,7 +294,7 @@ namespace
                 platformData.VTData,
                 platformData.MipCount);
 
-            return false;
+            return nullptr;
         }
 
         MiniMapNative::TextureAccess::MipData mipZero = {};
@@ -218,7 +308,7 @@ namespace
                 "MiniMap: terrain: "
                 "failed to query source mip zero");
 
-            return false;
+            return nullptr;
         }
 
         const int sourceWidth =
@@ -238,21 +328,25 @@ namespace
                 MiniMapTerrainChunks::kBC1BlockSizePixels) *
             MiniMapTerrainChunks::kBC1BytesPerBlock;
 
-        if (sourceWidth != platformData.SizeX ||
-            sourceHeight != platformData.SizeY ||
+        if (sourceWidth !=
+            platformData.SizeX ||
+            sourceHeight !=
+            platformData.SizeY ||
             mipZero.SizeZ == 0 ||
             mipZero.BulkData == nullptr ||
-            mipZero.BulkSize != expectedBC1ByteCount)
+            mipZero.BulkSize !=
+            expectedBC1ByteCount)
         {
             LOG_ERROR(
-                "MiniMap: terrain: invalid source mip zero metadata");
+                "MiniMap: terrain: "
+                "invalid source mip zero metadata");
 
-            return false;
+            return nullptr;
         }
 
         std::vector<uint8_t> compressedChunk;
 
-        bool loadedFromCache =
+        outLoadedFromCache =
             MiniMapTerrainCache::TryLoadChunk(
                 sourceTile.RadiationLevel,
                 sourceTile.GridX,
@@ -265,21 +359,23 @@ namespace
                 chunkY,
                 compressedChunk);
 
-        if (!loadedFromCache)
+        if (!outLoadedFromCache)
         {
-            void* ownedMipZero = nullptr;
+            void* ownedMipZero =
+                nullptr;
 
             if (!MiniMapNative::TextureAccess::CopyBulkData(
                 mipZero,
                 &ownedMipZero,
                 false) ||
-                ownedMipZero == nullptr)
+                ownedMipZero ==
+                nullptr)
             {
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "failed to copy terrain mip zero");
 
-                return false;
+                return nullptr;
             }
 
             const bool cacheWritten =
@@ -323,9 +419,9 @@ namespace
             {
                 LOG_ERROR(
                     "MiniMap: terrain: "
-                    "failed to extract current BC1 chunk");
+                    "failed to extract BC1 chunk");
 
-                return false;
+                return nullptr;
             }
         }
 
@@ -337,9 +433,9 @@ namespace
         {
             LOG_ERROR(
                 "MiniMap: terrain: "
-                "failed to decode current BC1 chunk");
+                "failed to decode BC1 chunk");
 
-            return false;
+            return nullptr;
         }
 
         char textureName[128] = {};
@@ -354,7 +450,7 @@ namespace
             chunkX,
             chunkY);
 
-        PluginTextureHandle newTexture =
+        PluginTextureHandle texture =
             g_terrainSelf->
             hooks->
             ImGuiTextures->
@@ -364,54 +460,396 @@ namespace
                 MiniMapTerrainChunks::kChunkSizePixels,
                 textureName);
 
-        if (newTexture == nullptr)
+        if (texture == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: terrain: "
-                "failed to upload current terrain chunk");
+                "failed to upload terrain chunk");
 
-            return false;
+            return nullptr;
         }
-
-        if (g_terrainTexture != nullptr)
-        {
-            g_terrainSelf->
-                hooks->
-                ImGuiTextures->
-                FreeTexture(
-                    g_terrainTexture);
-        }
-
-        g_terrainTexture =
-            newTexture;
-
-        g_loadedRadiationLevel =
-            sourceTile.RadiationLevel;
-
-        g_loadedGridX =
-            sourceTile.GridX;
-
-        g_loadedGridY =
-            sourceTile.GridY;
-
-        g_loadedChunkX =
-            chunkX;
-
-        g_loadedChunkY =
-            chunkY;
 
         LOG_INFO(
             "MiniMap: terrain: "
-            "current chunk loaded R%d grid=(%d, %d) "
+            "loaded R%d grid=(%d, %d) "
             "chunk=(%d, %d) source=%s",
             sourceTile.RadiationLevel,
             sourceTile.GridX,
             sourceTile.GridY,
             chunkX,
             chunkY,
-            loadedFromCache
+            outLoadedFromCache
             ? "cache"
             : "mip0");
+
+        return texture;
+    }
+
+
+    bool UpdateViewport()
+    {
+        if (g_terrainSelf == nullptr ||
+            g_terrainSelf->hooks == nullptr ||
+            g_terrainSelf->hooks->ImGuiTextures == nullptr ||
+            !MiniMapMap::HasWorld())
+        {
+            return false;
+        }
+
+        SDK::FVector playerLocation = {};
+
+        if (!MiniMapMap::TryGetPlayerWorldPosition(
+            playerLocation))
+        {
+            return false;
+        }
+
+        MiniMapTerrainSource::SourceTile playerTile = {};
+
+        if (!MiniMapTerrainSource::TryResolveSourceTile(
+            playerLocation,
+            playerTile,
+            false))
+        {
+            return false;
+        }
+
+        const double playerGlobalChunkX =
+            static_cast<double>(
+                playerTile.GridY *
+                MiniMapTerrainChunks::kChunksPerAxis) +
+            playerTile.LocalU *
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunksPerAxis);
+
+        const double playerGlobalChunkY =
+            static_cast<double>(
+                playerTile.GridX *
+                MiniMapTerrainChunks::kChunksPerAxis) +
+            playerTile.LocalV *
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunksPerAxis);
+
+        const double viewportMinX =
+            playerGlobalChunkX -
+            kViewportHalfSizeInChunks;
+
+        const double viewportMaxX =
+            playerGlobalChunkX +
+            kViewportHalfSizeInChunks;
+
+        const double viewportMinY =
+            playerGlobalChunkY -
+            kViewportHalfSizeInChunks;
+
+        const double viewportMaxY =
+            playerGlobalChunkY +
+            kViewportHalfSizeInChunks;
+
+        constexpr double kBoundaryEpsilon =
+            1.0e-9;
+
+        const int firstGlobalChunkX =
+            static_cast<int>(
+                std::floor(
+                    viewportMinX));
+
+        const int lastGlobalChunkX =
+            static_cast<int>(
+                std::floor(
+                    viewportMaxX -
+                    kBoundaryEpsilon));
+
+        const int firstGlobalChunkY =
+            static_cast<int>(
+                std::floor(
+                    viewportMinY));
+
+        const int lastGlobalChunkY =
+            static_cast<int>(
+                std::floor(
+                    viewportMaxY -
+                    kBoundaryEpsilon));
+
+        std::vector<LoadedChunk> existingChunks;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            existingChunks =
+                g_loadedChunks;
+        }
+
+        std::vector<LoadedChunk> nextChunks;
+
+        const int chunkCountX =
+            lastGlobalChunkX -
+            firstGlobalChunkX +
+            1;
+
+        const int chunkCountY =
+            lastGlobalChunkY -
+            firstGlobalChunkY +
+            1;
+
+        if (chunkCountX > 0 &&
+            chunkCountY > 0)
+        {
+            nextChunks.reserve(
+                static_cast<size_t>(
+                    chunkCountX *
+                    chunkCountY));
+        }
+
+        for (int globalChunkY =
+            firstGlobalChunkY;
+            globalChunkY <=
+            lastGlobalChunkY;
+            ++globalChunkY)
+        {
+            for (int globalChunkX =
+                firstGlobalChunkX;
+                globalChunkX <=
+                lastGlobalChunkX;
+                ++globalChunkX)
+            {
+                const int gridY =
+                    FloorDiv(
+                        globalChunkX,
+                        MiniMapTerrainChunks::kChunksPerAxis);
+
+                const int gridX =
+                    FloorDiv(
+                        globalChunkY,
+                        MiniMapTerrainChunks::kChunksPerAxis);
+
+                const int chunkX =
+                    PositiveMod(
+                        globalChunkX,
+                        MiniMapTerrainChunks::kChunksPerAxis);
+
+                const int chunkY =
+                    PositiveMod(
+                        globalChunkY,
+                        MiniMapTerrainChunks::kChunksPerAxis);
+
+                const double targetWorldX =
+                    playerLocation.X +
+                    (static_cast<double>(
+                        globalChunkX) +
+                        0.5 -
+                        playerGlobalChunkX) *
+                    kChunkWorldUnits;
+
+                const double targetWorldY =
+                    playerLocation.Y +
+                    (static_cast<double>(
+                        globalChunkY) +
+                        0.5 -
+                        playerGlobalChunkY) *
+                    kChunkWorldUnits;
+
+                SDK::FVector targetWorldPosition =
+                    playerLocation;
+
+                targetWorldPosition.X =
+                    targetWorldX;
+
+                targetWorldPosition.Y =
+                    targetWorldY;
+
+                MiniMapTerrainSource::SourceTile sourceTile = {};
+
+                if (!MiniMapTerrainSource::TryResolveSourceTile(
+                    targetWorldPosition,
+                    sourceTile,
+                    false))
+                {
+                    continue;
+                }
+
+                if (sourceTile.GridX !=
+                    gridX ||
+                    sourceTile.GridY !=
+                    gridY)
+                {
+                    continue;
+                }
+
+                ChunkIdentity identity = {};
+
+                identity.RadiationLevel =
+                    sourceTile.RadiationLevel;
+
+                identity.GridX =
+                    gridX;
+
+                identity.GridY =
+                    gridY;
+
+                identity.ChunkX =
+                    chunkX;
+
+                identity.ChunkY =
+                    chunkY;
+
+                PluginTextureHandle texture =
+                    FindExistingTexture(
+                        existingChunks,
+                        identity);
+
+                if (texture == nullptr)
+                {
+                    bool loadedFromCache =
+                        false;
+
+                    texture =
+                        LoadChunkTexture(
+                            sourceTile,
+                            chunkX,
+                            chunkY,
+                            loadedFromCache);
+                }
+
+                if (texture == nullptr)
+                {
+                    continue;
+                }
+
+                const double rawX0 =
+                    (static_cast<double>(
+                        globalChunkX) -
+                        viewportMinX) /
+                    kViewportSizeInChunks;
+
+                const double rawX1 =
+                    (static_cast<double>(
+                        globalChunkX + 1) -
+                        viewportMinX) /
+                    kViewportSizeInChunks;
+
+                const double rawY0 =
+                    (static_cast<double>(
+                        globalChunkY) -
+                        viewportMinY) /
+                    kViewportSizeInChunks;
+
+                const double rawY1 =
+                    (static_cast<double>(
+                        globalChunkY + 1) -
+                        viewportMinY) /
+                    kViewportSizeInChunks;
+
+                const double clippedX0 =
+                    std::clamp(
+                        rawX0,
+                        0.0,
+                        1.0);
+
+                const double clippedX1 =
+                    std::clamp(
+                        rawX1,
+                        0.0,
+                        1.0);
+
+                const double clippedY0 =
+                    std::clamp(
+                        rawY0,
+                        0.0,
+                        1.0);
+
+                const double clippedY1 =
+                    std::clamp(
+                        rawY1,
+                        0.0,
+                        1.0);
+
+                if (clippedX1 <=
+                    clippedX0 ||
+                    clippedY1 <=
+                    clippedY0)
+                {
+                    continue;
+                }
+
+                LoadedChunk renderChunk = {};
+
+                renderChunk.Identity =
+                    identity;
+
+                renderChunk.Texture =
+                    texture;
+
+                renderChunk.X0 =
+                    static_cast<float>(
+                        clippedX0);
+
+                renderChunk.Y0 =
+                    static_cast<float>(
+                        clippedY0);
+
+                renderChunk.X1 =
+                    static_cast<float>(
+                        clippedX1);
+
+                renderChunk.Y1 =
+                    static_cast<float>(
+                        clippedY1);
+
+                renderChunk.U0 =
+                    static_cast<float>(
+                        (clippedX0 -
+                            rawX0) /
+                        (rawX1 -
+                            rawX0));
+
+                renderChunk.U1 =
+                    static_cast<float>(
+                        (clippedX1 -
+                            rawX0) /
+                        (rawX1 -
+                            rawX0));
+
+                renderChunk.V0 =
+                    static_cast<float>(
+                        (clippedY0 -
+                            rawY0) /
+                        (rawY1 -
+                            rawY0));
+
+                renderChunk.V1 =
+                    static_cast<float>(
+                        (clippedY1 -
+                            rawY0) /
+                        (rawY1 -
+                            rawY0));
+
+                nextChunks.push_back(
+                    renderChunk);
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            for (const LoadedChunk& oldChunk :
+                g_loadedChunks)
+            {
+                if (!ContainsTexture(
+                    nextChunks,
+                    oldChunk.Texture))
+                {
+                    FreeTexture(
+                        oldChunk.Texture);
+                }
+            }
+
+            g_loadedChunks =
+                std::move(
+                    nextChunks);
+        }
 
         return true;
     }
@@ -432,7 +870,7 @@ namespace
         g_updateAccumulator =
             0.0f;
 
-        LoadCurrentChunk();
+        UpdateViewport();
     }
 }
 
@@ -448,7 +886,7 @@ namespace MiniMapTerrain
         g_updateAccumulator =
             kUpdateIntervalSeconds;
 
-        ReleaseTerrainTexture();
+        ReleaseLoadedChunks();
 
         if (g_terrainSelf == nullptr ||
             g_terrainSelf->hooks == nullptr ||
@@ -507,7 +945,7 @@ namespace MiniMapTerrain
         g_tickRegistered =
             false;
 
-        ReleaseTerrainTexture();
+        ReleaseLoadedChunks();
 
         MiniMapTerrainDiagnostics::Shutdown();
 
@@ -539,9 +977,73 @@ namespace MiniMapTerrain
     }
 
 
-    PluginTextureHandle GetTerrainTexture()
+    void Render(
+        IModLoaderImGui* ui,
+        float windowX,
+        float windowY,
+        float windowWidth,
+        float windowHeight)
     {
-        return g_terrainTexture;
+        if (ui == nullptr ||
+            windowWidth <= 0.0f ||
+            windowHeight <= 0.0f)
+        {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(
+            g_renderMutex);
+
+        if (g_loadedChunks.empty())
+        {
+            return;
+        }
+
+        PluginDrawList drawList =
+            ui->GetWindowDrawList();
+
+        for (const LoadedChunk& chunk :
+            g_loadedChunks)
+        {
+            if (chunk.Texture ==
+                nullptr)
+            {
+                continue;
+            }
+
+            const float x0 =
+                windowX +
+                chunk.X0 *
+                windowWidth;
+
+            const float y0 =
+                windowY +
+                chunk.Y0 *
+                windowHeight;
+
+            const float x1 =
+                windowX +
+                chunk.X1 *
+                windowWidth;
+
+            const float y1 =
+                windowY +
+                chunk.Y1 *
+                windowHeight;
+
+            ui->DL_AddImage(
+                drawList,
+                chunk.Texture,
+                x0,
+                y0,
+                x1,
+                y1,
+                chunk.U0,
+                chunk.V0,
+                chunk.U1,
+                chunk.V1,
+                0xFFFFFFFFu);
+        }
     }
 }
 

@@ -1,5 +1,3 @@
-#if defined(MODLOADER_CLIENT_BUILD)
-
 #include "MiniMapUI.h"
 #include "Map/Terrain.h"
 
@@ -141,9 +139,6 @@ namespace
         constexpr uint32_t borderColor =
             0x80606060u;
 
-        constexpr uint32_t textColor =
-            0xFFE8E8E8u;
-
         constexpr float rounding = 8.0f;
 
         ui->DL_AddRectFilled(
@@ -156,24 +151,12 @@ namespace
             rounding,
             PluginDrawFlags_RoundCornersAll);
 
-        PluginTextureHandle terrainTexture =
-            MiniMapTerrain::GetTerrainTexture();
-
-        if (terrainTexture != nullptr)
-        {
-            ui->DL_AddImage(
-                drawList,
-                terrainTexture,
-                windowX,
-                windowY,
-                windowX + windowWidth,
-                windowY + windowHeight,
-                0.0f,
-                0.0f,
-                1.0f,
-                1.0f,
-                0xFFFFFFFFu);
-        }
+        MiniMapTerrain::Render(
+            ui,
+            windowX,
+            windowY,
+            windowWidth,
+            windowHeight);
 
         ui->DL_AddRect(
             drawList,
@@ -186,36 +169,11 @@ namespace
             PluginDrawFlags_RoundCornersAll,
             1.0f);
 
-        if (terrainTexture == nullptr)
-        {
-            constexpr const char* placeholderText =
-                "MiniMap";
-
-            float textWidth = 0.0f;
-            float textHeight = 0.0f;
-
-            ui->CalcTextSize(
-                placeholderText,
-                &textWidth,
-                &textHeight,
-                false,
-                0.0f);
-
-            const float textX =
-                windowX +
-                (windowWidth - textWidth) * 0.5f;
-
-            const float textY =
-                windowY +
-                (windowHeight - textHeight) * 0.5f;
-
-            ui->DL_AddText(
-                drawList,
-                textX,
-                textY,
-                textColor,
-                placeholderText);
-        }
+        /*
+         * Keep the Stage 1 label for now. Terrain rendering draws over the
+         * background when chunks are available; the label remains useful only
+         * while terrain has not been prepared yet.
+         */
     }
 
     void OnToggleKeyPressed(
@@ -432,5 +390,3 @@ namespace MiniMapUI
         return g_visible;
     }
 }
-
-#endif // MODLOADER_CLIENT_BUILD

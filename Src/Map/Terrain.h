@@ -1,7 +1,8 @@
 #pragma once
 
+#include "plugin_interface.h"
+
 struct IPluginSelf;
-typedef void* PluginTextureHandle;
 
 namespace MiniMapTerrain
 {
@@ -13,5 +14,10 @@ namespace MiniMapTerrain
 
     void CancelPendingDiagnostic();
 
-    PluginTextureHandle GetTerrainTexture();
+    void Render(
+        IModLoaderImGui* ui,
+        float windowX,
+        float windowY,
+        float windowWidth,
+        float windowHeight);
 }
