@@ -1,11 +1,14 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "MiniMapTerrain.h"
+#include "Terrain.h"
+#include "Map.h"
+
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 
 #include <cmath>
+
 #include "../plugin.h"
 #include "../plugin_helpers.h"
 
@@ -15,7 +18,6 @@
 namespace
 {
     IPluginSelf* g_terrainSelf = nullptr;
-    SDK::UWorld* g_world = nullptr;
     SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
 
     PluginTextureHandle g_terrainTexture = nullptr;
@@ -57,19 +59,6 @@ namespace
         void (*)(SDK::UStreamableRenderAsset*,
             bool,
             bool);
-
-    using GetFirstPlayerControllerFn =
-        SDK::APlayerController* (*)(
-            const SDK::UWorld*);
-
-    using GetPlayerPawnFn =
-        SDK::ACrCharacterPlayerBase* (*)(
-            const SDK::AController*);
-
-    using GetComponentLocationFn =
-        SDK::FVector* (*)(
-            const SDK::USceneComponent*,
-            SDK::FVector*);
 
 
     SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
@@ -153,7 +142,7 @@ namespace
             return;
         }
 
-        if (g_world == nullptr)
+        if (!MiniMapMap::HasWorld())
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -202,25 +191,13 @@ namespace
         const uintptr_t waitPendingAddress =
             GetWaitForPendingInitOrStreamingAddress();
 
-        const uintptr_t getFirstControllerAddress =
-            GetFirstPlayerControllerAddress();
-
-        const uintptr_t getPlayerPawnAddress =
-            GetPlayerPawnAddress();
-
-        const uintptr_t getComponentLocationAddress =
-            GetComponentLocationAddress();
-
         if (loadSynchronousAddress == 0 ||
             getBrushTextureAddress == 0 ||
             getResidentMipsAddress == 0 ||
             getAllowedMipsAddress == 0 ||
             getNumMipsAddress == 0 ||
             streamInAddress == 0 ||
-            waitPendingAddress == 0 ||
-            getFirstControllerAddress == 0 ||
-            getPlayerPawnAddress == 0 ||
-            getComponentLocationAddress == 0)
+            waitPendingAddress == 0)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -257,66 +234,20 @@ namespace
             reinterpret_cast<WaitForPendingInitOrStreamingFn>(
                 waitPendingAddress);
 
-        auto getFirstPlayerController =
-            reinterpret_cast<GetFirstPlayerControllerFn>(
-                getFirstControllerAddress);
-
-        auto getPlayerPawn =
-            reinterpret_cast<GetPlayerPawnFn>(
-                getPlayerPawnAddress);
-
-        auto getComponentLocation =
-            reinterpret_cast<GetComponentLocationFn>(
-                getComponentLocationAddress);
-
         // ---------------------------------------------------------------------
         // Obtain the local pawn's physical world position.
+        //
+        // World ownership and player discovery are map-wide responsibilities.
+        // Terrain consumes only the resulting physical world position.
         // ---------------------------------------------------------------------
-
-        SDK::APlayerController* playerController =
-            getFirstPlayerController(
-                g_world);
-
-        if (playerController == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "first player controller was not found");
-
-            return;
-        }
-
-        SDK::ACrCharacterPlayerBase* playerPawn =
-            getPlayerPawn(
-                static_cast<const SDK::AController*>(
-                    playerController));
-
-        if (playerPawn == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "local CrCharacterPlayerBase pawn was not found");
-
-            return;
-        }
-
-        SDK::USceneComponent* rootComponent =
-            playerPawn->RootComponent;
-
-        if (rootComponent == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "local player pawn has no RootComponent");
-
-            return;
-        }
 
         SDK::FVector playerLocation = {};
 
-        getComponentLocation(
-            rootComponent,
-            &playerLocation);
+        if (!MiniMapMap::TryGetPlayerWorldPosition(
+            playerLocation))
+        {
+            return;
+        }
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
@@ -806,18 +737,11 @@ namespace
 
 namespace MiniMapTerrain
 {
-    void SetWorld(
-        SDK::UWorld* world)
+    void CancelPendingDiagnostic()
     {
-        g_world = world;
-
         g_diagnosticPending.store(
             false,
             std::memory_order_release);
-
-        LOG_INFO(
-            "MiniMap: active gameplay world = %p",
-            g_world);
     }
 
     bool Initialize(IPluginSelf* self)
@@ -979,7 +903,6 @@ namespace MiniMapTerrain
         }
 
         g_terrainData = nullptr;
-        g_world = nullptr;
     }
 
 

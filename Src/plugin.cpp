@@ -19,7 +19,8 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/MiniMapUI.h"
-#include "Map/MiniMapTerrain.h"
+#include "Map/Terrain.h"
+#include "Map/Map.h"
 #endif
 
 #ifdef MODLOADER_SERVER_BUILD
@@ -132,7 +133,8 @@ void OnPluginLoadHooks(
 
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
-    MiniMapTerrain::SetWorld(world);
+    MiniMapMap::SetWorld(world);
+    MiniMapTerrain::CancelPendingDiagnostic();
 
     LOG_INFO(
         "MiniMap: game world began: %p",
@@ -166,7 +168,7 @@ static void OnAfterWorldEndPlay(
 
     MiniMapUI::Hide();
 
-    MiniMapTerrain::SetWorld(nullptr);
+    MiniMapMap::SetWorld(nullptr);
     MiniMapTerrain::Shutdown();
 }
 
@@ -346,6 +348,7 @@ extern "C"
 
         MiniMapTerrain::UnregisterDiagnostics();
         MiniMapTerrain::Shutdown();
+        MiniMapMap::Shutdown();
         MiniMapUI::Shutdown();
 
 #endif

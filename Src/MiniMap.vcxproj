@@ -95,8 +95,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
+    <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Native\Fingerprints.h" />
-    <ClInclude Include="Map\MiniMapTerrain.h" />
+    <ClInclude Include="Map\Terrain.h" />
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
     <ClInclude Include="plugin_helpers.h" />
@@ -110,8 +111,9 @@
     </ClCompile>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Config\Config.cpp" />
+    <ClCompile Include="Map\Map.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
-    <ClCompile Include="Map\MiniMapTerrain.cpp" />
+    <ClCompile Include="Map\Terrain.cpp" />
     <ClCompile Include="UI\MiniMapUI.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>

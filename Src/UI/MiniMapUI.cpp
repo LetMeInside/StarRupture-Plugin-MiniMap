@@ -1,5 +1,5 @@
 #include "MiniMapUI.h"
-#include "Map/MiniMapTerrain.h"
+#include "Map/Terrain.h"
 
 #include "plugin.h"
 #include "plugin_helpers.h"
