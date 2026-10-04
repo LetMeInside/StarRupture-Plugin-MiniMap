@@ -66,20 +66,23 @@ namespace
             MiniMapTerrainChunks::kChunkWorldSizeMeters) *
         100.0;
 
-    constexpr double kViewportWorldSizeMeters =
-        100.0;
+    constexpr double kDefaultMetersPerPixel =
+        100.0 / 300.0;
 
-    constexpr double kViewportSizeInChunks =
-        kViewportWorldSizeMeters /
-        static_cast<double>(
-            MiniMapTerrainChunks::kChunkWorldSizeMeters);
+    constexpr float kDefaultViewportPixelWidth =
+        300.0f;
 
-    constexpr double kViewportHalfSizeInChunks =
-        kViewportSizeInChunks *
-        0.5;
+    constexpr float kDefaultViewportPixelHeight =
+        300.0f;
 
     std::mutex g_renderMutex;
     std::vector<LoadedChunk> g_loadedChunks;
+
+    float g_viewportPixelWidth =
+        kDefaultViewportPixelWidth;
+
+    float g_viewportPixelHeight =
+        kDefaultViewportPixelHeight;
 
 
     bool SameIdentity(
@@ -530,21 +533,71 @@ namespace
             static_cast<double>(
                 MiniMapTerrainChunks::kChunksPerAxis);
 
+        std::vector<LoadedChunk> existingChunks;
+
+        float viewportPixelWidth =
+            kDefaultViewportPixelWidth;
+
+        float viewportPixelHeight =
+            kDefaultViewportPixelHeight;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            existingChunks =
+                g_loadedChunks;
+
+            viewportPixelWidth =
+                g_viewportPixelWidth;
+
+            viewportPixelHeight =
+                g_viewportPixelHeight;
+        }
+
+        const double viewportWidthMeters =
+            static_cast<double>(
+                viewportPixelWidth) *
+            kDefaultMetersPerPixel;
+
+        const double viewportHeightMeters =
+            static_cast<double>(
+                viewportPixelHeight) *
+            kDefaultMetersPerPixel;
+
+        const double viewportWidthInChunks =
+            viewportWidthMeters /
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunkWorldSizeMeters);
+
+        const double viewportHeightInChunks =
+            viewportHeightMeters /
+            static_cast<double>(
+                MiniMapTerrainChunks::kChunkWorldSizeMeters);
+
+        const double viewportHalfWidthInChunks =
+            viewportWidthInChunks *
+            0.5;
+
+        const double viewportHalfHeightInChunks =
+            viewportHeightInChunks *
+            0.5;
+
         const double viewportMinX =
             playerGlobalChunkX -
-            kViewportHalfSizeInChunks;
+            viewportHalfWidthInChunks;
 
         const double viewportMaxX =
             playerGlobalChunkX +
-            kViewportHalfSizeInChunks;
+            viewportHalfWidthInChunks;
 
         const double viewportMinY =
             playerGlobalChunkY -
-            kViewportHalfSizeInChunks;
+            viewportHalfHeightInChunks;
 
         const double viewportMaxY =
             playerGlobalChunkY +
-            kViewportHalfSizeInChunks;
+            viewportHalfHeightInChunks;
 
         constexpr double kBoundaryEpsilon =
             1.0e-9;
@@ -570,16 +623,6 @@ namespace
                 std::floor(
                     viewportMaxY -
                     kBoundaryEpsilon));
-
-        std::vector<LoadedChunk> existingChunks;
-
-        {
-            std::lock_guard<std::mutex> lock(
-                g_renderMutex);
-
-            existingChunks =
-                g_loadedChunks;
-        }
 
         std::vector<LoadedChunk> nextChunks;
 
@@ -721,25 +764,25 @@ namespace
                     (static_cast<double>(
                         globalChunkX) -
                         viewportMinX) /
-                    kViewportSizeInChunks;
+                    viewportWidthInChunks;
 
                 const double rawX1 =
                     (static_cast<double>(
                         globalChunkX + 1) -
                         viewportMinX) /
-                    kViewportSizeInChunks;
+                    viewportWidthInChunks;
 
                 const double rawY0 =
                     (static_cast<double>(
                         globalChunkY) -
                         viewportMinY) /
-                    kViewportSizeInChunks;
+                    viewportHeightInChunks;
 
                 const double rawY1 =
                     (static_cast<double>(
                         globalChunkY + 1) -
                         viewportMinY) /
-                    kViewportSizeInChunks;
+                    viewportHeightInChunks;
 
                 const double clippedX0 =
                     std::clamp(
@@ -886,6 +929,17 @@ namespace MiniMapTerrain
         g_updateAccumulator =
             kUpdateIntervalSeconds;
 
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            g_viewportPixelWidth =
+                kDefaultViewportPixelWidth;
+
+            g_viewportPixelHeight =
+                kDefaultViewportPixelHeight;
+        }
+
         ReleaseLoadedChunks();
 
         if (g_terrainSelf == nullptr ||
@@ -954,6 +1008,17 @@ namespace MiniMapTerrain
 
         g_updateAccumulator =
             0.0f;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            g_viewportPixelWidth =
+                kDefaultViewportPixelWidth;
+
+            g_viewportPixelHeight =
+                kDefaultViewportPixelHeight;
+        }
     }
 
 
@@ -993,6 +1058,12 @@ namespace MiniMapTerrain
 
         std::lock_guard<std::mutex> lock(
             g_renderMutex);
+
+        g_viewportPixelWidth =
+            windowWidth;
+
+        g_viewportPixelHeight =
+            windowHeight;
 
         if (g_loadedChunks.empty())
         {
