@@ -6,6 +6,7 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
+#include "../Native/NativeApi.h"
 
 #include <cmath>
 
@@ -38,48 +39,6 @@ namespace
 
     constexpr const char* kDiagnosticKey = "F8";
 
-
-    using LoadSynchronousFn =
-        SDK::UObject* (*)(void*);
-
-    using GetBrushTextureFn =
-        SDK::UTexture2D* (*)(
-            const SDK::FSlateBrush&);
-
-    using GetNumResidentMipsFn =
-        int32_t(*)(const SDK::UTexture2D*);
-
-    using GetNumMipsAllowedFn =
-        int32_t(*)(const SDK::UTexture2D*,
-            bool);
-
-    using GetNumMipsFn =
-        int32_t(*)(const SDK::UTexture2D*);
-
-    using StreamInFn =
-        bool (*)(SDK::UTexture2D*,
-            int32_t,
-            bool);
-
-    using WaitForPendingInitOrStreamingFn =
-        void (*)(SDK::UStreamableRenderAsset*,
-            bool,
-            bool);
-
-    using GetPlatformDataFn =
-        void* (*)(SDK::UTexture2D*);
-
-    using GetBulkDataSizeFn =
-        int64_t(*)(const void*);
-
-    using CanLoadFromDiskFn =
-        bool (*)(const void*);
-
-    using GetBulkDataCopyFn =
-        void (*)(void*, void**, bool);
-
-    using MemoryFreeFn =
-        void (*)(void*);
 
 
     struct NativeTexturePlatformDataLayout
@@ -581,109 +540,43 @@ namespace
             return;
         }
 
-        const uintptr_t loadSynchronousAddress =
-            GetSoftObjectLoadSynchronousAddress();
+        const MiniMapNative::NativeApi* native =
+            MiniMapNative::Get();
 
-        const uintptr_t getBrushTextureAddress =
-            GetBrushResourceAsTexture2DAddress();
-
-        const uintptr_t getResidentMipsAddress =
-            GetNumResidentMipsAddress();
-
-        const uintptr_t getAllowedMipsAddress =
-            GetNumMipsAllowedAddress();
-
-        const uintptr_t getNumMipsAddress =
-            GetNumMipsAddress();
-
-        const uintptr_t streamInAddress =
-            GetStreamInAddress();
-
-        const uintptr_t waitPendingAddress =
-            GetWaitForPendingInitOrStreamingAddress();
-
-        const uintptr_t getPlatformDataAddress =
-            GetPlatformDataAddress();
-
-        const uintptr_t getBulkDataSizeAddress =
-            GetBulkDataSizeAddress();
-
-        const uintptr_t canLoadFromDiskAddress =
-            GetCanLoadFromDiskAddress();
-
-        const uintptr_t getBulkDataCopyAddress =
-            GetBulkDataCopyAddress();
-
-        const uintptr_t memoryFreeAddress =
-            GetMemoryFreeAddress();
-
-        if (loadSynchronousAddress == 0 ||
-            getBrushTextureAddress == 0 ||
-            getResidentMipsAddress == 0 ||
-            getAllowedMipsAddress == 0 ||
-            getNumMipsAddress == 0 ||
-            streamInAddress == 0 ||
-            waitPendingAddress == 0 ||
-            getPlatformDataAddress == 0 ||
-            getBulkDataSizeAddress == 0 ||
-            canLoadFromDiskAddress == 0 ||
-            getBulkDataCopyAddress == 0 ||
-            memoryFreeAddress == 0)
+        if (native == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
-                "one or more required native functions are unavailable");
+                "native API is unavailable");
 
             return;
         }
 
-        auto loadSynchronous =
-            reinterpret_cast<LoadSynchronousFn>(
-                loadSynchronousAddress);
+        const auto& assetApi =
+            native->asset;
 
-        auto getBrushTexture =
-            reinterpret_cast<GetBrushTextureFn>(
-                getBrushTextureAddress);
+        const auto& textureApi =
+            native->texture;
 
-        auto getNumResidentMips =
-            reinterpret_cast<GetNumResidentMipsFn>(
-                getResidentMipsAddress);
+        if (assetApi.loadSynchronous == nullptr ||
+            textureApi.getBrushTexture == nullptr ||
+            textureApi.getNumResidentMips == nullptr ||
+            textureApi.getNumMipsAllowed == nullptr ||
+            textureApi.getNumMips == nullptr ||
+            textureApi.streamIn == nullptr ||
+            textureApi.waitForPendingInitOrStreaming == nullptr ||
+            textureApi.getPlatformData == nullptr ||
+            textureApi.getBulkDataSize == nullptr ||
+            textureApi.canLoadFromDisk == nullptr ||
+            textureApi.getBulkDataCopy == nullptr ||
+            textureApi.memoryFree == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: F8 diagnostic: "
+                "native API is incomplete");
 
-        auto getNumMipsAllowed =
-            reinterpret_cast<GetNumMipsAllowedFn>(
-                getAllowedMipsAddress);
-
-        auto getNumMips =
-            reinterpret_cast<GetNumMipsFn>(
-                getNumMipsAddress);
-
-        auto streamIn =
-            reinterpret_cast<StreamInFn>(
-                streamInAddress);
-
-        auto waitForPendingInitOrStreaming =
-            reinterpret_cast<WaitForPendingInitOrStreamingFn>(
-                waitPendingAddress);
-
-        auto getPlatformData =
-            reinterpret_cast<GetPlatformDataFn>(
-                getPlatformDataAddress);
-
-        auto getBulkDataSize =
-            reinterpret_cast<GetBulkDataSizeFn>(
-                getBulkDataSizeAddress);
-
-        auto canLoadFromDisk =
-            reinterpret_cast<CanLoadFromDiskFn>(
-                canLoadFromDiskAddress);
-
-        auto getBulkDataCopy =
-            reinterpret_cast<GetBulkDataCopyFn>(
-                getBulkDataCopyAddress);
-
-        auto memoryFree =
-            reinterpret_cast<MemoryFreeFn>(
-                memoryFreeAddress);
+            return;
+        }
 
         // ---------------------------------------------------------------------
         // Obtain the local pawn's physical world position.
@@ -728,7 +621,7 @@ namespace
                 &devSettings->TerrainData);
 
         SDK::UObject* loadedObject =
-            loadSynchronous(
+            assetApi.loadSynchronous(
                 terrainDataSoftPtr);
 
         if (loadedObject == nullptr)
@@ -926,7 +819,7 @@ namespace
         // ---------------------------------------------------------------------
 
         SDK::UTexture2D* sourceTexture =
-            getBrushTexture(
+            textureApi.getBrushTexture(
                 diagnosticSegment->
                 TerrainSegmentTexture);
 
@@ -962,7 +855,7 @@ namespace
             "MiniMap: F8 diagnostic: "
             "waiting for existing texture initialization/streaming");
 
-        waitForPendingInitOrStreaming(
+        textureApi.waitForPendingInitOrStreaming(
             streamableTexture,
             true,
             true);
@@ -981,7 +874,7 @@ namespace
         // ---------------------------------------------------------------------
 
         void* platformDataRaw =
-            getPlatformData(
+            textureApi.getPlatformData(
                 sourceTexture);
 
         if (platformDataRaw == nullptr)
@@ -1083,11 +976,11 @@ namespace
                 mipZero->BulkData);
 
         const int64_t mipZeroBulkSize =
-            getBulkDataSize(
+            textureApi.getBulkDataSize(
                 bulkData);
 
         const bool mipZeroCanLoadFromDisk =
-            canLoadFromDisk(
+            textureApi.canLoadFromDisk(
                 bulkData);
 
         LOG_INFO(
@@ -1185,7 +1078,7 @@ namespace
         const auto copyStart =
             std::chrono::steady_clock::now();
 
-        getBulkDataCopy(
+        textureApi.getBulkDataCopy(
             const_cast<void*>(bulkData),
             &ownedMipZero,
             false);
@@ -1228,7 +1121,7 @@ namespace
                 chunkY,
                 compressedChunk);
 
-        memoryFree(
+        textureApi.memoryFree(
             ownedMipZero);
 
         ownedMipZero = nullptr;
@@ -1303,16 +1196,16 @@ namespace
             9;
 
         const int32_t totalMipsBefore =
-            getNumMips(
+            textureApi.getNumMips(
                 sourceTexture);
 
         const int32_t allowedMipsBefore =
-            getNumMipsAllowed(
+            textureApi.getNumMipsAllowed(
                 sourceTexture,
                 false);
 
         const int32_t residentMipsBefore =
-            getNumResidentMips(
+            textureApi.getNumResidentMips(
                 sourceTexture);
 
         int32_t residentMips =
@@ -1359,7 +1252,7 @@ namespace
                 targetResidentMips);
 
             const bool streamAccepted =
-                streamIn(
+                textureApi.streamIn(
                     sourceTexture,
                     targetResidentMips,
                     true);
@@ -1384,7 +1277,7 @@ namespace
                 "MiniMap: F8 diagnostic: "
                 "waiting for requested texture transition");
 
-            waitForPendingInitOrStreaming(
+            textureApi.waitForPendingInitOrStreaming(
                 streamableTexture,
                 true,
                 true);
@@ -1394,7 +1287,7 @@ namespace
                 "requested texture transition completed");
 
             residentMips =
-                getNumResidentMips(
+                textureApi.getNumResidentMips(
                     sourceTexture);
         }
         else if (residentMips > targetResidentMips)
@@ -1408,16 +1301,16 @@ namespace
         }
 
         const int32_t totalMipsAfter =
-            getNumMips(
+            textureApi.getNumMips(
                 sourceTexture);
 
         const int32_t allowedMipsAfter =
-            getNumMipsAllowed(
+            textureApi.getNumMipsAllowed(
                 sourceTexture,
                 false);
 
         const int32_t residentMipsAfter =
-            getNumResidentMips(
+            textureApi.getNumResidentMips(
                 sourceTexture);
 
         LOG_INFO(

@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map.h"
-
+#include "../Native/NativeApi.h"
 #include "../plugin.h"
 #include "../plugin_helpers.h"
 
@@ -11,20 +11,6 @@
 namespace
 {
     SDK::UWorld* g_world = nullptr;
-
-
-    using GetFirstPlayerControllerFn =
-        SDK::APlayerController* (*)(
-            const SDK::UWorld*);
-
-    using GetPlayerPawnFn =
-        SDK::ACrCharacterPlayerBase* (*)(
-            const SDK::AController*);
-
-    using GetComponentLocationFn =
-        SDK::FVector* (*)(
-            const SDK::USceneComponent*,
-            SDK::FVector*);
 }
 
 
@@ -59,40 +45,32 @@ namespace MiniMapMap
             return false;
         }
 
-        const uintptr_t getFirstControllerAddress =
-            GetFirstPlayerControllerAddress();
+        const MiniMapNative::NativeApi* native =
+            MiniMapNative::Get();
 
-        const uintptr_t getPlayerPawnAddress =
-            GetPlayerPawnAddress();
-
-        const uintptr_t getComponentLocationAddress =
-            GetComponentLocationAddress();
-
-        if (getFirstControllerAddress == 0 ||
-            getPlayerPawnAddress == 0 ||
-            getComponentLocationAddress == 0)
+        if (native == nullptr)
         {
             LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "one or more required native functions are unavailable");
+                "MiniMap: native API is unavailable");
 
             return false;
         }
 
-        auto getFirstPlayerController =
-            reinterpret_cast<GetFirstPlayerControllerFn>(
-                getFirstControllerAddress);
+        const auto& playerApi =
+            native->player;
 
-        auto getPlayerPawn =
-            reinterpret_cast<GetPlayerPawnFn>(
-                getPlayerPawnAddress);
+        if (playerApi.getFirstPlayerController == nullptr ||
+            playerApi.getPlayerPawn == nullptr ||
+            playerApi.getComponentLocation == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: player native API is incomplete");
 
-        auto getComponentLocation =
-            reinterpret_cast<GetComponentLocationFn>(
-                getComponentLocationAddress);
+            return false;
+        }
 
         SDK::APlayerController* playerController =
-            getFirstPlayerController(
+            playerApi.getFirstPlayerController(
                 g_world);
 
         if (playerController == nullptr)
@@ -105,7 +83,7 @@ namespace MiniMapMap
         }
 
         SDK::ACrCharacterPlayerBase* playerPawn =
-            getPlayerPawn(
+            playerApi.getPlayerPawn(
                 static_cast<const SDK::AController*>(
                     playerController));
 
@@ -132,7 +110,7 @@ namespace MiniMapMap
 
         outPosition = {};
 
-        getComponentLocation(
+        playerApi.getComponentLocation(
             rootComponent,
             &outPosition);
 

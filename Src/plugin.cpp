@@ -4,6 +4,7 @@
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
+#include "Native/NativeApi.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -30,95 +31,6 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #endif
 
 
-#ifdef MODLOADER_CLIENT_BUILD
-
-uintptr_t GetSoftObjectLoadSynchronousAddress()
-{
-    return g_resolvedAddresses.softObjectLoadSynchronous;
-}
-
-uintptr_t GetBrushResourceAsTexture2DAddress()
-{
-    return g_resolvedAddresses.getBrushResourceAsTexture2D;
-}
-
-uintptr_t GetSetForceMipLevelsToBeResidentAddress()
-{
-    return g_resolvedAddresses.setForceMipLevelsToBeResident;
-}
-
-uintptr_t GetWaitForStreamingAddress()
-{
-    return g_resolvedAddresses.waitForStreaming;
-}
-
-uintptr_t GetNumResidentMipsAddress()
-{
-    return g_resolvedAddresses.getNumResidentMips;
-}
-
-uintptr_t GetNumMipsAllowedAddress()
-{
-    return g_resolvedAddresses.getNumMipsAllowed;
-}
-
-uintptr_t GetNumMipsAddress()
-{
-    return g_resolvedAddresses.getNumMips;
-}
-
-uintptr_t GetStreamInAddress()
-{
-    return g_resolvedAddresses.streamIn;
-}
-
-uintptr_t GetWaitForPendingInitOrStreamingAddress()
-{
-    return g_resolvedAddresses.waitForPendingInitOrStreaming;
-}
-
-uintptr_t GetFirstPlayerControllerAddress()
-{
-    return g_resolvedAddresses.getFirstPlayerController;
-}
-
-uintptr_t GetPlayerPawnAddress()
-{
-    return g_resolvedAddresses.getPlayerPawn;
-}
-
-uintptr_t GetComponentLocationAddress()
-{
-    return g_resolvedAddresses.getComponentLocation;
-}
-
-uintptr_t GetPlatformDataAddress()
-{
-    return g_resolvedAddresses.getPlatformData;
-}
-
-uintptr_t GetBulkDataSizeAddress()
-{
-    return g_resolvedAddresses.getBulkDataSize;
-}
-
-uintptr_t GetCanLoadFromDiskAddress()
-{
-    return g_resolvedAddresses.canLoadFromDisk;
-}
-
-uintptr_t GetBulkDataCopyAddress()
-{
-    return g_resolvedAddresses.getBulkDataCopy;
-}
-
-uintptr_t GetMemoryFreeAddress()
-{
-    return g_resolvedAddresses.memoryFree;
-}
-
-#endif
-
 static PluginInfo s_pluginInfo = {
     "MiniMap",
     MODLOADER_BUILD_TAG,
@@ -144,7 +56,23 @@ void OnPluginLoadHooks(
     {
         LOG_ERROR(
             "MiniMap: native fingerprint resolution failed");
+
+        MiniMapNative::Shutdown();
+        return;
     }
+
+    if (!MiniMapNative::Initialize(
+        g_resolvedAddresses))
+    {
+        LOG_ERROR(
+            "MiniMap: native API initialization failed");
+
+        MiniMapNative::Shutdown();
+        return;
+    }
+
+    LOG_INFO(
+        "MiniMap: native API initialized");
 
 #else
 
@@ -202,7 +130,7 @@ static void OnAfterWorldEndPlay(
 extern "C"
 {
     __declspec(dllexport)
-    PluginInfo* GetPluginInfo()
+        PluginInfo* GetPluginInfo()
     {
         return &s_pluginInfo;
     }
@@ -406,6 +334,9 @@ extern "C"
         MiniMapMap::Shutdown();
         MiniMapUI::Shutdown();
 
+        // NativeApi should be the last subsystem torn down.
+        // Other subsystems depend on it for their own shutdown paths.
+        MiniMapNative::Shutdown();
 #endif
 
         g_self = nullptr;
