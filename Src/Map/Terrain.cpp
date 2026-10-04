@@ -7,6 +7,7 @@
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "../Native/NativeApi.h"
+#include "../Native/TextureAccess.h"
 
 #include <cmath>
 
@@ -14,7 +15,6 @@
 #include "../plugin_helpers.h"
 
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <chrono>
 
@@ -41,63 +41,6 @@ namespace
 
 
 
-    struct NativeTexturePlatformDataLayout
-    {
-        int32_t SizeX;
-        int32_t SizeY;
-        uint32_t PackedData;
-        uint8_t PixelFormat;
-        uint8_t Padding0D[0x0B];
-        void** MipPointers;
-        int32_t MipCount;
-        int32_t MipCapacity;
-        void* VTData;
-        void* CPUCopy;
-    };
-
-    static_assert(
-        offsetof(
-            NativeTexturePlatformDataLayout,
-            MipPointers) == 0x18);
-
-    static_assert(
-        offsetof(
-            NativeTexturePlatformDataLayout,
-            VTData) == 0x28);
-
-    static_assert(
-        offsetof(
-            NativeTexturePlatformDataLayout,
-            CPUCopy) == 0x30);
-
-    static_assert(
-        sizeof(
-            NativeTexturePlatformDataLayout) == 0x38);
-
-
-    struct NativeTexture2DMipMapLayout
-    {
-        uint8_t DerivedData[0x20];
-        uint8_t BulkData[0x28];
-        uint16_t SizeX;
-        uint16_t SizeY;
-        uint16_t SizeZ;
-        uint16_t Padding4E;
-    };
-
-    static_assert(
-        offsetof(
-            NativeTexture2DMipMapLayout,
-            BulkData) == 0x20);
-
-    static_assert(
-        offsetof(
-            NativeTexture2DMipMapLayout,
-            SizeX) == 0x48);
-
-    static_assert(
-        sizeof(
-            NativeTexture2DMipMapLayout) == 0x50);
 
 
     struct RGBA8
@@ -564,12 +507,7 @@ namespace
             textureApi.getNumMipsAllowed == nullptr ||
             textureApi.getNumMips == nullptr ||
             textureApi.streamIn == nullptr ||
-            textureApi.waitForPendingInitOrStreaming == nullptr ||
-            textureApi.getPlatformData == nullptr ||
-            textureApi.getBulkDataSize == nullptr ||
-            textureApi.canLoadFromDisk == nullptr ||
-            textureApi.getBulkDataCopy == nullptr ||
-            textureApi.memoryFree == nullptr)
+            textureApi.waitForPendingInitOrStreaming == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -868,16 +806,15 @@ namespace
         // Inspect the cooked texture metadata without requesting mip 0 or
         // copying bulk bytes yet.
         //
-        // These layouts are verified against the matching HF2.5 PDB. The
-        // generated SDK intentionally hides FTexturePlatformData, so this
-        // diagnostic keeps the native layout knowledge local to Terrain.
+        // The generated SDK intentionally hides FTexturePlatformData.
+        // Native layout knowledge is isolated in Native/TextureAccess.
         // ---------------------------------------------------------------------
 
-        void* platformDataRaw =
-            textureApi.getPlatformData(
-                sourceTexture);
+        MiniMapNative::TextureAccess::PlatformData platformData = {};
 
-        if (platformDataRaw == nullptr)
+        if (!MiniMapNative::TextureAccess::QueryPlatformData(
+            sourceTexture,
+            platformData))
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -886,46 +823,32 @@ namespace
             return;
         }
 
-        const auto* platformData =
-            reinterpret_cast<
-            const NativeTexturePlatformDataLayout*>(
-                platformDataRaw);
-
-        if (platformData->SizeX <= 0 ||
-            platformData->SizeY <= 0)
+        if (platformData.SizeX <= 0 ||
+            platformData.SizeY <= 0)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
                 "invalid platform texture dimensions %dx%d",
-                platformData->SizeX,
-                platformData->SizeY);
+                platformData.SizeX,
+                platformData.SizeY);
 
             return;
         }
 
-        if (platformData->MipCount <= 0 ||
-            platformData->MipCount > 64 ||
-            platformData->MipPointers == nullptr)
+        if (platformData.MipCount <= 0 ||
+            platformData.MipCount > 64 ||
+            !platformData.HasMipPointers)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
                 "invalid platform mip array "
                 "pointer=%p count=%d capacity=%d",
-                platformData->MipPointers,
-                platformData->MipCount,
-                platformData->MipCapacity);
+                platformData.MipPointers,
+                platformData.MipCount,
+                platformData.MipCapacity);
 
             return;
         }
-
-        const uint8_t textureFlags =
-            *reinterpret_cast<const uint8_t*>(
-                reinterpret_cast<const uint8_t*>(
-                    sourceTexture) +
-                0x106);
-
-        const bool isSRGB =
-            (textureFlags & 0x01) != 0;
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
@@ -934,20 +857,20 @@ namespace
             "pixelFormat=%u (%s) sRGB=%s "
             "mips=%d capacity=%d "
             "VTData=%p CPUCopy=%p",
-            platformData->SizeX,
-            platformData->SizeY,
-            platformData->PackedData,
+            platformData.SizeX,
+            platformData.SizeY,
+            platformData.PackedData,
             static_cast<unsigned int>(
-                platformData->PixelFormat),
+                platformData.PixelFormat),
             GetPixelFormatName(
-                platformData->PixelFormat),
-            isSRGB ? "true" : "false",
-            platformData->MipCount,
-            platformData->MipCapacity,
-            platformData->VTData,
-            platformData->CPUCopy);
+                platformData.PixelFormat),
+            platformData.SRGB ? "true" : "false",
+            platformData.MipCount,
+            platformData.MipCapacity,
+            platformData.VTData,
+            platformData.CPUCopy);
 
-        if (platformData->VTData != nullptr)
+        if (platformData.VTData != nullptr)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -957,12 +880,12 @@ namespace
             return;
         }
 
-        auto* mipZero =
-            reinterpret_cast<
-            const NativeTexture2DMipMapLayout*>(
-                platformData->MipPointers[0]);
+        MiniMapNative::TextureAccess::MipData mipZero = {};
 
-        if (mipZero == nullptr)
+        if (!MiniMapNative::TextureAccess::QueryMipData(
+            platformData,
+            0,
+            mipZero))
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -972,16 +895,13 @@ namespace
         }
 
         const void* bulkData =
-            static_cast<const void*>(
-                mipZero->BulkData);
+            mipZero.BulkData;
 
         const int64_t mipZeroBulkSize =
-            textureApi.getBulkDataSize(
-                bulkData);
+            mipZero.BulkSize;
 
         const bool mipZeroCanLoadFromDisk =
-            textureApi.canLoadFromDisk(
-                bulkData);
+            mipZero.CanLoadFromDisk;
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
@@ -989,11 +909,11 @@ namespace
             "bulk=%p bulkSize=%lld "
             "canLoadFromDisk=%s",
             static_cast<unsigned int>(
-                mipZero->SizeX),
+                mipZero.SizeX),
             static_cast<unsigned int>(
-                mipZero->SizeY),
+                mipZero.SizeY),
             static_cast<unsigned int>(
-                mipZero->SizeZ),
+                mipZero.SizeZ),
             bulkData,
             static_cast<long long>(
                 mipZeroBulkSize),
@@ -1001,9 +921,9 @@ namespace
             ? "true"
             : "false");
 
-        if (mipZero->SizeX == 0 ||
-            mipZero->SizeY == 0 ||
-            mipZero->SizeZ == 0 ||
+        if (mipZero.SizeX == 0 ||
+            mipZero.SizeY == 0 ||
+            mipZero.SizeZ == 0 ||
             mipZeroBulkSize <= 0)
         {
             LOG_ERROR(
@@ -1022,27 +942,27 @@ namespace
         // therefore exactly 64x64 blocks = 32768 bytes.
         // ---------------------------------------------------------------------
 
-        if (platformData->PixelFormat != 5)
+        if (platformData.PixelFormat != 5)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
                 "BC1 chunk experiment requires PF_DXT1; observed %u (%s)",
                 static_cast<unsigned int>(
-                    platformData->PixelFormat),
+                    platformData.PixelFormat),
                 GetPixelFormatName(
-                    platformData->PixelFormat));
+                    platformData.PixelFormat));
 
             return;
         }
 
         const int expectedSourceWidth =
-            static_cast<int>(mipZero->SizeX);
+            static_cast<int>(mipZero.SizeX);
 
         const int expectedSourceHeight =
-            static_cast<int>(mipZero->SizeY);
+            static_cast<int>(mipZero.SizeY);
 
-        if (expectedSourceWidth != platformData->SizeX ||
-            expectedSourceHeight != platformData->SizeY)
+        if (expectedSourceWidth != platformData.SizeX ||
+            expectedSourceHeight != platformData.SizeY)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -1050,8 +970,8 @@ namespace
                 "(%dx%d vs %dx%d)",
                 expectedSourceWidth,
                 expectedSourceHeight,
-                platformData->SizeX,
-                platformData->SizeY);
+                platformData.SizeX,
+                platformData.SizeY);
 
             return;
         }
@@ -1078,8 +998,8 @@ namespace
         const auto copyStart =
             std::chrono::steady_clock::now();
 
-        textureApi.getBulkDataCopy(
-            const_cast<void*>(bulkData),
+        MiniMapNative::TextureAccess::CopyBulkData(
+            mipZero,
             &ownedMipZero,
             false);
 
@@ -1121,7 +1041,7 @@ namespace
                 chunkY,
                 compressedChunk);
 
-        textureApi.memoryFree(
+        MiniMapNative::TextureAccess::FreeBulkDataCopy(
             ownedMipZero);
 
         ownedMipZero = nullptr;
