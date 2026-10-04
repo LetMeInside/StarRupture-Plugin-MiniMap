@@ -3,6 +3,7 @@
 #include "TerrainDiagnostics.h"
 #include "Map.h"
 #include "TerrainChunks.h"
+#include "TerrainSource.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -10,7 +11,6 @@
 #include "../Native/NativeApi.h"
 #include "../Native/TextureAccess.h"
 
-#include <cmath>
 
 #include "../plugin.h"
 #include "../plugin_helpers.h"
@@ -23,8 +23,6 @@
 namespace
 {
     IPluginSelf* g_terrainSelf = nullptr;
-    SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
-
     PluginTextureHandle g_terrainTexture = nullptr;
     PluginTextureHandle g_referenceTerrainTexture = nullptr;
 
@@ -73,70 +71,6 @@ namespace
         }
     }
 
-
-    SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
-    {
-        if (g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr ||
-            g_terrainSelf->hooks->ObjectWalker == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: ObjectWalker is unavailable");
-
-            return nullptr;
-        }
-
-        auto* walker =
-            g_terrainSelf->hooks->ObjectWalker;
-
-        if (!walker->IsReady())
-        {
-            LOG_ERROR(
-                "MiniMap: ObjectWalker is not ready");
-
-            return nullptr;
-        }
-
-        PluginObjectInfo objects[8] = {};
-
-        const int count =
-            walker->FindObjectsByClassNameInto(
-                "CrMapMenuDevSettings",
-                PluginObjectLookup_CDOOnly,
-                objects,
-                8);
-
-        LOG_INFO(
-            "MiniMap: found %d CrMapMenuDevSettings CDO(s)",
-            count);
-
-        const int loggedCount =
-            count < 8 ? count : 8;
-
-        for (int i = 0; i < loggedCount; ++i)
-        {
-            LOG_INFO(
-                "MiniMap: DevSettings CDO [%d]: "
-                "object=%p name=%s class=%s",
-                i,
-                objects[i].object,
-                objects[i].objectName,
-                objects[i].className);
-        }
-
-        if (count != 1 ||
-            objects[0].object == nullptr)
-        {
-            LOG_WARN(
-                "MiniMap: expected exactly one "
-                "CrMapMenuDevSettings CDO");
-
-            return nullptr;
-        }
-
-        return static_cast<SDK::UCrMapMenuDevSettings*>(
-            objects[0].object);
-    }
 
 
     void ProcessTerrainDiagnostic()
@@ -195,15 +129,10 @@ namespace
             return;
         }
 
-        const auto& assetApi =
-            native->asset;
-
         const auto& textureApi =
             native->texture;
 
-        if (assetApi.loadSynchronous == nullptr ||
-            textureApi.getBrushTexture == nullptr ||
-            textureApi.getNumResidentMips == nullptr ||
+        if (textureApi.getNumResidentMips == nullptr ||
             textureApi.getNumMipsAllowed == nullptr ||
             textureApi.getNumMips == nullptr ||
             textureApi.streamIn == nullptr ||
@@ -238,137 +167,26 @@ namespace
             playerLocation.Y,
             playerLocation.Z);
 
-        // ---------------------------------------------------------------------
-        // Load UCrMapMenuTerrainData.
-        // ---------------------------------------------------------------------
+        MiniMapTerrainSource::SourceTile sourceTile = {};
 
-        auto* devSettings =
-            FindMapMenuDevSettingsCDO();
-
-        if (devSettings == nullptr)
+        if (!MiniMapTerrainSource::TryResolveSourceTile(
+            playerLocation,
+            sourceTile))
         {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "CrMapMenuDevSettings CDO was not found");
-
             return;
         }
-
-        void* terrainDataSoftPtr =
-            static_cast<void*>(
-                &devSettings->TerrainData);
-
-        SDK::UObject* loadedObject =
-            assetApi.loadSynchronous(
-                terrainDataSoftPtr);
-
-        if (loadedObject == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "TerrainData could not be loaded");
-
-            return;
-        }
-
-        auto* loadedTerrainData =
-            static_cast<SDK::UCrMapMenuTerrainData*>(
-                loadedObject);
-
-        g_terrainData =
-            loadedTerrainData;
-
-        const auto& pivot =
-            loadedTerrainData->MapTerrainTopLeftPivotPoint;
-
-        const auto& segmentSize =
-            loadedTerrainData->MapTerrainSegmentSize;
-
-        const int segmentCount =
-            loadedTerrainData->TerrainSegmentsData.Num();
-
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "TerrainData origin=(%.3f, %.3f, %.3f) "
-            "segment-size=(%.3f, %.3f, %.3f) "
-            "segments=%d",
-            pivot.X,
-            pivot.Y,
-            pivot.Z,
-            segmentSize.X,
-            segmentSize.Y,
-            segmentSize.Z,
-            segmentCount);
-
-        // ---------------------------------------------------------------------
-        // Convert physical player world position to terrain-grid coordinates.
-        //
-        // Native StarRupture terrain placement establishes a factor of 100
-        // between MapTerrainSegmentSize canvas units and world units.
-        //
-        // World X -> terrain horizontal -> TerrainSegmentGridIndex.Y
-        // World Y -> terrain vertical   -> TerrainSegmentGridIndex.X
-        // ---------------------------------------------------------------------
-
-        const double worldTileWidth =
-            100.0 *
-            static_cast<double>(
-                segmentSize.X);
-
-        const double worldTileHeight =
-            100.0 *
-            static_cast<double>(
-                segmentSize.Y);
-
-        if (worldTileWidth <= 0.0 ||
-            worldTileHeight <= 0.0)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "invalid terrain world tile size "
-                "(%.3f x %.3f)",
-                worldTileWidth,
-                worldTileHeight);
-
-            return;
-        }
-
-        const double horizontalTile =
-            (playerLocation.X -
-                static_cast<double>(pivot.X)) /
-            worldTileWidth;
-
-        const double verticalTile =
-            (playerLocation.Y -
-                static_cast<double>(pivot.Y)) /
-            worldTileHeight;
 
         const int gridX =
-            static_cast<int>(
-                std::floor(
-                    verticalTile));
+            sourceTile.GridX;
 
         const int gridY =
-            static_cast<int>(
-                std::floor(
-                    horizontalTile));
+            sourceTile.GridY;
 
         const double localU =
-            horizontalTile -
-            static_cast<double>(gridY);
+            sourceTile.LocalU;
 
         const double localV =
-            verticalTile -
-            static_cast<double>(gridX);
-
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "player terrain grid=(%d, %d) "
-            "local-uv=(%.6f, %.6f)",
-            gridX,
-            gridY,
-            localU,
-            localV);
+            sourceTile.LocalV;
 
         int chunkX = 0;
         int chunkY = 0;
@@ -396,75 +214,9 @@ namespace
             chunkX,
             chunkY);
 
-        // ---------------------------------------------------------------------
-        // Find the actual terrain record by TerrainSegmentGridIndex.
-        // Do not assume array order matches grid order.
-        // ---------------------------------------------------------------------
-
-        const SDK::FCrTerrainSegmentData* diagnosticSegment =
-            nullptr;
-
-        for (int i = 0; i < segmentCount; ++i)
-        {
-            const auto& segment =
-                loadedTerrainData->
-                TerrainSegmentsData[i];
-
-            if (segment.TerrainSegmentGridIndex.X ==
-                gridX &&
-                segment.TerrainSegmentGridIndex.Y ==
-                gridY)
-            {
-                diagnosticSegment =
-                    &segment;
-
-                break;
-            }
-        }
-
-        if (diagnosticSegment == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "player position maps outside available terrain "
-                "or grid=(%d, %d) has no terrain record",
-                gridX,
-                gridY);
-
-            return;
-        }
-
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "selected terrain segment grid=(%d, %d)",
-            diagnosticSegment->
-            TerrainSegmentGridIndex.X,
-            diagnosticSegment->
-            TerrainSegmentGridIndex.Y);
-
-        // ---------------------------------------------------------------------
-        // Obtain the UTexture2D from the selected terrain brush.
-        // ---------------------------------------------------------------------
-
         SDK::UTexture2D* sourceTexture =
-            textureApi.getBrushTexture(
-                diagnosticSegment->
-                TerrainSegmentTexture);
+            sourceTile.Texture;
 
-        LOG_INFO(
-            "MiniMap: F8 diagnostic: "
-            "GetBrushResourceAsTexture2D returned %p",
-            sourceTexture);
-
-        if (sourceTexture == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "selected terrain brush did not provide "
-                "a UTexture2D");
-
-            return;
-        }
 
         auto* streamableTexture =
             static_cast<SDK::UStreamableRenderAsset*>(
@@ -1110,7 +862,6 @@ namespace MiniMapTerrainDiagnostics
     bool Initialize(IPluginSelf* self)
     {
         g_terrainSelf = self;
-        g_terrainData = nullptr;
 
         g_diagnosticPending.store(
             false,
@@ -1123,6 +874,12 @@ namespace MiniMapTerrainDiagnostics
                 "MiniMap: hooks are unavailable "
                 "during terrain initialization");
 
+            return false;
+        }
+
+        if (!MiniMapTerrainSource::Initialize(
+            self))
+        {
             return false;
         }
 
@@ -1290,7 +1047,7 @@ namespace MiniMapTerrainDiagnostics
             g_terrainTexture = nullptr;
         }
 
-        g_terrainData = nullptr;
+        MiniMapTerrainSource::Shutdown();
     }
 
 
