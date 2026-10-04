@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MiniMapUI.h"
+#include "Input/MouseWheel.h"
 #include "Map/Terrain.h"
 
 #include "plugin.h"
@@ -79,6 +80,8 @@ namespace
     void Render(
         IModLoaderImGui* ui)
     {
+        MiniMapMouseWheel::SignalUiReady();
+
         if (ui == nullptr ||
             !g_visible)
         {
@@ -125,6 +128,7 @@ namespace
                 availableWidth,
                 availableHeight);
         }
+
 
         PluginDrawList drawList =
             ui->GetWindowDrawList();
@@ -218,6 +222,7 @@ namespace
             EModKeyEvent::Pressed,
             &OnToggleKeyPressed);
 
+
         g_keybindRegistered = true;
 
         LOG_INFO(
@@ -242,6 +247,7 @@ namespace
                 kToggleKey,
                 EModKeyEvent::Pressed,
                 &OnToggleKeyPressed);
+
         }
 
         g_keybindRegistered = false;
@@ -311,6 +317,22 @@ namespace MiniMapUI
             return false;
         }
 
+        if (!MiniMapMouseWheel::Initialize(
+            self))
+        {
+            LOG_ERROR(
+                "MiniMap: window subclass diagnostic initialization failed");
+
+            UnregisterToggleKeybind();
+
+            self->hooks->UI->UnregisterWidget(
+                g_widget);
+
+            g_widget = nullptr;
+
+            return false;
+        }
+
         LOG_INFO(
             "MiniMap: UI initialized");
 
@@ -319,6 +341,8 @@ namespace MiniMapUI
 
     void Shutdown()
     {
+        MiniMapMouseWheel::Shutdown();
+
         UnregisterToggleKeybind();
 
         if (g_self != nullptr &&
@@ -356,6 +380,9 @@ namespace MiniMapUI
 
         g_visible = true;
 
+        MiniMapMouseWheel::SetZoomEnabled(
+            true);
+
         g_self->hooks->UI->SetWidgetVisible(
             g_widget,
             true);
@@ -372,6 +399,9 @@ namespace MiniMapUI
         }
 
         g_visible = false;
+
+        MiniMapMouseWheel::SetZoomEnabled(
+            false);
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&
@@ -393,4 +423,4 @@ namespace MiniMapUI
     }
 }
 
-#endif // MODLOADER_CLIENT_BUILD
+#endif

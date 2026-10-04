@@ -96,6 +96,7 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="Map\Map.h" />
+    <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain.h" />
@@ -118,6 +119,7 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
+    <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
     <ClCompile Include="Map\Terrain.cpp" />

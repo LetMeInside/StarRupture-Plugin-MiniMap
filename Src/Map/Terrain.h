@@ -14,6 +14,8 @@ namespace MiniMapTerrain
 
     void CancelPendingDiagnostic();
 
+    void AdjustZoom(float wheelDelta);
+
     void Render(
         IModLoaderImGui* ui,
         float windowX,

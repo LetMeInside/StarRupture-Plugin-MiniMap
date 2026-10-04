@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Terrain.h"
+#include "Input/MouseWheel.h"
 
 #include "Map.h"
 #include "TerrainCache.h"
@@ -17,6 +18,7 @@
 #include "SDK/Engine_classes.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -62,6 +64,15 @@ namespace
     constexpr double kDefaultMetersPerPixel =
         100.0 / 300.0;
 
+    constexpr double kMinimumMetersPerPixel =
+        0.125;
+
+    constexpr double kMaximumMetersPerPixel =
+        2.0 / 3.0;
+
+    constexpr double kZoomStep =
+        1.25;
+
     constexpr float kDefaultViewportPixelWidth =
         300.0f;
 
@@ -69,13 +80,26 @@ namespace
         300.0f;
 
     std::mutex g_renderMutex;
+
+    // Chunks currently referenced by the MiniMap render path.
     std::vector<LoadedChunk> g_loadedChunks;
+
+    // Chunks whose PluginTextureHandle ownership is retained even when they
+    // leave the current viewport. Runtime reconciliation must not FreeTexture
+    // these handles; revisiting a chunk reuses the existing handle.
+    std::vector<LoadedChunk> g_residentChunks;
 
     float g_viewportPixelWidth =
         kDefaultViewportPixelWidth;
 
     float g_viewportPixelHeight =
         kDefaultViewportPixelHeight;
+
+    double g_metersPerPixel =
+        kDefaultMetersPerPixel;
+
+    std::atomic<bool> g_reconcileRequested =
+        false;
 
     bool g_hasViewportAnchor = false;
 
@@ -170,13 +194,14 @@ namespace
             g_renderMutex);
 
         for (const LoadedChunk& chunk :
-            g_loadedChunks)
+            g_residentChunks)
         {
             FreeTexture(
                 chunk.Texture);
         }
 
         g_loadedChunks.clear();
+        g_residentChunks.clear();
     }
 
 
@@ -197,29 +222,6 @@ namespace
         }
 
         return nullptr;
-    }
-
-
-    bool ContainsTexture(
-        const std::vector<LoadedChunk>& chunks,
-        PluginTextureHandle texture)
-    {
-        if (texture == nullptr)
-        {
-            return false;
-        }
-
-        for (const LoadedChunk& chunk :
-            chunks)
-        {
-            if (chunk.Texture ==
-                texture)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 
@@ -529,7 +531,7 @@ namespace
             static_cast<double>(
                 MiniMapTerrainChunks::kChunksPerAxis);
 
-        std::vector<LoadedChunk> existingChunks;
+        std::vector<LoadedChunk> residentChunks;
 
         float viewportPixelWidth =
             kDefaultViewportPixelWidth;
@@ -537,29 +539,35 @@ namespace
         float viewportPixelHeight =
             kDefaultViewportPixelHeight;
 
+        double metersPerPixel =
+            kDefaultMetersPerPixel;
+
         {
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
 
-            existingChunks =
-                g_loadedChunks;
+            residentChunks =
+                g_residentChunks;
 
             viewportPixelWidth =
                 g_viewportPixelWidth;
 
             viewportPixelHeight =
                 g_viewportPixelHeight;
+
+            metersPerPixel =
+                g_metersPerPixel;
         }
 
         const double viewportWidthMeters =
             static_cast<double>(
                 viewportPixelWidth) *
-            kDefaultMetersPerPixel;
+            metersPerPixel;
 
         const double viewportHeightMeters =
             static_cast<double>(
                 viewportPixelHeight) *
-            kDefaultMetersPerPixel;
+            metersPerPixel;
 
         const double viewportWidthInChunks =
             viewportWidthMeters /
@@ -735,7 +743,7 @@ namespace
 
                 PluginTextureHandle texture =
                     FindExistingTexture(
-                        existingChunks,
+                        residentChunks,
                         identity);
 
                 if (texture == nullptr)
@@ -749,6 +757,26 @@ namespace
                             chunkX,
                             chunkY,
                             loadedFromCache);
+
+                    if (texture != nullptr)
+                    {
+                        LoadedChunk residentChunk = {};
+
+                        residentChunk.Identity =
+                            identity;
+
+                        residentChunk.Texture =
+                            texture;
+
+                        residentChunk.GlobalChunkX =
+                            globalChunkX;
+
+                        residentChunk.GlobalChunkY =
+                            globalChunkY;
+
+                        residentChunks.push_back(
+                            residentChunk);
+                    }
                 }
 
                 if (texture == nullptr)
@@ -779,21 +807,16 @@ namespace
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
 
-            for (const LoadedChunk& oldChunk :
-                g_loadedChunks)
-            {
-                if (!ContainsTexture(
-                    nextChunks,
-                    oldChunk.Texture))
-                {
-                    FreeTexture(
-                        oldChunk.Texture);
-                }
-            }
-
+            // Runtime reconciliation only changes the active/rendered set.
+            // Resident texture handles remain owned so a chunk that leaves
+            // and later re-enters the viewport can be reused safely.
             g_loadedChunks =
                 std::move(
                     nextChunks);
+
+            g_residentChunks =
+                std::move(
+                    residentChunks);
 
             g_viewportAnchorWorldPosition =
                 playerLocation;
@@ -859,13 +882,28 @@ namespace
             return;
         }
 
+        const float zoomDelta =
+            MiniMapMouseWheel::DrainZoomDelta();
+
+        if (zoomDelta != 0.0f)
+        {
+            MiniMapTerrain::AdjustZoom(
+                zoomDelta);
+        }
+
         UpdateFastViewportCenter(
             playerLocation);
 
         g_updateAccumulator +=
             deltaSeconds;
 
-        if (g_updateAccumulator <
+        const bool reconcileRequested =
+            g_reconcileRequested.exchange(
+                false,
+                std::memory_order_acq_rel);
+
+        if (!reconcileRequested &&
+            g_updateAccumulator <
             kUpdateIntervalSeconds)
         {
             return;
@@ -901,6 +939,9 @@ namespace MiniMapTerrain
             g_viewportPixelHeight =
                 kDefaultViewportPixelHeight;
 
+            g_metersPerPixel =
+                kDefaultMetersPerPixel;
+
             g_hasViewportAnchor =
                 false;
 
@@ -918,6 +959,10 @@ namespace MiniMapTerrain
             g_playerGlobalChunkY =
                 0.0;
         }
+
+        g_reconcileRequested.store(
+            false,
+            std::memory_order_release);
 
         ReleaseLoadedChunks();
 
@@ -960,6 +1005,8 @@ namespace MiniMapTerrain
 
     void Shutdown()
     {
+        MiniMapMouseWheel::ClearPendingZoom();
+
         if (g_tickRegistered &&
             g_terrainSelf != nullptr &&
             g_terrainSelf->hooks != nullptr &&
@@ -988,6 +1035,10 @@ namespace MiniMapTerrain
         g_updateAccumulator =
             0.0f;
 
+        g_reconcileRequested.store(
+            false,
+            std::memory_order_release);
+
         {
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
@@ -997,6 +1048,9 @@ namespace MiniMapTerrain
 
             g_viewportPixelHeight =
                 kDefaultViewportPixelHeight;
+
+            g_metersPerPixel =
+                kDefaultMetersPerPixel;
 
             g_hasViewportAnchor =
                 false;
@@ -1038,6 +1092,49 @@ namespace MiniMapTerrain
     }
 
 
+    void AdjustZoom(
+        float wheelDelta)
+    {
+        if (wheelDelta == 0.0f)
+        {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            const double zoomMultiplier =
+                std::pow(
+                    kZoomStep,
+                    static_cast<double>(
+                        wheelDelta));
+
+            const double newMetersPerPixel =
+                std::clamp(
+                    g_metersPerPixel /
+                    zoomMultiplier,
+                    kMinimumMetersPerPixel,
+                    kMaximumMetersPerPixel);
+
+            if (std::abs(
+                newMetersPerPixel -
+                g_metersPerPixel) <
+                1.0e-9)
+            {
+                return;
+            }
+
+            g_metersPerPixel =
+                newMetersPerPixel;
+        }
+
+        g_reconcileRequested.store(
+            true,
+            std::memory_order_release);
+    }
+
+
     void Render(
         IModLoaderImGui* ui,
         float windowX,
@@ -1070,12 +1167,12 @@ namespace MiniMapTerrain
         const double viewportWidthMeters =
             static_cast<double>(
                 windowWidth) *
-            kDefaultMetersPerPixel;
+            g_metersPerPixel;
 
         const double viewportHeightMeters =
             static_cast<double>(
                 windowHeight) *
-            kDefaultMetersPerPixel;
+            g_metersPerPixel;
 
         const double viewportWidthInChunks =
             viewportWidthMeters /
