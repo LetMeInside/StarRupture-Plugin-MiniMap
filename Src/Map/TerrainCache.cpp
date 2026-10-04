@@ -8,6 +8,8 @@
 #include <windows.h>
 
 #include <array>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -21,6 +23,13 @@ namespace
     };
 
     constexpr uint32_t kCacheVersion = 1;
+
+    constexpr std::array<char, 8> kCacheInfoMagic =
+    {
+        'M', 'M', 'C', 'I', 'N', 'F', 'O', '1'
+    };
+
+    constexpr uint32_t kCacheInfoFormatVersion = 1;
 
     constexpr uint32_t kBC1PixelFormat = 5;
 
@@ -57,16 +66,38 @@ namespace
         uint8_t SRGB;
         uint8_t Reserved[7];
     };
+
+
+    struct CacheInfo
+    {
+        char Magic[8];
+        uint32_t FormatVersion;
+        uint32_t TileCacheVersion;
+
+        uint32_t ExecutableTimeDateStamp;
+        uint32_t ExecutableSizeOfImage;
+
+        uint8_t HasCodeViewIdentity;
+        uint8_t Reserved[3];
+
+        uint8_t CodeViewGuid[16];
+        uint32_t CodeViewAge;
+    };
 #pragma pack(pop)
 
     static_assert(
         sizeof(CacheHeader) == 60);
 
+    static_assert(
+        sizeof(CacheInfo) == 48);
+
     int g_moduleAnchor = 0;
 
+    bool g_cacheReady = false;
+    bool g_cacheInitializationAttempted = false;
 
-    bool GetCacheDirectory(
-        int radiationLevel,
+
+    bool GetPluginDirectory(
         std::filesystem::path& outDirectory)
     {
         HMODULE module = nullptr;
@@ -109,17 +140,482 @@ namespace
             static_cast<size_t>(
                 length));
 
+        outDirectory =
+            std::filesystem::path(
+                modulePath).parent_path();
+
+        return true;
+    }
+
+
+    bool GetTerrainCacheRoot(
+        std::filesystem::path& outDirectory)
+    {
+        std::filesystem::path pluginDirectory;
+
+        if (!GetPluginDirectory(
+            pluginDirectory))
+        {
+            return false;
+        }
+
+        outDirectory =
+            pluginDirectory /
+            L"MiniMap" /
+            L"Cache" /
+            L"Terrain";
+
+        return true;
+    }
+
+
+    bool QueryCurrentCacheInfo(
+        CacheInfo& outInfo)
+    {
+        outInfo = {};
+
+        for (size_t i = 0;
+            i < kCacheInfoMagic.size();
+            ++i)
+        {
+            outInfo.Magic[i] =
+                kCacheInfoMagic[i];
+        }
+
+        outInfo.FormatVersion =
+            kCacheInfoFormatVersion;
+
+        outInfo.TileCacheVersion =
+            kCacheVersion;
+
+        HMODULE module =
+            GetModuleHandleW(
+                nullptr);
+
+        if (module == nullptr)
+        {
+            LOG_ERROR(
+                "MiniMap: TerrainCache: "
+                "game executable module is unavailable");
+
+            return false;
+        }
+
+        const auto* dosHeader =
+            reinterpret_cast<const IMAGE_DOS_HEADER*>(
+                module);
+
+        if (dosHeader->e_magic !=
+            IMAGE_DOS_SIGNATURE)
+        {
+            LOG_ERROR(
+                "MiniMap: TerrainCache: "
+                "invalid DOS header in game executable");
+
+            return false;
+        }
+
+        const auto* ntHeaders =
+            reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+                reinterpret_cast<const uint8_t*>(
+                    module) +
+                dosHeader->e_lfanew);
+
+        if (ntHeaders->Signature !=
+            IMAGE_NT_SIGNATURE)
+        {
+            LOG_ERROR(
+                "MiniMap: TerrainCache: "
+                "invalid NT header in game executable");
+
+            return false;
+        }
+
+        outInfo.ExecutableTimeDateStamp =
+            ntHeaders->FileHeader.TimeDateStamp;
+
+        outInfo.ExecutableSizeOfImage =
+            ntHeaders->
+            OptionalHeader.
+            SizeOfImage;
+
+        const IMAGE_DATA_DIRECTORY& debugDirectory =
+            ntHeaders->
+            OptionalHeader.
+            DataDirectory[
+                IMAGE_DIRECTORY_ENTRY_DEBUG];
+
+        if (debugDirectory.VirtualAddress == 0 ||
+            debugDirectory.Size <
+            sizeof(IMAGE_DEBUG_DIRECTORY))
+        {
+            return true;
+        }
+
+        const auto* debugEntries =
+            reinterpret_cast<const IMAGE_DEBUG_DIRECTORY*>(
+                reinterpret_cast<const uint8_t*>(
+                    module) +
+                debugDirectory.VirtualAddress);
+
+        const size_t debugCount =
+            debugDirectory.Size /
+            sizeof(IMAGE_DEBUG_DIRECTORY);
+
+        constexpr uint32_t kRsdsSignature =
+            0x53445352;
+
+        for (size_t i = 0;
+            i < debugCount;
+            ++i)
+        {
+            if (debugEntries[i].Type !=
+                IMAGE_DEBUG_TYPE_CODEVIEW ||
+                debugEntries[i].AddressOfRawData == 0 ||
+                debugEntries[i].SizeOfData < 24)
+            {
+                continue;
+            }
+
+            const uint8_t* codeView =
+                reinterpret_cast<const uint8_t*>(
+                    module) +
+                debugEntries[i].AddressOfRawData;
+
+            uint32_t signature = 0;
+
+            std::memcpy(
+                &signature,
+                codeView,
+                sizeof(signature));
+
+            if (signature !=
+                kRsdsSignature)
+            {
+                continue;
+            }
+
+            std::memcpy(
+                outInfo.CodeViewGuid,
+                codeView + 4,
+                sizeof(outInfo.CodeViewGuid));
+
+            std::memcpy(
+                &outInfo.CodeViewAge,
+                codeView + 20,
+                sizeof(outInfo.CodeViewAge));
+
+            outInfo.HasCodeViewIdentity =
+                1;
+
+            break;
+        }
+
+        return true;
+    }
+
+
+    bool CacheInfoMatches(
+        const CacheInfo& stored,
+        const CacheInfo& current)
+    {
+        if (std::memcmp(
+            stored.Magic,
+            current.Magic,
+            sizeof(stored.Magic)) != 0)
+        {
+            return false;
+        }
+
+        if (stored.FormatVersion !=
+            current.FormatVersion ||
+            stored.TileCacheVersion !=
+            current.TileCacheVersion ||
+            stored.ExecutableTimeDateStamp !=
+            current.ExecutableTimeDateStamp ||
+            stored.ExecutableSizeOfImage !=
+            current.ExecutableSizeOfImage ||
+            stored.HasCodeViewIdentity !=
+            current.HasCodeViewIdentity)
+        {
+            return false;
+        }
+
+        if (stored.HasCodeViewIdentity != 0)
+        {
+            if (stored.CodeViewAge !=
+                current.CodeViewAge ||
+                std::memcmp(
+                    stored.CodeViewGuid,
+                    current.CodeViewGuid,
+                    sizeof(stored.CodeViewGuid)) != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+
+    bool ReadCacheInfo(
+        const std::filesystem::path& path,
+        CacheInfo& outInfo)
+    {
+        outInfo = {};
+
+        std::error_code error;
+
+        if (!std::filesystem::exists(
+            path,
+            error) ||
+            error)
+        {
+            return false;
+        }
+
+        const uint64_t fileSize =
+            std::filesystem::file_size(
+                path,
+                error);
+
+        if (error ||
+            fileSize != sizeof(CacheInfo))
+        {
+            return false;
+        }
+
+        std::ifstream stream(
+            path,
+            std::ios::binary);
+
+        if (!stream)
+        {
+            return false;
+        }
+
+        stream.read(
+            reinterpret_cast<char*>(
+                &outInfo),
+            sizeof(outInfo));
+
+        return
+            static_cast<bool>(
+                stream);
+    }
+
+
+    bool WriteCacheInfo(
+        const std::filesystem::path& path,
+        const CacheInfo& info)
+    {
+        const std::filesystem::path temporaryPath =
+            path.wstring() +
+            L".tmp";
+
+        {
+            std::ofstream stream(
+                temporaryPath,
+                std::ios::binary |
+                std::ios::trunc);
+
+            if (!stream)
+            {
+                return false;
+            }
+
+            stream.write(
+                reinterpret_cast<const char*>(
+                    &info),
+                sizeof(info));
+
+            stream.close();
+
+            if (!stream)
+            {
+                std::error_code removeError;
+
+                std::filesystem::remove(
+                    temporaryPath,
+                    removeError);
+
+                return false;
+            }
+        }
+
+        if (!MoveFileExW(
+            temporaryPath.c_str(),
+            path.c_str(),
+            MOVEFILE_REPLACE_EXISTING |
+            MOVEFILE_WRITE_THROUGH))
+        {
+            std::error_code removeError;
+
+            std::filesystem::remove(
+                temporaryPath,
+                removeError);
+
+            return false;
+        }
+
+        return true;
+    }
+
+
+    bool EnsureCacheReady()
+    {
+        if (g_cacheInitializationAttempted)
+        {
+            return g_cacheReady;
+        }
+
+        g_cacheInitializationAttempted =
+            true;
+
+        std::filesystem::path root;
+
+        if (!GetTerrainCacheRoot(
+            root))
+        {
+            return false;
+        }
+
+        CacheInfo currentInfo = {};
+
+        if (!QueryCurrentCacheInfo(
+            currentInfo))
+        {
+            LOG_WARN(
+                "MiniMap: TerrainCache: "
+                "game build identity unavailable; "
+                "persistent cache disabled for this run");
+
+            return false;
+        }
+
+        const std::filesystem::path infoPath =
+            root /
+            L"CacheInfo";
+
+        CacheInfo storedInfo = {};
+
+        const bool hasStoredInfo =
+            ReadCacheInfo(
+                infoPath,
+                storedInfo);
+
+        const bool identityMatches =
+            hasStoredInfo &&
+            CacheInfoMatches(
+                storedInfo,
+                currentInfo);
+
+        if (!identityMatches)
+        {
+            if (hasStoredInfo)
+            {
+                LOG_INFO(
+                    "MiniMap: TerrainCache: "
+                    "cache format or StarRupture build changed; "
+                    "clearing terrain cache");
+            }
+            else
+            {
+                LOG_INFO(
+                    "MiniMap: TerrainCache: "
+                    "cache identity missing or invalid; "
+                    "initializing terrain cache");
+            }
+
+            std::error_code error;
+
+            std::filesystem::remove_all(
+                root,
+                error);
+
+            if (error)
+            {
+                LOG_ERROR(
+                    "MiniMap: TerrainCache: "
+                    "failed to clear terrain cache");
+
+                return false;
+            }
+        }
+
+        std::error_code error;
+
+        std::filesystem::create_directories(
+            root,
+            error);
+
+        if (error)
+        {
+            LOG_ERROR(
+                "MiniMap: TerrainCache: "
+                "failed to create terrain cache root");
+
+            return false;
+        }
+
+        if (!identityMatches)
+        {
+            if (!WriteCacheInfo(
+                infoPath,
+                currentInfo))
+            {
+                LOG_ERROR(
+                    "MiniMap: TerrainCache: "
+                    "failed to write cache identity");
+
+                return false;
+            }
+        }
+
+        if (identityMatches)
+        {
+            LOG_INFO(
+                "MiniMap: TerrainCache: "
+                "cache identity matches current StarRupture build");
+        }
+        else
+        {
+            LOG_INFO(
+                "MiniMap: TerrainCache: "
+                "cache identity initialized for current StarRupture build");
+        }
+
+        g_cacheReady =
+            true;
+
+        return true;
+    }
+
+
+    bool GetCacheDirectory(
+        int radiationLevel,
+        std::filesystem::path& outDirectory)
+    {
+        if (!EnsureCacheReady())
+        {
+            return false;
+        }
+
+        std::filesystem::path root;
+
+        if (!GetTerrainCacheRoot(
+            root))
+        {
+            return false;
+        }
+
         const std::wstring radiationDirectory =
             L"R" +
             std::to_wstring(
                 radiationLevel);
 
         outDirectory =
-            std::filesystem::path(
-                modulePath).parent_path() /
-            L"MiniMap" /
-            L"Cache" /
-            L"Terrain" /
+            root /
             radiationDirectory;
 
         std::error_code error;
@@ -354,7 +850,8 @@ namespace MiniMapTerrainCache
         {
             LOG_WARN(
                 "MiniMap: TerrainCache: "
-                "invalid cache file size for grid=(%d, %d)",
+                "invalid cache file size for R%d grid=(%d, %d)",
+                radiationLevel,
                 gridX,
                 gridY);
 
@@ -369,7 +866,8 @@ namespace MiniMapTerrainCache
         {
             LOG_WARN(
                 "MiniMap: TerrainCache: "
-                "failed to open cache file for grid=(%d, %d)",
+                "failed to open cache file for R%d grid=(%d, %d)",
+                radiationLevel,
                 gridX,
                 gridY);
 
@@ -396,7 +894,8 @@ namespace MiniMapTerrainCache
         {
             LOG_WARN(
                 "MiniMap: TerrainCache: "
-                "cache header mismatch for grid=(%d, %d)",
+                "cache header mismatch for R%d grid=(%d, %d)",
+                radiationLevel,
                 gridX,
                 gridY);
 
@@ -437,9 +936,10 @@ namespace MiniMapTerrainCache
             LOG_WARN(
                 "MiniMap: TerrainCache: "
                 "failed to read chunk=(%d, %d) "
-                "for grid=(%d, %d)",
+                "for R%d grid=(%d, %d)",
                 chunkX,
                 chunkY,
+                radiationLevel,
                 gridX,
                 gridY);
 
@@ -620,20 +1120,11 @@ namespace MiniMapTerrainCache
             return false;
         }
 
-        std::error_code error;
-
-        std::filesystem::remove(
-            filePath,
-            error);
-
-        error.clear();
-
-        std::filesystem::rename(
-            temporaryPath,
-            filePath,
-            error);
-
-        if (error)
+        if (!MoveFileExW(
+            temporaryPath.c_str(),
+            filePath.c_str(),
+            MOVEFILE_REPLACE_EXISTING |
+            MOVEFILE_WRITE_THROUGH))
         {
             std::error_code removeError;
 
