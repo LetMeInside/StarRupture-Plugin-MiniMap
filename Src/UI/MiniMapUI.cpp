@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 #include "MiniMapUI.h"
 #include "Map/Terrain.h"
 
@@ -430,3 +432,5 @@ namespace MiniMapUI
         return g_visible;
     }
 }
+
+#endif // MODLOADER_CLIENT_BUILD

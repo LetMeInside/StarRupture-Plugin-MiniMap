@@ -100,6 +100,7 @@
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain.h" />
     <ClInclude Include="Native\TextureAccess.h" />
+    <ClInclude Include="Map\TerrainChunks.h" />
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
     <ClInclude Include="plugin_helpers.h" />
@@ -118,6 +119,7 @@
     <ClCompile Include="Native\Fingerprints.cpp" />
     <ClCompile Include="Map\Terrain.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
+    <ClCompile Include="Map\TerrainChunks.cpp" />
     <ClCompile Include="UI\MiniMapUI.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>
