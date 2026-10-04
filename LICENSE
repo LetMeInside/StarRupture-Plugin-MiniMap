@@ -1,0 +1,124 @@
+MiniMap Source Available License
+Version 1.0
+
+Copyright (c) 2026 Kian369 (LetMeInside on GitHub)
+All rights reserved.
+
+1. Definitions
+
+"Software" means the MiniMap source code, associated source files,
+documentation, scripts, configuration files, and other materials
+distributed with this license.
+
+"Copyright Holder" means Kian369, also known as LetMeInside on GitHub.
+
+2. Permission to View and Study
+
+Permission is granted to access, download, and make private copies of
+the source code solely as reasonably necessary to view and study it for
+personal and educational purposes.
+
+Such copies may not be published, redistributed, shared, incorporated
+into another project, or used as the basis for a derivative work.
+
+Except for the limited permission above, this license does not grant
+any right to copy, reuse, modify, redistribute, publish, sublicense, or
+incorporate the Software or any substantial portion of it into another
+project.
+
+3. Use of Compiled Releases
+
+Official compiled releases of MiniMap made available by the Copyright
+Holder may be installed and used for their intended purpose with
+StarRupture.
+
+This permission applies only to use of the compiled release and does
+not grant permission to extract, reuse, redistribute, modify, or
+incorporate its source code into another project.
+
+4. Restrictions
+
+Without prior written permission from the Copyright Holder, you may not:
+
+a. copy or redistribute the Software or any substantial portion of it,
+   except for the limited private-copy permission granted in Section 2;
+
+b. modify the Software or distribute modified versions of it;
+
+c. use the Software or any substantial portion of it in another mod,
+   plugin, library, application, tool, or other software project;
+
+d. create or distribute derivative works based upon the Software;
+
+e. port, adapt, translate, or reimplement substantial portions of the
+   Software where that work is copied from or derived from the protected
+   expression contained in the Software, for another project, game,
+   mod loader, or platform;
+
+f. sell, sublicense, commercially exploit, or otherwise use the
+   Software for commercial purposes;
+
+g. remove or alter copyright, attribution, or license notices contained
+   in the Software.
+
+5. Permission for Reuse
+
+Permission to reuse, modify, redistribute, or incorporate portions of
+the Software may be granted separately by the Copyright Holder.
+
+Such permission must be obtained in writing before the relevant use or
+distribution takes place.
+
+6. Independent Work
+
+This license does not restrict independently developed software that
+does not copy or derive from the protected expression contained in the
+Software.
+
+Ideas, concepts, algorithms, interfaces, techniques, and functionality
+that are not protected by applicable copyright law are not made
+exclusive by this license.
+
+7. Third-Party Components
+
+This license applies only to material for which the Copyright Holder
+owns the applicable rights.
+
+Third-party libraries, SDK files, headers, game assets, APIs, or other
+third-party materials remain subject to their respective licenses,
+terms, and ownership.
+
+StarRupture and related names, assets, and intellectual property belong
+to their respective owners.
+
+8. No Transfer of Ownership
+
+No ownership, copyright, trademark, or other intellectual-property
+rights are transferred under this license.
+
+All rights not expressly granted are reserved by the Copyright Holder.
+
+9. Termination
+
+Any permission granted under this license terminates automatically if
+you violate its terms.
+
+Upon termination, you must cease any use, copying, modification, or
+distribution that was permitted under this license.
+
+10. Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NONINFRINGEMENT.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR ITS USE.
+
+11. Contact
+
+For permission to reuse, modify, redistribute, or incorporate source
+code from MiniMap, contact the Copyright Holder through the project's
+official repository or other published contact channel.
