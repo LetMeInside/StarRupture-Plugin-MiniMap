@@ -29,6 +29,7 @@ namespace MiniMapNative
             addresses.waitForPendingInitOrStreaming == 0 ||
             addresses.getFirstPlayerController == 0 ||
             addresses.getPlayerPawn == 0 ||
+            addresses.isPlayerInForgottenEngine == 0 ||
             addresses.getComponentLocation == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
@@ -50,6 +51,10 @@ namespace MiniMapNative
         g_nativeApi.player.getPlayerPawn =
             reinterpret_cast<PlayerApi::GetPlayerPawnFn>(
                 addresses.getPlayerPawn);
+
+        g_nativeApi.player.isPlayerInForgottenEngine =
+            reinterpret_cast<PlayerApi::IsPlayerInForgottenEngineFn>(
+                addresses.isPlayerInForgottenEngine);
 
         g_nativeApi.player.getComponentLocation =
             reinterpret_cast<PlayerApi::GetComponentLocationFn>(

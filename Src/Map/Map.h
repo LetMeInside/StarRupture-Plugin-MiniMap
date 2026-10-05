@@ -17,6 +17,9 @@ namespace MiniMapMap
     bool TryGetPlayerWorldPosition(
         SDK::FVector& outPosition);
 
+    bool TryIsPlayerInForgottenEngine(
+        bool& outIsInForgottenEngine);
+
     void Shutdown();
 }
 

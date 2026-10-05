@@ -13,7 +13,9 @@ namespace
 {
     WidgetHandle g_widget = nullptr;
 
-    bool g_visible = false;
+    bool g_userVisible = false;
+    bool g_gameplaySuppressed = false;
+    bool g_actualVisible = false;
     bool g_keybindRegistered = false;
 
     PluginWindowHints g_hints = {};
@@ -83,7 +85,7 @@ namespace
         MiniMapMouseWheel::SignalUiReady();
 
         if (ui == nullptr ||
-            !g_visible)
+            !g_actualVisible)
         {
             return;
         }
@@ -182,6 +184,41 @@ namespace
          */
     }
 
+    void ApplyVisibility()
+    {
+        const bool shouldBeVisible =
+            g_userVisible &&
+            !g_gameplaySuppressed;
+
+        if (g_actualVisible ==
+            shouldBeVisible)
+        {
+            return;
+        }
+
+        g_actualVisible =
+            shouldBeVisible;
+
+        MiniMapMouseWheel::SetZoomEnabled(
+            g_actualVisible);
+
+        if (g_self != nullptr &&
+            g_self->hooks != nullptr &&
+            g_self->hooks->UI != nullptr &&
+            g_widget != nullptr)
+        {
+            g_self->hooks->UI->SetWidgetVisible(
+                g_widget,
+                g_actualVisible);
+        }
+
+        LOG_INFO(
+            g_actualVisible
+            ? "MiniMap: widget shown"
+            : "MiniMap: widget hidden");
+    }
+
+
     void OnToggleKeyPressed(
         EModKey key,
         EModKeyEvent event)
@@ -189,7 +226,7 @@ namespace
         (void)key;
         (void)event;
 
-        if (g_visible)
+        if (g_userVisible)
         {
             MiniMapUI::Hide();
         }
@@ -275,7 +312,9 @@ namespace MiniMapUI
             return true;
         }
 
-        g_visible = false;
+        g_userVisible = false;
+        g_gameplaySuppressed = false;
+        g_actualVisible = false;
 
         UpdateHints();
 
@@ -359,7 +398,9 @@ namespace MiniMapUI
         }
 
         g_widget = nullptr;
-        g_visible = false;
+        g_userVisible = false;
+        g_gameplaySuppressed = false;
+        g_actualVisible = false;
         g_hints = {};
     }
 
@@ -373,53 +414,48 @@ namespace MiniMapUI
             return;
         }
 
-        if (g_visible)
+        if (g_userVisible)
         {
             return;
         }
 
-        g_visible = true;
+        g_userVisible =
+            true;
 
-        MiniMapMouseWheel::SetZoomEnabled(
-            true);
-
-        g_self->hooks->UI->SetWidgetVisible(
-            g_widget,
-            true);
-
-        LOG_INFO(
-            "MiniMap: widget shown");
+        ApplyVisibility();
     }
 
     void Hide()
     {
-        if (!g_visible)
+        if (!g_userVisible)
         {
             return;
         }
 
-        g_visible = false;
+        g_userVisible =
+            false;
 
-        MiniMapMouseWheel::SetZoomEnabled(
-            false);
+        ApplyVisibility();
+    }
 
-        if (g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->UI != nullptr &&
-            g_widget != nullptr)
+    void SetGameplaySuppressed(
+        bool suppressed)
+    {
+        if (g_gameplaySuppressed ==
+            suppressed)
         {
-            g_self->hooks->UI->SetWidgetVisible(
-                g_widget,
-                false);
+            return;
         }
 
-        LOG_INFO(
-            "MiniMap: widget hidden");
+        g_gameplaySuppressed =
+            suppressed;
+
+        ApplyVisibility();
     }
 
     bool IsVisible()
     {
-        return g_visible;
+        return g_actualVisible;
     }
 }
 

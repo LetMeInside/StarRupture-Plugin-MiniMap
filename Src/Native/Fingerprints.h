@@ -22,6 +22,7 @@ namespace MiniMapFingerprints
         uintptr_t waitForPendingInitOrStreaming = 0;
         uintptr_t getFirstPlayerController = 0;
         uintptr_t getPlayerPawn = 0;
+        uintptr_t isPlayerInForgottenEngine = 0;
         uintptr_t getComponentLocation = 0;
 
         uintptr_t getPlatformData = 0;

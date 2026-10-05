@@ -120,6 +120,62 @@ namespace MiniMapMap
     }
 
 
+    bool TryIsPlayerInForgottenEngine(
+        bool& outIsInForgottenEngine)
+    {
+        outIsInForgottenEngine =
+            false;
+
+        if (g_world == nullptr)
+        {
+            return false;
+        }
+
+        const MiniMapNative::NativeApi* native =
+            MiniMapNative::Get();
+
+        if (native == nullptr)
+        {
+            return false;
+        }
+
+        const auto& playerApi =
+            native->player;
+
+        if (playerApi.getFirstPlayerController == nullptr ||
+            playerApi.getPlayerPawn == nullptr ||
+            playerApi.isPlayerInForgottenEngine == nullptr)
+        {
+            return false;
+        }
+
+        SDK::APlayerController* playerController =
+            playerApi.getFirstPlayerController(
+                g_world);
+
+        if (playerController == nullptr)
+        {
+            return false;
+        }
+
+        SDK::ACrCharacterPlayerBase* playerPawn =
+            playerApi.getPlayerPawn(
+                static_cast<const SDK::AController*>(
+                    playerController));
+
+        if (playerPawn == nullptr)
+        {
+            return false;
+        }
+
+        outIsInForgottenEngine =
+            playerApi.isPlayerInForgottenEngine(
+                playerPawn);
+
+        return true;
+    }
+
+
     void Shutdown()
     {
         g_world = nullptr;

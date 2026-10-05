@@ -2,6 +2,7 @@
 
 #include "Terrain.h"
 #include "Input/MouseWheel.h"
+#include "UI/MiniMapUI.h"
 
 #include "Map.h"
 #include "TerrainCache.h"
@@ -956,6 +957,22 @@ namespace
         if (!MiniMapMap::HasWorld())
         {
             return;
+        }
+
+        bool isInForgottenEngine =
+            false;
+
+        if (MiniMapMap::TryIsPlayerInForgottenEngine(
+            isInForgottenEngine))
+        {
+            MiniMapUI::SetGameplaySuppressed(
+                isInForgottenEngine);
+
+            if (isInForgottenEngine)
+            {
+                MiniMapMouseWheel::ClearPendingZoom();
+                return;
+            }
         }
 
         SDK::FVector playerLocation = {};

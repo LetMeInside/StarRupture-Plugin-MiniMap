@@ -12,5 +12,8 @@ namespace MiniMapUI
 
     void Hide();
 
+    void SetGameplaySuppressed(
+        bool suppressed);
+
     bool IsVisible();
 }

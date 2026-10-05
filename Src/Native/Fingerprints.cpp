@@ -9,7 +9,7 @@
 // Resolved native addresses remain valid after this callback; the scanner
 // itself must not be retained.
 //
-// Twelve native functions are currently resolved:
+// Thirteen native functions are currently resolved:
 //
 //   1.  FSoftObjectPtr::LoadSynchronous
 //   2.  UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D
@@ -23,6 +23,7 @@
 //   10. UWorld::GetFirstPlayerController
 //   11. AController::GetPawn<ACrCharacterPlayerBase>
 //   12. USceneComponent::K2_GetComponentLocation
+//   13. ACrCharacterPlayerBase::IsPlayerInForgottenEngine
 //
 // Each fingerprint is intentionally tied to native behavior MiniMap depends on.
 // If StarRupture changes an incompatible implementation or layout, resolution
@@ -904,6 +905,70 @@ namespace MiniMapFingerprints
         addresses.memoryFree =
             memoryFreeAddress;
 
+
+        // -------------------------------------------------------------------
+        // ACrCharacterPlayerBase::IsPlayerInForgottenEngine
+        //
+        // Verified against HF2.5-CL-126119.
+        //
+        // Native target:
+        //
+        //   bool ACrCharacterPlayerBase::IsPlayerInForgottenEngine() const
+        //   RVA 0x075712D0
+        //
+        // This fingerprint is anchored on:
+        //
+        //   UCrUW_MapMenuMapArea::CenterOnPlayerLocation
+        //
+        // The call-site path selects UCrMapMenuDevSettings::
+        // ForgottenEngineMarkerLocation when the predicate returns true and
+        // otherwise continues to the pawn RootComponent position path.
+        //
+        // The complete pattern is unique in the verified shipping EXE.
+        // AlienX follows the E8 at offset 3 and validates the destination as a
+        // native function start.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest forgottenEngineRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        forgottenEngineRequest.hookName =
+            "MiniMap::ACrCharacterPlayerBase::"
+            "IsPlayerInForgottenEngine";
+
+        forgottenEngineRequest.pattern =
+            "48 8B CB "
+            "E8 ?? ?? ?? ?? "
+            "84 C0 "
+            "74 ?? "
+            "F2 0F 10 47 5C "
+            "8B 47 64 "
+            "F2 0F 11 44 24 ?? "
+            "89 44 24 ?? "
+            "EB ?? "
+            "48 8B 83 B8 01 00 00";
+
+        forgottenEngineRequest.followRel32At =
+            3;
+
+        forgottenEngineRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+
+        forgottenEngineRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t forgottenEngineAddress =
+            scanner->Resolve(
+                self,
+                &forgottenEngineRequest);
+
+        if (forgottenEngineAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.isPlayerInForgottenEngine =
+            forgottenEngineAddress;
         return true;
     }
 }

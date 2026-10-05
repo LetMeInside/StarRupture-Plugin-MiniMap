@@ -46,6 +46,10 @@ namespace MiniMapNative
             SDK::ACrCharacterPlayerBase* (*)(
                 const SDK::AController*);
 
+        using IsPlayerInForgottenEngineFn =
+            bool(__fastcall*)(
+                const SDK::ACrCharacterPlayerBase* player);
+
         using GetComponentLocationFn =
             SDK::FVector* (*)(
                 const SDK::USceneComponent*,
@@ -53,6 +57,7 @@ namespace MiniMapNative
 
         GetFirstPlayerControllerFn getFirstPlayerController = nullptr;
         GetPlayerPawnFn getPlayerPawn = nullptr;
+        IsPlayerInForgottenEngineFn isPlayerInForgottenEngine = nullptr;
         GetComponentLocationFn getComponentLocation = nullptr;
     };
 
