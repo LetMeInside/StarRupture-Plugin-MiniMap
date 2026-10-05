@@ -31,6 +31,21 @@ namespace MiniMapFingerprints
         uintptr_t findPOIMarkerCategoryData = 0;
         uintptr_t getMapMenuMarkerFilterStatus = 0;
         uintptr_t isAbandonBaseCompleted = 0;
+        uintptr_t findFoundableMarkerCategoryData = 0;
+
+        uintptr_t getMassEntitySubsystem = 0;
+        uintptr_t massQueryConstruct = 0;
+        uintptr_t massQueryDestruct = 0;
+        uintptr_t addInventoryRequirement = 0;
+        uintptr_t addTransformRequirement = 0;
+        uintptr_t addFoundableParametersRequirement = 0;
+        uintptr_t addFoundableTagRequirement = 0;
+        uintptr_t getMatchingEntityHandles = 0;
+        uintptr_t getMassFragmentDataPtr = 0;
+        uintptr_t getMassConstSharedFragmentPtr = 0;
+        uintptr_t transformFragmentStaticStruct = 0;
+        uintptr_t inventoryFragmentStaticStruct = 0;
+        uintptr_t foundableParametersStaticStruct = 0;
 
         uintptr_t getPlatformData = 0;
         uintptr_t getBulkDataSize = 0;

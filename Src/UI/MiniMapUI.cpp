@@ -4,6 +4,7 @@
 #include "MapOverlays.h"
 #include "Input/MouseWheel.h"
 #include "Map/FogOfWar.h"
+#include "Map/Foundables.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 
@@ -201,6 +202,10 @@ namespace
             transform))
         {
             MiniMapFogOfWar::Render(
+                ui,
+                transform);
+
+            MiniMapFoundables::Render(
                 ui,
                 transform);
 

@@ -37,6 +37,20 @@ namespace MiniMapNative
             addresses.findPOIMarkerCategoryData == 0 ||
             addresses.getMapMenuMarkerFilterStatus == 0 ||
             addresses.isAbandonBaseCompleted == 0 ||
+            addresses.findFoundableMarkerCategoryData == 0 ||
+            addresses.getMassEntitySubsystem == 0 ||
+            addresses.massQueryConstruct == 0 ||
+            addresses.massQueryDestruct == 0 ||
+            addresses.addInventoryRequirement == 0 ||
+            addresses.addTransformRequirement == 0 ||
+            addresses.addFoundableParametersRequirement == 0 ||
+            addresses.addFoundableTagRequirement == 0 ||
+            addresses.getMatchingEntityHandles == 0 ||
+            addresses.getMassFragmentDataPtr == 0 ||
+            addresses.getMassConstSharedFragmentPtr == 0 ||
+            addresses.transformFragmentStaticStruct == 0 ||
+            addresses.inventoryFragmentStaticStruct == 0 ||
+            addresses.foundableParametersStaticStruct == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
             addresses.canLoadFromDisk == 0 ||
@@ -90,6 +104,63 @@ namespace MiniMapNative
         g_nativeApi.pointsOfInterest.isAbandonBaseCompleted =
             reinterpret_cast<PointsOfInterestApi::IsAbandonBaseCompletedFn>(
                 addresses.isAbandonBaseCompleted);
+
+        g_nativeApi.pointsOfInterest.findFoundableMarkerCategoryData =
+            reinterpret_cast<
+            PointsOfInterestApi::FindFoundableMarkerCategoryDataFn>(
+                addresses.findFoundableMarkerCategoryData);
+
+        g_nativeApi.mass.getMassEntitySubsystem =
+            reinterpret_cast<MassApi::GetMassEntitySubsystemFn>(
+                addresses.getMassEntitySubsystem);
+
+        g_nativeApi.mass.queryConstruct =
+            reinterpret_cast<MassApi::QueryConstructFn>(
+                addresses.massQueryConstruct);
+
+        g_nativeApi.mass.queryDestruct =
+            reinterpret_cast<MassApi::QueryDestructFn>(
+                addresses.massQueryDestruct);
+
+        g_nativeApi.mass.addInventoryRequirement =
+            reinterpret_cast<MassApi::AddFragmentRequirementFn>(
+                addresses.addInventoryRequirement);
+
+        g_nativeApi.mass.addTransformRequirement =
+            reinterpret_cast<MassApi::AddFragmentRequirementFn>(
+                addresses.addTransformRequirement);
+
+        g_nativeApi.mass.addFoundableParametersRequirement =
+            reinterpret_cast<MassApi::AddSharedRequirementFn>(
+                addresses.addFoundableParametersRequirement);
+
+        g_nativeApi.mass.addFoundableTagRequirement =
+            reinterpret_cast<MassApi::AddSharedRequirementFn>(
+                addresses.addFoundableTagRequirement);
+
+        g_nativeApi.mass.getMatchingEntityHandles =
+            reinterpret_cast<MassApi::GetMatchingEntityHandlesFn>(
+                addresses.getMatchingEntityHandles);
+
+        g_nativeApi.mass.getFragmentDataPtr =
+            reinterpret_cast<MassApi::GetFragmentDataPtrFn>(
+                addresses.getMassFragmentDataPtr);
+
+        g_nativeApi.mass.getConstSharedFragmentPtr =
+            reinterpret_cast<MassApi::GetConstSharedFragmentPtrFn>(
+                addresses.getMassConstSharedFragmentPtr);
+
+        g_nativeApi.mass.transformFragmentStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.transformFragmentStaticStruct);
+
+        g_nativeApi.mass.inventoryFragmentStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.inventoryFragmentStaticStruct);
+
+        g_nativeApi.mass.foundableParametersStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.foundableParametersStaticStruct);
 
         g_nativeApi.texture.getBrushTexture =
             reinterpret_cast<TextureApi::GetBrushTextureFn>(

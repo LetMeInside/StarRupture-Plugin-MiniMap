@@ -18,7 +18,10 @@ namespace SDK
     class UClass;
     class UCrMapMenuDevSettings;
     class UCrMapMenuPOIData;
+    class UCrMapMenuCategoryData;
     class UCrPlayerMapMenuDataComponent;
+    class UMassEntitySubsystem;
+    class UScriptStruct;
 
     struct FCrAbandonBaseData;
     struct FVector;
@@ -99,11 +102,105 @@ namespace MiniMapNative
             bool (__fastcall*)(
                 const SDK::FCrAbandonBaseData* data);
 
+        using FindFoundableMarkerCategoryDataFn =
+            const SDK::UCrMapMenuCategoryData* (__fastcall*)(
+                const SDK::UCrMapMenuDevSettings* settings,
+                uint8_t foundableType);
+
         GetAllActorsOfClassFn getAllActorsOfClass = nullptr;
         POIStaticClassFn pointOfInterestStaticClass = nullptr;
         FindPOIMarkerCategoryDataFn findPOIMarkerCategoryData = nullptr;
         GetMarkerFilterStatusFn getMarkerFilterStatus = nullptr;
         IsAbandonBaseCompletedFn isAbandonBaseCompleted = nullptr;
+        FindFoundableMarkerCategoryDataFn findFoundableMarkerCategoryData = nullptr;
+    };
+
+
+    struct MassEntityHandle
+    {
+        int32_t Index = 0;
+        int32_t SerialNumber = 0;
+    };
+
+    static_assert(
+        sizeof(MassEntityHandle) ==
+        0x08);
+
+
+    struct MassEntityHandleArray
+    {
+        MassEntityHandle* Data = nullptr;
+        int32_t Num = 0;
+        int32_t Max = 0;
+    };
+
+    static_assert(
+        sizeof(MassEntityHandleArray) ==
+        0x10);
+
+
+    struct MassApi
+    {
+        using GetMassEntitySubsystemFn =
+            SDK::UMassEntitySubsystem* (__fastcall*)(
+                const SDK::UWorld* world);
+
+        using QueryConstructFn =
+            void* (__fastcall*)(
+                void* query,
+                const void* managerSharedPtrStorage);
+
+        using QueryDestructFn =
+            void (__fastcall*)(
+                void* query);
+
+        using AddFragmentRequirementFn =
+            void* (__fastcall*)(
+                void* requirements,
+                uint8_t access,
+                uint8_t presence);
+
+        using AddSharedRequirementFn =
+            void* (__fastcall*)(
+                void* requirements,
+                uint8_t presence);
+
+        using GetMatchingEntityHandlesFn =
+            MassEntityHandleArray* (__fastcall*)(
+                void* query,
+                MassEntityHandleArray* returnStorage);
+
+        using GetFragmentDataPtrFn =
+            void* (__fastcall*)(
+                const void* manager,
+                MassEntityHandle entity,
+                const SDK::UScriptStruct* fragmentType);
+
+        using GetConstSharedFragmentPtrFn =
+            const void* (__fastcall*)(
+                const void* manager,
+                MassEntityHandle entity,
+                const SDK::UScriptStruct* fragmentType);
+
+        using StaticStructFn =
+            SDK::UScriptStruct* (__fastcall*)();
+
+        GetMassEntitySubsystemFn getMassEntitySubsystem = nullptr;
+        QueryConstructFn queryConstruct = nullptr;
+        QueryDestructFn queryDestruct = nullptr;
+
+        AddFragmentRequirementFn addInventoryRequirement = nullptr;
+        AddFragmentRequirementFn addTransformRequirement = nullptr;
+        AddSharedRequirementFn addFoundableParametersRequirement = nullptr;
+        AddSharedRequirementFn addFoundableTagRequirement = nullptr;
+
+        GetMatchingEntityHandlesFn getMatchingEntityHandles = nullptr;
+        GetFragmentDataPtrFn getFragmentDataPtr = nullptr;
+        GetConstSharedFragmentPtrFn getConstSharedFragmentPtr = nullptr;
+
+        StaticStructFn transformFragmentStaticStruct = nullptr;
+        StaticStructFn inventoryFragmentStaticStruct = nullptr;
+        StaticStructFn foundableParametersStaticStruct = nullptr;
     };
 
 
@@ -217,6 +314,7 @@ namespace MiniMapNative
         AssetApi asset;
         PlayerApi player;
         PointsOfInterestApi pointsOfInterest;
+        MassApi mass;
         TextureApi texture;
     };
 

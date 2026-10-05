@@ -98,6 +98,7 @@
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Map\FogOfWar.h" />
+    <ClInclude Include="Map\Foundables.h" />
     <ClInclude Include="Map\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
@@ -124,6 +125,7 @@
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
     <ClCompile Include="Map\FogOfWar.cpp" />
+    <ClCompile Include="Map\Foundables.cpp" />
     <ClCompile Include="Map\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />

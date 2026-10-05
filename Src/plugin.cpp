@@ -21,6 +21,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar.h"
+#include "Map/Foundables.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
@@ -90,6 +91,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
 {
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
+    MiniMapFoundables::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
@@ -104,6 +106,7 @@ static void OnExperienceLoadComplete()
 {
     LOG_INFO("MiniMap: OnExperienceLoadComplete");
 
+    MiniMapFoundables::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     if (!MiniMapTerrain::Initialize(g_self))
@@ -127,6 +130,7 @@ static void OnAfterWorldEndPlay(
 
     MiniMapUI::Hide();
 
+    MiniMapFoundables::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -198,6 +202,13 @@ extern "C"
         {
             LOG_ERROR(
                 "MiniMap: landmark POI initialization failed");
+        }
+
+        if (!MiniMapFoundables::Initialize(
+            g_self))
+        {
+            LOG_ERROR(
+                "MiniMap: Mass foundable initialization failed");
         }
 
         LOG_INFO(
@@ -358,6 +369,7 @@ extern "C"
         }
 
         MiniMapTerrain::UnregisterDiagnostics();
+        MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();
         MiniMapTerrain::Shutdown();

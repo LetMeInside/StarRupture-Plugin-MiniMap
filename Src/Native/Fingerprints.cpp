@@ -1194,7 +1194,394 @@ namespace MiniMapFingerprints
 
         addresses.isAbandonBaseCompleted =
             abandonBaseCompletedAddress;
+        // -------------------------------------------------------------------
+        // Foundable category and callback-free Mass query support.
+        // -------------------------------------------------------------------
 
+        PluginScanRequest foundableCategoryRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        foundableCategoryRequest.hookName =
+            "MiniMap::UCrMapMenuDevSettings::"
+            "FindFoundableMarkerCateroryData";
+
+        foundableCategoryRequest.pattern =
+            "48 8B 8C 24 D0 00 00 00 41 0F B6 14 24 48 8B 49 08 "
+            "E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? "
+            "40 38 78 30 0F 85 ?? ?? ?? ?? 49 8B EE 45 85 F6";
+
+        foundableCategoryRequest.followRel32At = 0x11;
+        foundableCategoryRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        foundableCategoryRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t foundableCategoryAddress =
+            scanner->Resolve(self, &foundableCategoryRequest);
+
+        if (foundableCategoryAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.findFoundableMarkerCategoryData =
+            foundableCategoryAddress;
+
+
+        PluginScanRequest massSubsystemRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        massSubsystemRequest.hookName =
+            "MiniMap::UWorld::GetSubsystem<UMassEntitySubsystem>";
+
+        massSubsystemRequest.pattern =
+            "49 8B CD E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B C8 "
+            "E8 ?? ?? ?? ?? 48 8B D8 EB ?? 33 DB 48 83 7B 38 00 75 ?? "
+            "4C 8D 0D ?? ?? ?? ?? 41 B8 ?? ?? ?? ??";
+
+        massSubsystemRequest.followRel32At = 0x10;
+        massSubsystemRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        massSubsystemRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t massSubsystemAddress =
+            scanner->Resolve(self, &massSubsystemRequest);
+
+        if (massSubsystemAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getMassEntitySubsystem =
+            massSubsystemAddress;
+
+
+        PluginScanRequest massQueryCtorRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        massQueryCtorRequest.hookName =
+            "MiniMap::FMassEntityQuery::FMassEntityQuery";
+
+        massQueryCtorRequest.pattern =
+            "48 8D 54 24 60 48 8D 8D 80 03 00 00 E8 ?? ?? ?? ?? "
+            "48 8B 5C 24 68 48 85 DB 74 ?? 41 8B C4 F0 0F C1 43 08";
+
+        massQueryCtorRequest.followRel32At = 0x0C;
+        massQueryCtorRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        massQueryCtorRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t massQueryCtorAddress =
+            scanner->Resolve(self, &massQueryCtorRequest);
+
+        if (massQueryCtorAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.massQueryConstruct =
+            massQueryCtorAddress;
+
+
+        PluginScanRequest massRequirementsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        massRequirementsRequest.pattern =
+            "41 B1 01 48 8D 8D D0 06 00 00 0F 28 D6 48 8B D6 "
+            "E8 ?? ?? ?? ?? 45 33 C0 48 8D 8D 80 03 00 00 B2 01 "
+            "E8 ?? ?? ?? ?? 45 33 C0 48 8D 8D 80 03 00 00 B2 01 "
+            "E8 ?? ?? ?? ?? 33 D2 48 8D 8D 80 03 00 00 E8 ?? ?? ?? ??";
+
+        massRequirementsRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        massRequirementsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        massRequirementsRequest.hookName =
+            "MiniMap::AddRequirement<FCrInventoryFragment>";
+        massRequirementsRequest.followRel32At = 0x21;
+
+        const uintptr_t inventoryRequirementAddress =
+            scanner->Resolve(self, &massRequirementsRequest);
+
+        if (inventoryRequirementAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.addInventoryRequirement =
+            inventoryRequirementAddress;
+
+        massRequirementsRequest.hookName =
+            "MiniMap::AddRequirement<FTransformFragment>";
+        massRequirementsRequest.followRel32At = 0x32;
+
+        const uintptr_t transformRequirementAddress =
+            scanner->Resolve(self, &massRequirementsRequest);
+
+        if (transformRequirementAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.addTransformRequirement =
+            transformRequirementAddress;
+
+        massRequirementsRequest.hookName =
+            "MiniMap::AddConstSharedRequirement<"
+            "FCrMassFoundableParameters>";
+        massRequirementsRequest.followRel32At = 0x40;
+
+        const uintptr_t foundableParametersRequirementAddress =
+            scanner->Resolve(self, &massRequirementsRequest);
+
+        if (foundableParametersRequirementAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.addFoundableParametersRequirement =
+            foundableParametersRequirementAddress;
+
+
+        PluginScanRequest foundableTagRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        foundableTagRequest.hookName =
+            "MiniMap::AddTagRequirement<FCrMassFoundableTag>";
+
+        foundableTagRequest.pattern =
+            "40 53 48 83 EC 20 48 8B DA 33 D2 48 8B CB E8 ?? ?? ?? ?? "
+            "48 8B CB E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? "
+            "45 33 C0 B2 02 48 8B CB E8 ?? ?? ?? ?? "
+            "41 B0 03 B2 02 48 8B CB E8 ?? ?? ?? ?? "
+            "33 D2 48 8B CB 48 83 C4 20 5B E9 ?? ?? ?? ??";
+
+        foundableTagRequest.followRel32At = 0x0E;
+        foundableTagRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        foundableTagRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t foundableTagAddress =
+            scanner->Resolve(self, &foundableTagRequest);
+
+        if (foundableTagAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.addFoundableTagRequirement =
+            foundableTagAddress;
+
+
+        PluginScanRequest massQueryDtorRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        massQueryDtorRequest.hookName =
+            "MiniMap::FMassEntityQuery::~FMassEntityQuery";
+
+        massQueryDtorRequest.pattern =
+            "48 8D 8D D0 06 00 00 E8 ?? ?? ?? ?? "
+            "48 8D 8D 80 03 00 00 E8 ?? ?? ?? ?? "
+            "48 8D 4D 30 E8 ?? ?? ?? ?? "
+            "48 8D 8D B0 0B 00 00 E8 ?? ?? ?? ??";
+
+        massQueryDtorRequest.followRel32At = 0x13;
+        massQueryDtorRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        massQueryDtorRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t massQueryDtorAddress =
+            scanner->Resolve(self, &massQueryDtorRequest);
+
+        if (massQueryDtorAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.massQueryDestruct =
+            massQueryDtorAddress;
+
+
+        PluginScanRequest matchingHandlesRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        matchingHandlesRequest.hookName =
+            "MiniMap::FMassEntityQuery::GetMatchingEntityHandles";
+
+        matchingHandlesRequest.pattern =
+            "40 53 41 54 41 56 41 57 48 83 EC 48 "
+            "48 8B D9 4C 8D 62 08 33 C9 4C 8B F2 "
+            "48 89 0A 41 89 0C 24 89 4A 0C 48 8B CB "
+            "E8 ?? ?? ?? ?? "
+            "4C 8B BB F8 02 00 00 48 63 83 00 03 00 00";
+
+        matchingHandlesRequest.flags = 0;
+        matchingHandlesRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t matchingHandlesAddress =
+            scanner->Resolve(self, &matchingHandlesRequest);
+
+        if (matchingHandlesAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getMatchingEntityHandles =
+            matchingHandlesAddress;
+
+
+        PluginScanRequest fragmentDataRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        fragmentDataRequest.hookName =
+            "MiniMap::FMassEntityManager::"
+            "InternalGetFragmentDataPtr";
+
+        fragmentDataRequest.pattern =
+            "E8 ?? ?? ?? ?? "
+            "4C 8B C0 48 8B D3 48 8B CE "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 0F 84 ?? ?? ?? ?? "
+            "0F 10 48 20 66 41 0F 2F 4D 30 "
+            "0F 10 40 30 0F 11 4D EF F2 0F 11 45 FF";
+
+        fragmentDataRequest.followRel32At = 0x0E;
+        fragmentDataRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        fragmentDataRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t fragmentDataAddress =
+            scanner->Resolve(self, &fragmentDataRequest);
+
+        if (fragmentDataAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getMassFragmentDataPtr =
+            fragmentDataAddress;
+
+        fragmentDataRequest.hookName =
+            "MiniMap::FTransformFragment::StaticStruct";
+        fragmentDataRequest.followRel32At = 0x00;
+
+        const uintptr_t transformStaticStructAddress =
+            scanner->Resolve(self, &fragmentDataRequest);
+
+        if (transformStaticStructAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.transformFragmentStaticStruct =
+            transformStaticStructAddress;
+
+
+        PluginScanRequest constSharedDataRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        constSharedDataRequest.hookName =
+            "MiniMap::FMassEntityManager::"
+            "InternalGetConstSharedFragmentPtr";
+
+        constSharedDataRequest.pattern =
+            "E8 ?? ?? ?? ?? "
+            "4C 8B C0 48 8B D3 48 8B CE "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 74 ?? "
+            "48 8B 10 48 85 D2 74 ?? "
+            "48 8B 02 48 0F BF 48 5C "
+            "48 8D 41 07 48 F7 D9 48 03 C2 48 23 C1 "
+            "74 ?? "
+            "F3 0F 10 00 48 8B 4D 6F F3 0F 58 01 F3 0F 11 01";
+
+        constSharedDataRequest.followRel32At = 0x0E;
+        constSharedDataRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        constSharedDataRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t constSharedDataAddress =
+            scanner->Resolve(self, &constSharedDataRequest);
+
+        if (constSharedDataAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getMassConstSharedFragmentPtr =
+            constSharedDataAddress;
+
+
+        PluginScanRequest inventoryStaticStructRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        inventoryStaticStructRequest.hookName =
+            "MiniMap::FCrInventoryFragment::StaticStruct";
+
+        inventoryStaticStructRequest.pattern =
+            "E8 ?? ?? ?? ?? "
+            "4C 8B C0 48 8B D3 48 8B CF "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 74 ?? "
+            "48 8B 7C 24 48 "
+            "48 8D 88 20 01 00 00 "
+            "48 8B 57 30 "
+            "E8 ?? ?? ?? ?? "
+            "85 C0 7E ?? 8B 5F 38";
+
+        inventoryStaticStructRequest.followRel32At = 0x00;
+        inventoryStaticStructRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        inventoryStaticStructRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t inventoryStaticStructAddress =
+            scanner->Resolve(self, &inventoryStaticStructRequest);
+
+        if (inventoryStaticStructAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.inventoryFragmentStaticStruct =
+            inventoryStaticStructAddress;
+
+
+        PluginScanRequest foundableParametersStructRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        foundableParametersStructRequest.hookName =
+            "MiniMap::FCrMassFoundableParameters::StaticStruct";
+
+        foundableParametersStructRequest.pattern =
+            "4D 63 B5 30 03 00 00 48 0F 44 D8 48 C1 E6 05 48 03 F3 "
+            "48 3B DE 74 ?? E8 ?? ?? ?? ?? 48 39 03 74 ?? "
+            "48 83 C3 20 48 3B DE 75 ??";
+
+        foundableParametersStructRequest.followRel32At = 0x17;
+        foundableParametersStructRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        foundableParametersStructRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t foundableParametersStructAddress =
+            scanner->Resolve(self, &foundableParametersStructRequest);
+
+        if (foundableParametersStructAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.foundableParametersStaticStruct =
+            foundableParametersStructAddress;
         return true;
     }
 }
