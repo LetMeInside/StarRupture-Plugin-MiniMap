@@ -24,6 +24,10 @@ namespace
     constexpr float kWindowWidth = 300.0f;
     constexpr float kWindowHeight = 300.0f;
 
+    // Keep all map content slightly inside the widget boundary. This outer
+    // strip is reserved for the current/future MiniMap frame.
+    constexpr float kMapViewportInset = 4.0f;
+
     constexpr const char* kToggleKey = "F4";
 
     void UpdateHints()
@@ -110,6 +114,30 @@ namespace
             return;
         }
 
+        const float viewportX =
+            windowX +
+            kMapViewportInset;
+
+        const float viewportY =
+            windowY +
+            kMapViewportInset;
+
+        const float viewportWidth =
+            windowWidth -
+            kMapViewportInset *
+            2.0f;
+
+        const float viewportHeight =
+            windowHeight -
+            kMapViewportInset *
+            2.0f;
+
+        if (viewportWidth <= 1.0f ||
+            viewportHeight <= 1.0f)
+        {
+            return;
+        }
+
         /*
          * Reserve the complete content area.
          *
@@ -164,10 +192,10 @@ namespace
 
         if (MiniMapTerrain::Render(
             ui,
-            windowX,
-            windowY,
-            windowWidth,
-            windowHeight,
+            viewportX,
+            viewportY,
+            viewportWidth,
+            viewportHeight,
             transform))
         {
             MiniMapOverlays::Render(
