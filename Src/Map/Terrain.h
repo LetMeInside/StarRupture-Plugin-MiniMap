@@ -2,6 +2,8 @@
 
 #include "plugin_interface.h"
 
+#include "MapTransform.h"
+
 struct IPluginSelf;
 
 namespace MiniMapTerrain
@@ -16,10 +18,11 @@ namespace MiniMapTerrain
 
     void AdjustZoom(float wheelDelta);
 
-    void Render(
+    bool Render(
         IModLoaderImGui* ui,
         float windowX,
         float windowY,
         float windowWidth,
-        float windowHeight);
+        float windowHeight,
+        MiniMapMap::Transform& outTransform);
 }

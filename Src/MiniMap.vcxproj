@@ -106,6 +106,7 @@
     <ClInclude Include="Map\TerrainDiagnostics.h" />
     <ClInclude Include="Map\TerrainSource.h" />
     <ClInclude Include="Map\TerrainCache.h" />
+    <ClInclude Include="UI\MapOverlays.h" />
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
     <ClInclude Include="plugin_helpers.h" />
@@ -129,6 +130,7 @@
     <ClCompile Include="Map\TerrainDiagnostics.cpp" />
     <ClCompile Include="Map\TerrainSource.cpp" />
     <ClCompile Include="Map\TerrainCache.cpp" />
+    <ClCompile Include="UI\MapOverlays.cpp" />
     <ClCompile Include="UI\MiniMapUI.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>

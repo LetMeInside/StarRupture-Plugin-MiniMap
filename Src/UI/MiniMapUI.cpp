@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MiniMapUI.h"
+#include "MapOverlays.h"
 #include "Input/MouseWheel.h"
 #include "Map/Terrain.h"
 
@@ -159,12 +160,20 @@ namespace
             rounding,
             PluginDrawFlags_RoundCornersAll);
 
-        MiniMapTerrain::Render(
+        MiniMapMap::Transform transform = {};
+
+        if (MiniMapTerrain::Render(
             ui,
             windowX,
             windowY,
             windowWidth,
-            windowHeight);
+            windowHeight,
+            transform))
+        {
+            MiniMapOverlays::Render(
+                ui,
+                transform);
+        }
 
         ui->DL_AddRect(
             drawList,
