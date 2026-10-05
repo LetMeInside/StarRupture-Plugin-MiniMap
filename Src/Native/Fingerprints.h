@@ -30,6 +30,7 @@ namespace MiniMapFingerprints
         uintptr_t pointOfInterestStaticClass = 0;
         uintptr_t findPOIMarkerCategoryData = 0;
         uintptr_t getMapMenuMarkerFilterStatus = 0;
+        uintptr_t isAbandonBaseCompleted = 0;
 
         uintptr_t getPlatformData = 0;
         uintptr_t getBulkDataSize = 0;

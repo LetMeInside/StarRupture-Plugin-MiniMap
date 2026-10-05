@@ -56,6 +56,9 @@ namespace
     constexpr uint8_t kUnknownFilter =
         24;
 
+    constexpr uint8_t kAbandonedBaseType =
+        2;
+
     constexpr std::ptrdiff_t kActorRootComponentOffset =
         0x1B8;
 
@@ -79,6 +82,21 @@ namespace
 
     constexpr std::ptrdiff_t kCategoryUnknownIconOffset =
         0x110;
+
+    constexpr std::ptrdiff_t kCategoryCompletedBaseIconOffset =
+        0x1C0;
+
+    constexpr std::ptrdiff_t kReplicatorDataArrayOffset =
+        0x3F8;
+
+    constexpr std::ptrdiff_t kAbandonBaseRecordGuidOffset =
+        0x0C;
+
+    constexpr std::size_t kAbandonBaseRecordStride =
+        0x78;
+
+    constexpr int32_t kMaximumReasonableAbandonBaseRecords =
+        4096;
 
 
     struct NativeActorClassStorage
@@ -109,6 +127,23 @@ namespace
         0x10);
 
 
+    struct NativeAbandonBaseArray
+    {
+        uint8_t* Data =
+            nullptr;
+
+        int32_t Num =
+            0;
+
+        int32_t Max =
+            0;
+    };
+
+    static_assert(
+        sizeof(NativeAbandonBaseArray) ==
+        0x10);
+
+
     struct POIGuid
     {
         uint32_t A = 0;
@@ -134,6 +169,14 @@ namespace
         double WorldX = 0.0;
         double WorldY = 0.0;
         PluginTextureHandle Icon = nullptr;
+    };
+
+
+    enum class IconVariant : uint8_t
+    {
+        Unknown = 1,
+        Discovered = 2,
+        Completed = 3
     };
 
 
@@ -780,10 +823,145 @@ namespace
     }
 
 
+
+    const SDK::FCrAbandonBaseData* FindReplicatedAbandonBaseData(
+        SDK::UWorld* world,
+        const POIGuid& guid)
+    {
+        if (world == nullptr)
+        {
+            return nullptr;
+        }
+
+        /*
+         * These two generated fields are verified against the current PDB
+         * and native UpdatePOIMarkers path:
+         *
+         *   UWorld::GameState                         +0x1B0
+         *   ACrGameStateBase::AbandonBaseInfoReplicator +0x3A8
+         *
+         * The tracked MiniMap world is the gameplay world. We do not retain
+         * either pointer across polls.
+         */
+        SDK::AGameStateBase* baseGameState =
+            world->GameState;
+
+        if (baseGameState == nullptr)
+        {
+            return nullptr;
+        }
+
+        auto* gameState =
+            static_cast<SDK::ACrGameStateBase*>(
+                baseGameState);
+
+        SDK::ACrAbandonBaseInfoReplicator* replicator =
+            gameState->
+                AbandonBaseInfoReplicator;
+
+        if (replicator == nullptr)
+        {
+            return nullptr;
+        }
+
+        NativeAbandonBaseArray array = {};
+
+        std::memcpy(
+            &array,
+            reinterpret_cast<const uint8_t*>(
+                replicator) +
+                kReplicatorDataArrayOffset,
+            sizeof(array));
+
+        if (array.Num < 0 ||
+            array.Max < array.Num ||
+            array.Num >
+                kMaximumReasonableAbandonBaseRecords ||
+            array.Max >
+                kMaximumReasonableAbandonBaseRecords)
+        {
+            return nullptr;
+        }
+
+        if (array.Num == 0)
+        {
+            return nullptr;
+        }
+
+        if (array.Data == nullptr)
+        {
+            return nullptr;
+        }
+
+        for (int32_t index = 0;
+            index < array.Num;
+            ++index)
+        {
+            const uint8_t* record =
+                array.Data +
+                static_cast<std::size_t>(
+                    index) *
+                kAbandonBaseRecordStride;
+
+            POIGuid recordGuid = {};
+
+            std::memcpy(
+                &recordGuid,
+                record +
+                    kAbandonBaseRecordGuidOffset,
+                sizeof(recordGuid));
+
+            if (recordGuid ==
+                guid)
+            {
+                return reinterpret_cast<
+                    const SDK::FCrAbandonBaseData*>(
+                        record);
+            }
+        }
+
+        /*
+         * Do not call native FindAbandonBaseData for an absent record.
+         * The native helper enters an Unreal ensure path on lookup miss.
+         */
+        return nullptr;
+    }
+
+
+    bool IsCompletedAbandonedBase(
+        SDK::UWorld* world,
+        const POIGuid& guid)
+    {
+        const MiniMapNative::NativeApi* native =
+            MiniMapNative::Get();
+
+        if (native == nullptr ||
+            native->pointsOfInterest.isAbandonBaseCompleted == nullptr)
+        {
+            return false;
+        }
+
+        const SDK::FCrAbandonBaseData* data =
+            FindReplicatedAbandonBaseData(
+                world,
+                guid);
+
+        if (data == nullptr)
+        {
+            return false;
+        }
+
+        return
+            native->
+                pointsOfInterest.
+                isAbandonBaseCompleted(
+                    data);
+    }
+
     PluginTextureHandle ResolveIcon(
         const SDK::UCrMapMenuPOIData* category,
         uint8_t poiType,
-        bool unknown)
+        IconVariant variant)
     {
         if (category == nullptr)
         {
@@ -794,9 +972,8 @@ namespace
             (static_cast<uint32_t>(
                 poiType) <<
                 8) |
-            (unknown
-                ? 1u
-                : 2u);
+            static_cast<uint32_t>(
+                variant);
 
         const auto existing =
             g_iconCache.find(
@@ -817,12 +994,26 @@ namespace
             return nullptr;
         }
 
+        std::ptrdiff_t brushOffset =
+            kCategoryIconOffset;
+
+        if (variant ==
+            IconVariant::Unknown)
+        {
+            brushOffset =
+                kCategoryUnknownIconOffset;
+        }
+        else if (variant ==
+            IconVariant::Completed)
+        {
+            brushOffset =
+                kCategoryCompletedBaseIconOffset;
+        }
+
         const SDK::FSlateBrush* brush =
             BrushAt(
                 category,
-                unknown
-                    ? kCategoryUnknownIconOffset
-                    : kCategoryIconOffset);
+                brushOffset);
 
         if (brush ==
             nullptr)
@@ -844,15 +1035,29 @@ namespace
 
         char name[64] = {};
 
+        const char* variantName =
+            "Discovered";
+
+        if (variant ==
+            IconVariant::Unknown)
+        {
+            variantName =
+                "Unknown";
+        }
+        else if (variant ==
+            IconVariant::Completed)
+        {
+            variantName =
+                "Completed";
+        }
+
         std::snprintf(
             name,
             sizeof(name),
             "MiniMap_POI_%u_%s",
             static_cast<unsigned int>(
                 poiType),
-            unknown
-                ? "Unknown"
-                : "Discovered");
+            variantName);
 
         PluginTextureHandle handle =
             LoadIconFromBulkData(
@@ -957,11 +1162,52 @@ namespace
             return false;
         }
 
+        const POIGuid guid =
+            ReadGuid(
+                actor);
+
+        IconVariant iconVariant =
+            unknown
+                ? IconVariant::Unknown
+                : IconVariant::Discovered;
+
+        if (!unknown &&
+            poiType ==
+                kAbandonedBaseType)
+        {
+            SDK::UWorld* world =
+                MiniMapMap::GetWorld();
+
+            if (IsCompletedAbandonedBase(
+                world,
+                guid))
+            {
+                iconVariant =
+                    IconVariant::Completed;
+            }
+        }
+
         PluginTextureHandle icon =
             ResolveIcon(
                 category,
                 poiType,
-                unknown);
+                iconVariant);
+
+        /*
+         * If the completed asset is not available yet, retain the ordinary
+         * discovered marker for this poll and retry the completed variant on
+         * the next poll.
+         */
+        if (icon == nullptr &&
+            iconVariant ==
+                IconVariant::Completed)
+        {
+            icon =
+                ResolveIcon(
+                    category,
+                    poiType,
+                    IconVariant::Discovered);
+        }
 
         if (icon ==
             nullptr)
@@ -1003,8 +1249,7 @@ namespace
         }
 
         outRecord.Guid =
-            ReadGuid(
-                actor);
+            guid;
 
         outRecord.WorldX =
             location.X;

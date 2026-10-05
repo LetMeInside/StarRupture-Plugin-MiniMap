@@ -1141,6 +1141,60 @@ namespace MiniMapFingerprints
 
         addresses.getMapMenuMarkerFilterStatus =
             markerFilterAddress;
+
+
+        // -------------------------------------------------------------------
+        // FCrAbandonBaseData::IsCompleted
+        //
+        // Anchored in UCrUW_MapMenuMapArea::UpdatePOIMarkers.
+        //
+        // The same native branch first looks up abandoned-base data and then
+        // tests completion. We intentionally resolve only IsCompleted here:
+        // MiniMap pre-scans the replicated array by GUID, avoiding the native
+        // FindAbandonBaseData ensure path for absent records.
+        //
+        // Verified current-build RVA: 0x073C1360
+        //
+        // This leaf function has no RUNTIME_FUNCTION entry, so CODE
+        // validation is required.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest abandonBaseCompletedRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        abandonBaseCompletedRequest.hookName =
+            "MiniMap::FCrAbandonBaseData::IsCompleted";
+
+        abandonBaseCompletedRequest.pattern =
+            "48 8B 44 24 70 48 8D 55 B0 "
+            "48 8B 88 A8 03 00 00 "
+            "E8 ?? ?? ?? ?? "
+            "48 85 C0 0F 84 ?? ?? ?? ?? "
+            "48 8B C8 E8 ?? ?? ?? ?? "
+            "84 C0 74 ?? 4C 63 43 08";
+
+        abandonBaseCompletedRequest.followRel32At =
+            0x21;
+
+        abandonBaseCompletedRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+
+        abandonBaseCompletedRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t abandonBaseCompletedAddress =
+            scanner->Resolve(
+                self,
+                &abandonBaseCompletedRequest);
+
+        if (abandonBaseCompletedAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.isAbandonBaseCompleted =
+            abandonBaseCompletedAddress;
+
         return true;
     }
 }

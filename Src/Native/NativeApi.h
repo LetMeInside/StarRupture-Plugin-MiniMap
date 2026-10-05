@@ -20,6 +20,7 @@ namespace SDK
     class UCrMapMenuPOIData;
     class UCrPlayerMapMenuDataComponent;
 
+    struct FCrAbandonBaseData;
     struct FVector;
     struct FRotator;
     struct FSlateBrush;
@@ -94,10 +95,15 @@ namespace MiniMapNative
                 SDK::UCrPlayerMapMenuDataComponent* component,
                 uint8_t filter);
 
+        using IsAbandonBaseCompletedFn =
+            bool (__fastcall*)(
+                const SDK::FCrAbandonBaseData* data);
+
         GetAllActorsOfClassFn getAllActorsOfClass = nullptr;
         POIStaticClassFn pointOfInterestStaticClass = nullptr;
         FindPOIMarkerCategoryDataFn findPOIMarkerCategoryData = nullptr;
         GetMarkerFilterStatusFn getMarkerFilterStatus = nullptr;
+        IsAbandonBaseCompletedFn isAbandonBaseCompleted = nullptr;
     };
 
 

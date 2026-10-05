@@ -36,6 +36,7 @@ namespace MiniMapNative
             addresses.pointOfInterestStaticClass == 0 ||
             addresses.findPOIMarkerCategoryData == 0 ||
             addresses.getMapMenuMarkerFilterStatus == 0 ||
+            addresses.isAbandonBaseCompleted == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
             addresses.canLoadFromDisk == 0 ||
@@ -85,6 +86,10 @@ namespace MiniMapNative
         g_nativeApi.pointsOfInterest.getMarkerFilterStatus =
             reinterpret_cast<PointsOfInterestApi::GetMarkerFilterStatusFn>(
                 addresses.getMapMenuMarkerFilterStatus);
+
+        g_nativeApi.pointsOfInterest.isAbandonBaseCompleted =
+            reinterpret_cast<PointsOfInterestApi::IsAbandonBaseCompletedFn>(
+                addresses.isAbandonBaseCompleted);
 
         g_nativeApi.texture.getBrushTexture =
             reinterpret_cast<TextureApi::GetBrushTextureFn>(
