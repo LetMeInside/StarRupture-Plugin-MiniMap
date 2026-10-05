@@ -97,6 +97,7 @@
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
+    <ClInclude Include="Map\FogOfWar.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
     <ClInclude Include="Native\Fingerprints.h" />
@@ -121,6 +122,7 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
+    <ClCompile Include="Map\FogOfWar.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />

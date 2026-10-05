@@ -20,6 +20,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/MiniMapUI.h"
+#include "Map/FogOfWar.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
 #endif
@@ -87,6 +88,7 @@ void OnPluginLoadHooks(
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
     MiniMapMap::SetWorld(world);
+    MiniMapFogOfWar::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
     LOG_INFO(
@@ -121,6 +123,7 @@ static void OnAfterWorldEndPlay(
 
     MiniMapUI::Hide();
 
+    MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
     MiniMapTerrain::Shutdown();
 }
@@ -176,6 +179,13 @@ extern "C"
 
             g_self = nullptr;
             return false;
+        }
+
+        if (!MiniMapFogOfWar::Initialize(
+            g_self))
+        {
+            LOG_ERROR(
+                "MiniMap: FOW diagnostic initialization failed");
         }
 
         LOG_INFO(
@@ -336,6 +346,7 @@ extern "C"
         }
 
         MiniMapTerrain::UnregisterDiagnostics();
+        MiniMapFogOfWar::Shutdown();
         MiniMapTerrain::Shutdown();
         MiniMapMap::Shutdown();
         MiniMapUI::Shutdown();
