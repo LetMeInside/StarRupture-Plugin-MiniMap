@@ -8,6 +8,8 @@
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
 
+#include <cmath>
+
 namespace
 {
     SDK::UWorld* g_world = nullptr;
@@ -39,14 +41,15 @@ namespace MiniMapMap
     }
 
 
-    bool TryGetPlayerWorldPosition(
-        SDK::FVector& outPosition)
+    bool TryGetPlayerPose(
+        PlayerPose& outPose)
     {
+        outPose = {};
+
         if (g_world == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: active gameplay world is unavailable");
-
             return false;
         }
 
@@ -57,7 +60,6 @@ namespace MiniMapMap
         {
             LOG_ERROR(
                 "MiniMap: native API is unavailable");
-
             return false;
         }
 
@@ -66,11 +68,11 @@ namespace MiniMapMap
 
         if (playerApi.getFirstPlayerController == nullptr ||
             playerApi.getPlayerPawn == nullptr ||
+            playerApi.getControlRotation == nullptr ||
             playerApi.getComponentLocation == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: player native API is incomplete");
-
             return false;
         }
 
@@ -82,7 +84,6 @@ namespace MiniMapMap
         {
             LOG_ERROR(
                 "MiniMap: first player controller is unavailable");
-
             return false;
         }
 
@@ -95,7 +96,6 @@ namespace MiniMapMap
         {
             LOG_ERROR(
                 "MiniMap: local player pawn is unavailable");
-
             return false;
         }
 
@@ -106,19 +106,53 @@ namespace MiniMapMap
         {
             LOG_ERROR(
                 "MiniMap: local player root component is unavailable");
+            return false;
+        }
 
+        SDK::FVector playerLocation = {};
+        playerApi.getComponentLocation(
+            rootComponent,
+            &playerLocation);
+
+        SDK::FRotator controlRotation = {};
+        playerApi.getControlRotation(
+            static_cast<const SDK::AController*>(
+                playerController),
+            &controlRotation);
+
+        if (!std::isfinite(playerLocation.X) ||
+            !std::isfinite(playerLocation.Y) ||
+            !std::isfinite(playerLocation.Z) ||
+            !std::isfinite(controlRotation.Yaw))
+        {
+            return false;
+        }
+
+        outPose.WorldX = playerLocation.X;
+        outPose.WorldY = playerLocation.Y;
+        outPose.WorldZ = playerLocation.Z;
+        outPose.ControlYawDegrees = controlRotation.Yaw;
+        return true;
+    }
+
+
+    bool TryGetPlayerWorldPosition(
+        SDK::FVector& outPosition)
+    {
+        PlayerPose pose = {};
+
+        if (!TryGetPlayerPose(
+            pose))
+        {
             return false;
         }
 
         outPosition = {};
-
-        playerApi.getComponentLocation(
-            rootComponent,
-            &outPosition);
-
+        outPosition.X = pose.WorldX;
+        outPosition.Y = pose.WorldY;
+        outPosition.Z = pose.WorldZ;
         return true;
     }
-
 
     bool TryIsPlayerInForgottenEngine(
         bool& outIsInForgottenEngine)

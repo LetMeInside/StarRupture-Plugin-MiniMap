@@ -17,6 +17,7 @@ namespace SDK
     class USceneComponent;
 
     struct FVector;
+    struct FRotator;
     struct FSlateBrush;
 }
 
@@ -46,6 +47,11 @@ namespace MiniMapNative
             SDK::ACrCharacterPlayerBase* (*)(
                 const SDK::AController*);
 
+        using GetControlRotationFn =
+            SDK::FRotator* (__fastcall*)(
+                const SDK::AController* controller,
+                SDK::FRotator* outRotation);
+
         using IsPlayerInForgottenEngineFn =
             bool(__fastcall*)(
                 const SDK::ACrCharacterPlayerBase* player);
@@ -57,6 +63,7 @@ namespace MiniMapNative
 
         GetFirstPlayerControllerFn getFirstPlayerController = nullptr;
         GetPlayerPawnFn getPlayerPawn = nullptr;
+        GetControlRotationFn getControlRotation = nullptr;
         IsPlayerInForgottenEngineFn isPlayerInForgottenEngine = nullptr;
         GetComponentLocationFn getComponentLocation = nullptr;
     };

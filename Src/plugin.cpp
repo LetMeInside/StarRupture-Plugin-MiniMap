@@ -244,6 +244,12 @@ extern "C"
                 g_resolvedAddresses.getPlayerPawn));
 
         LOG_INFO(
+            "MiniMap: AController::"
+            "GetControlRotation = 0x%llX",
+            static_cast<unsigned long long>(
+                g_resolvedAddresses.getControlRotation));
+
+        LOG_INFO(
             "MiniMap: USceneComponent::"
             "K2_GetComponentLocation = 0x%llX",
             static_cast<unsigned long long>(

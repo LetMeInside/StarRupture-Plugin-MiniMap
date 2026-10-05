@@ -29,6 +29,7 @@ namespace MiniMapNative
             addresses.waitForPendingInitOrStreaming == 0 ||
             addresses.getFirstPlayerController == 0 ||
             addresses.getPlayerPawn == 0 ||
+            addresses.getControlRotation == 0 ||
             addresses.isPlayerInForgottenEngine == 0 ||
             addresses.getComponentLocation == 0 ||
             addresses.getPlatformData == 0 ||
@@ -51,6 +52,10 @@ namespace MiniMapNative
         g_nativeApi.player.getPlayerPawn =
             reinterpret_cast<PlayerApi::GetPlayerPawnFn>(
                 addresses.getPlayerPawn);
+
+        g_nativeApi.player.getControlRotation =
+            reinterpret_cast<PlayerApi::GetControlRotationFn>(
+                addresses.getControlRotation);
 
         g_nativeApi.player.isPlayerInForgottenEngine =
             reinterpret_cast<PlayerApi::IsPlayerInForgottenEngineFn>(

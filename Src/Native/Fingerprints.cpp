@@ -9,7 +9,7 @@
 // Resolved native addresses remain valid after this callback; the scanner
 // itself must not be retained.
 //
-// Thirteen native functions are currently resolved:
+// Fourteen native functions are currently resolved:
 //
 //   1.  FSoftObjectPtr::LoadSynchronous
 //   2.  UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D
@@ -24,6 +24,7 @@
 //   11. AController::GetPawn<ACrCharacterPlayerBase>
 //   12. USceneComponent::K2_GetComponentLocation
 //   13. ACrCharacterPlayerBase::IsPlayerInForgottenEngine
+//   14. AController::GetControlRotation
 //
 // Each fingerprint is intentionally tied to native behavior MiniMap depends on.
 // If StarRupture changes an incompatible implementation or layout, resolution
@@ -969,6 +970,54 @@ namespace MiniMapFingerprints
 
         addresses.isPlayerInForgottenEngine =
             forgottenEngineAddress;
+
+
+        // -------------------------------------------------------------------
+        // AController::GetControlRotation
+        //
+        // Verified against HF2.5-CL-126119.
+        //
+        // Native target:
+        //
+        //   FRotator AController::GetControlRotation() const
+        //   RVA 0x04821C60
+        //
+        // The complete 27-byte leaf body is unique in the verified shipping
+        // EXE. It has no RUNTIME_FUNCTION entry, so validate it as executable
+        // code rather than as an unwind-backed function start.
+        // -------------------------------------------------------------------
+
+        PluginScanRequest controlRotationRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        controlRotationRequest.hookName =
+            "MiniMap::AController::GetControlRotation";
+
+        controlRotationRequest.pattern =
+            "0F 10 81 38 03 00 00 "
+            "48 8B C2 "
+            "F2 0F 10 89 48 03 00 00 "
+            "0F 11 02 "
+            "F2 0F 11 4A 10 "
+            "C3";
+
+        controlRotationRequest.flags = 0;
+        controlRotationRequest.kind =
+            PLUGIN_SCAN_CODE;
+
+        const uintptr_t controlRotationAddress =
+            scanner->Resolve(
+                self,
+                &controlRotationRequest);
+
+        if (controlRotationAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getControlRotation =
+            controlRotationAddress;
+
         return true;
     }
 }

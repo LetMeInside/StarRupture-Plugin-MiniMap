@@ -96,6 +96,7 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="Map\Map.h" />
+    <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
     <ClInclude Include="Native\Fingerprints.h" />

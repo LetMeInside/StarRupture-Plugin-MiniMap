@@ -10,9 +10,21 @@ namespace SDK
 
 namespace MiniMapMap
 {
+    struct PlayerPose
+    {
+        double WorldX = 0.0;
+        double WorldY = 0.0;
+        double WorldZ = 0.0;
+        double ControlYawDegrees = 0.0;
+    };
+
+
     void SetWorld(SDK::UWorld* world);
     SDK::UWorld* GetWorld();
     bool HasWorld();
+
+    bool TryGetPlayerPose(
+        PlayerPose& outPose);
 
     bool TryGetPlayerWorldPosition(
         SDK::FVector& outPosition);
