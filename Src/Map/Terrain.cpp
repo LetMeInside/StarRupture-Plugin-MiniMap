@@ -55,6 +55,7 @@ namespace
 
     IPluginSelf* g_terrainSelf = nullptr;
 
+    bool g_initialized = false;
     bool g_tickRegistered = false;
 
     float g_updateAccumulator = 0.0f;
@@ -199,24 +200,6 @@ namespace
             ImGuiTextures->
             FreeTexture(
                 texture);
-    }
-
-
-    void ReleaseLoadedChunks()
-    {
-        std::lock_guard<std::mutex> lock(
-            g_renderMutex);
-
-        for (const LoadedChunk& chunk :
-            g_residentChunks)
-        {
-            FreeTexture(
-                chunk.Texture);
-        }
-
-        g_loadedChunks.clear();
-        g_residentChunks.clear();
-        g_renderGeneration = 0;
     }
 
 
@@ -1024,6 +1007,11 @@ namespace MiniMapTerrain
     bool Initialize(
         IPluginSelf* self)
     {
+        if (g_initialized)
+        {
+            return true;
+        }
+
         g_terrainSelf =
             self;
 
@@ -1065,8 +1053,6 @@ namespace MiniMapTerrain
             false,
             std::memory_order_release);
 
-        ReleaseLoadedChunks();
-
         if (g_terrainSelf == nullptr ||
             g_terrainSelf->hooks == nullptr ||
             g_terrainSelf->hooks->Engine == nullptr ||
@@ -1076,12 +1062,32 @@ namespace MiniMapTerrain
                 "MiniMap: terrain initialization failed: "
                 "required hooks are unavailable");
 
+            g_terrainSelf =
+                nullptr;
+
+            return false;
+        }
+
+        if (!MiniMapTerrainSource::Initialize(
+            self))
+        {
+            LOG_ERROR(
+                "MiniMap: terrain source initialization failed");
+
+            g_terrainSelf =
+                nullptr;
+
             return false;
         }
 
         if (!MiniMapTerrainDiagnostics::Initialize(
             self))
         {
+            MiniMapTerrainSource::Shutdown();
+
+            g_terrainSelf =
+                nullptr;
+
             return false;
         }
 
@@ -1100,12 +1106,20 @@ namespace MiniMapTerrain
                 "MiniMap: registered terrain update tick");
         }
 
+        g_initialized =
+            true;
+
         return true;
     }
 
 
     void Shutdown()
     {
+        if (!g_initialized)
+        {
+            return;
+        }
+
         MiniMapMouseWheel::ClearPendingZoom();
 
         if (g_tickRegistered &&
@@ -1126,9 +1140,32 @@ namespace MiniMapTerrain
         g_tickRegistered =
             false;
 
-        ReleaseLoadedChunks();
+        {
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+
+            // Stop exposing terrain textures to the MiniMap render path, but
+            // retain resident ownership. Immediate destruction here is unsafe
+            // because already-built ImGui draw data or submitted GPU work may
+            // still reference those descriptors.
+            g_loadedChunks.clear();
+
+            // A later gameplay world may reuse matching residents. Inactive
+            // residents will be scheduled again by ReconcileViewport against
+            // the new render-generation sequence.
+            for (LoadedChunk& residentChunk :
+                g_residentChunks)
+            {
+                residentChunk.RetireAfterRenderGeneration =
+                    0;
+            }
+
+            g_renderGeneration =
+                0;
+        }
 
         MiniMapTerrainDiagnostics::Shutdown();
+        MiniMapTerrainSource::Shutdown();
 
         g_terrainSelf =
             nullptr;
@@ -1170,6 +1207,9 @@ namespace MiniMapTerrain
             g_playerGlobalChunkY =
                 0.0;
         }
+
+        g_initialized =
+            false;
     }
 
 
