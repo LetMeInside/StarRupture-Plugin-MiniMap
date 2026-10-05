@@ -26,6 +26,11 @@ namespace MiniMapFingerprints
         uintptr_t isPlayerInForgottenEngine = 0;
         uintptr_t getComponentLocation = 0;
 
+        uintptr_t getAllActorsOfClass = 0;
+        uintptr_t pointOfInterestStaticClass = 0;
+        uintptr_t findPOIMarkerCategoryData = 0;
+        uintptr_t getMapMenuMarkerFilterStatus = 0;
+
         uintptr_t getPlatformData = 0;
         uintptr_t getBulkDataSize = 0;
         uintptr_t canLoadFromDisk = 0;

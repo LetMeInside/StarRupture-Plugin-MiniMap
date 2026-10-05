@@ -32,6 +32,10 @@ namespace MiniMapNative
             addresses.getControlRotation == 0 ||
             addresses.isPlayerInForgottenEngine == 0 ||
             addresses.getComponentLocation == 0 ||
+            addresses.getAllActorsOfClass == 0 ||
+            addresses.pointOfInterestStaticClass == 0 ||
+            addresses.findPOIMarkerCategoryData == 0 ||
+            addresses.getMapMenuMarkerFilterStatus == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
             addresses.canLoadFromDisk == 0 ||
@@ -64,6 +68,23 @@ namespace MiniMapNative
         g_nativeApi.player.getComponentLocation =
             reinterpret_cast<PlayerApi::GetComponentLocationFn>(
                 addresses.getComponentLocation);
+
+        g_nativeApi.pointsOfInterest.getAllActorsOfClass =
+            reinterpret_cast<PointsOfInterestApi::GetAllActorsOfClassFn>(
+                addresses.getAllActorsOfClass);
+
+        g_nativeApi.pointsOfInterest.pointOfInterestStaticClass =
+            reinterpret_cast<PointsOfInterestApi::POIStaticClassFn>(
+                addresses.pointOfInterestStaticClass);
+
+        g_nativeApi.pointsOfInterest.findPOIMarkerCategoryData =
+            reinterpret_cast<
+            PointsOfInterestApi::FindPOIMarkerCategoryDataFn>(
+                addresses.findPOIMarkerCategoryData);
+
+        g_nativeApi.pointsOfInterest.getMarkerFilterStatus =
+            reinterpret_cast<PointsOfInterestApi::GetMarkerFilterStatusFn>(
+                addresses.getMapMenuMarkerFilterStatus);
 
         g_nativeApi.texture.getBrushTexture =
             reinterpret_cast<TextureApi::GetBrushTextureFn>(

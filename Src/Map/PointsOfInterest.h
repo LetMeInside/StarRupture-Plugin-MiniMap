@@ -11,16 +11,12 @@ namespace MiniMapMap
 
 struct IPluginSelf;
 
-namespace MiniMapFogOfWar
+namespace MiniMapPointsOfInterest
 {
-    bool Initialize(
-        IPluginSelf* self);
-
+    bool Initialize(IPluginSelf* self);
     void Reset();
 
-    bool IsNativeWorldPositionRevealed(
-        double worldX,
-        double worldY);
+    void OnExperienceLoadComplete();
 
     void Render(
         IModLoaderImGui* ui,

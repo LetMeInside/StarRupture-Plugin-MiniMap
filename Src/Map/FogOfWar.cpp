@@ -1308,6 +1308,38 @@ namespace MiniMapFogOfWar
     }
 
 
+    bool IsNativeWorldPositionRevealed(
+        double worldX,
+        double worldY)
+    {
+        if (!g_snapshot.Valid ||
+            !std::isfinite(worldX) ||
+            !std::isfinite(worldY))
+        {
+            return false;
+        }
+
+        const int32_t maskX =
+            static_cast<int32_t>(
+                (worldX - kMapPivotX) *
+                kWorldToMaskScale);
+
+        const int32_t maskY =
+            static_cast<int32_t>(
+                (worldY - kMapPivotY) *
+                kWorldToMaskScale);
+
+        uint8_t maskByte = 0;
+
+        return
+            TryGetMaskByte(
+                maskX,
+                maskY,
+                maskByte) &&
+            maskByte == 255;
+    }
+
+
     void Render(
         IModLoaderImGui* ui,
         const MiniMapMap::Transform& transform)

@@ -1018,6 +1018,129 @@ namespace MiniMapFingerprints
         addresses.getControlRotation =
             controlRotationAddress;
 
+        PluginScanRequest getAllActorsRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        getAllActorsRequest.hookName =
+            "MiniMap::UGameplayStatics::GetAllActorsOfClass";
+
+        getAllActorsRequest.pattern =
+            "4C 8D 44 24 30 4C 89 A4 24 28 01 00 00 "
+            "48 8D 54 24 58 4C 89 AC 24 20 01 00 00 "
+            "49 8B CE 4C 89 BC 24 18 01 00 00 "
+            "E8 ?? ?? ?? ?? "
+            "48 63 44 24 38 85 C0 0F 84 ?? ?? ?? ??";
+
+        getAllActorsRequest.followRel32At = 0x25;
+        getAllActorsRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        getAllActorsRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t getAllActorsAddress =
+            scanner->Resolve(self, &getAllActorsRequest);
+
+        if (getAllActorsAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getAllActorsOfClass =
+            getAllActorsAddress;
+
+
+        PluginScanRequest poiStaticClassRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        poiStaticClassRequest.hookName =
+            "MiniMap::ACrPointOfInterestMarkerActor::StaticClass";
+
+        poiStaticClassRequest.pattern =
+            "48 C7 44 24 30 00 00 00 00 "
+            "48 C7 44 24 38 00 00 00 00 "
+            "E8 ?? ?? ?? ?? "
+            "80 3D ?? ?? ?? ?? 00 "
+            "48 89 44 24 58 74 ?? 48 85 C0 74 ?? "
+            "48 8B C8 E8 ?? ?? ?? ?? "
+            "48 89 B4 24 38 01 00 00 "
+            "4C 8D 44 24 30";
+
+        poiStaticClassRequest.followRel32At = 0x12;
+        poiStaticClassRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        poiStaticClassRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t poiStaticClassAddress =
+            scanner->Resolve(self, &poiStaticClassRequest);
+
+        if (poiStaticClassAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.pointOfInterestStaticClass =
+            poiStaticClassAddress;
+
+
+        PluginScanRequest poiCategoryRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        poiCategoryRequest.hookName =
+            "MiniMap::UCrMapMenuDevSettings::FindPOIMarkerCategoryData";
+
+        poiCategoryRequest.pattern =
+            "48 8B 8B 10 01 00 00 48 85 C9 74 ?? "
+            "0F B6 96 E9 02 00 00 "
+            "E8 ?? ?? ?? ?? "
+            "4C 8B E8 EB ?? 45 33 ED "
+            "49 83 BE C0 03 00 00 00";
+
+        poiCategoryRequest.followRel32At = 0x13;
+        poiCategoryRequest.flags =
+            PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        poiCategoryRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t poiCategoryAddress =
+            scanner->Resolve(self, &poiCategoryRequest);
+
+        if (poiCategoryAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.findPOIMarkerCategoryData =
+            poiCategoryAddress;
+
+
+        PluginScanRequest markerFilterRequest =
+            PLUGIN_SCAN_REQUEST_INIT;
+
+        markerFilterRequest.hookName =
+            "MiniMap::UCrPlayerMapMenuDataComponent::"
+            "GetMapMenuMarkerFiltersOnOffStatus";
+
+        markerFilterRequest.pattern =
+            "48 89 5C 24 08 57 48 83 EC ?? "
+            "0F B6 FA 48 8B D9 "
+            "3B B9 18 01 00 00 7D ?? "
+            "48 63 89 18 01 00 00 3B F9 7C ??";
+
+        markerFilterRequest.flags = 0;
+        markerFilterRequest.kind =
+            PLUGIN_SCAN_FUNCTION_START;
+
+        const uintptr_t markerFilterAddress =
+            scanner->Resolve(self, &markerFilterRequest);
+
+        if (markerFilterAddress == 0)
+        {
+            return false;
+        }
+
+        addresses.getMapMenuMarkerFilterStatus =
+            markerFilterAddress;
         return true;
     }
 }

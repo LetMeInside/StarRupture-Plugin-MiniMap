@@ -15,6 +15,10 @@ namespace SDK
     class AController;
     class ACrCharacterPlayerBase;
     class USceneComponent;
+    class UClass;
+    class UCrMapMenuDevSettings;
+    class UCrMapMenuPOIData;
+    class UCrPlayerMapMenuDataComponent;
 
     struct FVector;
     struct FRotator;
@@ -66,6 +70,34 @@ namespace MiniMapNative
         GetControlRotationFn getControlRotation = nullptr;
         IsPlayerInForgottenEngineFn isPlayerInForgottenEngine = nullptr;
         GetComponentLocationFn getComponentLocation = nullptr;
+    };
+
+
+    struct PointsOfInterestApi
+    {
+        using GetAllActorsOfClassFn =
+            void (__fastcall*)(
+                const SDK::UObject* worldContext,
+                const void* actorClassStorage,
+                void* outActors);
+
+        using POIStaticClassFn =
+            SDK::UClass* (__fastcall*)();
+
+        using FindPOIMarkerCategoryDataFn =
+            const SDK::UCrMapMenuPOIData* (__fastcall*)(
+                const SDK::UCrMapMenuDevSettings* settings,
+                uint8_t pointOfInterestType);
+
+        using GetMarkerFilterStatusFn =
+            bool (__fastcall*)(
+                SDK::UCrPlayerMapMenuDataComponent* component,
+                uint8_t filter);
+
+        GetAllActorsOfClassFn getAllActorsOfClass = nullptr;
+        POIStaticClassFn pointOfInterestStaticClass = nullptr;
+        FindPOIMarkerCategoryDataFn findPOIMarkerCategoryData = nullptr;
+        GetMarkerFilterStatusFn getMarkerFilterStatus = nullptr;
     };
 
 
@@ -178,6 +210,7 @@ namespace MiniMapNative
     {
         AssetApi asset;
         PlayerApi player;
+        PointsOfInterestApi pointsOfInterest;
         TextureApi texture;
     };
 
