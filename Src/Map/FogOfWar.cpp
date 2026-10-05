@@ -3,6 +3,7 @@
 #include "FogOfWar.h"
 
 #include "Map.h"
+#include "MapTransform.h"
 
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
@@ -10,6 +11,7 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -41,20 +43,19 @@ namespace
         kSegmentGridSize *
         kSegmentSize;
 
-    // HF2.5-CL-126119 cooked MapAreaPivotPoint.
-    // These are diagnostic mapping constants only. The permanent renderer
-    // should obtain the active settings from the loaded map-settings CDO.
     constexpr double kMapPivotX =
         -480000.0;
 
     constexpr double kMapPivotY =
         -380000.0;
 
-    // 128 mask texels per 100000 world units.
     constexpr double kWorldToMaskScale =
         0.00128;
 
-    // PDB-established native offsets for HF2.5-CL-126119.
+    constexpr double kMaskCellWorldUnits =
+        1.0 /
+        kWorldToMaskScale;
+
     constexpr std::ptrdiff_t kFOWDataOffset =
         0x100;
 
@@ -95,6 +96,9 @@ namespace
     bool g_invalidStateReported =
         false;
 
+    bool g_renderReported =
+        false;
+
     float g_snapshotAccumulator =
         0.0f;
 
@@ -105,6 +109,8 @@ namespace
     {
         g_snapshot = {};
         g_invalidStateReported =
+            false;
+        g_renderReported =
             false;
     }
 
@@ -276,56 +282,15 @@ namespace
     }
 
 
-    bool TrySamplePlayerMask(
-        uint8_t& outValue,
-        int32_t& outMaskX,
-        int32_t& outMaskY,
-        int32_t& outSegmentIndex)
+    bool TryGetMaskByte(
+        int32_t maskX,
+        int32_t maskY,
+        uint8_t& outValue)
     {
         outValue = 0;
-        outMaskX = -1;
-        outMaskY = -1;
-        outSegmentIndex = -1;
 
-        if (!g_snapshot.Valid)
-        {
-            return false;
-        }
-
-        MiniMapMap::PlayerPose pose = {};
-
-        if (!MiniMapMap::TryGetPlayerPose(
-            pose))
-        {
-            return false;
-        }
-
-        const double maskXDouble =
-            (pose.WorldX -
-                kMapPivotX) *
-            kWorldToMaskScale;
-
-        const double maskYDouble =
-            (pose.WorldY -
-                kMapPivotY) *
-            kWorldToMaskScale;
-
-        if (!std::isfinite(maskXDouble) ||
-            !std::isfinite(maskYDouble))
-        {
-            return false;
-        }
-
-        // Native conversion truncates toward zero.
-        const int32_t maskX =
-            static_cast<int32_t>(
-                maskXDouble);
-
-        const int32_t maskY =
-            static_cast<int32_t>(
-                maskYDouble);
-
-        if (maskX < 0 ||
+        if (!g_snapshot.Valid ||
+            maskX < 0 ||
             maskY < 0 ||
             maskX >= kLogicalMaskSize ||
             maskY >= kLogicalMaskSize)
@@ -378,16 +343,89 @@ namespace
                 static_cast<std::size_t>(
                     byteIndex)];
 
+        return true;
+    }
+
+
+    bool TrySamplePlayerMask(
+        uint8_t& outValue,
+        int32_t& outMaskX,
+        int32_t& outMaskY,
+        int32_t& outSegmentIndex)
+    {
+        outValue = 0;
+        outMaskX = -1;
+        outMaskY = -1;
+        outSegmentIndex = -1;
+
+        if (!g_snapshot.Valid)
+        {
+            return false;
+        }
+
+        MiniMapMap::PlayerPose pose = {};
+
+        if (!MiniMapMap::TryGetPlayerPose(
+            pose))
+        {
+            return false;
+        }
+
+        const double maskXDouble =
+            (pose.WorldX -
+                kMapPivotX) *
+            kWorldToMaskScale;
+
+        const double maskYDouble =
+            (pose.WorldY -
+                kMapPivotY) *
+            kWorldToMaskScale;
+
+        if (!std::isfinite(maskXDouble) ||
+            !std::isfinite(maskYDouble))
+        {
+            return false;
+        }
+
+        const int32_t maskX =
+            static_cast<int32_t>(
+                maskXDouble);
+
+        const int32_t maskY =
+            static_cast<int32_t>(
+                maskYDouble);
+
+        if (maskX < 0 ||
+            maskY < 0 ||
+            maskX >= kLogicalMaskSize ||
+            maskY >= kLogicalMaskSize)
+        {
+            return false;
+        }
+
+        const int32_t segmentHorizontal =
+            maskX /
+            kSegmentSize;
+
+        const int32_t segmentVertical =
+            maskY /
+            kSegmentSize;
+
+        outSegmentIndex =
+            segmentVertical *
+            kSegmentGridSize +
+            segmentHorizontal;
+
         outMaskX =
             maskX;
 
         outMaskY =
             maskY;
 
-        outSegmentIndex =
-            segmentIndex;
-
-        return true;
+        return TryGetMaskByte(
+            maskX,
+            maskY,
+            outValue);
     }
 
 
@@ -580,6 +618,101 @@ namespace
 
         PollFogOfWar();
     }
+
+
+    uint32_t FogColorForMaskByte(
+        uint8_t maskByte)
+    {
+        const uint32_t alpha =
+            255u -
+            static_cast<uint32_t>(
+                maskByte);
+
+        // ImGui packed color is AABBGGRR. RGB remains black.
+        return alpha << 24;
+    }
+
+
+    bool DrawFogRun(
+        IModLoaderImGui* ui,
+        PluginDrawList drawList,
+        const MiniMapMap::Transform& transform,
+        int32_t startMaskX,
+        int32_t endMaskXExclusive,
+        int32_t maskY,
+        uint8_t maskByte)
+    {
+        if (ui == nullptr ||
+            startMaskX >=
+            endMaskXExclusive ||
+            maskByte ==
+            255)
+        {
+            return false;
+        }
+
+        const double worldX0 =
+            kMapPivotX +
+            static_cast<double>(
+                startMaskX) *
+            kMaskCellWorldUnits;
+
+        const double worldX1 =
+            kMapPivotX +
+            static_cast<double>(
+                endMaskXExclusive) *
+            kMaskCellWorldUnits;
+
+        const double worldY0 =
+            kMapPivotY +
+            static_cast<double>(
+                maskY) *
+            kMaskCellWorldUnits;
+
+        const double worldY1 =
+            worldY0 +
+            kMaskCellWorldUnits;
+
+        MiniMapMap::ScreenPoint p1 = {};
+        MiniMapMap::ScreenPoint p2 = {};
+        MiniMapMap::ScreenPoint p3 = {};
+        MiniMapMap::ScreenPoint p4 = {};
+
+        if (!transform.WorldToScreen(
+                worldX0,
+                worldY0,
+                p1) ||
+            !transform.WorldToScreen(
+                worldX1,
+                worldY0,
+                p2) ||
+            !transform.WorldToScreen(
+                worldX1,
+                worldY1,
+                p3) ||
+            !transform.WorldToScreen(
+                worldX0,
+                worldY1,
+                p4))
+        {
+            return false;
+        }
+
+        ui->DL_AddQuadFilled(
+            drawList,
+            p1.X,
+            p1.Y,
+            p2.X,
+            p2.Y,
+            p3.X,
+            p3.Y,
+            p4.X,
+            p4.Y,
+            FogColorForMaskByte(
+                maskByte));
+
+        return true;
+    }
 }
 
 
@@ -634,6 +767,234 @@ namespace MiniMapFogOfWar
 
         g_snapshotAccumulator =
             kSnapshotIntervalSeconds;
+    }
+
+
+    void Render(
+        IModLoaderImGui* ui,
+        const MiniMapMap::Transform& transform)
+    {
+        if (ui == nullptr ||
+            !transform.Valid ||
+            !g_snapshot.Valid ||
+            transform.PixelsPerWorldUnit <=
+                0.0)
+        {
+            return;
+        }
+
+        PluginDrawList drawList =
+            ui->GetWindowDrawList();
+
+        if (drawList ==
+            nullptr)
+        {
+            return;
+        }
+
+        const double halfWidthWorld =
+            static_cast<double>(
+                transform.Width) *
+            0.5 /
+            transform.PixelsPerWorldUnit;
+
+        const double halfHeightWorld =
+            static_cast<double>(
+                transform.Height) *
+            0.5 /
+            transform.PixelsPerWorldUnit;
+
+        const double viewportRadiusWorld =
+            std::sqrt(
+                halfWidthWorld *
+                    halfWidthWorld +
+                halfHeightWorld *
+                    halfHeightWorld);
+
+        if (!std::isfinite(
+            viewportRadiusWorld))
+        {
+            return;
+        }
+
+        const double minWorldX =
+            transform.PlayerWorldX -
+            viewportRadiusWorld;
+
+        const double maxWorldX =
+            transform.PlayerWorldX +
+            viewportRadiusWorld;
+
+        const double minWorldY =
+            transform.PlayerWorldY -
+            viewportRadiusWorld;
+
+        const double maxWorldY =
+            transform.PlayerWorldY +
+            viewportRadiusWorld;
+
+        const int32_t minMaskX =
+            std::clamp(
+                static_cast<int32_t>(
+                    std::floor(
+                        (minWorldX -
+                            kMapPivotX) *
+                        kWorldToMaskScale)),
+                0,
+                kLogicalMaskSize -
+                    1);
+
+        const int32_t maxMaskX =
+            std::clamp(
+                static_cast<int32_t>(
+                    std::floor(
+                        (maxWorldX -
+                            kMapPivotX) *
+                        kWorldToMaskScale)),
+                0,
+                kLogicalMaskSize -
+                    1);
+
+        const int32_t minMaskY =
+            std::clamp(
+                static_cast<int32_t>(
+                    std::floor(
+                        (minWorldY -
+                            kMapPivotY) *
+                        kWorldToMaskScale)),
+                0,
+                kLogicalMaskSize -
+                    1);
+
+        const int32_t maxMaskY =
+            std::clamp(
+                static_cast<int32_t>(
+                    std::floor(
+                        (maxWorldY -
+                            kMapPivotY) *
+                        kWorldToMaskScale)),
+                0,
+                kLogicalMaskSize -
+                    1);
+
+        if (minMaskX >
+                maxMaskX ||
+            minMaskY >
+                maxMaskY)
+        {
+            return;
+        }
+
+        const float viewportX =
+            transform.CenterX -
+            transform.Width *
+            0.5f;
+
+        const float viewportY =
+            transform.CenterY -
+            transform.Height *
+            0.5f;
+
+        ui->DL_PushClipRect(
+            drawList,
+            viewportX,
+            viewportY,
+            viewportX +
+                transform.Width,
+            viewportY +
+                transform.Height,
+            true);
+
+        std::size_t runCount =
+            0;
+
+        for (int32_t maskY = minMaskY;
+            maskY <= maxMaskY;
+            ++maskY)
+        {
+            int32_t maskX =
+                minMaskX;
+
+            while (maskX <=
+                maxMaskX)
+            {
+                uint8_t maskByte =
+                    255;
+
+                if (!TryGetMaskByte(
+                    maskX,
+                    maskY,
+                    maskByte))
+                {
+                    ++maskX;
+                    continue;
+                }
+
+                if (maskByte ==
+                    255)
+                {
+                    ++maskX;
+                    continue;
+                }
+
+                const int32_t runStart =
+                    maskX;
+
+                const uint8_t runMaskByte =
+                    maskByte;
+
+                ++maskX;
+
+                while (maskX <=
+                    maxMaskX)
+                {
+                    uint8_t nextMaskByte =
+                        255;
+
+                    if (!TryGetMaskByte(
+                            maskX,
+                            maskY,
+                            nextMaskByte) ||
+                        nextMaskByte !=
+                            runMaskByte)
+                    {
+                        break;
+                    }
+
+                    ++maskX;
+                }
+
+                if (DrawFogRun(
+                    ui,
+                    drawList,
+                    transform,
+                    runStart,
+                    maskX,
+                    maskY,
+                    runMaskByte))
+                {
+                    ++runCount;
+                }
+            }
+        }
+
+        ui->DL_PopClipRect(
+            drawList);
+
+        if (!g_renderReported)
+        {
+            LOG_INFO(
+                "MiniMap: FOW geometry renderer active "
+                "visible-mask=(%d..%d, %d..%d) runs=%zu",
+                minMaskX,
+                maxMaskX,
+                minMaskY,
+                maxMaskY,
+                runCount);
+
+            g_renderReported =
+                true;
+        }
     }
 
 

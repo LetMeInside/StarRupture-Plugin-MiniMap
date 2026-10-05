@@ -3,6 +3,7 @@
 #include "MiniMapUI.h"
 #include "MapOverlays.h"
 #include "Input/MouseWheel.h"
+#include "Map/FogOfWar.h"
 #include "Map/Terrain.h"
 
 #include "plugin.h"
@@ -198,6 +199,10 @@ namespace
             viewportHeight,
             transform))
         {
+            MiniMapFogOfWar::Render(
+                ui,
+                transform);
+
             MiniMapOverlays::Render(
                 ui,
                 transform);
