@@ -38,7 +38,7 @@ static PluginInfo s_pluginInfo = {
     "MiniMap",
     MODLOADER_BUILD_TAG,
     "Kian369",
-    "TODO: Add plugin description",
+    "A configurable on-screen minimap for StarRupture",
     PLUGIN_INTERFACE_VERSION,
     MINIMAP_EXPORTS_TARGET
 };
