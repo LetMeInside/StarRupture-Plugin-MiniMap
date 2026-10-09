@@ -25,6 +25,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/AlienActors.h"
 #include "Map/BuildingInventory.h"
 #include "Map/BuildingCollector.h"
+#include "Map/BuildingVisuals.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
@@ -98,6 +99,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapAlienActors::Reset();
     MiniMapBuildingInventory::Reset();
     MiniMapBuildingCollector::Reset();
+    MiniMapBuildingVisuals::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
@@ -143,6 +145,7 @@ static void OnAfterWorldEndPlay(
     MiniMapAlienActors::Reset();
     MiniMapBuildingInventory::Reset();
     MiniMapBuildingCollector::Reset();
+    MiniMapBuildingVisuals::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -229,6 +232,11 @@ extern "C"
         if (!MiniMapBuildingCollector::Initialize(g_self))
         {
             LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
+        }
+
+        if (!MiniMapBuildingVisuals::Initialize(g_self))
+        {
+            LOG_ERROR("MiniMap: building visuals initialization failed");
         }
 
         if (!MiniMapFoundables::Initialize(
@@ -397,6 +405,7 @@ extern "C"
 
         MiniMapTerrain::UnregisterDiagnostics();
         MiniMapAlienActors::Shutdown();
+        MiniMapBuildingVisuals::Shutdown();
         MiniMapBuildingCollector::Shutdown();
         MiniMapBuildingInventory::Shutdown();
         MiniMapFoundables::Shutdown();

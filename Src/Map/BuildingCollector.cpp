@@ -3,6 +3,7 @@
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
+#include "BuildingVisuals.h"
 #include "../DebugText.h"
 #include "Map.h"
 #include "../Native/NativeApi.h"
@@ -787,6 +788,7 @@ namespace
                 << "\nUnproven ordinary visual bounds: " << ordinary
                 << "\nOrigin-outside ordinary: " << ordinaryCross
                 << "\nOrigin-outside spline: " << splineCross;
+            text << MiniMapBuildingVisuals::GetDebugText();
             MiniMapDebugText::Publish(text.str());
 #endif
             g_metrics={}; g_nextLog=now+kLogCadence;

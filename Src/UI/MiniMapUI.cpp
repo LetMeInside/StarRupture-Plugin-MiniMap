@@ -8,6 +8,7 @@
 #include "Map/Foundables.h"
 #include "Map/AlienActors.h"
 #include "Map/BuildingCollector.h"
+#include "Map/BuildingVisuals.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 
@@ -204,6 +205,7 @@ namespace
             viewportHeight,
             transform))
         {
+            MiniMapBuildingVisuals::Render(ui, transform);
             MiniMapFogOfWar::Render(
                 ui,
                 transform);
