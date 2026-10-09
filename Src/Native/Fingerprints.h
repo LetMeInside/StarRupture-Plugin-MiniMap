@@ -38,6 +38,10 @@ namespace MiniMapFingerprints
         uintptr_t massQueryDestruct = 0;
         uintptr_t addInventoryRequirement = 0;
         uintptr_t addTransformRequirement = 0;
+        uintptr_t addSplineRequirement = 0; // Optional Stage B.1.
+        uintptr_t isMassEntityValid = 0;
+        uintptr_t isMassEntityBuilt = 0;
+        uintptr_t gridForEachCellInRadius = 0; // Optional XY collector traversal.
         uintptr_t addEnemyStateRequirement = 0;
         uintptr_t enemyStateFragmentStaticStruct = 0;
         uintptr_t enemyTagStaticStruct = 0;

@@ -1693,9 +1693,9 @@ namespace MiniMapFingerprints
                 static_cast<unsigned long long>(addresses.addTagRequirement));
         }
 
-        // Stage A.1 only. Each pattern is unique in the installed CL-127004
+        // Optional grid/collector functions. Each pattern is unique in CL-127004
         // executable and its target ABI was checked against the matching PDB.
-        // These resolve functions, not hooks. Failure disables only diagnostics.
+        // These resolve functions, not hooks. Failure disables dependent stages.
         const auto resolveGridDiagnostic = [&](const char* name, const char* pattern,
             int32_t followAt, uintptr_t& target)
         {
@@ -1711,6 +1711,21 @@ namespace MiniMapFingerprints
             LOG_INFO("MiniMap: GridValidation: resolve %s = 0x%llX", name,
                 static_cast<unsigned long long>(target));
         };
+        // Stage B.1 optional function resolutions, not hooks. PDB/EXE checked:
+        // spline anchor unique at 074B9ABE -> 0748E400; built anchor unique at
+        // 044657F0, whose first call is IsEntityValid (044658A0).
+        resolveGridDiagnostic("MiniMap::AddRequirement<FAuSplineConnectionFragment>",
+            "45 33 C0 48 8D 8B E0 00 00 00 B2 01 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? "
+            "48 8D 8B 78 03 00 00 8B D0 E8 ?? ?? ?? ?? 80 8B 98 03 00 00 01",
+            12, addresses.addSplineRequirement);
+        constexpr const char* entityBuiltPattern =
+            "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 "
+            "E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? "
+            "41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??";
+        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityBuilt",
+            entityBuiltPattern, -1, addresses.isMassEntityBuilt);
+        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityValid",
+            entityBuiltPattern, 21, addresses.isMassEntityValid);
         resolveGridDiagnostic("MiniMap::UWorld::GetSubsystem<UCrEntityGridSubsystem>",
             "48 89 74 24 20 57 48 81 EC 90 00 00 00 48 8B F9 E8 ?? ?? ?? ?? "
             "48 85 C0 0F 84 F8 00 00 00 48 8B C8 E8 ?? ?? ?? ?? 48 8B F0 "
@@ -1722,6 +1737,12 @@ namespace MiniMapFingerprints
             "49 8B D8 44 0F 29 40 C8 7C 0C E8 ?? ?? ?? ?? 33 C0";
         resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::FindEntitiesInBox",
             gridBoxPattern, -1, addresses.gridFindEntitiesInBox);
+        // CL-127004: unique existing box anchor, call at +14D -> 07714720.
+        // PDB: (const FVector&, float, const TFunctionRef<bool(const
+        // FCrGridEntityHandle&)>&, bool). Final bool gates IsInRadius only;
+        // cell selection is XY at both hierarchy levels regardless of Z.
+        resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::ForEachCellInRadius",
+            gridBoxPattern, 0x14D, addresses.gridForEachCellInRadius);
         // The first call in FindEntitiesInBox destroys its previous results.
         // Linker-folded symbol name may mention FCulture, but verified code
         // destroys 24-byte elements and releases the controller at +0x10.

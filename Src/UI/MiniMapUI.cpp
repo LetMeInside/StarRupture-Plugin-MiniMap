@@ -6,6 +6,7 @@
 #include "Map/FogOfWar.h"
 #include "Map/Foundables.h"
 #include "Map/AlienActors.h"
+#include "Map/BuildingCollector.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 
@@ -207,6 +208,7 @@ namespace
                 transform);
 
             MiniMapAlienActors::SetViewport(transform);
+            MiniMapBuildingCollector::SetViewport(transform);
 
             MiniMapFoundables::Render(
                 ui,

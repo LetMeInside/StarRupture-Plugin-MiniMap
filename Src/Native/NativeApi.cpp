@@ -241,9 +241,13 @@ namespace MiniMapNative
             reinterpret_cast<TextureApi::MemoryFreeFn>(
                 addresses.memoryFree);
 
-        // Optional diagnostic addresses: a missing resolution disables Stage A.1
-        // without disabling the established Stage A inventory or MiniMap.
+        // Optional grid/collector addresses: missing resolutions disable the
+        // dependent stage without disabling Stage A or the established MiniMap.
         g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);
+        g_nativeApi.gridDiagnostic.forEachCellInRadius = reinterpret_cast<GridDiagnosticApi::ForEachCellInRadiusFn>(addresses.gridForEachCellInRadius);
+        g_nativeApi.mass.addSplineRequirement = reinterpret_cast<MassApi::AddFragmentRequirementFn>(addresses.addSplineRequirement);
+        g_nativeApi.mass.isEntityValid = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityValid);
+        g_nativeApi.mass.isEntityBuilt = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityBuilt);
         g_nativeApi.gridDiagnostic.findInBox = reinterpret_cast<GridDiagnosticApi::FindInBoxFn>(addresses.gridFindEntitiesInBox);
         g_nativeApi.gridDiagnostic.destructItems = reinterpret_cast<GridDiagnosticApi::DestructItemsFn>(addresses.gridDestructResultItems);
         g_nativeApi.gridDiagnostic.viewConstruct = reinterpret_cast<GridDiagnosticApi::ViewConstructFn>(addresses.massEntityViewConstruct);

@@ -101,6 +101,8 @@
     <ClInclude Include="Map\Foundables.h" />
     <ClInclude Include="Map\AlienActors.h" />
     <ClInclude Include="Map\BuildingInventory.h" />
+    <ClInclude Include="Map\BuildingCollector.h" />
+    <ClInclude Include="Map\BuildingGeometry.h" />
     <ClInclude Include="Map\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
@@ -130,6 +132,7 @@
     <ClCompile Include="Map\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors.cpp" />
     <ClCompile Include="Map\BuildingInventory.cpp" />
+    <ClCompile Include="Map\BuildingCollector.cpp" />
     <ClCompile Include="Map\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />

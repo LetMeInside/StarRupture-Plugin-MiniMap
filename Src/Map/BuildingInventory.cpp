@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingInventory.h"
+#include "BuildingCollector.h"
 #include "Map.h"
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
@@ -1106,6 +1107,13 @@ namespace
             g_nextDiagnostic = now + kDiagnosticInterval;
             g_intervalAdded = g_intervalRemoved = 0;
             g_maxMilliseconds = 0.0;
+        }
+        if (MiniMapBuildingCollector::BeginComparison(g_world))
+        {
+            std::scoped_lock lock(g_mutex);
+            for (const auto& [key, record] : g_inventory)
+                MiniMapBuildingCollector::ObserveBaseline(record);
+            MiniMapBuildingCollector::EndComparison();
         }
         const double totalMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
         if (totalMilliseconds > 20.0 && Clock::now() >= g_nextWarning)

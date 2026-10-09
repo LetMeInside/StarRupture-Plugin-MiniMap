@@ -205,6 +205,10 @@ namespace MiniMapNative
 
         AddFragmentRequirementFn addInventoryRequirement = nullptr;
         AddFragmentRequirementFn addTransformRequirement = nullptr;
+        AddFragmentRequirementFn addSplineRequirement = nullptr;
+        using EntityCheckFn = bool (__fastcall*)(const void*, MassEntityHandle);
+        EntityCheckFn isEntityValid = nullptr;
+        EntityCheckFn isEntityBuilt = nullptr;
         AddEnemyStateRequirementFn addEnemyStateRequirement = nullptr;
         AddTagRequirementFn addTagRequirement = nullptr;
         StaticStructFn enemyStateFragmentStaticStruct = nullptr;
@@ -246,6 +250,18 @@ namespace MiniMapNative
 
     struct GridDiagnosticApi
     {
+        // Verified CL-127004 TFunctionRef: Callable +0, Storage.Object +8.
+        // Synchronous borrowed callback; no native ownership/destruction.
+        struct VisitorRef
+        {
+            using InvokeFn = bool (__fastcall*)(void*, const GridEntityHandle&);
+            InvokeFn Callable = nullptr;
+            void* Object = nullptr;
+        };
+        static_assert(sizeof(VisitorRef) == 0x10);
+        static_assert(offsetof(VisitorRef, Object) == 8);
+        using ForEachCellInRadiusFn = void (__fastcall*)(void*, const SDK::FVector&,
+            float, const VisitorRef&, bool testEntityRadius);
         using GetSubsystemFn = void* (__fastcall*)(const SDK::UWorld*);
         using FindInBoxFn = void (__fastcall*)(void* subsystem, const SDK::FBox&,
             GridResultArray&, const void* requiredTags, const void* excludedTags);
@@ -254,6 +270,7 @@ namespace MiniMapNative
         using ViewHasTagFn = bool (__fastcall*)(const void* view, const SDK::UScriptStruct*);
 
         GetSubsystemFn getSubsystem = nullptr;
+        ForEachCellInRadiusFn forEachCellInRadius = nullptr;
         FindInBoxFn findInBox = nullptr;
         DestructItemsFn destructItems = nullptr;
         ViewConstructFn viewConstruct = nullptr;

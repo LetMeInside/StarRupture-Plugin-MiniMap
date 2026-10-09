@@ -24,6 +24,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/Foundables.h"
 #include "Map/AlienActors.h"
 #include "Map/BuildingInventory.h"
+#include "Map/BuildingCollector.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
@@ -96,6 +97,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
     MiniMapBuildingInventory::Reset();
+    MiniMapBuildingCollector::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
@@ -113,6 +115,7 @@ static void OnExperienceLoadComplete()
     MiniMapFoundables::OnExperienceLoadComplete();
     MiniMapAlienActors::OnExperienceLoadComplete();
     MiniMapBuildingInventory::OnExperienceLoadComplete();
+    MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     if (!MiniMapTerrain::Initialize(g_self))
@@ -139,6 +142,7 @@ static void OnAfterWorldEndPlay(
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
     MiniMapBuildingInventory::Reset();
+    MiniMapBuildingCollector::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -220,6 +224,11 @@ extern "C"
         if (!MiniMapBuildingInventory::Initialize(g_self))
         {
             LOG_ERROR("MiniMap: Stage A building inventory initialization failed");
+        }
+
+        if (!MiniMapBuildingCollector::Initialize(g_self))
+        {
+            LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
         }
 
         if (!MiniMapFoundables::Initialize(
@@ -388,6 +397,7 @@ extern "C"
 
         MiniMapTerrain::UnregisterDiagnostics();
         MiniMapAlienActors::Shutdown();
+        MiniMapBuildingCollector::Shutdown();
         MiniMapBuildingInventory::Shutdown();
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
