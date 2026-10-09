@@ -241,6 +241,14 @@ namespace MiniMapNative
             reinterpret_cast<TextureApi::MemoryFreeFn>(
                 addresses.memoryFree);
 
+        // Optional diagnostic addresses: a missing resolution disables Stage A.1
+        // without disabling the established Stage A inventory or MiniMap.
+        g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);
+        g_nativeApi.gridDiagnostic.findInBox = reinterpret_cast<GridDiagnosticApi::FindInBoxFn>(addresses.gridFindEntitiesInBox);
+        g_nativeApi.gridDiagnostic.destructItems = reinterpret_cast<GridDiagnosticApi::DestructItemsFn>(addresses.gridDestructResultItems);
+        g_nativeApi.gridDiagnostic.viewConstruct = reinterpret_cast<GridDiagnosticApi::ViewConstructFn>(addresses.massEntityViewConstruct);
+        g_nativeApi.gridDiagnostic.viewHasTag = reinterpret_cast<GridDiagnosticApi::ViewHasTagFn>(addresses.massEntityViewHasTag);
+
         g_initialized = true;
 
         LOG_INFO(

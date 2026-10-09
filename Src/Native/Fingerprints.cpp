@@ -1693,6 +1693,54 @@ namespace MiniMapFingerprints
                 static_cast<unsigned long long>(addresses.addTagRequirement));
         }
 
+        // Stage A.1 only. Each pattern is unique in the installed CL-127004
+        // executable and its target ABI was checked against the matching PDB.
+        // These resolve functions, not hooks. Failure disables only diagnostics.
+        const auto resolveGridDiagnostic = [&](const char* name, const char* pattern,
+            int32_t followAt, uintptr_t& target)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = name;
+            request.pattern = pattern;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = followAt >= 0 ? PLUGIN_SCAN_FLAG_FOLLOW_REL32 : 0;
+            request.followRel32At = followAt >= 0 ? followAt : 0;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            target = scanner->Resolve(self, &request);
+            LOG_INFO("MiniMap: GridValidation: resolve %s = 0x%llX", name,
+                static_cast<unsigned long long>(target));
+        };
+        resolveGridDiagnostic("MiniMap::UWorld::GetSubsystem<UCrEntityGridSubsystem>",
+            "48 89 74 24 20 57 48 81 EC 90 00 00 00 48 8B F9 E8 ?? ?? ?? ?? "
+            "48 85 C0 0F 84 F8 00 00 00 48 8B C8 E8 ?? ?? ?? ?? 48 8B F0 "
+            "48 85 C0 0F 84 E4 00 00 00", 0x21, addresses.getEntityGridSubsystem);
+        constexpr const char* gridBoxPattern =
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 "
+            "48 81 EC B0 00 00 00 41 83 78 0C 00 49 8D 78 0C 0F 29 70 E8 "
+            "48 8B F2 41 8B 50 08 48 8B E9 49 8B 08 4D 8B F1 0F 29 78 D8 "
+            "49 8B D8 44 0F 29 40 C8 7C 0C E8 ?? ?? ?? ?? 33 C0";
+        resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::FindEntitiesInBox",
+            gridBoxPattern, -1, addresses.gridFindEntitiesInBox);
+        // The first call in FindEntitiesInBox destroys its previous results.
+        // Linker-folded symbol name may mention FCulture, but verified code
+        // destroys 24-byte elements and releases the controller at +0x10.
+        resolveGridDiagnostic("MiniMap::FCrGridEntityHandle::DestructItems",
+            gridBoxPattern, 0x47, addresses.gridDestructResultItems);
+        resolveGridDiagnostic("MiniMap::FMassEntityView::Construct(manager,handle)",
+            "4C 8B DC 49 89 5B 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 60 "
+            "45 33 F6 48 C7 41 18 FF FF FF FF 4C 89 71 08 BD FF FF FF FF 89 69 10 "
+            "49 8B D8 4C 89 71 20 48 8B F9 48 89 19 45 85 C0 0F 84 C6 00 00 00 "
+            "0F B6 42 60 48 8D 72 20 4C 8D 3D ?? ?? ?? ?? 45 88 73 08 48 8B D6",
+            -1, addresses.massEntityViewConstruct);
+        resolveGridDiagnostic("MiniMap::FMassEntityView::HasTag",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 8B FA 48 83 C1 08 "
+            "48 8B 53 20 E8 ?? ?? ?? ?? 84 C0 75 26 4C 8D 0D ?? ?? ?? ?? "
+            "41 B8 58 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? "
+            "E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 48 8B 5B 20 48 85 FF 75 26 "
+            "4C 8D 0D ?? ?? ?? ?? 41 B8 02 01 00 00 48 8D 15 ?? ?? ?? ??",
+            -1, addresses.massEntityViewHasTag);
+
         return true;
     }
 }

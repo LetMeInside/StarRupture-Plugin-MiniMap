@@ -52,6 +52,13 @@ namespace MiniMapFingerprints
         uintptr_t inventoryFragmentStaticStruct = 0;
         uintptr_t foundableParametersStaticStruct = 0;
 
+        // Optional Stage A.1 diagnostic; never a dependency of map rendering.
+        uintptr_t getEntityGridSubsystem = 0;
+        uintptr_t gridFindEntitiesInBox = 0;
+        uintptr_t gridDestructResultItems = 0;
+        uintptr_t massEntityViewConstruct = 0;
+        uintptr_t massEntityViewHasTag = 0;
+
         uintptr_t getPlatformData = 0;
         uintptr_t getBulkDataSize = 0;
         uintptr_t canLoadFromDisk = 0;

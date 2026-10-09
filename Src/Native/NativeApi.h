@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include <cstdint>
+#include <cstddef>
 
 namespace SDK
 {
@@ -29,6 +30,7 @@ namespace SDK
     struct FVector;
     struct FRotator;
     struct FSlateBrush;
+    struct FBox;
 }
 
 namespace MiniMapFingerprints
@@ -221,6 +223,48 @@ namespace MiniMapNative
     };
 
 
+    // CL-127004 FCrGridEntityHandle: handle + TSharedPtr<Data, ESPMode::ThreadSafe>.
+    // Opaque shared-pointer words are owned by native code, never copied out.
+    struct GridEntityHandle
+    {
+        MassEntityHandle Entity;
+        void* Data = nullptr;
+        void* ReferenceController = nullptr;
+    };
+    static_assert(sizeof(GridEntityHandle) == 0x18);
+    static_assert(alignof(GridEntityHandle) == 8);
+    static_assert(offsetof(GridEntityHandle, Data) == 0x08);
+    static_assert(offsetof(GridEntityHandle, ReferenceController) == 0x10);
+
+    struct GridResultArray
+    {
+        GridEntityHandle* Data = nullptr;
+        int32_t Num = 0;
+        int32_t Max = 0;
+    };
+    static_assert(sizeof(GridResultArray) == 0x10);
+
+    struct GridDiagnosticApi
+    {
+        using GetSubsystemFn = void* (__fastcall*)(const SDK::UWorld*);
+        using FindInBoxFn = void (__fastcall*)(void* subsystem, const SDK::FBox&,
+            GridResultArray&, const void* requiredTags, const void* excludedTags);
+        using DestructItemsFn = void (__fastcall*)(GridEntityHandle*, int32_t);
+        using ViewConstructFn = void* (__fastcall*)(void* view, const void* manager, MassEntityHandle);
+        using ViewHasTagFn = bool (__fastcall*)(const void* view, const SDK::UScriptStruct*);
+
+        GetSubsystemFn getSubsystem = nullptr;
+        FindInBoxFn findInBox = nullptr;
+        DestructItemsFn destructItems = nullptr;
+        ViewConstructFn viewConstruct = nullptr;
+        ViewHasTagFn viewHasTag = nullptr;
+
+        bool IsAvailable() const
+        {
+            return getSubsystem && findInBox && destructItems && viewConstruct && viewHasTag;
+        }
+    };
+
     struct TextureApi
     {
         using GetBrushTextureFn =
@@ -332,6 +376,7 @@ namespace MiniMapNative
         PlayerApi player;
         PointsOfInterestApi pointsOfInterest;
         MassApi mass;
+        GridDiagnosticApi gridDiagnostic;
         TextureApi texture;
     };
 

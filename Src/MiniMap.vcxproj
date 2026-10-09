@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -100,6 +100,7 @@
     <ClInclude Include="Map\FogOfWar.h" />
     <ClInclude Include="Map\Foundables.h" />
     <ClInclude Include="Map\AlienActors.h" />
+    <ClInclude Include="Map\BuildingInventory.h" />
     <ClInclude Include="Map\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
@@ -128,6 +129,7 @@
     <ClCompile Include="Map\FogOfWar.cpp" />
     <ClCompile Include="Map\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors.cpp" />
+    <ClCompile Include="Map\BuildingInventory.cpp" />
     <ClCompile Include="Map\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />

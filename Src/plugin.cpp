@@ -1,4 +1,4 @@
-﻿#include "plugin.h"
+#include "plugin.h"
 #include "plugin_helpers.h"
 #include "Config/Config.h"
 
@@ -23,6 +23,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/FogOfWar.h"
 #include "Map/Foundables.h"
 #include "Map/AlienActors.h"
+#include "Map/BuildingInventory.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
@@ -94,6 +95,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
+    MiniMapBuildingInventory::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
@@ -110,6 +112,7 @@ static void OnExperienceLoadComplete()
 
     MiniMapFoundables::OnExperienceLoadComplete();
     MiniMapAlienActors::OnExperienceLoadComplete();
+    MiniMapBuildingInventory::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     if (!MiniMapTerrain::Initialize(g_self))
@@ -135,6 +138,7 @@ static void OnAfterWorldEndPlay(
 
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
+    MiniMapBuildingInventory::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -211,6 +215,11 @@ extern "C"
         if (!MiniMapAlienActors::Initialize(g_self))
         {
             LOG_ERROR("MiniMap: Alien Actors initialization failed");
+        }
+
+        if (!MiniMapBuildingInventory::Initialize(g_self))
+        {
+            LOG_ERROR("MiniMap: Stage A building inventory initialization failed");
         }
 
         if (!MiniMapFoundables::Initialize(
@@ -379,6 +388,7 @@ extern "C"
 
         MiniMapTerrain::UnregisterDiagnostics();
         MiniMapAlienActors::Shutdown();
+        MiniMapBuildingInventory::Shutdown();
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();
