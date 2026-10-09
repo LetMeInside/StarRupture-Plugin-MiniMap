@@ -223,7 +223,7 @@ extern "C"
 
         if (!MiniMapBuildingInventory::Initialize(g_self))
         {
-            LOG_ERROR("MiniMap: Stage A building inventory initialization failed");
+            LOG_ERROR("MiniMap: building validation oracle initialization failed");
         }
 
         if (!MiniMapBuildingCollector::Initialize(g_self))

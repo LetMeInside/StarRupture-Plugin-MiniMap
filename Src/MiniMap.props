@@ -1,6 +1,7 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
+    <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">true</MiniMapDebugUI>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
@@ -20,5 +21,8 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true'">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_DEBUG_UI=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
 </Project>

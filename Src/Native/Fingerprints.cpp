@@ -1708,7 +1708,7 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
             request.module = nullptr;
             target = scanner->Resolve(self, &request);
-            LOG_INFO("MiniMap: GridValidation: resolve %s = 0x%llX", name,
+            LOG_DEBUG("MiniMap: building native: resolve %s = 0x%llX", name,
                 static_cast<unsigned long long>(target));
         };
         // Stage B.1 optional function resolutions, not hooks. PDB/EXE checked:

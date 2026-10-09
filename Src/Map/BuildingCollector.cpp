@@ -3,6 +3,7 @@
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
+#include "../DebugText.h"
 #include "Map.h"
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
@@ -14,6 +15,10 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#if MINIMAP_DEBUG_UI
+#include <iomanip>
+#include <sstream>
+#endif
 
 namespace
 {
@@ -21,8 +26,8 @@ namespace
     using Clock = std::chrono::steady_clock;
     using Id = MiniMapNative::MassEntityHandle;
     using Native = MiniMapNative::NativeApi;
-    constexpr double kOriginPadding = 5000.0; // 50m admission padding; NOT measured mesh bounds.
-    constexpr double kSplinePadding = 1000.0; // Curve hull + 10m provisional width allowance.
+    constexpr double kOriginPadding = MiniMapBuildingGeometry::kOrdinarySafetyAllowance;
+    constexpr double kSplinePadding = MiniMapBuildingGeometry::kSplineSafetyAllowance;
     constexpr double kMovementPadding = 5000.0;
     constexpr double kFallbackVerticalExtent = 100000.0; // Original policy if optional XY traversal is unavailable.
     constexpr auto kLocalCadence = std::chrono::milliseconds(200);
@@ -36,8 +41,11 @@ namespace
     struct Types
     {
         SDK::UScriptStruct *Building=nullptr, *Grid=nullptr, *Transform=nullptr,
-            *Parameters=nullptr, *Spline=nullptr, *Tint=nullptr;
+            *Parameters=nullptr, *Spline=nullptr, *Tint=nullptr, *TargetBox=nullptr;
         SDK::UClass *Placement=nullptr, *BuildingData=nullptr, *GridClass=nullptr;
+        SDK::UClass *Config=nullptr, *TargetTrait=nullptr, *VisualTrait=nullptr,
+            *CosmeticTrait=nullptr, *DroneRail=nullptr, *Walkway=nullptr, *StaticMesh=nullptr,
+            *DronesSettings=nullptr;
     };
     struct Query
     {
@@ -52,12 +60,18 @@ namespace
         bool Read = false;
         uint8_t PreviousSources = 0;
     };
-    struct Definition { uint32_t Id; uint8_t Category; int32_t NameIndex; uint32_t NameNumber; };
+    struct Definition
+    {
+        uint32_t Id; uint8_t Category; int32_t NameIndex; uint32_t NameNumber;
+        std::shared_ptr<const DefinitionGeometry> Geometry;
+        Clock::time_point RetryAt = {};
+    };
     struct Metrics
     {
         double GridQuery=0, GridExtract=0, OffQuery=0, SplineQuery=0, Reconcile=0,
             Dynamic=0, BoundsTime=0, OffDynamic=0, OffBounds=0, CacheService=0,
-            Filter=0, SnapshotTime=0, Total=0, MaxTick=0, GridMax=0;
+            Filter=0, SnapshotTime=0, Total=0, MaxTick=0, GridMax=0,
+            DefinitionTime=0, OrdinaryTime=0, SplineTime=0;
         size_t Added=0, Removed=0, OffAdded=0, OffRemoved=0, DefinitionMiss=0, Stale=0, Refreshed=0, Polls=0, IdentityPolls=0, GridCalls=0;
     };
     IPluginSelf* g_collectorSelf=nullptr;
@@ -74,11 +88,23 @@ namespace
     size_t g_cursor=0, g_nearCursor=0;
     Bounds g_region, g_queryRegion;
     double g_queryZ=0, g_lastRadius=0;
+    double g_ordinaryQueryPadding=kOriginPadding;
     std::mutex g_mutex;
     double g_viewRadius=0;
     std::shared_ptr<const Snapshot> g_snapshot;
-    Clock::time_point g_nextLocal={}, g_nextIdentity={}, g_nextLog={}, g_nextWarning={}, g_nextCompare={};
+    Clock::time_point g_nextLocal={}, g_nextIdentity={}, g_nextLog={}, g_nextWarning={};
     Metrics g_metrics;
+#if MINIMAP_DEBUG_UI
+    struct DebugOracle
+    {
+        bool Valid=false;
+        size_t Missing=0, Repeated=0, Stale=0, Duplicate=0;
+        size_t Expected=0, Present=0, UnresolvedCached=0, UnresolvedWorldwide=0;
+    };
+    DebugOracle g_debugOracle;
+    double g_debugLastGridMs=0;
+#endif
+    SplineGeometry g_curveScratch; // Game-thread scratch retains capacity; unchanged curves reuse ownership.
     size_t g_indexed=0, g_gridResults=0, g_duplicates=0;
     std::vector<Id> g_indexedHandles; // Retains plugin-owned capacity; no grid shared-pointer members.
     size_t g_gridVisited=0;
@@ -130,6 +156,16 @@ namespace
         g_types.Placement=static_cast<SDK::UClass*>(Metadata("AuActorPlacementData","Class",sizeof(SDK::UAuActorPlacementData)));
         g_types.BuildingData=static_cast<SDK::UClass*>(Metadata("CrBuildingData","Class",sizeof(SDK::UCrBuildingData)));
         g_types.GridClass=static_cast<SDK::UClass*>(Metadata("CrEntityGridSubsystem","Class",sizeof(SDK::UCrEntityGridSubsystem)));
+        // Optional geometry sources. Missing metadata never disables B.1 acquisition.
+        g_types.TargetBox=static_cast<SDK::UScriptStruct*>(Metadata("CrBuildingAggroTargetDataFragment","ScriptStruct",sizeof(SDK::FCrBuildingAggroTargetDataFragment)));
+        g_types.Config=static_cast<SDK::UClass*>(Metadata("MassEntityConfigAsset","Class",sizeof(SDK::UMassEntityConfigAsset)));
+        g_types.TargetTrait=static_cast<SDK::UClass*>(Metadata("CrBuildingAggroTargetDataTrait","Class",sizeof(SDK::UCrBuildingAggroTargetDataTrait)));
+        g_types.VisualTrait=static_cast<SDK::UClass*>(Metadata("MassVisualizationTrait","Class",sizeof(SDK::UMassVisualizationTrait)));
+        g_types.CosmeticTrait=static_cast<SDK::UClass*>(Metadata("CrMassRepVisCosmeticsTrait","Class",sizeof(SDK::UCrMassRepVisCosmeticsTrait)));
+        g_types.DroneRail=static_cast<SDK::UClass*>(Metadata("CrDronePathPointConnection","Class",sizeof(SDK::ACrDronePathPointConnection)));
+        g_types.Walkway=static_cast<SDK::UClass*>(Metadata("CrModularRampWalkway","Class",sizeof(SDK::ACrModularRampWalkway)));
+        g_types.StaticMesh=static_cast<SDK::UClass*>(Metadata("StaticMesh","Class",sizeof(SDK::UStaticMesh)));
+        g_types.DronesSettings=static_cast<SDK::UClass*>(Metadata("DronesDeveloperSettings","Class",sizeof(SDK::UDronesDeveloperSettings)));
         g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
             g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
         return g_typesReady;
@@ -146,12 +182,160 @@ namespace
         const uintptr_t base=reinterpret_cast<uintptr_t>(memory+sizeof(void*));
         return reinterpret_cast<const SDK::FCrBuildingParameters*>((base+alignment-1)&~uintptr_t(alignment-1));
     }
+    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement)
+    {
+        DefinitionGeometry shape;
+        if(!placement || !g_types.Config) return shape;
+        auto readTemplate=[&](const SDK::UClass* type)
+        {
+            // Do not call GetDefaultObject: that can create/load a CDO. Only
+            // already resident, hard-referenced template defaults are inspected.
+            const auto* object=type?type->ClassDefaultObject:nullptr;
+            const SDK::UStaticMesh* mesh=nullptr;
+            if(IsClass(object,g_types.DroneRail))
+            {
+                mesh=static_cast<const SDK::ACrDronePathPointConnection*>(object)->SplineMesh;
+                const auto* settings=g_types.DronesSettings?g_types.DronesSettings->ClassDefaultObject:nullptr;
+                if(IsClass(settings,g_types.DronesSettings))
+                {
+                    const double extension=static_cast<const SDK::UDronesDeveloperSettings*>(settings)->RailMeshVisualExtraLength;
+                    if(std::isfinite(extension) && std::abs(extension)<=MiniMapBuildingGeometry::kMaximumGeometrySpan)
+                    { shape.RailEndpointExtension=std::abs(extension); shape.HasRailExtension=true; }
+                }
+            }
+            else if(IsClass(object,g_types.Walkway))
+                mesh=static_cast<const SDK::ACrModularRampWalkway*>(object)->SplineMesh;
+            if(!IsClass(mesh,g_types.StaticMesh)) return;
+            // CL-127004 rail/walkway builders use forward axis X. ExtendedBounds
+            // is mesh-local, not world space. Include origin offsets and Z so a
+            // tilted/rolled cross section cannot exceed this radial allowance.
+            const auto& b=mesh->ExtendedBounds;
+            const Point extent{b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z};
+            const Point origin{b.Origin.X,b.Origin.Y,b.Origin.Z};
+            if(!MiniMapBuildingGeometry::Finite(extent) || !MiniMapBuildingGeometry::Finite(origin) ||
+                std::any_of(extent.begin(),extent.end(),[](double v){return v<0;}))
+            { shape.Issue=GeometryIssue::NonFinite; return; }
+            const double width=std::hypot(std::abs(origin[1])+extent[1],std::abs(origin[2])+extent[2]);
+            if(!std::isfinite(width) || width<=0 || width>MiniMapBuildingGeometry::kMaximumGeometrySpan)
+            { shape.Issue=GeometryIssue::Oversized; return; }
+            if(!shape.HasSplineMesh || width>shape.SplineMeshCrossSection)
+            {
+                shape.SplineMeshCrossSection=width; shape.HasSplineMesh=true;
+                shape.VisualClassObjectIndex=type->Index;
+                shape.SplineMeshBounds.Valid=true;
+                for(size_t axis=0;axis<3;++axis)
+                { shape.SplineMeshBounds.Min[axis]=origin[axis]-extent[axis]; shape.SplineMeshBounds.Max[axis]=origin[axis]+extent[axis]; }
+                shape.SplineMeshObjectIndex=mesh->Index;
+                shape.SplineMeshNameIndex=mesh->Name.ComparisonIndex;
+                shape.SplineMeshNameNumber=mesh->Name.Number;
+            }
+        };
+        const auto* config=placement->EntityType.EntityConfigPtr;
+        std::array<const SDK::UMassEntityConfigAsset*,32> visited={};
+        for(size_t depth=0;config && depth<visited.size();++depth)
+        {
+            if((reinterpret_cast<uintptr_t>(config)&7) || !IsClass(config,g_types.Config) ||
+                std::find(visited.begin(),visited.begin()+depth,config)!=visited.begin()+depth)
+            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            visited[depth]=config;
+            const auto& traits=config->Config.Traits;
+            if(traits.Num()<0 || traits.Num()>256 || traits.Max()<traits.Num() || (traits.Num() && !traits.GetDataPtr()))
+            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            for(const auto* trait:traits)
+            {
+                if(reinterpret_cast<uintptr_t>(trait)&7) { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+                if(!shape.TargetingBox.Valid && IsClass(trait,g_types.TargetTrait))
+                    shape.TargetingBox=MiniMapBuildingGeometry::Copy(static_cast<const SDK::UCrBuildingAggroTargetDataTrait*>(trait)->BuildingBoundingBox);
+                if(IsClass(trait,g_types.CosmeticTrait))
+                {
+                    const auto* visual=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
+                    readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
+                }
+                else if(IsClass(trait,g_types.VisualTrait))
+                {
+                    const auto* visual=static_cast<const SDK::UMassVisualizationTrait*>(trait);
+                    readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
+                }
+            }
+            config=config->Config.Parent;
+        }
+        // Partial resident sources are useful, but do not establish full visual
+        // coverage. In particular Blueprint construction scripts, dynamic poles,
+        // foundations and mesh/component variants may add geometry.
+        return shape;
+    }
+    std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool measure=true)
+    {
+        const auto now=Clock::now();
+        if(!definition.Geometry || now>=definition.RetryAt)
+        {
+            const auto start=Clock::now();
+            auto shape=ResolveGeometry(placement);
+            if(!definition.Geometry || !(*definition.Geometry==shape))
+                definition.Geometry=std::make_shared<const DefinitionGeometry>(std::move(shape));
+            // Resident assets/config may settle after load. Bounded per-definition
+            // retry; no synchronous loads and no fragment/asset pointers cached.
+            definition.RetryAt=now+kLogCadence;
+            if(measure) g_metrics.DefinitionTime+=Ms(start);
+        }
+        return definition.Geometry;
+    }
+    void Geometry(Record& r,const SDK::FAuSplineConnectionFragment* spline,const SDK::FBox* targetingBox,bool retain=true)
+    {
+        r.SourceFootprint={}; r.LocalFootprint={}; r.UnboundedGeometry=false;
+        r.InvalidFootprintSource=false;
+        r.SplineInflation=0; r.GeometryStatus=GeometryIssue::MissingSource;
+        r.UsesSafetyAllowance=true;
+        if(spline)
+        {
+            const auto start=Clock::now();
+            MiniMapBuildingGeometry::CopySpline(*spline,g_curveScratch);
+            if(retain && (!r.Curve || r.Curve->Issue!=g_curveScratch.Issue ||
+                r.Curve->Reconstructed!=g_curveScratch.Reconstructed || r.Curve->Segments!=g_curveScratch.Segments))
+                r.Curve=std::make_shared<const SplineGeometry>(g_curveScratch);
+            const auto& curve=retain?*r.Curve:g_curveScratch;
+            r.GeometryStatus=curve.Issue;
+            const double scale=(std::max)({std::abs(r.Scale[0]),std::abs(r.Scale[1]),std::abs(r.Scale[2]),1.0});
+            double sourced=0;
+            if(r.DefinitionShape)
+                sourced=r.DefinitionShape->SplineMeshCrossSection+r.DefinitionShape->RailEndpointExtension;
+            r.SplineInflation=(std::max)(kSplinePadding,sourced*scale);
+            if(std::isfinite(r.SplineInflation) && r.SplineInflation<=MiniMapBuildingGeometry::kMaximumGeometrySpan)
+                r.Extent=Pad(curve.CenterlineBounds,r.SplineInflation);
+            else { r.Extent={}; r.GeometryStatus=GeometryIssue::Oversized; }
+            if(r.Extent.Valid) r.BoundsKind=Coverage::SplineHull;
+            else
+            {
+                // No finite guessed box can guarantee an unsupported spline's
+                // crossing coverage. Keep its identity explicitly admitted.
+                r.UnboundedGeometry=true;
+                r.Extent=Box(r.Position[0],r.Position[1],kOriginPadding);
+                r.BoundsKind=Coverage::Unresolved;
+            }
+            if(retain) g_metrics.SplineTime+=Ms(start);
+        }
+        else if(r.TransformValid)
+        {
+            const auto start=Clock::now(); r.Curve.reset();
+            if(targetingBox) r.LocalFootprint=MiniMapBuildingGeometry::Copy(*targetingBox);
+            else if(r.DefinitionShape) r.LocalFootprint=r.DefinitionShape->TargetingBox;
+            r.InvalidFootprintSource=targetingBox && !r.LocalFootprint.Valid;
+            r.SourceFootprint=MiniMapBuildingGeometry::Footprint(r.LocalFootprint,r.Position,r.Rotation,r.Scale);
+            // Authored targeting bounds do NOT prove visual-mesh bounds. Retain
+            // B.1 safety coverage and enlarge it if a known proxy extends farther.
+            r.Extent=MiniMapBuildingGeometry::Union(Box(r.Position[0],r.Position[1],kOriginPadding),r.SourceFootprint);
+            r.BoundsKind=r.SourceFootprint.Valid?Coverage::OrdinaryProxy:Coverage::OriginPadding;
+            if(r.LocalFootprint.Valid && !r.SourceFootprint.Valid) r.GeometryStatus=GeometryIssue::InvalidTransform;
+            if(retain) g_metrics.OrdinaryTime+=Ms(start);
+        }
+    }
     bool Read(const Native& n,Record& r)
     {
         const Id id{r.Index,r.Serial};
         if(!Live(n,id)) { ++g_metrics.Stale; return false; }
         const auto start=Clock::now();
         r.TransformValid=false; r.DefinitionValid=false; r.Extent={}; r.BoundsKind=Coverage::Unresolved;
+        r.DefinitionShape.reset();
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
         {
             r.Position={t->Translation.X,t->Translation.Y,t->Translation.Z};
@@ -180,6 +364,7 @@ namespace
                 ++g_metrics.DefinitionMiss;
             }
             r.BuildingId=it->second.Id; r.Category=it->second.Category; r.DefinitionValid=true;
+            r.DefinitionShape=DefinitionShape(it->second,placement);
         }
         r.Tint={1,1,1,1};
         if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
@@ -190,13 +375,14 @@ namespace
         g_metrics.Dynamic+=dynamic;
         if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
         const auto boundsStart=Clock::now();
-        if(spline)
+        const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(n,id,g_types.TargetBox));
+        Geometry(r,spline,targeting?&targeting->BuildingBoundingBox:nullptr);
+        if(!r.HasSpline && r.SourceFootprint.Valid)
         {
-            r.Extent=Pad(MiniMapBuildingGeometry::SplineBounds(*spline),kSplinePadding);
-            if(r.Extent.Valid) r.BoundsKind=Coverage::SplineHull;
+            const double reach=(std::max)({std::abs(r.SourceFootprint.MinX-r.Position[0]),std::abs(r.SourceFootprint.MaxX-r.Position[0]),
+                std::abs(r.SourceFootprint.MinY-r.Position[1]),std::abs(r.SourceFootprint.MaxY-r.Position[1])});
+            g_ordinaryQueryPadding=(std::max)(g_ordinaryQueryPadding,reach);
         }
-        else if(r.TransformValid)
-        { r.Extent=Box(r.Position[0],r.Position[1],kOriginPadding); r.BoundsKind=Coverage::OriginPadding; }
         const double boundsTime=Ms(boundsStart);
         g_metrics.BoundsTime+=boundsTime;
         if(r.Sources&OffGrid) g_metrics.OffBounds+=boundsTime;
@@ -214,10 +400,16 @@ namespace
     void Clear()
     {
         Destroy();
+#if MINIMAP_DEBUG_UI
+        MiniMapDebugText::Clear();
+        g_debugOracle={}; g_debugLastGridMs=0;
+#endif
         g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
+        g_curveScratch={};
         g_cursor=g_nearCursor=0; g_epoch=0; g_types={}; g_typesReady=false;
         g_region={}; g_queryRegion={}; g_lastRadius=0;
-        g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning=g_nextCompare={}; g_metrics={};
+        g_ordinaryQueryPadding=kOriginPadding;
+        g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={};
         g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
         g_indexedHandles.clear(); g_xyQuery=false;
         g_gridSucceeded=g_identitySucceeded=false;
@@ -363,6 +555,9 @@ namespace
     void MeasureGridCall(Clock::time_point start)
     {
         const double elapsed=Ms(start);
+#if MINIMAP_DEBUG_UI
+        g_debugLastGridMs=elapsed;
+#endif
         g_metrics.GridQuery+=elapsed;
         g_metrics.GridMax=(std::max)(g_metrics.GridMax,elapsed);
         ++g_metrics.GridCalls;
@@ -429,6 +624,7 @@ namespace
         {
             Record r; r.Generation=g_generation; r.Index=id.Index;
             r.Serial=id.SerialNumber; r.Sources=Indexed;
+            if(const auto cached=g_cache.find(Key(id));cached!=g_cache.end()) r.Curve=cached->second.Data.Curve;
             if(Read(n,r)) records.push_back(r);
         }
         g_metrics.GridExtract+=Ms(extraction);
@@ -444,14 +640,14 @@ namespace
         auto add=[&](const Record& r)
         {
             if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
-            if(!MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
+            if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
         };
         for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
         for(const auto& [key,e]:g_cache)
         {
             if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || !e.Data.DefinitionValid) { result->Complete=false; continue; }
-            if(!MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)) continue;
+            if(!e.Data.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)) continue;
             g_near.push_back(key);
             if(!Live(n,{e.Data.Index,e.Data.Serial})) { ++g_metrics.Stale; continue; }
             add(e.Data);
@@ -492,10 +688,10 @@ namespace
         MiniMapMap::PlayerPose pose;
         if(radius<=0 || !MiniMapMap::TryGetPlayerPose(pose)) return;
         const auto now=Clock::now(); g_region=Box(pose.WorldX,pose.WorldY,radius);
-        const bool relocate=!Contains(g_queryRegion,Pad(g_region,kOriginPadding)) || radius!=g_lastRadius || std::abs(pose.WorldZ-g_queryZ)>kMovementPadding;
+        const bool relocate=!Contains(g_queryRegion,Pad(g_region,g_ordinaryQueryPadding)) || radius!=g_lastRadius || std::abs(pose.WorldZ-g_queryZ)>kMovementPadding;
         if(relocate)
         {
-            g_queryRegion=Pad(g_region,kOriginPadding+kMovementPadding); g_queryZ=pose.WorldZ; g_lastRadius=radius;
+            g_queryRegion=Pad(g_region,g_ordinaryQueryPadding+kMovementPadding); g_queryZ=pose.WorldZ; g_lastRadius=radius;
             g_nextLocal={};
             // Newly relevant cached hulls get refreshed promptly, independent of
             // rotation. Unknown bounds still use the fair discovery sweep.
@@ -535,68 +731,83 @@ namespace
             LOG_INFO("MiniMap: BuildingCollector: gridTiming mode=%s calls=%zu total=%.3fms mean=%.3fms maxCall=%.3fms visitedLast=%zu indexed=%zu slabs=0",
                 g_xyQuery?"XY/all-Z":"fallback-sphere",g_metrics.GridCalls,g_metrics.GridQuery,
                 g_metrics.GridCalls?g_metrics.GridQuery/g_metrics.GridCalls:0.0,g_metrics.GridMax,g_gridVisited,g_indexed);
+            size_t ordinary=0,proxy=0,meshWidth=0,railExtension=0,unresolvedSpline=0,reconstructed=0,
+                ordinaryCross=0,splineCross=0,ordinarySourceOnly=0,segments=0,invalidFootprint=0;
+            std::array<size_t,10> issues={};
+            if(snapshot) for(const auto& r:snapshot->Records)
+            {
+                ++issues[size_t(r.GeometryStatus)];
+                invalidFootprint+=r.InvalidFootprintSource;
+                const bool originOutside=!Contains(snapshot->Region,Box(r.Position[0],r.Position[1],0));
+                if(r.HasSpline)
+                {
+                    meshWidth+=r.DefinitionShape && r.DefinitionShape->HasSplineMesh;
+                    railExtension+=r.DefinitionShape && r.DefinitionShape->HasRailExtension;
+                    unresolvedSpline+=r.UnboundedGeometry;
+                    splineCross+=originOutside && !r.UnboundedGeometry;
+                    if(r.Curve) { reconstructed+=r.Curve->Reconstructed; segments+=r.Curve->Segments.size(); }
+                }
+                else
+                {
+                    ++ordinary; proxy+=r.SourceFootprint.Valid; ordinaryCross+=originOutside;
+                    ordinarySourceOnly+=!MiniMapBuildingGeometry::Intersects(Box(r.Position[0],r.Position[1],kOriginPadding),snapshot->Region);
+                }
+            }
+            LOG_INFO("MiniMap: BuildingCollector: geometry ordinary=%zu proxy=%zu completeVisual=0 ordinarySafety50m=%zu invalidFootprint=%zu splineMeshWidth=%zu railExtension=%zu splineCapSafety=%zu unresolvedSpline=%zu reconstructed=%zu segments=%zu originOutside(ordinary/spline)=%zu/%zu ordinaryBeyondSafety=%zu issue(none/missingSource/uninitialized/looped/array/curve/mode/nonfinite/oversized/transform)=%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu queryPadding=%.1fm intervalSums(ms): definition=%.3f ordinary=%.3f spline=%.3f",
+                ordinary,proxy,ordinary,invalidFootprint,meshWidth,railExtension,splines,unresolvedSpline,reconstructed,segments,
+                ordinaryCross,splineCross,ordinarySourceOnly,issues[0],issues[1],issues[2],issues[3],issues[4],issues[5],issues[6],issues[7],issues[8],issues[9],
+                g_ordinaryQueryPadding/100.0,g_metrics.DefinitionTime,g_metrics.OrdinaryTime,g_metrics.SplineTime);
+#if MINIMAP_DEBUG_UI
+            // Reuse the existing diagnostic traversal; no render-time collection.
+            std::ostringstream text;
+            text << std::fixed << std::setprecision(2)
+                << "BuildingCollector\nMode: " << (g_xyQuery?"XY/all-Z":"fallback-sphere")
+                << "\nCache complete: " << (snapshot && snapshot->Complete?"yes":"no")
+                << "\nPending: " << pending
+                << "\nCandidates: " << (snapshot?snapshot->Records.size():0)
+                << "\nIndexed: " << g_indexed
+                << "\nOff-grid cached: " << off
+                << "\nTagged splines: " << tagged;
+            if(snapshot) text << "\nSnapshot age (sampled): " << Seconds()-snapshot->PublishedAtSeconds << " s";
+            else text << "\nSnapshot: awaiting publication";
+            if(g_debugOracle.Valid)
+                text << "\nOracle (10s) expected/present: " << g_debugOracle.Expected << '/' << g_debugOracle.Present
+                    << "\nOracle missing/repeated: " << g_debugOracle.Missing << '/' << g_debugOracle.Repeated
+                    << "\nOracle stale/duplicate: " << g_debugOracle.Stale << '/' << g_debugOracle.Duplicate
+                    << "\nOracle unresolved cache/world: " << g_debugOracle.UnresolvedCached << '/' << g_debugOracle.UnresolvedWorldwide;
+            else text << "\nOracle: awaiting comparison";
+            text << "\nLast local query: " << g_debugLastGridMs << " ms"
+                << "\n\nGeometry"
+                << "\nOrdinary proxy: " << proxy
+                << "\nOrdinary fallback (50m): " << ordinary
+                << "\nSpline resident-width: " << meshWidth
+                << "\nSpline fallback-width: " << splines-meshWidth
+                << "\nSpline cap safety: " << splines
+                << "\nUnresolved spline geometry: " << unresolvedSpline
+                << "\nUnproven ordinary visual bounds: " << ordinary
+                << "\nOrigin-outside ordinary: " << ordinaryCross
+                << "\nOrigin-outside spline: " << splineCross;
+            MiniMapDebugText::Publish(text.str());
+#endif
             g_metrics={}; g_nextLog=now+kLogCadence;
         }
     }
 
-    // Stage A validation sink: never feeds records or metadata into acquisition.
+    // Independent worldwide-reference sink. None of this state feeds acquisition.
     std::shared_ptr<const Snapshot> g_comparison;
     std::unordered_set<uint64_t> g_remaining, g_previousMissing, g_missing;
-    size_t g_expected=0,g_missingCount=0,g_persistent=0,g_boundsCases=0,g_unresolved=0,g_outside=0,g_missingOff=0,g_missingGrid=0,g_stale=0;
-    size_t g_missingWarmup=0,g_missingUnresolved=0,g_verticalRejected=0,g_snapshotDuplicates=0;
-    std::array<size_t,6> g_heightBuckets={},g_indexedHeightBuckets={},g_slabMisses={};
-    size_t g_heightIndependent=0,g_heightIndexed=0,g_heightUnresolved=0,g_threeSlabMiss=0,g_xyExcluded=0;
-    double g_maxHeight=0,g_maxIndexedHeight=0;
-    constexpr std::array<double,5> kHeightBucketsMeters={25,50,100,200,500};
-    constexpr std::array<double,6> kTestHalfSlabsMeters={25,50,100,200,500,1000};
+    size_t g_expected=0,g_missingCount=0,g_persistent=0,g_unresolved=0;
+    size_t g_missingOff=0,g_missingGrid=0,g_stale=0,g_unresolvedCached=0,g_snapshotDuplicates=0;
+    std::unordered_map<uint64_t,Definition> g_oracleDefinitions; // Copied metadata, independent of production cache.
     Clock::time_point g_compareStart;
     void ClearComparison()
     {
         g_comparison.reset(); g_remaining.clear(); g_previousMissing.clear(); g_missing.clear();
-        g_heightBuckets={}; g_indexedHeightBuckets={}; g_slabMisses={};
-        g_heightIndependent=g_heightIndexed=g_heightUnresolved=g_threeSlabMiss=g_xyExcluded=0;
-        g_maxHeight=g_maxIndexedHeight=0;
-    }
-    bool SlabCaptures(const MiniMapBuildingInventory::Record& r,double halfHeight,double shift=0)
-    {
-        // Diagnostic simulation only: reproduce the box wrapper's float sphere
-        // radius and IsInRadius's float squared-distance comparison, then XY.
-        if(!(r.Position[0]>g_queryRegion.MinX && r.Position[0]<g_queryRegion.MaxX &&
-             r.Position[1]>g_queryRegion.MinY && r.Position[1]<g_queryRegion.MaxY)) return false;
-        const double width=g_queryRegion.MaxX-g_queryRegion.MinX;
-        const double height=g_queryRegion.MaxY-g_queryRegion.MinY;
-        const double depth=halfHeight*2;
-        const float radius=static_cast<float>(std::sqrt((width*width+height*height+depth*depth)*0.25));
-        const double dx=r.Position[0]-(g_queryRegion.MinX+width*0.5);
-        const double dy=r.Position[1]-(g_queryRegion.MinY+height*0.5);
-        const double dz=r.Position[2]-(g_queryZ+shift);
-        return static_cast<float>(dx*dx+dy*dy+dz*dz)<=radius*radius;
-    }
-    void ObserveHeight(const MiniMapBuildingInventory::Record& r,const Native& n)
-    {
-        const double dz=std::abs(r.Position[2]-g_queryZ)/100.0;
-        size_t bucket=0;
-        while(bucket<kHeightBucketsMeters.size() && dz>kHeightBucketsMeters[bucket]) ++bucket;
-        ++g_heightBuckets[bucket]; g_maxHeight=(std::max)(g_maxHeight,dz);
-        // Spline geometry may cross at another height than its origin. Neither
-        // spline complement depends on a local origin-Z query: classify bypass,
-        // never use origin height to exclude its geometry from the oracle.
-        if(r.HasSpline) { ++g_heightIndependent; return; }
-        const Id id{r.Index,r.SerialNumber};
-        if(!Live(n,id)) { ++g_heightUnresolved; return; }
-        alignas(8) std::array<std::byte,0x28> view={};
-        n.gridDiagnostic.viewConstruct(view.data(),g_manager,id);
-        if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Grid)) { ++g_heightIndependent; return; }
-        ++g_heightIndexed; ++g_indexedHeightBuckets[bucket];
-        g_maxIndexedHeight=(std::max)(g_maxIndexedHeight,dz);
-        for(size_t i=0;i<kTestHalfSlabsMeters.size();++i)
-            g_slabMisses[i]+=!SlabCaptures(r,kTestHalfSlabsMeters[i]*100);
-        g_threeSlabMiss+=!(SlabCaptures(r,10000,-20000) || SlabCaptures(r,10000) || SlabCaptures(r,10000,20000));
-        g_xyExcluded+=!(r.Position[0]>g_queryRegion.MinX && r.Position[0]<g_queryRegion.MaxX &&
-                       r.Position[1]>g_queryRegion.MinY && r.Position[1]<g_queryRegion.MaxY);
+        g_oracleDefinitions.clear();
+        g_expected=g_missingCount=g_persistent=g_unresolved=0;
+        g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
     }
 }
-
 namespace MiniMapBuildingCollector
 {
     bool Initialize(IPluginSelf* self)
@@ -626,77 +837,80 @@ namespace MiniMapBuildingCollector
         if(!g_initialized) return;
         g_collectorSelf->hooks->Engine->UnregisterOnTick(&OnTick); Reset(); g_collectorSelf=nullptr; g_initialized=false;
     }
-    bool BeginComparison(const SDK::UWorld* world)
+    bool BeginComparison(const SDK::UWorld* world,const void* manager)
     {
-        if(world!=g_world || Clock::now()<g_nextCompare) return false;
-        g_comparison=GetSnapshot(); if(!g_comparison) return false;
-        g_nextCompare=Clock::now()+std::chrono::seconds(10); g_compareStart=Clock::now();
-        g_remaining.clear(); g_missing.clear();
-        g_expected=g_missingCount=g_persistent=g_boundsCases=g_unresolved=g_outside=g_missingOff=g_missingGrid=g_stale=0;
-        g_missingWarmup=g_missingUnresolved=g_verticalRejected=g_snapshotDuplicates=0;
-        g_heightBuckets={}; g_indexedHeightBuckets={}; g_slabMisses={};
-        g_heightIndependent=g_heightIndexed=g_heightUnresolved=g_threeSlabMiss=g_xyExcluded=0;
-        g_maxHeight=g_maxIndexedHeight=0;
         const auto* n=MiniMapNative::Get();
+        if(!n || world!=g_world || manager!=g_manager) return false;
+        g_comparison=GetSnapshot();
+        if(!g_comparison || g_comparison->Generation!=g_generation) { g_comparison.reset(); return false; }
+        g_compareStart=Clock::now();
+        g_remaining.clear(); g_missing.clear();
+        g_expected=g_missingCount=g_persistent=g_unresolved=0;
+        g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
         for(const auto& r:g_comparison->Records)
         {
             g_snapshotDuplicates+=!g_remaining.insert(Key(r.Index,r.Serial)).second;
             if(!Live(*n,{r.Index,r.Serial})) ++g_stale;
         }
+        for(const auto& [key,e]:g_cache)
+            g_unresolvedCached+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || !e.Data.DefinitionValid;
         return true;
     }
     void ObserveBaseline(const MiniMapBuildingInventory::Record& r)
     {
         if(!g_comparison) return;
-        if(!r.HasTransform || !r.HasPlacement) { ++g_unresolved; return; }
-        Bounds bounds;
+        if(!r.HasTransform) { ++g_unresolved; return; }
+        // Preserve the existing ordinary discovery envelope. This does not claim
+        // worldwide completeness for unproven visual footprints beyond it.
+        if(!r.HasSpline && !Contains(Pad(g_comparison->Region,g_ordinaryQueryPadding),Box(r.Position[0],r.Position[1],0)))
+            return;
         const auto* n=MiniMapNative::Get(); const Id id{r.Index,r.SerialNumber};
-        // Diagnostic oracle uses every baseline spline, with no length heuristic.
-        // Its native reads and traversal time are excluded from collector timing.
-        if(r.HasSpline && Live(*n,id))
+        if(!Live(*n,id)) { ++g_unresolved; return; }
+        const auto* spline=r.HasSpline?static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(*n,id,g_types.Spline)):nullptr;
+        if(r.HasSpline && !spline) { ++g_unresolved; return; }
+
+        // Re-read native geometry/definition data independently of production
+        // records. All worldwide splines are examined, including origin-outside crossings.
+        Record geometry; geometry.Position=r.Position; geometry.Rotation=r.Rotation; geometry.Scale=r.Scale;
+        geometry.TransformValid=true; geometry.HasSpline=r.HasSpline;
+        const auto* parameters=Parameters(*n,id);
+        const auto* placement=parameters?parameters->PlacementData:nullptr;
+        bool unresolvedSource=false;
+        if((reinterpret_cast<uintptr_t>(placement)&7)==0 && IsClass(placement,g_types.Placement))
         {
-            const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(*n,id,g_types.Spline));
-            if(spline) bounds=Pad(MiniMapBuildingGeometry::SplineBounds(*spline),kSplinePadding);
+            const auto key=Key(placement->Index,int32_t(placement->BuildingID));
+            auto [entry,inserted]=g_oracleDefinitions.try_emplace(key,Definition{uint32_t(placement->BuildingID),0xFF,
+                placement->Name.ComparisonIndex,placement->Name.Number});
+            if(!inserted && (entry->second.NameIndex!=placement->Name.ComparisonIndex || entry->second.NameNumber!=placement->Name.Number))
+                entry->second=Definition{uint32_t(placement->BuildingID),0xFF,placement->Name.ComparisonIndex,placement->Name.Number};
+            geometry.DefinitionShape=DefinitionShape(entry->second,placement,false);
         }
-        else if(!r.HasSpline && r.HasTransform) bounds=Box(r.Position[0],r.Position[1],kOriginPadding);
-        if(!bounds.Valid) { ++g_unresolved; return; }
-        if(!MiniMapBuildingGeometry::Intersects(bounds,g_comparison->Region)) { ++g_outside; return; }
+        else unresolvedSource=true; // Still compare fallback coverage; never report an unqualified pass.
+        const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(*n,id,g_types.TargetBox));
+        Geometry(geometry,spline,targeting?&targeting->BuildingBoundingBox:nullptr,false);
+        g_unresolved+=unresolvedSource || geometry.UnboundedGeometry;
+        if(!geometry.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(geometry.Extent,g_comparison->Region)) return;
+
         ++g_expected;
-        ObserveHeight(r,*n);
-        if(!Contains(g_comparison->Region,Box(r.Position[0],r.Position[1],0))) ++g_boundsCases;
         const auto key=Key(id);
         if(g_remaining.erase(key)) return;
         ++g_missingCount; g_missing.insert(key); g_persistent+=g_previousMissing.contains(key);
-        const auto cached=g_cache.find(key);
-        if(cached!=g_cache.end())
-        {
-            g_missingWarmup+=!cached->second.Read;
-            g_missingUnresolved+=cached->second.Read && (!cached->second.Data.Extent.Valid ||
-                !cached->second.Data.TransformValid || !cached->second.Data.DefinitionValid);
-        }
-        if(Live(*n,id))
-        {
-            alignas(8) std::array<std::byte,0x28> view={};
-            n->gridDiagnostic.viewConstruct(view.data(),g_manager,id);
-            if(n->gridDiagnostic.viewHasTag(view.data(),g_types.Grid))
-            {
-                ++g_missingGrid;
-                if(!g_xyQuery && !r.HasSpline && !SlabCaptures(r,kFallbackVerticalExtent)) ++g_verticalRejected;
-            }
-            else ++g_missingOff;
-        }
-        if(g_missingCount<=4) LOG_DEBUG("MiniMap: BuildingCollector: comparison missing identity=%d:%d buildingID=%u spline=%d cached=%d",id.Index,id.SerialNumber,r.BuildingId,r.HasSpline,int(g_cache.contains(key)));
+        alignas(8) std::array<std::byte,0x28> view={};
+        n->gridDiagnostic.viewConstruct(view.data(),g_manager,id);
+        if(n->gridDiagnostic.viewHasTag(view.data(),g_types.Grid)) ++g_missingGrid;
+        else ++g_missingOff;
     }
-    void EndComparison()
+    void EndComparison(size_t matching,double queryMs,double referenceMs)
     {
         if(!g_comparison) return;
-        LOG_INFO("MiniMap: BuildingCollector: oracle expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu warmup=%zu unresolvedCached=%zu sphereRejected=%zu extraOrTemporal=%zu mergedInputs=%zu duplicateSnapshot=%zu stale=%zu boundsAdmission=%zu unresolvedWorldwide=%zu outside=%zu cacheComplete=%d snapshotAge=%.3fs validation=%.3fms",
-            g_expected,g_expected-g_missingCount,g_missingCount,g_persistent,g_missingOff,g_missingGrid,g_missingWarmup,g_missingUnresolved,g_verticalRejected,g_remaining.size(),g_duplicates,g_snapshotDuplicates,g_stale,g_boundsCases,g_unresolved,g_outside,int(g_comparison->Complete),Seconds()-g_comparison->PublishedAtSeconds,Ms(g_compareStart));
-        LOG_INFO("MiniMap: BuildingCollector: verticalOracle originAbsDZ(m) buckets=[0,25]/(25,50]/(50,100]/(100,200]/(200,500]/>500 all=%zu/%zu/%zu/%zu/%zu/%zu indexedNonSpline=%zu/%zu/%zu/%zu/%zu/%zu max(all/indexed)=%.1f/%.1fm indexed=%zu complementBypass=%zu unresolved=%zu XYexcluded=%zu simulatedSingleSlabMiss(25/50/100/200/500/1000m)=%zu/%zu/%zu/%zu/%zu/%zu threeSlab100mMiss=%zu mode=%s",
-            g_heightBuckets[0],g_heightBuckets[1],g_heightBuckets[2],g_heightBuckets[3],g_heightBuckets[4],g_heightBuckets[5],
-            g_indexedHeightBuckets[0],g_indexedHeightBuckets[1],g_indexedHeightBuckets[2],g_indexedHeightBuckets[3],g_indexedHeightBuckets[4],g_indexedHeightBuckets[5],
-            g_maxHeight,g_maxIndexedHeight,g_heightIndexed,g_heightIndependent,g_heightUnresolved,g_xyExcluded,
-            g_slabMisses[0],g_slabMisses[1],g_slabMisses[2],g_slabMisses[3],g_slabMisses[4],g_slabMisses[5],g_threeSlabMiss,g_xyQuery?"XY/all-Z":"fallback-sphere");
+#if MINIMAP_DEBUG_UI
+        g_debugOracle={true,g_missingCount,g_persistent,g_stale,g_snapshotDuplicates,
+            g_expected,g_expected-g_missingCount,g_unresolvedCached,g_unresolved};
+#endif
+        LOG_INFO("MiniMap: BuildingCollector: oracle cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms",
+            matching,g_expected,g_expected-g_missingCount,g_missingCount,g_persistent,g_missingOff,g_missingGrid,
+            g_unresolvedCached,g_snapshotDuplicates,g_stale,g_unresolved,int(g_comparison->Complete),
+            queryMs,referenceMs,queryMs+Ms(g_compareStart));
         g_previousMissing.swap(g_missing); g_comparison.reset();
     }
 }

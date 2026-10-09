@@ -2,6 +2,7 @@
 
 #include "MiniMapUI.h"
 #include "MapOverlays.h"
+#include "DebugText.h"
 #include "Input/MouseWheel.h"
 #include "Map/FogOfWar.h"
 #include "Map/Foundables.h"
@@ -236,11 +237,21 @@ namespace
             PluginDrawFlags_RoundCornersAll,
             1.0f);
 
-        /*
-         * Keep the Stage 1 label for now. Terrain rendering draws over the
-         * background when chunks are available; the label remains useful only
-         * while terrain has not been prepared yet.
-         */
+#if MINIMAP_DEBUG_UI
+        const auto debugText = MiniMapDebugText::GetDebugText();
+        if (debugText && !debugText->empty())
+        {
+            float textWidth = 0.0f, textHeight = 0.0f;
+            ui->CalcTextSize(debugText->c_str(), &textWidth, &textHeight, false, -1.0f);
+            const float x = windowX + kMapViewportInset;
+            const float y = windowY + windowHeight + kMapViewportInset;
+            const auto debugDrawList = ui->GetForegroundDrawList();
+            ui->DL_AddRectFilled(debugDrawList, x - 4.0f, y - 4.0f,
+                x + textWidth + 4.0f, y + textHeight + 4.0f,
+                0xC0202020, 3.0f, PluginDrawFlags_RoundCornersAll);
+            ui->DL_AddText(debugDrawList, x, y, 0xFFE0E0E0, debugText->c_str());
+        }
+#endif
     }
 
     void ApplyVisibility()

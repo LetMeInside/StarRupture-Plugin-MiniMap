@@ -95,6 +95,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
+    <ClInclude Include="DebugText.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Map\FogOfWar.h" />

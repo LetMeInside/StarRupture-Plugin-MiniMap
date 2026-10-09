@@ -3,6 +3,7 @@
 #include "../plugin.h"
 #include "MapTransform.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -15,7 +16,48 @@ namespace MiniMapBuildingCollector
         double MinX = 0, MinY = 0, MaxX = 0, MaxY = 0;
         bool Valid = false;
     };
-    enum class Coverage : uint8_t { Unresolved, OriginPadding, SplineHull };
+    enum class Coverage : uint8_t { Unresolved, OriginPadding, SplineHull, OrdinaryProxy };
+    enum class GeometryIssue : uint8_t
+    {
+        None, MissingSource, Uninitialized, Looped, InvalidArray, InvalidCurve,
+        UnsupportedMode, NonFinite, Oversized, InvalidTransform
+    };
+    using Point = std::array<double, 3>;
+    struct LocalBounds
+    {
+        Point Min = {}, Max = {};
+        bool Valid = false;
+        bool operator==(const LocalBounds&) const = default;
+    };
+    // Definition-shared copied metadata. A gameplay targeting box is NOT proof
+    // of the complete visual footprint. Safety allowances remain explicit.
+    struct DefinitionGeometry
+    {
+        LocalBounds TargetingBox;
+        LocalBounds SplineMeshBounds;
+        double SplineMeshCrossSection = 0, RailEndpointExtension = 0;
+        int32_t VisualClassObjectIndex = 0;
+        int32_t SplineMeshObjectIndex = 0;
+        int32_t SplineMeshNameIndex = 0;
+        uint32_t SplineMeshNameNumber = 0;
+        bool HasSplineMesh = false, HasRailExtension = false;
+        GeometryIssue Issue = GeometryIssue::MissingSource;
+        bool operator==(const DefinitionGeometry&) const = default;
+    };
+    struct CurveSegment
+    {
+        std::array<Point, 4> Controls = {}; // World-space cubic Bezier, Unreal units.
+        double StartKey = 0, EndKey = 1;
+        uint8_t Mode = 0; // Native EInterpCurveMode; constant jumps stay discontinuous.
+        bool operator==(const CurveSegment&) const = default;
+    };
+    struct SplineGeometry
+    {
+        std::vector<CurveSegment> Segments;
+        Bounds CenterlineBounds;
+        GeometryIssue Issue = GeometryIssue::None;
+        bool Reconstructed = false;
+    };
     enum Source : uint8_t { Indexed = 1, OffGrid = 2, IndexedSpline = 4 };
     struct Record
     {
@@ -31,6 +73,15 @@ namespace MiniMapBuildingCollector
         std::array<double, 4> Rotation = {};
         std::array<float, 4> Tint = { 1, 1, 1, 1 };
         Bounds Extent;
+        Bounds SourceFootprint; // Transformed targeting proxy, separate from admission fallback.
+        LocalBounds LocalFootprint;
+        std::shared_ptr<const DefinitionGeometry> DefinitionShape;
+        std::shared_ptr<const SplineGeometry> Curve;
+        double SplineInflation = 0; // Includes named width/cap fallback; not a measured half-width.
+        GeometryIssue GeometryStatus = GeometryIssue::MissingSource;
+        bool UsesSafetyAllowance = true;
+        bool InvalidFootprintSource = false;
+        bool UnboundedGeometry = false; // Unresolved spline: explicitly admit, never silently lose crossings.
         Coverage BoundsKind = Coverage::Unresolved;
         double RefreshedAtSeconds = 0; // steady_clock; dynamic data/bounds sample time.
     };
@@ -38,7 +89,7 @@ namespace MiniMapBuildingCollector
     {
         uint64_t Generation = 0;
         Bounds Region;
-        bool Complete = false; // Cache warm-up/unresolved geometry is explicit.
+        bool Complete = false; // Identity/cache completeness; NOT proof of exact visual geometry.
         double PublishedAtSeconds = 0;
         std::vector<Record> Records;
     };
@@ -49,8 +100,8 @@ namespace MiniMapBuildingCollector
     std::shared_ptr<const Snapshot> GetSnapshot();
     void Shutdown();
     // Diagnostic sink only. Never used to populate production records/caches.
-    bool BeginComparison(const SDK::UWorld* world);
+    bool BeginComparison(const SDK::UWorld* world, const void* manager);
     void ObserveBaseline(const MiniMapBuildingInventory::Record& record);
-    void EndComparison();
+    void EndComparison(size_t matching, double queryMs, double referenceMs);
 }
 #endif
