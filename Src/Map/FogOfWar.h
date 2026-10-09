@@ -22,6 +22,13 @@ namespace MiniMapFogOfWar
         double worldX,
         double worldY);
 
+    // Effective visual exposure, including the temporary local feather.
+    // Reads the copied FOW snapshot; does not change persistent exploration.
+    float GetRenderedVisibilityAtWorldPosition(
+        double worldX,
+        double worldY,
+        const MiniMapMap::Transform& transform);
+
     void Render(
         IModLoaderImGui* ui,
         const MiniMapMap::Transform& transform);

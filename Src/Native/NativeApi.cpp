@@ -43,6 +43,11 @@ namespace MiniMapNative
             addresses.massQueryDestruct == 0 ||
             addresses.addInventoryRequirement == 0 ||
             addresses.addTransformRequirement == 0 ||
+            addresses.addEnemyStateRequirement == 0 ||
+            addresses.enemyStateFragmentStaticStruct == 0 ||
+            addresses.enemyTagStaticStruct == 0 ||
+            addresses.neutralTagStaticStruct == 0 ||
+            addresses.addTagRequirement == 0 ||
             addresses.addFoundableParametersRequirement == 0 ||
             addresses.addFoundableTagRequirement == 0 ||
             addresses.getMatchingEntityHandles == 0 ||
@@ -121,6 +126,26 @@ namespace MiniMapNative
         g_nativeApi.mass.queryDestruct =
             reinterpret_cast<MassApi::QueryDestructFn>(
                 addresses.massQueryDestruct);
+
+        g_nativeApi.mass.addEnemyStateRequirement =
+            reinterpret_cast<MassApi::AddEnemyStateRequirementFn>(
+                addresses.addEnemyStateRequirement);
+
+        g_nativeApi.mass.enemyStateFragmentStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.enemyStateFragmentStaticStruct);
+
+        g_nativeApi.mass.enemyTagStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.enemyTagStaticStruct);
+
+        g_nativeApi.mass.neutralTagStaticStruct =
+            reinterpret_cast<MassApi::StaticStructFn>(
+                addresses.neutralTagStaticStruct);
+
+        g_nativeApi.mass.addTagRequirement =
+            reinterpret_cast<MassApi::AddTagRequirementFn>(
+                addresses.addTagRequirement);
 
         g_nativeApi.mass.addInventoryRequirement =
             reinterpret_cast<MassApi::AddFragmentRequirementFn>(

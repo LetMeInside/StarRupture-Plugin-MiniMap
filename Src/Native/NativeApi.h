@@ -6,6 +6,8 @@
 
 namespace SDK
 {
+    enum class EMassFragmentAccess : uint8_t;
+    enum class EMassFragmentPresence : uint8_t;
     class UObject;
     class UTexture2D;
     class UStreamableRenderAsset;
@@ -160,6 +162,16 @@ namespace MiniMapNative
                 uint8_t access,
                 uint8_t presence);
 
+        using AddEnemyStateRequirementFn =
+            void* (__fastcall*)(void* requirements,
+                SDK::EMassFragmentAccess access,
+                SDK::EMassFragmentPresence presence);
+
+        using AddTagRequirementFn =
+            void (__fastcall*)(void* requirements,
+                const SDK::UScriptStruct* tag,
+                SDK::EMassFragmentPresence presence);
+
         using AddSharedRequirementFn =
             void* (__fastcall*)(
                 void* requirements,
@@ -191,6 +203,11 @@ namespace MiniMapNative
 
         AddFragmentRequirementFn addInventoryRequirement = nullptr;
         AddFragmentRequirementFn addTransformRequirement = nullptr;
+        AddEnemyStateRequirementFn addEnemyStateRequirement = nullptr;
+        AddTagRequirementFn addTagRequirement = nullptr;
+        StaticStructFn enemyStateFragmentStaticStruct = nullptr;
+        StaticStructFn enemyTagStaticStruct = nullptr;
+        StaticStructFn neutralTagStaticStruct = nullptr;
         AddSharedRequirementFn addFoundableParametersRequirement = nullptr;
         AddSharedRequirementFn addFoundableTagRequirement = nullptr;
 

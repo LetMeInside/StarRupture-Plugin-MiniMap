@@ -5,6 +5,7 @@
 #include "Input/MouseWheel.h"
 #include "Map/FogOfWar.h"
 #include "Map/Foundables.h"
+#include "Map/AlienActors.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 
@@ -205,6 +206,8 @@ namespace
                 ui,
                 transform);
 
+            MiniMapAlienActors::SetViewport(transform);
+
             MiniMapFoundables::Render(
                 ui,
                 transform);
@@ -212,6 +215,8 @@ namespace
             MiniMapPointsOfInterest::Render(
                 ui,
                 transform);
+
+            MiniMapAlienActors::Render(ui, transform);
 
             MiniMapOverlays::Render(
                 ui,

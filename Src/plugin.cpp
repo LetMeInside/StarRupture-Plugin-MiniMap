@@ -22,6 +22,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar.h"
 #include "Map/Foundables.h"
+#include "Map/AlienActors.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
@@ -92,6 +93,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
+    MiniMapAlienActors::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapTerrain::CancelPendingDiagnostic();
 
@@ -107,6 +109,7 @@ static void OnExperienceLoadComplete()
     LOG_INFO("MiniMap: OnExperienceLoadComplete");
 
     MiniMapFoundables::OnExperienceLoadComplete();
+    MiniMapAlienActors::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     if (!MiniMapTerrain::Initialize(g_self))
@@ -131,6 +134,7 @@ static void OnAfterWorldEndPlay(
     MiniMapUI::Hide();
 
     MiniMapFoundables::Reset();
+    MiniMapAlienActors::Reset();
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -202,6 +206,11 @@ extern "C"
         {
             LOG_ERROR(
                 "MiniMap: landmark POI initialization failed");
+        }
+
+        if (!MiniMapAlienActors::Initialize(g_self))
+        {
+            LOG_ERROR("MiniMap: Alien Actors initialization failed");
         }
 
         if (!MiniMapFoundables::Initialize(
@@ -369,6 +378,7 @@ extern "C"
         }
 
         MiniMapTerrain::UnregisterDiagnostics();
+        MiniMapAlienActors::Shutdown();
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();

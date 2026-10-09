@@ -745,6 +745,17 @@ namespace
     }
 
 
+    double RenderedFogAlpha(
+        double worldX,
+        double worldY,
+        const MiniMapMap::Transform& transform)
+    {
+        const double nativeFog = BilinearNativeFogAlpha(worldX, worldY);
+        return nativeFog <= 0.0 ? 0.0 :
+            nativeFog * LocalFogFactor(worldX, worldY, transform);
+    }
+
+
     uint32_t FogColorForAlpha(
         double alpha)
     {
@@ -942,26 +953,8 @@ namespace
                         worldY1) *
                     0.5;
 
-                const double nativeFog =
-                    BilinearNativeFogAlpha(
-                        centerX,
-                        centerY);
-
-                if (nativeFog <=
-                    0.0)
-                {
-                    continue;
-                }
-
-                const double localFactor =
-                    LocalFogFactor(
-                        centerX,
-                        centerY,
-                        transform);
-
                 const double finalAlpha =
-                    nativeFog *
-                    localFactor;
+                    RenderedFogAlpha(centerX, centerY, transform);
 
                 if (DrawWorldFogQuad(
                     ui,
@@ -1337,6 +1330,23 @@ namespace MiniMapFogOfWar
                 maskY,
                 maskByte) &&
             maskByte == 255;
+    }
+
+
+    float GetRenderedVisibilityAtWorldPosition(
+        double worldX,
+        double worldY,
+        const MiniMapMap::Transform& transform)
+    {
+        if (!g_snapshot.Valid || !transform.Valid ||
+            !std::isfinite(worldX) || !std::isfinite(worldY) ||
+            !std::isfinite(transform.PlayerWorldX) ||
+            !std::isfinite(transform.PlayerWorldY))
+        {
+            return 0.0f;
+        }
+        return static_cast<float>(std::clamp(
+            1.0 - RenderedFogAlpha(worldX, worldY, transform), 0.0, 1.0));
     }
 
 

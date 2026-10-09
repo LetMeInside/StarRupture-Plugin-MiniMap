@@ -1582,6 +1582,117 @@ namespace MiniMapFingerprints
 
         addresses.foundableParametersStaticStruct =
             foundableParametersStructAddress;
+
+        // Alien Actors: each anchor verified unique in client CL-127004.
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::AddRequirement<FMassEnemyStateFragment>";
+            request.pattern =
+                "45 33 C0 B2 02 48 8B CB E8 ?? ?? ?? ?? 41 B0 03 "
+                "B2 02 48 8B CB E8 ?? ?? ?? ?? 33 D2 48 8B CB E8 "
+                "?? ?? ?? ?? E8 ?? ?? ?? ?? 8B D0 48 8D 8F 58 03 "
+                "00 00 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B D0 48 8D "
+                "8F 58 03 00 00";
+            request.followRel32At = 8;
+            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            addresses.addEnemyStateRequirement = scanner->Resolve(self, &request);
+            if (addresses.addEnemyStateRequirement == 0)
+            {
+                return false;
+            }
+            LOG_DEBUG("MiniMap: AddRequirement<FMassEnemyStateFragment> = 0x%llX",
+                static_cast<unsigned long long>(addresses.addEnemyStateRequirement));
+        }
+
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::FMassEnemyStateFragment::StaticStruct";
+            request.pattern =
+                "0F 10 46 48 0F 11 00 F2 0F 10 4E 58 F2 0F 11 48 "
+                "10 E8 ?? ?? ?? ?? 48 8B D0 49 8B CE E8 ?? ?? ?? "
+                "?? 48 8B F8 E8 ?? ?? ?? ?? 48 8B D0 49 8B CE E8 "
+                "?? ?? ?? ?? 48 8B D8 E8 ?? ?? ?? ?? 48 8B D0 49 "
+                "8B CE";
+            request.followRel32At = 17;
+            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            addresses.enemyStateFragmentStaticStruct = scanner->Resolve(self, &request);
+            if (addresses.enemyStateFragmentStaticStruct == 0)
+            {
+                return false;
+            }
+            LOG_DEBUG("MiniMap: FMassEnemyStateFragment::StaticStruct = 0x%llX",
+                static_cast<unsigned long long>(addresses.enemyStateFragmentStaticStruct));
+        }
+
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::FMassEnemyTag::StaticStruct";
+            request.pattern =
+                "48 8B 9A C8 00 00 00 49 8B F8 4C 8B F2 48 8B F1 "
+                "E8 ?? ?? ?? ?? 48 8D 4B 20 8B D0 E8 ?? ?? ?? ?? "
+                "E8 ?? ?? ?? ?? 48 8B D0 49 8B CE E8 ?? ?? ?? ?? "
+                "E8 ?? ?? ?? ?? 48 8B D0 49 8B CE";
+            request.followRel32At = 32;
+            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            addresses.enemyTagStaticStruct = scanner->Resolve(self, &request);
+            if (addresses.enemyTagStaticStruct == 0)
+            {
+                return false;
+            }
+            LOG_DEBUG("MiniMap: FMassEnemyTag::StaticStruct = 0x%llX",
+                static_cast<unsigned long long>(addresses.enemyTagStaticStruct));
+        }
+
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::FMassNeutralAITag::StaticStruct";
+            request.pattern =
+                "E8 ?? ?? ?? ?? 48 8B D0 48 8D 4C 24 20 E8 ?? ?? "
+                "?? ?? 48 83 C4 50 5F 5E 5B C3 32 C0 48 83 C4 50";
+            request.followRel32At = 0;
+            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            addresses.neutralTagStaticStruct = scanner->Resolve(self, &request);
+            if (addresses.neutralTagStaticStruct == 0)
+            {
+                return false;
+            }
+            LOG_DEBUG("MiniMap: FMassNeutralAITag::StaticStruct = 0x%llX",
+                static_cast<unsigned long long>(addresses.neutralTagStaticStruct));
+        }
+
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::FMassFragmentRequirements::AddTagRequirement";
+            request.pattern =
+                "48 8B 03 48 8B CB FF 90 10 03 00 00 45 33 C0 49 "
+                "8B CF 48 8B D0 E8 ?? ?? ?? ?? 48 8B 03 48 8D 54 "
+                "24 20 48 8B CB FF 90 18 03 00 00";
+            request.followRel32At = 21;
+            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.resultOffset = 0;
+            request.module = nullptr;
+            addresses.addTagRequirement = scanner->Resolve(self, &request);
+            if (addresses.addTagRequirement == 0)
+            {
+                return false;
+            }
+            LOG_DEBUG("MiniMap: FMassFragmentRequirements::AddTagRequirement = 0x%llX",
+                static_cast<unsigned long long>(addresses.addTagRequirement));
+        }
+
         return true;
     }
 }

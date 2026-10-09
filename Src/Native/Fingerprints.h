@@ -38,6 +38,11 @@ namespace MiniMapFingerprints
         uintptr_t massQueryDestruct = 0;
         uintptr_t addInventoryRequirement = 0;
         uintptr_t addTransformRequirement = 0;
+        uintptr_t addEnemyStateRequirement = 0;
+        uintptr_t enemyStateFragmentStaticStruct = 0;
+        uintptr_t enemyTagStaticStruct = 0;
+        uintptr_t neutralTagStaticStruct = 0;
+        uintptr_t addTagRequirement = 0;
         uintptr_t addFoundableParametersRequirement = 0;
         uintptr_t addFoundableTagRequirement = 0;
         uintptr_t getMatchingEntityHandles = 0;
