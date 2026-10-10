@@ -3,9 +3,11 @@
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
 #include "AssemblyRecipeCore.h"
+#include "StaticAssemblyCaptureCore.h"
 #include "RepresentationMetadataPatterns.h"
 #include "ReadbackNativeAdapter.h"
 #include "SmelterCaptureNativeBindings.h"
+#include "SmelterCaptureExperiment.h"
 #include "../Map/BuildingCollector.h"
 #include "../Map/TerrainCache.h"
 #include "../Map/Map.h"
@@ -100,6 +102,7 @@ namespace MiniMapBuildingRepresentation
             std::map<std::string,std::string> AuditParents;
             std::set<std::string> AuditConflictingParents;
             std::map<uintptr_t,uintptr_t> AuditAssignments;
+            std::map<std::string,uintptr_t> AuditMaterialPointers;
             struct AuditMassRecord {std::string Mesh,Descriptor,Local,Materials,Min,Max;size_t Ordinal;};
             std::vector<AuditMassRecord> AuditMassRecords;
             std::map<std::pair<std::string,size_t>,std::string> AuditMassOffsets;
@@ -887,6 +890,50 @@ namespace MiniMapBuildingRepresentation
             }
             return false;
         }
+    }
+    bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
+    bool ValidateCaptureMaterialSlots(uintptr_t component,const uintptr_t* materials,size_t count,size_t& failedSlot)
+    {
+        failedSlot=0;
+        if(!materials||count>32||!Identity(component,0x540))return false;
+        C::ArrayHeader h{};if(!Read(component,0x530,h))return false;
+        const auto b=C::BoundArray(h,8,8,32);
+        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,8)))return false;
+        for(size_t i=0;i<count;++i)
+        {
+            failedSlot=i;uintptr_t material=0;
+            if(!Read(h.Data,i*8,material)||material!=materials[i]||!Identity(material))return false;
+        }
+        return true;
+    }
+    bool ValidateCaptureMembership(uintptr_t capture,const uintptr_t* components,size_t count)
+    {
+        // Read the existing weak entries; never resolve a weak pointer. Match
+        // index AND serial against the retained, directly validated component.
+        if(!objectArray||!components||count>10||!Identity(capture,0x298))return false;
+        // Components and actors are separate engine-owned show-only sources.
+        // Reject any actor list, rather than allowing it to add world geometry.
+        C::ArrayHeader actors{};if(!Read(capture,0x288,actors))return false;
+        const auto actorBounds=C::BoundArray(actors,8,8,0);
+        if(!actorBounds.Valid||actorBounds.Truncated||actors.Num!=0||actors.Max>64||
+            (!actors.Max&&actors.Data)||(actors.Max&&!Readable(actors.Data,size_t(actors.Max)*8,8)))return false;
+        C::ArrayHeader h{};if(!Read(capture,0x278,h))return false;
+        const auto b=C::BoundArray(h,8,4,16);
+        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,4)))return false;
+        std::set<uintptr_t> unique;
+        for(size_t i=0;i<count;++i)
+        {
+            const auto p=components[i];if(!unique.insert(p).second||!Identity(p))return false;
+            const auto index=Value<int32_t>(p,0xc);const auto table=Value<uintptr_t>(objectArray,0x10);
+            const auto chunk=Value<uintptr_t>(table,size_t(uint32_t(index)>>16)*8);
+            const auto serial=Value<int32_t>(chunk,size_t(uint32_t(index)&65535)*0x18+0x10);
+            if(serial<=0)return false;
+            size_t matches=0;
+            for(size_t j=0;j<count;++j)
+                if(Value<int32_t>(h.Data,j*8)==index&&Value<int32_t>(h.Data,j*8+4)==serial)++matches;
+            if(matches!=1)return false;
+        }
+        return true;
     }
     bool ResolvePrerequisites()
     {

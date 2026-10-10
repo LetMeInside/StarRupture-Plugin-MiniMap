@@ -9,6 +9,8 @@
     <!-- R2 diagnostic capture/export is enabled in normal Client Release builds. -->
     <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR2SmelterCapture>
     <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == ''">false</MiniMapStageR2SmelterCapture>
+    <MiniMapStageR25bStaticAssembly Condition="'$(MiniMapStageR25bStaticAssembly)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR25bStaticAssembly>
+    <MiniMapStageR25bStaticAssembly Condition="'$(MiniMapStageR25bStaticAssembly)' == ''">false</MiniMapStageR25bStaticAssembly>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
   </PropertyGroup>
@@ -41,5 +43,8 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapStageR2SmelterCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R2_SMELTER_CAPTURE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapStageR25bStaticAssembly)' == 'true' And '$(MiniMapStageR2SmelterCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R25B_STATIC_ASSEMBLY=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
 </Project>

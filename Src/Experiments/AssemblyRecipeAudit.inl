@@ -1,4 +1,5 @@
-// Included inside the synchronous representation Context. No persistent objects.
+// Included inside the synchronous representation Context. The optional R2.5b
+// handoff independently retains assets; Context's own roots remain local.
 bool AuditTransform(uintptr_t p,A::Transform& t,bool& absolute,bool& socket)
 {
     A::V rotation{};Name name{};uint8_t flags=0;
@@ -23,6 +24,7 @@ std::vector<A::Slot> AuditMaterials(uintptr_t header,size_t stride,bool& valid,s
         uintptr_t material=0;
         if(!Read(h.Data+i*stride,0,material)){valid=false;break;}
         const bool ok=material&&Is(material,Material)&&Hold(material);
+        if(ok)AuditMaterialPointers[Id(material)]=material;
         if(material&&!ok)valid=false;
         slots.push_back({i,ok?Id(material):"",ok});
         records.Add(C::Object({{"slot",std::to_string(i)},{"material_id",ok?C::Quote(Id(material)):"null"},
@@ -70,6 +72,10 @@ std::string AssemblyDocument(SDK::UWorld* world)
     struct EndAudit {bool& Active;~EndAudit(){Active=false;}} endAudit{AuditActive};
     const bool representationIncomplete=Truncated||Invalid||Graph.Truncated||Work.Exhausted||Components.Truncated||Relationships.Truncated;
     bool resident=true,materialsValid=true,transformsValid=true;
+    MiniMapStaticAssembly::Recipe captureRecipe;
+    captureRecipe.Generation=Record.Generation;
+    captureRecipe.ActorClass=AuditClass;
+    std::map<std::string,size_t> captureIndexes;
     std::map<std::string,A::Node> nodes;
     std::map<std::string,A::Result> native;
     C::JsonArray candidates,chains,hierarchy,staticRecords,skeletalRecords,comparisons,blockers;
@@ -158,6 +164,26 @@ std::string AssemblyDocument(SDK::UWorld* world)
             {allPresent&=slot.Valid;mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},
                 {"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));}
             if(isStatic)materialsValid&=defaultsValid&&overridesValid&&allPresent;
+            if(isStatic&&captureRecipe.Count<MiniMapStaticAssembly::Limit)
+            {
+                const auto index=captureRecipe.Count++;captureIndexes[n.Id]=index;
+                auto& input=captureRecipe.Instances[index];
+                input.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));input.Mesh=meshValid?mesh:0;
+                input.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;
+                input.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                input.Verified=meshValid&&defaultsValid&&overridesValid&&allPresent&&
+                    proposed.size()<=MiniMapStaticAssembly::Slots&&Is(mesh,StaticMesh,0x278)&&
+                    Read(mesh,0x240,input.LocalBounds.Origin)&&Read(mesh,0x258,input.LocalBounds.Extent);
+                input.MaterialCount=(std::min)(proposed.size(),MiniMapStaticAssembly::Slots);
+                for(const auto& slot:proposed)
+                {
+                    if(slot.Index>=input.MaterialCount){input.Verified=false;break;}
+                    const auto found=AuditMaterialPointers.find(slot.Material);
+                    if(!slot.Valid||found==AuditMaterialPointers.end()){input.Verified=false;break;}
+                    input.Materials[slot.Index]=found->second;
+                    for(const auto& over:overridden)if(over.Index==slot.Index&&over.Valid&&!over.Material.empty())input.Overrides[slot.Index]=true;
+                }
+            }
             n.Metadata=C::Object({{"component_identity",Ref(component,declared)},{"mesh_identity",meshValid?Ref(mesh,expected):"null"},
                 {"source",C::Quote("selected_actor_class_scs_template")},{"visibility",visibility},
                 {"raw_relative_location",n.Scene?Vector(component,0x140,3):"null"},
@@ -197,6 +223,8 @@ std::string AssemblyDocument(SDK::UWorld* world)
         const auto result=A::Resolve(id,nodes,native,active,0,&remaining);AuditVisits=A::VisitLimit-remaining;
         if(result.Status=="truncated")AuditTruncated=true;
         if(n.Kind=="static"){transformsValid&=result.Status=="verified";if(!n.Mesh.empty())meshes.insert(n.Mesh);}
+        if(const auto entry=captureIndexes.find(id);entry!=captureIndexes.end())
+        {auto& input=captureRecipe.Instances[entry->second];input.Transform=result.Effective;input.Verified&=result.Status=="verified";}
         const auto record=C::Object({{"component_id",C::Quote(n.Component)},{"scs_node_id",C::Quote(id)},
             {"parent_scs_node_id",n.Parent.empty()?"null":C::Quote(n.Parent)},
             {"native_parent_id",n.NativeParent.empty()?"null":C::Quote(n.NativeParent)},
@@ -235,6 +263,11 @@ std::string AssemblyDocument(SDK::UWorld* world)
     const bool worldValid=world==MiniMapMap::GetWorld()&&currentSnapshot&&currentSnapshot->Generation==Record.Generation;
     if(!worldValid)blockers.Add(C::Quote("world_or_generation_changed"));
     AuditTruncated|=AuditCollectionTruncated||hierarchy.Truncated||staticRecords.Truncated||skeletalRecords.Truncated||chains.Truncated||comparisons.Truncated||Work.Exhausted;
+    captureRecipe.RootVerified=root!=0&&transformsValid;
+    captureRecipe.HighDetail=SelectedTier=="high_detail_actor";
+    captureRecipe.Complete=initialSnapshot->Complete&&currentSnapshot&&currentSnapshot->Complete&&worldValid&&
+        resident&&materialsValid&&!AuditTruncated&&!representationIncomplete;
+    MiniMapSmelterCapture::OfferStaticAssembly(captureRecipe,world);
     if(AuditTruncated||representationIncomplete)blockers.Add(C::Quote("incomplete_or_truncated_input"));
     return A::Bound(C::Object({{"schema_version","1"},{"stage",C::Quote("R2.5a")},{"game_build",C::Quote("5.6.1-127004")},
         {"building_id","336"},{"status",C::Quote(AuditTruncated?"truncated":!staticCount||!resident||!transformsValid?"unresolved":"conditional")},

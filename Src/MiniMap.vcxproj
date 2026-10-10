@@ -107,6 +107,8 @@
     <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
     <ClInclude Include="Experiments\RepresentationSelectionCore.h" />
     <ClInclude Include="Experiments\AssemblyRecipeCore.h" />
+    <ClInclude Include="Experiments\StaticAssemblyCaptureCore.h" />
+    <ClInclude Include="Experiments\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Experiments\AssemblyRecipeAudit.inl" />
     <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
     <ClInclude Include="Experiments\SmelterCaptureNativeBindings.h" />
