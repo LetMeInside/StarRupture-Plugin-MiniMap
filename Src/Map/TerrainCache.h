@@ -5,9 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <filesystem>
 
 namespace MiniMapTerrainCache
 {
+    bool GetBuildingDiagnosticsDirectory(std::filesystem::path&);
     bool TryLoadChunk(
         int radiationLevel,
         int gridX,

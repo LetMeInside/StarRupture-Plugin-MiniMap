@@ -98,8 +98,16 @@
     <ClInclude Include="DebugText.h" />
     <ClInclude Include="Experiments\AsyncReadbackExperiment.h" />
     <ClInclude Include="Experiments\ReadbackPixels.h" />
+    <ClInclude Include="Experiments\CapturePng.h" />
     <ClInclude Include="Experiments\ReadbackUEConfiguration.h" />
     <ClInclude Include="Experiments\ReadbackNativeAdapter.h" />
+    <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
+    <ClInclude Include="Experiments\BuildingRepresentationDiagnostic.h" />
+    <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
+    <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
+    <ClInclude Include="Experiments\SmelterCaptureNativeBindings.h" />
+    <ClInclude Include="Experiments\FloatReadbackPixels.h" />
+    <None Include="Experiments\SmelterCapturePatterns.inl" />
     <ClInclude Include="Experiments\ReadbackNativeBindings.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
@@ -136,15 +144,21 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Experiments\AsyncReadbackExperiment.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
-      <AdditionalIncludeDirectories Condition="'$(MiniMapAsyncReadbackExperiment)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="('$(MiniMapAsyncReadbackExperiment)' == 'true' Or '$(MiniMapStageR2SmelterCapture)' == 'true') And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="Experiments\ReadbackNativeResolution.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <ClCompile Include="Experiments\SmelterCaptureExperiment.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <ClCompile Include="Experiments\BuildingRepresentationDiagnostic.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <ClCompile Include="Experiments\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
-      <AdditionalIncludeDirectories Condition="'$(MiniMapAsyncReadbackExperiment)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="('$(MiniMapAsyncReadbackExperiment)' == 'true' Or '$(MiniMapStageR2SmelterCapture)' == 'true') And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />

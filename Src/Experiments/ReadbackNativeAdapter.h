@@ -1,10 +1,14 @@
 #pragma once
 
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MODLOADER_CLIENT_BUILD) && (defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE))
 #include <cstdint>
 #include "ReadbackPixels.h"
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#include "FloatReadbackPixels.h"
+#endif
 namespace MiniMapReadbackNative
 {
+    uintptr_t ResolveOptionalFunction(const char* pattern, bool leaf);
     bool ResolvePrerequisites();
     bool Preflight();
     const char* Status();
@@ -33,6 +37,15 @@ namespace MiniMapReadbackNative
     };
     // One job; native objects remain private to this TU's render commands.
     Job* CreateJob();
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    // Resource is GC-protected by the game-thread capture owner through retirement.
+    Job* CreateExternalJob(void* resource, uint32_t width, uint32_t height);
+    // Owner may call ONLY before builder Execute; no capture may reference it yet.
+    bool DiscardExternalBeforeCapture(Job*&);
+    const MiniMapFloatPixels::Stats* FloatStats(const Job*);
+    // Immutable packed CPU pixels; valid only until DestroyIfRetired. No GPU access.
+    const std::vector<uint8_t>* FloatPixels(const Job*);
+#endif
     void Service(Job*, uint64_t frame); // game thread; submits at most one command
     void Cancel(Job*);                 // invalidates publication, not resources
     Report Inspect(const Job*);

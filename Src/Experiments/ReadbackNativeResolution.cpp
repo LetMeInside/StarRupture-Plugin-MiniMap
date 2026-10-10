@@ -1,4 +1,4 @@
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MODLOADER_CLIENT_BUILD) && (defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE))
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
 #define NOMINMAX
@@ -74,6 +74,27 @@ namespace MiniMapReadbackNative
             }
             return result;
         }
+    }
+
+    uintptr_t ResolveOptionalFunction(const char* pattern, bool leaf)
+    {
+        const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        if (!base) return 0;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+        const auto* sections = IMAGE_FIRST_SECTION(nt);
+        for (unsigned i=0;i<nt->FileHeader.NumberOfSections;++i)
+            if (!memcmp(sections[i].Name,".text",5))
+            {
+                auto address=FindUnique(reinterpret_cast<const unsigned char*>(base+sections[i].VirtualAddress),sections[i].Misc.VirtualSize,pattern);
+                if (!address || leaf) return address;
+                DWORD64 imageBase=0;
+                const auto* entry=RtlLookupFunctionEntry(address,&imageBase,nullptr);
+                return entry && imageBase+entry->BeginAddress==address ? address : 0;
+            }
+        return 0;
     }
 
     const Bindings& GetBindings() { return bindings; }

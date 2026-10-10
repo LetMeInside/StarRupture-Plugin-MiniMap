@@ -7,6 +7,8 @@
 #include "Native/NativeApi.h"
 #include "Experiments/AsyncReadbackExperiment.h"
 #include "Experiments/ReadbackNativeAdapter.h"
+#include "Experiments/SmelterCaptureExperiment.h"
+#include "Experiments/BuildingRepresentationDiagnostic.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -83,9 +85,13 @@ void OnPluginLoadHooks(
     LOG_INFO(
         "MiniMap: native API initialized");
 
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
+#endif
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    MiniMapSmelterCapture::ResolvePrerequisites();
+    MiniMapBuildingRepresentation::ResolvePrerequisites();
 #endif
 
 #else
@@ -381,6 +387,10 @@ extern "C"
 #if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
         MiniMapAsyncReadbackExperiment::Initialize();
 #endif
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        MiniMapSmelterCapture::Initialize();
+        MiniMapBuildingRepresentation::Initialize();
+#endif
 
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
         {
@@ -405,6 +415,10 @@ extern "C"
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::Hide();
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        MiniMapSmelterCapture::Shutdown();
+        MiniMapBuildingRepresentation::Shutdown();
+#endif
 #if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
         MiniMapAsyncReadbackExperiment::Shutdown();
 #endif

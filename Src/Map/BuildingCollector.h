@@ -9,6 +9,7 @@
 #include <vector>
 
 namespace MiniMapBuildingInventory { struct Record; }
+namespace SDK { class UObject; }
 namespace MiniMapBuildingCollector
 {
     struct Bounds
@@ -98,6 +99,11 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    // Caller must be on the game thread. Borrowing ends when visitor returns.
+    // Revalidates the Mass identity; does not resolve the copied UObject index.
+    bool VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
+#endif
     void Shutdown();
     // Diagnostic sink only. Never used to populate production records/caches.
     bool BeginComparison(const SDK::UWorld* world, const void* manager);

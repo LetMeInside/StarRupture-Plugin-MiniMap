@@ -834,6 +834,18 @@ namespace MiniMapBuildingCollector
         std::scoped_lock lock(g_mutex); g_viewRadius=std::isfinite(radius)?radius:0;
     }
     std::shared_ptr<const Snapshot> GetSnapshot() { std::scoped_lock lock(g_mutex); return g_snapshot; }
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    bool VisitDiagnosticDefinition(const Record& r,bool(*visitor)(const SDK::UObject*,void*),void* context)
+    {
+        const auto* n=MiniMapNative::Get();
+        if(!visitor||!n||!g_ready||!g_manager||!g_typesReady||r.Generation!=g_generation||
+            g_world!=MiniMapMap::GetWorld()||!r.DefinitionValid||!Live(*n,{r.Index,r.Serial}))return false;
+        const auto* parameters=Parameters(*n,{r.Index,r.Serial});
+        // Identity/type/extent checks and strong acquisition happen in the
+        // synchronous diagnostic visitor before any placement fields are read.
+        return visitor(parameters?parameters->PlacementData:nullptr,context);
+    }
+#endif
     void Shutdown()
     {
         if(!g_initialized) return;

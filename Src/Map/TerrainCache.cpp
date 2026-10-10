@@ -781,6 +781,12 @@ namespace
 
 namespace MiniMapTerrainCache
 {
+    bool GetBuildingDiagnosticsDirectory(std::filesystem::path& out)
+    {
+        if(!GetPluginDirectory(out))return false;
+        out/=L"MiniMap\\Cache\\Buildings\\Diagnostics";
+        return true;
+    }
     bool TryLoadChunk(
         int radiationLevel,
         int gridX,
