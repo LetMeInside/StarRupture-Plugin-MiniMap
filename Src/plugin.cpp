@@ -5,6 +5,8 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
+#include "Experiments/AsyncReadbackExperiment.h"
+#include "Experiments/ReadbackNativeAdapter.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -81,6 +83,11 @@ void OnPluginLoadHooks(
     LOG_INFO(
         "MiniMap: native API initialized");
 
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+    // Optional private preflight: failure never changes production readiness.
+    MiniMapReadbackNative::ResolvePrerequisites();
+#endif
+
 #else
 
     (void)self;
@@ -93,6 +100,9 @@ void OnPluginLoadHooks(
 
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+    MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
+#endif
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
@@ -135,6 +145,9 @@ static void OnAfterWorldEndPlay(
     SDK::UWorld* world,
     const char* worldName)
 {
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+    MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
+#endif
     LOG_INFO(
         "MiniMap: world ended: %s",
         worldName != nullptr ? worldName : "<null>");
@@ -365,6 +378,10 @@ extern "C"
         LOG_INFO(
             "MiniMap: registered world lifecycle callbacks");
 
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+        MiniMapAsyncReadbackExperiment::Initialize();
+#endif
+
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
         {
             LOG_ERROR(
@@ -388,6 +405,9 @@ extern "C"
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::Hide();
+#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
+        MiniMapAsyncReadbackExperiment::Shutdown();
+#endif
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&
