@@ -29,6 +29,8 @@ namespace MiniMapSmelterCapture
         IPluginWorldEvents* worlds=nullptr;
         IPluginObjectWalker* invocation=nullptr;
         Native::Job* job=nullptr;
+        MiniMapCaptureRetirement::FenceOwner retirementFence;
+        bool captureCommitted=false, retirementPending=false;
         SDK::UStaticMesh* asset=nullptr;
         SDK::UStaticMeshComponent* mesh=nullptr;
         SDK::USceneCaptureComponent2D* capture=nullptr;
@@ -48,6 +50,25 @@ namespace MiniMapSmelterCapture
         static_assert(sizeof(SDK::TSubclassOf<SDK::UObject>)==8);
 
         bool GameThread(){return bindings.GameThread && reinterpret_cast<bool(*)()>(bindings.GameThread)();}
+        struct RetirementOperations
+        {
+            bool Available() const
+            {
+                return GameThread() && bindings.RetirementConstruct && bindings.RetirementDestroy &&
+                    bindings.RetirementBegin && bindings.RetirementPoll;
+            }
+            bool Construct(void* storage) const
+            { reinterpret_cast<void(*)(void*)>(bindings.RetirementConstruct)(storage); return true; }
+            bool Begin(void* storage) const
+            {
+                // Installed PDB ESyncDepth: RenderThread=0, RHIThread=1, Swapchain=2.
+                reinterpret_cast<void(*)(void*,int32_t)>(bindings.RetirementBegin)(storage,1); return true;
+            }
+            bool Poll(void* storage) const
+            { return reinterpret_cast<bool(*)(const void*)>(bindings.RetirementPoll)(storage); }
+            void Destroy(void* storage) const
+            { reinterpret_cast<void(*)(void*)>(bindings.RetirementDestroy)(storage); }
+        };
         void Hold(SDK::UObject* object){reinterpret_cast<void(*)(SDK::UObject*)>(bindings.Retain)(object);}
         void Drop(SDK::UObject* object){reinterpret_cast<void(*)(SDK::UObject*)>(bindings.Release)(object);}
         void Unregister()
@@ -142,7 +163,50 @@ namespace MiniMapSmelterCapture
         {
             LOG_ERROR("MiniMap: R2 failed before capture: %s; no retry",reason);
             Native::DiscardExternalBeforeCapture(job);
+            RetirementOperations operations;
+            retirementFence.Release(operations); // constructed, never inserted
             ReleaseObjects(); finished=true;
+        }
+        bool RecoverRejectedCapture()
+        {
+            RetirementOperations operations;
+            // Detach only through a still-current world or the earlier verified
+            // before-EndPlay detachment. No old-world access during polling.
+            if (!MiniMapCaptureRetirement::CanStart(captureCommitted && Native::ExternalRejectedWithoutReadback(job),
+                Native::CaptureRetirementRendererAvailable(),operations.Available(),meshRegistered || captureRegistered,
+                captureWorld && captureWorld==MiniMapMap::GetWorld() && captureWorld!=endingWorld)) return false;
+            cancelled.store(true,std::memory_order_release);
+            Native::Cancel(job);
+            LOG_WARN("MiniMap: R2 readback rejected before native enqueue; empty-job recovery eligible: %s",Native::Inspect(job).Failure);
+            Unregister();
+            // Capture Execute and all detach commands precede this insertion on
+            // the same game thread. No subsequent detach is needed by this job.
+            if (!retirementFence.Insert(operations,!meshRegistered && !captureRegistered)) return false;
+            retirementPending=true;
+            LOG_INFO("MiniMap: R2 capture retirement RHI-depth fence inserted; publication cancelled");
+            return true;
+        }
+        void ServiceCaptureRetirement()
+        {
+            RetirementOperations operations;
+            if (!MiniMapCaptureRetirement::CanPoll(Native::ExternalRejectedWithoutReadback(job),
+                Native::CaptureRetirementRendererAvailable(),operations.Available(),!meshRegistered && !captureRegistered))
+            {
+                finished=true;
+                LOG_ERROR("MiniMap: R2 capture retirement prerequisites uncertain; existing quarantine retained");
+                return;
+            }
+            if (!retirementFence.Poll(operations)) return; // one nonblocking poll
+            LOG_INFO("MiniMap: R2 capture retirement fence complete (RHI submission, not GPU idle)");
+            if (!Native::CompleteExternalCaptureRetirement(job) || !retirementFence.Release(operations) ||
+                !Native::DestroyIfRetired(job))
+            {
+                finished=true;
+                LOG_ERROR("MiniMap: R2 capture retirement final ownership check failed; resources retained");
+                return;
+            }
+            ReleaseObjects(); retirementPending=false; finished=true;
+            LOG_INFO("MiniMap: R2 failed capture retired: empty CPU job released; components destroyed; strong references released");
         }
         void ExportImage() noexcept
         {
@@ -193,6 +257,8 @@ namespace MiniMapSmelterCapture
         {
             attempted=true;
             if(!Native::Preflight()){FailBeforeCapture(Native::Status());return;}
+            RetirementOperations retirementOperations;
+            if(!retirementFence.Prepare(retirementOperations)){FailBeforeCapture("retirement fence construction unavailable");return;}
             LOG_INFO("MiniMap: R2 gameplay-world eligibility established via lifecycle pointer; setup entered");
             auto* type=static_cast<SDK::UClass*>(Find(L"/Script/Engine.StaticMesh"));
             auto* meshClass=static_cast<SDK::UClass*>(Find(L"/Script/Engine.StaticMeshComponent"));
@@ -315,14 +381,23 @@ namespace MiniMapSmelterCapture
             const auto& native=Native::GetBindings();
             void* builder=reinterpret_cast<void*(*)(size_t,uint32_t)>(native.Malloc)(0x20,8);
             if(!builder){FailBeforeCapture("builder storage allocation failed");return;}
+            if(!GameThread() || world!=MiniMapMap::GetWorld() || world==endingWorld ||
+                !Native::CaptureRetirementRendererAvailable())
+            {
+                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+                FailBeforeCapture("final pre-commit world/RHI prerequisite changed");return;
+            }
             LOG_INFO("MiniMap: R2 capture-builder submission entered");
             reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
             reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
             // This is the commit boundary: all subsequent failures retain the
             // rooted target/components until real GPU retirement is established.
             reinterpret_cast<void(*)(void*)>(bindings.BuilderExecute)(builder);
+            captureCommitted=true;
+            const bool committedJob=Native::MarkExternalCaptureCommitted(job);
             reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
             reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+            if(!committedJob){finished=true;Native::Cancel(job);LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
             LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, 9 authored materials; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f; inverse-opacity and RGB premultiplication remain unverified",
                 Dimension,Dimension,extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
             LOG_INFO("MiniMap: R2 GPU readback scheduling entered (copy submission reported separately)");
@@ -354,11 +429,22 @@ namespace MiniMapSmelterCapture
                 Submit(world,player);return;
             }
             if(!job)return;
+            if(retirementPending)
+            {
+                try { ServiceCaptureRetirement(); }
+                catch(...) { finished=true;LOG_ERROR("MiniMap: R2 capture retirement exception; resources retained"); }
+                return;
+            }
             Native::Service(job,++frame); // never consult the old world here.
             const auto report=Native::Inspect(job);
             if((report.Visited&Bit(Native::Phase::CopySubmitted))&&!(reported&Bit(Native::Phase::CopySubmitted)))
             {reported|=Bit(Native::Phase::CopySubmitted);LOG_INFO("MiniMap: R2 GPU readback copy submitted; later-frame readiness polling");}
-            if(report.Quarantined){finished=true;LOG_ERROR("MiniMap: R2 retirement unproven: %s; resources retained, DLL unload NOT certified",report.Failure?report.Failure:"unknown");return;}
+            if(report.Quarantined)
+            {
+                try { if(RecoverRejectedCapture())return; }
+                catch(...) { LOG_ERROR("MiniMap: R2 capture-retirement native state uncertain; quarantine retained"); }
+                finished=true;LOG_ERROR("MiniMap: R2 recovery rejected; existing quarantine retained: %s",report.Failure?report.Failure:"unknown");return;
+            }
             if(report.Current!=Native::Phase::CleanupComplete||report.Callables||report.Outstanding)return;
             if(!cancelled.load())
             {
@@ -380,7 +466,8 @@ namespace MiniMapSmelterCapture
                     ExportImage();
                 }
             }
-            if(Native::DestroyIfRetired(job)){ReleaseObjects();finished=true;LOG_INFO("MiniMap: R2 cleanup complete: no outstanding callable, readback released, components destroyed and strong references released");}
+            RetirementOperations retirementOperations;
+            if(retirementFence.Release(retirementOperations) && Native::DestroyIfRetired(job)){ReleaseObjects();finished=true;LOG_INFO("MiniMap: R2 cleanup complete: no outstanding callable, readback released, components destroyed and strong references released");}
         }
         void BeginShutdown()
         {
@@ -393,6 +480,8 @@ namespace MiniMapSmelterCapture
     const Bindings& GetBindings(){return bindings;}
     bool ResolvePrerequisites()
     {
+        if(!Native::MatchesCaptureRetirementBuild())
+        {LOG_WARN("MiniMap: R2 capture-retirement executable identity mismatch; R2 disabled");return false;}
         struct Pattern{const char* Name;const char* Bytes;uintptr_t Bindings::*Field;bool Leaf;};
         const Pattern patterns[]={
 #include "SmelterCapturePatterns.inl"
@@ -405,7 +494,7 @@ namespace MiniMapSmelterCapture
             candidate.*p.Field=address;
         }
         bindings=candidate;resolved=true;
-        LOG_INFO("MiniMap: R2 optional native signatures resolved (18); no capture submitted");return true;
+        LOG_INFO("MiniMap: R2 optional native signatures resolved (22), including retirement fence; no capture submitted");return true;
     }
     void Initialize()
     {

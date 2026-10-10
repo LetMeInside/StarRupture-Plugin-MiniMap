@@ -99,13 +99,16 @@ namespace MiniMapReadbackNative
             return (*reinterpret_cast<uintptr_t**>(rhi))[0x1A0 / 8] == b.Create;
         }
 
-        bool Submit(const TCHAR* persistentName, uint32& persistentSpec, RenderCallable&& callable)
+        bool Submit(const TCHAR* persistentName, uint32& persistentSpec, RenderCallable&& callable,
+            std::atomic<MiniMapCaptureRetirement::EnqueueState>* enqueue = nullptr,
+            std::atomic<bool>* everInvoked = nullptr)
         {
-            if (!Prerequisites()) return false;
             const auto& b = GetBindings();
-            reinterpret_cast<SubmitFn>(b.Submit)(reinterpret_cast<void*>(b.Pipe), persistentName,
-                persistentSpec, TStatId{}, MoveTemp(callable));
-            return true;
+            return MiniMapCaptureRetirement::SubmitWithEvidence(Prerequisites(),enqueue,everInvoked,[&]
+            {
+                reinterpret_cast<SubmitFn>(b.Submit)(reinterpret_cast<void*>(b.Pipe), persistentName,
+                    persistentSpec, TStatId{}, MoveTemp(callable));
+            });
         }
 
         FRHICommandListImmediate& Immediate()
@@ -201,6 +204,8 @@ namespace MiniMapReadbackNative
     namespace Px = MiniMapAsyncReadbackExperiment::Pixels;
     struct Job
     {
+        std::atomic<MiniMapCaptureRetirement::EnqueueState> Enqueue{MiniMapCaptureRetirement::EnqueueState::NotAttempted};
+        std::atomic<bool> NativeEnqueueEverInvoked{false};
         std::atomic<Phase> Current{Phase::ReadyToSubmit};
         std::atomic<Outcome> Result{Outcome::Pending};
         std::atomic<uint32> Visited{1u << uint32(Phase::ReadyToSubmit)};
@@ -224,6 +229,7 @@ namespace MiniMapReadbackNative
         FRHIGPUTextureReadback* Readback = nullptr;
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
         bool External = false;
+        bool CaptureCommitted = false; // game-thread only
         void* TargetResource = nullptr;
         uint32 Width = 0, ImageHeight = 0;
         std::vector<uint8_t> FloatCpu;
@@ -408,18 +414,28 @@ namespace MiniMapReadbackNative
         struct Command
         {
             Job* State;
-            explicit Command(Job* job) : State(job) { State->Callables.fetch_add(1); }
-            Command(const Command& other) : Command(other.State) {}
-            Command(Command&& other) noexcept : State(other.State) { other.State = nullptr; }
-            ~Command() { if (State) State->Callables.fetch_sub(1, std::memory_order_release); }
+            bool Initial;
+            explicit Command(Job* job, bool initial) : State(job), Initial(initial) { State->Callables.fetch_add(1); }
+            Command(const Command& other) : Command(other.State, other.Initial) {}
+            Command(Command&& other) noexcept : State(other.State), Initial(other.Initial) { other.State = nullptr; }
+            ~Command()
+            {
+                if (!State) return;
+                State->Callables.fetch_sub(1, std::memory_order_release);
+            }
             void operator()(FRHICommandListImmediate& list) const
             {
+                if (Initial)
+                {
+                    auto invoked=MiniMapCaptureRetirement::EnqueueState::NativeInvoked;
+                    State->Enqueue.compare_exchange_strong(invoked,MiniMapCaptureRetirement::EnqueueState::CallbackExecuting);
+                }
                 try { Execute(State, list); }
-                catch (...) { Fail(State, "C++ exception in native command; retirement unproven", true); }
+                catch (...) { State->Enqueue.store(MiniMapCaptureRetirement::EnqueueState::Uncertain, std::memory_order_release); Fail(State, "C++ exception in native command; retirement unproven", true); }
                 State->Outstanding.store(false, std::memory_order_release);
             }
         };
-        static_assert(sizeof(Command) == sizeof(void*));
+        static_assert(sizeof(Command) == 16);
         static_assert(sizeof(UE::Core::Private::Function::TFunction_OwnedObject<Command, true, false>) <= 24);
     }
 
@@ -454,10 +470,43 @@ namespace MiniMapReadbackNative
     bool DiscardExternalBeforeCapture(Job*& job)
     {
         if (!job) return true;
-        if (!job->External || job->Current.load()!=Phase::ReadyToSubmit ||
+        if (!job->External || job->CaptureCommitted || job->Current.load()!=Phase::ReadyToSubmit ||
             job->Callables.load() || job->Outstanding.load()) return false;
         delete job; job=nullptr; return true;
     }
+    bool MarkExternalCaptureCommitted(Job* job)
+    {
+        if (!job || !job->External || job->CaptureCommitted || job->Current.load()!=Phase::ReadyToSubmit ||
+            job->NativeEnqueueEverInvoked.load() || job->Callables.load() || job->Outstanding.load()) return false;
+        job->CaptureCommitted=true; return true;
+    }
+    bool ExternalRejectedWithoutReadback(const Job* job)
+    {
+        using namespace MiniMapCaptureRetirement;
+        if (!job || job->NativeEnqueueEverInvoked.load(std::memory_order_acquire) ||
+            job->Enqueue.load(std::memory_order_acquire)!=EnqueueState::RejectedBeforeEnqueue ||
+            job->Callables.load(std::memory_order_acquire) || job->Outstanding.load(std::memory_order_acquire)) return false;
+        // The monotonic never-invoked proof excludes all render-thread access;
+        // only now may the game thread inspect native-member emptiness.
+        Evidence e;
+        e.External=job->External; e.CaptureCommitted=job->CaptureCommitted;
+        e.Enqueue=job->Enqueue.load();
+        e.ReadbackAllocated=job->Readback!=nullptr; e.TextureOwned=bool(job->Texture);
+        e.CopyIssued=(job->Visited.load() & (1u<<uint32(Phase::CopySubmitted)))!=0;
+        e.MappingPossible=e.PendingFenceWritePossible=e.ReadbackAllocated;
+        return EmptyRejectedCapture(e) && job->Quarantined.load() && job->Current.load()==Phase::CleanupPending;
+    }
+    bool CompleteExternalCaptureRetirement(Job* job)
+    {
+        if (!ExternalRejectedWithoutReadback(job)) return false;
+        // No readback/native destructor is involved. The caller has separately
+        // proven ordered capture/detachment RHI submission completion.
+        job->TargetResource=nullptr;
+        Enter(job,Phase::CleanupComplete);
+        job->Quarantined.store(false,std::memory_order_release);
+        return true;
+    }
+    bool CaptureRetirementRendererAvailable() { return Operations::Prerequisites(); }
     const MiniMapFloatPixels::Stats* FloatStats(const Job* job)
     { return job && job->External && job->DataReady.load(std::memory_order_acquire) && job->HasPixels ? &job->FloatStatistics : nullptr; }
     const std::vector<uint8_t>* FloatPixels(const Job* job)
@@ -484,9 +533,21 @@ namespace MiniMapReadbackNative
             job->StartNs.store(NowNs()); job->StartFrame.store(frame);
             Enter(job, Phase::CommandQueued);
         }
-        RenderCallable callable{Command(job)};
-        if (!Operations::Submit(initial ? TEXT("MiniMapR1Submit") : TEXT("MiniMapR1Poll"),
-            initial ? job->SubmitSpec : job->PollSpec, MoveTemp(callable)))
+        RenderCallable callable{Command(job,initial)};
+        bool submitted=false;
+        try
+        {
+            submitted=Operations::Submit(initial ? TEXT("MiniMapR1Submit") : TEXT("MiniMapR1Poll"),
+                initial ? job->SubmitSpec : job->PollSpec, MoveTemp(callable),
+                initial ? &job->Enqueue : nullptr, initial ? &job->NativeEnqueueEverInvoked : nullptr);
+        }
+        catch (...)
+        {
+            job->Enqueue.store(MiniMapCaptureRetirement::EnqueueState::Uncertain,std::memory_order_release);
+            Fail(job,"native enqueue exception; invocation state uncertain",true);
+            return; // Outstanding intentionally retained: do not invent completion.
+        }
+        if (!submitted)
         {
             job->Outstanding.store(false, std::memory_order_release);
             Fail(job, "render-command submission prerequisites unavailable", !initial);
@@ -518,6 +579,10 @@ namespace MiniMapReadbackNative
         report.Callables = job->Callables.load(std::memory_order_acquire);
         report.Outstanding = job->Outstanding.load(std::memory_order_acquire);
         report.Quarantined = job->Quarantined.load(std::memory_order_acquire);
+        report.Enqueue = job->Enqueue.load(std::memory_order_acquire);
+        report.NativeEnqueueEverInvoked = job->NativeEnqueueEverInvoked.load(std::memory_order_acquire);
+        report.Enqueue=MiniMapCaptureRetirement::ObserveEnqueue(report.Enqueue,report.NativeEnqueueEverInvoked,
+            report.Callables,report.Outstanding,report.Current==Phase::CleanupComplete);
         report.Result = job->Result.load(std::memory_order_acquire);
         report.Failure = job->Failure.load(std::memory_order_acquire);
         if (job->DataReady.load(std::memory_order_acquire))
@@ -547,6 +612,7 @@ namespace MiniMapReadbackNative
             job->Current.load(std::memory_order_acquire) != Phase::CleanupComplete) return false;
         // Callback destruction release/acquire orders all native member accesses.
         if (job->Readback || job->Texture) return false;
+        if (job->NativeEnqueueEverInvoked.load()) job->Enqueue.store(MiniMapCaptureRetirement::EnqueueState::ReadbackCompleted);
         delete job;
         job = nullptr;
         return true;

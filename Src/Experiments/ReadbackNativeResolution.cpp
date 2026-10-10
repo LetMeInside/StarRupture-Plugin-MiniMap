@@ -97,6 +97,35 @@ namespace MiniMapReadbackNative
         return 0;
     }
 
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    bool MatchesCaptureRetirementBuild()
+    {
+        const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        if (!base) return false;
+        const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x100000) return false;
+        const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+        if (nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
+            nt->OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
+        const auto& dir=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+        const auto size=nt->OptionalHeader.SizeOfImage;
+        if (!dir.VirtualAddress || dir.Size>4096 || dir.VirtualAddress>size || dir.Size>size-dir.VirtualAddress ||
+            dir.Size%sizeof(IMAGE_DEBUG_DIRECTORY)) return false;
+        const auto* entries=reinterpret_cast<const IMAGE_DEBUG_DIRECTORY*>(base+dir.VirtualAddress);
+        // RSDS GUID bytes in native little-endian storage, CL-127004 age 1.
+        const unsigned char identity[]{0x52,0x53,0x44,0x53,0xa9,0xae,0xcb,0x41,0xc3,0x7a,0xda,0x99,
+            0xb9,0x47,0xa1,0xdb,0x9c,0x10,0x21,0xed,1,0,0,0};
+        for (size_t i=0;i<dir.Size/sizeof(*entries);++i)
+        {
+            const auto& entry=entries[i];
+            if (entry.Type==IMAGE_DEBUG_TYPE_CODEVIEW && entry.SizeOfData>=sizeof(identity) &&
+                entry.AddressOfRawData<=size && entry.SizeOfData<=size-entry.AddressOfRawData &&
+                !std::memcmp(reinterpret_cast<const void*>(base+entry.AddressOfRawData),identity,sizeof(identity))) return true;
+        }
+        return false;
+    }
+#endif
+
     const Bindings& GetBindings() { return bindings; }
     const char* Status() { return status; }
     void SetStatus(const char* message) { status = message; }

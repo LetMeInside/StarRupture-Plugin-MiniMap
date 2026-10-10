@@ -101,6 +101,7 @@
     <ClInclude Include="Experiments\CapturePng.h" />
     <ClInclude Include="Experiments\ReadbackUEConfiguration.h" />
     <ClInclude Include="Experiments\ReadbackNativeAdapter.h" />
+    <ClInclude Include="Experiments\CaptureRetirementCore.h" />
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
     <ClInclude Include="Experiments\BuildingRepresentationDiagnostic.h" />
     <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
