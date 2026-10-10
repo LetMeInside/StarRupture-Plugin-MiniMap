@@ -104,6 +104,9 @@
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
     <ClInclude Include="Experiments\BuildingRepresentationDiagnostic.h" />
     <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
+    <ClInclude Include="Experiments\RepresentationSelectionCore.h" />
+    <ClInclude Include="Experiments\AssemblyRecipeCore.h" />
+    <ClInclude Include="Experiments\AssemblyRecipeAudit.inl" />
     <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
     <ClInclude Include="Experiments\SmelterCaptureNativeBindings.h" />
     <ClInclude Include="Experiments\FloatReadbackPixels.h" />

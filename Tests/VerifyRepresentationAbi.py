@@ -103,6 +103,8 @@ contracts={
  'FChunkedFixedUObjectArray':(0x20,{'Objects':0,'MaxElements':0x10,'NumElements':0x14,'MaxChunks':0x18,'NumChunks':0x1c}),
  'FUObjectItem':(0x18,{'Object':0,'Flags':8,'SerialNumber':0x10}),
  'FObjectPtr':(8,{'Handle':0,'DebugPtr':0}),
+ 'AActor':(0x2a8,{'RootComponent':0x1b8}),
+ 'ACrBuildingActorBase':(0x6c8,{'MainComponent':0x2d8,'MainMeshComponent':0x2e0}),
  'UClass':(0x200,{'ClassDefaultObject':0x110}),
  'UStruct':(0xb0,{'SuperStruct':0x40}),
  'UBlueprintGeneratedClass':(0x360,{'ComponentTemplates':0x220,'SimpleConstructionScript':0x268,'InheritableComponentHandler':0x270}),
@@ -170,6 +172,16 @@ def complete(index):
         if struct.unpack_from('<H',c)[0] not in (0x1504,0x1505) or struct.unpack_from('<H',c,4)[0]&0x80:continue
         _,name_at=numeric(c,18)
         if c[name_at:].split(b'\0')[0]==name:return candidate
+
+# Direct CDO fields must use the same native-pointer TObjectPtr storage contract.
+for owner,field in [('AActor','RootComponent'),('ACrBuildingActorBase','MainComponent'),('ACrBuildingActorBase','MainMeshComponent')]:
+    wrapper=complete(found[owner][1][field][1]); wb=record(wrapper)
+    size,_=numeric(wb,18); assert size==8
+    wf=members(struct.unpack_from('<I',wb,6)[0]); assert wf['ObjectPtr'][0]==0
+    object_ptr=complete(wf['ObjectPtr'][1]); ob=record(object_ptr); size,_=numeric(ob,18);assert size==8
+    of=members(struct.unpack_from('<I',ob,6)[0]);assert of['Handle'][0]==0
+    assert struct.unpack_from('<H',record(of['Handle'][1]))[0]==0x1002
+    print(f'PDB {owner}.{field}: 8-byte TObjectPtr -> FObjectPtr native pointer at +0')
 
 array_fields=[('UBlueprintGeneratedClass','ComponentTemplates'),('USimpleConstructionScript','RootNodes'),
  ('USimpleConstructionScript','AllNodes'),('USCS_Node','ChildNodes'),('UInheritableComponentHandler','Records'),

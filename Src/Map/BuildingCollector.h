@@ -102,7 +102,8 @@ namespace MiniMapBuildingCollector
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
     // Caller must be on the game thread. Borrowing ends when visitor returns.
     // Revalidates the Mass identity; does not resolve the copied UObject index.
-    bool VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
+    enum class DiagnosticVisitStatus { Visited,VisitorRejected,CollectorUnavailable,WorldGenerationChanged,InvalidCopiedDefinition,StaleEntity,ParametersUnavailable };
+    DiagnosticVisitStatus VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
 #endif
     void Shutdown();
     // Diagnostic sink only. Never used to populate production records/caches.

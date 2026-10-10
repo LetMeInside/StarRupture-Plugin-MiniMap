@@ -1,6 +1,8 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentationDiagnostic.h"
 #include "RepresentationMetadataCore.h"
+#include "RepresentationSelectionCore.h"
+#include "AssemblyRecipeCore.h"
 #include "RepresentationMetadataPatterns.h"
 #include "ReadbackNativeAdapter.h"
 #include "SmelterCaptureNativeBindings.h"
@@ -18,6 +20,8 @@
 namespace MiniMapBuildingRepresentation
 {
     namespace C=MiniMapRepresentationCore;
+    namespace S=MiniMapRepresentationSelection;
+    namespace A=MiniMapAssemblyRecipe;
     namespace
     {
         // Only native interfaces/addresses and lifecycle comparison tokens persist.
@@ -89,7 +93,36 @@ namespace MiniMapBuildingRepresentation
         }
         struct Context
         {
+            uintptr_t AuditClass=0;
+            bool AuditActive=false,AuditTruncated=false,AuditCollectionTruncated=false;
+            size_t AuditVisits=0;
+            std::vector<uintptr_t> AuditNodes;
+            std::map<std::string,std::string> AuditParents;
+            std::set<std::string> AuditConflictingParents;
+            std::map<uintptr_t,uintptr_t> AuditAssignments;
+            struct AuditMassRecord {std::string Mesh,Descriptor,Local,Materials,Min,Max;size_t Ordinal;};
+            std::vector<AuditMassRecord> AuditMassRecords;
+            std::map<std::pair<std::string,size_t>,std::string> AuditMassOffsets;
             C::Graph Graph;
+            S::WorkBudget Work;
+            S::Plan SelectionPlan;
+            S::Decision Decision;
+            C::JsonArray Attempts;
+            bool FullTraversal=false,SelectionTraversalTruncated=false;
+            size_t SelectionTraitVisits=0,SelectionMeshVisits=0,SelectionGraphVisits=0;
+            struct ProbeState
+            {
+                S::Route Route=S::Route::None;
+                uintptr_t High=0,Low=0;
+                size_t Traits=0,VisualTraits=0,MeshReferences=0;
+                bool Mesh=false,Stale=false,Truncated=false,Incomplete=false;
+                std::string MassIdentity="not_examined",DefinitionIdentity="not_examined",CachedConfig="not_examined",
+                    ConfigValidation="not_examined",HighStatus="not_examined",LowStatus="not_examined",MassStatus="not_examined";
+                std::vector<std::string> Reasons;
+                void Note(const char* reason)
+                {if(Reasons.size()<16&&std::find(Reasons.begin(),Reasons.end(),reason)==Reasons.end())Reasons.emplace_back(reason);}
+            };
+            ProbeState ProbeResult;
             C::JsonArray Sources,Candidates,Mass,Relationships,Components;
             std::unordered_map<uintptr_t,std::string> Ids;
             std::unordered_set<uintptr_t> Held,ComponentSet;
@@ -107,6 +140,13 @@ namespace MiniMapBuildingRepresentation
                 Components.Limit=512*1024;Mass.Limit=128*1024;Candidates.Limit=32*1024;
                 Sources.Limit=128*1024;Relationships.Limit=64*1024;
             }
+            bool CheckIdentity(uintptr_t p,size_t extent=0x28)
+            {
+                if(AuditActive&&(!AuditSpend()))return false;
+                return Work.Spend(FullTraversal)&&Identity(p,extent);
+            }
+            bool AuditSpend()
+            {if(AuditVisits>=A::VisitLimit){AuditTruncated=true;return false;}++AuditVisits;return true;}
             ~Context()
             {
                 const auto address=MiniMapSmelterCapture::GetBindings().Release;
@@ -115,7 +155,7 @@ namespace MiniMapBuildingRepresentation
             }
             bool Hold(uintptr_t p,size_t extent=0x28)
             {
-                if(!Identity(p,extent))return false;
+                if(!CheckIdentity(p,extent))return false;
                 if(Held.insert(p).second)
                 {
                     Roots.push_back(p);
@@ -131,11 +171,11 @@ namespace MiniMapBuildingRepresentation
             }
             bool ClassObject(uintptr_t p)
             {
-                if(!Identity(p,0x200))return false;
+                if(!CheckIdentity(p,0x200))return false;
                 auto meta=Value<uintptr_t>(p,0x10);
                 for(size_t n=0;meta&&n<C::DepthLimit;++n)
                 {
-                    if(!Identity(meta,0x200))return false;
+                    if(!CheckIdentity(meta,0x200))return false;
                     if(meta==Class)return true;
                     if(Value<uintptr_t>(meta,0x10)!=Class)return false;
                     meta=Value<uintptr_t>(meta,0x40);
@@ -156,7 +196,7 @@ namespace MiniMapBuildingRepresentation
                 return false;
             }
             bool Is(uintptr_t p,uintptr_t type,size_t extent=0x28)
-            {return Identity(p,extent)&&Derives(Value<uintptr_t>(p,0x10),type);}
+            {return CheckIdentity(p,extent)&&Derives(Value<uintptr_t>(p,0x10),type);}
             bool BoundedNativeClassChain(uintptr_t type)
             {
                 // Fixed getter's IsA uses FStructBaseChain at UStruct +0x30.
@@ -185,7 +225,7 @@ namespace MiniMapBuildingRepresentation
             bool Initialize()
             {
                 Class=Find(L"/Script/CoreUObject.Class");
-                if(!Class||!Identity(Class,0x200)||Value<uintptr_t>(Class,0x10)!=Class)return false;
+                if(!Class||!CheckIdentity(Class,0x200)||Value<uintptr_t>(Class,0x10)!=Class)return false;
 #define NATIVE(field,path) field=NativeClass(L"/Script/" path);if(!field)Source("native_metadata_class",0,"unavailable_not_resident",#field)
                 NATIVE(Actor,"Engine.Actor");NATIVE(Component,"Engine.ActorComponent");NATIVE(Scene,"Engine.SceneComponent");
                 NATIVE(MeshComponent,"Engine.MeshComponent");NATIVE(StaticComponent,"Engine.StaticMeshComponent");
@@ -209,10 +249,10 @@ namespace MiniMapBuildingRepresentation
             {
                 if(!p)return C::Object({{"status",C::Quote("absent")}});
                 if((expected&&!Is(p,expected))||!Hold(p))
-                {Invalid=true;return C::Object({{"status",C::Quote("invalid")}});}
+                {Invalid|=!Work.Exhausted;return C::Object({{"status",C::Quote(Work.Exhausted?"truncated":"invalid")}});}
                 const auto type=Value<uintptr_t>(p,0x10);
                 if(!ClassObject(type)||!Hold(type,0x200))
-                {Invalid=true;return C::Object({{"status",C::Quote("invalid_class")}});}
+                {Invalid|=!Work.Exhausted;return C::Object({{"status",C::Quote(Work.Exhausted?"truncated":"invalid_class")}});}
                 const auto name=Value<Name>(p,0x18);
                 return C::Object({{"id",C::Quote(Id(p))},{"class_id",C::Quote(Id(type))},
                     {"status",C::Quote("present")},{"resident_validated","true"},{"readable_name", "null"},
@@ -221,6 +261,8 @@ namespace MiniMapBuildingRepresentation
             }
             void Source(const std::string& category,uintptr_t owner,const char* status,const std::string& reason="",const std::string& details="null")
             {
+                if(Work.Exhausted&&std::strcmp(status,"invalid")==0)
+                {Source(category,owner,"truncated","native object-validation work budget exhausted",details);return;}
                 Sources.Add(C::Object({{"source",C::Quote(category)},{"owner_id",owner?C::Quote(Id(owner)):"null"},
                     {"status",C::Quote(status)},{"reason",C::Quote(reason)},{"details",details}}));
                 if(std::strcmp(status,"truncated")==0)Truncated=true;
@@ -283,6 +325,13 @@ namespace MiniMapBuildingRepresentation
             }
             void Edge(uintptr_t from,uintptr_t to,const std::string& kind,const char* status="present")
             {
+                if(BuildingId==336&&kind=="scs_child")
+                {
+                    const auto child=Id(to),parent=Id(from);
+                    if(AuditParents.size()<A::NodeLimit||AuditParents.contains(child))
+                    {auto [it,inserted]=AuditParents.emplace(child,parent);if(!inserted&&it->second!=parent)AuditConflictingParents.insert(child);}
+                    else AuditCollectionTruncated=true;
+                }
                 Relationships.Add(C::Object({{"from",C::Quote(Id(from))},{"to",to?C::Quote(Id(to)):"null"},
                     {"kind",C::Quote(kind)},{"status",C::Quote(status)}}));
             }
@@ -359,6 +408,13 @@ namespace MiniMapBuildingRepresentation
                     {"authored_mesh_materials",defaults},{"authored_component_overrides",overrides},
                     {"effective_materials_status",C::Quote("not_attempted_unbounded_array_getter_and_virtual_resolution_not_verified")},
                     {"live_instance_state","false"}}));
+                // A component may first be encountered in ComponentTemplates;
+                // keep its already validated assignment for the later SCS join.
+                if(BuildingId==336&&owner==AuditClass&&asset&&meshStatus=="present")
+                {
+                    if(AuditAssignments.size()<A::NodeLimit)AuditAssignments.emplace(p,asset);
+                    else AuditCollectionTruncated=true;
+                }
                 if(Is(p,Child,0x268))
                 {
                     const auto childClass=Value<uintptr_t>(p,0x250),childTemplate=Value<uintptr_t>(p,0x260);
@@ -386,6 +442,8 @@ namespace MiniMapBuildingRepresentation
                 if(std::strcmp(state,"present")!=0){Source("scs_node",p,state);return;}
                 if(NodeCount>=C::NodeLimit){Source("scs_node",p,"truncated","total unique SCS node limit");Graph.Leave(p);return;}
                 ++NodeCount;
+                if(BuildingId==336&&owner==AuditClass&&childDepth==0)
+                {if(AuditNodes.size()<A::NodeLimit)AuditNodes.push_back(p);else AuditCollectionTruncated=true;}
                 const auto declared=Value<uintptr_t>(p,0x28),component=Value<uintptr_t>(p,0x30);
                 Source("scs_node",p,"present","",C::Object({{"node",Ref(p,Node)},{"declared_class",Ref(declared,Class)},
                     {"attach_to",NameValue(p,0x80)},{"parent_variable",NameValue(p,0x88)},
@@ -468,15 +526,21 @@ namespace MiniMapBuildingRepresentation
                 bool validMesh=false;
                 Array(descriptor+8,0xa0,16,64,"mass_mesh_descriptors",trait,[&](uintptr_t item,size_t ordinal)
                 {
-                    validMesh|=Is(Value<uintptr_t>(item,0x60),StaticMesh);
-                    meshes.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"mesh",Ref(Value<uintptr_t>(item,0x60),StaticMesh)},
-                        {"local_transform",Transform(item)},
-                        {"material_overrides",Materials(item+0x68,8,trait,"mass_mesh_material_overrides")},
-                        {"min_lod_significance",C::Number(Value<float>(item,0x78))},
-                        {"max_lod_significance",C::Number(Value<float>(item,0x7c))}}));
+                    const auto mesh=Value<uintptr_t>(item,0x60);const bool valid=Is(mesh,StaticMesh);validMesh|=valid;
+                    const auto ref=Ref(mesh,StaticMesh),local=Transform(item),materials=Materials(item+0x68,8,trait,"mass_mesh_material_overrides"),
+                        min=C::Number(Value<float>(item,0x78)),max=C::Number(Value<float>(item,0x7c));
+                    meshes.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"mesh",ref},{"local_transform",local},
+                        {"material_overrides",materials},{"min_lod_significance",min},{"max_lod_significance",max}}));
+                    if(BuildingId==336)
+                    {
+                        if(AuditMassRecords.size()<64)AuditMassRecords.push_back({valid?Id(mesh):"",Id(trait)+"_ism",local,materials,min,max,ordinal});
+                        else AuditCollectionTruncated=true;
+                    }
                 });
                 Array(descriptor+0x80,0x60,16,64,"mass_raw_transform_offsets",trait,[&](uintptr_t item,size_t ordinal)
-                    {offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",Transform(item)}}));});
+                    {const auto transform=Transform(item);offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",transform}}));
+                     if(BuildingId==336){if(AuditMassOffsets.size()<64)AuditMassOffsets.emplace(std::pair{Id(trait)+"_ism",ordinal},transform);
+                        else AuditCollectionTruncated=true;}});
                 Mass.Add(C::Object({{"descriptor_id",C::Quote(Id(trait)+"_ism")},{"owner_trait",Ref(trait)},
                     {"tier",C::Quote("mass_ism_alternative")},{"mesh_references",meshes.String()},
                     {"use_transform_offset",C::Bool(Value<uint8_t>(descriptor,0x18)!=0)},
@@ -484,6 +548,109 @@ namespace MiniMapBuildingRepresentation
                     {"renderer_equivalent_transforms","false"},{"provenance",C::Quote("resident visualization trait; raw inputs only")}}));
                 Truncated|=meshes.Truncated||offsets.Truncated;
                 return validMesh;
+            }
+            template<class Visitor> bool ProbeArray(uintptr_t header,size_t stride,size_t alignment,size_t limit,Visitor visitor)
+            {
+                C::ArrayHeader a{};
+                if(!Readable(header,sizeof(a),8)||!Read(header,0,a))
+                {ProbeResult.Incomplete=true;ProbeResult.Note("invalid_array_header");return false;}
+                const auto b=C::BoundArray(a,stride,alignment,limit);
+                if(!b.Valid||(b.Bytes&&!Readable(a.Data,b.Bytes,alignment)))
+                {ProbeResult.Incomplete=true;ProbeResult.Note("invalid_array_storage");return false;}
+                if(b.Truncated){ProbeResult.Truncated=true;ProbeResult.Note("array_visit_limit");}
+                for(size_t i=0;i<b.Count;++i)
+                {
+                    if(!Graph.Spend()||Work.Exhausted){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");return false;}
+                    visitor(a.Data+i*stride);
+                }
+                return !b.Truncated&&!Work.Exhausted;
+            }
+            bool ProbeDefinition(uintptr_t definition)
+            {
+                ProbeResult.MassIdentity="valid"; // Collector invokes visitor only after entity revalidation.
+                if(!definition){ProbeResult.DefinitionIdentity="null";ProbeResult.Note("placement_null");return false;}
+                if(!Is(definition,Placement,0x174)||!Hold(definition,0x174))
+                {ProbeResult.DefinitionIdentity=Work.Exhausted?"not_examined_budget_exhausted":"invalid";
+                    ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_placement");return false;}
+                const auto name=Value<Name>(definition,0x18);
+                if(Value<int32_t>(definition,0xc)!=Record.DefinitionObjectIndex||name.Index!=Record.DefinitionIndex||
+                    name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)
+                {ProbeResult.DefinitionIdentity="mismatch";ProbeResult.Note("definition_identity_mismatch");return false;}
+                ProbeResult.DefinitionIdentity="valid";
+                // Optional soft-reference interpretation/resolution is deliberately
+                // omitted. Null transient cache never implies authored absence.
+                auto config=Value<uintptr_t>(definition,0x150);
+                ProbeResult.CachedConfig=config?"populated":"null";
+                if(!config){ProbeResult.Note("cached_config_null");return false;}
+                std::unordered_set<uintptr_t> configs,traits;
+                for(size_t depth=0;config&&depth<16;++depth)
+                {
+                    if(!Graph.Spend()||Work.Exhausted){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");break;}
+                    if(!Is(config,Config,0x60)||!Hold(config,0x60))
+                    {ProbeResult.ConfigValidation=Work.Exhausted?"not_examined_budget_exhausted":"invalid";ProbeResult.Incomplete=true;
+                        ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_config");break;}
+                    ProbeResult.ConfigValidation="valid_in_examined_chain";
+                    if(!configs.insert(config).second){ProbeResult.Incomplete=true;ProbeResult.Note("configuration_cycle");break;}
+                    ProbeArray(config+0x38,8,8,256,[&](uintptr_t item)
+                    {
+                        ++ProbeResult.Traits;const auto trait=Value<uintptr_t>(item,0);
+                        if(!Is(trait,Trait)||!Hold(trait)){ProbeResult.Incomplete=true;
+                            ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_trait");return;}
+                        if(!traits.insert(trait).second)return;
+                        if(!Is(trait,Visual,0xe0)&&!Is(trait,Cosmetic,0xe0))return;
+                        ++ProbeResult.VisualTraits;
+                        for(const auto offset:{size_t(0xd0),size_t(0xd8)})
+                        {
+                            const auto type=Value<uintptr_t>(trait,offset);
+                            const bool valid=type&&ClassObject(type)&&Derives(type,Actor)&&Hold(type,0x200);
+                            auto& state=offset==0xd0?ProbeResult.HighStatus:ProbeResult.LowStatus;
+                            auto& first=offset==0xd0?ProbeResult.High:ProbeResult.Low;
+                            if(valid){state="resident_validated";if(!first)first=type;}
+                            else if(state!="resident_validated")state=Work.Exhausted?"not_examined_budget_exhausted":!type?"null":"invalid_or_unavailable";
+                        }
+                        // Eligibility reads assignments only: no transforms,
+                        // materials, SCS, CDOs or component traversal in a probe.
+                        const bool massComplete=ProbeArray(trait+0x38,0xa0,16,64,[&](uintptr_t meshItem)
+                        {
+                            ++ProbeResult.MeshReferences;const auto mesh=Value<uintptr_t>(meshItem,0x60);
+                            if(Is(mesh,StaticMesh)&&Hold(mesh))ProbeResult.Mesh=true;
+                        });
+                        if(!massComplete)ProbeResult.MassStatus="unavailable_or_truncated";
+                        else if(ProbeResult.MassStatus!="unavailable_or_truncated")ProbeResult.MassStatus="examined";
+                    });
+                    config=Value<uintptr_t>(config,0x30);
+                    if(config&&depth==15){ProbeResult.Truncated=true;ProbeResult.Note("configuration_depth_limit");}
+                }
+                if(!ProbeResult.VisualTraits&&!ProbeResult.Incomplete&&!ProbeResult.Truncated&&!Work.Exhausted)
+                    ProbeResult.Note("no_supported_visualization_trait");
+                else if(ProbeResult.VisualTraits&&!Work.Exhausted&&!Truncated)
+                {
+                    if(!ProbeResult.High&&!ProbeResult.Low)ProbeResult.Note("no_valid_actor_class");
+                    if(!ProbeResult.Mesh&&ProbeResult.MassStatus=="examined")ProbeResult.Note("no_valid_mass_mesh");
+                }
+                ProbeResult.Route=S::EligibleRoute(false,ProbeResult.High||ProbeResult.Low,ProbeResult.Mesh);
+                if(Work.Exhausted||Graph.Truncated){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");}
+                return ProbeResult.Route!=S::Route::None;
+            }
+            std::string ProbeJson(const S::Record& record,size_t attempt)const
+            {
+                C::JsonArray reasons;for(const auto& reason:ProbeResult.Reasons)reasons.Add(C::Quote(reason));
+                return C::Object({{"attempt",std::to_string(attempt)},{"building_id",std::to_string(record.Building)},
+                    {"definition_identity",C::Object({{"object_index",std::to_string(record.Def.ObjectIndex)},
+                        {"fname_comparison_index",std::to_string(record.Def.NameIndex)},{"fname_number",std::to_string(record.Def.NameNumber)}})},
+                    {"entity_index",std::to_string(record.Index)},{"entity_serial",std::to_string(record.Serial)},
+                    {"mass_identity",C::Quote(ProbeResult.MassIdentity)},{"definition_validation",C::Quote(ProbeResult.DefinitionIdentity)},
+                    {"cached_entity_config",C::Quote(ProbeResult.CachedConfig)},
+                    {"configuration_validation",C::Quote(ProbeResult.ConfigValidation)},
+                    {"authored_entity_config",S::UnavailableReference("soft-reference state/read contract not verified; no weak resolution or loading")},
+                    {"placement_actor_class",S::UnavailableReference("resident soft-class access contract not verified")},
+                    {"traits_examined",std::to_string(ProbeResult.Traits)},{"visualization_traits",std::to_string(ProbeResult.VisualTraits)},
+                    {"high_detail_class",C::Quote(ProbeResult.HighStatus)},{"low_detail_class",C::Quote(ProbeResult.LowStatus)},
+                    {"mass_metadata",C::Quote(ProbeResult.MassStatus)},{"mesh_references_examined",std::to_string(ProbeResult.MeshReferences)},
+                    {"valid_mass_mesh",ProbeResult.Mesh?"true":ProbeResult.MassStatus=="examined"?"false":"null"},
+                    {"eligible",C::Bool(ProbeResult.Route!=S::Route::None)},
+                    {"eligible_route",C::Quote(S::RouteName(ProbeResult.Route))},{"truncated",C::Bool(ProbeResult.Truncated)},
+                    {"reasons",reasons.String()}});
             }
             bool Discover(uintptr_t definition)
             {
@@ -522,55 +689,75 @@ namespace MiniMapBuildingRepresentation
                     config=Value<uintptr_t>(config,0x30);
                     if(config&&depth==15)Source("entity_configuration",definition,"truncated","configuration parent depth");
                 }
-                if(!configs.size())Source("entity_configuration",definition,"absent");
+                if(!Value<uintptr_t>(definition,0x150))Source("entity_configuration",definition,"unavailable","cached_config_null; authored configuration state not examined");
                 const auto selected=high?high:low;
                 if(selected)
                 {
                     Selected=Ref(selected,Class);SelectedTier=high?"high_detail_actor":"low_detail_actor";
                     Reason="first validated resident actor class in bounded configuration traversal; high-detail preferred; alternatives remain separate";
-                    InspectClass(selected,0,"selected_actor_class_templates");Status="partial";
+                    AuditClass=selected;InspectClass(selected,0,"selected_actor_class_templates");Status="partial";
                 }
                 else if(hasMass)
                 {Selected=Ref(definition,Placement);SelectedTier="mass_ism";Status="partial";Reason="no validated resident actor class; resident Mass metadata recorded separately";}
                 return selected||hasMass;
             }
+            #include "AssemblyRecipeAudit.inl"
             std::string Document()
             {
-                const bool truncated=Truncated||Graph.Truncated||Sources.Truncated||Components.Truncated||Candidates.Truncated||Mass.Truncated||Relationships.Truncated;
-                return C::BoundDocument(C::Object({{"schema_version","1"},{"game_build",C::Quote("5.6.1-127004")},
-                    {"stage",C::Quote("R2.4")},{"building_id",std::to_string(BuildingId)},
-                    {"building_transform_input",C::Object({{"valid",C::Bool(Record.TransformValid)},
+                const bool truncated=FullTraversal&&(Truncated||Graph.Truncated||Work.Exhausted||Sources.Truncated||Components.Truncated||Candidates.Truncated||Mass.Truncated||Relationships.Truncated);
+                return S::BoundDocument(C::Object({{"schema_version","2"},{"game_build",C::Quote("5.6.1-127004")},
+                    {"stage",C::Quote("R2.4b")},{"building_id",Decision.HasSelection()?std::to_string(BuildingId):"null"},
+                    {"selection",S::CoverageJson(SelectionPlan,Decision)},{"candidate_attempts",Attempts.String()},
+                    {"selection_truncation",S::TruncationJson(SelectionPlan,Decision,SelectionTraversalTruncated,Attempts.Truncated)},
+                    {"representation",C::Object({{"attempted",C::Bool(FullTraversal)},
+                        {"status",C::Quote(truncated?"truncated":Status)},
+                        {"observed_active_tier","null"},{"complete_visual_building","false"}})},
+                    {"representation_truncation",C::Object({{"truncated",C::Bool(truncated)},
+                        {"native_work_limit",C::Bool(FullTraversal&&Work.Exhausted)}})},
+                    {"native_work",C::Object({{"selection_object_validation_visits",std::to_string(Work.SelectionVisits)},
+                        {"representation_object_validation_visits",std::to_string(Work.RepresentationVisits)},
+                        {"selection_trait_visits",std::to_string(SelectionTraitVisits)},
+                        {"selection_mesh_assignment_visits",std::to_string(SelectionMeshVisits)},
+                        {"selection_graph_visits",std::to_string(SelectionGraphVisits)},
+                        {"representation_graph_visits",std::to_string(C::VisitLimit-Graph.Remaining-SelectionGraphVisits)},
+                        {"remaining",std::to_string(Work.Remaining)},
+                        {"graph_visits",std::to_string(C::VisitLimit-Graph.Remaining)}})},
+                    {"building_transform_input",Decision.HasSelection()?C::Object({{"valid",C::Bool(Record.TransformValid)},
                         {"position",CopiedNumbers(Record.Position)},{"rotation_xyzw",CopiedNumbers(Record.Rotation)},
                         {"scale",CopiedNumbers(Record.Scale)},{"refreshed_at_steady_seconds",C::Number(Record.RefreshedAtSeconds)},
-                        {"provenance",C::Quote("copied collector record; not refreshed or composed by diagnostic")}})},
+                        {"provenance",C::Quote("copied collector record; not refreshed or composed by diagnostic")}}):"null"},
                     {"status",C::Quote(truncated?"truncated":Status)},{"invalid_metadata_seen",C::Bool(Invalid)},
                     {"selected_representation_type",C::Quote(SelectedTier)},{"selected",Selected},{"selection_reason",C::Quote(Reason)},
                     {"runtime_source",C::Quote("collector snapshot -> revalidated Mass entity -> current placement -> resident entity configuration -> visualization traits")},
-                    {"selection_window_records","64"},{"complete_visual_building","false"},{"transforms_composed","false"},
+                    {"selection_window_records",std::to_string(S::RecordLimit)},{"complete_visual_building","false"},{"transforms_composed","false"},
                     {"component_records_are_additive_geometry","false"},{"inherited_override_selection_status",C::Quote("not_evaluated")},
                     {"truncated",C::Bool(truncated)},{"sources",Sources.String()},{"candidates",Candidates.String()},
                     {"truncation_summary",C::Object({{"traversal_limits",C::Bool(Truncated)},
-                        {"total_visit_limit",C::Bool(Graph.Truncated)},{"sources_byte_limit",C::Bool(Sources.Truncated)},
+                        {"total_visit_limit",C::Bool(FullTraversal&&Graph.Truncated)},{"sources_byte_limit",C::Bool(Sources.Truncated)},
                         {"components_byte_limit",C::Bool(Components.Truncated)},{"mass_byte_limit",C::Bool(Mass.Truncated)},
                         {"candidates_byte_limit",C::Bool(Candidates.Truncated)},{"relationships_byte_limit",C::Bool(Relationships.Truncated)}})},
                     {"components",Components.String()},{"mass_representations",Mass.String()},{"relationships",Relationships.String()},
                     {"limits",C::Object({{"components",std::to_string(C::ComponentLimit)},{"scs_nodes_total_and_per_array",std::to_string(C::NodeLimit)},
                         {"materials_per_array",std::to_string(C::MaterialLimit)},{"child_depth",std::to_string(C::ChildDepthLimit)},
                         {"graph_depth",std::to_string(C::DepthLimit)},{"total_visits",std::to_string(C::VisitLimit)},
+                        {"copied_records",std::to_string(S::RecordLimit)},{"candidate_definitions",std::to_string(S::DefinitionLimit)},
+                        {"native_probes",std::to_string(S::ProbeLimit)},{"native_validation_work",std::to_string(S::NativeWorkLimit)},
                         {"output_bytes",std::to_string(C::OutputLimit)}})},
                     {"limitations",C::Quote("Native default components and native inherited resolution not attempted. Authored defaults/overrides are separate; effective virtual materials not evaluated. Construction scripts, live state, animation, skeletal poses, LOD/residency/Nanite and signed-scale transform composition not evaluated. Null numeric channels indicate invalid nonfinite input. Readable names unavailable.")}}));
             }
         };
         bool Visit(const SDK::UObject* definition,void* context)
         {return static_cast<Context*>(context)->Discover(reinterpret_cast<uintptr_t>(definition));}
+        bool ProbeVisit(const SDK::UObject* definition,void* context)
+        {return static_cast<Context*>(context)->ProbeDefinition(reinterpret_cast<uintptr_t>(definition));}
 
-        void Export(uint32_t building,const std::string& json)
+        void Export(uint32_t building,bool selected,const std::string& json,bool assembly=false)
         {
             std::filesystem::path directory;
             if(!MiniMapTerrainCache::GetBuildingDiagnosticsDirectory(directory))return;
             std::error_code ec;std::filesystem::create_directories(directory,ec);
             if(ec){LOG_ERROR("MiniMap: R2.4 diagnostic directory creation failed: %s",ec.message().c_str());return;}
-            const auto path=directory/(L"Building_"+std::to_wstring(building)+L"_Representation.json");
+            const auto path=directory/(assembly?L"Smelter_AssemblyRecipe.json":selected?L"Building_"+std::to_wstring(building)+L"_Representation.json":L"Representation_Selection.json");
             const auto temporary=path.wstring()+L".tmp";
             {
                 std::ofstream file(temporary,std::ios::binary|std::ios::trunc);
@@ -601,34 +788,76 @@ namespace MiniMapBuildingRepresentation
             struct EndExecution {~EndExecution(){executing.clear();}} endExecution;
             try
             {
-                LOG_INFO("MiniMap: R2.4 one-shot bounded resident representation metadata snapshot entered");
-                std::string json;uint32_t building=0;
+                LOG_INFO("MiniMap: R2.4b one-shot bounded representation-eligible selection entered");
+                std::string json,assemblyJson;uint32_t building=0;bool hasSelection=false;
                 {
                     Context context;
                     context.Source("native_default_components",0,"not_attempted",NativeExcluded);
+                    context.SelectionPlan=S::Scan(snapshot->Records.size(),[&](size_t i)
+                    {
+                        const auto& r=snapshot->Records[i];
+                        return S::Record{{r.DefinitionObjectIndex,r.DefinitionIndex,r.DefinitionNumber},r.BuildingId,
+                            r.Index,r.Serial,r.Generation,r.DefinitionValid,i};
+                    });
                     if(context.Initialize())
                     {
-                        const MiniMapBuildingCollector::Record* selected=nullptr;
-                        const size_t count=(std::min)(size_t(64),snapshot->Records.size());
-                        for(size_t i=0;i<count;++i)
+                        context.Decision=S::Choose(context.SelectionPlan,[&](const S::Record& record,size_t attempt)
                         {
-                            const auto& record=snapshot->Records[i];if(!record.DefinitionValid)continue;
-                            if(!selected)selected=&record;
-                            // Selection preference only; all discovery/traversal is generic.
-                            if(record.BuildingId==uint32_t(SDK::ECrBuildingID::Smelter)){selected=&record;break;}
-                        }
-                        if(snapshot->Records.size()>count)context.Source("building_selection_window",0,"truncated","only first 64 collector records considered");
-                        if(selected&&world==MiniMapMap::GetWorld())
+                            const bool previousTruncated=context.Truncated;
+                            context.Record=snapshot->Records[record.SnapshotIndex];context.ProbeResult={};
+                            using V=MiniMapBuildingCollector::DiagnosticVisitStatus;
+                            if(!context.Work.Spend(false)||!context.Graph.Remaining)
+                            {context.ProbeResult.Truncated=true;context.ProbeResult.Note("work_budget_exhausted");}
+                            else
+                            {
+                                const auto result=world==MiniMapMap::GetWorld()?
+                                    MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context):V::WorldGenerationChanged;
+                                switch(result)
+                                {
+                                case V::StaleEntity:context.ProbeResult.Stale=true;context.ProbeResult.MassIdentity="stale";context.ProbeResult.Note("stale_entity");break;
+                                case V::WorldGenerationChanged:context.ProbeResult.MassIdentity="not_examined";context.ProbeResult.Note("world_generation_changed");break;
+                                case V::CollectorUnavailable:context.ProbeResult.Note("collector_unavailable");break;
+                                case V::ParametersUnavailable:context.ProbeResult.MassIdentity="valid";context.ProbeResult.Note("parameters_unavailable");break;
+                                case V::InvalidCopiedDefinition:context.ProbeResult.Note("invalid_copied_definition");break;
+                                default:break; // Visitor supplies precise tested predicates.
+                                }
+                            }
+                            if(context.Work.Exhausted||!context.Work.Remaining||!context.Graph.Remaining)
+                            {context.ProbeResult.Truncated=true;context.ProbeResult.Note("work_budget_exhausted");}
+                            context.ProbeResult.Truncated|=context.Truncated&&!previousTruncated;
+                            context.Truncated=previousTruncated;
+                            context.SelectionTraversalTruncated|=context.ProbeResult.Truncated;
+                            context.SelectionTraitVisits+=context.ProbeResult.Traits;context.SelectionMeshVisits+=context.ProbeResult.MeshReferences;
+                            context.Attempts.Add(context.ProbeJson(record,attempt));
+                            return S::Probe{context.ProbeResult.Route,context.ProbeResult.Stale,
+                                context.Work.Exhausted||!context.Work.Remaining||!context.Graph.Remaining};
+                        },S::Route::ConfigurationActor); // Placement soft-class route is deliberately unsupported.
+                        context.SelectionGraphVisits=C::VisitLimit-context.Graph.Remaining;
+                        if(context.Decision.HasSelection())
                         {
-                            context.Record=*selected;context.BuildingId=selected->BuildingId;
-                            if(!MiniMapBuildingCollector::VisitDiagnosticDefinition(*selected,&Visit,&context))
-                                context.Source("selected_building_discovery",0,"unavailable","Mass identity/definition or resident representation validation failed; no fallback load");
+                            context.Record=snapshot->Records[context.Decision.Selected.SnapshotIndex];context.BuildingId=context.Record.BuildingId;
+                            context.Status="not_attempted";context.SelectedTier=S::RouteName(context.Decision.SelectedRoute);
+                            context.Reason="resident representation eligibility established; full metadata traversal pending";
+                            if(context.Work.Remaining&&context.Graph.Remaining&&world==MiniMapMap::GetWorld())
+                            {
+                                context.FullTraversal=true;
+                                if(MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&Visit,&context)!=MiniMapBuildingCollector::DiagnosticVisitStatus::Visited)
+                                {
+                                    context.Status="unavailable";context.Reason="selected eligible candidate failed full-snapshot revalidation";
+                                    context.Source("selected_representation_revalidation",0,"unavailable","selected candidate could not be revalidated; no second full snapshot");
+                                }
+                            }
+                            else context.Source("selected_representation_traversal",0,"not_attempted","world changed or shared work budget exhausted");
                         }
+                        else context.Source("representation_selection",0,"unavailable","no eligible representation in bounded examined candidates; see candidate_attempts");
                     }
                     else context.Source("native_metadata_classes",0,"unavailable_not_resident","required exact native class anchors unavailable or invalid");
-                    building=context.BuildingId;json=context.Document();
+                    building=context.BuildingId;hasSelection=context.Decision.HasSelection();json=context.Document();
+                    try {assemblyJson=context.AssemblyDocument(world);}
+                    catch(...) {assemblyJson="{\"schema_version\":1,\"stage\":\"R2.5a\",\"status\":\"invalid\",\"reason\":\"audit_exception\",\"readiness\":{\"static_only_diagnostic_capture\":false,\"complete_visual_building\":false}}";}
                 } // All borrowed pointers and strong references retire before I/O.
-                Export(building,json);
+                Export(building,hasSelection,json);
+                Export(building,hasSelection,assemblyJson,true);
             }
             catch(const std::exception& e){LOG_ERROR("MiniMap: R2.4 diagnostic failed, no retry: %.200s",e.what());}
             catch(...){LOG_ERROR("MiniMap: R2.4 diagnostic failed, no retry");}
