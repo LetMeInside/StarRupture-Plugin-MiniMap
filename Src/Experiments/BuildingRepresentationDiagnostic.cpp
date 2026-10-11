@@ -15,7 +15,6 @@
 #include "SmelterCaptureNativeBindings.h"
 #include "SmelterCaptureExperiment.h"
 #include "../Map/BuildingCollector.h"
-#include "../Map/TerrainCache.h"
 #include "../Map/Map.h"
 #include "../Map/BuildingSprites.h"
 #include "../plugin_helpers.h"
@@ -23,7 +22,6 @@
 #include <atomic>
 #include <cstring>
 #include <cwchar>
-#include <fstream>
 #include <unordered_map>
 #include <type_traits>
 
@@ -40,7 +38,7 @@ namespace MiniMapBuildingRepresentation
         IPluginEngineEvents* engine=nullptr;
         IPluginWorldEvents* worlds=nullptr;
         SDK::UWorld* endingWorld=nullptr; // comparison only; never dereferenced
-        std::atomic<bool> stopped{false},attempted{false};
+        std::atomic<bool> stopped{false};
         std::atomic_flag executing=ATOMIC_FLAG_INIT;
         bool registered=false;
         constexpr auto NativeExcluded="sparse-set traversal bound not yet independently verified";
@@ -149,11 +147,7 @@ namespace MiniMapBuildingRepresentation
             std::map<std::pair<std::string,size_t>,std::string> AuditMassOffsets;
             C::Graph Graph;
             S::WorkBudget Work;
-            S::Plan SelectionPlan;
-            S::Decision Decision;
-            C::JsonArray Attempts;
-            bool FullTraversal=false,SelectionTraversalTruncated=false;
-            size_t SelectionTraitVisits=0,SelectionMeshVisits=0,SelectionGraphVisits=0;
+            bool FullTraversal=false;
             struct ProbeState
             {
                 S::Route Route=S::Route::None;
@@ -691,26 +685,6 @@ namespace MiniMapBuildingRepresentation
                 if(Work.Exhausted||Graph.Truncated){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");}
                 return ProbeResult.Route!=S::Route::None;
             }
-            std::string ProbeJson(const S::Record& record,size_t attempt)const
-            {
-                C::JsonArray reasons;for(const auto& reason:ProbeResult.Reasons)reasons.Add(C::Quote(reason));
-                return C::Object({{"attempt",std::to_string(attempt)},{"building_id",std::to_string(record.Building)},
-                    {"definition_identity",C::Object({{"object_index",std::to_string(record.Def.ObjectIndex)},
-                        {"fname_comparison_index",std::to_string(record.Def.NameIndex)},{"fname_number",std::to_string(record.Def.NameNumber)}})},
-                    {"entity_index",std::to_string(record.Index)},{"entity_serial",std::to_string(record.Serial)},
-                    {"mass_identity",C::Quote(ProbeResult.MassIdentity)},{"definition_validation",C::Quote(ProbeResult.DefinitionIdentity)},
-                    {"cached_entity_config",C::Quote(ProbeResult.CachedConfig)},
-                    {"configuration_validation",C::Quote(ProbeResult.ConfigValidation)},
-                    {"authored_entity_config",S::UnavailableReference("soft-reference state/read contract not verified; no weak resolution or loading")},
-                    {"placement_actor_class",S::UnavailableReference("resident soft-class access contract not verified")},
-                    {"traits_examined",std::to_string(ProbeResult.Traits)},{"visualization_traits",std::to_string(ProbeResult.VisualTraits)},
-                    {"high_detail_class",C::Quote(ProbeResult.HighStatus)},{"low_detail_class",C::Quote(ProbeResult.LowStatus)},
-                    {"mass_metadata",C::Quote(ProbeResult.MassStatus)},{"mesh_references_examined",std::to_string(ProbeResult.MeshReferences)},
-                    {"valid_mass_mesh",ProbeResult.Mesh?"true":ProbeResult.MassStatus=="examined"?"false":"null"},
-                    {"eligible",C::Bool(ProbeResult.Route!=S::Route::None)},
-                    {"eligible_route",C::Quote(S::RouteName(ProbeResult.Route))},{"truncated",C::Bool(ProbeResult.Truncated)},
-                    {"reasons",reasons.String()}});
-            }
             bool Discover(uintptr_t definition)
             {
                 if(!Is(definition,Placement,0x174)||!Hold(definition,0x174))return false;
@@ -767,72 +741,12 @@ namespace MiniMapBuildingRepresentation
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             #include "GenericRepresentationAudit.inl"
 #endif
-            std::string Document()
-            {
-                const bool truncated=FullTraversal&&(Truncated||Graph.Truncated||Work.Exhausted||Sources.Truncated||Components.Truncated||Candidates.Truncated||Mass.Truncated||Relationships.Truncated);
-                return S::BoundDocument(C::Object({{"schema_version","2"},{"game_build",C::Quote("5.6.1-127004")},
-                    {"stage",C::Quote("R2.4b")},{"building_id",Decision.HasSelection()?std::to_string(BuildingId):"null"},
-                    {"selection",S::CoverageJson(SelectionPlan,Decision)},{"candidate_attempts",Attempts.String()},
-                    {"selection_truncation",S::TruncationJson(SelectionPlan,Decision,SelectionTraversalTruncated,Attempts.Truncated)},
-                    {"representation",C::Object({{"attempted",C::Bool(FullTraversal)},
-                        {"status",C::Quote(truncated?"truncated":Status)},
-                        {"observed_active_tier","null"},{"complete_visual_building","false"}})},
-                    {"representation_truncation",C::Object({{"truncated",C::Bool(truncated)},
-                        {"native_work_limit",C::Bool(FullTraversal&&Work.Exhausted)}})},
-                    {"native_work",C::Object({{"selection_object_validation_visits",std::to_string(Work.SelectionVisits)},
-                        {"representation_object_validation_visits",std::to_string(Work.RepresentationVisits)},
-                        {"selection_trait_visits",std::to_string(SelectionTraitVisits)},
-                        {"selection_mesh_assignment_visits",std::to_string(SelectionMeshVisits)},
-                        {"selection_graph_visits",std::to_string(SelectionGraphVisits)},
-                        {"representation_graph_visits",std::to_string(C::VisitLimit-Graph.Remaining-SelectionGraphVisits)},
-                        {"remaining",std::to_string(Work.Remaining)},
-                        {"graph_visits",std::to_string(C::VisitLimit-Graph.Remaining)}})},
-                    {"building_transform_input",Decision.HasSelection()?C::Object({{"valid",C::Bool(Record.TransformValid)},
-                        {"position",CopiedNumbers(Record.Position)},{"rotation_xyzw",CopiedNumbers(Record.Rotation)},
-                        {"scale",CopiedNumbers(Record.Scale)},{"refreshed_at_steady_seconds",C::Number(Record.RefreshedAtSeconds)},
-                        {"provenance",C::Quote("copied collector record; not refreshed or composed by diagnostic")}}):"null"},
-                    {"status",C::Quote(truncated?"truncated":Status)},{"invalid_metadata_seen",C::Bool(Invalid)},
-                    {"selected_representation_type",C::Quote(SelectedTier)},{"selected",Selected},{"selection_reason",C::Quote(Reason)},
-                    {"runtime_source",C::Quote("collector snapshot -> revalidated Mass entity -> current placement -> resident entity configuration -> visualization traits")},
-                    {"selection_window_records",std::to_string(S::RecordLimit)},{"complete_visual_building","false"},{"transforms_composed","false"},
-                    {"component_records_are_additive_geometry","false"},{"inherited_override_selection_status",C::Quote("not_evaluated")},
-                    {"truncated",C::Bool(truncated)},{"sources",Sources.String()},{"candidates",Candidates.String()},
-                    {"truncation_summary",C::Object({{"traversal_limits",C::Bool(Truncated)},
-                        {"total_visit_limit",C::Bool(FullTraversal&&Graph.Truncated)},{"sources_byte_limit",C::Bool(Sources.Truncated)},
-                        {"components_byte_limit",C::Bool(Components.Truncated)},{"mass_byte_limit",C::Bool(Mass.Truncated)},
-                        {"candidates_byte_limit",C::Bool(Candidates.Truncated)},{"relationships_byte_limit",C::Bool(Relationships.Truncated)}})},
-                    {"components",Components.String()},{"mass_representations",Mass.String()},{"relationships",Relationships.String()},
-                    {"limits",C::Object({{"components",std::to_string(C::ComponentLimit)},{"scs_nodes_total_and_per_array",std::to_string(C::NodeLimit)},
-                        {"materials_per_array",std::to_string(C::MaterialLimit)},{"child_depth",std::to_string(C::ChildDepthLimit)},
-                        {"graph_depth",std::to_string(C::DepthLimit)},{"total_visits",std::to_string(C::VisitLimit)},
-                        {"copied_records",std::to_string(S::RecordLimit)},{"candidate_definitions",std::to_string(S::DefinitionLimit)},
-                        {"native_probes",std::to_string(S::ProbeLimit)},{"native_validation_work",std::to_string(S::NativeWorkLimit)},
-                        {"output_bytes",std::to_string(C::OutputLimit)}})},
-                    {"limitations",C::Quote("Native default components and native inherited resolution not attempted. Authored defaults/overrides are separate; effective virtual materials not evaluated. Construction scripts, live state, animation, skeletal poses, LOD/residency/Nanite and signed-scale transform composition not evaluated. Null numeric channels indicate invalid nonfinite input. Readable names unavailable.")}}));
-            }
         };
         bool Visit(const SDK::UObject* definition,void* context)
         {return static_cast<Context*>(context)->Discover(reinterpret_cast<uintptr_t>(definition));}
         bool ProbeVisit(const SDK::UObject* definition,void* context)
         {return static_cast<Context*>(context)->ProbeDefinition(reinterpret_cast<uintptr_t>(definition));}
 
-        void Export(uint32_t building,bool selected,const std::string& json,bool assembly=false)
-        {
-            std::filesystem::path directory;
-            if(!MiniMapTerrainCache::GetBuildingDiagnosticsDirectory(directory))return;
-            std::error_code ec;std::filesystem::create_directories(directory,ec);
-            if(ec){LOG_ERROR("MiniMap: R2.4 diagnostic directory creation failed: %s",ec.message().c_str());return;}
-            const auto path=directory/(assembly?L"Smelter_AssemblyRecipe.json":selected?L"Building_"+std::to_wstring(building)+L"_Representation.json":L"Representation_Selection.json");
-            const auto temporary=path.wstring()+L".tmp";
-            {
-                std::ofstream file(temporary,std::ios::binary|std::ios::trunc);
-                file.write(json.data(),std::streamsize(json.size()));file.close();
-                if(!file){LOG_ERROR("MiniMap: R2.4 diagnostic write failed");std::filesystem::remove(temporary,ec);return;}
-            }
-            if(!MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-            {LOG_ERROR("MiniMap: R2.4 diagnostic publication failed: %lu",GetLastError());std::filesystem::remove(temporary,ec);return;}
-            LOG_INFO("MiniMap: R2.4 representation metadata exported: %ls (%zu bytes); visual completeness unproven",path.c_str(),json.size());
-        }
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
@@ -847,100 +761,6 @@ namespace MiniMapBuildingRepresentation
             StopImpl();
         }
 
-        void Tick(float)
-        {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationTick,true);
-        if(!MiniMapMap::GameplayReady())return;
-#if !defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
-        if(!PrepareNativeClasses())return;
-#else
-        if(nativeAnchorCursor!=std::size(nativeAnchors))return;
-#endif
-            const auto& b=MiniMapSmelterCapture::GetBindings();
-            if(stopped.load()||attempted.load()||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)())return;
-            auto* world=MiniMapMap::GetWorld();
-            if(!world||world==endingWorld)return;
-            const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-            if(!snapshot||!snapshot->Complete||snapshot->Records.empty())return;
-            if(attempted.exchange(true))return;
-            if(executing.test_and_set())return;
-            struct EndExecution {~EndExecution(){executing.clear();}} endExecution;
-            try
-            {
-                LOG_INFO("MiniMap: R2.4b one-shot bounded representation-eligible selection entered");
-                std::string json,assemblyJson;uint32_t building=0;bool hasSelection=false;
-                {
-                    Context context;
-                    context.Source("native_default_components",0,"not_attempted",NativeExcluded);
-                    context.SelectionPlan=S::Scan(snapshot->Records.size(),[&](size_t i)
-                    {
-                        const auto& r=snapshot->Records[i];
-                        return S::Record{{r.DefinitionObjectIndex,r.DefinitionIndex,r.DefinitionNumber},r.BuildingId,
-                            r.Index,r.Serial,r.Generation,r.DefinitionValid,i};
-                    });
-                    if(context.Initialize())
-                    {
-                        context.Decision=S::Choose(context.SelectionPlan,[&](const S::Record& record,size_t attempt)
-                        {
-                            const bool previousTruncated=context.Truncated;
-                            context.Record=snapshot->Records[record.SnapshotIndex];context.ProbeResult={};
-                            using V=MiniMapBuildingCollector::DiagnosticVisitStatus;
-                            if(!context.Work.Spend(false)||!context.Graph.Remaining)
-                            {context.ProbeResult.Truncated=true;context.ProbeResult.Note("work_budget_exhausted");}
-                            else
-                            {
-                                const auto result=world==MiniMapMap::GetWorld()?
-                                    MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context):V::WorldGenerationChanged;
-                                switch(result)
-                                {
-                                case V::StaleEntity:context.ProbeResult.Stale=true;context.ProbeResult.MassIdentity="stale";context.ProbeResult.Note("stale_entity");break;
-                                case V::WorldGenerationChanged:context.ProbeResult.MassIdentity="not_examined";context.ProbeResult.Note("world_generation_changed");break;
-                                case V::CollectorUnavailable:context.ProbeResult.Note("collector_unavailable");break;
-                                case V::ParametersUnavailable:context.ProbeResult.MassIdentity="valid";context.ProbeResult.Note("parameters_unavailable");break;
-                                case V::InvalidCopiedDefinition:context.ProbeResult.Note("invalid_copied_definition");break;
-                                default:break; // Visitor supplies precise tested predicates.
-                                }
-                            }
-                            if(context.Work.Exhausted||!context.Work.Remaining||!context.Graph.Remaining)
-                            {context.ProbeResult.Truncated=true;context.ProbeResult.Note("work_budget_exhausted");}
-                            context.ProbeResult.Truncated|=context.Truncated&&!previousTruncated;
-                            context.Truncated=previousTruncated;
-                            context.SelectionTraversalTruncated|=context.ProbeResult.Truncated;
-                            context.SelectionTraitVisits+=context.ProbeResult.Traits;context.SelectionMeshVisits+=context.ProbeResult.MeshReferences;
-                            context.Attempts.Add(context.ProbeJson(record,attempt));
-                            return S::Probe{context.ProbeResult.Route,context.ProbeResult.Stale,
-                                context.Work.Exhausted||!context.Work.Remaining||!context.Graph.Remaining};
-                        },S::Route::ConfigurationActor); // Placement soft-class route is deliberately unsupported.
-                        context.SelectionGraphVisits=C::VisitLimit-context.Graph.Remaining;
-                        if(context.Decision.HasSelection())
-                        {
-                            context.Record=snapshot->Records[context.Decision.Selected.SnapshotIndex];context.BuildingId=context.Record.BuildingId;
-                            context.Status="not_attempted";context.SelectedTier=S::RouteName(context.Decision.SelectedRoute);
-                            context.Reason="resident representation eligibility established; full metadata traversal pending";
-                            if(context.Work.Remaining&&context.Graph.Remaining&&world==MiniMapMap::GetWorld())
-                            {
-                                context.FullTraversal=true;
-                                if(MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&Visit,&context)!=MiniMapBuildingCollector::DiagnosticVisitStatus::Visited)
-                                {
-                                    context.Status="unavailable";context.Reason="selected eligible candidate failed full-snapshot revalidation";
-                                    context.Source("selected_representation_revalidation",0,"unavailable","selected candidate could not be revalidated; no second full snapshot");
-                                }
-                            }
-                            else context.Source("selected_representation_traversal",0,"not_attempted","world changed or shared work budget exhausted");
-                        }
-                        else context.Source("representation_selection",0,"unavailable","no eligible representation in bounded examined candidates; see candidate_attempts");
-                    }
-                    else context.Source("native_metadata_classes",0,"unavailable_not_resident","required exact native class anchors unavailable or invalid");
-                    building=context.BuildingId;hasSelection=context.Decision.HasSelection();json=context.Document();
-                    try {assemblyJson=context.AssemblyDocument(world);}
-                    catch(...) {assemblyJson="{\"schema_version\":1,\"stage\":\"R2.5a\",\"status\":\"invalid\",\"reason\":\"audit_exception\",\"readiness\":{\"static_only_diagnostic_capture\":false,\"complete_visual_building\":false}}";}
-                } // All borrowed pointers and strong references retire before I/O.
-                Export(building,hasSelection,json);
-                Export(building,hasSelection,assemblyJson,true);
-            }
-            catch(const std::exception& e){LOG_ERROR("MiniMap: R2.4 diagnostic failed, no retry: %.200s",e.what());}
-            catch(...){LOG_ERROR("MiniMap: R2.4 diagnostic failed, no retry");}
-        }
         bool MatchingBuild()
         {
             // Guard direct read contracts with the installed executable's RSDS
@@ -1195,16 +1015,16 @@ namespace MiniMapBuildingRepresentation
         auto* hooks=GetHooks();
         if(!hooks||!hooks->Engine||!hooks->World||!b.GameThread||!b.Retain||!b.Release)return;
         engine=hooks->Engine;worlds=hooks->World;
-        if(!engine->GetStaticFindObjectByNameAddress||!engine->GetStaticFindObjectByNameAddress()||!engine->RegisterOnTick||!engine->UnregisterOnTick||
+        if(!engine->GetStaticFindObjectByNameAddress||!engine->GetStaticFindObjectByNameAddress()||
             !engine->RegisterOnShutdown||!engine->UnregisterOnShutdown||!worlds->RegisterOnBeforeWorldEndPlay||!worlds->UnregisterOnBeforeWorldEndPlay)return;
-        engine->RegisterOnTick(&Tick);engine->RegisterOnShutdown(&Stop);worlds->RegisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=true;
-        LOG_INFO("MiniMap: R2.4 enabled; waiting for complete collector snapshot; native default components explicitly excluded");
+        engine->RegisterOnShutdown(&Stop);worlds->RegisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=true;
+        LOG_INFO("MiniMap: R2.4 capture validation enabled; native class preparation is serviced by sprite discovery");
     }
     void Shutdown()
     {
         StopImpl();
-        if(registered){engine->UnregisterOnTick(&Tick);engine->UnregisterOnShutdown(&Stop);worlds->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=false;}
-        if(executing.test_and_set()){LOG_ERROR("MiniMap: R2.4 shutdown overlaps synchronous diagnostic; DLL unload not certified");}
+        if(registered){engine->UnregisterOnShutdown(&Stop);worlds->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=false;}
+        if(executing.test_and_set()){LOG_ERROR("MiniMap: R2.4 shutdown overlaps synchronous representation service; DLL unload not certified");}
         else
         {
             const auto release=MiniMapSmelterCapture::GetBindings().Release;
