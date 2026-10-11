@@ -8,7 +8,7 @@
 
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
-#include "../Experiments/BuildingSpritePipelineCore.h"
+#include "BuildingSpritePipelineCore.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"

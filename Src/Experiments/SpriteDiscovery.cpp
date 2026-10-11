@@ -1,10 +1,10 @@
 #include "../Map/Map.h"
 #include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
-#include "SpriteDiscoveryCore.h"
-#include "SpriteCandidateIdentity.h"
+#include "../Map/SpriteDiscoveryCore.h"
+#include "../Map/SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-#include "SpriteValidationCore.h"
+#include "../Map/SpriteValidationCore.h"
 #include "../Map/BuildingRepresentation.h"
 #endif
 #include "../plugin.h"

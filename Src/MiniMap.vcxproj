@@ -106,9 +106,12 @@
     <ClInclude Include="Map\RepresentationSelectionCore.h" />
     <ClInclude Include="Map\AssemblyRecipeCore.h" />
     <ClInclude Include="Map\StaticAssemblyCaptureCore.h" />
-    <ClInclude Include="Experiments\SpriteCandidateIdentity.h" />
-    <ClInclude Include="Experiments\SpriteCaptureCore.h" />
-    <ClInclude Include="Experiments\BuildingSpritePipelineCore.h" />
+    <ClInclude Include="Map\SpriteDiscoveryCore.h" />
+    <ClInclude Include="Map\SpriteClassificationCore.h" />
+    <ClInclude Include="Map\SpriteValidationCore.h" />
+    <ClInclude Include="Map\SpriteCandidateIdentity.h" />
+    <ClInclude Include="Map\SpriteCaptureCore.h" />
+    <ClInclude Include="Map\BuildingSpritePipelineCore.h" />
     <ClInclude Include="Map\BuildingSprites.h" />
     <ClInclude Include="Native\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Map\AssemblyRecipeAudit.inl" />

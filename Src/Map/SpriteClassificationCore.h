@@ -1,5 +1,5 @@
 #pragma once
-#include "../Map/RepresentationMetadataCore.h"
+#include "RepresentationMetadataCore.h"
 #include <array>
 
 namespace MiniMapSpriteClassification

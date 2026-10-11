@@ -1,6 +1,6 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_BUILDING_SPRITES)
-#include "../Experiments/BuildingSpritePipelineCore.h"
+#include "BuildingSpritePipelineCore.h"
 #include "BuildingCollector.h"
 #include <chrono>
 namespace MiniMapBuildingSprites

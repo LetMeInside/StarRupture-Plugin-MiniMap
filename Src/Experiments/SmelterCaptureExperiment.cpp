@@ -2,8 +2,8 @@
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "SmelterCaptureExperiment.h"
 #include "../Map/StaticAssemblyCaptureCore.h"
-#include "SpriteCaptureCore.h"
-#include "SpriteCandidateIdentity.h"
+#include "../Map/SpriteCaptureCore.h"
+#include "../Map/SpriteCandidateIdentity.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
 #include "../Native/ReadbackNativeAdapter.h"
 #include "../Native/ReadbackNativeBindings.h"

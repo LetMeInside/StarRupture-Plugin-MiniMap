@@ -6,10 +6,10 @@
 #include "RepresentationSelectionCore.h"
 #include "AssemblyRecipeCore.h"
 #include "StaticAssemblyCaptureCore.h"
-#include "../Experiments/SpriteCaptureCore.h"
-#include "../Experiments/SpriteCandidateIdentity.h"
+#include "SpriteCaptureCore.h"
+#include "SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-#include "../Experiments/SpriteValidationCore.h"
+#include "SpriteValidationCore.h"
 #endif
 #include "RepresentationMetadataPatterns.h"
 #include "../Native/ReadbackNativeAdapter.h"

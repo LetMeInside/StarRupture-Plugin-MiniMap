@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_BUILDING_SPRITES)
 #include "BuildingSprites.h"
 #include "FogOfWar.h"
-#include "../Experiments/SpriteCandidateIdentity.h"
+#include "SpriteCandidateIdentity.h"
 #include "../Experiments/SmelterCaptureExperiment.h"
 #include "../plugin_helpers.h"
 #include <mutex>
