@@ -108,6 +108,10 @@
     <ClInclude Include="Experiments\RepresentationSelectionCore.h" />
     <ClInclude Include="Experiments\AssemblyRecipeCore.h" />
     <ClInclude Include="Experiments\StaticAssemblyCaptureCore.h" />
+    <ClInclude Include="Experiments\SpriteCandidateIdentity.h" />
+    <ClInclude Include="Experiments\SpriteCaptureCore.h" />
+    <ClInclude Include="Experiments\BuildingSpritePipelineCore.h" />
+    <ClInclude Include="Map\BuildingSprites.h" />
     <ClInclude Include="Experiments\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Experiments\AssemblyRecipeAudit.inl" />
     <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
@@ -139,6 +143,7 @@
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
     <ClInclude Include="plugin_helpers.h" />
+    <ClInclude Include="CallbackTiming.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(StarRuptureSDKSourceDir)Basic.cpp">
@@ -173,7 +178,13 @@
     <ClCompile Include="Map\AlienActors.cpp" />
     <ClCompile Include="Map\BuildingInventory.cpp" />
     <ClCompile Include="Map\BuildingCollector.cpp" />
+    <ClCompile Include="Experiments\SpriteDiscovery.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
     <ClCompile Include="Map\BuildingVisuals.cpp" />
+    <ClCompile Include="Map\BuildingSprites.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
     <ClCompile Include="Map\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />

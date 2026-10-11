@@ -1,6 +1,9 @@
+#include "../CallbackTiming.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "SmelterCaptureExperiment.h"
 #include "StaticAssemblyCaptureCore.h"
+#include "SpriteCaptureCore.h"
+#include "SpriteCandidateIdentity.h"
 #include "SmelterCaptureNativeBindings.h"
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
@@ -9,6 +12,7 @@
 #include "../Map/BuildingCollector.h"
 #include "../plugin_helpers.h"
 #include "../Map/Map.h"
+#include "../Map/BuildingSprites.h"
 #include <Engine_classes.hpp>
 #include <Engine_parameters.hpp>
 #include <atomic>
@@ -17,6 +21,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <type_traits>
+#include <memory>
 
 namespace MiniMapSmelterCapture
 {
@@ -35,6 +40,12 @@ namespace MiniMapSmelterCapture
         MiniMapCaptureRetirement::FenceOwner baselineFence,assemblyFence;
         namespace SA=MiniMapStaticAssembly;
         SA::Recipe assemblyRecipe;
+        struct CandidateRequest
+        {
+            MiniMapSpriteCapture::Candidate Candidate;
+            MiniMapBuildingCollector::Record Source; // CPU-owned metadata only.
+        };
+        CandidateRequest* candidateRequest=nullptr; // Owned with the assembly roots.
         SA::Footprint assemblyBounds;
         SA::Ledger assemblyComponents;
         SDK::UObject* assemblyRoots[SA::Assignments+SA::Limit]{};
@@ -84,12 +95,68 @@ namespace MiniMapSmelterCapture
         };
         void Hold(SDK::UObject* object){reinterpret_cast<void(*)(SDK::UObject*)>(bindings.Retain)(object);}
         void Drop(SDK::UObject* object){reinterpret_cast<void(*)(SDK::UObject*)>(bindings.Release)(object);}
+        void FailSpritePublication(const char* reason) noexcept
+        {
+#if defined(MINIMAP_BUILDING_SPRITES)
+            try {if(candidateRequest&&candidateRequest->Candidate.General)
+                MiniMapBuildingSprites::Record(candidateRequest->Candidate.Identity,MiniMapBuildingSpriteCore::State::Failed,reason);}catch(...){}
+#else
+            (void)reason;
+#endif
+        }
         void ReleaseAssemblySources()
         {
+            FailSpritePublication("capture_ended_without_ready_sprite");
             while(assemblyRootCount)
             {auto*& root=assemblyRoots[--assemblyRootCount];Drop(root);root=nullptr;}
             assemblyPending=false;recipeWorld=nullptr;
             assemblyRecipe={};
+            delete candidateRequest;candidateRequest=nullptr;
+        }
+        MiniMapSpriteCapture::Decision CheckCandidate(CandidateRequest& request,const SA::Recipe& recipe,void* world,bool retained)
+        {
+            namespace P=MiniMapSpriteCapture;
+            try
+            {
+            auto& candidate=request.Candidate;
+            if(candidate.General!=recipe.General)return {P::State::Rejected,"candidate_recipe_mode_mismatch"};
+            if(candidate.Classification.ExcludeFromMiniMap==P::K::Exclusion::Exclude||candidate.Classification.Reason=="InteriorTag")
+                return {P::State::Rejected,"classification_excluded"};
+            if(!candidate.General&&!P::Experiment::Enabled(candidate.Identity.Building))return {P::State::Rejected,"experimental_target_not_enabled"};
+            const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+            const auto copied=MiniMapSpriteCandidates::Copy(request.Source);
+            P::Evidence evidence;
+            evidence.SourceCurrent=world&&world==MiniMapMap::GetWorld()&&world!=endingWorld&&snapshot&&snapshot->Complete&&
+                snapshot->Generation==recipe.Generation&&candidate.Identity.Generation==recipe.Generation&&
+                request.Source.Generation==recipe.Generation;
+            if(evidence.SourceCurrent&&copied.DefinitionValid&&copied.VisualInputsValid&&copied.Identity==candidate.Identity)
+            {
+                P::K::Observation fresh;
+                evidence.SourceValidated=MiniMapBuildingRepresentation::RevalidateCaptureSource(request.Source,fresh);
+                candidate.Classification=std::move(fresh.CachedPolicy);
+                candidate.ClassificationObserved=evidence.SourceValidated;
+                candidate.Truncated|=fresh.Truncated;
+            }
+            if(!MiniMapBuildingRepresentation::ValidateCaptureObject(recipe.ActorClass))candidate.RepresentationVerified=false;
+            else
+            {
+                const auto* klass=reinterpret_cast<const SDK::UClass*>(recipe.ActorClass);
+                candidate.RepresentationVerified&=klass->Index==candidate.ActorObject&&
+                    klass->Name.ComparisonIndex==candidate.ActorName&&klass->Name.Number==candidate.ActorNumber;
+            }
+            SA::Footprint bounds;evidence.RecipeVerified=SA::Validate(recipe,bounds)==nullptr;
+            RetirementOperations retirement;
+            const bool gameThread=GameThread(),renderer=Native::CaptureRetirementRendererAvailable(),fence=retirement.Available();
+            const bool ownership=bindings.Retain&&bindings.Release;
+            const bool setters=bindings.AssemblySetMaterial&&bindings.AssemblySetWorldTransform&&bindings.AssemblyShowOnlyExec;
+            evidence.LifecycleReady=gameThread&&!stopping.load()&&renderer&&fence&&ownership&&setters;
+            if(!evidence.LifecycleReady)
+                LOG_WARN("MiniMap: capture lifecycle rejected: gameThread=%d renderer=%d fence=%d ownership=%d setters=%d stopping=%d",
+                    int(gameThread),int(renderer),int(fence),int(ownership),int(setters),int(stopping.load()));
+            evidence.SourcesRetained=retained;
+            return candidate.General?P::Decide(candidate,evidence,true):P::Experiment::Evaluate(candidate,evidence);
+            }
+            catch(...){return {P::State::Rejected,"candidate_revalidation_exception"};}
         }
         void Unregister()
         {
@@ -242,10 +309,11 @@ namespace MiniMapSmelterCapture
                 size_t overrides=0;for(size_t s=0;s<input.MaterialCount;++s)overrides+=input.Overrides[s];
                 LOG_INFO("MiniMap: R2.5b configured static instance %zu: materialSlots=%zu authoredOverrides=%zu; stored transform verified",i,input.MaterialCount,overrides);
             }
-            return assemblyComponents.Count==SA::Expected;
+            return assemblyComponents.Count==assemblyRecipe.Count;
         }
         void FailBeforeCapture(const char* reason)
         {
+            FailSpritePublication(reason);
             LOG_ERROR("MiniMap: R2 failed before capture: %s; no retry",reason);
             if(assemblyActive&&!SA::CanCleanBeforeCommit(assemblyAssociationUncertain,
                 captureRegistered||!assemblyComponents.Detached(),
@@ -258,7 +326,7 @@ namespace MiniMapSmelterCapture
             Native::DiscardExternalBeforeCapture(job);
             RetirementOperations operations;
             RetirementFence().Release(operations); // constructed, never inserted
-            ReleaseObjects(); finished=true;
+            ReleaseObjects(); finished=true;assemblyActive=false;baselineRetired=true;
         }
         bool RecoverRejectedCapture()
         {
@@ -269,6 +337,7 @@ namespace MiniMapSmelterCapture
                 Native::CaptureRetirementRendererAvailable(),operations.Available(),meshRegistered || captureRegistered || !assemblyComponents.Detached(),
                 captureWorld && captureWorld==MiniMapMap::GetWorld() && captureWorld!=endingWorld)) return false;
             cancelled.store(true,std::memory_order_release);
+            FailSpritePublication("readback_rejected_before_enqueue; retirement_pending");
             Native::Cancel(job);
             LOG_WARN("MiniMap: R2 readback rejected before native enqueue; empty-job recovery eligible: %s",Native::Inspect(job).Failure);
             Unregister();
@@ -286,6 +355,7 @@ namespace MiniMapSmelterCapture
                 Native::CaptureRetirementRendererAvailable(),operations.Available(),!meshRegistered && !captureRegistered && assemblyComponents.Detached()))
             {
                 finished=true;
+                FailSpritePublication("retirement_prerequisites_uncertain; resources_retained");
                 LOG_ERROR("MiniMap: R2 capture retirement prerequisites uncertain; existing quarantine retained");
                 return;
             }
@@ -295,10 +365,11 @@ namespace MiniMapSmelterCapture
                 !Native::DestroyIfRetired(job))
             {
                 finished=true;
+                FailSpritePublication("retirement_ownership_uncertain; resources_retained");
                 LOG_ERROR("MiniMap: R2 capture retirement final ownership check failed; resources retained");
                 return;
             }
-            ReleaseObjects(); retirementPending=false; finished=true;
+            ReleaseObjects(); retirementPending=false; finished=true;assemblyActive=false;baselineRetired=true;
             LOG_INFO("MiniMap: R2 failed capture retired: empty CPU job released; components destroyed; strong references released");
         }
         void ExportImage() noexcept
@@ -314,6 +385,14 @@ namespace MiniMapSmelterCapture
                 MiniMapCapturePng::Image image;
                 if(!MiniMapCapturePng::Convert(pixels->data(),pixels->size(),Dimension,Dimension,Dimension,Dimension,image))
                 {LOG_ERROR("MiniMap: R2 PNG export failed: invalid packed RGBA16F dimensions/bytes");return;}
+                #if defined(MINIMAP_BUILDING_SPRITES)
+                if(assemblyActive&&candidateRequest&&candidateRequest->Candidate.General)
+                    MiniMapBuildingSprites::Complete(candidateRequest->Candidate.Identity,assemblyBounds,image.Rgba);
+#endif
+#if !MINIMAP_DEBUG_UI
+                // Session texture publication above is independent of development PNGs.
+                if(assemblyActive&&candidateRequest&&candidateRequest->Candidate.General)return;
+#endif
                 HMODULE module=nullptr;
                 if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                     reinterpret_cast<LPCWSTR>(&ExportImage),&module))
@@ -340,8 +419,17 @@ namespace MiniMapSmelterCapture
                         LOG_ERROR("MiniMap: R2 PNG export failed: %ls; stage=%s HRESULT=0x%08lx",path.c_str(),result.Stage,(unsigned long)result.Error);
                     }
                 };
-                write(assemblyActive?L"Smelter_StaticAssembly.png":L"Smelter.png",image.Rgba,false);
-                write(assemblyActive?L"Smelter_StaticAssembly_Alpha.png":L"Smelter_Alpha.png",image.Mask,true);
+                if(assemblyActive&&candidateRequest&&candidateRequest->Candidate.General)
+                {
+                    // Session diagnostics are never read as durable cache entries.
+                    const auto stem=L"Building_Session_"+std::to_wstring(assemblyRecipe.Generation)+L"_"+
+                        std::to_wstring(candidateRequest->Candidate.Identity.DefinitionObject)+L"_"+std::to_wstring(candidateRequest->Candidate.Identity.Building);
+                    write((stem+L".png").c_str(),image.Rgba,false);write((stem+L"_Alpha.png").c_str(),image.Mask,true);
+
+                }
+                else
+                {write(assemblyActive?L"Smelter_StaticAssembly.png":L"Smelter.png",image.Rgba,false);
+                 write(assemblyActive?L"Smelter_StaticAssembly_Alpha.png":L"Smelter_Alpha.png",image.Mask,true);}
             }
             catch(const std::exception& e){LOG_ERROR("MiniMap: R2 PNG export failed: %s; native cleanup continues",e.what());}
             catch(...){LOG_ERROR("MiniMap: R2 PNG export failed: unknown exception; native cleanup continues");}
@@ -351,6 +439,7 @@ namespace MiniMapSmelterCapture
             attempted=true;
             if(!Native::Preflight()){FailBeforeCapture(Native::Status());return;}
             RetirementOperations retirementOperations;
+            if(assemblyActive&&!RetirementFence().Rearm()){FailBeforeCapture("previous fence ownership not retired");return;}
             if(!RetirementFence().Prepare(retirementOperations)){FailBeforeCapture("retirement fence construction unavailable");return;}
             LOG_INFO("MiniMap: R2 gameplay-world eligibility established via lifecycle pointer; setup entered");
             auto* type=static_cast<SDK::UClass*>(Find(L"/Script/Engine.StaticMesh"));
@@ -521,7 +610,7 @@ namespace MiniMapSmelterCapture
                     if(!Invoke(capture,functions.Items[2],showOnly)){FailBeforeCapture("assembly show-only dispatch failed");return;}
                     entry.Member=true;
                 }
-                if(!assemblyComponents.Complete()||!MiniMapBuildingRepresentation::ValidateCaptureMembership(reinterpret_cast<uintptr_t>(capture),members,assemblyComponents.Count))
+                if(!assemblyComponents.Complete(assemblyRecipe.Count)||!MiniMapBuildingRepresentation::ValidateCaptureMembership(reinterpret_cast<uintptr_t>(capture),members,assemblyComponents.Count))
                 {FailBeforeCapture("assembly show-only membership mismatch");return;}
             }
             else
@@ -533,18 +622,24 @@ namespace MiniMapSmelterCapture
             job=Native::CreateExternalJob(resource,Dimension,Dimension);
             if(!job){FailBeforeCapture("target resource or CPU readback allocation unavailable");return;}
             const auto& native=Native::GetBindings();
+            if(assemblyActive)
+            {
+                const auto decision=candidateRequest?CheckCandidate(*candidateRequest,assemblyRecipe,world,assemblyRootCount!=0):
+                    MiniMapSpriteCapture::Decision{MiniMapSpriteCapture::State::Rejected,"candidate_request_missing"};
+                if(!decision.Allowed()){FailBeforeCapture(decision.Reason);return;}
+            }
             void* builder=reinterpret_cast<void*(*)(size_t,uint32_t)>(native.Malloc)(0x20,8);
             if(!builder){FailBeforeCapture("builder storage allocation failed");return;}
             const auto snapshot=assemblyActive?MiniMapBuildingCollector::GetSnapshot():nullptr;
-            if(!GameThread() || world!=MiniMapMap::GetWorld() || world==endingWorld ||
-                (assemblyActive&&(!snapshot||!snapshot->Complete||snapshot->Generation!=assemblyRecipe.Generation||!assemblyComponents.Complete()))||
+            if(!MiniMapMap::GameplayReady() || !GameThread() || world!=MiniMapMap::GetWorld() || world==endingWorld ||
+                (assemblyActive&&(!snapshot||!snapshot->Complete||snapshot->Generation!=assemblyRecipe.Generation||!assemblyComponents.Complete(assemblyRecipe.Count)))||
                 !Native::CaptureRetirementRendererAvailable())
             {
                 reinterpret_cast<void(*)(void*)>(native.Free)(builder);
                 FailBeforeCapture("final pre-commit world/RHI prerequisite changed");return;
             }
             LOG_INFO("MiniMap: R2 capture-builder submission entered");
-            if(assemblyActive)LOG_INFO("MiniMap: R2.5b isolated static assembly: instances=%zu uniqueMeshes=7 width=%.3f; fixed anchor=(0,0,200000); skeletal excluded",assemblyComponents.Count,double(capture->OrthoWidth));
+            if(assemblyActive)LOG_INFO("MiniMap: R2.5b isolated static assembly: instances=%zu static-reference width=%.3f; fixed anchor=(0,0,200000); skeletal excluded",assemblyComponents.Count,double(capture->OrthoWidth));
             reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
             reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
             // This is the commit boundary: all subsequent failures retain the
@@ -554,14 +649,15 @@ namespace MiniMapSmelterCapture
             const bool committedJob=Native::MarkExternalCaptureCommitted(job);
             reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
             reinterpret_cast<void(*)(void*)>(native.Free)(builder);
-            if(!committedJob){finished=true;Native::Cancel(job);LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
+            if(!committedJob){finished=true;Native::Cancel(job);FailSpritePublication("committed_job_identity_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
             LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, %s; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f",
-                Dimension,Dimension,assemblyActive?"ten static authored instances":"9 authored materials",extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
+                Dimension,Dimension,assemblyActive?"bounded static authored instances":"9 authored materials",extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
             LOG_INFO("MiniMap: R2 GPU readback scheduling entered (copy submission reported separately)");
             Native::Service(job,++frame);
         }
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureWorldEnd,false);
             if(!GameThread()){LOG_ERROR("MiniMap: R2 before-EndPlay is not game thread; component retirement NOT certified");return;}
             if(scheduling.test_and_set(std::memory_order_acquire)){LOG_ERROR("MiniMap: R2 before-EndPlay overlaps capture scheduling; retirement NOT certified");return;}
             Scope scope;
@@ -577,11 +673,19 @@ namespace MiniMapSmelterCapture
         }
         void Tick(float)
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureTick,true);
             if(stopping.load()||!GameThread()||scheduling.test_and_set(std::memory_order_acquire))return;
             Scope scope;
+#if defined(MINIMAP_BUILDING_SPRITES)
+            MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::CaptureService);
+#endif
             if(finished)
             {
-                if(assemblyActive)return;
+                if(assemblyActive)
+                {
+                    if(job||mesh||capture||target||assemblyRootCount)return; // quarantine remains fail-closed
+                    assemblyActive=false;baselineRetired=true;
+                }
                 if(!baselineRetired||job){if(assemblyPending)ReleaseAssemblySources();return;}
                 if(!assemblyPending)return;
                 const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
@@ -589,12 +693,17 @@ namespace MiniMapSmelterCapture
                     !snapshot->Complete||snapshot->Generation!=assemblyRecipe.Generation||
                     !MiniMapBuildingRepresentation::ValidateCaptureObject(assemblyRecipe.ActorClass))
                 {ReleaseAssemblySources();LOG_WARN("MiniMap: R2.5b pending authored recipe cancelled: world/generation changed; no retry");return;}
+                const auto decision=candidateRequest?CheckCandidate(*candidateRequest,assemblyRecipe,recipeWorld,assemblyRootCount!=0):
+                    MiniMapSpriteCapture::Decision{MiniMapSpriteCapture::State::Rejected,"candidate_request_missing"};
+                if(!decision.Allowed())
+                {ReleaseAssemblySources();LOG_WARN("MiniMap: R2.7a candidate cancelled before setup: %s; no retry",decision.Reason);return;}
                 assemblyActive=true;assemblyPending=false;finished=false;attempted=false;captureCommitted=false;
                 retirementPending=false;cancelled.store(false,std::memory_order_release);reported=0;frame=0;
-                LOG_INFO("MiniMap: R2.5b static-template experiment eligible: ten instances, seven meshes; original R2 retired; skeletal omitted");
+                LOG_INFO("MiniMap: R2.5b static-template capture eligible: bounded verified instances; original R2 retired; skeletal omitted");
             }
             if(!attempted)
             {
+                if(!MiniMapMap::GameplayReady())return;
                 auto* world=MiniMapMap::GetWorld();SDK::FVector player{};
                 // Map publishes only the host's ChimeraMain-filtered lifecycle pointer.
                 // All reads/clears and submission are serialized on the game thread.
@@ -607,7 +716,7 @@ namespace MiniMapSmelterCapture
                     catch(...)
                     {
                         if(!captureCommitted)FailBeforeCapture("assembly setup exception before commitment");
-                        else {Native::Cancel(job);finished=true;LOG_ERROR("MiniMap: R2.5b exception after commitment; native state uncertain, resources retained");}
+                        else {Native::Cancel(job);finished=true;FailSpritePublication("capture_exception_after_commit; resources_retained");LOG_ERROR("MiniMap: R2.5b exception after commitment; native state uncertain, resources retained");}
                     }
                 }
                 return;
@@ -616,7 +725,7 @@ namespace MiniMapSmelterCapture
             if(retirementPending)
             {
                 try { ServiceCaptureRetirement(); }
-                catch(...) { finished=true;LOG_ERROR("MiniMap: R2 capture retirement exception; resources retained"); }
+                catch(...) { finished=true;FailSpritePublication("retirement_exception; resources_retained");LOG_ERROR("MiniMap: R2 capture retirement exception; resources retained"); }
                 return;
             }
             Native::Service(job,++frame); // never consult the old world here.
@@ -627,10 +736,17 @@ namespace MiniMapSmelterCapture
             {
                 try { if(RecoverRejectedCapture())return; }
                 catch(...) { LOG_ERROR("MiniMap: R2 capture-retirement native state uncertain; quarantine retained"); }
-                finished=true;LOG_ERROR("MiniMap: R2 recovery rejected; existing quarantine retained: %s",report.Failure?report.Failure:"unknown");return;
+                finished=true;FailSpritePublication(report.Failure?report.Failure:"native_state_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 recovery rejected; existing quarantine retained: %s",report.Failure?report.Failure:"unknown");return;
             }
             if(report.Current!=Native::Phase::CleanupComplete||report.Callables||report.Outstanding)return;
-            if(!cancelled.load())
+            if(assemblyActive&&candidateRequest)
+                LOG_INFO("MiniMap: R2.7a candidate=%s readback=%s; PNG publication=%s; existing cleanup follows",
+                    MiniMapSpriteCapture::SessionVisualKey(candidateRequest->Candidate).c_str(),
+                    report.Result==Native::Outcome::Verified?"verified":"failed_or_cancelled",
+                    cancelled.load()?"cancelled":report.Result==Native::Outcome::Verified?"export_follows":"not_attempted");
+            if(!MiniMapMap::GameplayReady())
+                FailSpritePublication("loading_readiness_lost; publication_cancelled; native_retirement_continues");
+            if(!cancelled.load()&&MiniMapMap::GameplayReady())
             {
                 if(const auto* stats=Native::FloatStats(job))
                 {
@@ -652,30 +768,68 @@ namespace MiniMapSmelterCapture
             }
             RetirementOperations retirementOperations;
             if(RetirementFence().Release(retirementOperations) && Native::DestroyIfRetired(job))
-            {ReleaseObjects();finished=true;if(!assemblyActive)baselineRetired=report.Result==Native::Outcome::Verified&&!cancelled.load();LOG_INFO("MiniMap: R2 cleanup complete: no outstanding callable, readback released, components destroyed and strong references released");}
+            {ReleaseObjects();finished=true;assemblyActive=false;baselineRetired=true;LOG_INFO("MiniMap: R2 cleanup complete: no outstanding callable, readback released, components destroyed and strong references released");}
         }
-        void BeginShutdown()
+        void BeginShutdownImpl()
         {
+
             stopping.store(true,std::memory_order_release);cancelled.store(true,std::memory_order_release);
             // Shared job pointer is inspected only under the scheduling guard.
             if(!scheduling.test_and_set(std::memory_order_acquire))
             {Scope scope;Native::Cancel(job);if(GameThread())Unregister();}
         }
+        void BeginShutdown()
+        {
+            MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureShutdown,false);
+            BeginShutdownImpl();
+        }
+
+    }
+    bool CanAcceptCandidate()
+    {
+        if(!MiniMapMap::GameplayReady())return false;return resolved&&registered&&GameThread()&&!stopping.load()&&finished&&baselineRetired&&!job&&!mesh&&!capture&&!target&&!assemblyActive&&!assemblyPending&&!assemblyRootCount;}
+    const char* CandidateServiceStatus()
+    {
+        if(!resolved||!registered)return "native_capture_unavailable";
+        if(stopping.load())return "stopped";
+        if(finished&&job)return "quarantined_resources_retained; further_captures_deferred";
+        if(assemblyPending||assemblyActive||job||retirementPending)return "capture_or_retirement_pending";
+        return CanAcceptCandidate()?"idle":"unavailable";
     }
     const Bindings& GetBindings(){return bindings;}
-    bool OfferStaticAssembly(const MiniMapStaticAssembly::Recipe& recipe,void* world)
+    MiniMapSpriteCapture::Decision OfferStaticAssembly(const MiniMapSpriteCapture::Candidate& candidate,
+        const MiniMapBuildingCollector::Record& source,const MiniMapStaticAssembly::Recipe& recipe,void* world)
     {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        MiniMapBuildingSprites::TimingScope admissionTiming(MiniMapBuildingSprites::Timing::CaptureAdmission);
+#endif
+        namespace P=MiniMapSpriteCapture;
 #if !defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
-        (void)recipe;(void)world;return false;
+        (void)candidate;(void)source;(void)recipe;(void)world;return {P::State::Rejected,"static_assembly_experiment_disabled"};
 #else
-        if(!GameThread()||stopping.load()||assemblyOffered||scheduling.test_and_set(std::memory_order_acquire))return false;
-        Scope scope;assemblyOffered=true;
-        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+        if(!GameThread()||stopping.load()||(!candidate.General&&assemblyOffered)||(candidate.General&&!CanAcceptCandidate())||scheduling.test_and_set(std::memory_order_acquire))return {P::State::Rejected,"capture_owner_unavailable_or_already_attempted"};
+        Scope scope;if(!candidate.General)assemblyOffered=true;
+        struct Rollback {bool Committed=false;~Rollback(){if(!Committed)ReleaseAssemblySources();}} rollback;
+        if(candidate.Classification.ExcludeFromMiniMap==P::K::Exclusion::Exclude||candidate.Classification.Reason=="InteriorTag")
+            return {P::State::Rejected,"classification_excluded"};
+        // The old startup capture ran Preflight in Submit before any assembly
+        // handoff. General mode deliberately skips that capture. Initialize the
+        // validated GPU-count snapshot here, BEFORE CheckCandidate consumes it.
+        // CanAcceptCandidate proved this owner has no outstanding native job;
+        // never write the snapshot from render-thread callbacks or in-flight checks.
+        if(candidate.General&&!Native::Preflight())
+        {LOG_WARN("MiniMap: general sprite admission preflight rejected: %s; no sources retained or capture submitted",Native::Status());
+         return {P::State::Rejected,"capture_backend_preflight_unavailable"};}
+        if(candidate.General)LOG_INFO("MiniMap: general sprite admission preflight complete; idle owner, RHI/threading/GPU-count/backend verified");
+        auto request=std::make_unique<CandidateRequest>(CandidateRequest{candidate,source});
+        const auto decision=CheckCandidate(*request,recipe,world,false);
+        LOG_INFO("MiniMap: R2.7a candidate=%s classification=%s representation=%s eligibility=%s",
+            P::D::KeyText(candidate.Identity).c_str(),P::K::Label(request->Candidate.Classification.ExcludeFromMiniMap),
+            request->Candidate.RepresentationVerified?"verified_static_reference":"unverified",decision.Reason);
+        if(!decision.MayRetain())return decision;
         SA::Footprint footprint;
         const auto* reason=SA::Validate(recipe,footprint);
-        if(!reason&&(!bindings.AssemblySetMaterial||!bindings.AssemblySetWorldTransform||!bindings.AssemblyShowOnlyExec))reason="native_assembly_bindings_unavailable";
-        if(!reason&&(!snapshot||!snapshot->Complete||snapshot->Generation!=recipe.Generation||world!=MiniMapMap::GetWorld()||world==endingWorld))reason="world_generation_changed";
-        if(reason){LOG_WARN("MiniMap: R2.5b experimental_static_template_eligibility rejected: %s; no retry",reason);return false;}
+        if(reason)return {P::State::Rejected,reason};
         auto retain=[&](uintptr_t p)
         {
             if(!MiniMapBuildingRepresentation::ValidateCaptureObject(p))return false;
@@ -684,16 +838,23 @@ namespace MiniMapSmelterCapture
             if(assemblyRootCount>=std::size(assemblyRoots))return false;
             Hold(object);assemblyRoots[assemblyRootCount++]=object;return true;
         };
-        if(!retain(recipe.ActorClass)){ReleaseAssemblySources();return false;}
+        if(!retain(recipe.ActorClass))return {P::State::Rejected,"actor_class_retention_failed"};
         for(size_t i=0;i<recipe.Count;++i)
         {
-            if(!retain(recipe.Instances[i].Mesh)){ReleaseAssemblySources();return false;}
+            if(!retain(recipe.Instances[i].Mesh))return {P::State::Rejected,"mesh_retention_failed"};
             for(size_t s=0;s<recipe.Instances[i].MaterialCount;++s)
-                if(!retain(recipe.Instances[i].Materials[s])){ReleaseAssemblySources();return false;}
+                if(!retain(recipe.Instances[i].Materials[s]))return {P::State::Rejected,"material_retention_failed"};
         }
+        const auto retained=CheckCandidate(*request,recipe,world,true);
+        if(!retained.Allowed())return retained;
         assemblyRecipe=recipe;assemblyBounds=footprint;recipeWorld=static_cast<SDK::UWorld*>(world);assemblyPending=true;
-        LOG_INFO("MiniMap: R2.5b validated authored recipe handed off with independent strong roots; waiting for original R2 retirement");
-        return true;
+        #if defined(MINIMAP_BUILDING_SPRITES)
+        if(candidate.General&&!MiniMapBuildingSprites::Queue(candidate.Identity))return {P::State::Rejected,"session_capture_capacity_or_duplicate"};
+#endif
+        candidateRequest=request.release();rollback.Committed=true;
+        LOG_INFO("MiniMap: validated authored recipe handed off with independent strong roots; %s",candidate.General?"general capture scheduled":"waiting for original R2 retirement");
+        LOG_INFO("MiniMap: R2.7a capture accepted: %s; experimental session-only static reference; skeletal omitted; no persistent cache or atlas admission",retained.Reason);
+        return retained;
 #endif
     }
     bool ResolvePrerequisites()
@@ -735,11 +896,19 @@ namespace MiniMapSmelterCapture
         {LOG_WARN("MiniMap: R2 lifecycle/resident lookup prerequisites unavailable; disabled");return;}
         engine->RegisterOnTick(&Tick);engine->RegisterOnShutdown(&BeginShutdown);
         worlds->RegisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=true;
+#if defined(MINIMAP_BUILDING_SPRITES)
+        // General mode starts with an empty retired owner. It never requires a
+        // Smelter lookup/capture to unlock other definitions. Legacy one-shot
+        // mode remains available when the general pipeline is disabled.
+        finished=true;attempted=true;baselineRetired=true;
+        LOG_INFO("MiniMap: general static-sprite capture owner enabled; registry-driven, one active job; no Smelter startup dependency");
+#else
         LOG_INFO("MiniMap: R2 enabled: waiting for ChimeraMain/player; one resident Smelter lookup and one capture attempt per process");
+#endif
     }
     void Shutdown()
     {
-        BeginShutdown();
+        BeginShutdownImpl();
         if(registered){engine->UnregisterOnTick(&Tick);engine->UnregisterOnShutdown(&BeginShutdown);worlds->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=false;}
         if(scheduling.test_and_set(std::memory_order_acquire)){LOG_ERROR("MiniMap: R2 shutdown overlaps callback; DLL unload NOT certified");return;}
         Scope scope;

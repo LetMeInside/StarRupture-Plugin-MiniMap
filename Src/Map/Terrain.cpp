@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Terrain.h"
@@ -975,6 +976,8 @@ namespace
     void OnTerrainTick(
         float deltaSeconds)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::TerrainTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if (!MiniMapMap::HasWorld())
         {
             return;

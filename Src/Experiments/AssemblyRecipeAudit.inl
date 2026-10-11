@@ -71,7 +71,7 @@ std::string AssemblyDocument(SDK::UWorld* world)
     AuditActive=true;
     struct EndAudit {bool& Active;~EndAudit(){Active=false;}} endAudit{AuditActive};
     const bool representationIncomplete=Truncated||Invalid||Graph.Truncated||Work.Exhausted||Components.Truncated||Relationships.Truncated;
-    bool resident=true,materialsValid=true,transformsValid=true;
+    bool resident=true,materialsValid=true,transformsValid=true,unsupportedStatic=false;
     MiniMapStaticAssembly::Recipe captureRecipe;
     captureRecipe.Generation=Record.Generation;
     captureRecipe.ActorClass=AuditClass;
@@ -146,6 +146,7 @@ std::string AssemblyDocument(SDK::UWorld* world)
         const auto assignment=AuditAssignments.find(component);
         if(assignment!=AuditAssignments.end())mesh=assignment->second;
         const bool isStatic=Is(component,StaticComponent,0x590),isSkeletal=!isStatic&&Is(component,SkeletalComponent,0x598);
+        if(isStatic&&Value<uintptr_t>(component,0x10)!=StaticComponent)unsupportedStatic=true;
         n.Kind=isStatic?"static":isSkeletal?"skeletal":"none";
         const auto expected=isStatic?StaticMesh:SkeletalMesh;
         bool meshValid=(isStatic||isSkeletal)&&mesh&&Is(mesh,expected,isStatic?0x170:0x1b0)&&Hold(mesh);
@@ -267,10 +268,32 @@ std::string AssemblyDocument(SDK::UWorld* world)
     captureRecipe.HighDetail=SelectedTier=="high_detail_actor";
     captureRecipe.Complete=initialSnapshot->Complete&&currentSnapshot&&currentSnapshot->Complete&&worldValid&&
         resident&&materialsValid&&!AuditTruncated&&!representationIncomplete;
-    MiniMapSmelterCapture::OfferStaticAssembly(captureRecipe,world);
+    MiniMapSpriteCapture::Candidate captureCandidate;
+    captureCandidate.Identity=MiniMapSpriteCandidates::Copy(Record).Identity;
+    captureCandidate.Tier=SelectedTier=="high_detail_actor"?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Unknown;
+    if(AuditClass&&ClassObject(AuditClass))
+    {
+        const auto name=Value<Name>(AuditClass,0x18);
+        captureCandidate.ActorObject=Value<int32_t>(AuditClass,0xc);
+        captureCandidate.ActorName=name.Index;captureCandidate.ActorNumber=name.Number;
+    }
+    captureCandidate.RepresentationVerified=captureRecipe.Complete&&captureRecipe.RootVerified&&captureRecipe.HighDetail&&
+        !unsupportedStatic&&!GenericInherited&&!GenericChild;
+    captureCandidate.Truncated=AuditTruncated||representationIncomplete;
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+    captureCandidate.Classification=Classification.CachedPolicy;
+    captureCandidate.ClassificationObserved=Classification.Fixed&&Classification.Subclass&&!Classification.Truncated&&Classification.InteriorTag!="unknown";
+    captureCandidate.Truncated|=Classification.Truncated;
+#endif
+#if defined(MINIMAP_BUILDING_SPRITES)
+    const MiniMapSpriteCapture::Decision captureDecision{MiniMapSpriteCapture::State::Rejected,"capture_owned_by_generic_registry_scheduler"};
+#else
+    const auto captureDecision=MiniMapSmelterCapture::OfferStaticAssembly(captureCandidate,Record,captureRecipe,world);
+#endif
     if(AuditTruncated||representationIncomplete)blockers.Add(C::Quote("incomplete_or_truncated_input"));
     return A::Bound(C::Object({{"schema_version","1"},{"stage",C::Quote("R2.5a")},{"game_build",C::Quote("5.6.1-127004")},
         {"building_id","336"},{"status",C::Quote(AuditTruncated?"truncated":!staticCount||!resident||!transformsValid?"unresolved":"conditional")},
+        {"sprite_capture",MiniMapSpriteCapture::Json(captureCandidate,captureDecision)},
         {"representation_source",C::Quote(SelectedTier+"_scs")},
         {"reference_space",C::Quote("existing selected-class CDO RootComponent; its own placement/external attachment excluded")},
         {"building_placement_applied","false"},{"camera_transform_applied","false"},

@@ -1,5 +1,8 @@
+#include "Map.h"
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
+#include "BuildingSprites.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
 #include "../DebugText.h"
@@ -43,6 +46,9 @@ namespace
     };
     struct Instance
     {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        C::Record SpriteSource;
+#endif
         G::Polygon Shape;
         C::Bounds Bounds;
         G::XY Origin;
@@ -94,6 +100,8 @@ namespace
     }
     void OnTick(float)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::VisualsTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         const auto input=C::GetSnapshot();
         if(!input) { if(g_lastInput) Clear(); return; }
@@ -131,6 +139,9 @@ namespace
                 cached=&entry;
             }
             Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]}; instance.Tint=r.Tint;
+#if defined(MINIMAP_BUILDING_SPRITES)
+            instance.SpriteSource=r;
+#endif
             if(r.HasSpline)
             {
                 instance.Curve=r.Curve; instance.Bounds=r.Extent;
@@ -263,14 +274,28 @@ namespace MiniMapBuildingVisuals
             transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2,true};
         ui->DL_PushClipRect(dl,float(viewport.MinX),float(viewport.MinY),float(viewport.MaxX),float(viewport.MaxY),true);
         // Deterministic: splines below ordinary proxies; stable Mass identity order within each.
+#if defined(MINIMAP_BUILDING_SPRITES)
+        auto spriteFrame=MiniMapBuildingSprites::BeginDraw();
+#endif
         for(bool spline:{true,false}) for(const auto& instance:snapshot->Instances)
         {
             if(instance.Spline!=spline) continue;
+#if defined(MINIMAP_BUILDING_SPRITES)
+            // Draw before proxy culling: an authored assembly can extend beyond
+            // its targeting proxy. The texture path performs its own clip/FOW checks.
+            if(!spline&&MiniMapBuildingSprites::Draw(spriteFrame,ui,dl,transform,instance.SpriteSource))
+            {++stats.Ordinary;continue;} // exactly one representation per instance
+#endif
             if(instance.Unresolved)
             {
                 ++stats.Unresolved; MiniMapMap::ScreenPoint p;
                 if(transform.WorldToScreen(instance.Origin.X,instance.Origin.Y,p) && p.X>=viewport.MinX && p.X<=viewport.MaxX && p.Y>=viewport.MinY && p.Y<=viewport.MaxY)
+                {
                     ui->DL_AddCircle(dl,p.X,p.Y,3,Color(instance.Tint,170),8,1);
+#if defined(MINIMAP_BUILDING_SPRITES)
+                    MiniMapBuildingSprites::RecordFallback(spriteFrame);
+#endif
+                }
                 continue;
             }
             // B.2 bounds include spline width/caps; ordinary bounds are the
@@ -281,7 +306,11 @@ namespace MiniMapBuildingVisuals
             if(spline)
             {
                 if(DrawSpline(ui,dl,transform,instance,viewport,stats))
-                { ++stats.Splines; stats.WidthFallback+=instance.WidthFallback; stats.WidthSource+=!instance.WidthFallback; }
+                { ++stats.Splines; stats.WidthFallback+=instance.WidthFallback; stats.WidthSource+=!instance.WidthFallback;
+#if defined(MINIMAP_BUILDING_SPRITES)
+                    MiniMapBuildingSprites::RecordFallback(spriteFrame);
+#endif
+                }
                 else ++stats.Culled;
                 continue;
             }
@@ -298,10 +327,16 @@ namespace MiniMapBuildingVisuals
             if(!valid || !G::Intersects(screenBounds,viewport)) { ++stats.Culled; continue; }
             if(instance.Proxy) ui->DL_AddConvexPolyFilled(dl,xy.data(),int(instance.Shape.Count),Color(instance.Tint,70));
             ui->DL_AddPolyline(dl,xy.data(),int(instance.Shape.Count),Color(instance.Tint,instance.Proxy?150:95),PluginDrawFlags_Closed,1);
+#if defined(MINIMAP_BUILDING_SPRITES)
+            MiniMapBuildingSprites::RecordFallback(spriteFrame);
+#endif
             ++stats.Ordinary;
             stats.OrdinaryProxy+=instance.Proxy; stats.OrdinaryPlaceholder+=!instance.Proxy;
         }
         ui->DL_PopClipRect(dl); stats.Ms=Ms(start);
+#if defined(MINIMAP_BUILDING_SPRITES)
+        MiniMapBuildingSprites::EndDraw(spriteFrame);
+#endif
         { std::scoped_lock lock(g_mutex); if(g_published==snapshot)
             { g_render=stats; g_renderMax=(std::max)(g_renderMax,stats.Ms); ++g_renderCount; } }
     }

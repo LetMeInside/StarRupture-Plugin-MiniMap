@@ -1,9 +1,15 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentationDiagnostic.h"
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
 #include "AssemblyRecipeCore.h"
 #include "StaticAssemblyCaptureCore.h"
+#include "SpriteCaptureCore.h"
+#include "SpriteCandidateIdentity.h"
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+#include "SpriteValidationCore.h"
+#endif
 #include "RepresentationMetadataPatterns.h"
 #include "ReadbackNativeAdapter.h"
 #include "SmelterCaptureNativeBindings.h"
@@ -11,10 +17,12 @@
 #include "../Map/BuildingCollector.h"
 #include "../Map/TerrainCache.h"
 #include "../Map/Map.h"
+#include "../Map/BuildingSprites.h"
 #include "../plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <unordered_map>
 #include <type_traits>
@@ -28,7 +36,7 @@ namespace MiniMapBuildingRepresentation
     {
         // Only native interfaces/addresses and lifecycle comparison tokens persist.
         // All UObject identities, strong roots and traversal containers are local.
-        uintptr_t objectArray=0,skeletalGetter=0;
+        uintptr_t objectArray=0,skeletalGetter=0,nameEqualsWide=0;
         IPluginEngineEvents* engine=nullptr;
         IPluginWorldEvents* worlds=nullptr;
         SDK::UWorld* endingWorld=nullptr; // comparison only; never dereferenced
@@ -93,8 +101,41 @@ namespace MiniMapBuildingRepresentation
             return C::ValidateObjectIdentity(p,objectArray,extent,
                 [](uintptr_t base,size_t offset,auto& out){return Read(base,offset,out);},&Readable);
         }
+        // Strongly retained native CLASS anchors only. No candidate/asset cursor survives.
+        struct NativeAnchor {const wchar_t* Path;uintptr_t Object{};};
+        NativeAnchor nativeAnchors[]={
+            {L"/Script/CoreUObject.Class",0},
+            {L"/Script/Engine.Actor",0},
+            {L"/Script/Engine.ActorComponent",0},
+            {L"/Script/Engine.SceneComponent",0},
+            {L"/Script/Engine.MeshComponent",0},
+            {L"/Script/Engine.StaticMeshComponent",0},
+            {L"/Script/Engine.SkeletalMeshComponent",0},
+            {L"/Script/Engine.SkinnedMeshComponent",0},
+            {L"/Script/Engine.StaticMesh",0},
+            {L"/Script/Engine.SkeletalMesh",0},
+            {L"/Script/Engine.SkinnedAsset",0},
+            {L"/Script/Engine.MaterialInterface",0},
+            {L"/Script/Engine.BlueprintGeneratedClass",0},
+            {L"/Script/Engine.SimpleConstructionScript",0},
+            {L"/Script/Engine.SCS_Node",0},
+            {L"/Script/Engine.InheritableComponentHandler",0},
+            {L"/Script/Engine.ChildActorComponent",0},
+            {L"/Script/AuActorPlacement.AuActorPlacementData",0},
+            {L"/Script/MassSpawner.MassEntityConfigAsset",0},
+            {L"/Script/MassSpawner.MassEntityTraitBase",0},
+            {L"/Script/MassRepresentation.MassVisualizationTrait",0},
+            {L"/Script/Chimera.CrMassRepVisCosmeticsTrait",0},
+            {L"/Script/Chimera.CrBuildingActorBase",0}
+        };
+        size_t nativeAnchorCursor=0;
         struct Context
         {
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+            MiniMapSpriteClassification::Observation Classification;
+#include "SpriteClassificationAudit.inl"
+#endif
+            bool GenericValidation=false,GenericInherited=false,GenericChild=false,CaptureRequested=false;
             uintptr_t AuditClass=0;
             bool AuditActive=false,AuditTruncated=false,AuditCollectionTruncated=false;
             size_t AuditVisits=0;
@@ -168,6 +209,8 @@ namespace MiniMapBuildingRepresentation
             }
             uintptr_t Find(const wchar_t* path)
             {
+                for(const auto& anchor:nativeAnchors)
+                    if(std::wcscmp(path,anchor.Path)==0)return anchor.Object&&Hold(anchor.Object)?anchor.Object:0;
                 using Fn=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
                 const auto p=reinterpret_cast<uintptr_t>(reinterpret_cast<Fn>(engine->GetStaticFindObjectByNameAddress())(nullptr,nullptr,path,false));
                 return Hold(p)?p:0;
@@ -227,6 +270,9 @@ namespace MiniMapBuildingRepresentation
             }
             bool Initialize()
             {
+#if defined(MINIMAP_BUILDING_SPRITES)
+                MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::NativeClassResolution);
+#endif
                 Class=Find(L"/Script/CoreUObject.Class");
                 if(!Class||!CheckIdentity(Class,0x200)||Value<uintptr_t>(Class,0x10)!=Class)return false;
 #define NATIVE(field,path) field=NativeClass(L"/Script/" path);if(!field)Source("native_metadata_class",0,"unavailable_not_resident",#field)
@@ -328,7 +374,7 @@ namespace MiniMapBuildingRepresentation
             }
             void Edge(uintptr_t from,uintptr_t to,const std::string& kind,const char* status="present")
             {
-                if(BuildingId==336&&kind=="scs_child")
+                if((BuildingId==336||GenericValidation)&&kind=="scs_child")
                 {
                     const auto child=Id(to),parent=Id(from);
                     if(AuditParents.size()<A::NodeLimit||AuditParents.contains(child))
@@ -413,13 +459,14 @@ namespace MiniMapBuildingRepresentation
                     {"live_instance_state","false"}}));
                 // A component may first be encountered in ComponentTemplates;
                 // keep its already validated assignment for the later SCS join.
-                if(BuildingId==336&&owner==AuditClass&&asset&&meshStatus=="present")
+                if((BuildingId==336||GenericValidation)&&owner==AuditClass&&asset&&meshStatus=="present")
                 {
                     if(AuditAssignments.size()<A::NodeLimit)AuditAssignments.emplace(p,asset);
                     else AuditCollectionTruncated=true;
                 }
                 if(Is(p,Child,0x268))
                 {
+                    GenericChild=true;
                     const auto childClass=Value<uintptr_t>(p,0x250),childTemplate=Value<uintptr_t>(p,0x260);
                     const bool validClass=childClass&&ClassObject(childClass)&&Derives(childClass,Actor);
                     const bool validTemplate=childTemplate&&Is(childTemplate,Actor);
@@ -445,7 +492,8 @@ namespace MiniMapBuildingRepresentation
                 if(std::strcmp(state,"present")!=0){Source("scs_node",p,state);return;}
                 if(NodeCount>=C::NodeLimit){Source("scs_node",p,"truncated","total unique SCS node limit");Graph.Leave(p);return;}
                 ++NodeCount;
-                if(BuildingId==336&&owner==AuditClass&&childDepth==0)
+                if(owner!=AuditClass)GenericInherited=true;
+                if((BuildingId==336||GenericValidation)&&owner==AuditClass&&childDepth==0)
                 {if(AuditNodes.size()<A::NodeLimit)AuditNodes.push_back(p);else AuditCollectionTruncated=true;}
                 const auto declared=Value<uintptr_t>(p,0x28),component=Value<uintptr_t>(p,0x30);
                 Source("scs_node",p,"present","",C::Object({{"node",Ref(p,Node)},{"declared_class",Ref(declared,Class)},
@@ -505,6 +553,7 @@ namespace MiniMapBuildingRepresentation
                         else if(!Is(handler,Handler,0x48)||!Hold(handler,0x48))Source("inherited_override_records",type,"invalid");
                         else Array(handler+0x28,0x78,8,C::ComponentLimit,"inherited_override_records",handler,[&](uintptr_t record,size_t ordinal)
                         {
+                            GenericInherited=true;
                             const auto declared=Value<uintptr_t>(record,0),component=Value<uintptr_t>(record,8),keyOwner=Value<uintptr_t>(record,0x10);
                             Source("inherited_override_key",handler,"present","",C::Object({{"ordinal",std::to_string(ordinal)},
                                 {"owner_class",Ref(keyOwner,Class)},{"variable_name",NameValue(record,0x18)},
@@ -580,6 +629,13 @@ namespace MiniMapBuildingRepresentation
                     name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)
                 {ProbeResult.DefinitionIdentity="mismatch";ProbeResult.Note("definition_identity_mismatch");return false;}
                 ProbeResult.DefinitionIdentity="valid";
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+                if(GenericValidation)ClassificationInputs(definition);
+#if defined(MINIMAP_BUILDING_SPRITES)
+                if(CaptureRequested&&Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
+                {ProbeResult.Note("classification_excluded");return false;}
+#endif
+#endif
                 // Optional soft-reference interpretation/resolution is deliberately
                 // omitted. Null transient cache never implies authored absence.
                 auto config=Value<uintptr_t>(definition,0x150);
@@ -662,6 +718,9 @@ namespace MiniMapBuildingRepresentation
                 if(Value<int32_t>(definition,0xc)!=Record.DefinitionObjectIndex||name.Index!=Record.DefinitionIndex||
                     name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)return false;
                 BuildingId=Record.BuildingId;
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+                if(!GenericValidation)ClassificationInputs(definition);
+#endif
                 Source("mass_building_definition",definition,"present","",Ref(definition,Placement));
                 uintptr_t high=0,low=0;bool hasMass=false;
                 auto config=Value<uintptr_t>(definition,0x150);
@@ -705,6 +764,9 @@ namespace MiniMapBuildingRepresentation
                 return selected||hasMass;
             }
             #include "AssemblyRecipeAudit.inl"
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+            #include "GenericRepresentationAudit.inl"
+#endif
             std::string Document()
             {
                 const bool truncated=FullTraversal&&(Truncated||Graph.Truncated||Work.Exhausted||Sources.Truncated||Components.Truncated||Candidates.Truncated||Mass.Truncated||Relationships.Truncated);
@@ -773,13 +835,27 @@ namespace MiniMapBuildingRepresentation
         }
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
             const auto gameThread=MiniMapSmelterCapture::GetBindings().GameThread;
             if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)())endingWorld=world;
             else stopped.store(true);
         }
-        void Stop(){stopped.store(true);}
+        void StopImpl(){stopped.store(true);}
+        void Stop()
+        {
+            MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationStop,false);
+            StopImpl();
+        }
+
         void Tick(float)
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationTick,true);
+        if(!MiniMapMap::GameplayReady())return;
+#if !defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
+        if(!PrepareNativeClasses())return;
+#else
+        if(nativeAnchorCursor!=std::size(nativeAnchors))return;
+#endif
             const auto& b=MiniMapSmelterCapture::GetBindings();
             if(stopped.load()||attempted.load()||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)())return;
             auto* world=MiniMapMap::GetWorld();
@@ -891,7 +967,167 @@ namespace MiniMapBuildingRepresentation
             return false;
         }
     }
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+    MiniMapSpriteValidation::Result ValidateRepresentationImpl(const MiniMapBuildingCollector::Record& record,
+        const MiniMapBuildingCollector::Record* alternate,bool captureRequested)
+    {
+        namespace V=MiniMapSpriteValidation;
+        V::Result out;
+        const auto& bindings=MiniMapSmelterCapture::GetBindings();
+        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();auto* world=MiniMapMap::GetWorld();
+        if(!objectArray||!engine||!bindings.GameThread||!bindings.Retain||!bindings.Release||stopped.load()||
+            !reinterpret_cast<bool(*)()>(bindings.GameThread)()||!world||world==endingWorld||!snapshot||
+            !snapshot->Complete||snapshot->Generation!=record.Generation)
+        {out.Reason="native_facility_or_world_generation_unavailable";return out;}
+        if(executing.test_and_set(std::memory_order_acquire)){out.Reason="representation_service_busy";return out;}
+        struct Leave {~Leave(){executing.clear(std::memory_order_release);}} leave;
+        try
+        {
+#if defined(MINIMAP_BUILDING_SPRITES)
+            MiniMapBuildingSprites::TimingScope auditTiming(MiniMapBuildingSprites::Timing::RepresentationAudit);
+#endif
+            Context context;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;context.BuildingId=record.BuildingId;
+            if(!context.Initialize()){out.Reason="resident_native_class_anchors_unavailable";return out;}
+            auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);out.Probes=1;
+            if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::StaleEntity&&alternate&&
+                alternate->Generation==record.Generation&&alternate->DefinitionObjectIndex==record.DefinitionObjectIndex&&
+                alternate->DefinitionIndex==record.DefinitionIndex&&alternate->DefinitionNumber==record.DefinitionNumber&&alternate->BuildingId==record.BuildingId)
+            {
+                context.Record=*alternate;context.ProbeResult={};
+                status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);++out.Probes;
+            }
+            const auto probes=out.Probes;
+            if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited)
+            {
+                context.FullTraversal=true;
+#if defined(MINIMAP_BUILDING_SPRITES)
+                MiniMapBuildingSprites::TimingScope traversalTiming(MiniMapBuildingSprites::Timing::RepresentationTraversal);
+#endif
+                const auto full=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&Visit,&context);
+                if(full==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited&&context.AuditClass)out=context.GenericAudit();
+                else if(full==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited&&context.SelectedTier=="mass_ism")
+                {out.Resident=true;out.Route="mass_ism";out.Status=V::Outcome::Unsupported;out.Reason="resident_mass_only_alternative; renderer_equivalent_transform_chain_not_verified";}
+                else out.Reason="selected_representation_revalidation_failed";
+            }
+            else
+            {
+                out.Status=context.ProbeResult.DefinitionIdentity=="valid"&&!context.ProbeResult.Incomplete?
+                    V::Outcome::NoResident:V::Outcome::Invalid;
+                using VisitStatus=MiniMapBuildingCollector::DiagnosticVisitStatus;
+                out.Reason=status==VisitStatus::StaleEntity?"stale_entity":status==VisitStatus::WorldGenerationChanged?"world_generation_changed":
+                    !context.ProbeResult.Reasons.empty()?context.ProbeResult.Reasons.front():"collector_instance_unavailable";
+                out.Truncated=context.ProbeResult.Truncated||context.Work.Exhausted||context.Graph.Truncated;
+            }
+            out.Probes=probes;out.High=context.ProbeResult.HighStatus;out.Low=context.ProbeResult.LowStatus;
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+            out.Classification=context.Classification;
+#endif
+            out.Config=context.ProbeResult.CachedConfig;
+            out.Mass=context.ProbeResult.Mesh?"validated_resident_mesh_assignments":context.ProbeResult.MassStatus;
+            out.IdentityVisits=context.Work.SelectionVisits+context.Work.RepresentationVisits;
+            out.GraphVisits=C::VisitLimit-context.Graph.Remaining;out.AuditVisits=context.AuditVisits;
+            if(context.ProbeResult.Truncated||context.ProbeResult.Incomplete)
+            {out.Truncated=true;if(out.Status==V::Outcome::Eligible){out.Status=V::Outcome::Conditional;out.Reason="selection_probe_incomplete";}}
+            const auto current=MiniMapBuildingCollector::GetSnapshot();
+            if(world!=MiniMapMap::GetWorld()||!current||current->Generation!=record.Generation)
+            {out.Status=V::Outcome::Invalid;out.Reason="world_generation_changed_during_audit";}
+        } // Context releases every strong root before return/file export.
+        catch(...){out={};out.Reason="native_audit_exception";}
+        return out;
+    }
+    MiniMapSpriteValidation::Result ValidateRepresentation(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a)
+    {return ValidateRepresentationImpl(r,a,false);}
+    MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a)
+    {return ValidateRepresentationImpl(r,a,true);}
+#endif
+    bool PrepareNativeClasses()
+    {
+        if(nativeAnchorCursor==std::size(nativeAnchors))return true;
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        if(!MiniMapMap::GameplayReady()||!engine||!objectArray||!b.GameThread||!b.Retain||!b.Release||
+            !reinterpret_cast<bool(*)()>(b.GameThread)())return false;
+#if defined(MINIMAP_BUILDING_SPRITES)
+        MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::NativeClassResolution);
+#endif
+        // One verified resident lookup is the smallest noninterruptible native unit.
+        // Never do all 23 lookups synchronously beneath a candidate audit.
+        const auto start=std::chrono::steady_clock::now();
+        auto& anchor=nativeAnchors[nativeAnchorCursor++];
+        using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
+        const auto p=reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(engine->GetStaticFindObjectByNameAddress())(nullptr,nullptr,anchor.Path,false));
+        if(Identity(p,0x200))
+        {reinterpret_cast<void(*)(SDK::UObject*)>(b.Retain)(reinterpret_cast<SDK::UObject*>(p));anchor.Object=p;}
+        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        if(ms>=2.0){LOG_WARN("MiniMap: resident class preparation took %.3f ms; one noninterruptible lookup: %ls",ms,anchor.Path);}
+        return nativeAnchorCursor==std::size(nativeAnchors);
+    }
+    int LoadingScreenState(uintptr_t world)
+    {
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        if(!objectArray||!nameEqualsWide||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)()||
+            !Identity(world,0x238))return -1;
+        const auto gi=Value<uintptr_t>(world,0x230);
+        if(!Identity(gi,0x1f0))return -1;
+        // Installed UGameInstance.SubsystemCollection +0x130; map +8.
+        // Game-thread-owned subsystem registry, never inspected while populating.
+        const auto collection=gi+0x130,map=collection+8;
+        if(Value<uintptr_t>(collection,0xb0)!=gi||Value<uint8_t>(collection,0xb8)||Value<uint8_t>(collection,0xb9))return -1;
+        const auto data=Value<uintptr_t>(map,0);const auto num=Value<int32_t>(map,8),max=Value<int32_t>(map,12);
+        const auto bits=Value<int32_t>(map,0x28),maxBits=Value<int32_t>(map,0x2c);
+        if(num<0||num>128||max<num||max>256||bits!=num||maxBits<bits||maxBits>256||
+            (num&&!Readable(data,size_t(num)*24,8)))return -1;
+        auto flags=Value<uintptr_t>(map,0x20);if(!flags)flags=map+0x10;
+        if(num&&!Readable(flags,((size_t(num)+31)/32)*4,4))return -1;
+        using Equals=bool(*)(Name,const wchar_t*);
+        const auto equals=reinterpret_cast<Equals>(nameEqualsWide);
+        uintptr_t manager=0;
+        for(int32_t i=0;i<num;++i)
+        {
+            if(!(Value<uint32_t>(flags,size_t(i/32)*4)&(uint32_t(1)<<(i%32))))continue;
+            const auto cls=Value<uintptr_t>(data,size_t(i)*24),value=Value<uintptr_t>(data,size_t(i)*24+8);
+            if(!Identity(cls,0x200))return -1;
+            if(!equals(Value<Name>(cls,0x18),L"LoadingScreenManager"))continue;
+            const auto package=Value<uintptr_t>(cls,0x20);
+            if(!Identity(package)||!equals(Value<Name>(package,0x18),L"/Script/CommonLoadingScreen")||
+                !Identity(value,0xc8)||Value<uintptr_t>(value,0x10)!=cls||Value<uintptr_t>(value,0x20)!=gi||manager)return -1;
+            manager=value;
+        }
+        if(!manager)return -1;
+        // PDB bool fields, NOT elapsed-time or render-fence inference.
+        const auto inMap=Value<uint8_t>(manager,0xb0),visible=Value<uint8_t>(manager,0xb1);
+        if(inMap>1||visible>1)return -1;
+        return inMap||visible?1:0;
+    }
     bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
+    bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record& record,MiniMapSpriteClassification::Observation& observation)
+    {
+        observation={};
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+        if(!objectArray||stopped.load()||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)()||
+            !b.Retain||!b.Release||!MiniMapMap::GetWorld()||MiniMapMap::GetWorld()==endingWorld||
+            !snapshot||!snapshot->Complete||snapshot->Generation!=record.Generation)return false;
+        Context context;context.Record=record;
+        if(!context.Initialize())return false;
+        const auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(record,[](const SDK::UObject* object,void* state)
+        {
+            auto& c=*static_cast<Context*>(state);const auto p=reinterpret_cast<uintptr_t>(object);
+            if(!c.Is(p,c.Placement,0x174)||!c.Hold(p,0x174))return false;
+            const auto name=Value<Name>(p,0x18);
+            if(Value<int32_t>(p,0xc)!=c.Record.DefinitionObjectIndex||name.Index!=c.Record.DefinitionIndex||
+                name.Number!=c.Record.DefinitionNumber||Value<uint32_t>(p,0x170)!=c.Record.BuildingId)return false;
+            c.ClassificationInputs(p);return true;
+        },&context);
+        observation=context.Classification;
+        const auto current=MiniMapBuildingCollector::GetSnapshot();
+        return status==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited&&current&&current->Complete&&
+            current->Generation==record.Generation&&observation.Fixed&&observation.Subclass&&
+            !observation.Truncated&&observation.InteriorTag!="unknown";
+#else
+        (void)record;return false;
+#endif
+    }
     bool ValidateCaptureMaterialSlots(uintptr_t component,const uintptr_t* materials,size_t count,size_t& failedSlot)
     {
         failedSlot=0;
@@ -910,7 +1146,7 @@ namespace MiniMapBuildingRepresentation
     {
         // Read the existing weak entries; never resolve a weak pointer. Match
         // index AND serial against the retained, directly validated component.
-        if(!objectArray||!components||count>10||!Identity(capture,0x298))return false;
+        if(!objectArray||!components||count>16||!Identity(capture,0x298))return false;
         // Components and actors are separate engine-owned show-only sources.
         // Reject any actor list, rather than allowing it to add world geometry.
         C::ArrayHeader actors{};if(!Read(capture,0x288,actors))return false;
@@ -945,6 +1181,10 @@ namespace MiniMapBuildingRepresentation
         if(target<=0||!Readable(uintptr_t(target),0x30,8))return false;
         objectArray=uintptr_t(target);
         skeletalGetter=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::SkeletalAsset,false);
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        nameEqualsWide=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::NameEqualsWide,true);
+        LOG_INFO("MiniMap: Interior definition-tag comparison=%s; unavailable comparison preserves Unknown",nameEqualsWide?"available":"unavailable");
+#endif
         LOG_INFO("MiniMap: R2.4 installed-binary identity and targeted object-array anchor verified; skeletal getter=%s",skeletalGetter?"available":"not_attempted");
         return true;
     }
@@ -962,10 +1202,16 @@ namespace MiniMapBuildingRepresentation
     }
     void Shutdown()
     {
-        Stop();
+        StopImpl();
         if(registered){engine->UnregisterOnTick(&Tick);engine->UnregisterOnShutdown(&Stop);worlds->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);registered=false;}
         if(executing.test_and_set()){LOG_ERROR("MiniMap: R2.4 shutdown overlaps synchronous diagnostic; DLL unload not certified");}
-        else executing.clear();
+        else
+        {
+            const auto release=MiniMapSmelterCapture::GetBindings().Release;
+            if(release)for(auto& anchor:nativeAnchors)if(anchor.Object)
+            {reinterpret_cast<void(*)(SDK::UObject*)>(release)(reinterpret_cast<SDK::UObject*>(anchor.Object));anchor.Object=0;}
+            nativeAnchorCursor=0;executing.clear();
+        }
     }
 }
 #endif

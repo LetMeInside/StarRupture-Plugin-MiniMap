@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
@@ -1380,6 +1381,8 @@ namespace
     void OnTick(
         float deltaSeconds)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PoiTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady ||
             !MiniMapMap::HasWorld())
         {

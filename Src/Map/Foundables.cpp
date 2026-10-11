@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Foundables.h"
@@ -1006,6 +1007,8 @@ namespace
 
     void OnTick(float deltaSeconds)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FoundablesTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady ||
             !MiniMapMap::HasWorld())
         {

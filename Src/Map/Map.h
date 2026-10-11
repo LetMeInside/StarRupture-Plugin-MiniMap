@@ -22,6 +22,8 @@ namespace MiniMapMap
     void SetWorld(SDK::UWorld* world);
     SDK::UWorld* GetWorld();
     bool HasWorld();
+    bool GameplayReady();
+    void SetGameplayReady(bool ready);
 
     bool TryGetPlayerPose(
         PlayerPose& outPose);

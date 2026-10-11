@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
@@ -7,6 +8,7 @@
 
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
+#include "../Experiments/BuildingSpritePipelineCore.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -1225,6 +1227,8 @@ namespace
     void OnTick(
         float deltaSeconds)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FogTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if (!MiniMapMap::HasWorld())
         {
             return;
@@ -1332,6 +1336,12 @@ namespace MiniMapFogOfWar
             maskByte == 255;
     }
 
+
+    bool IsNativeWorldRectangleRevealed(double minX,double minY,double maxX,double maxY)
+    {
+        return g_snapshot.Valid&&MiniMapBuildingSpriteCore::Revealed(minX,minY,maxX,maxY,kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
+            [](int x,int y){uint8_t value=0;return TryGetMaskByte(x,y,value)&&value==255;});
+    }
 
     float GetRenderedVisibilityAtWorldPosition(
         double worldX,

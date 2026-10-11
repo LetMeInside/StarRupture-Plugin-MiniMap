@@ -21,6 +21,8 @@ namespace MiniMapFogOfWar
     bool IsNativeWorldPositionRevealed(
         double worldX,
         double worldY);
+    // Conservative entire AABB, bounded copied mask read; never native scanning.
+    bool IsNativeWorldRectangleRevealed(double minX,double minY,double maxX,double maxY);
 
     // Effective visual exposure, including the temporary local feather.
     // Reads the copied FOW snapshot; does not change persistent exploration.

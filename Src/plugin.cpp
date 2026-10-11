@@ -1,3 +1,4 @@
+#include "CallbackTiming.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "Config/Config.h"
@@ -9,6 +10,7 @@
 #include "Experiments/ReadbackNativeAdapter.h"
 #include "Experiments/SmelterCaptureExperiment.h"
 #include "Experiments/BuildingRepresentationDiagnostic.h"
+#include "Experiments/SpriteDiscovery.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -33,6 +35,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 #include "Map/Map.h"
+#include "SDK/Chimera_classes.hpp"
 #endif
 
 #ifdef MODLOADER_SERVER_BUILD
@@ -56,6 +59,7 @@ void OnPluginLoadHooks(
     IPluginSelf* self,
     IPluginHookScanner* scanner)
 {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginLoadHooks,false,self);
 #ifdef MODLOADER_CLIENT_BUILD
 
     g_resolvedAddresses = {};
@@ -104,11 +108,51 @@ void OnPluginLoadHooks(
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+// Lifecycle callbacks only establish identity and cancel/reset old state.
+// Loading-screen state is polled on the existing engine game-thread cadence.
+static bool g_experienceComplete=false,g_startedGameplay=false,g_readinessUnknownLogged=false;
+static void SetStartupReady(bool ready)
+{
+    const bool changed=MiniMapMap::GameplayReady()!=ready;
+    MiniMapMap::SetGameplayReady(ready);
+    if(changed)MiniMapUI::RefreshVisibility();
+}
+static void OnStartupTick(float)
+{
+    MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ReadinessTick,true);
+    if(!g_experienceComplete||!MiniMapMap::HasWorld())return;
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    const int loading=MiniMapBuildingRepresentation::LoadingScreenState(reinterpret_cast<uintptr_t>(MiniMapMap::GetWorld()));
+#else
+    const int loading=-1;
+#endif
+    if(loading!=0)
+    {
+        SetStartupReady(false);
+        if(loading<0&&!g_readinessUnknownLogged){LOG_WARN("MiniMap: gameplay readiness waiting: loading-screen state unavailable; no world work admitted");g_readinessUnknownLogged=true;}
+        return;
+    }
+    const auto* native=MiniMapNative::Get();
+    if(!native||!native->player.getFirstPlayerController||!native->player.getPlayerPawn){SetStartupReady(false);return;}
+    const auto* pc=native->player.getFirstPlayerController(MiniMapMap::GetWorld());
+    if(!pc||!native->player.getPlayerPawn(static_cast<const SDK::AController*>(pc))){SetStartupReady(false);return;}
+    if(!g_startedGameplay)
+    {
+        g_startedGameplay=true;
+        LOG_INFO("MiniMap: gameplay ready: experience complete, loading screen hidden, local controller and pawn available; progressive world services enabled");
+        MiniMapUI::Show();
+    }
+    SetStartupReady(true);
+}
+
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBegin,false);
 #if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
     MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
 #endif
+    g_experienceComplete=g_startedGameplay=g_readinessUnknownLogged=false;
+    MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
@@ -123,11 +167,11 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
         "MiniMap: game world began: %p",
         world);
 
-    MiniMapUI::Show();
 }
 
 static void OnExperienceLoadComplete()
 {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ExperienceComplete,false);
     LOG_INFO("MiniMap: OnExperienceLoadComplete");
 
     MiniMapFoundables::OnExperienceLoadComplete();
@@ -136,21 +180,18 @@ static void OnExperienceLoadComplete()
     MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
-    if (!MiniMapTerrain::Initialize(g_self))
-    {
-        LOG_ERROR(
-            "MiniMap: terrain initialization failed after experience load");
-        return;
-    }
-
-    LOG_INFO(
-        "MiniMap: terrain initialization complete");
+    // Initialize only resets CPU state and registers OnTerrainTick. Register here,
+    // outside tick iteration; asset/texture work is gated inside OnTerrainTick.
+    g_experienceComplete=MiniMapTerrain::Initialize(g_self);
+    if(!g_experienceComplete){LOG_ERROR("MiniMap: terrain service preparation failed");return;}
+    LOG_INFO("MiniMap: experience complete; terrain service registered; heavy world services await loading-screen dismissal");
 }
 
 static void OnAfterWorldEndPlay(
     SDK::UWorld* world,
     const char* worldName)
 {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldEnd,false);
 #if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
     MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
 #endif
@@ -158,6 +199,8 @@ static void OnAfterWorldEndPlay(
         "MiniMap: world ended: %s",
         worldName != nullptr ? worldName : "<null>");
 
+    MiniMapMap::SetGameplayReady(false);
+    g_experienceComplete=g_startedGameplay=false;
     MiniMapUI::Hide();
 
     MiniMapFoundables::Reset();
@@ -178,12 +221,14 @@ extern "C"
     __declspec(dllexport)
         PluginInfo* GetPluginInfo()
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInfo,false);
         return &s_pluginInfo;
     }
 
     __declspec(dllexport)
         bool PluginInit(IPluginSelf* self)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInit,false,self);
         g_self = self;
 
         if (g_self == nullptr ||
@@ -205,7 +250,8 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-        if (g_self->hooks->World == nullptr)
+        if (g_self->hooks->World == nullptr || g_self->hooks->Engine == nullptr ||
+            !g_self->hooks->Engine->RegisterOnTick || !g_self->hooks->Engine->UnregisterOnTick)
         {
             LOG_ERROR(
                 "MiniMap: World hooks are unavailable");
@@ -223,6 +269,9 @@ extern "C"
             g_self = nullptr;
             return false;
         }
+
+        // ModLoader invokes tick subscribers in registration order: barrier first.
+        g_self->hooks->Engine->RegisterOnTick(&OnStartupTick);
 
         if (!MiniMapFogOfWar::Initialize(
             g_self))
@@ -391,6 +440,9 @@ extern "C"
         MiniMapSmelterCapture::Initialize();
         MiniMapBuildingRepresentation::Initialize();
 #endif
+#if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
+        MiniMapSpriteDiscovery::Initialize();
+#endif
 
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
         {
@@ -409,12 +461,16 @@ extern "C"
     __declspec(dllexport)
         void PluginShutdown()
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginShutdown,false);
         LOG_INFO(
             "MiniMap: shutting down");
 
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::Hide();
+#if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
+        MiniMapSpriteDiscovery::Shutdown();
+#endif
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
         MiniMapSmelterCapture::Shutdown();
         MiniMapBuildingRepresentation::Shutdown();
@@ -427,6 +483,7 @@ extern "C"
             g_self->hooks != nullptr &&
             g_self->hooks->World != nullptr)
         {
+            g_self->hooks->Engine->UnregisterOnTick(&OnStartupTick);
             g_self->hooks->World->UnregisterOnExperienceLoadComplete(
                 &OnExperienceLoadComplete);
 

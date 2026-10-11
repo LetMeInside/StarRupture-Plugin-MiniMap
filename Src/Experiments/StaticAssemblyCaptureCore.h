@@ -23,7 +23,7 @@ namespace MiniMapStaticAssembly
         size_t Count{};
         uintptr_t ActorClass{};
         uint64_t Generation{};
-        bool RootVerified=false,Complete=false,HighDetail=false;
+        bool RootVerified=false,Complete=false,HighDetail=false,General=false;
     };
     struct Footprint { A::V Min{},Max{};bool Initialized=false; };
     inline bool Add(Footprint& f,const Instance& i)
@@ -46,8 +46,8 @@ namespace MiniMapStaticAssembly
     inline const char* Validate(const Recipe& r,Footprint& f)
     {
         f={};
-        if(!r.ActorClass||!r.RootVerified||!r.Complete||!r.HighDetail)return "unverified_root_or_upstream";
-        if(r.Count!=Expected)return "static_instance_count";
+        if(!r.ActorClass||!r.RootVerified||!r.Complete||(!r.HighDetail&&!r.General))return "unverified_root_or_upstream";
+        if(!r.Count||r.Count>Limit||(!r.General&&r.Count!=Expected))return "static_instance_count";
         std::set<uintptr_t> meshes;std::set<uint32_t> components;size_t assigned=0;
         for(size_t n=0;n<r.Count;++n)
         {
@@ -60,7 +60,7 @@ namespace MiniMapStaticAssembly
             for(size_t s=0;s<i.MaterialCount;++s)if(!i.Materials[s])return "missing_material";
             if(!Add(f,i))return "invalid_mesh_bounds";
         }
-        if(meshes.size()!=UniqueExpected)return "unique_mesh_count";
+        if(!r.General&&meshes.size()!=UniqueExpected)return "unique_mesh_count";
         for(size_t a=0;a<3;++a)if(!std::isfinite(f.Max[a]-f.Min[a])||f.Max[a]<=f.Min[a])return "invalid_aggregate_bounds";
         return nullptr;
     }
@@ -82,9 +82,9 @@ namespace MiniMapStaticAssembly
     {
         struct Entry {uintptr_t Component{};bool Registered=false,Member=false;};
         std::array<Entry,Limit> Entries{};size_t Count{};
-        bool Complete() const
+        bool Complete(size_t expected=Expected) const
         {
-            if(Count!=Expected)return false;std::set<uintptr_t> unique;
+            if(!expected||expected>Limit||Count!=expected)return false;std::set<uintptr_t> unique;
             for(size_t i=0;i<Count;++i)if(!Entries[i].Component||!Entries[i].Registered||!Entries[i].Member||!unique.insert(Entries[i].Component).second)return false;
             return true;
         }

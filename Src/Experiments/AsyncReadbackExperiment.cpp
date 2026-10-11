@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT && defined(MODLOADER_CLIENT_BUILD)
 #include "AsyncReadbackExperiment.h"
 #include "ReadbackNativeAdapter.h"
@@ -27,6 +28,7 @@ namespace MiniMapAsyncReadbackExperiment
 
         void OnTick(float)
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ReadbackTick,true);
             if (!started.load(std::memory_order_acquire) || stopping.load() ||
                 scheduling.test_and_set(std::memory_order_acquire)) return;
             SchedulingScope scope;
@@ -85,6 +87,7 @@ namespace MiniMapAsyncReadbackExperiment
 
         void BeginEngineShutdown()
         {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ReadbackShutdown,false);
             // Nonblocking: never queue a new command or wait on this callback.
             if (stopping.exchange(true)) return;
             if (!scheduling.test_and_set(std::memory_order_acquire))

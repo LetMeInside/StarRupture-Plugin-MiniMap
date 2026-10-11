@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingCollector.h"
@@ -676,6 +677,8 @@ namespace
     }
     void OnTick(float)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CollectorTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if(!g_ready || !MiniMapMap::HasWorld()) return;
         const auto start=Clock::now(); const auto* n=MiniMapNative::Get();
         if(!n || !n->gridDiagnostic.IsAvailable() || !n->texture.memoryFree || !n->mass.getConstSharedFragmentPtr ||

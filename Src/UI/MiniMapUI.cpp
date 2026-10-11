@@ -1,3 +1,5 @@
+#include "../Map/Map.h"
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MiniMapUI.h"
@@ -9,6 +11,7 @@
 #include "Map/AlienActors.h"
 #include "Map/BuildingCollector.h"
 #include "Map/BuildingVisuals.h"
+#include "Map/BuildingSprites.h"
 #include "Map/PointsOfInterest.h"
 #include "Map/Terrain.h"
 
@@ -25,6 +28,9 @@ namespace
     bool g_gameplaySuppressed = false;
     bool g_actualVisible = false;
     bool g_keybindRegistered = false;
+#if defined(MINIMAP_BUILDING_SPRITES)
+    std::chrono::steady_clock::time_point g_lastSpriteWidget{};
+#endif
 
     PluginWindowHints g_hints = {};
 
@@ -94,13 +100,29 @@ namespace
     void Render(
         IModLoaderImGui* ui)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WidgetRender,true);
+        if(!MiniMapMap::GameplayReady())return;
         MiniMapMouseWheel::SignalUiReady();
 
         if (ui == nullptr ||
             !g_actualVisible)
         {
+#if defined(MINIMAP_BUILDING_SPRITES)
+            g_lastSpriteWidget={};
+#endif
             return;
         }
+
+#if defined(MINIMAP_BUILDING_SPRITES)
+        // CPU callback time and callback cadence are separate. Neither measures
+        // GPU execution or attributes time spent outside this widget to MiniMap.
+        MiniMapBuildingSprites::TimingScope widgetTiming(MiniMapBuildingSprites::Timing::WidgetCpu);
+        const auto widgetNow=std::chrono::steady_clock::now();
+        if(g_lastSpriteWidget.time_since_epoch().count())
+            MiniMapBuildingSprites::RecordTiming(MiniMapBuildingSprites::Timing::WidgetInterval,
+                std::chrono::duration<double,std::milli>(widgetNow-g_lastSpriteWidget).count());
+        g_lastSpriteWidget=widgetNow;
+#endif
 
         float windowX = 0.0f;
         float windowY = 0.0f;
@@ -260,6 +282,7 @@ namespace
     {
         const bool shouldBeVisible =
             g_userVisible &&
+            MiniMapMap::GameplayReady() &&
             !g_gameplaySuppressed;
 
         if (g_actualVisible ==
@@ -295,6 +318,7 @@ namespace
         EModKey key,
         EModKeyEvent event)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ToggleKey,false);
         (void)key;
         (void)event;
 
@@ -524,6 +548,8 @@ namespace MiniMapUI
 
         ApplyVisibility();
     }
+
+    void RefreshVisibility(){ApplyVisibility();}
 
     bool IsVisible()
     {

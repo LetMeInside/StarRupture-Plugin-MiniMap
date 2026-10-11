@@ -252,7 +252,7 @@ patterns_path=pathlib.Path(__file__).parent.parent/'Src/Experiments/Representati
 patterns=re.findall(r'char\s+(\w+)\[\]="([0-9A-F? ]+)"',patterns_path.read_text())
 text=next(x for x in section_list if x[0]=='.text')
 text_bytes=image[text[3]:text[3]+text[4]]
-references={'ObjectArrayAnchor':0x17b2740,'SkeletalAsset':0x48f6190}
+references={'ObjectArrayAnchor':0x17b2740,'SkeletalAsset':0x48f6190,'NameEqualsWide':0x14b60f0}
 exception_rva,exception_size=struct.unpack_from('<II',image,optional+112+3*8)
 exception_data=data(exception_rva,exception_size)
 starts={struct.unpack_from('<I',exception_data,i)[0] for i in range(0,len(exception_data),12)}
@@ -267,8 +267,14 @@ for name,pattern in patterns:
         if start<0 or start+len(values)>len(text_bytes):continue
         if all(v=='??' or text_bytes[start+i]==int(v,16) for i,v in enumerate(values)):hits.append(text[1]+start)
     assert hits==[references[name]],(name,hits)
-    assert hits[0] in starts,(name,'not unwind function start')
-    print(f'PE unique masked signature {name}: RVA=0x{hits[0]:08x}; unwind start verified')
+    if name=='NameEqualsWide':
+        # Verified leaf tail thunk; full public-symbol/ABI checks are in
+        # VerifyInteriorTagAbi.py. Leaf functions need no unwind record.
+        assert data(hits[0]+30,1)==b'\xe9'
+        print(f'PE unique masked signature {name}: RVA=0x{hits[0]:08x}; leaf tail thunk')
+    else:
+        assert hits[0] in starts,(name,'not unwind function start')
+        print(f'PE unique masked signature {name}: RVA=0x{hits[0]:08x}; unwind start verified')
 anchor=references['ObjectArrayAnchor']
 assert data(anchor+0x15,3)==b'\x48\x8d\x0d'
 target=anchor+0x1c+struct.unpack('<i',data(anchor+0x18,4))[0]

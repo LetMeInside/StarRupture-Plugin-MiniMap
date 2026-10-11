@@ -46,8 +46,8 @@ namespace MiniMapRepresentationCore
     {
         ArrayRead r;
         if(a.Num<0||a.Max<0||a.Num>a.Max||!stride||!alignment||(alignment&(alignment-1)))return r;
-        if(size_t(a.Max)>std::numeric_limits<size_t>::max()/stride)return r;
-        if(a.Data>std::numeric_limits<uintptr_t>::max()-size_t(a.Max)*stride)return r;
+        if(size_t(a.Max)>(std::numeric_limits<size_t>::max)()/stride)return r;
+        if(a.Data>(std::numeric_limits<uintptr_t>::max)()-size_t(a.Max)*stride)return r;
         if(a.Data&&(a.Data&(alignment-1)))return r;
         if(a.Max&&!a.Data)return r;
         if(!a.Num){r.Valid=true;r.Status="absent";return r;}

@@ -61,6 +61,10 @@ namespace MiniMapCaptureRetirement
         FenceOwner(const FenceOwner&) = delete;
         FenceOwner& operator=(const FenceOwner&) = delete;
         FenceState GetState() const { return State; }
+        // Reuse storage only AFTER the verified destructor. No task handle copy,
+        // no reset of an inserted/uncertain object and no new native boundary.
+        bool Rearm()
+        {if(State!=FenceState::Destroyed)return State==FenceState::Empty;State=FenceState::Empty;return true;}
         template<class Ops> bool Prepare(Ops& ops)
         {
             if (State != FenceState::Empty || !ops.Available()) return false;

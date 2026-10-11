@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingInventory.h"
@@ -143,6 +144,8 @@ namespace
 
     void OnTick(float)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::InventoryTick,true);
+        if(!MiniMapMap::GameplayReady())return;
         if (!g_ready || !MiniMapMap::HasWorld() || Clock::now() < g_nextPoll) return;
         Poll();
         g_nextPoll = Clock::now() + kOracleInterval; // No catch-up; does not affect production cadence.

@@ -1,3 +1,4 @@
+#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MouseWheel.h"
@@ -654,6 +655,7 @@ namespace
     void OnTick(
         float deltaSeconds)
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::MouseTick,true);
         (void)deltaSeconds;
 
         if (!g_acceptInstall.load(
@@ -685,6 +687,7 @@ namespace
 
     void OnEngineShutdown()
     {
+        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::MouseShutdown,false);
         g_zoomEnabled.store(
             false,
             std::memory_order_release);

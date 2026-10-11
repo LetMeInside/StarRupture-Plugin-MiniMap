@@ -9,10 +9,12 @@
 #include "../plugin_helpers.h"
 
 #include <cmath>
+#include <atomic>
 
 namespace
 {
     SDK::UWorld* g_world = nullptr;
+    std::atomic<bool> g_gameplayReady{false};
 }
 
 
@@ -21,6 +23,7 @@ namespace MiniMapMap
     void SetWorld(
         SDK::UWorld* world)
     {
+        g_gameplayReady.store(false,std::memory_order_release);
         g_world = world;
 
         LOG_INFO(
@@ -34,6 +37,9 @@ namespace MiniMapMap
         return g_world;
     }
 
+
+    bool GameplayReady(){return g_gameplayReady.load(std::memory_order_acquire);}
+    void SetGameplayReady(bool ready){g_gameplayReady.store(ready,std::memory_order_release);}
 
     bool HasWorld()
     {
@@ -212,6 +218,7 @@ namespace MiniMapMap
 
     void Shutdown()
     {
+        g_gameplayReady.store(false,std::memory_order_release);
         g_world = nullptr;
     }
 }
