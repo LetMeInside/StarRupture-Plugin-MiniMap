@@ -5,7 +5,7 @@
 #include "SpriteCaptureCore.h"
 #include "SpriteCandidateIdentity.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
-#include "ReadbackNativeAdapter.h"
+#include "../Native/ReadbackNativeAdapter.h"
 #include "../Native/ReadbackNativeBindings.h"
 #include "CapturePng.h"
 #include "../Map/BuildingRepresentation.h"

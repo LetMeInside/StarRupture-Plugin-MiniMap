@@ -6,7 +6,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
-#include "Experiments/ReadbackNativeAdapter.h"
+#include "Native/ReadbackNativeAdapter.h"
 #include "Experiments/SmelterCaptureExperiment.h"
 #include "Map/BuildingRepresentation.h"
 #include "Experiments/SpriteDiscovery.h"

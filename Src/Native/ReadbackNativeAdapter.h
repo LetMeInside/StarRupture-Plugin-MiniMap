@@ -2,9 +2,9 @@
 
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include <cstdint>
-#include "../Native/CaptureRetirementCore.h"
+#include "CaptureRetirementCore.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-#include "../Native/FloatReadbackPixels.h"
+#include "FloatReadbackPixels.h"
 #endif
 namespace MiniMapReadbackNative
 {
