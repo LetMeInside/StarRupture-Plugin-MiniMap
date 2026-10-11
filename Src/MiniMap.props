@@ -4,8 +4,6 @@
     <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">true</MiniMapDebugUI>
     <!-- Independent development gate for unfinished Stage C visuals; safe default is OFF. -->
     <MiniMapStageCVisuals Condition="'$(MiniMapStageCVisuals)' == ''">false</MiniMapStageCVisuals>
-    <!-- R1 is independent of Stage C visuals and never enabled by default. -->
-    <MiniMapAsyncReadbackExperiment Condition="'$(MiniMapAsyncReadbackExperiment)' == ''">false</MiniMapAsyncReadbackExperiment>
     <!-- R2 diagnostic capture/export is enabled in normal Client Release builds. -->
     <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR2SmelterCapture>
     <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == ''">false</MiniMapStageR2SmelterCapture>
@@ -41,9 +39,6 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true' And '$(MiniMapStageCVisuals)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_C_VISUALS_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapAsyncReadbackExperiment)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_ASYNC_READBACK_EXPERIMENT=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapStageR2SmelterCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R2_SMELTER_CAPTURE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>

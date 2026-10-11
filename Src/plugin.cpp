@@ -6,7 +6,6 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
-#include "Experiments/AsyncReadbackExperiment.h"
 #include "Experiments/ReadbackNativeAdapter.h"
 #include "Experiments/SmelterCaptureExperiment.h"
 #include "Experiments/BuildingRepresentationDiagnostic.h"
@@ -89,7 +88,7 @@ void OnPluginLoadHooks(
     LOG_INFO(
         "MiniMap: native API initialized");
 
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
 #endif
@@ -148,9 +147,6 @@ static void OnStartupTick(float)
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBegin,false);
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
-    MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
-#endif
     g_experienceComplete=g_startedGameplay=g_readinessUnknownLogged=false;
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
@@ -192,9 +188,6 @@ static void OnAfterWorldEndPlay(
     const char* worldName)
 {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldEnd,false);
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
-    MiniMapAsyncReadbackExperiment::CancelForWorldTransition();
-#endif
     LOG_INFO(
         "MiniMap: world ended: %s",
         worldName != nullptr ? worldName : "<null>");
@@ -433,9 +426,6 @@ extern "C"
         LOG_INFO(
             "MiniMap: registered world lifecycle callbacks");
 
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
-        MiniMapAsyncReadbackExperiment::Initialize();
-#endif
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
         MiniMapSmelterCapture::Initialize();
         MiniMapBuildingRepresentation::Initialize();
@@ -474,9 +464,6 @@ extern "C"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
         MiniMapSmelterCapture::Shutdown();
         MiniMapBuildingRepresentation::Shutdown();
-#endif
-#if defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) && MINIMAP_ASYNC_READBACK_EXPERIMENT
-        MiniMapAsyncReadbackExperiment::Shutdown();
 #endif
 
         if (g_self != nullptr &&
