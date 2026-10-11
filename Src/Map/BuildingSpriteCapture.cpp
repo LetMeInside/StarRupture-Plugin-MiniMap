@@ -657,6 +657,7 @@ namespace MiniMapSmelterCapture
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureWorldEnd,false);
+            if(!world||world!=MiniMapMap::GetWorld())return;
             if(!GameThread()){LOG_ERROR("MiniMap: R2 before-EndPlay is not game thread; component retirement NOT certified");return;}
             if(scheduling.test_and_set(std::memory_order_acquire)){LOG_ERROR("MiniMap: R2 before-EndPlay overlaps capture scheduling; retirement NOT certified");return;}
             Scope scope;
@@ -744,7 +745,7 @@ namespace MiniMapSmelterCapture
                     report.Result==Native::Outcome::Verified?"verified":"failed_or_cancelled",
                     cancelled.load()?"cancelled":report.Result==Native::Outcome::Verified?"export_follows":"not_attempted");
             if(!MiniMapMap::GameplayReady())
-                FailSpritePublication("loading_readiness_lost; publication_cancelled; native_retirement_continues");
+                FailSpritePublication("gameplay_admission_closed; publication_cancelled; native_retirement_continues");
             if(!cancelled.load()&&MiniMapMap::GameplayReady())
             {
                 if(const auto* stats=Native::FloatStats(job))

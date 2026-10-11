@@ -724,6 +724,7 @@ namespace MiniMapBuildingRepresentation
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
+            if(!world||world!=MiniMapMap::GetWorld())return;
             const auto gameThread=MiniMapSmelterCapture::GetBindings().GameThread;
             if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)())endingWorld=world;
             else stopped.store(true);
@@ -854,43 +855,6 @@ namespace MiniMapBuildingRepresentation
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(ms>=2.0){LOG_WARN("MiniMap: resident class preparation took %.3f ms; one noninterruptible lookup: %ls",ms,anchor.Path);}
         return nativeAnchorCursor==std::size(nativeAnchors);
-    }
-    int LoadingScreenState(uintptr_t world)
-    {
-        const auto& b=MiniMapSmelterCapture::GetBindings();
-        if(!objectArray||!nameEqualsWide||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)()||
-            !Identity(world,0x238))return -1;
-        const auto gi=Value<uintptr_t>(world,0x230);
-        if(!Identity(gi,0x1f0))return -1;
-        // Installed UGameInstance.SubsystemCollection +0x130; map +8.
-        // Game-thread-owned subsystem registry, never inspected while populating.
-        const auto collection=gi+0x130,map=collection+8;
-        if(Value<uintptr_t>(collection,0xb0)!=gi||Value<uint8_t>(collection,0xb8)||Value<uint8_t>(collection,0xb9))return -1;
-        const auto data=Value<uintptr_t>(map,0);const auto num=Value<int32_t>(map,8),max=Value<int32_t>(map,12);
-        const auto bits=Value<int32_t>(map,0x28),maxBits=Value<int32_t>(map,0x2c);
-        if(num<0||num>128||max<num||max>256||bits!=num||maxBits<bits||maxBits>256||
-            (num&&!Readable(data,size_t(num)*24,8)))return -1;
-        auto flags=Value<uintptr_t>(map,0x20);if(!flags)flags=map+0x10;
-        if(num&&!Readable(flags,((size_t(num)+31)/32)*4,4))return -1;
-        using Equals=bool(*)(Name,const wchar_t*);
-        const auto equals=reinterpret_cast<Equals>(nameEqualsWide);
-        uintptr_t manager=0;
-        for(int32_t i=0;i<num;++i)
-        {
-            if(!(Value<uint32_t>(flags,size_t(i/32)*4)&(uint32_t(1)<<(i%32))))continue;
-            const auto cls=Value<uintptr_t>(data,size_t(i)*24),value=Value<uintptr_t>(data,size_t(i)*24+8);
-            if(!Identity(cls,0x200))return -1;
-            if(!equals(Value<Name>(cls,0x18),L"LoadingScreenManager"))continue;
-            const auto package=Value<uintptr_t>(cls,0x20);
-            if(!Identity(package)||!equals(Value<Name>(package,0x18),L"/Script/CommonLoadingScreen")||
-                !Identity(value,0xc8)||Value<uintptr_t>(value,0x10)!=cls||Value<uintptr_t>(value,0x20)!=gi||manager)return -1;
-            manager=value;
-        }
-        if(!manager)return -1;
-        // PDB bool fields, NOT elapsed-time or render-fence inference.
-        const auto inMap=Value<uint8_t>(manager,0xb0),visible=Value<uint8_t>(manager,0xb1);
-        if(inMap>1||visible>1)return -1;
-        return inMap||visible?1:0;
     }
     bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
     bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record& record,MiniMapSpriteClassification::Observation& observation)

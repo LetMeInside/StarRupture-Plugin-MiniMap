@@ -98,7 +98,7 @@ namespace MiniMapSpriteDiscovery
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::DiscoveryWorldEnd,false);
-            if(!owner||world!=MiniMapMap::GetWorld())return;
+            if(!world||!owner||world!=MiniMapMap::GetWorld())return;
             MiniMapMap::SetGameplayReady(false);
             const auto current=B::GetSnapshot();
             owner->Writer.Invalidate(0);owner->WriterGeneration=0;owner->Dirty=0;

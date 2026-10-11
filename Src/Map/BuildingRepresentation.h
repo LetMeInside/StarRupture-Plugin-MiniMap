@@ -12,8 +12,6 @@ namespace MiniMapBuildingRepresentation
     void Initialize();
     void Shutdown();
     bool ValidateCaptureObject(uintptr_t);
-    // -1 unknown/invalid, 0 hidden, 1 loading. Passive bounded game-thread read.
-    int LoadingScreenState(uintptr_t world);
     // Bounded fresh Mass/definition identity and classification read. No graph
     // traversal or borrowed native pointer escapes this synchronous call.
     bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record&,MiniMapSpriteClassification::Observation&);
