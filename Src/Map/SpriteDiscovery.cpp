@@ -10,7 +10,7 @@
 #include "../plugin.h"
 #include "../plugin_helpers.h"
 #include "SpriteDiscovery.h"
-#include "../Experiments/SmelterCaptureExperiment.h"
+#include "BuildingSpriteCapture.h"
 #include "BuildingSprites.h"
 #include "BuildingCollector.h"
 #include "TerrainCache.h"

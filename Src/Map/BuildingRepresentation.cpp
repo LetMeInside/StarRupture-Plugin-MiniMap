@@ -14,7 +14,7 @@
 #include "RepresentationMetadataPatterns.h"
 #include "../Native/ReadbackNativeAdapter.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
-#include "../Experiments/SmelterCaptureExperiment.h"
+#include "BuildingSpriteCapture.h"
 #include "BuildingCollector.h"
 #include "Map.h"
 #include "BuildingSprites.h"

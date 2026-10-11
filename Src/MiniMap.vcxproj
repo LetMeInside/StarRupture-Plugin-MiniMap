@@ -96,11 +96,11 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
-    <ClInclude Include="Experiments\CapturePng.h" />
+    <ClInclude Include="Map\CapturePng.h" />
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
-    <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
+    <ClInclude Include="Map\BuildingSpriteCapture.h" />
     <ClInclude Include="Map\BuildingRepresentation.h" />
     <ClInclude Include="Map\SpriteDiscovery.h" />
     <ClInclude Include="Map\RepresentationMetadataCore.h" />
@@ -160,7 +160,7 @@
     <ClCompile Include="Native\ReadbackNativeResolution.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Experiments\SmelterCaptureExperiment.cpp">
+    <ClCompile Include="Map\BuildingSpriteCapture.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">

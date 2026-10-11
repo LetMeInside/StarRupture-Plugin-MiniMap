@@ -7,7 +7,7 @@
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Experiments/SmelterCaptureExperiment.h"
+#include "Map/BuildingSpriteCapture.h"
 #include "Map/BuildingRepresentation.h"
 #include "Map/SpriteDiscovery.h"
 #endif

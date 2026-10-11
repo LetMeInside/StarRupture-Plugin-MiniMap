@@ -1,18 +1,18 @@
 #include "../CallbackTiming.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
-#include "SmelterCaptureExperiment.h"
-#include "../Map/StaticAssemblyCaptureCore.h"
-#include "../Map/SpriteCaptureCore.h"
-#include "../Map/SpriteCandidateIdentity.h"
+#include "BuildingSpriteCapture.h"
+#include "StaticAssemblyCaptureCore.h"
+#include "SpriteCaptureCore.h"
+#include "SpriteCandidateIdentity.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
 #include "../Native/ReadbackNativeAdapter.h"
 #include "../Native/ReadbackNativeBindings.h"
 #include "CapturePng.h"
-#include "../Map/BuildingRepresentation.h"
-#include "../Map/BuildingCollector.h"
+#include "BuildingRepresentation.h"
+#include "BuildingCollector.h"
 #include "../plugin_helpers.h"
-#include "../Map/Map.h"
-#include "../Map/BuildingSprites.h"
+#include "Map.h"
+#include "BuildingSprites.h"
 #include <Engine_classes.hpp>
 #include <Engine_parameters.hpp>
 #include <atomic>

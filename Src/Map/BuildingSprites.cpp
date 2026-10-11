@@ -2,7 +2,7 @@
 #include "BuildingSprites.h"
 #include "FogOfWar.h"
 #include "SpriteCandidateIdentity.h"
-#include "../Experiments/SmelterCaptureExperiment.h"
+#include "BuildingSpriteCapture.h"
 #include "../plugin_helpers.h"
 #include <mutex>
 #include <limits>
