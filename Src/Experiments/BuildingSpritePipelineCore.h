@@ -1,6 +1,6 @@
 #pragma once
 #include "SpriteCaptureCore.h"
-#include "StaticAssemblyCaptureCore.h"
+#include "../Map/StaticAssemblyCaptureCore.h"
 
 namespace MiniMapBuildingSpriteCore
 {

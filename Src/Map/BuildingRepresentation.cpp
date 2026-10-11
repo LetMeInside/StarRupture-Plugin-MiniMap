@@ -4,8 +4,8 @@
 #include "../Native/NativeApi.h"
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
-#include "../Experiments/AssemblyRecipeCore.h"
-#include "../Experiments/StaticAssemblyCaptureCore.h"
+#include "AssemblyRecipeCore.h"
+#include "StaticAssemblyCaptureCore.h"
 #include "../Experiments/SpriteCaptureCore.h"
 #include "../Experiments/SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
@@ -117,7 +117,7 @@ namespace MiniMapBuildingRepresentation
         {
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
             MiniMapSpriteClassification::Observation Classification;
-#include "../Experiments/SpriteClassificationAudit.inl"
+#include "SpriteClassificationAudit.inl"
 #endif
             bool GenericValidation=false,GenericInherited=false,GenericChild=false,CaptureRequested=false;
             uintptr_t AuditClass=0;
@@ -711,9 +711,9 @@ namespace MiniMapBuildingRepresentation
                 {Selected=Ref(definition,Placement);SelectedTier="mass_ism";Status="partial";Reason="no validated resident actor class; resident Mass metadata recorded separately";}
                 return selected||hasMass;
             }
-            #include "../Experiments/AssemblyRecipeAudit.inl"
+            #include "AssemblyRecipeAudit.inl"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-            #include "../Experiments/GenericRepresentationAudit.inl"
+            #include "GenericRepresentationAudit.inl"
 #endif
         };
         bool Visit(const SDK::UObject* definition,void* context)

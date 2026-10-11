@@ -1,7 +1,7 @@
 #include "../CallbackTiming.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "SmelterCaptureExperiment.h"
-#include "StaticAssemblyCaptureCore.h"
+#include "../Map/StaticAssemblyCaptureCore.h"
 #include "SpriteCaptureCore.h"
 #include "SpriteCandidateIdentity.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
