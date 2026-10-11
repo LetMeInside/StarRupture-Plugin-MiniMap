@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "ReadbackNativeAdapter.h"
-#include "ReadbackNativeBindings.h"
+#include "../Native/ReadbackNativeBindings.h"
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>

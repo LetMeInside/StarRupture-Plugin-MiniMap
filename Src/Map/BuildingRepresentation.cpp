@@ -13,7 +13,7 @@
 #endif
 #include "../Experiments/RepresentationMetadataPatterns.h"
 #include "../Experiments/ReadbackNativeAdapter.h"
-#include "../Experiments/SmelterCaptureNativeBindings.h"
+#include "../Native/SmelterCaptureNativeBindings.h"
 #include "../Experiments/SmelterCaptureExperiment.h"
 #include "BuildingCollector.h"
 #include "Map.h"

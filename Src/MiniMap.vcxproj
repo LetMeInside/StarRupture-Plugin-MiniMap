@@ -97,7 +97,7 @@
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
     <ClInclude Include="Experiments\CapturePng.h" />
-    <ClInclude Include="Experiments\ReadbackUEConfiguration.h" />
+    <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Experiments\ReadbackNativeAdapter.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
@@ -110,13 +110,13 @@
     <ClInclude Include="Experiments\SpriteCaptureCore.h" />
     <ClInclude Include="Experiments\BuildingSpritePipelineCore.h" />
     <ClInclude Include="Map\BuildingSprites.h" />
-    <ClInclude Include="Experiments\StaticAssemblyCapturePatterns.inl" />
+    <ClInclude Include="Native\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Experiments\AssemblyRecipeAudit.inl" />
     <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
-    <ClInclude Include="Experiments\SmelterCaptureNativeBindings.h" />
-    <ClInclude Include="Experiments\FloatReadbackPixels.h" />
-    <None Include="Experiments\SmelterCapturePatterns.inl" />
-    <ClInclude Include="Experiments\ReadbackNativeBindings.h" />
+    <ClInclude Include="Native\SmelterCaptureNativeBindings.h" />
+    <ClInclude Include="Native\FloatReadbackPixels.h" />
+    <None Include="Native\SmelterCapturePatterns.inl" />
+    <ClInclude Include="Native\ReadbackNativeBindings.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Map\FogOfWar.h" />

@@ -4,7 +4,7 @@
 #include <cstdint>
 #include "../Native/CaptureRetirementCore.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-#include "FloatReadbackPixels.h"
+#include "../Native/FloatReadbackPixels.h"
 #endif
 namespace MiniMapReadbackNative
 {

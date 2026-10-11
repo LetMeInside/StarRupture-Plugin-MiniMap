@@ -1,5 +1,5 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-#include "ReadbackUEConfiguration.h"
+#include "../Native/ReadbackUEConfiguration.h"
 #define RHI_API
 #define RENDERCORE_API
 #define WITH_MGPU 1
@@ -8,7 +8,7 @@
 #include "RHIResources.h"
 #include "Containers/ResourceArray.h"
 #include "ReadbackNativeAdapter.h"
-#include "ReadbackNativeBindings.h"
+#include "../Native/ReadbackNativeBindings.h"
 #include <cstddef>
 #include <cstring>
 #include <cstdlib>
@@ -17,7 +17,7 @@
 #include <new>
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "RHITransition.h"
-#include "SmelterCaptureNativeBindings.h"
+#include "../Native/SmelterCaptureNativeBindings.h"
 #include <vector>
 class FRHIComputeCommandList;
 #endif
