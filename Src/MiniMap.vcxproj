@@ -102,8 +102,8 @@
     <ClInclude Include="Native\CaptureRetirementCore.h" />
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
     <ClInclude Include="Map\BuildingRepresentation.h" />
-    <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
-    <ClInclude Include="Experiments\RepresentationSelectionCore.h" />
+    <ClInclude Include="Map\RepresentationMetadataCore.h" />
+    <ClInclude Include="Map\RepresentationSelectionCore.h" />
     <ClInclude Include="Experiments\AssemblyRecipeCore.h" />
     <ClInclude Include="Experiments\StaticAssemblyCaptureCore.h" />
     <ClInclude Include="Experiments\SpriteCandidateIdentity.h" />
@@ -112,7 +112,7 @@
     <ClInclude Include="Map\BuildingSprites.h" />
     <ClInclude Include="Native\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Experiments\AssemblyRecipeAudit.inl" />
-    <ClInclude Include="Experiments\RepresentationMetadataPatterns.h" />
+    <ClInclude Include="Map\RepresentationMetadataPatterns.h" />
     <ClInclude Include="Native\SmelterCaptureNativeBindings.h" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
     <None Include="Native\SmelterCapturePatterns.inl" />

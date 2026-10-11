@@ -2,8 +2,8 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentation.h"
 #include "../Native/NativeApi.h"
-#include "../Experiments/RepresentationMetadataCore.h"
-#include "../Experiments/RepresentationSelectionCore.h"
+#include "RepresentationMetadataCore.h"
+#include "RepresentationSelectionCore.h"
 #include "../Experiments/AssemblyRecipeCore.h"
 #include "../Experiments/StaticAssemblyCaptureCore.h"
 #include "../Experiments/SpriteCaptureCore.h"
@@ -11,7 +11,7 @@
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
 #include "../Experiments/SpriteValidationCore.h"
 #endif
-#include "../Experiments/RepresentationMetadataPatterns.h"
+#include "RepresentationMetadataPatterns.h"
 #include "../Native/ReadbackNativeAdapter.h"
 #include "../Native/SmelterCaptureNativeBindings.h"
 #include "../Experiments/SmelterCaptureExperiment.h"
