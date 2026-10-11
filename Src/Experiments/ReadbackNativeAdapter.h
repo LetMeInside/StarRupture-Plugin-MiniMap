@@ -1,8 +1,7 @@
 #pragma once
 
-#if defined(MODLOADER_CLIENT_BUILD) && (defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE))
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include <cstdint>
-#include "ReadbackPixels.h"
 #include "CaptureRetirementCore.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "FloatReadbackPixels.h"
@@ -34,12 +33,8 @@ namespace MiniMapReadbackNative
         int Pitch = 0, BufferHeight = 0;
         uint64_t CompletionFrames = 0;
         double CompletionMs = 0;
-        size_t Mismatches = 0;
-        int FirstX = -1, FirstY = -1;
-        MiniMapAsyncReadbackExperiment::Pixels::Rgba Expected{}, Actual{};
     };
     // One job; native objects remain private to this TU's render commands.
-    Job* CreateJob();
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
     // Resource is GC-protected by the game-thread capture owner through retirement.
     Job* CreateExternalJob(void* resource, uint32_t width, uint32_t height);

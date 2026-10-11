@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && (defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE))
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "ReadbackUEConfiguration.h"
 #define RHI_API
 #define RENDERCORE_API
@@ -22,7 +22,6 @@
 class FRHIComputeCommandList;
 #endif
 
-class FRHICommandListBase;
 class FRHICommandList;
 class FRHICommandListImmediate;
 class FRHIGPUTextureReadback; // Native owns its construction and all eight slots.
@@ -72,8 +71,6 @@ namespace MiniMapReadbackNative
 
     using SubmitFn = void(*)(void*, const TCHAR*, uint32&, TStatId, RenderCallable&&);
     using ImmediateFn = FRHICommandListImmediate&(*)();
-    // Explicit MSVC x64 member-function indirect result: this, sret, list, desc.
-    using CreateFn = FTextureRHIRef*(*)(void*, FTextureRHIRef*, FRHICommandListBase*, const FRHITextureCreateDesc*);
     using ConstructFn = FRHIGPUTextureReadback*(*)(FRHIGPUTextureReadback*, FName);
     using DestroyFn = void(*)(FRHIGPUTextureReadback*);
     using CopyFn = void(*)(FRHIGPUTextureReadback*, FRHICommandList&, FRHITexture*, const FIntVector&, uint32, const FIntVector&);
@@ -116,23 +113,6 @@ namespace MiniMapReadbackNative
             return reinterpret_cast<ImmediateFn>(GetBindings().Immediate)();
         }
 
-        FTextureRHIRef Create(FRHICommandListBase& list, const void* pixels, uint32 bytes)
-        {
-            FTextureRHIRef result;
-            if (!Prerequisites() || !pixels || bytes != 3404) return result;
-            FResourceBulkDataArrayView bulk(pixels, bytes);
-            auto desc = FRHITextureCreateDesc::Create2D(TEXT("MiniMapR1"), 37, 23, PF_B8G8R8A8);
-            desc.SetNumMips(1).SetNumSamples(1).SetArraySize(1)
-                .SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
-                .SetInitialState(ERHIAccess::CopySrc).SetBulkData(&bulk);
-            const auto& b = GetBindings();
-            // Native InitializeTextureData copies bulk bytes into an engine-owned
-            // upload allocation before returning; its queued GPU work owns that
-            // allocation. InitialState drives its final CopySrc barrier.
-            reinterpret_cast<CreateFn>(b.Create)(*reinterpret_cast<void**>(b.DynamicRHI), &result, &list, &desc);
-            return result;
-        }
-
         FRHIGPUTextureReadback* Construct()
         {
             if (!Prerequisites()) return nullptr;
@@ -140,12 +120,6 @@ namespace MiniMapReadbackNative
             auto* storage = static_cast<FRHIGPUTextureReadback*>(
                 reinterpret_cast<void*(*)(SIZE_T, uint32)>(b.Malloc)(sizeof(ReadbackLayout), 8));
             return storage ? reinterpret_cast<ConstructFn>(b.Construct)(storage, FName{}) : nullptr;
-        }
-
-        void Copy(FRHIGPUTextureReadback* readback, FRHICommandList& list, FRHITexture* texture)
-        {
-            reinterpret_cast<CopyFn>(GetBindings().Copy)(readback, list, texture,
-                FIntVector(0, 0, 0), 0, FIntVector(37, 23, 1));
         }
 
         enum class Readiness { Pending, Complete, Invalid, Unavailable };
@@ -201,7 +175,6 @@ namespace MiniMapReadbackNative
         return ready;
     }
 
-    namespace Px = MiniMapAsyncReadbackExperiment::Pixels;
     struct Job
     {
         std::atomic<MiniMapCaptureRetirement::EnqueueState> Enqueue{MiniMapCaptureRetirement::EnqueueState::NotAttempted};
@@ -217,9 +190,6 @@ namespace MiniMapReadbackNative
         // Only game-thread submission touches these trace IDs. Native callable
         // names are literals in this DLL, and Job persists through destruction.
         uint32 SubmitSpec = 0, PollSpec = 0;
-        std::array<uint8_t, Px::ByteCount> Initial{}, Cpu{};
-        // Render-thread-only until DataReady release publication. Immutable then.
-        Px::Result Verification{};
         int Pitch = 0, Height = 0;
         double CompletionMs = 0;
         uint64_t CompletionFrames = 0;
@@ -274,75 +244,45 @@ namespace MiniMapReadbackNative
         {
             if (job->Current.load(std::memory_order_acquire) == Phase::CommandQueued)
             {
-                if (job->Result.load() == Outcome::Cancelled
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                    && !job->External
-#endif
-                    ) { Cleanup(job); return; }
                 if (!Operations::Prerequisites())
-                {
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                    if(job->External){Fail(job,"native prerequisites changed after capture submission",true);return;}
-#endif
-                    Fail(job, "native prerequisites changed before creation", false); Cleanup(job); return;
-                }
+                { Fail(job,"native prerequisites changed after capture submission",true);return; }
                 auto& immediate = Operations::Immediate();
                 if (&immediate != &provided)
                 {
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                    if(job->External){Fail(job,"capture callback immediate-list mismatch",true);return;}
-#endif
-                    Fail(job, "render callback did not supply the native immediate list", false); Cleanup(job); return;
+                    Fail(job,"capture callback immediate-list mismatch",true);return;
                 }
-                // PDB: Immediate -> CommandList -> Base each has base offset 0.
+                // PDB: Immediate -> CommandList has base offset 0.
                 // Keep the classes incomplete; do not include command-list headers.
-                auto& base = reinterpret_cast<FRHICommandListBase&>(immediate);
                 auto& list = reinterpret_cast<FRHICommandList&>(immediate);
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                if (job->External)
-                {
-                    // CL PDB: FRenderTarget base at +0x50. Native no-argument
-                    // getter slot +0x10 returns the reference at subobject +8.
-                    const auto* target = static_cast<const uint8_t*>(job->TargetResource) + 0x50;
-                    auto getter = (*reinterpret_cast<const uintptr_t* const*>(target))[2];
-                    const unsigned char expected[]{0x48,0x8d,0x41,0x08,0xc3};
-                    if (std::memcmp(reinterpret_cast<const void*>(getter),expected,sizeof(expected)))
-                    { Fail(job,"unverified render-target getter; capture retirement unproven",true); return; }
-                    using Getter = const FTextureRHIRef&(*)(const void*);
-                    job->Texture = reinterpret_cast<Getter>(getter)(target);
-                    job->TargetResource = nullptr;
-                    if (!job->Texture) { Fail(job,"capture RHI texture unavailable; retirement unproven",true); return; }
-                    const auto& desc = job->Texture->GetDesc();
-                    if (desc.Format != PF_FloatRGBA || desc.NumSamples != 1 || desc.Extent.X != int32(job->Width) || desc.Extent.Y != int32(job->ImageHeight))
-                    { Fail(job,"capture RHI descriptor mismatch; retirement unproven",true); return; }
-                }
-                else
-#endif
-                job->Texture = Operations::Create(base, job->Initial.data(), uint32(job->Initial.size()));
-                if (!job->Texture)
-                { Fail(job, "native texture creation returned null", false); Cleanup(job); return; }
+                // CL PDB: FRenderTarget base at +0x50. Native no-argument
+                // getter slot +0x10 returns the reference at subobject +8.
+                const auto* target = static_cast<const uint8_t*>(job->TargetResource) + 0x50;
+                auto getter = (*reinterpret_cast<const uintptr_t* const*>(target))[2];
+                const unsigned char expected[]{0x48,0x8d,0x41,0x08,0xc3};
+                if (std::memcmp(reinterpret_cast<const void*>(getter),expected,sizeof(expected)))
+                { Fail(job,"unverified render-target getter; capture retirement unproven",true); return; }
+                using Getter = const FTextureRHIRef&(*)(const void*);
+                job->Texture = reinterpret_cast<Getter>(getter)(target);
+                job->TargetResource = nullptr;
+                if (!job->Texture) { Fail(job,"capture RHI texture unavailable; retirement unproven",true); return; }
+                const auto& desc = job->Texture->GetDesc();
+                if (desc.Format != PF_FloatRGBA || desc.NumSamples != 1 || desc.Extent.X != int32(job->Width) || desc.Extent.Y != int32(job->ImageHeight))
+                { Fail(job,"capture RHI descriptor mismatch; retirement unproven",true); return; }
                 job->Readback = Operations::Construct();
-                // Texture creation has already queued upload work. Without a
-                // usable copy fence, do NOT pretend that early release is safe.
+                // Without a usable copy fence, do NOT pretend that early
+                // release is safe.
                 if (!job->Readback || !Operations::ValidFence(job->Readback))
                 { Fail(job, "readback construction/fence invalid; upload retirement unproven", true); return; }
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                if (job->External)
-                {
-                    using TransitionFn = void(*)(FRHIComputeCommandList*, TArrayView<const FRHITransitionInfo>, ERHITransitionCreateFlags);
-                    static_assert(sizeof(FRHITransitionInfo)==0x30 && sizeof(TArrayView<const FRHITransitionInfo>)==0x10);
-                    static_assert(sizeof(FRHISubresourceRange)==6 && sizeof(FRHITexture)==0x60);
-                    static_assert(offsetof(FRHITransitionInfo,Texture)==8 && offsetof(FRHITransitionInfo,AccessAfter)==0x18);
-                    const auto transition=reinterpret_cast<TransitionFn>(MiniMapSmelterCapture::GetBindings().Transition);
-                    const FRHITransitionInfo before(job->Texture.GetReference(),ERHIAccess::SRVMask,ERHIAccess::CopySrc);
-                    transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&before,1),ERHITransitionCreateFlags::None);
-                    reinterpret_cast<CopyFn>(GetBindings().Copy)(job->Readback,list,job->Texture.GetReference(),FIntVector(0,0,0),0,FIntVector(job->Width,job->ImageHeight,1));
-                    const FRHITransitionInfo after(job->Texture.GetReference(),ERHIAccess::CopySrc,ERHIAccess::SRVMask);
-                    transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&after,1),ERHITransitionCreateFlags::None);
-                }
-                else
-#endif
-                Operations::Copy(job->Readback, list, job->Texture.GetReference());
+                using TransitionFn = void(*)(FRHIComputeCommandList*, TArrayView<const FRHITransitionInfo>, ERHITransitionCreateFlags);
+                static_assert(sizeof(FRHITransitionInfo)==0x30 && sizeof(TArrayView<const FRHITransitionInfo>)==0x10);
+                static_assert(sizeof(FRHISubresourceRange)==6 && sizeof(FRHITexture)==0x60);
+                static_assert(offsetof(FRHITransitionInfo,Texture)==8 && offsetof(FRHITransitionInfo,AccessAfter)==0x18);
+                const auto transition=reinterpret_cast<TransitionFn>(MiniMapSmelterCapture::GetBindings().Transition);
+                const FRHITransitionInfo before(job->Texture.GetReference(),ERHIAccess::SRVMask,ERHIAccess::CopySrc);
+                transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&before,1),ERHITransitionCreateFlags::None);
+                reinterpret_cast<CopyFn>(GetBindings().Copy)(job->Readback,list,job->Texture.GetReference(),FIntVector(0,0,0),0,FIntVector(job->Width,job->ImageHeight,1));
+                const FRHITransitionInfo after(job->Texture.GetReference(),ERHIAccess::CopySrc,ERHIAccess::SRVMask);
+                transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&after,1),ERHITransitionCreateFlags::None);
                 Enter(job, Phase::CopySubmitted);
                 Enter(job, Phase::CopyPending);
                 return; // Never map in the submission command.
@@ -364,42 +304,22 @@ namespace MiniMapReadbackNative
                 Fail(job, "native Lock returned null after readiness; mapping state unproven", true);
                 return;
             }
-            bool dimensions = false;
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-            if (job->External)
-            {
-                size_t row=0,total=0,source=0;
-                dimensions=job->Pitch>0 && job->Pitch<=16384 && job->Height>0 && job->Height<=16384 &&
-                    MiniMapFloatPixels::Size(job->Width,job->ImageHeight,size_t(job->Pitch),size_t(job->Height),row,total,source);
-                if (dimensions) dimensions=MiniMapFloatPixels::CopyRows(mapped,source,job->Width,job->ImageHeight,job->Pitch,job->Height,job->FloatCpu);
-            }
-            else
-#endif
-            {
-                dimensions=job->Pitch>=Px::Width && job->Pitch<=16384 && job->Height>=Px::Height;
-                if (dimensions) for(int y=0;y<Px::Height;++y)
-                    std::memcpy(job->Cpu.data()+size_t(y)*Px::Width*4,mapped+size_t(y)*size_t(job->Pitch)*4,Px::Width*4);
-            }
+            size_t row=0,total=0,source=0;
+            bool dimensions=job->Pitch>0 && job->Pitch<=16384 && job->Height>0 && job->Height<=16384 &&
+                MiniMapFloatPixels::Size(job->Width,job->ImageHeight,size_t(job->Pitch),size_t(job->Height),row,total,source);
+            if (dimensions) dimensions=MiniMapFloatPixels::CopyRows(mapped,source,job->Width,job->ImageHeight,job->Pitch,job->Height,job->FloatCpu);
             Operations::Unmap(job->Readback);
             job->CompletionMs = double(NowNs() - job->StartNs.load()) / 1e6;
             job->CompletionFrames = job->Frame.load() - job->StartFrame.load();
             if (dimensions)
             {
                 Enter(job, Phase::PixelsCopied);
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                if (job->External) dimensions=MiniMapFloatPixels::Analyze(job->FloatCpu.data(),job->FloatCpu.size(),job->Width,job->ImageHeight,job->FloatStatistics);
-                else
-#endif
-                job->Verification = Px::CopyAndVerify(job->Cpu, Px::Width, Px::Height);
+                dimensions=MiniMapFloatPixels::Analyze(job->FloatCpu.data(),job->FloatCpu.size(),job->Width,job->ImageHeight,job->FloatStatistics);
                 job->HasPixels = true;
             }
             job->DataReady.store(true, std::memory_order_release);
             if (!dimensions) Fail(job, "invalid staging pitch/height (unmapped)", false);
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-            else if (job->External && job->FloatStatistics.Nonfinite) Fail(job,"capture contains nonfinite channels",false);
-#endif
-            else if (job->Verification.Failure != Px::Error::None || job->Verification.Mismatches)
-                Fail(job, "pixel verification mismatch", false);
+            else if (job->FloatStatistics.Nonfinite) Fail(job,"capture contains nonfinite channels",false);
             else
             {
                 auto pending = Outcome::Pending;
@@ -437,21 +357,6 @@ namespace MiniMapReadbackNative
         };
         static_assert(sizeof(Command) == 16);
         static_assert(sizeof(UE::Core::Private::Function::TFunction_OwnedObject<Command, true, false>) <= 24);
-    }
-
-    Job* CreateJob()
-    {
-        auto* job = new (std::nothrow) Job;
-        if (!job) return nullptr;
-        for (int y = 0; y < Px::Height; ++y)
-            for (int x = 0; x < Px::Width; ++x)
-            {
-                const auto color = Px::Expected(x, y);
-                const auto i = size_t(y * Px::Width + x) * 4;
-                job->Initial[i] = color.B; job->Initial[i + 1] = color.G;
-                job->Initial[i + 2] = color.R; job->Initial[i + 3] = color.A;
-            }
-        return job;
     }
 
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
@@ -519,12 +424,6 @@ namespace MiniMapReadbackNative
         if (job->Quarantined.load() || job->Callables.load(std::memory_order_acquire)) return;
         const auto phase = job->Current.load(std::memory_order_acquire);
         if (phase != Phase::ReadyToSubmit && phase != Phase::CopyPending) return;
-        if (phase == Phase::ReadyToSubmit && job->Result.load() == Outcome::Cancelled
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-            && !job->External
-#endif
-            )
-        { Enter(job, Phase::CleanupComplete); return; }
         bool available = false;
         if (!job->Outstanding.compare_exchange_strong(available, true)) return;
         const bool initial = phase == Phase::ReadyToSubmit;
@@ -553,11 +452,8 @@ namespace MiniMapReadbackNative
             Fail(job, "render-command submission prerequisites unavailable", !initial);
             if (initial)
             {
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-                if (job->External) { job->Quarantined.store(true); Enter(job,Phase::CleanupPending); }
-                else
-#endif
-                Enter(job, Phase::CleanupComplete);
+                job->Quarantined.store(true);
+                Enter(job,Phase::CleanupPending);
             }
         }
     }
@@ -590,9 +486,6 @@ namespace MiniMapReadbackNative
             report.HasPixels = job->HasPixels;
             report.Pitch = job->Pitch; report.BufferHeight = job->Height;
             report.CompletionMs = job->CompletionMs; report.CompletionFrames = job->CompletionFrames;
-            report.Mismatches = job->Verification.Mismatches;
-            report.FirstX = job->Verification.FirstX; report.FirstY = job->Verification.FirstY;
-            report.Expected = job->Verification.FirstExpected; report.Actual = job->Verification.FirstActual;
         }
         return report;
     }
@@ -600,14 +493,6 @@ namespace MiniMapReadbackNative
     bool DestroyIfRetired(Job*& job)
     {
         if (!job) return true;
-        if (!job->Callables.load(std::memory_order_acquire) && !job->Outstanding.load() &&
-            job->Current.load() == Phase::ReadyToSubmit && job->Result.load() == Outcome::Cancelled)
-        {
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-            if (!job->External)
-#endif
-            Enter(job, Phase::CleanupComplete);
-        }
         if (job->Callables.load(std::memory_order_acquire) || job->Outstanding.load() ||
             job->Current.load(std::memory_order_acquire) != Phase::CleanupComplete) return false;
         // Callback destruction release/acquire orders all native member accesses.

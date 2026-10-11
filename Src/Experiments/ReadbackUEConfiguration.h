@@ -1,7 +1,7 @@
 #pragma once
 
-// Only included by the opt-in R1 translation unit. Use Epic's genuine callable
-// template, without pulling in RHI headers with engine static initializers.
+// Use Epic's genuine callable template without pulling in RHI headers with
+// engine static initializers.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI

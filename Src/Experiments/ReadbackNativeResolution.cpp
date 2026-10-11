@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && (defined(MINIMAP_ASYNC_READBACK_EXPERIMENT) || defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE))
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
 #define NOMINMAX
@@ -153,8 +153,8 @@ namespace MiniMapReadbackNative
         if (!text) return false;
 
         // The v70 scanner's OPTIONAL flag only changes its label: a miss still
-        // refuses the plugin. Preflight privately to keep R1 genuinely optional.
-        // This runs once during native resolution, never in a tick/Ui callback.
+        // refuses the plugin. Resolve these bindings privately before capture.
+        // This runs once during native resolution, never in a tick/UI callback.
         Bindings candidate{};
         for (const auto& pattern : patterns)
         {

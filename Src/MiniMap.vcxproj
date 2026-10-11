@@ -96,7 +96,6 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
-    <ClInclude Include="Experiments\ReadbackPixels.h" />
     <ClInclude Include="Experiments\CapturePng.h" />
     <ClInclude Include="Experiments\ReadbackUEConfiguration.h" />
     <ClInclude Include="Experiments\ReadbackNativeAdapter.h" />
