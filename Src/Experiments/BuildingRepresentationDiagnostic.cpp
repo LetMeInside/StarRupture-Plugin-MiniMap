@@ -142,9 +142,6 @@ namespace MiniMapBuildingRepresentation
             std::set<std::string> AuditConflictingParents;
             std::map<uintptr_t,uintptr_t> AuditAssignments;
             std::map<std::string,uintptr_t> AuditMaterialPointers;
-            struct AuditMassRecord {std::string Mesh,Descriptor,Local,Materials,Min,Max;size_t Ordinal;};
-            std::vector<AuditMassRecord> AuditMassRecords;
-            std::map<std::pair<std::string,size_t>,std::string> AuditMassOffsets;
             C::Graph Graph;
             S::WorkBudget Work;
             bool FullTraversal=false;
@@ -170,7 +167,6 @@ namespace MiniMapBuildingRepresentation
                 Material=0,Blueprint=0,SCS=0,Node=0,Handler=0,Child=0,Placement=0,Config=0,Trait=0,Visual=0,Cosmetic=0;
             bool Truncated=false,Invalid=false;
             size_t NodeCount=0;
-            uint32_t BuildingId=0;
             std::string Selected="null",SelectedTier="none",Status="unavailable",Reason="no safe resident representation";
             MiniMapBuildingCollector::Record Record{};
             Context()
@@ -368,7 +364,7 @@ namespace MiniMapBuildingRepresentation
             }
             void Edge(uintptr_t from,uintptr_t to,const std::string& kind,const char* status="present")
             {
-                if((BuildingId==336||GenericValidation)&&kind=="scs_child")
+                if(GenericValidation&&kind=="scs_child")
                 {
                     const auto child=Id(to),parent=Id(from);
                     if(AuditParents.size()<A::NodeLimit||AuditParents.contains(child))
@@ -453,7 +449,7 @@ namespace MiniMapBuildingRepresentation
                     {"live_instance_state","false"}}));
                 // A component may first be encountered in ComponentTemplates;
                 // keep its already validated assignment for the later SCS join.
-                if((BuildingId==336||GenericValidation)&&owner==AuditClass&&asset&&meshStatus=="present")
+                if(GenericValidation&&owner==AuditClass&&asset&&meshStatus=="present")
                 {
                     if(AuditAssignments.size()<A::NodeLimit)AuditAssignments.emplace(p,asset);
                     else AuditCollectionTruncated=true;
@@ -487,7 +483,7 @@ namespace MiniMapBuildingRepresentation
                 if(NodeCount>=C::NodeLimit){Source("scs_node",p,"truncated","total unique SCS node limit");Graph.Leave(p);return;}
                 ++NodeCount;
                 if(owner!=AuditClass)GenericInherited=true;
-                if((BuildingId==336||GenericValidation)&&owner==AuditClass&&childDepth==0)
+                if(GenericValidation&&owner==AuditClass&&childDepth==0)
                 {if(AuditNodes.size()<A::NodeLimit)AuditNodes.push_back(p);else AuditCollectionTruncated=true;}
                 const auto declared=Value<uintptr_t>(p,0x28),component=Value<uintptr_t>(p,0x30);
                 Source("scs_node",p,"present","",C::Object({{"node",Ref(p,Node)},{"declared_class",Ref(declared,Class)},
@@ -577,16 +573,9 @@ namespace MiniMapBuildingRepresentation
                         min=C::Number(Value<float>(item,0x78)),max=C::Number(Value<float>(item,0x7c));
                     meshes.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"mesh",ref},{"local_transform",local},
                         {"material_overrides",materials},{"min_lod_significance",min},{"max_lod_significance",max}}));
-                    if(BuildingId==336)
-                    {
-                        if(AuditMassRecords.size()<64)AuditMassRecords.push_back({valid?Id(mesh):"",Id(trait)+"_ism",local,materials,min,max,ordinal});
-                        else AuditCollectionTruncated=true;
-                    }
                 });
                 Array(descriptor+0x80,0x60,16,64,"mass_raw_transform_offsets",trait,[&](uintptr_t item,size_t ordinal)
-                    {const auto transform=Transform(item);offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",transform}}));
-                     if(BuildingId==336){if(AuditMassOffsets.size()<64)AuditMassOffsets.emplace(std::pair{Id(trait)+"_ism",ordinal},transform);
-                        else AuditCollectionTruncated=true;}});
+                    {const auto transform=Transform(item);offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",transform}}));});
                 Mass.Add(C::Object({{"descriptor_id",C::Quote(Id(trait)+"_ism")},{"owner_trait",Ref(trait)},
                     {"tier",C::Quote("mass_ism_alternative")},{"mesh_references",meshes.String()},
                     {"use_transform_offset",C::Bool(Value<uint8_t>(descriptor,0x18)!=0)},
@@ -691,7 +680,6 @@ namespace MiniMapBuildingRepresentation
                 const auto name=Value<Name>(definition,0x18);
                 if(Value<int32_t>(definition,0xc)!=Record.DefinitionObjectIndex||name.Index!=Record.DefinitionIndex||
                     name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)return false;
-                BuildingId=Record.BuildingId;
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
                 if(!GenericValidation)ClassificationInputs(definition);
 #endif
@@ -806,7 +794,7 @@ namespace MiniMapBuildingRepresentation
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::TimingScope auditTiming(MiniMapBuildingSprites::Timing::RepresentationAudit);
 #endif
-            Context context;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;context.BuildingId=record.BuildingId;
+            Context context;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;
             if(!context.Initialize()){out.Reason="resident_native_class_anchors_unavailable";return out;}
             auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);out.Probes=1;
             if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::StaleEntity&&alternate&&
