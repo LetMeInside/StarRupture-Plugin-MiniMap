@@ -102,6 +102,7 @@
     <ClInclude Include="Native\CaptureRetirementCore.h" />
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
     <ClInclude Include="Map\BuildingRepresentation.h" />
+    <ClInclude Include="Map\SpriteDiscovery.h" />
     <ClInclude Include="Map\RepresentationMetadataCore.h" />
     <ClInclude Include="Map\RepresentationSelectionCore.h" />
     <ClInclude Include="Map\AssemblyRecipeCore.h" />
@@ -177,7 +178,7 @@
     <ClCompile Include="Map\BuildingRepresentation.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Experiments\SpriteDiscovery.cpp">
+    <ClCompile Include="Map\SpriteDiscovery.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <ClCompile Include="Map\BuildingVisuals.cpp" />

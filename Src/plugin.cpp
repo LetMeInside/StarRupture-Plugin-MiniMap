@@ -9,7 +9,7 @@
 #include "Native/ReadbackNativeAdapter.h"
 #include "Experiments/SmelterCaptureExperiment.h"
 #include "Map/BuildingRepresentation.h"
-#include "Experiments/SpriteDiscovery.h"
+#include "Map/SpriteDiscovery.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
