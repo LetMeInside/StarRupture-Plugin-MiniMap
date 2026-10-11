@@ -8,7 +8,7 @@
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
 #include "CapturePng.h"
-#include "BuildingRepresentationDiagnostic.h"
+#include "../Map/BuildingRepresentation.h"
 #include "../Map/BuildingCollector.h"
 #include "../plugin_helpers.h"
 #include "../Map/Map.h"

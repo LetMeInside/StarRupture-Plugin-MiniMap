@@ -101,7 +101,7 @@
     <ClInclude Include="Experiments\ReadbackNativeAdapter.h" />
     <ClInclude Include="Experiments\CaptureRetirementCore.h" />
     <ClInclude Include="Experiments\SmelterCaptureExperiment.h" />
-    <ClInclude Include="Experiments\BuildingRepresentationDiagnostic.h" />
+    <ClInclude Include="Map\BuildingRepresentation.h" />
     <ClInclude Include="Experiments\RepresentationMetadataCore.h" />
     <ClInclude Include="Experiments\RepresentationSelectionCore.h" />
     <ClInclude Include="Experiments\AssemblyRecipeCore.h" />
@@ -157,9 +157,6 @@
     <ClCompile Include="Experiments\SmelterCaptureExperiment.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Experiments\BuildingRepresentationDiagnostic.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
     <ClCompile Include="Experiments\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
@@ -172,6 +169,9 @@
     <ClCompile Include="Map\AlienActors.cpp" />
     <ClCompile Include="Map\BuildingInventory.cpp" />
     <ClCompile Include="Map\BuildingCollector.cpp" />
+    <ClCompile Include="Map\BuildingRepresentation.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
     <ClCompile Include="Experiments\SpriteDiscovery.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>

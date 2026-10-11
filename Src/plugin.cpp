@@ -8,7 +8,7 @@
 #include "Native/NativeApi.h"
 #include "Experiments/ReadbackNativeAdapter.h"
 #include "Experiments/SmelterCaptureExperiment.h"
-#include "Experiments/BuildingRepresentationDiagnostic.h"
+#include "Map/BuildingRepresentation.h"
 #include "Experiments/SpriteDiscovery.h"
 #endif
 

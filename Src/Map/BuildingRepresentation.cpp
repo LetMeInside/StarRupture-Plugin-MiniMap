@@ -1,23 +1,23 @@
 #include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-#include "BuildingRepresentationDiagnostic.h"
+#include "BuildingRepresentation.h"
 #include "../Native/NativeApi.h"
-#include "RepresentationMetadataCore.h"
-#include "RepresentationSelectionCore.h"
-#include "AssemblyRecipeCore.h"
-#include "StaticAssemblyCaptureCore.h"
-#include "SpriteCaptureCore.h"
-#include "SpriteCandidateIdentity.h"
+#include "../Experiments/RepresentationMetadataCore.h"
+#include "../Experiments/RepresentationSelectionCore.h"
+#include "../Experiments/AssemblyRecipeCore.h"
+#include "../Experiments/StaticAssemblyCaptureCore.h"
+#include "../Experiments/SpriteCaptureCore.h"
+#include "../Experiments/SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-#include "SpriteValidationCore.h"
+#include "../Experiments/SpriteValidationCore.h"
 #endif
-#include "RepresentationMetadataPatterns.h"
-#include "ReadbackNativeAdapter.h"
-#include "SmelterCaptureNativeBindings.h"
-#include "SmelterCaptureExperiment.h"
-#include "../Map/BuildingCollector.h"
-#include "../Map/Map.h"
-#include "../Map/BuildingSprites.h"
+#include "../Experiments/RepresentationMetadataPatterns.h"
+#include "../Experiments/ReadbackNativeAdapter.h"
+#include "../Experiments/SmelterCaptureNativeBindings.h"
+#include "../Experiments/SmelterCaptureExperiment.h"
+#include "BuildingCollector.h"
+#include "Map.h"
+#include "BuildingSprites.h"
 #include "../plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
 #include <atomic>
@@ -117,7 +117,7 @@ namespace MiniMapBuildingRepresentation
         {
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
             MiniMapSpriteClassification::Observation Classification;
-#include "SpriteClassificationAudit.inl"
+#include "../Experiments/SpriteClassificationAudit.inl"
 #endif
             bool GenericValidation=false,GenericInherited=false,GenericChild=false,CaptureRequested=false;
             uintptr_t AuditClass=0;
@@ -711,9 +711,9 @@ namespace MiniMapBuildingRepresentation
                 {Selected=Ref(definition,Placement);SelectedTier="mass_ism";Status="partial";Reason="no validated resident actor class; resident Mass metadata recorded separately";}
                 return selected||hasMass;
             }
-            #include "AssemblyRecipeAudit.inl"
+            #include "../Experiments/AssemblyRecipeAudit.inl"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-            #include "GenericRepresentationAudit.inl"
+            #include "../Experiments/GenericRepresentationAudit.inl"
 #endif
         };
         bool Visit(const SDK::UObject* definition,void* context)

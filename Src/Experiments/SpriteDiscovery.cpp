@@ -5,7 +5,7 @@
 #include "SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
 #include "SpriteValidationCore.h"
-#include "BuildingRepresentationDiagnostic.h"
+#include "../Map/BuildingRepresentation.h"
 #endif
 #include "../plugin.h"
 #include "../plugin_helpers.h"
