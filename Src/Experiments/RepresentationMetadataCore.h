@@ -113,10 +113,4 @@ namespace MiniMapRepresentationCore
             return out+"]";
         }
     };
-    inline std::string BoundDocument(std::string document,size_t limit=OutputLimit)
-    {
-        if(document.size()<=limit)return document;
-        const std::string fallback="{\"schema_version\":1,\"stage\":\"R2.4\",\"status\":\"truncated\",\"reason\":\"output_byte_limit\",\"complete_visual_building\":false}";
-        return fallback.size()<=limit?fallback:"{}";
-    }
 }
