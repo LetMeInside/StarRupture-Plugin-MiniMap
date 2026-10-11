@@ -4,6 +4,14 @@
 #include "Fingerprints.h"
 #include "plugin_helpers.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <algorithm>
+#include <cstring>
+#include <type_traits>
+
 namespace
 {
     MiniMapNative::NativeApi g_nativeApi = {};
@@ -13,6 +21,69 @@ namespace
 
 namespace MiniMapNative
 {
+    namespace
+    {
+        template<class T> bool ReadAt(uintptr_t base,size_t offset,T& out)
+        {
+            static_assert(std::is_trivially_copyable_v<T>);
+            if(base>UINTPTR_MAX-offset)return false;
+            return ReadMemory(base+offset,&out,sizeof(T));
+        }
+    }
+
+    bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
+    {
+        if(!p||!alignment||(alignment&(alignment-1))||(p&(alignment-1))||p>UINTPTR_MAX-bytes)return false;
+        const auto end=p+bytes;
+        while(p<end)
+        {
+            MEMORY_BASIC_INFORMATION m{};
+            if(!VirtualQuery(reinterpret_cast<const void*>(p),&m,sizeof(m))||m.State!=MEM_COMMIT||
+                (m.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
+            const auto protection=m.Protect&0xff;
+            if(protection!=PAGE_READONLY&&protection!=PAGE_READWRITE&&protection!=PAGE_WRITECOPY&&
+                protection!=PAGE_EXECUTE_READ&&protection!=PAGE_EXECUTE_READWRITE&&protection!=PAGE_EXECUTE_WRITECOPY)return false;
+            const auto regionBase=reinterpret_cast<uintptr_t>(m.BaseAddress);
+            if(regionBase>UINTPTR_MAX-m.RegionSize||regionBase+m.RegionSize<=p)return false;
+            p=(std::min)(end,regionBase+m.RegionSize);
+        }
+        return true;
+    }
+
+
+    bool ReadMemory(uintptr_t address,void* output,size_t bytes)
+    {
+        if(!output||!IsMemoryRangeReadable(address,bytes))return false;
+        std::memcpy(output,reinterpret_cast<const void*>(address),bytes);
+        return true;
+    }
+
+
+    bool ValidateObjectIdentity(uintptr_t p,uintptr_t objectArray,size_t extent)
+    {
+        if(!IsMemoryRangeReadable(p,extent,8)||!IsMemoryRangeReadable(objectArray,0x30,8))return false;
+        int32_t index=-1,num=0,max=0,chunks=0,maxChunks=0;
+        if(!ReadAt(p,0xc,index)||!ReadAt(objectArray,0x20,max)||!ReadAt(objectArray,0x24,num)||
+            !ReadAt(objectArray,0x28,maxChunks)||!ReadAt(objectArray,0x2c,chunks))return false;
+        if(index<0||num<0||max<num||max>64*1024*1024||index>=num||chunks<0||
+           maxChunks<chunks||maxChunks>4096||int64_t(num)>int64_t(chunks)*65536||
+           int64_t(max)>int64_t(maxChunks)*65536)return false;
+        const size_t chunkIndex=uint32_t(index)>>16;
+        if(chunkIndex>=size_t(chunks))return false;
+        uintptr_t table=0,chunk=0;
+        if(!ReadAt(objectArray,0x10,table)||
+            !IsMemoryRangeReadable(table,(chunkIndex+1)*8,8)||
+            !ReadAt(table,chunkIndex*8,chunk))return false;
+        const size_t itemOffset=size_t(uint32_t(index)&65535)*0x18;
+        if(chunk>UINTPTR_MAX-itemOffset||!IsMemoryRangeReadable(chunk+itemOffset,0x18,8))return false;
+        uintptr_t actual=0;uint32_t internalFlags=0,objectFlags=0;
+        if(!ReadAt(chunk+itemOffset,0,actual)||!ReadAt(chunk+itemOffset,8,internalFlags)||
+            !ReadAt(p,8,objectFlags))return false;
+        // PDB: Unreachable | Garbage; pending load/postload and destruction.
+        return actual==p&&!(internalFlags&0x10200000)&&!(objectFlags&0x1b400);
+    }
+
+
     bool Initialize(
         const MiniMapFingerprints::ResolvedAddresses& addresses)
     {

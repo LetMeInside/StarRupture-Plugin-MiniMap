@@ -14,28 +14,6 @@ namespace MiniMapRepresentationCore
         ChildDepthLimit=4,DepthLimit=32,VisitLimit=8192,OutputLimit=1024*1024;
     struct ArrayHeader { uintptr_t Data{}; int32_t Num{},Max{}; };
     static_assert(sizeof(ArrayHeader)==16);
-    // Installed CL-127004 indexed UObject identity contract. Reader and storage
-    // checks are injected so the exact runtime gate also has synthetic tests.
-    template<class Reader,class Storage> bool ValidateObjectIdentity(uintptr_t p,uintptr_t objectArray,
-        size_t extent,Reader read,Storage readable)
-    {
-        if(!readable(p,extent,8)||!readable(objectArray,0x30,8))return false;
-        int32_t index=-1,num=0,max=0,chunks=0,maxChunks=0;
-        if(!read(p,0xc,index)||!read(objectArray,0x20,max)||!read(objectArray,0x24,num)||
-            !read(objectArray,0x28,maxChunks)||!read(objectArray,0x2c,chunks))return false;
-        if(index<0||num<0||max<num||max>64*1024*1024||index>=num||chunks<0||
-            maxChunks<chunks||maxChunks>4096||int64_t(num)>int64_t(chunks)*65536||int64_t(max)>int64_t(maxChunks)*65536)return false;
-        const size_t chunkIndex=uint32_t(index)>>16;
-        if(chunkIndex>=size_t(chunks))return false;
-        uintptr_t table=0,chunk=0;
-        if(!read(objectArray,0x10,table)||!readable(table,(chunkIndex+1)*8,8)||!read(table,chunkIndex*8,chunk))return false;
-        const size_t itemOffset=size_t(uint32_t(index)&65535)*0x18;
-        if(chunk>UINTPTR_MAX-itemOffset||!readable(chunk+itemOffset,0x18,8))return false;
-        uintptr_t actual=0;uint32_t internalFlags=0,objectFlags=0;
-        if(!read(chunk+itemOffset,0,actual)||!read(chunk+itemOffset,8,internalFlags)||!read(p,8,objectFlags))return false;
-        // PDB: Unreachable | Garbage; pending load/postload and destruction.
-        return actual==p&&!(internalFlags&0x10200000)&&!(objectFlags&0x1b400);
-    }
     struct ArrayRead
     {
         size_t Count{},Bytes{};

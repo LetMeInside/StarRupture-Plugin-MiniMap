@@ -401,6 +401,21 @@ namespace MiniMapNative
     bool Initialize(
         const MiniMapFingerprints::ResolvedAddresses& addresses);
 
+    bool IsMemoryRangeReadable(
+        uintptr_t address,
+        size_t bytes,
+        size_t alignment = 1);
+
+    bool ReadMemory(
+        uintptr_t address,
+        void* output,
+        size_t bytes);
+
+    bool ValidateObjectIdentity(
+        uintptr_t object,
+        uintptr_t objectArray,
+        size_t extent = 0x28);
+
     void Shutdown();
 
     bool IsInitialized();

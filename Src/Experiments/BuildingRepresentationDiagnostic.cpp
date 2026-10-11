@@ -1,6 +1,7 @@
 #include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentationDiagnostic.h"
+#include "../Native/NativeApi.h"
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
 #include "AssemblyRecipeCore.h"
@@ -45,27 +46,13 @@ namespace MiniMapBuildingRepresentation
 
         bool Readable(uintptr_t p,size_t bytes,size_t alignment=1)
         {
-            if(!p||!alignment||(alignment&(alignment-1))||(p&(alignment-1))||p>UINTPTR_MAX-bytes)return false;
-            const auto end=p+bytes;
-            while(p<end)
-            {
-                MEMORY_BASIC_INFORMATION m{};
-                if(!VirtualQuery(reinterpret_cast<const void*>(p),&m,sizeof(m))||m.State!=MEM_COMMIT||
-                    (m.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
-                const auto protection=m.Protect&0xff;
-                if(protection!=PAGE_READONLY&&protection!=PAGE_READWRITE&&protection!=PAGE_WRITECOPY&&
-                    protection!=PAGE_EXECUTE_READ&&protection!=PAGE_EXECUTE_READWRITE&&protection!=PAGE_EXECUTE_WRITECOPY)return false;
-                const auto base=reinterpret_cast<uintptr_t>(m.BaseAddress);
-                if(base>UINTPTR_MAX-m.RegionSize||base+m.RegionSize<=p)return false;
-                p=(std::min)(end,base+m.RegionSize);
-            }
-            return true;
+            return MiniMapNative::IsMemoryRangeReadable(p,bytes,alignment);
         }
         template<class T> bool Read(uintptr_t p,size_t offset,T& out)
         {
             static_assert(std::is_trivially_copyable_v<T>);
-            if(p>UINTPTR_MAX-offset||!Readable(p+offset,sizeof(T)))return false;
-            std::memcpy(&out,reinterpret_cast<const void*>(p+offset),sizeof(T));return true;
+            if(p>UINTPTR_MAX-offset)return false;
+            return MiniMapNative::ReadMemory(p+offset,&out,sizeof(T));
         }
         template<class T> T Value(uintptr_t p,size_t offset)
         {T out{};Read(p,offset,out);return out;} // Use only after validating the containing extent.
@@ -96,8 +83,7 @@ namespace MiniMapBuildingRepresentation
         // resolution. A candidate always comes from a retained ownership chain.
         bool Identity(uintptr_t p,size_t extent=0x28)
         {
-            return C::ValidateObjectIdentity(p,objectArray,extent,
-                [](uintptr_t base,size_t offset,auto& out){return Read(base,offset,out);},&Readable);
+            return MiniMapNative::ValidateObjectIdentity(p,objectArray,extent);
         }
         // Strongly retained native CLASS anchors only. No candidate/asset cursor survives.
         struct NativeAnchor {const wchar_t* Path;uintptr_t Object{};};
