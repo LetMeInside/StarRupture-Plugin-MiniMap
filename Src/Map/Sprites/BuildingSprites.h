@@ -10,11 +10,25 @@ namespace MiniMapBuildingSprites
     bool Queue(const MiniMapSpriteDiscoveryCore::Key&);
     void Complete(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&);
     struct DrawState;
+    enum class DrawCounter : size_t
+    {
+        Calls,NoReadyView,GenerationMismatch,InvalidInputs,LookupAttempts,LookupMisses,LookupMatches,
+        InvalidTransform,QuadFailure,ProjectionFailure,ViewportRejection,BudgetRejection,FogRejection,
+        InvalidHandle,Submissions,Count
+    };
     struct DrawFrame
     {
         std::shared_ptr<const DrawState> View;
         uint64_t Generation{};
         size_t Hits{},Fallbacks{},Budget=128;
+        std::array<size_t,size_t(DrawCounter::Count)> Counts{};
+        uint32_t ReportedReasons{};
+        DrawCounter SampleReason=DrawCounter::Count;
+        MiniMapSpriteDiscoveryCore::Key SampleKey,SamplePublishedKey;
+        bool SampleDefinitionValid{},SampleVisualValid{},SampleTransformValid{},SampleGeometry{},SampleProjection{};
+        std::array<double,3> SamplePosition{},SampleScale{};
+        std::array<double,4> SampleRotation{},SampleRegion{},SampleViewport{};
+        std::array<std::array<double,2>,4> SampleWorld{},SampleScreen{};
     };
     DrawFrame BeginDraw(); // one immutable ready-texture view per map draw
     void EndDraw(const DrawFrame&); // one generation-checked counter commit

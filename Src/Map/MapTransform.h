@@ -8,6 +8,7 @@
 
 namespace MiniMapMap
 {
+    inline constexpr double MinimumMetersPerPixel = 0.125;
     struct ScreenPoint
     {
         float X = 0.0f;

@@ -75,7 +75,7 @@ namespace
         100.0 / 300.0;
 
     constexpr double kMinimumMetersPerPixel =
-        0.125;
+        MiniMapMap::MinimumMetersPerPixel;
 
     constexpr double kMaximumMetersPerPixel =
         2.0 / 3.0;

@@ -16,8 +16,9 @@ namespace MiniMapBuildingSpriteCore
             for(auto v:k.TintBits){h^=v;h*=1099511628211ull;}return size_t(h);
         }
     };
-    inline bool HasCoverage(const std::vector<uint8_t>& rgba)
-    {if(rgba.size()!=256*256*4)return false;for(size_t i=3;i<rgba.size();i+=4)if(rgba[i])return true;return false;}
+    inline bool HasCoverage(const std::vector<uint8_t>& rgba,size_t width=256,size_t height=256)
+    {if(!width||!height||width>256||height>256||rgba.size()!=width*height*4)return false;
+     for(size_t i=3;i<rgba.size();i+=4)if(rgba[i])return true;return false;}
     enum class State { Awaiting,Excluded,Unavailable,Unsupported,Queued,Ready,Failed };
     inline const char* Label(State s)
     {switch(s){case State::Excluded:return "excluded";case State::Unavailable:return "temporarily_unavailable";
@@ -81,8 +82,10 @@ namespace MiniMapBuildingSpriteCore
     // Only upright, positive-scale instances can reuse this reference projection.
     inline bool Quad(const std::array<double,3>& position,const std::array<double,4>& q,
         const std::array<double,3>& scale,const MiniMapStaticAssembly::Footprint& bounds,
-        std::array<std::array<double,2>,4>& out)
+        std::array<std::array<double,2>,4>& out,const std::array<double,4>& region={0,0,1,1})
     {
+        for(double v:region)if(!std::isfinite(v))return false;
+        if(region[0]<0||region[1]<0||region[2]<=region[0]||region[3]<=region[1])return false;
         if(!bounds.Initialized||!MiniMapAssemblyRecipe::Finite(position)||!MiniMapAssemblyRecipe::Finite(scale))return false;
         double norm=0;for(double v:q){if(!std::isfinite(v))return false;norm+=v*v;}
         if(std::abs(norm-1)>0.001||std::abs(q[0])>1e-6||std::abs(q[1])>1e-6)return false;
@@ -91,8 +94,9 @@ namespace MiniMapBuildingSpriteCore
         const double cx=(bounds.Min[0]+bounds.Max[0])/2,cy=(bounds.Min[1]+bounds.Max[1])/2;
         if(!std::isfinite(half)||half<=0)return false;
         const double c=1-2*q[2]*q[2],s=2*q[3]*q[2];
-        for(size_t i=0;i<4;++i){const double x=(cx+((i==1||i==2)?half:-half))*scale[0];
-            const double y=(cy+(i>=2?half:-half))*scale[1];out[i]={position[0]+c*x-s*y,position[1]+s*x+c*y};
+        for(size_t i=0;i<4;++i){const double u=region[(i==1||i==2)?2:0],v=region[i>=2?3:1];
+            const double x=(cx+(2*u-1)*half)*scale[0];
+            const double y=(cy+(2*v-1)*half)*scale[1];out[i]={position[0]+c*x-s*y,position[1]+s*x+c*y};
             if(!std::isfinite(out[i][0])||!std::isfinite(out[i][1]))return false;}
         return true;
     }

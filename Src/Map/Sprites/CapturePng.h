@@ -41,6 +41,83 @@ namespace MiniMapCapturePng
         }
         return true;
     }
+    // Final display RGBA8 only; native HDR conversion above is deliberately unchanged.
+    struct ProcessedImage
+    {
+        std::vector<uint8_t> Rgba;
+        size_t X0{},Y0{},X1{},Y1{},Width{},Height{};
+        double Ratio=1,SourceStep=1;
+        bool Ok=false,Empty=false,Insufficient=false,Passthrough=false;
+        const char* Reason="invalid_processing_input";
+    };
+    inline ProcessedImage Process(const std::vector<uint8_t>& rgba,size_t width,size_t height,
+        double orthoExtent,double pixelsPerWorldUnit) noexcept
+    {
+        ProcessedImage out;
+        try
+        {
+            // Bounded square capture canvas; not an atlas cell or final sprite size.
+            if(!width||width>256||height!=width||rgba.size()!=width*height*4||
+                !std::isfinite(orthoExtent)||orthoExtent<=0||
+                !std::isfinite(pixelsPerWorldUnit)||pixelsPerWorldUnit<=0)return out;
+            out.X0=width;out.Y0=height;
+            for(size_t y=0;y<height;++y)for(size_t x=0;x<width;++x)
+                if(rgba[(y*width+x)*4+3])
+                {out.X0=(std::min)(out.X0,x);out.Y0=(std::min)(out.Y0,y);
+                 out.X1=(std::max)(out.X1,x+1);out.Y1=(std::max)(out.Y1,y+1);}
+            if(!out.X1){out.Empty=true;out.Reason="empty_alpha_capture";return out;}
+            const double requestedRatio=(orthoExtent/double(width))*pixelsPerWorldUnit;
+            if(!std::isfinite(requestedRatio)||requestedRatio<=0)return out;
+            out.Insufficient=requestedRatio>1;out.Ratio=(std::min)(1.0,requestedRatio);
+            out.SourceStep=1/out.Ratio;
+            const double area=out.SourceStep*out.SourceStep;
+            if(!std::isfinite(area)||area<=0){out.Reason="invalid_sampling_footprint";return out;}
+            out.Width=size_t(std::ceil(double(out.X1-out.X0)*out.Ratio));
+            out.Height=size_t(std::ceil(double(out.Y1-out.Y0)*out.Ratio));
+            if(!out.Width||!out.Height||out.Width>width||out.Height>height)return out;
+            if(out.Ratio==1&&out.X0==0&&out.Y0==0&&out.X1==width&&out.Y1==height)
+            {out.Ok=true;out.Passthrough=true;out.Reason="original_sampling_retained";return out;}
+            out.Rgba.resize(out.Width*out.Height*4);
+            if(out.Ratio==1)
+            {
+                for(size_t y=0;y<out.Height;++y)
+                    std::memcpy(out.Rgba.data()+y*out.Width*4,rgba.data()+((out.Y0+y)*width+out.X0)*4,out.Width*4);
+            }
+            else
+            {
+                std::array<double,256> linear{};
+                for(size_t i=0;i<linear.size();++i)
+                {const double v=double(i)/255;linear[i]=v<=0.04045?v/12.92:std::pow((v+0.055)/1.055,2.4);}
+                auto encode=[](double v)
+                {v=std::clamp(v,0.0,1.0);return uint8_t(std::lround(255*(v<=0.0031308?12.92*v:1.055*std::pow(v,1/2.4)-0.055)));};
+                for(size_t y=0;y<out.Height;++y)for(size_t x=0;x<out.Width;++x)
+                {
+                    const double left=out.X0+x*out.SourceStep,top=out.Y0+y*out.SourceStep;
+                    const double right=(std::min)(double(out.X1),left+out.SourceStep);
+                    const double bottom=(std::min)(double(out.Y1),top+out.SourceStep);
+                    double alpha=0;std::array<double,3> color{};
+                    if(left<right&&top<bottom)
+                        for(size_t sy=size_t(std::floor(top));sy<size_t(std::ceil(bottom));++sy)
+                            for(size_t sx=size_t(std::floor(left));sx<size_t(std::ceil(right));++sx)
+                            {
+                                const double weight=((std::min)(right,double(sx+1))-(std::max)(left,double(sx)))*
+                                    ((std::min)(bottom,double(sy+1))-(std::max)(top,double(sy)));
+                                const auto* pixel=rgba.data()+(sy*width+sx)*4;
+                                const double covered=weight*double(pixel[3])/255;alpha+=covered;
+                                for(size_t k=0;k<3;++k)color[k]+=covered*linear[pixel[k]];
+                            }
+                    auto* pixel=out.Rgba.data()+(y*out.Width+x)*4;
+                    // The denominator includes transparent rounding margins outside the crop.
+                    pixel[3]=uint8_t(std::lround(255*std::clamp(alpha/area,0.0,1.0)));
+                    if(pixel[3]&&alpha>0)for(size_t k=0;k<3;++k)pixel[k]=encode(color[k]/alpha);
+                }
+            }
+            bool coverage=false;for(size_t i=3;i<out.Rgba.size();i+=4)coverage|=out.Rgba[i]!=0;
+            if(!coverage){out.Reason="empty_processed_alpha";return out;}
+            out.Ok=true;out.Reason="cropped_spatial_image";return out;
+        }
+        catch(...){out.Ok=false;out.Reason="processing_exception";return out;}
+    }
     struct WriteResult { bool Ok=false; uintmax_t Bytes=0; HRESULT Error=S_OK; const char* Stage=""; };
     inline WriteResult Write(const std::filesystem::path& path,UINT w,UINT h,const std::vector<uint8_t>& pixels,bool gray)
     {

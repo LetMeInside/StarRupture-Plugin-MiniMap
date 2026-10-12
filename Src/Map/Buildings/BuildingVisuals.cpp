@@ -286,6 +286,7 @@ namespace MiniMapBuildingVisuals
             if(!spline&&MiniMapBuildingSprites::Draw(spriteFrame,ui,dl,transform,instance.SpriteSource))
             {++stats.Ordinary;continue;} // exactly one representation per instance
 #endif
+            if(!spline)continue; // Missing ordinary sprites intentionally have no fallback visual.
             if(instance.Unresolved)
             {
                 ++stats.Unresolved; MiniMapMap::ScreenPoint p;
