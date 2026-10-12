@@ -2,7 +2,7 @@
 
 #include "plugin_interface.h"
 
-#include "MapTransform.h"
+#include "Map/MapTransform.h"
 
 struct IPluginSelf;
 

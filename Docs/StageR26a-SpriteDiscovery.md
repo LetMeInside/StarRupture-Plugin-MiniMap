@@ -39,7 +39,7 @@ No newly resolved game function, generated SDK wrapper or UObject read is used.
 
 Relevant existing source:
 
-- `Src/Map/BuildingCollector.h`: `Record`, `DefinitionGeometry`, `Snapshot`.
+- `Src/Map/Buildings/BuildingCollector.h`: `Record`, `DefinitionGeometry`, `Snapshot`.
 - `BuildingCollector.cpp:634`: publication copies spatially admitted records,
   sorts by entity index/serial, deduplicates instances, then publishes an
   immutable `shared_ptr<const Snapshot>` under a mutex.

@@ -1,7 +1,7 @@
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD)
-#include "../plugin.h"
+#include "plugin.h"
 #include <array>
 #include <cstdint>
 

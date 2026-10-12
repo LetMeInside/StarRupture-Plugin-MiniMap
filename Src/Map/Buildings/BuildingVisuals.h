@@ -1,7 +1,7 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
-#include "../plugin.h"
-#include "MapTransform.h"
+#include "plugin.h"
+#include "Map/MapTransform.h"
 #include <string>
 
 namespace MiniMapBuildingVisuals

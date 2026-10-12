@@ -1,5 +1,5 @@
 #pragma once
-#include "../Native/FloatReadbackPixels.h"
+#include "Native/FloatReadbackPixels.h"
 #include <windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>

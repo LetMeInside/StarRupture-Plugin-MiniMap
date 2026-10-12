@@ -96,53 +96,53 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
-    <ClInclude Include="Map\CapturePng.h" />
+    <ClInclude Include="Map\Sprites\CapturePng.h" />
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
-    <ClInclude Include="Map\BuildingSpriteCapture.h" />
-    <ClInclude Include="Map\BuildingRepresentation.h" />
-    <ClInclude Include="Map\SpriteDiscovery.h" />
-    <ClInclude Include="Map\RepresentationMetadataCore.h" />
-    <ClInclude Include="Map\RepresentationSelectionCore.h" />
-    <ClInclude Include="Map\AssemblyRecipeCore.h" />
-    <ClInclude Include="Map\StaticAssemblyCaptureCore.h" />
-    <ClInclude Include="Map\SpriteDiscoveryCore.h" />
-    <ClInclude Include="Map\SpriteClassificationCore.h" />
-    <ClInclude Include="Map\SpriteValidationCore.h" />
-    <ClInclude Include="Map\SpriteCandidateIdentity.h" />
-    <ClInclude Include="Map\SpriteCaptureCore.h" />
-    <ClInclude Include="Map\BuildingSpritePipelineCore.h" />
-    <ClInclude Include="Map\BuildingSprites.h" />
+    <ClInclude Include="Map\Sprites\BuildingSpriteCapture.h" />
+    <ClInclude Include="Map\Sprites\BuildingRepresentation.h" />
+    <ClInclude Include="Map\Sprites\SpriteDiscovery.h" />
+    <ClInclude Include="Map\Sprites\RepresentationMetadataCore.h" />
+    <ClInclude Include="Map\Sprites\RepresentationSelectionCore.h" />
+    <ClInclude Include="Map\Sprites\AssemblyRecipeCore.h" />
+    <ClInclude Include="Map\Sprites\StaticAssemblyCaptureCore.h" />
+    <ClInclude Include="Map\Sprites\SpriteDiscoveryCore.h" />
+    <ClInclude Include="Map\Sprites\SpriteClassificationCore.h" />
+    <ClInclude Include="Map\Sprites\SpriteValidationCore.h" />
+    <ClInclude Include="Map\Sprites\SpriteCandidateIdentity.h" />
+    <ClInclude Include="Map\Sprites\SpriteCaptureCore.h" />
+    <ClInclude Include="Map\Sprites\BuildingSpritePipelineCore.h" />
+    <ClInclude Include="Map\Sprites\BuildingSprites.h" />
     <ClInclude Include="Native\StaticAssemblyCapturePatterns.inl" />
-    <ClInclude Include="Map\AssemblyRecipeAudit.inl" />
-    <ClInclude Include="Map\GenericRepresentationAudit.inl" />
-    <ClInclude Include="Map\SpriteClassificationAudit.inl" />
-    <ClInclude Include="Map\RepresentationMetadataPatterns.h" />
+    <ClInclude Include="Map\Sprites\AssemblyRecipeAudit.inl" />
+    <ClInclude Include="Map\Sprites\GenericRepresentationAudit.inl" />
+    <ClInclude Include="Map\Sprites\SpriteClassificationAudit.inl" />
+    <ClInclude Include="Map\Sprites\RepresentationMetadataPatterns.h" />
     <ClInclude Include="Native\SmelterCaptureNativeBindings.h" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
     <None Include="Native\SmelterCapturePatterns.inl" />
     <ClInclude Include="Native\ReadbackNativeBindings.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
-    <ClInclude Include="Map\FogOfWar.h" />
-    <ClInclude Include="Map\Foundables.h" />
-    <ClInclude Include="Map\AlienActors.h" />
-    <ClInclude Include="Map\BuildingInventory.h" />
-    <ClInclude Include="Map\BuildingCollector.h" />
-    <ClInclude Include="Map\BuildingGeometry.h" />
-    <ClInclude Include="Map\BuildingVisualGeometry.h" />
-    <ClInclude Include="Map\BuildingVisuals.h" />
-    <ClInclude Include="Map\PointsOfInterest.h" />
+    <ClInclude Include="Map\FogOfWar\FogOfWar.h" />
+    <ClInclude Include="Map\Foundables\Foundables.h" />
+    <ClInclude Include="Map\AlienActors\AlienActors.h" />
+    <ClInclude Include="Map\Buildings\BuildingInventory.h" />
+    <ClInclude Include="Map\Buildings\BuildingCollector.h" />
+    <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
+    <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
     <ClInclude Include="Native\Fingerprints.h" />
-    <ClInclude Include="Map\Terrain.h" />
+    <ClInclude Include="Map\Terrain\Terrain.h" />
     <ClInclude Include="Native\TextureAccess.h" />
-    <ClInclude Include="Map\TerrainChunks.h" />
-    <ClInclude Include="Map\TerrainDiagnostics.h" />
-    <ClInclude Include="Map\TerrainSource.h" />
-    <ClInclude Include="Map\TerrainCache.h" />
+    <ClInclude Include="Map\Terrain\TerrainChunks.h" />
+    <ClInclude Include="Map\Terrain\TerrainDiagnostics.h" />
+    <ClInclude Include="Map\Terrain\TerrainSource.h" />
+    <ClInclude Include="Map\Terrain\TerrainCache.h" />
     <ClInclude Include="UI\MapOverlays.h" />
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
@@ -160,7 +160,7 @@
     <ClCompile Include="Native\ReadbackNativeResolution.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Map\BuildingSpriteCapture.cpp">
+    <ClCompile Include="Map\Sprites\BuildingSpriteCapture.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
@@ -170,31 +170,31 @@
     </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
-    <ClCompile Include="Map\FogOfWar.cpp" />
-    <ClCompile Include="Map\Foundables.cpp" />
-    <ClCompile Include="Map\AlienActors.cpp" />
-    <ClCompile Include="Map\BuildingInventory.cpp" />
-    <ClCompile Include="Map\BuildingCollector.cpp" />
-    <ClCompile Include="Map\BuildingRepresentation.cpp">
+    <ClCompile Include="Map\FogOfWar\FogOfWar.cpp" />
+    <ClCompile Include="Map\Foundables\Foundables.cpp" />
+    <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingInventory.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
+    <ClCompile Include="Map\Sprites\BuildingRepresentation.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Map\SpriteDiscovery.cpp">
+    <ClCompile Include="Map\Sprites\SpriteDiscovery.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Map\BuildingVisuals.cpp" />
-    <ClCompile Include="Map\BuildingSprites.cpp">
+    <ClCompile Include="Map\Buildings\BuildingVisuals.cpp" />
+    <ClCompile Include="Map\Sprites\BuildingSprites.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Map\PointsOfInterest.cpp" />
+    <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
-    <ClCompile Include="Map\Terrain.cpp" />
+    <ClCompile Include="Map\Terrain\Terrain.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
-    <ClCompile Include="Map\TerrainChunks.cpp" />
-    <ClCompile Include="Map\TerrainDiagnostics.cpp" />
-    <ClCompile Include="Map\TerrainSource.cpp" />
-    <ClCompile Include="Map\TerrainCache.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainChunks.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainDiagnostics.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainSource.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainCache.cpp" />
     <ClCompile Include="UI\MapOverlays.cpp" />
     <ClCompile Include="UI\MiniMapUI.cpp" />
     <ClCompile Include="plugin.cpp" />

@@ -1,14 +1,14 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
-#include "../DebugText.h"
-#include "Map.h"
-#include "../Native/NativeApi.h"
-#include "../plugin_helpers.h"
+#include "DebugText.h"
+#include "Map/Map.h"
+#include "Native/NativeApi.h"
+#include "plugin_helpers.h"
 #include "SDK/Chimera_classes.hpp"
 
 #include <chrono>

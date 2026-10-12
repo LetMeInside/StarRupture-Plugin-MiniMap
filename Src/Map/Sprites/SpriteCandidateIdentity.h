@@ -1,6 +1,6 @@
 #pragma once
 #include "SpriteDiscoveryCore.h"
-#include "BuildingCollector.h"
+#include "Map/Buildings/BuildingCollector.h"
 
 namespace MiniMapSpriteCandidates
 {

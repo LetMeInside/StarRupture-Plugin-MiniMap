@@ -7,9 +7,9 @@
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Map/BuildingSpriteCapture.h"
-#include "Map/BuildingRepresentation.h"
-#include "Map/SpriteDiscovery.h"
+#include "Map/Sprites/BuildingSpriteCapture.h"
+#include "Map/Sprites/BuildingRepresentation.h"
+#include "Map/Sprites/SpriteDiscovery.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -25,14 +25,14 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/MiniMapUI.h"
-#include "Map/FogOfWar.h"
-#include "Map/Foundables.h"
-#include "Map/AlienActors.h"
-#include "Map/BuildingInventory.h"
-#include "Map/BuildingCollector.h"
-#include "Map/BuildingVisuals.h"
-#include "Map/PointsOfInterest.h"
-#include "Map/Terrain.h"
+#include "Map/FogOfWar/FogOfWar.h"
+#include "Map/Foundables/Foundables.h"
+#include "Map/AlienActors/AlienActors.h"
+#include "Map/Buildings/BuildingInventory.h"
+#include "Map/Buildings/BuildingCollector.h"
+#include "Map/Buildings/BuildingVisuals.h"
+#include "Map/PointsOfInterest/PointsOfInterest.h"
+#include "Map/Terrain/Terrain.h"
 #include "Map/Map.h"
 #include <cstdint>
 #endif

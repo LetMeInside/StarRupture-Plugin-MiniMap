@@ -3,7 +3,7 @@
 #include "TerrainCache.h"
 #include "TerrainChunks.h"
 
-#include "../plugin_helpers.h"
+#include "plugin_helpers.h"
 
 #include <windows.h>
 

@@ -1,5 +1,5 @@
-#include "Map.h"
-#include "../CallbackTiming.h"
+#include "Map/Map.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
 #include "SpriteDiscoveryCore.h"
 #include "SpriteCandidateIdentity.h"
@@ -7,13 +7,13 @@
 #include "SpriteValidationCore.h"
 #include "BuildingRepresentation.h"
 #endif
-#include "../plugin.h"
-#include "../plugin_helpers.h"
+#include "plugin.h"
+#include "plugin_helpers.h"
 #include "SpriteDiscovery.h"
 #include "BuildingSpriteCapture.h"
 #include "BuildingSprites.h"
-#include "BuildingCollector.h"
-#include "TerrainCache.h"
+#include "Map/Buildings/BuildingCollector.h"
+#include "Map/Terrain/TerrainCache.h"
 #include <chrono>
 #include <fstream>
 #include <atomic>

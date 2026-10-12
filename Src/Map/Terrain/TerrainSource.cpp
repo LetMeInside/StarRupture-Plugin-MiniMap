@@ -1,14 +1,14 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainSource.h"
-#include "Map.h"
+#include "Map/Map.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 
-#include "../Native/NativeApi.h"
-#include "../plugin_helpers.h"
+#include "Native/NativeApi.h"
+#include "plugin_helpers.h"
 
 #include <cmath>
 

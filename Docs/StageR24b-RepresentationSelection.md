@@ -17,7 +17,7 @@ metadata remain unobserved until a separately authorized runtime test.
   shared native-work accounting, selection JSON and bounded document fallback.
 - `Src/Experiments/BuildingRepresentationDiagnostic.cpp`: eligibility probes,
   candidate provenance, schema 2 reporting, and one selected full traversal.
-- `Src/Map/BuildingCollector.h` and `Src/Map/BuildingCollector.cpp`: diagnostic-only
+- `Src/Map/Buildings/BuildingCollector.h` and `Src/Map/Buildings/BuildingCollector.cpp`: diagnostic-only
   accessor result enum distinguishing lifecycle, entity and parameter failures.
   Production collection behavior is unchanged.
 - `Src/MiniMap.vcxproj`: register the new header; normal configurations preserved.

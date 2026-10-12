@@ -1,21 +1,21 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Terrain.h"
 #include "Input/MouseWheel.h"
 #include "UI/MiniMapUI.h"
 
-#include "Map.h"
-#include "MapTransform.h"
+#include "Map/Map.h"
+#include "Map/MapTransform.h"
 #include "TerrainCache.h"
 #include "TerrainChunks.h"
 #include "TerrainDiagnostics.h"
 #include "TerrainSource.h"
 
-#include "../Native/NativeApi.h"
-#include "../Native/TextureAccess.h"
-#include "../plugin.h"
-#include "../plugin_helpers.h"
+#include "Native/NativeApi.h"
+#include "Native/TextureAccess.h"
+#include "plugin.h"
+#include "plugin_helpers.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"

@@ -1,15 +1,15 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
 
-#include "FogOfWar.h"
-#include "Map.h"
-#include "MapTransform.h"
+#include "Map/FogOfWar/FogOfWar.h"
+#include "Map/Map.h"
+#include "Map/MapTransform.h"
 
-#include "../Native/NativeApi.h"
-#include "../Native/TextureAccess.h"
-#include "../plugin_helpers.h"
+#include "Native/NativeApi.h"
+#include "Native/TextureAccess.h"
+#include "plugin_helpers.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"

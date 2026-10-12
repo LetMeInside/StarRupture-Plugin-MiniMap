@@ -1,12 +1,12 @@
-#include "Map.h"
-#include "../CallbackTiming.h"
+#include "Map/Map.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
-#include "BuildingSprites.h"
+#include "Map/Sprites/BuildingSprites.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
-#include "../DebugText.h"
-#include "../plugin_helpers.h"
+#include "DebugText.h"
+#include "plugin_helpers.h"
 #include <chrono>
 #include <map>
 #include <mutex>

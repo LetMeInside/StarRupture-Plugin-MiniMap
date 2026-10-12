@@ -1,7 +1,7 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentation.h"
-#include "../Native/NativeApi.h"
+#include "Native/NativeApi.h"
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
 #include "AssemblyRecipeCore.h"
@@ -12,13 +12,13 @@
 #include "SpriteValidationCore.h"
 #endif
 #include "RepresentationMetadataPatterns.h"
-#include "../Native/ReadbackNativeAdapter.h"
-#include "../Native/SmelterCaptureNativeBindings.h"
+#include "Native/ReadbackNativeAdapter.h"
+#include "Native/SmelterCaptureNativeBindings.h"
 #include "BuildingSpriteCapture.h"
-#include "BuildingCollector.h"
-#include "Map.h"
+#include "Map/Buildings/BuildingCollector.h"
+#include "Map/Map.h"
 #include "BuildingSprites.h"
-#include "../plugin_helpers.h"
+#include "plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
 #include <atomic>
 #include <cstring>

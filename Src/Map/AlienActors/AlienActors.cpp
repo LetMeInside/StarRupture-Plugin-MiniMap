@@ -1,11 +1,11 @@
-#include "Map.h"
-#include "../CallbackTiming.h"
+#include "Map/Map.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "AlienActors.h"
-#include "FogOfWar.h"
-#include "../Native/NativeApi.h"
-#include "../plugin_helpers.h"
+#include "Map/FogOfWar/FogOfWar.h"
+#include "Native/NativeApi.h"
+#include "plugin_helpers.h"
 #include "SDK/MassEntity_structs.hpp"
 #include "SDK/MassAIPrototypeEnemyRuntime_structs.hpp"
 

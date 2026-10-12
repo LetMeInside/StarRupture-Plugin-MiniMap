@@ -1,14 +1,14 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
 
-#include "Map.h"
-#include "MapTransform.h"
+#include "Map/Map.h"
+#include "Map/MapTransform.h"
 
-#include "../Native/NativeApi.h"
-#include "../plugin_helpers.h"
-#include "BuildingSpritePipelineCore.h"
+#include "Native/NativeApi.h"
+#include "plugin_helpers.h"
+#include "Map/Sprites/BuildingSpritePipelineCore.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"

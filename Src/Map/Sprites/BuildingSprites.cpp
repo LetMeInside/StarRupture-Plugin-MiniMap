@@ -1,9 +1,9 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_BUILDING_SPRITES)
 #include "BuildingSprites.h"
-#include "FogOfWar.h"
+#include "Map/FogOfWar/FogOfWar.h"
 #include "SpriteCandidateIdentity.h"
 #include "BuildingSpriteCapture.h"
-#include "../plugin_helpers.h"
+#include "plugin_helpers.h"
 #include <mutex>
 #include <limits>
 #include <unordered_map>

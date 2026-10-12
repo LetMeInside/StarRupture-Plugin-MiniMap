@@ -2,8 +2,8 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "../plugin.h"
-#include "MapTransform.h"
+#include "plugin.h"
+#include "Map/MapTransform.h"
 
 namespace MiniMapAlienActors
 {

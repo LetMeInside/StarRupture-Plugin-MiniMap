@@ -68,7 +68,7 @@ For selected Smelter ID 336: `Building_336_Representation.json`. In the normal b
 ## Files changed by this stage
 
 - New: `Src/Experiments/BuildingRepresentationDiagnostic.cpp`, `.h`, `RepresentationMetadataCore.h`, `RepresentationMetadataPatterns.h`.
-- Modified: `Src/Map/BuildingCollector.cpp`, `.h` (synchronous diagnostic accessor), `Src/Map/TerrainCache.cpp`, `.h` (existing cache resolver exposure), `Src/plugin.cpp` (guarded lifecycle), `Src/MiniMap.vcxproj` (new source/header entries and inspectable COFF object).
+- Modified: `Src/Map/Buildings/BuildingCollector.cpp`, `.h` (synchronous diagnostic accessor), `Src/Map/Terrain/TerrainCache.cpp`, `.h` (existing cache resolver exposure), `Src/plugin.cpp` (guarded lifecycle), `Src/MiniMap.vcxproj` (new source/header entries and inspectable COFF object).
 - New: `Tests/RepresentationMetadataTests.cpp`, `Tests/VerifyRepresentationAbi.py`, this report.
 
 Preexisting dirty capture files, props and documentation deletions were preserved. SHA256 checks of all 12 baseline capture/readback/configuration/conversion/export files matched their pre-implementation hashes.

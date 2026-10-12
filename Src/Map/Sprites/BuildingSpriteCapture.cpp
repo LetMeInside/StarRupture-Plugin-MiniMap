@@ -1,17 +1,17 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSpriteCapture.h"
 #include "StaticAssemblyCaptureCore.h"
 #include "SpriteCaptureCore.h"
 #include "SpriteCandidateIdentity.h"
-#include "../Native/SmelterCaptureNativeBindings.h"
-#include "../Native/ReadbackNativeAdapter.h"
-#include "../Native/ReadbackNativeBindings.h"
+#include "Native/SmelterCaptureNativeBindings.h"
+#include "Native/ReadbackNativeAdapter.h"
+#include "Native/ReadbackNativeBindings.h"
 #include "CapturePng.h"
 #include "BuildingRepresentation.h"
-#include "BuildingCollector.h"
-#include "../plugin_helpers.h"
-#include "Map.h"
+#include "Map/Buildings/BuildingCollector.h"
+#include "plugin_helpers.h"
+#include "Map/Map.h"
 #include "BuildingSprites.h"
 #include <Engine_classes.hpp>
 #include <Engine_parameters.hpp>
@@ -864,7 +864,7 @@ namespace MiniMapSmelterCapture
         {LOG_WARN("MiniMap: R2 capture-retirement executable identity mismatch; R2 disabled");return false;}
         struct Pattern{const char* Name;const char* Bytes;uintptr_t Bindings::*Field;bool Leaf;};
         const Pattern patterns[]={
-#include "../Native/SmelterCapturePatterns.inl"
+#include "Native/SmelterCapturePatterns.inl"
         };
         Bindings candidate{};
         for(const auto& p:patterns)
@@ -877,7 +877,7 @@ namespace MiniMapSmelterCapture
 #if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
         struct AssemblyPattern{const char* Bytes;uintptr_t Bindings::*Field;};
         const AssemblyPattern assemblyPatterns[]={
-#include "../Native/StaticAssemblyCapturePatterns.inl"
+#include "Native/StaticAssemblyCapturePatterns.inl"
         };
         for(const auto& p:assemblyPatterns)bindings.*p.Field=Native::ResolveOptionalFunction(p.Bytes,false);
         LOG_INFO("MiniMap: R2.5b additional native bindings %s; single-mesh baseline independent",

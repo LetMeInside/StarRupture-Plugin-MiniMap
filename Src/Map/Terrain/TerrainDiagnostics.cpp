@@ -1,20 +1,20 @@
-#include "../CallbackTiming.h"
+#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainDiagnostics.h"
-#include "Map.h"
+#include "Map/Map.h"
 #include "TerrainChunks.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
-#include "../Native/NativeApi.h"
-#include "../Native/TextureAccess.h"
+#include "Native/NativeApi.h"
+#include "Native/TextureAccess.h"
 
 #include <cmath>
 
-#include "../plugin.h"
-#include "../plugin_helpers.h"
+#include "plugin.h"
+#include "plugin_helpers.h"
 
 #include <atomic>
 #include <cstdint>
