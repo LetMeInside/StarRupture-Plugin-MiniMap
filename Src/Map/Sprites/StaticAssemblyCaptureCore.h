@@ -17,10 +17,18 @@ namespace MiniMapStaticAssembly
         size_t MaterialCount{};
         bool Verified=false,Visible=false,Hidden=true;
     };
+    // Optional one-shot evidence; never contributes to static admission or publication.
+    struct SkeletalDiagnostic
+    {
+        Instance Input;
+        uintptr_t Template{},ComponentClass{};
+        bool Present=false;
+    };
     struct Recipe
     {
         std::array<Instance,Limit> Instances{};
         size_t Count{};
+        SkeletalDiagnostic SkeletalTest;
         uintptr_t ActorClass{};
         uint64_t Generation{};
         bool RootVerified=false,Complete=false,HighDetail=false,General=false;
@@ -81,10 +89,10 @@ namespace MiniMapStaticAssembly
     struct Ledger
     {
         struct Entry {uintptr_t Component{};bool Registered=false,Member=false;};
-        std::array<Entry,Limit> Entries{};size_t Count{};
+        std::array<Entry,Limit+1> Entries{};size_t Count{};
         bool Complete(size_t expected=Expected) const
         {
-            if(!expected||expected>Limit||Count!=expected)return false;std::set<uintptr_t> unique;
+            if(!expected||expected>Entries.size()||Count!=expected)return false;std::set<uintptr_t> unique;
             for(size_t i=0;i<Count;++i)if(!Entries[i].Component||!Entries[i].Registered||!Entries[i].Member||!unique.insert(Entries[i].Component).second)return false;
             return true;
         }

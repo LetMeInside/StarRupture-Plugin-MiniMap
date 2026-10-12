@@ -42,6 +42,18 @@ MiniMapSpriteValidation::Result GenericAudit()
     MiniMapStaticAssembly::Recipe recipe;recipe.General=true;recipe.Generation=Record.Generation;
     recipe.ActorClass=AuditClass;recipe.RootVerified=out.Root;recipe.HighDetail=SelectedTier=="high_detail_actor";
     std::map<std::string,size_t> recipeIndexes;
+    std::string skeletalTestNode;
+    // First capture-requested skeletal candidate only; reuse evaluated audit data.
+    static bool skeletalAdmissionReported=false;
+    static size_t skeletalSummaryReports=0;
+    struct AdmissionDiagnostic
+    {
+        std::string Node,TransformStatus="not_evaluated",TransformReason="not_evaluated";
+        bool Asset=false,Defaults=false,Overrides=false,Materials=false,Capacity=false,Exact=false,
+            Derives=false,Visible=false,Hidden=true,SlotPointers=true,Admitted=false;
+        size_t MaterialCount=0;
+    } skeletalAdmission;
+
     std::map<std::string,A::Result> directTransforms;
     for(const auto p:AuditNodes)
     {
@@ -78,12 +90,34 @@ MiniMapSpriteValidation::Result GenericAudit()
             const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh,isStatic?0x170:0x1b0)&&Hold(mesh);
             if(!valid)sourceValid=false;else n.Mesh=Id(mesh);
             bool defaultsValid=false,overridesValid=false;MeshInput input;
-            const auto defaults=valid?AuditMaterials(mesh+(isStatic?0x160:0x1a0),isStatic?0x38:0x30,defaultsValid,input.Defaults):std::vector<A::Slot>{};
-            const auto overridden=AuditMaterials(component+0x530,8,overridesValid,input.Overrides);
+            const bool diagnoseMaterials=CaptureRequested&&!skeletalAdmissionReported&&isSkeletal&&skeletalAdmission.Node.empty();
+            const auto defaults=valid?AuditMaterials(mesh+(isStatic?0x160:0x1a0),isStatic?0x38:0x30,defaultsValid,input.Defaults,diagnoseMaterials):std::vector<A::Slot>{};
+            const auto overridden=AuditMaterials(component+0x530,8,overridesValid,input.Overrides,diagnoseMaterials);
             const auto proposed=A::ProposedMaterials(defaults,overridden);C::JsonArray mapping;
             bool present=!proposed.empty();
             for(const auto& slot:proposed){present&=slot.Valid;mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},{"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));}
             input.Mapping=mapping.String();input.Valid=defaultsValid&&overridesValid&&present;
+            // Only the first capture-requested skeletal component. The helper
+            // reports the same validation/retention decisions used for admission.
+            if(diagnoseMaterials)
+            {
+                LOG_INFO("MiniMap: skeletal-only material inputs A3.4b: generation=%llu building=%u defaultsValid=%d defaults=%s overridesValid=%d overrides=%s",
+                    (unsigned long long)Record.Generation,Record.BuildingId,int(defaultsValid),input.Defaults.c_str(),
+                    int(overridesValid),input.Overrides.c_str());
+                size_t reported=0;
+                for(const auto& slot:proposed)
+                {
+                    if(reported++>=MiniMapStaticAssembly::Slots)break;
+                    const auto def=std::find_if(defaults.begin(),defaults.end(),[&](const auto& s){return s.Index==slot.Index;});
+                    const auto over=std::find_if(overridden.begin(),overridden.end(),[&](const auto& s){return s.Index==slot.Index;});
+                    const bool useOverride=over!=overridden.end()&&over->Valid&&!over->Material.empty();
+                    const bool mapped=slot.Valid&&AuditMaterialPointers.contains(slot.Material);
+                    LOG_INFO("MiniMap: skeletal-only effective material: slot=%zu defaultSlotPresent=%d defaultValid=%d overrideSlotPresent=%d overrideValid=%d selectedSource=%s selectedValid=%d pointerMapped=%d failure=%s",
+                        slot.Index,int(def!=defaults.end()),int(def!=defaults.end()&&def->Valid),int(over!=overridden.end()),
+                        int(over!=overridden.end()&&over->Valid),useOverride?"component_override":def!=defaults.end()?"mesh_default":"none",
+                        int(slot.Valid),int(mapped),!slot.Valid?"effective_slot_absent_or_invalid":!mapped?"pointer_mapping_missing":"none");
+                }
+            }
             if(isStatic)
             {
                 if(recipe.Count>=MiniMapStaticAssembly::Limit)AuditTruncated=true;
@@ -102,6 +136,33 @@ MiniMapSpriteValidation::Result GenericAudit()
                         r.Materials[slot.Index]=found->second;
                         for(const auto& over:overridden)if(over.Index==slot.Index&&over.Valid&&!over.Material.empty())r.Overrides[slot.Index]=true;
                     }
+                }
+            }
+            if(CaptureRequested&&!skeletalAdmissionReported&&isSkeletal&&skeletalAdmission.Node.empty())
+            {
+                auto& d=skeletalAdmission;d.Node=n.Id;d.Asset=valid;d.Defaults=defaultsValid;d.Overrides=overridesValid;
+                d.Materials=input.Valid;d.MaterialCount=proposed.size();d.Capacity=proposed.size()<=MiniMapStaticAssembly::Slots;
+                d.Exact=Value<uintptr_t>(component,0x10)==SkeletalComponent;d.Derives=isSkeletal; // Is already validated inheritance
+                d.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;d.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                for(const auto& slot:proposed)
+                    d.SlotPointers&=slot.Index<proposed.size()&&slot.Valid&&AuditMaterialPointers.contains(slot.Material);
+            }
+            // Retain no new roots here: the capture owner independently validates
+            // and retains this optional record before the synchronous audit ends.
+            if(isSkeletal&&!recipe.SkeletalTest.Present&&valid&&input.Valid&&
+                proposed.size()<=MiniMapStaticAssembly::Slots&&Value<uintptr_t>(component,0x10)==SkeletalComponent)
+            {
+                auto& test=recipe.SkeletalTest;auto& r=test.Input;
+                test.Present=true;test.Template=component;test.ComponentClass=SkeletalComponent;skeletalTestNode=n.Id;
+                r.Mesh=mesh;r.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));
+                r.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;r.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                r.Verified=true;r.MaterialCount=proposed.size();
+                for(const auto& slot:proposed)
+                {
+                    const auto found=AuditMaterialPointers.find(slot.Material);
+                    if(slot.Index>=r.MaterialCount||!slot.Valid||found==AuditMaterialPointers.end()){r.Verified=false;break;}
+                    r.Materials[slot.Index]=found->second;
+                    for(const auto& over:overridden)if(over.Index==slot.Index&&over.Valid&&!over.Material.empty())r.Overrides[slot.Index]=true;
                 }
             }
             if(isStatic){out.MaterialSlots+=defaults.size();out.OverrideSlots+=overridden.size();out.Materials&=input.Valid;}
@@ -160,6 +221,10 @@ MiniMapSpriteValidation::Result GenericAudit()
         if(n.Kind=="static"){out.Transforms&=transform.Status=="verified";if(!n.Mesh.empty())meshes.insert(n.Mesh);}
         if(const auto found=recipeIndexes.find(id);found!=recipeIndexes.end())
         {auto& r=recipe.Instances[found->second];r.Transform=transform.Effective;r.Verified&=transform.Status=="verified";}
+        if(id==skeletalTestNode)
+        {auto& r=recipe.SkeletalTest.Input;r.Transform=transform.Effective;r.Verified&=transform.Status=="verified";}
+        if(id==skeletalAdmission.Node)
+        {skeletalAdmission.TransformStatus=transform.Status;skeletalAdmission.TransformReason=transform.Reason;skeletalAdmission.Admitted=id==skeletalTestNode;}
         const auto& m=materials.at(id);
         records.Add(C::Object({{"component_id",C::Quote(n.Component)},{"scs_node_id",C::Quote(id)},
             {"source",C::Quote(directTransforms.contains(id)?"verified_direct_cdo_component_field":"selected_actor_scs_template")},
@@ -207,6 +272,24 @@ MiniMapSpriteValidation::Result GenericAudit()
         out.Inherited?"inherited_component_selection_unverified":out.Child?"child_actor_contributions_not_composed":
         out.OtherSkinned?"other_skinned_component_not_audited":out.DerivedStatic?"derived_static_component_extra_geometry_semantics_unverified":
         !out.Transforms?"attachment_socket_absolute_or_transform_unresolved":"stored_material_inputs_incomplete";
+    if(CaptureRequested&&!skeletalAdmission.Node.empty()&&!skeletalAdmissionReported)
+    {
+        skeletalAdmissionReported=true;const auto& d=skeletalAdmission;
+        const char* reason=!d.Asset?"mesh_validation_or_retention_failed":!d.Materials?"material_inputs_invalid":
+            !d.Capacity?"material_capacity_exceeded":!d.Exact?"exact_native_template_class_required":
+            !d.Admitted?"record_not_selected":!d.SlotPointers?"material_pointer_mapping_invalid":
+            d.TransformStatus!="verified"?"effective_transform_unverified":"record_admitted";
+        LOG_INFO("MiniMap: skeletal-only recipe admission: generation=%llu building=%u discovered=1 admitted=%d admissionReason=%s isSkeletal=%d assetValidRetained=%d defaultsValid=%d overridesValid=%d inputValid=%d materialCount=%zu capacity=%zu capacityOK=%d materialPointersValid=%d exactNativeClass=%d derivesNativeClass=%d visible=%d hidden=%d transform=%s transformReason=%s recordVerified=%d highDetail=%d staticEligibility=%s reason=%s",
+            (unsigned long long)Record.Generation,Record.BuildingId,int(d.Admitted),reason,int(d.Derives),int(d.Asset),int(d.Defaults),int(d.Overrides),int(d.Materials),
+            d.MaterialCount,MiniMapStaticAssembly::Slots,int(d.Capacity),int(d.SlotPointers),int(d.Exact),int(d.Derives),int(d.Visible),int(d.Hidden),
+            d.TransformStatus.c_str(),d.TransformReason.c_str(),int(recipe.SkeletalTest.Input.Verified),int(recipe.HighDetail),V::Label(out.Status),out.Reason.c_str());
+    }
+    if(CaptureRequested&&skeletalSummaryReports<8)
+    {
+        ++skeletalSummaryReports;
+        LOG_INFO("MiniMap: skeletal-only audit summary %zu/8: generation=%llu building=%u discovered=%zu recordPresent=%d captureRequested=1 staticEligibility=%s reason=%s",
+            skeletalSummaryReports,(unsigned long long)Record.Generation,Record.BuildingId,out.Skeletal,int(recipe.SkeletalTest.Present),V::Label(out.Status),out.Reason.c_str());
+    }
 #if defined(MINIMAP_BUILDING_SPRITES)
     if(CaptureRequested&&out.Status==V::Outcome::Eligible)
     {

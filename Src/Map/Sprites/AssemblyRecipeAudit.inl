@@ -9,7 +9,7 @@ bool AuditTransform(uintptr_t p,A::Transform& t,bool& absolute,bool& socket)
     if(!A::Finite(rotation))return false;
     t.R=A::FromRotator(rotation);return A::Normalize(t.R)&&A::Valid(t);
 }
-std::vector<A::Slot> AuditMaterials(uintptr_t header,size_t stride,bool& valid,std::string& json)
+std::vector<A::Slot> AuditMaterials(uintptr_t header,size_t stride,bool& valid,std::string& json,bool detailed=false)
 {
     std::vector<A::Slot> slots;C::JsonArray records;
     C::ArrayHeader h{};valid=false;
@@ -23,12 +23,24 @@ std::vector<A::Slot> AuditMaterials(uintptr_t header,size_t stride,bool& valid,s
         if(!AuditSpend()){valid=false;break;}
         uintptr_t material=0;
         if(!Read(h.Data+i*stride,0,material)){valid=false;break;}
-        const bool ok=material&&Is(material,Material)&&Hold(material);
+        bool objectValid=false,compatible=false,retained=false;
+        const bool ok=detailed?
+            ((objectValid=material&&CheckIdentity(material))&&
+             (compatible=Derives(Value<uintptr_t>(material,0x10),Material))&&(retained=Hold(material))):
+            material&&Is(material,Material)&&Hold(material);
         if(ok)AuditMaterialPointers[Id(material)]=material;
         if(material&&!ok)valid=false;
         slots.push_back({i,ok?Id(material):"",ok});
-        records.Add(C::Object({{"slot",std::to_string(i)},{"material_id",ok?C::Quote(Id(material)):"null"},
-            {"status",C::Quote(!material?"absent":ok?"verified":"invalid_or_truncated")}}));
+        if(detailed)
+            records.Add(C::Object({{"slot",std::to_string(i)},{"material_id",ok?C::Quote(Id(material)):"null"},
+                {"status",C::Quote(!material?"absent":ok?"verified":"invalid_or_truncated")},{"nonNull",C::Bool(material!=0)},
+                {"objectValid",C::Bool(objectValid)},{"materialInterfaceCompatible",C::Bool(compatible)},
+                {"retained",C::Bool(retained)},{"pointerMapped",C::Bool(ok&&AuditMaterialPointers.contains(Id(material)))},
+                {"failure",C::Quote(!material?"null_slot":!objectValid?"object_identity_or_budget":
+                    !compatible?"material_interface_type_or_budget":!retained?"retention_validation_or_budget":"none")}}));
+        else
+            records.Add(C::Object({{"slot",std::to_string(i)},{"material_id",ok?C::Quote(Id(material)):"null"},
+                {"status",C::Quote(!material?"absent":ok?"verified":"invalid_or_truncated")}}));
     }
     json=records.String();return slots;
 }
