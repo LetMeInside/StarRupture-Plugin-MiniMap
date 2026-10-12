@@ -33,6 +33,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/Buildings/BuildingVisuals.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
+#include "Map/Terrain/TerrainCache.h"
 #include "Map/Map.h"
 #include <cstdint>
 #endif
@@ -249,6 +250,59 @@ extern "C"
 
             g_self = nullptr;
             return false;
+        }
+
+        bool hasLegacyTerrainCache = false;
+        {
+            std::filesystem::path terrainCacheRoot;
+            if (MiniMapTerrainCache::GetCacheRoot(terrainCacheRoot))
+            {
+                std::error_code error;
+                std::filesystem::recursive_directory_iterator iterator(
+                    terrainCacheRoot,
+                    error);
+                const std::filesystem::recursive_directory_iterator end;
+
+                if (error != std::errc::no_such_file_or_directory && error)
+                {
+                    LOG_WARN(
+                        "MiniMap: failed to inspect terrain cache for legacy files: %s",
+                        error.message().c_str());
+                }
+                else
+                {
+                    while (iterator != end && !error)
+                    {
+                        const auto& entry = *iterator;
+                        if (entry.path().extension() == L".mmc" &&
+                            entry.is_regular_file(error))
+                        {
+                            hasLegacyTerrainCache = true;
+                            break;
+                        }
+
+                        if (error)
+                        {
+                            break;
+                        }
+
+                        iterator.increment(error);
+                    }
+
+                    if (error)
+                    {
+                        LOG_WARN(
+                            "MiniMap: failed while inspecting terrain cache for legacy files: %s",
+                            error.message().c_str());
+                    }
+                }
+            }
+        }
+
+        if (hasLegacyTerrainCache &&
+            !MiniMapTerrainCache::Clear())
+        {
+            // Clear() reports its own failure; continue plugin initialization.
         }
 
         if (!MiniMapUI::Initialize(

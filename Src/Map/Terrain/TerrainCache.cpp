@@ -527,18 +527,8 @@ namespace
                     "initializing terrain cache");
             }
 
-            std::error_code error;
-
-            std::filesystem::remove_all(
-                root,
-                error);
-
-            if (error)
+            if (!MiniMapTerrainCache::Clear())
             {
-                LOG_ERROR(
-                    "MiniMap: TerrainCache: "
-                    "failed to clear terrain cache");
-
                 return false;
             }
         }
@@ -649,7 +639,7 @@ namespace
             L"_" +
             std::to_wstring(
                 gridY) +
-            L".mmc";
+            L".terrain";
 
         return directory /
             fileName;
@@ -781,6 +771,34 @@ namespace
 
 namespace MiniMapTerrainCache
 {
+    bool GetCacheRoot(std::filesystem::path& outDirectory)
+    {
+        return GetTerrainCacheRoot(outDirectory);
+    }
+
+
+    bool Clear()
+    {
+        std::filesystem::path root;
+        if (!GetTerrainCacheRoot(root))
+        {
+            return false;
+        }
+
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        if (error)
+        {
+            LOG_ERROR(
+                "MiniMap: TerrainCache: "
+                "failed to clear terrain cache");
+            return false;
+        }
+
+        return true;
+    }
+
+
     bool GetBuildingDiagnosticsDirectory(std::filesystem::path& out)
     {
         if(!GetPluginDirectory(out))return false;
