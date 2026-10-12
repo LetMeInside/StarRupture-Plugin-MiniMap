@@ -20,6 +20,7 @@
 #include "BuildingSprites.h"
 #include "plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
+#include <SDK/Engine_parameters.hpp>
 #include <atomic>
 #include <cstring>
 #include <cwchar>
@@ -113,6 +114,14 @@ namespace MiniMapBuildingRepresentation
             {L"/Script/Chimera.CrBuildingActorBase",0}
         };
         size_t nativeAnchorCursor=0;
+        // Diagnostic tokens only; never native ownership or sprite identity.
+        struct AuthoredIdentityObservations
+        {
+            uint64_t Generation{};
+            std::array<std::array<int64_t,3>,64> Definitions{};
+            size_t Count{};
+            bool LimitReported=false,ContractReported=false;
+        } authoredIdentities;
         struct Context
         {
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
@@ -264,6 +273,101 @@ namespace MiniMapBuildingRepresentation
                 NATIVE(Cosmetic,"Chimera.CrMassRepVisCosmeticsTrait");
 #undef NATIVE
                 return Actor&&Component&&Scene&&Blueprint&&SCS&&Node&&Placement&&Config&&Trait&&(Visual||Cosmetic);
+            }
+            void ObserveAuthoredIdentity(uintptr_t definition) noexcept
+            {
+                if(Record.HasSpline)return;
+                if(authoredIdentities.Generation!=Record.Generation)
+                {authoredIdentities={};authoredIdentities.Generation=Record.Generation;}
+                const std::array<int64_t,3> token={Record.DefinitionObjectIndex,Record.DefinitionIndex,Record.DefinitionNumber};
+                for(size_t i=0;i<authoredIdentities.Count;++i)if(authoredIdentities.Definitions[i]==token)return;
+                if(authoredIdentities.Count==authoredIdentities.Definitions.size())
+                {
+                    if(!authoredIdentities.LimitReported)
+                    {LOG_INFO("MiniMap: authored ActorClass diagnostic limit reached: generation=%llu limit=64",static_cast<unsigned long long>(Record.Generation));authoredIdentities.LimitReported=true;}
+                    return;
+                }
+                authoredIdentities.Definitions[authoredIdentities.Count++]=token;
+                auto report=[&](const char* status,const std::string& path=std::string{})
+                {LOG_INFO("MiniMap: authored ActorClass observation: generation=%llu building=%u definition=%d non_spline=true status=%s path=%s",
+                    static_cast<unsigned long long>(Record.Generation),Record.BuildingId,Record.DefinitionObjectIndex,status,C::Quote(path).c_str());};
+                try
+                {
+                    auto* hooks=GetHooks();const auto& bindings=MiniMapSmelterCapture::GetBindings();
+                    auto* memory=hooks?hooks->Memory:nullptr;auto* invocation=hooks?hooks->ObjectWalker:nullptr;
+                    if(!bindings.GameThread||!reinterpret_cast<bool(*)()>(bindings.GameThread)()||
+                        !memory||!memory->IsAllocatorAvailable||!memory->IsAllocatorAvailable()||!memory->Free||
+                        !invocation||!invocation->InvokeResolvedUFunction)
+                    {report("invocation_or_engine_allocator_unavailable");return;}
+                    // Independent work budget/roots: diagnostics cannot exhaust the capture audit.
+                    Context diagnostic;diagnostic.Class=Class;diagnostic.Placement=Placement;
+                    if(!diagnostic.Is(definition,Placement,sizeof(SDK::UAuActorPlacementData))||
+                        !diagnostic.Hold(definition,sizeof(SDK::UAuActorPlacementData)))
+                    {report("definition_validation_failed");return;}
+                    using Params=SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString;
+                    static_assert(sizeof(Params)==0x38&&offsetof(Params,SoftClassReference)==0&&offsetof(Params,ReturnValue)==0x28);
+                    static_assert(offsetof(SDK::UAuActorPlacementData,ActorClass)==0x38);
+                    Params params{};
+                    // Borrowed shallow copy. The retained definition owns its soft-reference storage.
+                    params.SoftClassReference=reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->ActorClass;
+                    const auto& path=params.SoftClassReference.ObjectID;
+                    const auto& package=path.AssetPath.PackageName;const auto& asset=path.AssetPath.AssetName;
+                    const auto* subpath=path.SubPathString.CStr();
+                    const auto count=path.SubPathString.Num(),capacity=path.SubPathString.Max();
+                    if(package.ComparisonIndex<0||asset.ComparisonIndex<0||count<0||capacity<count||capacity>1024||
+                        (count&&(!Readable(reinterpret_cast<uintptr_t>(subpath),size_t(count)*sizeof(wchar_t),alignof(wchar_t))||subpath[count-1]!=0)))
+                    {report("malformed_authored_soft_reference");return;}
+                    // A top-level blueprint identity must not name a subobject.
+                    if(count>1){report("unexpected_authored_subobject_reference");return;}
+                    const auto functionClass=diagnostic.NativeClass(L"/Script/CoreUObject.Function");
+                    const auto library=diagnostic.NativeClass(L"/Script/Engine.KismetSystemLibrary");
+                    if(!functionClass||!library){report("qualified_conversion_owner_unavailable");return;}
+                    using FindFunction=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
+                    const auto fn=reinterpret_cast<uintptr_t>(reinterpret_cast<FindFunction>(engine->GetStaticFindObjectByNameAddress())(
+                        reinterpret_cast<SDK::UClass*>(functionClass),reinterpret_cast<SDK::UObject*>(library),L"Conv_SoftClassReferenceToString",true));
+                    if(!diagnostic.Hold(fn,sizeof(SDK::UFunction))||!diagnostic.Is(fn,functionClass,sizeof(SDK::UFunction))||
+                        Value<uintptr_t>(fn,offsetof(SDK::UObject,Class))!=functionClass||
+                        Value<uintptr_t>(fn,offsetof(SDK::UObject,Outer))!=library)
+                    {report("qualified_conversion_function_unavailable");return;}
+                    const auto* function=reinterpret_cast<const SDK::UFunction*>(fn);
+                    // Same CL-127004 UFunction contract as the existing capture invocation.
+                    const auto flags=uint32_t(function->FunctionFlags);
+                    if((flags&0x2400)!=0x2400||!function->ExecFunction||
+                        Value<uint8_t>(fn,0xb4)!=2||Value<uint16_t>(fn,0xb6)!=sizeof(Params))
+                    {report("conversion_function_contract_mismatch");return;}
+                    const auto cdo=Value<uintptr_t>(library,offsetof(SDK::UClass,ClassDefaultObject));
+                    if(!diagnostic.Is(cdo,library,sizeof(SDK::UObject))||!diagnostic.Hold(cdo)||
+                        Value<uintptr_t>(cdo,offsetof(SDK::UObject,Class))!=library||
+                        !(Value<uint32_t>(cdo,offsetof(SDK::UObject,Flags))&0x10))
+                    {report("kismet_default_object_validation_failed");return;}
+                    if(!authoredIdentities.ContractReported)
+                    {LOG_INFO("MiniMap: authored ActorClass conversion contract verified: Engine.KismetSystemLibrary:Conv_SoftClassReferenceToString native/static parameters=2 frame=0x38; game-thread public dispatch; engine allocator available");authoredIdentities.ContractReported=true;}
+                    struct ReturnedString
+                    {
+                        SDK::FString& Value;IPluginMemoryUtils* Memory;
+                        ~ReturnedString(){if(Value.CStr())Memory->Free(Value.CStr());}
+                    } returned{params.ReturnValue,memory};
+                    if(!invocation->InvokeResolvedUFunction(reinterpret_cast<void*>(cdo),reinterpret_cast<void*>(fn),&params))
+                    {report("conversion_invocation_failed");return;}
+                    const auto& value=params.ReturnValue;const auto* text=value.CStr();const auto length=value.Num();
+                    if(length<0||length>1025||value.Max()<length||
+                        (length&&(!Readable(reinterpret_cast<uintptr_t>(text),size_t(length)*sizeof(wchar_t),alignof(wchar_t))||text[length-1]!=0)))
+                    {report("malformed_conversion_result");return;}
+                    if(length<=1){report("empty_authored_reference");return;}
+                    for(int32_t i=0;i<length-1;++i)if(text[i]<32||text[i]==127)
+                    {report("unexpected_control_character_in_path");return;}
+                    const std::string owned=value.ToString(); // UTF-16 -> owned UTF-8, before engine Free.
+                    if(owned.find("/Engine/Transient")!=std::string::npos||owned.find("UEDPIE_")!=std::string::npos||
+                        owned.find("REINST_")!=std::string::npos||owned.find("SKEL_")!=std::string::npos)
+                    {report("transient_or_reinstanced_reference",owned);return;}
+                    const auto dot=owned.rfind('.');
+                    if(owned.front()!='/'||owned.find(':')!=std::string::npos||dot==std::string::npos||
+                        dot<=owned.rfind('/')||dot+1==owned.size()||!owned.ends_with("_C"))
+                    {report("unexpected_non_generated_class_path",owned);return;}
+                    report("qualified_generated_class_reference_unverified_coverage",owned);
+                }
+                catch(...){LOG_WARN("MiniMap: authored ActorClass observation: generation=%llu building=%u non_spline=true status=diagnostic_exception",
+                    static_cast<unsigned long long>(Record.Generation),Record.BuildingId);}
             }
             std::string Id(uintptr_t p)
             {
@@ -598,6 +702,7 @@ namespace MiniMapBuildingRepresentation
                     name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)
                 {ProbeResult.DefinitionIdentity="mismatch";ProbeResult.Note("definition_identity_mismatch");return false;}
                 ProbeResult.DefinitionIdentity="valid";
+                ObserveAuthoredIdentity(definition);
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
                 if(GenericValidation)ClassificationInputs(definition);
 #if defined(MINIMAP_BUILDING_SPRITES)
@@ -726,7 +831,7 @@ namespace MiniMapBuildingRepresentation
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
             if(!world||world!=MiniMapMap::GetWorld())return;
             const auto gameThread=MiniMapSmelterCapture::GetBindings().GameThread;
-            if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)())endingWorld=world;
+            if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)()){endingWorld=world;authoredIdentities={};}
             else stopped.store(true);
         }
         void StopImpl(){stopped.store(true);}
@@ -968,7 +1073,7 @@ namespace MiniMapBuildingRepresentation
             const auto release=MiniMapSmelterCapture::GetBindings().Release;
             if(release)for(auto& anchor:nativeAnchors)if(anchor.Object)
             {reinterpret_cast<void(*)(SDK::UObject*)>(release)(reinterpret_cast<SDK::UObject*>(anchor.Object));anchor.Object=0;}
-            nativeAnchorCursor=0;executing.clear();
+            nativeAnchorCursor=0;authoredIdentities={};executing.clear();
         }
     }
 }
