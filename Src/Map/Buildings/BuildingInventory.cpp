@@ -3,6 +3,9 @@
 
 #include "BuildingInventory.h"
 #include "BuildingCollector.h"
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#include "Map/Sprites/BuildingRepresentation.h"
+#endif
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
@@ -31,6 +34,10 @@ namespace
     SDK::UScriptStruct *g_building = nullptr, *g_transform = nullptr, *g_spline = nullptr;
     alignas(16) std::array<std::byte, 0x350> g_query = {};
     Clock::time_point g_nextPoll = {}, g_nextWarning = {};
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    std::array<uintptr_t,3> g_metadataRoots{};size_t g_metadataCount=0;
+    Clock::time_point g_metadataRetry{};
+#endif
 
     double Ms(Clock::time_point start)
     { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
@@ -47,6 +54,10 @@ namespace
         if (g_constructed)
             if (const auto* native = MiniMapNative::Get()) native->mass.queryDestruct(g_query.data());
         g_constructed = false; g_query = {};
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
+        g_metadataRoots={};g_metadataCount=0;g_metadataRetry={};
+#endif
         g_world = nullptr; g_subsystem = nullptr; g_manager = nullptr;
         g_building = g_transform = g_spline = nullptr;
         g_nextPoll = g_nextWarning = {};
@@ -55,6 +66,15 @@ namespace
             reason, static_cast<unsigned long long>(g_generation));
     }
 
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    SDK::UScriptStruct* FindStruct(const wchar_t* path,size_t size)
+    {
+        const auto p=MiniMapBuildingRepresentation::AcquireResidentMetadata(path,true,size);
+        if(p)g_metadataRoots[g_metadataCount++]=p;
+        else g_metadataRetry=Clock::now()+std::chrono::seconds(1);
+        return reinterpret_cast<SDK::UScriptStruct*>(p);
+    }
+#else
     SDK::UScriptStruct* FindStruct(const char* name, size_t size)
     {
         PluginObjectInfo info = {};
@@ -64,8 +84,12 @@ namespace
         return type->Size == int32_t(size) ? type : nullptr;
     }
 
+#endif
     bool EnsureQuery(const Native& native)
     {
+        MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::InventoryEnsure);
+        if(!native.mass.getMassEntitySubsystem||!native.mass.queryConstruct||!native.mass.queryDestruct||
+            !native.mass.addTagRequirement||!native.mass.addTransformRequirement)return false;
         auto* world = MiniMapMap::GetWorld();
         auto* subsystem = world ? native.mass.getMassEntitySubsystem(world) : nullptr;
         const void* manager = nullptr;
@@ -74,9 +98,16 @@ namespace
         if (g_constructed && world == g_world && subsystem == g_subsystem && manager == g_manager) return true;
         if (g_constructed) Clear("world/manager changed");
         if (!manager || !g_inventorySelf->hooks->ObjectWalker->IsReady()) return false;
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        if(Clock::now()<g_metadataRetry)return false;
+        if(!g_building){g_building=FindStruct(L"/Script/Chimera.CrMassBuildingTag",sizeof(SDK::FCrMassBuildingTag));return false;}
+        if(!g_transform){g_transform=FindStruct(L"/Script/MassCommon.TransformFragment",sizeof(SDK::FTransform));return false;}
+        if(!g_spline){g_spline=FindStruct(L"/Script/AuActorPlacement.AuSplineConnectionFragment",sizeof(SDK::FAuSplineConnectionFragment));return false;}
+#else
         if (!g_building) g_building = FindStruct("CrMassBuildingTag", sizeof(SDK::FCrMassBuildingTag));
         if (!g_transform) g_transform = FindStruct("TransformFragment", sizeof(SDK::FTransform));
         if (!g_spline) g_spline = FindStruct("AuSplineConnectionFragment", sizeof(SDK::FAuSplineConnectionFragment));
+#endif
         // Missing spline metadata must not silently turn spline entities into ordinary buildings.
         if (!g_building || !g_transform || !g_spline) return false;
         native.mass.queryConstruct(g_query.data(), reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset);
@@ -115,6 +146,7 @@ namespace
 
     void Poll()
     {
+        MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::InventoryPoll);
         const auto* native = MiniMapNative::Get();
         if (!native || !native->mass.getMassEntitySubsystem || !native->mass.queryConstruct ||
             !native->mass.queryDestruct || !native->mass.addTagRequirement || !native->mass.addTransformRequirement ||
@@ -147,6 +179,11 @@ namespace
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::InventoryTick,true);
         if(!MiniMapMap::GameplayReady())return;
         if (!g_ready || !MiniMapMap::HasWorld() || Clock::now() < g_nextPoll) return;
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        // Metadata setup is serviced once per tick; the 10-second oracle cadence
+        // begins only after the native query is ready.
+        if(!g_constructed){const auto* native=MiniMapNative::Get();if(!native||!EnsureQuery(*native))return;}
+#endif
         Poll();
         g_nextPoll = Clock::now() + kOracleInterval; // No catch-up; does not affect production cadence.
     }

@@ -39,6 +39,7 @@ namespace MiniMapBuildingSprites
             size_t Hits{},Fallbacks{},Completed{},Failed{};
             std::array<size_t,size_t(DrawCounter::Count)> DrawCounts{};
             size_t DiagnosticFrames{},DiagnosticReports{},SampledHandleChecks{},SampledInvalidHandles{};
+            size_t SpatialReports{},SpatialCompleted{};
             uint32_t ReportedDrawReasons{};
         };
         // Explicit lifetime through discovery; no owning static initializer.
@@ -70,6 +71,7 @@ namespace MiniMapBuildingSprites
             (unsigned long long)owner->Jobs.Generation,(unsigned long long)generation,owner->Completed,owner->Hits);
          owner->View.reset();owner->Textures={};
          owner->DrawCounts={};owner->DiagnosticFrames=owner->DiagnosticReports=0;
+         owner->SpatialReports=owner->SpatialCompleted=0;
          owner->SampledHandleChecks=owner->SampledInvalidHandles=0;owner->ReportedDrawReasons=0;
          owner->Timings={};owner->Jobs.Reset(generation);owner->Hits=owner->Fallbacks=owner->Completed=owner->Failed=0;}
         if(!generation){delete owner;owner=nullptr;}
@@ -169,13 +171,55 @@ namespace MiniMapBuildingSprites
     DrawFrame BeginDraw()
     {
         std::scoped_lock lock(access);DrawFrame frame;
-        if(owner){frame.Generation=owner->Jobs.Generation;frame.View=owner->View;frame.ReportedReasons=owner->ReportedDrawReasons;}return frame;
+        if(owner)
+        {
+            frame.Generation=owner->Jobs.Generation;frame.View=owner->View;frame.ReportedReasons=owner->ReportedDrawReasons;
+            if(owner->Completed&&owner->SpatialReports<8&&
+                (owner->SpatialCompleted!=owner->Completed||owner->DiagnosticFrames==59||owner->DiagnosticFrames==299))
+                try{frame.Spatial=std::make_unique<SpatialSnapshot>();}catch(...){} // Diagnostics cannot prevent drawing.
+        }
+        return frame;
     }
     void EndDraw(const DrawFrame& frame)
     {
         std::scoped_lock lock(access);if(!owner||owner->Jobs.Generation!=frame.Generation)return;
         owner->Hits+=frame.Hits;owner->Fallbacks+=frame.Fallbacks;
         for(size_t i=0;i<frame.Counts.size();++i)owner->DrawCounts[i]+=frame.Counts[i];
+        if(frame.Spatial)
+        {
+            ++owner->SpatialReports;owner->SpatialCompleted=owner->Completed;
+            bool ascendingZ=true;
+            for(size_t i=1;i<frame.Spatial->Count;++i)
+                ascendingZ&=frame.Spatial->Entries[i-1].Position[2]<=frame.Spatial->Entries[i].Position[2];
+            LOG_INFO("MiniMap: sprite layering snapshot: generation=%llu frameAfterPublication=%zu submissions=%zu ascendingWorldZ=%d skipped=%zu lookupMisses=%zu projectionFailures=%zu viewportRejections=%zu fogRejections=%zu invalidHandles=%zu quadFailures=%zu details=%zu; order=world_Z_then_Y_then_X; spatial overlaps are screen AABBs, not opaque-pixel occlusion proof",
+                (unsigned long long)frame.Generation,owner->DiagnosticFrames+1,frame.Hits,int(ascendingZ),
+                frame.Counts[size_t(DrawCounter::Calls)]-frame.Hits,frame.Counts[size_t(DrawCounter::LookupMisses)],
+                frame.Counts[size_t(DrawCounter::ProjectionFailure)],frame.Counts[size_t(DrawCounter::ViewportRejection)],
+                frame.Counts[size_t(DrawCounter::FogRejection)],frame.Counts[size_t(DrawCounter::InvalidHandle)],frame.Counts[size_t(DrawCounter::QuadFailure)],
+                (std::min)(frame.Spatial->Count,size_t(64)));
+            for(size_t i=0;i<(std::min)(frame.Spatial->Count,size_t(64));++i)
+            {
+                const auto& spatial=frame.Spatial->Entries[i];
+                size_t lowerOverlaps=0,equalOverlaps=0,higherOverlaps=0;
+                for(size_t j=0;j<frame.Spatial->Count;++j)
+                {
+                    const auto& f=frame.Spatial->Entries[j];
+                    if(j!=i&&spatial.ScreenBounds[0]<f.ScreenBounds[2]&&spatial.ScreenBounds[2]>f.ScreenBounds[0]&&
+                        spatial.ScreenBounds[1]<f.ScreenBounds[3]&&spatial.ScreenBounds[3]>f.ScreenBounds[1])
+                    {
+                        if(f.Position[2]<spatial.Position[2])++lowerOverlaps;
+                        else if(f.Position[2]>spatial.Position[2])++higherOverlaps;
+                        else ++equalOverlaps;
+                    }
+                }
+                int width=0,height=0;auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
+                if(api&&api->GetSize)api->GetSize(spatial.Handle,&width,&height);
+                LOG_INFO("MiniMap: sprite layering submission: sequence=%zu entity=(%d,%d) building=%u worldCm=(%.6f,%.6f,%.6f) yawDegrees=%.6f worldSpriteCm=%.6fx%.6f screenAABB=[%.6f,%.6f]-[%.6f,%.6f] overlapsLowerEqualHigherZ=%zu,%zu,%zu texture=%dx%d; viewport intersection and FOW passed; capture foreground validated at publication, per-pixel overlap not measured",
+                    i,spatial.Index,spatial.Serial,spatial.Building,
+                    spatial.Position[0],spatial.Position[1],spatial.Position[2],spatial.Yaw,spatial.WorldWidth,spatial.WorldHeight,
+                    spatial.ScreenBounds[0],spatial.ScreenBounds[1],spatial.ScreenBounds[2],spatial.ScreenBounds[3],lowerOverlaps,equalOverlaps,higherOverlaps,width,height);
+            }
+        }
         if(frame.SampleReason!=DrawCounter::Count&&!(owner->ReportedDrawReasons&(1u<<size_t(frame.SampleReason))))
         {
             owner->ReportedDrawReasons|=1u<<size_t(frame.SampleReason);
@@ -279,6 +323,17 @@ namespace MiniMapBuildingSprites
         if(!MiniMapFogOfWar::IsNativeWorldRectangleRevealed(minX,minY,maxX,maxY))
         {count(DrawCounter::FogRejection);sample(DrawCounter::FogRejection,texture.get(),&quad,&p);return false;}
         ui->DL_AddImageQuad(dl,texture->Handle,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,p[3].X,p[3].Y,0,0,1,0,1,1,0,1,0xffffffff);
+        if(frame.Spatial&&frame.Spatial->Count<frame.Spatial->Entries.size())
+        {
+            auto& spatial=frame.Spatial->Entries[frame.Spatial->Count++];
+            spatial.Index=record.Index;spatial.Serial=record.Serial;spatial.Building=record.BuildingId;
+            spatial.Handle=texture->Handle;
+            spatial.Position=record.Position;spatial.ScreenBounds={sx,sy,ex,ey};
+            const auto& q=record.Rotation;double norm=0;for(double v:q)norm+=v*v;
+            spatial.Yaw=std::atan2(2*(q[3]*q[2]+q[0]*q[1]),norm-2*(q[1]*q[1]+q[2]*q[2]))*180/3.14159265358979323846;
+            spatial.WorldWidth=std::hypot(quad[1][0]-quad[0][0],quad[1][1]-quad[0][1]);
+            spatial.WorldHeight=std::hypot(quad[3][0]-quad[0][0],quad[3][1]-quad[0][1]);
+        }
         count(DrawCounter::Submissions);sample(DrawCounter::Submissions,texture.get(),&quad,&p);
         ++frame.Hits;return true;
     }

@@ -10,6 +10,16 @@ namespace MiniMapBuildingSprites
     bool Queue(const MiniMapSpriteDiscoveryCore::Key&);
     void Complete(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&);
     struct DrawState;
+    struct SpatialSubmission
+    {
+        int32_t Index{},Serial{};uint32_t Building{};
+        PluginTextureHandle Handle{};
+        std::array<double,3> Position{};
+        std::array<double,4> ScreenBounds{};
+        double Yaw{},WorldWidth{},WorldHeight{};
+    };
+    struct SpatialSnapshot
+    {std::array<SpatialSubmission,128> Entries{};size_t Count{};};
     enum class DrawCounter : size_t
     {
         Calls,NoReadyView,GenerationMismatch,InvalidInputs,LookupAttempts,LookupMisses,LookupMatches,
@@ -21,6 +31,7 @@ namespace MiniMapBuildingSprites
         std::shared_ptr<const DrawState> View;
         uint64_t Generation{};
         size_t Hits{},Fallbacks{},Budget=128;
+        std::unique_ptr<SpatialSnapshot> Spatial; // At most eight diagnostic frames per generation.
         std::array<size_t,size_t(DrawCounter::Count)> Counts{};
         uint32_t ReportedReasons{};
         DrawCounter SampleReason=DrawCounter::Count;

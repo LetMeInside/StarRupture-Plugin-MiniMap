@@ -121,6 +121,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
 {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBegin,false);
     if(!world||(world==MiniMapMap::GetWorld()&&!g_worldEnding))return;
+    MiniMapCallbackTiming::StartWorldTrace();
     ++g_worldGeneration;
     g_preparedGeneration=0;
     g_worldEnding=false;

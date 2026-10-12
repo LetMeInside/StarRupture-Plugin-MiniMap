@@ -28,6 +28,10 @@ namespace MiniMapBuildingRepresentation
     void Initialize();
     void Shutdown();
     bool ValidateCaptureObject(uintptr_t);
+    // Game-thread resident /Script metadata only. Success transfers one strong
+    // reference to the caller; release after destroying queries using the type.
+    uintptr_t AcquireResidentMetadata(const wchar_t* path,bool scriptStruct,size_t instanceSize);
+    void ReleaseResidentMetadata(uintptr_t);
     // Bounded fresh Mass/definition identity and classification read. No graph
     // traversal or borrowed native pointer escapes this synchronous call.
     bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record&,MiniMapSpriteClassification::Observation&);

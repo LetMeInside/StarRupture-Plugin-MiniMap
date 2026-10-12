@@ -24,16 +24,6 @@ namespace MiniMapNative
 {
     namespace
     {
-        template<class T> bool ReadAt(uintptr_t base,size_t offset,T& out)
-        {
-            static_assert(std::is_trivially_copyable_v<T>);
-            if(base>UINTPTR_MAX-offset)return false;
-            return ReadMemory(base+offset,&out,sizeof(T));
-        }
-    }
-
-    namespace
-    {
         thread_local ValidationProfile* validationProfile=nullptr;
         struct ValidationMeasurement
         {
@@ -42,12 +32,12 @@ namespace MiniMapNative
             std::chrono::steady_clock::time_point Start{};
             explicit ValidationMeasurement(bool identity):Identity(identity)
             {
-                if(Profile){Start=std::chrono::steady_clock::now();
+                if(Profile){if(Profile->MeasureTime)Start=std::chrono::steady_clock::now();
                     if(Identity)++Profile->IdentityCalls;else ++Profile->ReadableCalls;}
             }
             ~ValidationMeasurement()
             {
-                if(!Profile)return;
+                if(!Profile||!Profile->MeasureTime)return;
                 const auto ns=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-Start).count());
                 if(Identity)Profile->IdentityNanoseconds+=ns;else Profile->ReadableNanoseconds+=ns;
             }
@@ -55,7 +45,22 @@ namespace MiniMapNative
     }
     ScopedValidationProfile::ScopedValidationProfile(ValidationProfile& profile):Previous(validationProfile)
     {validationProfile=&profile;}
-    ScopedValidationProfile::~ScopedValidationProfile(){validationProfile=Previous;}
+    ScopedValidationProfile::~ScopedValidationProfile()
+    {
+        // Include the independent inventory observer in its enclosing audit's
+        // work totals while retaining the observer's own detailed counters.
+        if(Previous)
+        {
+            Previous->IdentityCalls+=validationProfile->IdentityCalls;
+            Previous->IdentityNanoseconds+=validationProfile->IdentityNanoseconds;
+            Previous->ReadableCalls+=validationProfile->ReadableCalls;
+            Previous->ReadableNanoseconds+=validationProfile->ReadableNanoseconds;
+            Previous->VirtualQueries+=validationProfile->VirtualQueries;
+        }
+        validationProfile=Previous;
+    }
+
+    void RecordVirtualQuery() noexcept {if(validationProfile)++validationProfile->VirtualQueries;}
 
     bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
     {
@@ -90,24 +95,28 @@ namespace MiniMapNative
     bool ValidateObjectIdentity(uintptr_t p,uintptr_t objectArray,size_t extent)
     {
         ValidationMeasurement measurement(true);
-        if(!IsMemoryRangeReadable(p,extent,8)||!IsMemoryRangeReadable(objectArray,0x30,8))return false;
+        if(!IsMemoryRangeReadable(p,(std::max)(extent,size_t(0x10)),8)||!IsMemoryRangeReadable(objectArray,0x30,8))return false;
+        // Copy only from the ranges just validated above. Re-querying each field
+        // in those same ranges adds no identity evidence. No range/identity cache
+        // survives this call, and all original object-array/flag checks remain.
+        auto copy=[]<class T>(uintptr_t base,size_t offset,T& value)
+        {std::memcpy(&value,reinterpret_cast<const void*>(base+offset),sizeof(T));};
         int32_t index=-1,num=0,max=0,chunks=0,maxChunks=0;
-        if(!ReadAt(p,0xc,index)||!ReadAt(objectArray,0x20,max)||!ReadAt(objectArray,0x24,num)||
-            !ReadAt(objectArray,0x28,maxChunks)||!ReadAt(objectArray,0x2c,chunks))return false;
+        copy(p,0xc,index);copy(objectArray,0x20,max);copy(objectArray,0x24,num);
+        copy(objectArray,0x28,maxChunks);copy(objectArray,0x2c,chunks);
         if(index<0||num<0||max<num||max>64*1024*1024||index>=num||chunks<0||
            maxChunks<chunks||maxChunks>4096||int64_t(num)>int64_t(chunks)*65536||
            int64_t(max)>int64_t(maxChunks)*65536)return false;
         const size_t chunkIndex=uint32_t(index)>>16;
         if(chunkIndex>=size_t(chunks))return false;
         uintptr_t table=0,chunk=0;
-        if(!ReadAt(objectArray,0x10,table)||
-            !IsMemoryRangeReadable(table,(chunkIndex+1)*8,8)||
-            !ReadAt(table,chunkIndex*8,chunk))return false;
+        copy(objectArray,0x10,table);
+        if(!IsMemoryRangeReadable(table,(chunkIndex+1)*8,8))return false;
+        copy(table,chunkIndex*8,chunk);
         const size_t itemOffset=size_t(uint32_t(index)&65535)*0x18;
         if(chunk>UINTPTR_MAX-itemOffset||!IsMemoryRangeReadable(chunk+itemOffset,0x18,8))return false;
         uintptr_t actual=0;uint32_t internalFlags=0,objectFlags=0;
-        if(!ReadAt(chunk+itemOffset,0,actual)||!ReadAt(chunk+itemOffset,8,internalFlags)||
-            !ReadAt(p,8,objectFlags))return false;
+        copy(chunk+itemOffset,0,actual);copy(chunk+itemOffset,8,internalFlags);copy(p,8,objectFlags);
         // PDB: Unreachable | Garbage; pending load/postload and destruction.
         return actual==p&&!(internalFlags&0x10200000)&&!(objectFlags&0x1b400);
     }

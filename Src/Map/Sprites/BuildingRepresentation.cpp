@@ -130,7 +130,7 @@ namespace MiniMapBuildingRepresentation
         {std::scoped_lock lock(blueprintIdentityAccess);blueprintIdentities={};}
         struct AuditMetrics
         {
-            uint64_t ClassCalls{},ClassNs{},InheritanceCalls{},InheritanceNs{},HoldCalls{},HoldNs{},Retained{},Released{},PrimaryRoots{},RecipeNs{},InspectionNs{};
+            uint64_t ClassCalls{},ClassNs{},ClassHits{},InheritanceCalls{},InheritanceNs{},InheritanceHits{},IdentityHits{},FieldHits{},HoldCalls{},HoldNs{},Retained{},Released{},PrimaryRoots{},RecipeNs{},InspectionNs{};
         };
         struct AuditElapsed
         {
@@ -142,6 +142,58 @@ namespace MiniMapBuildingRepresentation
         struct Context
         {
             AuditMetrics* Metrics=nullptr;
+            // Validated metadata reuse only within this synchronous, game-thread
+            // Context. Every reused object is strongly retained. No ownership,
+            // range or failed-validation result survives an audit/GC boundary.
+            std::map<uintptr_t,std::pair<uintptr_t,uintptr_t>> Classes;
+            std::map<std::pair<uintptr_t,uintptr_t>,bool> Inheritance;
+            std::map<uintptr_t,size_t> ValidatedExtents;
+            std::vector<std::pair<uintptr_t,size_t>> Storage;
+            bool OwnedRange(uintptr_t p,size_t bytes) const
+            {
+                if(!p||p>UINTPTR_MAX-bytes)return false;
+                auto it=ValidatedExtents.upper_bound(p);
+                if(it==ValidatedExtents.begin())return false;
+                --it;
+                return Held.contains(it->first)&&p-it->first<=it->second&&bytes<=it->second-(p-it->first);
+            }
+            bool KnownRange(uintptr_t p,size_t bytes) const
+            {
+                if(OwnedRange(p,bytes))return true;
+                if(!p||p>UINTPTR_MAX-bytes)return false;
+                for(auto it=Storage.rbegin();it!=Storage.rend();++it)
+                    if(p>=it->first&&p-it->first<=it->second&&bytes<=it->second-(p-it->first))return true;
+                return false;
+            }
+            bool Readable(uintptr_t p,size_t bytes,size_t alignment=1)
+            {
+                if(!alignment||(alignment&(alignment-1))||(p&(alignment-1)))return false;
+                return KnownRange(p,bytes)||MiniMapNative::IsMemoryRangeReadable(p,bytes,alignment);
+            }
+            template<class T> bool Read(uintptr_t p,size_t offset,T& out)
+            {
+                static_assert(std::is_trivially_copyable_v<T>);
+                if(p>UINTPTR_MAX-offset)return false;
+                const auto address=p+offset;
+                if(!KnownRange(address,sizeof(T)))return MiniMapNative::ReadMemory(address,&out,sizeof(T));
+                std::memcpy(&out,reinterpret_cast<const void*>(address),sizeof(T));
+                if(Metrics)++Metrics->FieldHits;
+                return true;
+            }
+            template<class T> T Value(uintptr_t p,size_t offset)
+            {T out{};Read(p,offset,out);return out;}
+            struct StorageScope
+            {
+                Context& Owner;size_t Previous;
+                StorageScope(Context& owner,uintptr_t header,uintptr_t data,size_t bytes):Owner(owner),Previous(owner.Storage.size())
+                {
+                    // Only bounded arrays reached through a retained owner (or
+                    // its enclosing validated array) qualify for scoped reads.
+                    // The caller has independently validated data/bytes first.
+                    if(bytes&&owner.KnownRange(header,sizeof(C::ArrayHeader)))owner.Storage.emplace_back(data,bytes);
+                }
+                ~StorageScope(){Owner.Storage.resize(Previous);}
+            };
             struct StaticObservation {uintptr_t Component{},Owner{};std::string Source;};
             std::vector<StaticObservation> StaticObservations;
             bool StaticObservationOverflow=false;
@@ -192,6 +244,7 @@ namespace MiniMapBuildingRepresentation
             std::string AuthoredClassStatus="not_examined_configuration_route";
             uintptr_t ResolveResidentAuthoredClass(uintptr_t definition)
             {
+                MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::ResidentAuthoredClass);
                 AuthoredFallback=true;
                 if(!BlueprintIdentity.Path)BlueprintIdentity=ResolveAuthoredIdentity(definition);
                 if(!BlueprintIdentity.Path)
@@ -248,7 +301,22 @@ namespace MiniMapBuildingRepresentation
             bool CheckIdentity(uintptr_t p,size_t extent=0x28)
             {
                 if(AuditActive&&(!AuditSpend()))return false;
-                return Work.Spend(FullTraversal)&&Identity(p,extent);
+                if(!Work.Spend(FullTraversal))return false;
+                // Strong ownership prevents index reuse/deallocation during this
+                // synchronous game-thread scope. New pointers and larger extents
+                // still receive the full indexed identity/range validation.
+                if(const auto found=ValidatedExtents.find(p);found!=ValidatedExtents.end()&&
+                    found->second>=extent&&Held.contains(p))
+                {
+                    uint32_t flags=0;std::memcpy(&flags,reinterpret_cast<const void*>(p+8),4);
+                    if(flags&0x1b400)return false;
+                    if(Metrics)++Metrics->IdentityHits;
+                    return true;
+                }
+                if(!Identity(p,extent))return false;
+                if(ValidatedExtents.size()<C::VisitLimit||ValidatedExtents.contains(p))
+                    ValidatedExtents[p]=(std::max)(ValidatedExtents[p],(std::max)(extent,size_t(0x10)));
+                return true;
             }
             bool AuditSpend()
             {if(AuditVisits>=A::VisitLimit){AuditTruncated=true;return false;}++AuditVisits;return true;}
@@ -285,11 +353,26 @@ namespace MiniMapBuildingRepresentation
             {
                 AuditElapsed elapsed(Metrics?&Metrics->ClassNs:nullptr);if(Metrics)++Metrics->ClassCalls;
                 if(!CheckIdentity(p,0x200))return false;
-                auto meta=Value<uintptr_t>(p,0x10);
+                // The containing 0x200 bytes have just been validated. Copy these
+                // two fields without querying those same bytes again.
+                uintptr_t meta=0,parent=0;
+                std::memcpy(&meta,reinterpret_cast<const void*>(p+0x10),8);
+                std::memcpy(&parent,reinterpret_cast<const void*>(p+0x40),8);
+                if(const auto found=Classes.find(p);found!=Classes.end()&&found->second==std::pair{meta,parent})
+                {if(Metrics)++Metrics->ClassHits;return true;}
+                // A changed hierarchy invalidates all derived answers, even in
+                // this short-lived scope. Never accept a changed class from cache.
+                if(Classes.contains(p)){Classes.erase(p);Inheritance.clear();}
+                const auto originalMeta=meta;
                 for(size_t n=0;meta&&n<C::DepthLimit;++n)
                 {
                     if(!CheckIdentity(meta,0x200))return false;
-                    if(meta==Class)return true;
+                    if(meta==Class)
+                    {
+                        if(!Hold(p,0x200))return false;
+                        if(Classes.size()<C::VisitLimit)Classes.emplace(p,std::pair{originalMeta,parent});
+                        return true;
+                    }
                     if(Value<uintptr_t>(meta,0x10)!=Class)return false;
                     meta=Value<uintptr_t>(meta,0x40);
                 }
@@ -299,14 +382,20 @@ namespace MiniMapBuildingRepresentation
             {
                 AuditElapsed elapsed(Metrics?&Metrics->InheritanceNs:nullptr);if(Metrics)++Metrics->InheritanceCalls;
                 if(!expected)return false;
+                const auto key=std::pair{type,expected};
+                if(!ClassObject(type))return false;
+                if(const auto found=Inheritance.find(key);found!=Inheritance.end())
+                {if(Metrics)++Metrics->InheritanceHits;return found->second;}
                 std::unordered_set<uintptr_t> chain;
                 for(size_t n=0;type&&n<C::DepthLimit;++n)
                 {
                     if(!ClassObject(type)||!chain.insert(type).second)return false;
-                    if(type==expected)return true;
+                    if(type==expected)
+                    {if(Inheritance.size()<C::VisitLimit)Inheritance.emplace(key,true);return true;}
                     type=Value<uintptr_t>(type,0x40);
                 }
                 if(type)Truncated=true;
+                else if(Inheritance.size()<C::VisitLimit)Inheritance.emplace(key,false);
                 return false;
             }
             bool Is(uintptr_t p,uintptr_t type,size_t extent=0x28)
@@ -440,6 +529,7 @@ namespace MiniMapBuildingRepresentation
             }
             BlueprintIdentityResult ResolveAuthoredIdentity(uintptr_t definition) noexcept
             {
+                MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::ActorIdentity);
                 try
                 {
                 if(Record.HasSpline)return {{},"spline_identity_not_requested"};
@@ -523,6 +613,7 @@ namespace MiniMapBuildingRepresentation
                 if(!b.Valid||!(!b.Bytes||Readable(a.Data,b.Bytes,alignment)))
                 {Source(source,owner,"invalid","array bounds, alignment, arithmetic or readable storage check failed");return;}
                 Source(source,owner,b.Status,"num="+std::to_string(a.Num)+" max="+std::to_string(a.Max)+" bounded_count="+std::to_string(b.Count));
+                StorageScope storage(*this,header,a.Data,b.Bytes);
                 for(size_t i=0;i<b.Count;++i)
                 {
                     if(!Graph.Spend()){Source(source,owner,"truncated","total traversal visit limit");break;}
@@ -808,6 +899,7 @@ namespace MiniMapBuildingRepresentation
                 if(!b.Valid||(b.Bytes&&!Readable(a.Data,b.Bytes,alignment)))
                 {ProbeResult.Incomplete=true;ProbeResult.Note("invalid_array_storage");return false;}
                 if(b.Truncated){ProbeResult.Truncated=true;ProbeResult.Note("array_visit_limit");}
+                StorageScope storage(*this,header,a.Data,b.Bytes);
                 for(size_t i=0;i<b.Count;++i)
                 {
                     if(!Graph.Spend()||Work.Exhausted){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");return false;}
@@ -1264,21 +1356,38 @@ namespace MiniMapBuildingRepresentation
         } // Context releases every strong root before return/file export.
         catch(...){out={};out.Reason="native_audit_exception";}
         // All Context roots have now been released. Times are inclusive/nested;
-        // independent component-inspection validations are counted separately.
+        // independent component-inspection validations are included in totals.
         const double total=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-auditStart).count();
+        // One audit opportunity per scheduler tick. These measure actual blocking
+        // time, not the scheduler's pre-entry deadline. CPU-only generation totals.
+        static uint64_t profileGeneration=0,profileAudits=0,profileIdentities=0,profileQueries=0;
+        static double maxTickAuditMs=0,totalAuditMs=0;
+        if(profileGeneration!=record.Generation)
+        {profileGeneration=record.Generation;profileAudits=profileIdentities=profileQueries=0;maxTickAuditMs=totalAuditMs=0;}
+        ++profileAudits;profileIdentities+=validationProfile.IdentityCalls;profileQueries+=validationProfile.VirtualQueries;
+        totalAuditMs+=total;maxTickAuditMs=(std::max)(maxTickAuditMs,total);
         try
         {
             const auto identity=GetBlueprintIdentity(record);
             out.Profile=C::Object({{"canonical_blueprint",identity.Path?C::Quote(*identity.Path):"null"},
-                {"scope",C::Quote("plugin_validation_on_auditing_thread; nested_times_not_additive; inspection_validation_separate")},
+                {"scope",C::Quote("plugin_validation_on_auditing_thread; nested_times_not_additive; inspection_validation_included")},
                 {"total_audit_ms",C::Number(total)},{"inspection_ms",C::Number(double(metrics.InspectionNs)/1e6)},
+                {"generation_audits",std::to_string(profileAudits)},{"generation_total_audit_ms",C::Number(totalAuditMs)},
+                {"maximum_tick_audit_ms",C::Number(maxTickAuditMs)},
+                {"generation_identity_calls",std::to_string(profileIdentities)},
+                {"generation_virtual_queries",std::to_string(profileQueries)},
+                {"exceeds_scheduler_2ms_budget",C::Bool(total>2.0)},
                 {"identity_calls",std::to_string(validationProfile.IdentityCalls)},
+                {"retained_identity_reuses",std::to_string(metrics.IdentityHits)},
+                {"owned_field_reads",std::to_string(metrics.FieldHits)},
                 {"identity_ms",C::Number(double(validationProfile.IdentityNanoseconds)/1e6)},
                 {"readable_calls",std::to_string(validationProfile.ReadableCalls)},
                 {"readable_ms",C::Number(double(validationProfile.ReadableNanoseconds)/1e6)},
                 {"virtual_queries",std::to_string(validationProfile.VirtualQueries)},
                 {"class_calls",std::to_string(metrics.ClassCalls)},{"class_ms",C::Number(double(metrics.ClassNs)/1e6)},
+                {"class_metadata_reuses",std::to_string(metrics.ClassHits)},
                 {"inheritance_calls",std::to_string(metrics.InheritanceCalls)},{"inheritance_ms",C::Number(double(metrics.InheritanceNs)/1e6)},
+                {"inheritance_reuses",std::to_string(metrics.InheritanceHits)},
                 {"hold_checks",std::to_string(metrics.HoldCalls)},{"hold_ms",C::Number(double(metrics.HoldNs)/1e6)},
                 {"retained_root_acquisitions",std::to_string(metrics.Retained)},{"roots_released",std::to_string(metrics.Released)},
                 {"primary_context_unique_roots",std::to_string(metrics.PrimaryRoots)},
@@ -1294,6 +1403,11 @@ namespace MiniMapBuildingRepresentation
                     (unsigned long long)validationProfile.VirtualQueries,double(metrics.ClassNs)/1e6,double(metrics.InheritanceNs)/1e6,
                     (unsigned long long)metrics.HoldCalls,double(metrics.HoldNs)/1e6,(unsigned long long)metrics.Retained,
                     (unsigned long long)metrics.Released,double(metrics.RecipeNs)/1e6,double(metrics.InspectionNs)/1e6);
+                LOG_INFO("MiniMap: audit blocking profile: generation=%llu audits=%llu maximumTickAuditMs=%.3f totalAuditMs=%.3f identityCalls=%llu virtualQueries=%llu classReuses=%llu inheritanceReuses=%llu retainedIdentityReuses=%llu ownedFieldReads=%llu over2ms=%d; synchronous audit is not interrupted by scheduler deadline",
+                    (unsigned long long)record.Generation,(unsigned long long)profileAudits,maxTickAuditMs,totalAuditMs,
+                    (unsigned long long)profileIdentities,(unsigned long long)profileQueries,
+                    (unsigned long long)metrics.ClassHits,(unsigned long long)metrics.InheritanceHits,
+                    (unsigned long long)metrics.IdentityHits,(unsigned long long)metrics.FieldHits,int(total>2.0));
             }
         }catch(...){LOG_WARN("MiniMap: validation profile unavailable; admission unchanged");}
         return out;
@@ -1323,6 +1437,46 @@ namespace MiniMapBuildingRepresentation
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(ms>=2.0){LOG_WARN("MiniMap: resident class preparation took %.3f ms; one noninterruptible lookup: %ls",ms,anchor.Path);}
         return nativeAnchorCursor==std::size(nativeAnchors);
+    }
+    uintptr_t AcquireResidentMetadata(const wchar_t* path,bool scriptStruct,size_t instanceSize)
+    {
+        MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::ResidentMetadata);
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        if(!path||std::wcsncmp(path,L"/Script/",8)!=0||!instanceSize||instanceSize>INT32_MAX||
+            !engine||!objectArray||stopped.load()||!MiniMapMap::GameplayReady()||!b.GameThread||!b.Retain||!b.Release||
+            !reinterpret_cast<bool(*)()>(b.GameThread)())return 0;
+        const auto address=engine->GetStaticFindObjectByNameAddress();if(!address)return 0;
+        using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
+        const auto find=reinterpret_cast<Find>(address);
+        auto* classType=find(nullptr,nullptr,L"/Script/CoreUObject.Class",false);
+        if(!Identity(reinterpret_cast<uintptr_t>(classType),sizeof(SDK::UClass))||classType->Class!=classType)return 0;
+        using Root=void(*)(SDK::UObject*);
+        const auto retain=reinterpret_cast<Root>(b.Retain),release=reinterpret_cast<Root>(b.Release);
+        retain(classType);
+        struct Drop {SDK::UObject* Object;Root Release;~Drop(){if(Object)Release(Object);}} classRoot{classType,release};
+        auto* expected=scriptStruct?find(static_cast<SDK::UClass*>(classType),nullptr,L"/Script/CoreUObject.ScriptStruct",true):classType;
+        if(!Identity(reinterpret_cast<uintptr_t>(expected),sizeof(SDK::UClass))||expected->Class!=classType)return 0;
+        retain(expected);Drop expectedRoot{expected,release};
+        // Exact class filtering plus full UObject identity precede typed access.
+        // StaticFindObject is a resident hash lookup, never a package/load request.
+        auto* object=find(static_cast<SDK::UClass*>(expected),nullptr,path,true);
+        const auto p=reinterpret_cast<uintptr_t>(object);
+        if(!Identity(p,scriptStruct?sizeof(SDK::UScriptStruct):sizeof(SDK::UClass))||object->Class!=expected)return 0;
+        auto* type=static_cast<SDK::UStruct*>(object);
+        if(type->Size!=int32_t(instanceSize))return 0;
+        retain(object);
+        static SDK::UWorld* reportedWorld=nullptr;static size_t reports=0;
+        if(reportedWorld!=MiniMapMap::GetWorld()){reportedWorld=MiniMapMap::GetWorld();reports=0;}
+        if(reports++<32)LOG_INFO("MiniMap: resident metadata acquired: path=%ls kind=%s instanceSize=%zu exactClass=1 retained=1; no global ObjectWalker scan",path,scriptStruct?"ScriptStruct":"Class",instanceSize);
+        return p;
+    }
+    void ReleaseResidentMetadata(uintptr_t object)
+    {
+        if(!object)return;
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        if(!b.GameThread||!b.Release||!reinterpret_cast<bool(*)()>(b.GameThread)())
+        {LOG_ERROR("MiniMap: resident metadata release off game thread/unavailable; root retained, unload safety unverified");return;}
+        reinterpret_cast<void(*)(SDK::UObject*)>(b.Release)(reinterpret_cast<SDK::UObject*>(object));
     }
     bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
     bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record& record,MiniMapSpriteClassification::Observation& observation)
@@ -1358,13 +1512,15 @@ namespace MiniMapBuildingRepresentation
     {
         failedSlot=0;
         if(!materials||count>32||!Identity(component,0x540))return false;
-        C::ArrayHeader h{};if(!Read(component,0x530,h))return false;
+        // Identity just validated the entire containing component extent.
+        C::ArrayHeader h{};std::memcpy(&h,reinterpret_cast<const void*>(component+0x530),sizeof(h));
         const auto b=C::BoundArray(h,8,8,32);
         if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,8)))return false;
         for(size_t i=0;i<count;++i)
         {
             failedSlot=i;uintptr_t material=0;
-            if(!Read(h.Data,i*8,material)||material!=materials[i]||!Identity(material))return false;
+            std::memcpy(&material,reinterpret_cast<const void*>(h.Data+i*8),sizeof(material));
+            if(material!=materials[i]||!Identity(material))return false;
         }
         return true;
     }
@@ -1375,13 +1531,17 @@ namespace MiniMapBuildingRepresentation
         if(!objectArray||!components||count>16||!Identity(capture,0x298))return false;
         // Components and actors are separate engine-owned show-only sources.
         // Reject any actor list, rather than allowing it to add world geometry.
-        C::ArrayHeader actors{};if(!Read(capture,0x288,actors))return false;
+        C::ArrayHeader actors{};std::memcpy(&actors,reinterpret_cast<const void*>(capture+0x288),sizeof(actors));
         const auto actorBounds=C::BoundArray(actors,8,8,0);
         if(!actorBounds.Valid||actorBounds.Truncated||actors.Num!=0||actors.Max>64||
             (!actors.Max&&actors.Data)||(actors.Max&&!Readable(actors.Data,size_t(actors.Max)*8,8)))return false;
-        C::ArrayHeader h{};if(!Read(capture,0x278,h))return false;
+        C::ArrayHeader h{};std::memcpy(&h,reinterpret_cast<const void*>(capture+0x278),sizeof(h));
         const auto b=C::BoundArray(h,8,4,16);
         if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,4)))return false;
+        // Snapshot the bounded weak array once. No native dispatch/GC/yield
+        // occurs here; every component's indexed identity is still checked below.
+        std::array<std::array<int32_t,2>,16> entries{};
+        if(b.Bytes)std::memcpy(entries.data(),reinterpret_cast<const void*>(h.Data),b.Bytes);
         std::set<uintptr_t> unique;
         for(size_t i=0;i<count;++i)
         {
@@ -1392,7 +1552,7 @@ namespace MiniMapBuildingRepresentation
             if(serial<=0)return false;
             size_t matches=0;
             for(size_t j=0;j<count;++j)
-                if(Value<int32_t>(h.Data,j*8)==index&&Value<int32_t>(h.Data,j*8+4)==serial)++matches;
+                if(entries[j][0]==index&&entries[j][1]==serial)++matches;
             if(matches!=1)return false;
         }
         return true;

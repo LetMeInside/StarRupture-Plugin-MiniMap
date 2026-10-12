@@ -16,6 +16,7 @@ std::vector<A::Slot> AuditMaterials(uintptr_t header,size_t stride,bool& valid,s
     if(!AuditSpend()||!Read(header,0,h))return slots;
     const auto b=C::BoundArray(h,stride,8,C::MaterialLimit);
     if(!b.Valid||(b.Bytes&&!Readable(h.Data,b.Bytes,8)))return slots;
+    StorageScope storage(*this,header,h.Data,b.Bytes);
     if(b.Truncated)AuditTruncated=true;
     valid=!b.Truncated;
     for(size_t i=0;i<b.Count;++i)

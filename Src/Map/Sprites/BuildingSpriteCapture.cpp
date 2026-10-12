@@ -65,6 +65,9 @@ namespace MiniMapSmelterCapture
         uint64_t staticEvidenceGeneration=0;
         size_t staticEvidenceReports=0; // at most eight static captures per generation
         bool staticEvidenceActive=false;
+        using CaptureClock=MiniMapCallbackTiming::Clock;
+        CaptureClock::time_point componentsRegisteredAt{},captureSubmittedAt{};
+        bool publicStaticCapture=false;
 
         SA::Footprint assemblyBounds;
         SA::Ledger assemblyComponents;
@@ -238,9 +241,26 @@ namespace MiniMapSmelterCapture
         }
         struct ComponentFunctions
         {
-            SDK::UFunction* Items[4]{};
+            SDK::UFunction* Items[5]{};
             ~ComponentFunctions(){for(auto* fn:Items)if(fn)Drop(fn);}
         };
+        SDK::UFunction* FindPublicCapture(SDK::UClass* functionClass,SDK::UClass* captureClass)
+        {
+            if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(captureClass)))return nullptr;
+            auto* fn=FindFunction(functionClass,L"/Script/Engine.SceneCaptureComponent2D",L"CaptureScene",0,0,0);
+            if(!fn)return nullptr;
+            // No arguments, return value or property frame. The installed public
+            // wrapper flushes World::SendAllEndOfFrameUpdates before its builder.
+            MEMORY_BASIC_INFORMATION memory{};
+            const bool valid=MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(fn))&&
+                MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(fn),sizeof(SDK::UFunction),8)&&
+                fn->Outer==captureClass&&!fn->ChildProperties&&!(uint32_t(fn->FunctionFlags)&0x2000)&&
+                (MiniMapNative::RecordVirtualQuery(),VirtualQuery(reinterpret_cast<const void*>(fn->ExecFunction),&memory,sizeof(memory)))&&
+                memory.State==MEM_COMMIT&&!(memory.Protect&(PAGE_GUARD|PAGE_NOACCESS))&&
+                (memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY));
+            if(!valid){Drop(fn);return nullptr;}
+            return fn;
+        }
         template<class Params> bool Invoke(SDK::UObject* object,SDK::UFunction* fn,Params& params)
         {
             // v70 public dispatch calls the supplied UFunction directly; no name
@@ -295,7 +315,8 @@ namespace MiniMapSmelterCapture
                 for(size_t i=0;i<bound.Count;++i)
                 {
                     float value=0;
-                    if(!MiniMapNative::ReadMemory(header.Data+i*sizeof(float),&value,sizeof(value))||!std::isfinite(value))return std::string("null");
+                    std::memcpy(&value,reinterpret_cast<const void*>(header.Data+i*sizeof(float)),sizeof(value));
+                    if(!std::isfinite(value))return std::string("null");
                     values.Add(J::Number(value));
                 }
                 return values.String();
@@ -356,6 +377,12 @@ namespace MiniMapSmelterCapture
                     LOG_INFO("MiniMap: static capture component evidence: instance=%zu meshObject=%u component=%s customData=%s; mesh/transform/material assignment already verified",
                         i,static_cast<unsigned>(reinterpret_cast<SDK::UObject*>(input.Mesh)->Index),
                         CapturePropertyEvidence(component).c_str(),CaptureCustomDataEvidence(component).c_str());
+                    // These are public SDK input flags on already retained, validated
+                    // static assets/components. They are NOT a render readiness gate.
+                    static_assert(offsetof(SDK::UStaticMeshComponent,ForcedLodModel)==0x578&&sizeof(SDK::UStreamableRenderAsset)==0xd0);
+                    const auto* meshAsset=reinterpret_cast<const SDK::UStaticMesh*>(input.Mesh);
+                    LOG_INFO("MiniMap: static quality inputs A4.8: instance=%zu forcedLodModel=%d (0=automatic,1=request_LOD0) neverStream=%d streamingUpdatePending=%d; effectiveLOD=unverified LOD0Residency=unverified renderData/proxy/PSO=unverified Nanite=unverified; capture route and nonempty readback do not prove full detail; retries=disabled",
+                        i,component->ForcedLodModel,int(meshAsset->NeverStream),int(meshAsset->bHasStreamingUpdatePending));
                     LOG_INFO("MiniMap: static capture component transform readback: instance=%zu unattached=%d T=(%.3f,%.3f,%.3f) rotation=(%.3f,%.3f,%.3f) scale=(%.3f,%.3f,%.3f)",
                         i,int(component->AttachParent==nullptr),component->RelativeLocation.X,component->RelativeLocation.Y,component->RelativeLocation.Z,
                         component->RelativeRotation.Pitch,component->RelativeRotation.Yaw,component->RelativeRotation.Roll,
@@ -456,7 +483,7 @@ namespace MiniMapSmelterCapture
                 if(!fn||!read(fn,sizeof(SDK::UFunction))||fn->Outer!=declaring||
                     (uint32_t(fn->FunctionFlags)&0x2000))return false; // instance functions only
                 MEMORY_BASIC_INFORMATION memory{};
-                if(!VirtualQuery(reinterpret_cast<const void*>(fn->ExecFunction),&memory,sizeof(memory))||
+                if(!(MiniMapNative::RecordVirtualQuery(),VirtualQuery(reinterpret_cast<const void*>(fn->ExecFunction),&memory,sizeof(memory)))||
                     memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_GUARD|PAGE_NOACCESS))||
                     !(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))return false;
                 uint16_t frameSize=0;std::memcpy(&frameSize,reinterpret_cast<const uint8_t*>(fn)+0xb6,2);
@@ -773,6 +800,7 @@ namespace MiniMapSmelterCapture
         }
         void ServiceCaptureRetirement()
         {
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CaptureRetire);
             RetirementOperations operations;
             if (!MiniMapCaptureRetirement::CanPoll(Native::ExternalRejectedWithoutReadback(job),
                 Native::CaptureRetirementRendererAvailable(),operations.Available(),!meshRegistered && !captureRegistered && assemblyComponents.Detached()))
@@ -797,6 +825,7 @@ namespace MiniMapSmelterCapture
         }
         void ExportImage() noexcept
         {
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CaptureExport);
             LOG_INFO("MiniMap: R2 PNG export entered (one-shot CPU image pair)");
             // One-shot CPU-only export on the game thread, after native GPU
             // cleanup/callable retirement and before the CPU job is deleted.
@@ -866,6 +895,7 @@ namespace MiniMapSmelterCapture
         }
         void Submit(SDK::UWorld* world,const SDK::FVector& player)
         {
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CaptureSetup);
             attempted=true;
             if(skeletalOnly&&!assemblyActive)
             {finished=true;LOG_ERROR("MiniMap: skeletal-only owner invariant failed; no native setup attempted; resources retained");return;}
@@ -936,7 +966,13 @@ namespace MiniMapSmelterCapture
             functions.Items[1]=FindFunction(functionClass,L"/Script/Engine.SceneComponent",L"K2_SetWorldLocationAndRotation",0x139,sizeof(TransformParams),5);
             functions.Items[2]=FindFunction(functionClass,L"/Script/Engine.SceneCaptureComponent",L"ShowOnlyComponent",8,sizeof(ShowOnlyParams),1);
             functions.Items[3]=FindFunction(functionClass,L"/Script/Engine.SceneCaptureComponent",L"SetShowFlagSettings",0x10,sizeof(FlagsParams),1);
-            for(auto* fn:functions.Items)if(!fn){FailBeforeCapture("exact native function lookup/parameter ABI validation failed");return;}
+            for(size_t i=0;i<4;++i)if(!functions.Items[i]){FailBeforeCapture("exact native function lookup/parameter ABI validation failed");return;}
+            publicStaticCapture=assemblyActive&&!skeletalOnly;
+            if(publicStaticCapture)
+            {
+                functions.Items[4]=FindPublicCapture(functionClass,captureClass);
+                if(!functions.Items[4]){FailBeforeCapture("public CaptureScene owner/native/executable/zero-frame contract unavailable");return;}
+            }
             if(assemblyActive&&reinterpret_cast<uintptr_t>(functions.Items[2]->ExecFunction)!=bindings.AssemblyShowOnlyExec)
             {FailBeforeCapture("installed show-only wrapper fingerprint mismatch");return;}
             LOG_INFO("MiniMap: R2 UObject creation/configuration entered; exact function lookups validated");
@@ -1060,6 +1096,7 @@ namespace MiniMapSmelterCapture
                 {FailBeforeCapture("assembly capture component/world registration failed");return;}
             }
             if(registeredMeshWorld!=world||registeredCaptureWorld!=world){FailBeforeCapture("component world registration failed");return;}
+            componentsRegisteredAt=CaptureClock::now();
             LOG_INFO("MiniMap: R2 component registration returned; both world pointers validated");
             if(skeletalOnly)
             {
@@ -1101,29 +1138,58 @@ namespace MiniMapSmelterCapture
                     MiniMapSpriteCapture::Decision{MiniMapSpriteCapture::State::Rejected,"candidate_request_missing"};
                 if(!decision.Allowed()){FailBeforeCapture(decision.Reason);return;}
             }
-            void* builder=reinterpret_cast<void*(*)(size_t,uint32_t)>(native.Malloc)(0x20,8);
-            if(!builder){FailBeforeCapture("builder storage allocation failed");return;}
+            void* builder=publicStaticCapture?nullptr:reinterpret_cast<void*(*)(size_t,uint32_t)>(native.Malloc)(0x20,8);
+            if(!publicStaticCapture&&!builder){FailBeforeCapture("builder storage allocation failed");return;}
             const auto snapshot=assemblyActive?MiniMapBuildingCollector::GetSnapshot():nullptr;
             if(!MiniMapMap::GameplayReady() || !GameThread() || world!=MiniMapMap::GetWorld() || world==endingWorld ||
                 (assemblyActive&&(!snapshot||!snapshot->Complete||snapshot->Generation!=assemblyRecipe.Generation||!assemblyComponents.Complete(skeletalOnly?1:assemblyRecipe.Count)))||
                 !Native::CaptureRetirementRendererAvailable())
             {
-                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+                if(builder)reinterpret_cast<void(*)(void*)>(native.Free)(builder);
                 FailBeforeCapture("final pre-commit world/RHI prerequisite changed");return;
             }
             LOG_INFO("MiniMap: R2 capture-builder submission entered");
             ReportStaticCaptureEvidence(camera,center,extent,location);
             if(skeletalOnly)LOG_INFO("MiniMap: skeletal-only isolated assembly: registered members=1, exact show-only membership verified; width=%.3f; fixed anchor=(0,0,200000); static components absent, publication disabled",double(capture->OrthoWidth));
             else if(assemblyActive)LOG_INFO("MiniMap: R2.5b isolated static assembly: instances=%zu static-reference width=%.3f; fixed anchor=(0,0,200000); skeletal excluded",assemblyComponents.Count,double(capture->OrthoWidth));
-            reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
-            reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
-            // This is the commit boundary: all subsequent failures retain the
-            // rooted target/components until real GPU retirement is established.
-            reinterpret_cast<void(*)(void*)>(bindings.BuilderExecute)(builder);
-            captureCommitted=true;
-            const bool committedJob=Native::MarkExternalCaptureCommitted(job);
-            reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
-            reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+            bool committedJob=false;
+            captureSubmittedAt=CaptureClock::now();
+            if(publicStaticCapture)
+            {
+                if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(capture))||
+                    capture->Class!=captureClass||!capture->bVisible)
+                {FailBeforeCapture("public CaptureScene receiver/visibility prerequisite failed");return;}
+                // EngineTick callbacks run after the original engine tick, outside
+                // its end-of-frame update traversal. Public CaptureScene performs
+                // the deferred update flush missing from direct UpdateCapture.
+                // Mark conservatively BEFORE dispatch: an exception may follow
+                // render work submission. Such failures must retain all roots.
+                committedJob=Native::MarkExternalCaptureCommitted(job);
+                if(!committedJob){FailBeforeCapture("public CaptureScene job commitment prerequisite failed");return;}
+                captureCommitted=true;
+                if(staticEvidenceActive&&candidateRequest)
+                    LOG_INFO("MiniMap: static capture lifecycle A4.6: generation=%llu building=%u attempt=1 components=%zu mode=public_CaptureScene registrationToSubmitMs=%.3f visible=%d detailMode=%u; deferred-update flush supplied by installed public contract; proxy/PSO/resident LOD readiness unobserved",
+                        (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,assemblyComponents.Count,
+                        std::chrono::duration<double,std::milli>(captureSubmittedAt-componentsRegisteredAt).count(),int(capture->bVisible),unsigned(capture->DetailMode));
+                MiniMapCallbackTiming::Phase dispatchTiming(MiniMapCallbackTiming::Id::CaptureSubmit);
+                uint8_t emptyFrame=0;
+                if(!Invoke(capture,functions.Items[4],emptyFrame))
+                {finished=true;Native::Cancel(job);FailSpritePublication("public_capture_dispatch_uncertain; resources_retained");LOG_ERROR("MiniMap: public CaptureScene dispatch uncertain; resources retained");return;}
+                if(staticEvidenceActive)
+                    LOG_INFO("MiniMap: static capture lifecycle A4.6: attempt=1 public dispatch returned in %.3fms; void call is not proof of drawable geometry; readback follows; retries=disabled",
+                        std::chrono::duration<double,std::milli>(CaptureClock::now()-captureSubmittedAt).count());
+            }
+            else
+            {
+                reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
+                reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
+                // Existing diagnostic commit boundary and retirement are unchanged.
+                reinterpret_cast<void(*)(void*)>(bindings.BuilderExecute)(builder);
+                captureCommitted=true;
+                committedJob=Native::MarkExternalCaptureCommitted(job);
+                reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
+                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+            }
             if(!committedJob){finished=true;Native::Cancel(job);FailSpritePublication("committed_job_identity_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
             LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, %s; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f",
                 Dimension,Dimension,skeletalOnly?"diagnostic skeletal-only reference render (no publication)":assemblyActive?"bounded static authored instances":"9 authored materials",extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
@@ -1231,7 +1297,7 @@ namespace MiniMapSmelterCapture
                 catch(...) { finished=true;FailSpritePublication("retirement_exception; resources_retained");LOG_ERROR("MiniMap: R2 capture retirement exception; resources retained"); }
                 return;
             }
-            Native::Service(job,++frame); // never consult the old world here.
+            {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CaptureReadback);Native::Service(job,++frame);} // never consult the old world here.
             const auto report=Native::Inspect(job);
             if((report.Visited&Bit(Native::Phase::CopySubmitted))&&!(reported&Bit(Native::Phase::CopySubmitted)))
             {reported|=Bit(Native::Phase::CopySubmitted);LOG_INFO("MiniMap: R2 GPU readback copy submitted; later-frame readiness polling");}
@@ -1261,6 +1327,10 @@ namespace MiniMapSmelterCapture
                     if(!stats->Foreground||!stats->Background) LOG_WARN("MiniMap: R2 image evidence inconclusive: candidate foreground/background separation absent");
                     if(staticEvidenceActive&&assemblyActive&&!skeletalOnly&&candidateRequest)
                     {
+                        LOG_INFO("MiniMap: static capture lifecycle A4.6: generation=%llu building=%u attempt=1 mode=%s submitToReadbackMs=%.3f foreground=%llu readback=%s; publication validation follows; no retry",
+                            (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,publicStaticCapture?"public_CaptureScene":"direct_builder",
+                            std::chrono::duration<double,std::milli>(CaptureClock::now()-captureSubmittedAt).count(),(unsigned long long)stats->Foreground,
+                            report.Result==Native::Outcome::Verified?"verified":"failed");
                         staticEvidenceActive=false;
                         const bool clearCompatible=!stats->Foreground&&!stats->Nonfinite&&stats->RgbMin==0&&stats->RgbMax==0&&stats->AlphaMin==1&&stats->AlphaMax==1;
                         LOG_INFO("MiniMap: static capture result evidence A4.4a: generation=%llu building=%u unchangedClearCompatible=%d foreground=%llu; empty output cannot establish tile identity, material opacity, rendered LOD or proxy readiness; no synthetic geometry or pillar acquisition",

@@ -405,6 +405,7 @@ namespace MiniMapNative
     struct ValidationProfile
     {
         uint64_t IdentityCalls{},IdentityNanoseconds{},ReadableCalls{},ReadableNanoseconds{},VirtualQueries{};
+        bool MeasureTime=true; // Callback scopes count work without per-check clocks.
     };
     class ScopedValidationProfile
     {
@@ -415,6 +416,8 @@ namespace MiniMapNative
         ScopedValidationProfile(const ScopedValidationProfile&)=delete;
         ScopedValidationProfile& operator=(const ScopedValidationProfile&)=delete;
     };
+
+    void RecordVirtualQuery() noexcept; // Direct native code-page queries join the current scope.
 
     bool IsMemoryRangeReadable(
         uintptr_t address,

@@ -119,10 +119,11 @@ namespace MiniMapSpriteDiscovery
         {
             namespace P=MiniMapBuildingSpriteCore;namespace V=MiniMapSpriteValidation;
             const auto key=CopiedRecord(record).Identity;
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryCandidate);
             const auto start=Clock::now();
             auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate);
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
-            LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; bounded synchronous native unit",
+            LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous audit duration, not a two-ms bounded unit",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
             if(out.Reason=="blueprint_blacklisted")
                 MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Reason);
@@ -154,6 +155,7 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_BUILDING_SPRITES)
                 MiniMapBuildingSprites::TimingScope registryTiming(MiniMapBuildingSprites::Timing::RegistryScan);
 #endif
+                MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryRegistry);
                 result=owner->Service(B::GetSnapshot(),MiniMapMap::HasWorld(),now,&CopiedRecord);
             }
             if(owner->WriterGeneration!=owner->Published.Generation)
@@ -168,7 +170,7 @@ namespace MiniMapSpriteDiscovery
             if(result==C::Publication::Ready)
                 for(size_t i=0;i<owner->Published.Count;++i)
                     MiniMapBuildingSprites::Record(owner->Published.Entries[i].Identity,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");
-            const bool anchorsReady=MiniMapBuildingRepresentation::PrepareNativeClasses();
+            const bool anchorsReady=[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
             const bool changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
                 v.Service(owner->Published,B::GetSnapshot(),&CopiedRecord,&ProcessCandidate);
             if(now>=owner->NextPipelineExport)
@@ -195,6 +197,7 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::TimingScope buildTiming(MiniMapBuildingSprites::Timing::DiagnosticBuild);
 #endif
+            MiniMapCallbackTiming::Phase diagnosticPhase(MiniMapCallbackTiming::Id::DiscoveryDiagnostics);
             if(owner->Dirty&1){Publish(C::Json(owner->Published,C::OutputLimit,result==C::Publication::Invalidated));owner->Dirty&=~1u;}
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             else if(owner->Dirty&2){Publish(MiniMapSpriteValidation::Json(v,owner->Published),true);owner->Dirty&=~2u;}

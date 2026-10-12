@@ -141,6 +141,47 @@ namespace
             if(type==base) return true;
         return false;
     }
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    std::array<uintptr_t,18> g_metadataRoots{};
+    size_t g_metadataCount=0,g_metadataStep=0;
+    Clock::time_point g_metadataRetry{};
+    bool ResolveTypes()
+    {
+        MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::CollectorMetadata);
+        if(g_typesReady)return true;
+        if(Clock::now()<g_metadataRetry)return false;
+        // One metadata item per callback, including optional geometry metadata.
+        // No worldwide ObjectWalker scan and no partial query construction.
+        uintptr_t acquired=0;
+        switch(g_metadataStep++)
+        {
+        case 0: if(!g_types.Building){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 1: if(!g_types.Grid){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 2: if(!g_types.Transform){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 3: if(!g_types.Parameters){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 4: if(!g_types.Spline){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 5: if(!g_types.Tint){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 6: if(!g_types.Placement){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 7: if(!g_types.BuildingData){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 8: if(!g_types.GridClass){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 9: if(!g_types.TargetBox){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 10: if(!g_types.Config){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 11: if(!g_types.TargetTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 12: if(!g_types.VisualTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 13: if(!g_types.CosmeticTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 14: if(!g_types.DroneRail){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 15: if(!g_types.Walkway){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 16: if(!g_types.StaticMesh){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 17: if(!g_types.DronesSettings){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        }
+        if(acquired)g_metadataRoots[g_metadataCount++]=acquired;
+        if(g_metadataStep<g_metadataRoots.size())return false;
+        g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
+            g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
+        if(!g_typesReady){g_metadataStep=0;g_metadataRetry=Clock::now()+std::chrono::seconds(1);}
+        return g_typesReady;
+    }
+#else
     SDK::UObject* Metadata(const char* name,const char* kind,size_t size)
     {
         PluginObjectInfo info={};
@@ -176,6 +217,7 @@ namespace
             g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
         return g_typesReady;
     }
+#endif
     const void* Fragment(const Native& n,Id id,const SDK::UScriptStruct* type)
     { return type?n.mass.getFragmentDataPtr(g_manager,id,type):nullptr; }
     const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id)
@@ -412,6 +454,10 @@ namespace
 #endif
         g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
         g_curveScratch={};
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+        for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
+        g_metadataRoots={};g_metadataCount=g_metadataStep=0;g_metadataRetry={};
+#endif
         g_cursor=g_nearCursor=0; g_epoch=0; g_types={}; g_typesReady=false;
         g_region={}; g_queryRegion={}; g_lastRadius=0;
         g_ordinaryQueryPadding=kOriginPadding;
@@ -700,7 +746,7 @@ namespace
             if(!g_unavailableLogged) LOG_WARN("MiniMap: BuildingCollector: optional native prerequisites unavailable; collector disabled");
             g_unavailableLogged=true; return;
         }
-        if(!Ensure(*n)) return;
+        {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorEnsure);if(!Ensure(*n)) return;}
         double radius=0; { std::scoped_lock lock(g_mutex); radius=g_viewRadius; }
         MiniMapMap::PlayerPose pose;
         if(radius<=0 || !MiniMapMap::TryGetPlayerPose(pose)) return;
@@ -716,11 +762,12 @@ namespace
             for(auto& [key,e]:g_cache) if(MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region))
             { e.Due={}; g_near.push_back(key); }
         }
-        if(now>=g_nextIdentity) { Reconcile(*n); g_nextIdentity=now+kIdentityCadence; }
-        Refresh(*n);
+        if(now>=g_nextIdentity) { MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorReconcile);Reconcile(*n); g_nextIdentity=now+kIdentityCadence; }
+        {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorRefresh);Refresh(*n);}
         if(now>=g_nextLocal)
         {
             g_nextLocal=now+kLocalCadence;
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorPublish);
             auto indexed=IndexedRecords(*n,pose); g_indexed=indexed.size();
             Publish(std::move(indexed),*n); ++g_metrics.Polls;
         }
@@ -732,6 +779,7 @@ namespace
         }
         if(now>=g_nextLog)
         {
+            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorDiagnostics);
             size_t off=0,tagged=0,pending=0,splines=0;
             double maxAge=0,localAge=0;
             for(const auto& [key,e]:g_cache)

@@ -12,6 +12,8 @@
 #include <mutex>
 #include <sstream>
 #include <iomanip>
+#include <numeric>
+#include <tuple>
 #ifndef MINIMAP_STAGE_C_VISUALS_ENABLED
 #define MINIMAP_STAGE_C_VISUALS_ENABLED 0
 #endif
@@ -55,12 +57,15 @@ namespace
         std::shared_ptr<const C::SplineGeometry> Curve;
         std::array<float,4> Tint={1,1,1,1};
         double HalfWidth=0;
+        double Elevation=0;
+        int32_t EntityIndex=0,EntitySerial=0;
         bool Spline=false, Proxy=false, WidthFallback=false, Unresolved=false;
     };
     struct Snapshot
     {
         uint64_t Generation=0;
         std::vector<Instance> Instances; // Same stable identity order as collector.
+        std::vector<size_t> DrawOrder; // Prepared on snapshot changes, never sorted in Render.
     };
     struct RenderStats
     {
@@ -83,6 +88,8 @@ namespace
 
     double Ms(Clock::time_point start)
     { return std::chrono::duration<double,std::milli>(Clock::now()-start).count(); }
+    auto DrawKey(const Instance& i)
+    {return std::tuple(i.Spline?0:1,i.Elevation,i.Origin.Y,i.Origin.X,i.EntitySerial,i.EntityIndex);}
     C::LocalBounds Placeholder()
     { return {{-kPlaceholderHalfSize,-kPlaceholderHalfSize,0},{kPlaceholderHalfSize,kPlaceholderHalfSize,0},true}; }
     void Clear()
@@ -139,6 +146,7 @@ namespace
                 cached=&entry;
             }
             Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]}; instance.Tint=r.Tint;
+            instance.Elevation=r.Position[2];instance.EntityIndex=r.Index;instance.EntitySerial=r.Serial;
 #if defined(MINIMAP_BUILDING_SPRITES)
             instance.SpriteSource=r;
 #endif
@@ -166,6 +174,20 @@ namespace
                 instance.Unresolved=instance.Shape.Count<3;
             }
             result->Instances.push_back(std::move(instance));
+        }
+        std::shared_ptr<const Snapshot> previous;
+        {std::scoped_lock lock(g_mutex);previous=g_published;}
+        const bool sameOrderInputs=previous&&previous->Generation==result->Generation&&
+            previous->Instances.size()==result->Instances.size()&&
+            std::equal(result->Instances.begin(),result->Instances.end(),previous->Instances.begin(),
+                [](const Instance& a,const Instance& b){return DrawKey(a)==DrawKey(b);});
+        if(sameOrderInputs)result->DrawOrder=previous->DrawOrder;
+        else
+        {
+            result->DrawOrder.resize(result->Instances.size());
+            std::iota(result->DrawOrder.begin(),result->DrawOrder.end(),size_t(0));
+            std::sort(result->DrawOrder.begin(),result->DrawOrder.end(),[&](size_t a,size_t b)
+                {return DrawKey(result->Instances[a])<DrawKey(result->Instances[b]);});
         }
         const double prepareMs=Ms(start);
         { std::scoped_lock lock(g_mutex); g_published=std::move(result); }
@@ -273,13 +295,14 @@ namespace MiniMapBuildingVisuals
         const C::Bounds viewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
             transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2,true};
         ui->DL_PushClipRect(dl,float(viewport.MinX),float(viewport.MinY),float(viewport.MaxX),float(viewport.MaxY),true);
-        // Deterministic: splines below ordinary proxies; stable Mass identity order within each.
+        // Preserve the separate spline pass. Every building sprite uses ascending
+        // world Z, then Y/X; entity identity only breaks exact coordinate ties.
 #if defined(MINIMAP_BUILDING_SPRITES)
         auto spriteFrame=MiniMapBuildingSprites::BeginDraw();
 #endif
-        for(bool spline:{true,false}) for(const auto& instance:snapshot->Instances)
+        for(const auto index:snapshot->DrawOrder)
         {
-            if(instance.Spline!=spline) continue;
+            const auto& instance=snapshot->Instances[index];const bool spline=instance.Spline;
 #if defined(MINIMAP_BUILDING_SPRITES)
             // Draw before proxy culling: an authored assembly can extend beyond
             // its targeting proxy. The texture path performs its own clip/FOW checks.
