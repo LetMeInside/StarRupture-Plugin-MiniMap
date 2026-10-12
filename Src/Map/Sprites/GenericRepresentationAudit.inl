@@ -4,6 +4,7 @@ MiniMapSpriteValidation::Result GenericAudit()
 #if defined(MINIMAP_BUILDING_SPRITES)
     MiniMapBuildingSprites::TimingScope recipeTiming(MiniMapBuildingSprites::Timing::AssemblyRecipe);
 #endif
+    AuditElapsed recipeElapsed(Metrics?&Metrics->RecipeNs:nullptr);
     namespace V=MiniMapSpriteValidation;
     V::Result out;out.Resident=AuditClass!=0;out.Route=SelectedTier;out.Selected=Selected;
     AuditActive=true;
@@ -11,7 +12,7 @@ MiniMapSpriteValidation::Result GenericAudit()
     C::JsonArray nativeRecords,records;records.Limit=12*1024;nativeRecords.Limit=2048;
     std::vector<A::NamedCandidate> names;std::map<std::string,uintptr_t> pointers;
     std::map<std::string,A::Node> nodes;std::map<std::string,A::Result> native;
-    uintptr_t cdo=0,root=0;
+    uintptr_t cdo=0,root=0,nativeMain=0;bool authoredMainMeshUnresolved=false;
     if(AuditClass&&ClassObject(AuditClass)&&Derives(AuditClass,Actor))
     {
         cdo=Value<uintptr_t>(AuditClass,0x110);
@@ -23,6 +24,19 @@ MiniMapSpriteValidation::Result GenericAudit()
         if(!Is(root,Scene,0x250)||!Hold(root,0x250))root=0;
         const auto buildingBase=NativeClass(L"/Script/Chimera.CrBuildingActorBase");
         const bool building=buildingBase&&Derives(AuditClass,buildingBase)&&Is(cdo,AuditClass,0x2e8);
+        // An authored building CDO may expose connectors before native initialization
+        // establishes its main mesh. Those templates alone cannot certify the body.
+        if(AuthoredFallback)
+        {
+            if(!buildingBase)authoredMainMeshUnresolved=true;
+            else if(Derives(AuditClass,buildingBase))
+            {
+                const auto main=building?Value<uintptr_t>(cdo,0x2e0):0;
+                nativeMain=main;
+                authoredMainMeshUnresolved=!main||!Is(main,StaticComponent,0x590)||!Hold(main,0x590)||
+                    !Is(Value<uintptr_t>(main,0x588),StaticMesh,0x170);
+            }
+        }
         const std::pair<size_t,const char*> fields[]={{0x1b8,"RootComponent"},{0x2d8,"MainComponent"},{0x2e0,"MainMeshComponent"}};
         for(size_t f=0;f<(building?3u:1u);++f)
         {
@@ -41,6 +55,48 @@ MiniMapSpriteValidation::Result GenericAudit()
     std::map<std::string,MeshInput> materials;
     MiniMapStaticAssembly::Recipe recipe;recipe.General=true;recipe.Generation=Record.Generation;
     recipe.ActorClass=AuditClass;recipe.RootVerified=out.Root;recipe.HighDetail=SelectedTier=="high_detail_actor";
+    // A separate body route is permitted only after proving that every other
+    // discovered static template is noncontributing. Unresolved visible inputs
+    // never become omissions, and exact component identity is the only duplicate rule.
+    const bool nativeBodyConsidered=AuthoredFallback&&CaptureRequested&&(nativeMain||authoredMainMeshUnresolved);
+    bool nativeBodySelected=nativeBodyConsidered&&!authoredMainMeshUnresolved&&out.Root&&
+        Is(nativeMain,StaticComponent,0x590)&&Hold(nativeMain,0x590)&&
+        Value<uintptr_t>(nativeMain,0x10)==StaticComponent;
+    size_t omittedHidden=0,omittedNull=0,duplicates=0,unresolvedVisible=0;
+    bool unresolvedSkinned=false;
+    std::set<uintptr_t> bodyOmissions,bodyExamined;
+    if(nativeBodyConsidered)
+    {
+        uint8_t visible=0,hidden=0;
+        nativeBodySelected=nativeBodySelected&&Read(nativeMain,0x1a0,visible)&&Read(nativeMain,0x1a1,hidden)&&
+            (visible&32)!=0&&(hidden&8)==0;
+        auto examine=[&](uintptr_t component)
+        {
+            if(!bodyExamined.insert(component).second)return;
+            if(component==nativeMain)return;
+            if(!Is(component,StaticComponent,0x590)||!Hold(component,0x590))
+            {++unresolvedVisible;nativeBodySelected=false;return;}
+            uint8_t v=0,h=0;uintptr_t mesh=0;
+            if(!Read(component,0x1a0,v)||!Read(component,0x1a1,h)||!Read(component,0x588,mesh))
+            {++unresolvedVisible;nativeBodySelected=false;return;}
+            if(!(v&32)||(h&8)){++omittedHidden;bodyOmissions.insert(component);return;}
+            // A null base mesh does not prove that a derived/instanced component
+            // contributes no geometry. Its additional semantics remain unsupported.
+            if(!mesh&&Value<uintptr_t>(component,0x10)==StaticComponent&&
+                (!AuditAssignments.contains(component)||!AuditAssignments.at(component)))
+            {++omittedNull;bodyOmissions.insert(component);return;}
+            ++unresolvedVisible;nativeBodySelected=false;
+        };
+        for(const auto& observation:StaticObservations)
+        {if(observation.Component==nativeMain)++duplicates;examine(observation.Component);}
+        for(const auto& [_,component]:pointers)
+            if(Is(component,StaticComponent,0x590))examine(component);
+        // ComponentTemplates can contain geometry outside the selected SCS list.
+        // This static-body route cannot certify any such skinned contribution.
+        for(const auto component:ComponentSet)
+            if(Is(component,SkinnedComponent))unresolvedSkinned=true;
+        nativeBodySelected&=!StaticObservationOverflow&&!GenericInherited&&!GenericChild&&!unresolvedSkinned;
+    }
     std::map<std::string,size_t> recipeIndexes;
     std::string skeletalTestNode;
     // First capture-requested skeletal candidate only; reuse evaluated audit data.
@@ -82,9 +138,11 @@ MiniMapSpriteValidation::Result GenericAudit()
         const bool isStatic=Is(component,StaticComponent,0x590),isSkeletal=!isStatic&&Is(component,SkeletalComponent,0x598);
         // A subclass may contain spline/instance/procedural geometry. Its base
         // mesh field alone cannot certify an ordinary rigid-mesh recipe.
-        if(isStatic&&Value<uintptr_t>(component,0x10)!=StaticComponent)out.DerivedStatic=true;
-        n.Kind=isStatic?"static":isSkeletal?"skeletal":"none";
-        if(isStatic||isSkeletal)
+        const bool bodyOmitted=nativeBodySelected&&isStatic&&
+            (bodyOmissions.contains(component)||component==nativeMain);
+        if(isStatic&&!bodyOmitted&&Value<uintptr_t>(component,0x10)!=StaticComponent)out.DerivedStatic=true;
+        n.Kind=isStatic&&!bodyOmitted?"static":isSkeletal?"skeletal":"none";
+        if((isStatic&&!bodyOmitted)||isSkeletal)
         {
             const auto found=AuditAssignments.find(component);const uintptr_t mesh=found==AuditAssignments.end()?0:found->second;
             const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh,isStatic?0x170:0x1b0)&&Hold(mesh);
@@ -173,12 +231,17 @@ MiniMapSpriteValidation::Result GenericAudit()
     }
     // The three already-verified CDO pointer fields are a bounded native route.
     // Never enumerate OwnedComponents or assume SCS and native lists are additive.
+    // Observer runs before the mixed-route skip, on independent validation budgets.
+    try{out.Inspection=InspectStaticInventory(nodes,native);}
+    catch(...){LOG_WARN("MiniMap: native static inspection unavailable; production admission unchanged");}
     const bool scsStatic=std::any_of(nodes.begin(),nodes.end(),[](const auto& item){return item.second.Kind=="static";});
     bool mixedNative=false;
     for(const auto& [componentId,p]:pointers)
     {
         if(!CaptureRequested)break; // preserve the R2.6b observational schema/counts
-        bool duplicate=false;for(const auto& [_,n]:nodes)duplicate|=n.Component==componentId;
+        bool duplicate=false;for(const auto& [_,n]:nodes)duplicate|=n.Component==componentId&&
+            !(nativeBodySelected&&p==nativeMain&&n.Kind=="none");
+        if(nativeBodySelected&&p!=nativeMain)continue;
         if(duplicate||!Is(p,StaticComponent,0x590))continue;
         if(Value<uintptr_t>(p,0x10)!=StaticComponent){out.DerivedStatic=true;continue;}
         const auto mesh=Value<uintptr_t>(p,0x588);if(!mesh)continue;
@@ -258,6 +321,13 @@ MiniMapSpriteValidation::Result GenericAudit()
         {"bounded_scs_nodes_examined",std::to_string(NodeCount)},
         {"native_default_components",C::Quote(CaptureRequested?"verified_direct_cdo_fields_only; other_native_components_not_enumerated":"not_attempted_sparse_set_bound_unverified")},
         {"mixed_native_scs_assembly_unverified",C::Bool(mixedNative)},
+        {"native_main_body_selection",C::Object({{"considered",C::Bool(nativeBodyConsidered)},
+            {"noncontributing_static_inventory_verified",C::Bool(nativeBodySelected)},
+            {"omitted_hidden_or_invisible",std::to_string(omittedHidden)},
+            {"omitted_null_mesh",std::to_string(omittedNull)},{"exact_main_duplicates",std::to_string(duplicates)},
+            {"unresolved_visible_static",std::to_string(unresolvedVisible)},
+            {"unresolved_skinned_contribution",C::Bool(unresolvedSkinned)},
+            {"visual_equivalence",C::Quote("not_established; experimental static body")}})},
         {"inherited_overrides",C::Quote(GenericInherited?"present_effective_selection_unverified":"none_encountered_in_bounded_traversal")},
         {"source_visibility",C::Quote("authored_inputs_only; live state unverified")},
         {"classification",C::Quote("unknown")},{"live_actor_equivalence",C::Quote("not_established")},
@@ -265,13 +335,49 @@ MiniMapSpriteValidation::Result GenericAudit()
         {"source_retention_for_future_capture",C::Quote("not_attempted; all audit roots released synchronously")}});
     if(out.Details.size()>V::DetailLimit){out.Details="{\"truncated\":true}";out.Truncated=true;}
     out.Status=V::Classify(out,Record.HasSpline);
-    if(mixedNative)out.Status=V::Outcome::Conditional;
-    out.Reason=mixedNative?"native_and_scs_static_routes_both_present; additive_equivalence_unverified":out.Status==V::Outcome::Eligible?"bounded_selected_class_authored_static_inputs; future_capture_retention_and_lifecycle_gate_required":
+    if(mixedNative||authoredMainMeshUnresolved)out.Status=V::Outcome::Conditional;
+    out.Reason=authoredMainMeshUnresolved?"authored_class_main_mesh_unresolved; connector_templates_cannot_certify_building_body":mixedNative?"native_and_scs_static_routes_both_present; additive_equivalence_unverified":out.Status==V::Outcome::Eligible?"bounded_selected_class_authored_static_inputs; future_capture_retention_and_lifecycle_gate_required":
         Record.HasSpline?"instance_specific_spline_geometry":!out.Static?"no_selected_scs_static_meshes; native_only_or_skeletal_or_procedural_path_unsupported":
         out.Truncated?"bounded_traversal_or_output_incomplete":!out.Root?"native_root_unavailable":
         out.Inherited?"inherited_component_selection_unverified":out.Child?"child_actor_contributions_not_composed":
         out.OtherSkinned?"other_skinned_component_not_audited":out.DerivedStatic?"derived_static_component_extra_geometry_semantics_unverified":
         !out.Transforms?"attachment_socket_absolute_or_transform_unresolved":"stored_material_inputs_incomplete";
+    if(nativeBodyConsidered)
+    {
+        // Skeletal contributions are not part of this independent static-body
+        // proof. Keep the existing diagnostic recipe, but do not omit them here.
+        if(!nativeBodySelected||out.Skeletal||StaticObservationOverflow)
+        {
+            out.Status=V::Outcome::Conditional;
+            out.Reason=!nativeMain?"native_main_body_missing":
+                GenericInherited?"native_main_body_inherited_contribution_unresolved":
+                GenericChild?"native_main_body_child_contribution_unresolved":
+                unresolvedSkinned?"native_main_body_skinned_contribution_unresolved":
+                out.Skeletal?"native_main_body_skeletal_contribution_unresolved":
+                StaticObservationOverflow?"native_main_body_static_inventory_incomplete":
+                unresolvedVisible?"native_main_body_additional_visible_static_unresolved":
+                "native_main_body_visibility_or_identity_unverified";
+        }
+        else if(out.Status==V::Outcome::Eligible)
+        {
+            out.Route="native_main_body_static";
+            out.Reason="experimental_native_main_body_static; live_actor_equivalence_unverified";
+        }
+        bool report=false;
+        {
+            std::scoped_lock lock(blueprintIdentityAccess);
+            if(BlueprintIdentity.Path&&blueprintIdentities.Generation==Record.Generation&&blueprintIdentities.NativeBodyReports<64)
+                for(size_t i=0;i<blueprintIdentities.Count;++i)
+                {
+                    auto& entry=blueprintIdentities.Entries[i];
+                    if(entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
+                    {if(!entry.NativeBodyReported){entry.NativeBodyReported=true;++blueprintIdentities.NativeBodyReports;report=true;}break;}
+                }
+        }
+        if(report)LOG_INFO("MiniMap: native-main-body selection: generation=%llu path=%s considered=1 mainInputsVerified=%d materials=%d transform=%d omittedHidden=%zu omittedNullMesh=%zu exactDuplicates=%zu unresolvedVisible=%zu inheritedUnresolved=%d outcome=%s source=%s reason=%s; experimental static body; live equivalence unverified",
+            (unsigned long long)Record.Generation,BlueprintIdentity.Path->c_str(),int(nativeBodySelected&&out.Materials&&out.Transforms&&!out.Truncated),int(out.Materials),int(out.Transforms),
+            omittedHidden,omittedNull,duplicates,unresolvedVisible,int(GenericInherited),V::Label(out.Status),out.Route.c_str(),out.Reason.c_str());
+    }
     if(CaptureRequested&&!skeletalAdmission.Node.empty()&&!skeletalAdmissionReported)
     {
         skeletalAdmissionReported=true;const auto& d=skeletalAdmission;

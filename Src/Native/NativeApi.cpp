@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <type_traits>
+#include <chrono>
 
 namespace
 {
@@ -31,13 +32,40 @@ namespace MiniMapNative
         }
     }
 
+    namespace
+    {
+        thread_local ValidationProfile* validationProfile=nullptr;
+        struct ValidationMeasurement
+        {
+            ValidationProfile* Profile=validationProfile;
+            bool Identity;
+            std::chrono::steady_clock::time_point Start{};
+            explicit ValidationMeasurement(bool identity):Identity(identity)
+            {
+                if(Profile){Start=std::chrono::steady_clock::now();
+                    if(Identity)++Profile->IdentityCalls;else ++Profile->ReadableCalls;}
+            }
+            ~ValidationMeasurement()
+            {
+                if(!Profile)return;
+                const auto ns=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-Start).count());
+                if(Identity)Profile->IdentityNanoseconds+=ns;else Profile->ReadableNanoseconds+=ns;
+            }
+        };
+    }
+    ScopedValidationProfile::ScopedValidationProfile(ValidationProfile& profile):Previous(validationProfile)
+    {validationProfile=&profile;}
+    ScopedValidationProfile::~ScopedValidationProfile(){validationProfile=Previous;}
+
     bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
     {
+        ValidationMeasurement measurement(false);
         if(!p||!alignment||(alignment&(alignment-1))||(p&(alignment-1))||p>UINTPTR_MAX-bytes)return false;
         const auto end=p+bytes;
         while(p<end)
         {
             MEMORY_BASIC_INFORMATION m{};
+            if(validationProfile)++validationProfile->VirtualQueries;
             if(!VirtualQuery(reinterpret_cast<const void*>(p),&m,sizeof(m))||m.State!=MEM_COMMIT||
                 (m.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
             const auto protection=m.Protect&0xff;
@@ -61,6 +89,7 @@ namespace MiniMapNative
 
     bool ValidateObjectIdentity(uintptr_t p,uintptr_t objectArray,size_t extent)
     {
+        ValidationMeasurement measurement(true);
         if(!IsMemoryRangeReadable(p,extent,8)||!IsMemoryRangeReadable(objectArray,0x30,8))return false;
         int32_t index=-1,num=0,max=0,chunks=0,maxChunks=0;
         if(!ReadAt(p,0xc,index)||!ReadAt(objectArray,0x20,max)||!ReadAt(objectArray,0x24,num)||

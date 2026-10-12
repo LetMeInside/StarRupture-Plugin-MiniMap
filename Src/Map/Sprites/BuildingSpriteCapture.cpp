@@ -62,6 +62,9 @@ namespace MiniMapSmelterCapture
         // Native roots are released explicitly on the game thread, never by a
         // static destructor during an uncertified DLL unload.
         bool skeletalTestObserved=false,skeletalOnly=false; // one attempt per plugin lifetime
+        uint64_t staticEvidenceGeneration=0;
+        size_t staticEvidenceReports=0; // at most eight static captures per generation
+        bool staticEvidenceActive=false;
 
         SA::Footprint assemblyBounds;
         SA::Ledger assemblyComponents;
@@ -243,6 +246,147 @@ namespace MiniMapSmelterCapture
             // v70 public dispatch calls the supplied UFunction directly; no name
             // discovery, UObject enumeration, or MiniMap SDK native address is used.
             return invocation->InvokeResolvedUFunction(object,fn,&params);
+        }
+        // Read-only reflection observations, never admission/readiness predicates.
+        // No generated wrappers, render-resource pointers, or new native calls.
+        std::string CapturePropertyEvidence(SDK::UObject* object,bool material=false)
+        {
+            namespace J=MiniMapRepresentationCore;
+            auto* p=GetHooks()?GetHooks()->ObjectProperties:nullptr;
+            if(!object||!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(object))||
+                !p||!p->IsReady||!p->IsReady()||!p->FindPropertyOnObject||!p->GetPropertyKind||!p->GetPropertyArrayDim)
+                return "{\"status\":\"reflection_or_object_unavailable\"}";
+            J::JsonArray fields;fields.Limit=4096;
+            const char* componentFields[]={"bVisible","bHiddenInGame","bVisibleInSceneCaptureOnly","bHiddenInSceneCapture",
+                "bRenderInMainPass","bRenderInDepthPass","bReverseCulling","bDisallowNanite","bForceDisableNanite",
+                "bEvaluateWorldPositionOffset","bOverrideMinLOD","ForcedLodModel","MinLOD","DetailMode",
+                "MinDrawDistance","CachedMaxDrawDistance","BoundsScale"};
+            const char* materialFields[]={"BlendMode","TwoSided","OpacityMaskClipValue","bDisableDepthTest"};
+            const auto fieldsToRead=material?materialFields:componentFields;
+            const size_t count=material?std::size(materialFields):std::size(componentFields);
+            for(size_t field=0;field<count;++field)
+            {
+                const auto* name=fieldsToRead[field];
+                auto property=p->FindPropertyOnObject(object,name);std::string value="null";
+                if(property&&p->GetPropertyArrayDim(property)==1)
+                {
+                    const auto kind=p->GetPropertyKind(property);
+                    bool b=false;int64_t i=0;double f=0;
+                    if(kind==PluginPropertyKind::Bool&&p->GetBoolProperty&&p->GetBoolProperty(object,property,&b))value=J::Bool(b);
+                    else if((kind==PluginPropertyKind::Int||kind==PluginPropertyKind::Enum)&&p->GetIntProperty&&p->GetIntProperty(object,property,&i))value=std::to_string(i);
+                    else if(kind==PluginPropertyKind::Float&&p->GetFloatProperty&&p->GetFloatProperty(object,property,&f)&&std::isfinite(f))value=J::Number(f);
+                }
+                fields.Add(J::Object({{"property",J::Quote(name)},{"value",value}}));
+            }
+            return J::Object({{"fields",fields.String()},{"null_means",J::Quote("absent_or_no_verified_typed_accessor")}});
+        }
+        std::string CaptureCustomDataEvidence(SDK::UPrimitiveComponent* component)
+        {
+            namespace J=MiniMapRepresentationCore;
+            static_assert(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveData)==0x2b8&&
+                offsetof(SDK::UPrimitiveComponent,CustomPrimitiveDataInternal)==0x2c8);
+            auto copy=[&](size_t offset)
+            {
+                J::ArrayHeader header{};
+                if(!MiniMapNative::ReadMemory(reinterpret_cast<uintptr_t>(component)+offset,&header,sizeof(header)))return std::string("null");
+                const auto bound=J::BoundArray(header,sizeof(float),alignof(float),32);
+                if(!bound.Valid||bound.Truncated||(bound.Bytes&&!MiniMapNative::IsMemoryRangeReadable(header.Data,bound.Bytes,alignof(float))))return std::string("null");
+                J::JsonArray values;
+                for(size_t i=0;i<bound.Count;++i)
+                {
+                    float value=0;
+                    if(!MiniMapNative::ReadMemory(header.Data+i*sizeof(float),&value,sizeof(value))||!std::isfinite(value))return std::string("null");
+                    values.Add(J::Number(value));
+                }
+                return values.String();
+            };
+            return J::Object({{"authored",copy(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveData))},
+                {"internal",copy(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveDataInternal))}});
+        }
+        void ReportStaticCaptureEvidence(const SDK::FVector& camera,const SDK::FVector& center,const SDK::FVector& extent,const SDK::FVector& anchor) noexcept
+        {
+            staticEvidenceActive=false;
+            if(!assemblyActive||skeletalOnly||!candidateRequest||!GameThread())return;
+            if(staticEvidenceGeneration!=assemblyRecipe.Generation)
+            {staticEvidenceGeneration=assemblyRecipe.Generation;staticEvidenceReports=0;}
+            if(staticEvidenceReports>=8)return;
+            ++staticEvidenceReports;staticEvidenceActive=true;
+            try
+            {
+                LOG_INFO("MiniMap: static capture evidence A4.4a %zu/8: generation=%llu building=%u blueprint=%s members=%zu camera=(%.3f,%.3f,%.3f) rotation=(-90,-90,0) centerLocal=(%.3f,%.3f,%.3f) extent=(%.3f,%.3f,%.3f) orthoWidth=%.3f distanceToBounds=[1000,%.3f] autoPlanes=%d updatePlanes=%d maxViewDistance=%.3f; registration/show-only verified separately; render-proxy/LOD-residency readiness unavailable; no timing/settings change",
+                    staticEvidenceReports,(unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,
+                    candidateRequest->Candidate.CanonicalBlueprint?candidateRequest->Candidate.CanonicalBlueprint->c_str():"unresolved",
+                    assemblyComponents.Count,camera.X,camera.Y,camera.Z,center.X,center.Y,center.Z,extent.X,extent.Y,extent.Z,
+                    double(capture->OrthoWidth),1000.0+2.0*extent.Z,int(capture->bAutoCalculateOrthoPlanes),int(capture->bUpdateOrthoPlanes),double(capture->MaxViewDistanceOverride));
+                LOG_INFO("MiniMap: static capture camera readback: unattached=%d storedLocation=(%.3f,%.3f,%.3f) storedRotation=(%.3f,%.3f,%.3f) customProjection=%d clipPlane=%d lodDistanceFactor=%.3f target=%dx%d; component inputs only, effective renderer view unobserved",
+                    int(capture->AttachParent==nullptr),capture->RelativeLocation.X,capture->RelativeLocation.Y,capture->RelativeLocation.Z,
+                    capture->RelativeRotation.Pitch,capture->RelativeRotation.Yaw,capture->RelativeRotation.Roll,
+                    int(capture->bUseCustomProjectionMatrix),int(capture->bEnableClipPlane),double(capture->LODDistanceFactor),target->SizeX,target->SizeY);
+                // Independent input-space framing check using the actual stored camera
+                // and the validated assembly AABB. For (-90,-90,0), screen right is
+                // +X, screen down is +Y, and forward is -Z. This does not inspect
+                // the renderer's auto-adjusted ortho planes or prove proxy readiness.
+                const auto& stored=capture->RelativeLocation;
+                const auto& rotation=capture->RelativeRotation;
+                const double width=capture->OrthoWidth;
+                const bool basisVerified=capture->AttachParent==nullptr&&
+                    std::abs(rotation.Pitch+90.0)<1e-6&&std::abs(rotation.Yaw+90.0)<1e-6&&std::abs(rotation.Roll)<1e-6&&
+                    !capture->bUseCustomProjectionMatrix&&target->SizeX==target->SizeY&&
+                    std::isfinite(width)&&width>0&&std::isfinite(stored.X)&&std::isfinite(stored.Y)&&std::isfinite(stored.Z);
+                if(basisVerified)
+                {
+                    const double u0=0.5+(anchor.X+assemblyBounds.Min[0]-stored.X)/width;
+                    const double u1=0.5+(anchor.X+assemblyBounds.Max[0]-stored.X)/width;
+                    const double v0=0.5+(anchor.Y+assemblyBounds.Min[1]-stored.Y)/width;
+                    const double v1=0.5+(anchor.Y+assemblyBounds.Max[1]-stored.Y)/width;
+                    const double nearDepth=stored.Z-anchor.Z-assemblyBounds.Max[2];
+                    const double farDepth=stored.Z-anchor.Z-assemblyBounds.Min[2];
+                    const bool inside=u0>=0&&u1<=1&&v0>=0&&v1<=1&&nearDepth>0&&farDepth>=nearDepth;
+                    LOG_INFO("MiniMap: static capture framing A4.4b: generation=%llu building=%u inputBoundsUV=[%.6f,%.6f]-[%.6f,%.6f] inputDepthCm=[%.3f,%.3f] insideInputXYAndForward=%d; stored camera and validated bounds only; effective clip planes, scene proxy, render-data/PSO readiness and shader output unobserved; no capture settings changed",
+                        (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,u0,v0,u1,v1,nearDepth,farDepth,int(inside));
+                }
+                else LOG_WARN("MiniMap: static capture framing A4.4b unavailable: stored camera basis/projection prerequisites differ; capture behavior unchanged");
+                size_t materialReports=0;
+                for(size_t i=0;i<(std::min)(assemblyComponents.Count,size_t(4));++i)
+                {
+                    auto* component=reinterpret_cast<SDK::UStaticMeshComponent*>(assemblyComponents.Entries[i].Component);
+                    if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(component)))continue;
+                    const auto& input=assemblyRecipe.Instances[i];
+                    if(!MiniMapBuildingRepresentation::ValidateCaptureObject(input.Mesh))continue;
+                    LOG_INFO("MiniMap: static capture component evidence: instance=%zu meshObject=%u component=%s customData=%s; mesh/transform/material assignment already verified",
+                        i,static_cast<unsigned>(reinterpret_cast<SDK::UObject*>(input.Mesh)->Index),
+                        CapturePropertyEvidence(component).c_str(),CaptureCustomDataEvidence(component).c_str());
+                    LOG_INFO("MiniMap: static capture component transform readback: instance=%zu unattached=%d T=(%.3f,%.3f,%.3f) rotation=(%.3f,%.3f,%.3f) scale=(%.3f,%.3f,%.3f)",
+                        i,int(component->AttachParent==nullptr),component->RelativeLocation.X,component->RelativeLocation.Y,component->RelativeLocation.Z,
+                        component->RelativeRotation.Pitch,component->RelativeRotation.Yaw,component->RelativeRotation.Roll,
+                        component->RelativeScale3D.X,component->RelativeScale3D.Y,component->RelativeScale3D.Z);
+                    for(size_t slot=0;slot<input.MaterialCount&&materialReports<8;++slot,++materialReports)
+                    {
+                        auto* material=reinterpret_cast<SDK::UObject*>(input.Materials[slot]);
+                        if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(material)))continue;
+                        // Only validated, explicitly retained reflected Parent links.
+                        // A base material is descriptive evidence, not proof of effective overrides or opacity.
+                        SDK::UObject* current=material;SDK::UObject* roots[3]{};size_t count=0;
+                        struct Release {SDK::UObject** Roots;size_t& Count;~Release(){while(Count)Drop(Roots[--Count]);}} release{roots,count};
+                        for(size_t depth=0;depth<4;++depth)
+                        {
+                            const int32_t classIndex=current->Class&&MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(current->Class))?current->Class->Index:-1;
+                            if(classIndex<0){LOG_WARN("MiniMap: static capture material evidence unavailable: class identity invalid; capture behavior unchanged");break;}
+                            LOG_INFO("MiniMap: static capture material evidence: instance=%zu slot=%zu parentDepth=%zu object=%d class=%d properties=%s; authored/parent observations only, shader output unverified",
+                                i,slot,depth,current->Index,classIndex,CapturePropertyEvidence(current,true).c_str());
+                            auto* p=GetHooks()?GetHooks()->ObjectProperties:nullptr;
+                            if(depth==3||!p||!p->IsReady||!p->IsReady()||!p->FindPropertyOnObject||!p->GetPropertyKind||
+                                !p->GetPropertyArrayDim||!p->GetObjectProperty)break;
+                            auto property=p->FindPropertyOnObject(current,"Parent");void* parent=nullptr;
+                            if(!property||p->GetPropertyKind(property)!=PluginPropertyKind::Object||p->GetPropertyArrayDim(property)!=1||
+                                !p->GetObjectProperty(current,property,&parent)||!parent||parent==current||
+                                !MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(parent)))break;
+                            auto* next=static_cast<SDK::UObject*>(parent);Hold(next);roots[count++]=next;current=next;
+                        }
+                    }
+                }
+            }
+            catch(...){LOG_WARN("MiniMap: static capture evidence unavailable; capture behavior unchanged");}
         }
         // CL-127004 lowers SpawnObject's by-value TSubclassOf<UObject> to an
         // indirect argument: RCX points at its single UClass* field; RDX is Outer.
@@ -968,6 +1112,7 @@ namespace MiniMapSmelterCapture
                 FailBeforeCapture("final pre-commit world/RHI prerequisite changed");return;
             }
             LOG_INFO("MiniMap: R2 capture-builder submission entered");
+            ReportStaticCaptureEvidence(camera,center,extent,location);
             if(skeletalOnly)LOG_INFO("MiniMap: skeletal-only isolated assembly: registered members=1, exact show-only membership verified; width=%.3f; fixed anchor=(0,0,200000); static components absent, publication disabled",double(capture->OrthoWidth));
             else if(assemblyActive)LOG_INFO("MiniMap: R2.5b isolated static assembly: instances=%zu static-reference width=%.3f; fixed anchor=(0,0,200000); skeletal excluded",assemblyComponents.Count,double(capture->OrthoWidth));
             reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
@@ -1114,6 +1259,13 @@ namespace MiniMapSmelterCapture
                         (unsigned long long)stats->Foreground,(unsigned long long)stats->Background,(unsigned long long)stats->Partial,stats->Coverage);
                     for(size_t i=0;i<stats->SampleCount;++i){const auto& p=stats->Samples[i];LOG_INFO("MiniMap: R2 sample (%zu,%zu) rawRGBA=(%.6g,%.6g,%.6g,%.6g)",p.X,p.Y,double(p.Rgba[0]),double(p.Rgba[1]),double(p.Rgba[2]),double(p.Rgba[3]));}
                     if(!stats->Foreground||!stats->Background) LOG_WARN("MiniMap: R2 image evidence inconclusive: candidate foreground/background separation absent");
+                    if(staticEvidenceActive&&assemblyActive&&!skeletalOnly&&candidateRequest)
+                    {
+                        staticEvidenceActive=false;
+                        const bool clearCompatible=!stats->Foreground&&!stats->Nonfinite&&stats->RgbMin==0&&stats->RgbMax==0&&stats->AlphaMin==1&&stats->AlphaMax==1;
+                        LOG_INFO("MiniMap: static capture result evidence A4.4a: generation=%llu building=%u unchangedClearCompatible=%d foreground=%llu; empty output cannot establish tile identity, material opacity, rendered LOD or proxy readiness; no synthetic geometry or pillar acquisition",
+                            (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,int(clearCompatible),(unsigned long long)stats->Foreground);
+                    }
                 }
                 if(report.Result!=Native::Outcome::Verified)
                 {

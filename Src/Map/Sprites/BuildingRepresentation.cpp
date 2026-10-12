@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <type_traits>
 #include <mutex>
+#include <chrono>
 
 namespace MiniMapBuildingRepresentation
 {
@@ -118,17 +119,32 @@ namespace MiniMapBuildingRepresentation
         // Tokens address definition metadata within a generation, never sprite identity.
         struct BlueprintIdentities
         {
-            struct Entry {std::array<int64_t,3> Definition{};BlueprintIdentityResult Result;};
+            struct Entry {std::array<int64_t,3> Definition{};BlueprintIdentityResult Result;bool AcquisitionReported=false,InventoryReported=false,NativeBodyReported=false;};
             uint64_t Generation{};
             std::array<Entry,MiniMapSpriteDiscoveryCore::Capacity> Entries{};
-            size_t Count{},Reported{};
+            size_t Count{},Reported{},AcquisitionReports{},InventoryReports{},ProfileReports{},NativeBodyReports{};
             bool LimitReported=false,ContractReported=false,CapacityReported=false;
         } blueprintIdentities;
         std::mutex blueprintIdentityAccess;
         void ClearBlueprintIdentities()
         {std::scoped_lock lock(blueprintIdentityAccess);blueprintIdentities={};}
+        struct AuditMetrics
+        {
+            uint64_t ClassCalls{},ClassNs{},InheritanceCalls{},InheritanceNs{},HoldCalls{},HoldNs{},Retained{},Released{},PrimaryRoots{},RecipeNs{},InspectionNs{};
+        };
+        struct AuditElapsed
+        {
+            uint64_t* Target;
+            std::chrono::steady_clock::time_point Start{};
+            explicit AuditElapsed(uint64_t* target):Target(target){if(Target)Start=std::chrono::steady_clock::now();}
+            ~AuditElapsed(){if(Target)*Target+=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-Start).count());}
+        };
         struct Context
         {
+            AuditMetrics* Metrics=nullptr;
+            struct StaticObservation {uintptr_t Component{},Owner{};std::string Source;};
+            std::vector<StaticObservation> StaticObservations;
+            bool StaticObservationOverflow=false;
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
             MiniMapSpriteClassification::Observation Classification;
 #include "SpriteClassificationAudit.inl"
@@ -170,6 +186,60 @@ namespace MiniMapBuildingRepresentation
             std::string Selected="null",SelectedTier="none",Status="unavailable",Reason="no safe resident representation";
             MiniMapBuildingCollector::Record Record{};
             BlueprintIdentityResult BlueprintIdentity;
+            bool AuthoredFallback=false,AuthoredLookupAttempted=false;
+            uintptr_t AuthoredClass=0,InstancedComponent=0;
+            size_t TemplateStatic=0,TemplateSkeletal=0,TemplateInstanced=0,TemplateValidStatic=0;
+            std::string AuthoredClassStatus="not_examined_configuration_route";
+            uintptr_t ResolveResidentAuthoredClass(uintptr_t definition)
+            {
+                AuthoredFallback=true;
+                if(!BlueprintIdentity.Path)BlueprintIdentity=ResolveAuthoredIdentity(definition);
+                if(!BlueprintIdentity.Path)
+                {AuthoredClassStatus="canonical_identity_unavailable";return 0;}
+                // StaticFindObject searches existing objects only. Never load the soft reference.
+                // Keep the exact engine-produced path, including its generated-class suffix.
+                const auto& path=*BlueprintIdentity.Path;
+                if(path.empty()||path.size()>4096)
+                {AuthoredClassStatus="canonical_path_length_invalid";return 0;}
+                const auto length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),nullptr,0);
+                if(length<=0||length>1024)
+                {AuthoredClassStatus="canonical_path_encoding_invalid";return 0;}
+                std::wstring wide(size_t(length),L'\0');
+                if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),wide.data(),length)!=length)
+                {AuthoredClassStatus="canonical_path_encoding_invalid";return 0;}
+                AuthoredLookupAttempted=true;
+                const auto type=Find(wide.c_str());
+                if(!type)
+                {AuthoredClassStatus=Work.Exhausted?"work_budget_exhausted":"not_resident_or_identity_invalid";return 0;}
+                if(!ClassObject(type)||!Is(type,Blueprint,0x360)||!Derives(type,Actor)||!Hold(type,0x360))
+                {AuthoredClassStatus=Work.Exhausted?"work_budget_exhausted":"resident_class_validation_failed";return 0;}
+                if(AuthoredClass&&AuthoredClass!=type)
+                {AuthoredClassStatus="resident_class_changed_during_inspection";return 0;}
+                AuthoredClass=type;AuthoredClassStatus="resident_validated_blueprint_actor_class";
+                return type;
+            }
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+            void ReportAuthoredAcquisition(const MiniMapSpriteValidation::Result& result)
+            {
+                if(!AuthoredFallback)return;
+                std::scoped_lock lock(blueprintIdentityAccess);
+                if(blueprintIdentities.Generation!=Record.Generation||blueprintIdentities.AcquisitionReports>=64)return;
+                // Reuse generation-owned identity metadata; no additional diagnostic registry.
+                for(size_t i=0;i<blueprintIdentities.Count;++i)
+                {
+                    auto& entry=blueprintIdentities.Entries[i];
+                    if(BlueprintIdentity.Path&&entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
+                    {if(entry.AcquisitionReported)return;entry.AcquisitionReported=true;}
+                }
+                ++blueprintIdentities.AcquisitionReports;
+                LOG_INFO("MiniMap: resident authored-class acquisition %zu/64: generation=%llu building=%u path=%s cachedConfig=null lookupAttempted=%d lookup=%s classValid=%d templates=%zu scsNodes=%zu static=%zu skeletal=%zu instanced=%zu instancedClassAvailable=%d validStaticMeshAssets=%zu auditedStatic=%zu horizontalSurface=unverified_template_geometry_requires_runtime_inspection captureRequested=%d recipe=%s reason=%s",
+                    blueprintIdentities.AcquisitionReports,(unsigned long long)Record.Generation,Record.BuildingId,
+                    BlueprintIdentity.Path?BlueprintIdentity.Path->c_str():"unresolved",int(AuthoredLookupAttempted),AuthoredClassStatus.c_str(),
+                    int(AuthoredClass!=0),ComponentSet.size(),NodeCount,TemplateStatic,TemplateSkeletal,TemplateInstanced,
+                    int(InstancedComponent!=0),TemplateValidStatic,result.Static,int(CaptureRequested),
+                    MiniMapSpriteValidation::Label(result.Status),result.Reason.c_str());
+            }
+#endif
             Context()
             {
                 Components.Limit=512*1024;Mass.Limit=128*1024;Candidates.Limit=32*1024;
@@ -186,15 +256,20 @@ namespace MiniMapBuildingRepresentation
             {
                 const auto address=MiniMapSmelterCapture::GetBindings().Release;
                 for(auto it=Roots.rbegin();it!=Roots.rend();++it)
+                {
                     reinterpret_cast<void(*)(SDK::UObject*)>(address)(reinterpret_cast<SDK::UObject*>(*it));
+                    if(Metrics)++Metrics->Released;
+                }
             }
             bool Hold(uintptr_t p,size_t extent=0x28)
             {
+                AuditElapsed elapsed(Metrics?&Metrics->HoldNs:nullptr);if(Metrics)++Metrics->HoldCalls;
                 if(!CheckIdentity(p,extent))return false;
                 if(Held.insert(p).second)
                 {
                     Roots.push_back(p);
                     reinterpret_cast<void(*)(SDK::UObject*)>(MiniMapSmelterCapture::GetBindings().Retain)(reinterpret_cast<SDK::UObject*>(p));
+                    if(Metrics)++Metrics->Retained;
                 }
                 return true;
             }
@@ -208,6 +283,7 @@ namespace MiniMapBuildingRepresentation
             }
             bool ClassObject(uintptr_t p)
             {
+                AuditElapsed elapsed(Metrics?&Metrics->ClassNs:nullptr);if(Metrics)++Metrics->ClassCalls;
                 if(!CheckIdentity(p,0x200))return false;
                 auto meta=Value<uintptr_t>(p,0x10);
                 for(size_t n=0;meta&&n<C::DepthLimit;++n)
@@ -221,6 +297,7 @@ namespace MiniMapBuildingRepresentation
             }
             bool Derives(uintptr_t type,uintptr_t expected)
             {
+                AuditElapsed elapsed(Metrics?&Metrics->InheritanceNs:nullptr);if(Metrics)++Metrics->InheritanceCalls;
                 if(!expected)return false;
                 std::unordered_set<uintptr_t> chain;
                 for(size_t n=0;type&&n<C::DepthLimit;++n)
@@ -293,7 +370,7 @@ namespace MiniMapBuildingRepresentation
                         !invocation||!invocation->InvokeResolvedUFunction)
                     {return report("invocation_or_engine_allocator_unavailable");}
                     // Independent work budget/roots: identity resolution cannot exhaust the capture audit.
-                    Context diagnostic;diagnostic.Class=Class;diagnostic.Placement=Placement;
+                    Context diagnostic;diagnostic.Metrics=Metrics;diagnostic.Class=Class;diagnostic.Placement=Placement;
                     if(!diagnostic.Is(definition,Placement,sizeof(SDK::UAuActorPlacementData))||
                         !diagnostic.Hold(definition,sizeof(SDK::UAuActorPlacementData)))
                     {return report("definition_validation_failed");}
@@ -512,6 +589,13 @@ namespace MiniMapBuildingRepresentation
                 if(ComponentSet.size()>=C::ComponentLimit){Source(source,owner,"truncated","component record limit");return;}
                 ComponentSet.insert(p);
                 const auto type=Value<uintptr_t>(p,0x10);
+                if(AuthoredFallback)
+                {
+                    if(Is(p,StaticComponent,0x590))
+                    {++TemplateStatic;if(Is(Value<uintptr_t>(p,0x588),StaticMesh,0x170))++TemplateValidStatic;}
+                    if(Is(p,SkeletalComponent,0x598))++TemplateSkeletal;
+                    if(InstancedComponent&&Is(p,InstancedComponent))++TemplateInstanced;
+                }
                 std::string scene="null",mesh="null",defaults="[]",overrides="[]",meshKind="none",
                     meshInputs="null",meshStatus="not_applicable";
                 if(Is(p,Scene,0x250))
@@ -535,6 +619,7 @@ namespace MiniMapBuildingRepresentation
                 }
                 if(Is(p,StaticComponent,0x590))
                 {
+                    if(AuthoredFallback)try{StaticObservations.push_back({p,owner,source});}catch(...){StaticObservationOverflow=true;}
                     meshKind="static";asset=Value<uintptr_t>(p,0x588);mesh=Ref(asset,StaticMesh);
                     meshStatus=!StaticMesh?"not_attempted":!asset?"absent":Is(asset,StaticMesh)?"present":"invalid";
                     Source("static_mesh_assignment",p,meshStatus.c_str());
@@ -750,11 +835,17 @@ namespace MiniMapBuildingRepresentation
                 {ProbeResult.Note("classification_excluded");return false;}
 #endif
 #endif
-                // Optional soft-reference interpretation/resolution is deliberately
-                // omitted. Null transient cache never implies authored absence.
+                // Null transient cache never implies authored absence. Only this case
+                // may inspect the independently authored, already-resident actor class.
                 auto config=Value<uintptr_t>(definition,0x150);
                 ProbeResult.CachedConfig=config?"populated":"null";
-                if(!config){ProbeResult.Note("cached_config_null");return false;}
+                if(!config)
+                {
+                    const auto type=ResolveResidentAuthoredClass(definition);
+                    if(!type){ProbeResult.Note(AuthoredClassStatus.c_str());return false;}
+                    ProbeResult.Route=S::Route::PlacementActor;
+                    return !Work.Exhausted&&!Graph.Truncated;
+                }
                 std::unordered_set<uintptr_t> configs,traits;
                 for(size_t depth=0;config&&depth<16;++depth)
                 {
@@ -844,12 +935,21 @@ namespace MiniMapBuildingRepresentation
                     config=Value<uintptr_t>(config,0x30);
                     if(config&&depth==15)Source("entity_configuration",definition,"truncated","configuration parent depth");
                 }
-                if(!Value<uintptr_t>(definition,0x150))Source("entity_configuration",definition,"unavailable","cached_config_null; authored configuration state not examined");
-                const auto selected=high?high:low;
+                const bool nullConfig=!Value<uintptr_t>(definition,0x150);
+                uintptr_t authored=0;
+                if(nullConfig)
+                {
+                    Source("entity_configuration",definition,"unavailable","cached_config_null; trying resident authored ActorClass templates only");
+                    authored=ResolveResidentAuthoredClass(definition);
+                    Source("resident_authored_actor_class",authored,AuthoredClassStatus.c_str());
+                    if(authored)InstancedComponent=NativeClass(L"/Script/Engine.InstancedStaticMeshComponent");
+                }
+                const auto selected=nullConfig?authored:high?high:low;
                 if(selected)
                 {
-                    Selected=Ref(selected,Class);SelectedTier=high?"high_detail_actor":"low_detail_actor";
-                    Reason="first validated resident actor class in bounded configuration traversal; high-detail preferred; alternatives remain separate";
+                    Selected=Ref(selected,Class);SelectedTier=nullConfig?"authored_actor_class":high?"high_detail_actor":"low_detail_actor";
+                    Reason=nullConfig?"resident authored ActorClass templates; initialized actor equivalence and horizontal surface unverified":
+                        "first validated resident actor class in bounded configuration traversal; high-detail preferred; alternatives remain separate";
                     AuditClass=selected;InspectClass(selected,0,"selected_actor_class_templates");Status="partial";
                 }
                 else if(hasMass)
@@ -859,6 +959,180 @@ namespace MiniMapBuildingRepresentation
             #include "AssemblyRecipeAudit.inl"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             #include "GenericRepresentationAudit.inl"
+            // Independent bounded observer: no mutation of the production audit's
+            // graph, budget, recipe, eligibility flags or retained asset inventory.
+            std::string InspectStaticInventory(const std::map<std::string,A::Node>& nodes,
+                const std::map<std::string,A::Result>& native)
+            {
+                if(!AuthoredFallback)return "{}";
+                {
+                    std::scoped_lock lock(blueprintIdentityAccess);
+                    if(blueprintIdentities.Generation!=Record.Generation||blueprintIdentities.InventoryReports>=8)return "{}";
+                    for(size_t n=0;n<blueprintIdentities.Count;++n)
+                    {
+                        auto& entry=blueprintIdentities.Entries[n];
+                        if(BlueprintIdentity.Path&&entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
+                        {if(entry.InventoryReported)return "{}";entry.InventoryReported=true;}
+                    }
+                    ++blueprintIdentities.InventoryReports;
+                }
+                AuditElapsed inspectionElapsed(Metrics?&Metrics->InspectionNs:nullptr);
+                MiniMapNative::ValidationProfile profile;AuditMetrics inspectionMetrics;
+                MiniMapNative::ScopedValidationProfile profileScope(profile);
+                C::JsonArray records,fields;records.Limit=24*1024;
+                bool limited=StaticObservationOverflow;
+                size_t discovered=StaticObservations.size();
+                std::string status="native_anchors_unavailable";
+                {
+                    Context d;d.Metrics=&inspectionMetrics;d.FullTraversal=true;d.Record=Record;
+                    if(d.Initialize()&&d.ClassObject(AuditClass)&&d.Derives(AuditClass,d.Actor)&&d.Hold(AuditClass,0x360))
+                    {
+                        status="read_only_not_admitted";
+                        uintptr_t cdo=Value<uintptr_t>(AuditClass,0x110),root=0;
+                        const bool validCdo=d.Is(cdo,AuditClass,0x1c0)&&d.Hold(cdo,0x1c0)&&(Value<uint32_t>(cdo,8)&0x10);
+                        if(validCdo)
+                        {root=Value<uintptr_t>(cdo,0x1b8);if(!d.Is(root,d.Scene,0x250)||!d.Hold(root,0x250))root=0;}
+                        auto inventory=StaticObservations; // bounded comparison tokens; original Context still retains sources.
+                        const auto base=d.NativeClass(L"/Script/Chimera.CrBuildingActorBase");
+                        if(validCdo&&base&&d.Derives(AuditClass,base)&&d.Is(cdo,AuditClass,0x2e8))
+                        {
+                            const std::pair<size_t,const char*> offsets[]={{0x1b8,"RootComponent"},{0x2d8,"MainComponent"},{0x2e0,"MainMeshComponent"}};
+                            for(const auto& field:offsets)
+                            {
+                                const auto component=Value<uintptr_t>(cdo,field.first);
+                                const bool valid=d.Is(component,d.StaticComponent,0x590)&&d.Hold(component,0x590);
+                                fields.Add(C::Object({{"field",C::Quote(field.second)},{"static_component_valid_retained",C::Bool(valid)},
+                                    {"component",component?d.Ref(component):"null"}}));
+                                if(valid)inventory.insert(inventory.begin(),{component,AuditClass,std::string("native_cdo_field:")+field.second});
+                            }
+                        }
+                        discovered=inventory.size();
+                        for(const auto& observation:inventory)
+                        {
+                            if(records.Records.size()>=16||d.Work.Exhausted){limited=true;break;}
+                            const auto component=observation.Component;
+                            if(!d.Is(component,d.StaticComponent,0x590)||!d.Hold(component,0x590))
+                            {records.Add(C::Object({{"source",C::Quote(observation.Source)},{"rejection",C::Quote("component_identity_type_or_retention_failed")}}));continue;}
+                            const auto type=Value<uintptr_t>(component,0x10),mesh=Value<uintptr_t>(component,0x588);
+                            const bool exact=type==d.StaticComponent;
+                            const bool assetIdentity=d.Is(mesh,d.StaticMesh,0x278);
+                            const bool asset=assetIdentity&&d.Hold(mesh,0x278);
+                            const auto parent=Value<uintptr_t>(component,0xc8);
+                            A::Transform local;bool absolute=false,socket=false;
+                            const bool localValid=d.AuditTransform(component,local,absolute,socket);
+                            C::JsonArray matches;A::Result transform;
+                            const auto originalId=Id(component);bool matched=false;
+                            for(const auto& [id,node]:nodes)if(node.Component==originalId)
+                            {
+                                matches.Add(C::Quote(id));matched=true;
+                                std::set<std::string> active;size_t remaining=A::VisitLimit;
+                                transform=A::Resolve(id,nodes,native,active,0,&remaining);
+                            }
+                            if(!matched&&root)
+                            {std::set<uintptr_t> active;C::JsonArray chain;transform=d.AuditNativeChain(component,root,active,0,chain);}
+                            else if(!matched){transform.Status="invalid";transform.Reason="validated_cdo_root_unavailable";}
+                            bool defaultsValid=false,overridesValid=false;std::string defaultsJson,overridesJson;
+                            const auto defaults=asset?d.AuditMaterials(mesh+0x160,0x38,defaultsValid,defaultsJson):std::vector<A::Slot>{};
+                            const auto overrides=d.AuditMaterials(component+0x530,8,overridesValid,overridesJson);
+                            const auto effective=A::ProposedMaterials(defaults,overrides);
+                            bool materials=defaultsValid&&overridesValid&&!effective.empty()&&effective.size()<=MiniMapStaticAssembly::Slots;
+                            MiniMapStaticAssembly::Instance instance;instance.Mesh=asset?mesh:0;
+                            instance.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));instance.Transform=transform.Effective;
+                            instance.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;
+                            instance.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                            instance.MaterialCount=(std::min)(effective.size(),MiniMapStaticAssembly::Slots);
+                            for(const auto& slot:effective)
+                            {
+                                const auto found=d.AuditMaterialPointers.find(slot.Material);
+                                if(!slot.Valid||slot.Index>=instance.MaterialCount||found==d.AuditMaterialPointers.end())materials=false;
+                                else instance.Materials[slot.Index]=found->second;
+                            }
+                            const bool bounds=asset&&Read(mesh,0x240,instance.LocalBounds.Origin)&&Read(mesh,0x258,instance.LocalBounds.Extent)&&
+                                A::Finite(instance.LocalBounds.Origin)&&A::Finite(instance.LocalBounds.Extent);
+                            instance.Verified=asset&&materials&&bounds&&transform.Status=="verified";
+                            MiniMapStaticAssembly::Recipe one;one.General=true;one.Complete=true;one.RootVerified=root!=0;
+                            one.ActorClass=AuditClass;one.Count=1;one.Instances[0]=instance;
+                            MiniMapStaticAssembly::Footprint footprint;
+                            const auto rejection=MiniMapStaticAssembly::Validate(one,footprint);
+                            const char* reason=!exact?"derived_static_component_semantics_unverified":!asset?!mesh?"mesh_assignment_null":!assetIdentity?"mesh_identity_or_type_invalid":"mesh_retention_failed":
+                                transform.Status!="verified"?transform.Reason.c_str():rejection?rejection:"individual_static_inputs_pass; overall_admission_unchanged";
+                            const bool ownerValid=d.ClassObject(observation.Owner)&&d.Hold(observation.Owner,0x200);
+                            // Read-only comparison with the fresh isolated component.
+                            // Custom primitive inputs may affect material opacity/WPO;
+                            // do not copy them or infer shader behavior in this diagnostic stage.
+                            auto customData=[&](size_t offset)
+                            {
+                                C::ArrayHeader header{};
+                                if(!Read(component,offset,header))return std::string("null");
+                                const auto bound=C::BoundArray(header,sizeof(float),alignof(float),32);
+                                if(!bound.Valid||bound.Truncated||(bound.Bytes&&!Readable(header.Data,bound.Bytes,alignof(float))))return std::string("null");
+                                C::JsonArray values;
+                                for(size_t i=0;i<bound.Count;++i)
+                                {
+                                    float value=0;
+                                    if(!Read(header.Data,i*sizeof(float),value)||!std::isfinite(value))return std::string("null");
+                                    values.Add(C::Number(value));
+                                }
+                                return values.String();
+                            };
+                            std::string captureInputs="null";
+                            if(d.Is(component,d.StaticComponent,sizeof(SDK::UStaticMeshComponent)))
+                            {
+                                const auto* source=reinterpret_cast<const SDK::UStaticMeshComponent*>(component);
+                                captureInputs=C::Object({{"render_in_main_pass",C::Bool(source->bRenderInMainPass)},
+                                    {"hidden_in_scene_capture",C::Bool(source->bHiddenInSceneCapture)},
+                                    {"forced_lod_model",std::to_string(source->ForcedLodModel)},{"min_lod",std::to_string(source->MinLOD)},
+                                    {"disallow_nanite",C::Bool(source->bDisallowNanite)},{"force_disable_nanite",C::Bool(source->bForceDisableNanite)},
+                                    {"evaluate_world_position_offset",C::Bool(source->bEvaluateWorldPositionOffset)},
+                                    {"reverse_culling",C::Bool(source->bReverseCulling)},
+                                    {"custom_primitive_authored",customData(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveData))},
+                                    {"custom_primitive_internal",customData(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveDataInternal))}});
+                            }
+                            const auto record=C::Object({{"source",C::Quote(observation.Source)},
+                                {"audit_component_id",C::Quote(originalId)},{"component",d.Ref(component,d.StaticComponent)},
+                                {"component_object_index",std::to_string(instance.ComponentIndex)},{"component_class",d.Ref(type,d.Class)},
+                                {"derives_static_mesh_component","true"},{"exact_native_static_class",C::Bool(exact)},
+                                {"enumeration_owner_class",ownerValid?d.Ref(observation.Owner,d.Class):"null"},
+                                {"component_outer",d.Ref(Value<uintptr_t>(component,0x20))},
+                                {"owner_is_selected_class",C::Bool(observation.Owner==AuditClass)},
+                                {"mesh",asset?d.Ref(mesh,d.StaticMesh):"null"},{"mesh_valid_retained",C::Bool(asset)},
+                                {"mesh_assignment_null",C::Bool(!mesh)},{"mesh_identity_type_valid",C::Bool(assetIdentity)},
+                                {"mesh_object_index",asset?std::to_string(Value<int32_t>(mesh,0xc)):"null"},
+                                {"mesh_class",asset?d.Ref(Value<uintptr_t>(mesh,0x10),d.Class):"null"},
+                                {"mesh_qualified_path","null"},{"mesh_path_status",C::Quote("unavailable_no_verified_object_path_conversion")},
+                                {"visible",C::Bool(instance.Visible)},{"hidden_in_game",C::Bool(instance.Hidden)},
+                                {"parent",parent?d.Ref(parent,d.Scene):"null"},{"socket",d.NameValue(component,0xd0)},
+                                {"socket_readable_name","null"},{"socket_name_status",C::Quote("unavailable_no_verified_name_conversion")},
+                                {"local_transform",localValid?A::Json(local):"null"},{"absolute_transform",C::Bool(absolute)},
+                                {"effective_root_relative_transform",transform.Status=="verified"?A::Json(transform.Effective):"null"},
+                                {"transform_status",C::Quote(transform.Status)},{"transform_reason",C::Quote(transform.Reason)},
+                                {"identical_scs_nodes",matches.String()},{"exact_scs_identity_match",C::Bool(matched)},
+                                {"default_material_slots",std::to_string(defaults.size())},{"override_material_slots",std::to_string(overrides.size())},
+                                {"default_materials",defaultsJson.empty()?"[]":defaultsJson},{"override_materials",overridesJson.empty()?"[]":overridesJson},
+                                {"effective_materials_valid",C::Bool(materials)},
+                                {"mesh_local_bounds_cm",bounds?C::Object({{"origin",d.CopiedNumbers(instance.LocalBounds.Origin)},
+                                    {"extent",d.CopiedNumbers(instance.LocalBounds.Extent)}}):"null"},
+                                {"capture_input_state",captureInputs},
+                                {"individual_static_input_check_passed",C::Bool(exact&&!rejection&&instance.Verified)},
+                                {"rejection_or_status",C::Quote(reason)},{"horizontal_surface","null"},{"admitted_by_inspection","false"}});
+                            if(!records.Add(record)){limited=true;break;}
+                        }
+                        limited|=d.Work.Exhausted||d.AuditTruncated;
+                    }
+                } // Diagnostic roots released while the original owner is still alive.
+                LOG_INFO("MiniMap: native static inspection: generation=%llu path=%s status=%s records=%zu discovered=%zu truncated=%d; SpriteValidation.json; admission unchanged",
+                    (unsigned long long)Record.Generation,BlueprintIdentity.Path?BlueprintIdentity.Path->c_str():"unresolved",
+                    status.c_str(),records.Records.size(),discovered,int(limited));
+                return C::Object({{"status",C::Quote(status)},{"canonical_blueprint",BlueprintIdentity.Path?C::Quote(*BlueprintIdentity.Path):"null"},
+                    {"identity_scope",C::Quote("opaque_audit_local_comparison_tokens; not_sprite_keys")},
+                    {"record_limit","16"},{"byte_limit","24576"},{"discovered_records",std::to_string(discovered)},
+                    {"truncated",C::Bool(limited)},{"native_fields",fields.String()},{"records",records.String()},
+                    {"identity_calls",std::to_string(profile.IdentityCalls)},{"identity_ms",C::Number(double(profile.IdentityNanoseconds)/1e6)},
+                    {"readable_calls",std::to_string(profile.ReadableCalls)},{"readable_ms",C::Number(double(profile.ReadableNanoseconds)/1e6)},
+                    {"virtual_queries",std::to_string(profile.VirtualQueries)},
+                    {"retained_root_acquisitions",std::to_string(inspectionMetrics.Retained)},
+                    {"roots_released",std::to_string(inspectionMetrics.Released)}});
+            }
 #endif
         };
         bool Visit(const SDK::UObject* definition,void* context)
@@ -931,12 +1205,16 @@ namespace MiniMapBuildingRepresentation
         {out.Reason="native_facility_or_world_generation_unavailable";return out;}
         if(executing.test_and_set(std::memory_order_acquire)){out.Reason="representation_service_busy";return out;}
         struct Leave {~Leave(){executing.clear(std::memory_order_release);}} leave;
+        const auto auditStart=std::chrono::steady_clock::now();
+        MiniMapNative::ValidationProfile validationProfile;
+        MiniMapNative::ScopedValidationProfile profileScope(validationProfile);
+        AuditMetrics metrics;
         try
         {
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::TimingScope auditTiming(MiniMapBuildingSprites::Timing::RepresentationAudit);
 #endif
-            Context context;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;
+            Context context;context.Metrics=&metrics;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;
             if(!context.Initialize()){out.Reason="resident_native_class_anchors_unavailable";return out;}
             auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);out.Probes=1;
             if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::StaleEntity&&alternate&&
@@ -972,7 +1250,7 @@ namespace MiniMapBuildingRepresentation
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
             out.Classification=context.Classification;
 #endif
-            out.Config=context.ProbeResult.CachedConfig;
+            out.Config=context.ProbeResult.CachedConfig;out.AuthoredClass=context.AuthoredClassStatus;
             out.Mass=context.ProbeResult.Mesh?"validated_resident_mesh_assignments":context.ProbeResult.MassStatus;
             out.IdentityVisits=context.Work.SelectionVisits+context.Work.RepresentationVisits;
             out.GraphVisits=C::VisitLimit-context.Graph.Remaining;out.AuditVisits=context.AuditVisits;
@@ -981,8 +1259,43 @@ namespace MiniMapBuildingRepresentation
             const auto current=MiniMapBuildingCollector::GetSnapshot();
             if(world!=MiniMapMap::GetWorld()||!current||current->Generation!=record.Generation)
             {out.Status=V::Outcome::Invalid;out.Reason="world_generation_changed_during_audit";}
+            context.ReportAuthoredAcquisition(out);
+            metrics.PrimaryRoots=context.Roots.size();
         } // Context releases every strong root before return/file export.
         catch(...){out={};out.Reason="native_audit_exception";}
+        // All Context roots have now been released. Times are inclusive/nested;
+        // independent component-inspection validations are counted separately.
+        const double total=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-auditStart).count();
+        try
+        {
+            const auto identity=GetBlueprintIdentity(record);
+            out.Profile=C::Object({{"canonical_blueprint",identity.Path?C::Quote(*identity.Path):"null"},
+                {"scope",C::Quote("plugin_validation_on_auditing_thread; nested_times_not_additive; inspection_validation_separate")},
+                {"total_audit_ms",C::Number(total)},{"inspection_ms",C::Number(double(metrics.InspectionNs)/1e6)},
+                {"identity_calls",std::to_string(validationProfile.IdentityCalls)},
+                {"identity_ms",C::Number(double(validationProfile.IdentityNanoseconds)/1e6)},
+                {"readable_calls",std::to_string(validationProfile.ReadableCalls)},
+                {"readable_ms",C::Number(double(validationProfile.ReadableNanoseconds)/1e6)},
+                {"virtual_queries",std::to_string(validationProfile.VirtualQueries)},
+                {"class_calls",std::to_string(metrics.ClassCalls)},{"class_ms",C::Number(double(metrics.ClassNs)/1e6)},
+                {"inheritance_calls",std::to_string(metrics.InheritanceCalls)},{"inheritance_ms",C::Number(double(metrics.InheritanceNs)/1e6)},
+                {"hold_checks",std::to_string(metrics.HoldCalls)},{"hold_ms",C::Number(double(metrics.HoldNs)/1e6)},
+                {"retained_root_acquisitions",std::to_string(metrics.Retained)},{"roots_released",std::to_string(metrics.Released)},
+                {"primary_context_unique_roots",std::to_string(metrics.PrimaryRoots)},
+                {"recipe_ms_including_inspection",C::Number(double(metrics.RecipeNs)/1e6)}});
+            std::scoped_lock lock(blueprintIdentityAccess);
+            if(blueprintIdentities.Generation==record.Generation&&blueprintIdentities.ProfileReports<64)
+            {
+                ++blueprintIdentities.ProfileReports;
+                LOG_INFO("MiniMap: validation profile %zu/64: generation=%llu building=%u totalMs=%.3f identityCalls=%llu identityMs=%.3f readableCalls=%llu readableMs=%.3f virtualQueries=%llu classMs=%.3f inheritanceMs=%.3f holdChecks=%llu holdMs=%.3f roots=%llu released=%llu recipeMs=%.3f inspectionMs=%.3f; nested times not additive; per-blueprint details in SpriteValidation.json",
+                    blueprintIdentities.ProfileReports,(unsigned long long)record.Generation,record.BuildingId,total,
+                    (unsigned long long)validationProfile.IdentityCalls,double(validationProfile.IdentityNanoseconds)/1e6,
+                    (unsigned long long)validationProfile.ReadableCalls,double(validationProfile.ReadableNanoseconds)/1e6,
+                    (unsigned long long)validationProfile.VirtualQueries,double(metrics.ClassNs)/1e6,double(metrics.InheritanceNs)/1e6,
+                    (unsigned long long)metrics.HoldCalls,double(metrics.HoldNs)/1e6,(unsigned long long)metrics.Retained,
+                    (unsigned long long)metrics.Released,double(metrics.RecipeNs)/1e6,double(metrics.InspectionNs)/1e6);
+            }
+        }catch(...){LOG_WARN("MiniMap: validation profile unavailable; admission unchanged");}
         return out;
     }
     MiniMapSpriteValidation::Result ValidateRepresentation(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a)

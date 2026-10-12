@@ -401,6 +401,21 @@ namespace MiniMapNative
     bool Initialize(
         const MiniMapFingerprints::ResolvedAddresses& addresses);
 
+    // Opt-in, current-thread diagnostic counters. No object identities are cached.
+    struct ValidationProfile
+    {
+        uint64_t IdentityCalls{},IdentityNanoseconds{},ReadableCalls{},ReadableNanoseconds{},VirtualQueries{};
+    };
+    class ScopedValidationProfile
+    {
+        ValidationProfile* Previous;
+    public:
+        explicit ScopedValidationProfile(ValidationProfile&);
+        ~ScopedValidationProfile();
+        ScopedValidationProfile(const ScopedValidationProfile&)=delete;
+        ScopedValidationProfile& operator=(const ScopedValidationProfile&)=delete;
+    };
+
     bool IsMemoryRangeReadable(
         uintptr_t address,
         size_t bytes,

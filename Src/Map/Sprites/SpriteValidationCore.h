@@ -16,7 +16,7 @@ namespace MiniMapSpriteValidation
         MiniMapSpriteClassification::Observation Classification;
         Outcome Status=Outcome::Invalid;
         std::string Reason="not_attempted",Route="none",High="not_examined",Low="not_examined",Mass="not_examined",
-            Config="not_examined",Selected="null",Details="{}";
+            Config="not_examined",AuthoredClass="not_examined",Selected="null",Details="{}",Inspection="{}",Profile="{}";
         size_t Static{},UniqueMeshes{},Skeletal{},Scene{},NonScene{},Nodes{},MaterialSlots{},OverrideSlots{},
             IdentityVisits{},GraphVisits{},AuditVisits{},Probes{};
         bool Root=false,Transforms=false,Materials=false,Resident=false,Truncated=false,Inherited=false,Child=false,OtherSkinned=false,DerivedStatic=false;
@@ -132,7 +132,7 @@ namespace MiniMapSpriteValidation
             {"high_detail_actor_status",J::Quote(r.High)},{"low_detail_actor_status",J::Quote(r.Low)},
             {"mass_alternative_status",J::Quote(r.Mass)},{"cached_entity_config",J::Quote(r.Config)},
             {"authored_entity_config",J::Quote("not_examined_soft_reference_contract_unverified")},
-            {"placement_actor_class",J::Quote("not_examined_resident_soft_class_contract_unverified")},
+            {"placement_actor_class",J::Quote(r.AuthoredClass)},
             {"selected_class",r.Selected},{"authored_static_instances",std::to_string(r.Static)},
             {"unique_static_meshes",std::to_string(r.UniqueMeshes)},{"skeletal_components",std::to_string(r.Skeletal)},
             {"nonmesh_scene_components",std::to_string(r.Scene)},{"non_scene_components",std::to_string(r.NonScene)},
@@ -146,7 +146,7 @@ namespace MiniMapSpriteValidation
             {"identity_visits",std::to_string(r.IdentityVisits)},{"graph_visits",std::to_string(r.GraphVisits)},
             {"audit_visits",std::to_string(r.AuditVisits)},{"representative_probes",std::to_string(r.Probes)},
             {"truncated",J::Bool(r.Truncated||r.Details.size()>DetailLimit)},{"verified_safe_to_capture","false"},
-            {"authored_audit",details}});
+            {"authored_audit",details},{"static_component_inspection",r.Inspection},{"validation_profile",r.Profile}});
     }
     template<class Snapshot> std::string Json(const Scheduler<Snapshot>& s,const D::Registry& registry,size_t limit=OutputLimit)
     {
