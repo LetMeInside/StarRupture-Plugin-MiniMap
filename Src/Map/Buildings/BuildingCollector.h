@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace MiniMapBuildingInventory { struct Record; }
@@ -76,6 +77,8 @@ namespace MiniMapBuildingCollector
         Bounds Extent;
         Bounds SourceFootprint; // Transformed targeting proxy, separate from admission fallback.
         LocalBounds LocalFootprint;
+        // Exact authored blueprint path, shared across instances; absent while unresolved.
+        std::shared_ptr<const std::string> CanonicalBlueprint;
         std::shared_ptr<const DefinitionGeometry> DefinitionShape;
         std::shared_ptr<const SplineGeometry> Curve;
         double SplineInflation = 0; // Includes named width/cap fallback; not a measured half-width.

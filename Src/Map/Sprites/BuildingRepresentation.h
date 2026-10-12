@@ -1,12 +1,28 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <array>
+#include <memory>
+#include <string>
+#include <string_view>
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 namespace MiniMapSpriteValidation { struct Result; }
 namespace MiniMapBuildingCollector { struct Record; }
 namespace MiniMapSpriteClassification { struct Observation; }
 namespace MiniMapBuildingRepresentation
 {
+    struct BlueprintIdentityResult
+    {
+        std::shared_ptr<const std::string> Path;
+        const char* Reason="identity_not_resolved";
+        explicit operator bool()const noexcept{return bool(Path);}
+    };
+    // Exact engine-produced generated-class paths only. No entries initially.
+    inline constexpr std::array<std::string_view,0> kBlacklistedBlueprints{};
+    inline bool IsBlueprintBlacklisted(std::string_view path)
+    {for(const auto entry:kBlacklistedBlueprints)if(entry==path)return true;return false;}
+    // Copied generation-owned metadata only; safe for readers, no native call.
+    BlueprintIdentityResult GetBlueprintIdentity(const MiniMapBuildingCollector::Record&);
     bool ResolvePrerequisites();
     bool PrepareNativeClasses(); // one retained resident native class per service tick
     void Initialize();

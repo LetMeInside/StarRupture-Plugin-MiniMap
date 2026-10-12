@@ -5,6 +5,9 @@
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#include "Map/Sprites/BuildingRepresentation.h"
+#endif
 #include "DebugText.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
@@ -66,6 +69,7 @@ namespace
     {
         uint32_t Id; uint8_t Category; int32_t NameIndex; uint32_t NameNumber;
         std::shared_ptr<const DefinitionGeometry> Geometry;
+        std::shared_ptr<const std::string> CanonicalBlueprint;
         Clock::time_point RetryAt = {};
     };
     struct Metrics
@@ -644,6 +648,15 @@ namespace
             if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+            const auto definition=g_definitions.find(Key(r.DefinitionObjectIndex,r.BuildingId));
+            if(definition!=g_definitions.end()&&definition->second.NameIndex==r.DefinitionIndex&&definition->second.NameNumber==r.DefinitionNumber)
+            {
+                auto& path=definition->second.CanonicalBlueprint;
+                if(!path)path=MiniMapBuildingRepresentation::GetBlueprintIdentity(r).Path;
+                result->Records.back().CanonicalBlueprint=path;
+            }
+#endif
         };
         for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
         for(const auto& [key,e]:g_cache)

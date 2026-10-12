@@ -213,6 +213,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         recipe.Complete=!out.Truncated;
         MiniMapSpriteCapture::Candidate candidate;candidate.General=true;
         candidate.Identity=MiniMapSpriteCandidates::Copy(Record).Identity;
+        candidate.CanonicalBlueprint=BlueprintIdentity.Path;
         candidate.Classification=Classification.CachedPolicy;
         candidate.ClassificationObserved=Classification.Fixed&&Classification.Subclass&&!Classification.Truncated&&Classification.InteriorTag!="unknown";
         candidate.RepresentationVerified=out.Root&&out.Transforms&&out.Materials&&!out.Inherited&&!out.Child&&!out.DerivedStatic&&!out.OtherSkinned;
@@ -220,6 +221,9 @@ MiniMapSpriteValidation::Result GenericAudit()
         candidate.ActorObject=Value<int32_t>(AuditClass,0xc);const auto name=Value<Name>(AuditClass,0x18);
         candidate.ActorName=name.Index;candidate.ActorNumber=name.Number;
         candidate.Tier=recipe.HighDetail?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Low;
+        // An unresolved identity preserves the existing session-only capture path.
+        if(candidate.CanonicalBlueprint&&IsBlueprintBlacklisted(*candidate.CanonicalBlueprint))
+        {out.Status=V::Outcome::Unsupported;out.Reason="blueprint_blacklisted";return out;}
         const auto decision=MiniMapSmelterCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
         out.Reason=decision.Reason;
         if(!decision.Allowed())out.Status=V::Outcome::Conditional;

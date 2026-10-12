@@ -124,7 +124,9 @@ namespace MiniMapSpriteDiscovery
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
             LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; bounded synchronous native unit",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
-            if(out.Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
+            if(out.Reason=="blueprint_blacklisted")
+                MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Reason);
+            else if(out.Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
                 MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Classification.CachedPolicy.Reason);
             else if(out.Status!=V::Outcome::Eligible)
                 MiniMapBuildingSprites::Record(key,out.Status==V::Outcome::NoResident||

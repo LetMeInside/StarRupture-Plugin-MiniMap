@@ -8,7 +8,8 @@ namespace MiniMapSpriteCapture
     namespace K=MiniMapSpriteClassification;
     struct Candidate
     {
-        D::Key Identity;
+        D::Key Identity; // Existing session/lifetime token; not a durable blueprint identity.
+        std::shared_ptr<const std::string> CanonicalBlueprint;
         K::Policy Classification;
         int32_t ActorObject=-1,ActorName=-1;uint32_t ActorNumber{};
         bool ClassificationObserved=false,RepresentationVerified=false,Truncated=true,General=false;
