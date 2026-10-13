@@ -54,6 +54,9 @@ MiniMapSpriteValidation::Result GenericAudit()
     struct MeshInput {std::string Defaults,Overrides,Mapping;bool Valid=false;};
     std::map<std::string,MeshInput> materials;
     MiniMapStaticAssembly::Recipe recipe;recipe.General=true;recipe.Generation=Record.Generation;
+    struct SkeletalSource {uintptr_t Component{},Mesh{};bool Valid=false;};
+    std::array<SkeletalSource,A::SkeletalLimit> skeletalSources{};size_t skeletalSourceCount=0;
+    bool skeletalSourcesTruncated=false;
     recipe.ActorClass=AuditClass;recipe.RootVerified=out.Root;recipe.HighDetail=SelectedTier=="high_detail_actor";
     // A separate body route is permitted only after proving that every other
     // discovered static template is noncontributing. Unresolved visible inputs
@@ -146,6 +149,12 @@ MiniMapSpriteValidation::Result GenericAudit()
         {
             const auto found=AuditAssignments.find(component);const uintptr_t mesh=found==AuditAssignments.end()?0:found->second;
             const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh,isStatic?0x170:0x1b0)&&Hold(mesh);
+            // Preserve source tokens before material rejection; no admission state changes.
+            if(isSkeletal)
+            {
+                if(skeletalSourceCount<skeletalSources.size())skeletalSources[skeletalSourceCount++]={component,mesh,valid};
+                else skeletalSourcesTruncated=true;
+            }
             if(!valid)sourceValid=false;else n.Mesh=Id(mesh);
             bool defaultsValid=false,overridesValid=false;MeshInput input;
             const bool diagnoseMaterials=CaptureRequested&&!skeletalAdmissionReported&&isSkeletal&&skeletalAdmission.Node.empty();
@@ -413,10 +422,23 @@ MiniMapSpriteValidation::Result GenericAudit()
         // An unresolved identity preserves the existing session-only capture path.
         if(candidate.CanonicalBlueprint&&IsBlueprintBlacklisted(*candidate.CanonicalBlueprint))
         {out.Status=V::Outcome::Unsupported;out.Reason="blueprint_blacklisted";return out;}
-        const auto decision=MiniMapSmelterCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
-        out.Reason=decision.Reason;
-        if(!decision.Allowed())out.Status=V::Outcome::Conditional;
+        // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY: validation stays capture-grade.
+        if(!DeferCapture)
+        {
+            const auto decision=MiniMapSmelterCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
+            out.Reason=decision.Reason;
+            if(!decision.Allowed())out.Status=V::Outcome::Conditional;
+        }
     }
 #endif
+    // Optional observations have independent budgets and roots. Run after all
+    // admission/handoff decisions, never feeding counts into readiness or policy.
+    try
+    {
+        Context diagnostic;diagnostic.Class=Class;diagnostic.StaticMesh=StaticMesh;
+        diagnostic.SkeletalMesh=SkeletalMesh;diagnostic.Material=Material;diagnostic.Ids=Ids;
+        diagnostic.SourceMetadata(recipe,skeletalSources,skeletalSourceCount,skeletalSourcesTruncated,out);
+    }
+    catch(...){/* Optional metadata cannot fail validation or capture handoff. */}
     return out;
 }

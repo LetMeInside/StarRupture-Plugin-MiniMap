@@ -202,6 +202,7 @@ namespace MiniMapBuildingRepresentation
 #include "SpriteClassificationAudit.inl"
 #endif
             bool GenericValidation=false,GenericInherited=false,GenericChild=false,CaptureRequested=false;
+            bool DeferCapture=false; // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY
             uintptr_t AuditClass=0;
             bool AuditActive=false,AuditTruncated=false,AuditCollectionTruncated=false;
             size_t AuditVisits=0;
@@ -1050,6 +1051,7 @@ namespace MiniMapBuildingRepresentation
             }
             #include "AssemblyRecipeAudit.inl"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+            #include "SourceMetadataAudit.inl"
             #include "GenericRepresentationAudit.inl"
             // Independent bounded observer: no mutation of the production audit's
             // graph, budget, recipe, eligibility flags or retained asset inventory.
@@ -1285,7 +1287,7 @@ namespace MiniMapBuildingRepresentation
     }
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
     MiniMapSpriteValidation::Result ValidateRepresentationImpl(const MiniMapBuildingCollector::Record& record,
-        const MiniMapBuildingCollector::Record* alternate,bool captureRequested)
+        const MiniMapBuildingCollector::Record* alternate,bool captureRequested,bool deferCapture=false)
     {
         namespace V=MiniMapSpriteValidation;
         V::Result out;
@@ -1307,6 +1309,7 @@ namespace MiniMapBuildingRepresentation
             MiniMapBuildingSprites::TimingScope auditTiming(MiniMapBuildingSprites::Timing::RepresentationAudit);
 #endif
             Context context;context.Metrics=&metrics;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;
+            context.DeferCapture=deferCapture;
             if(!context.Initialize()){out.Reason="resident_native_class_anchors_unavailable";return out;}
             auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);out.Probes=1;
             if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::StaleEntity&&alternate&&
@@ -1414,8 +1417,8 @@ namespace MiniMapBuildingRepresentation
     }
     MiniMapSpriteValidation::Result ValidateRepresentation(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a)
     {return ValidateRepresentationImpl(r,a,false);}
-    MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a)
-    {return ValidateRepresentationImpl(r,a,true);}
+    MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a,bool deferCapture)
+    {return ValidateRepresentationImpl(r,a,true,deferCapture);}
 #endif
     bool PrepareNativeClasses()
     {

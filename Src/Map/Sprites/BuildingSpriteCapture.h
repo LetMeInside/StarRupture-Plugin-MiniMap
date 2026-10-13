@@ -6,6 +6,7 @@ namespace MiniMapBuildingCollector { struct Record; }
 namespace MiniMapSmelterCapture { bool ResolvePrerequisites(); void Initialize(); void Shutdown(); }
 namespace MiniMapSmelterCapture
 {
+    bool HasResourceWatchCapacity(); // GT, bounded ticket-array inspection only
     bool CanAcceptCandidate(); // game-thread, no native work; one active owner
     const char* CandidateServiceStatus(); // game-thread diagnostics only
     // Synchronous game-thread handoff; on success acquire independent native

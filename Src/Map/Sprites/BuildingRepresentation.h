@@ -40,7 +40,7 @@ namespace MiniMapBuildingRepresentation
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
     // Synchronous game-thread audit. Returned data owns no native references.
     MiniMapSpriteValidation::Result ValidateRepresentation(const MiniMapBuildingCollector::Record&,const MiniMapBuildingCollector::Record*);
-    MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record&,const MiniMapBuildingCollector::Record*);
+    MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record&,const MiniMapBuildingCollector::Record*,bool deferCapture=false);
 #endif
 }
 #endif

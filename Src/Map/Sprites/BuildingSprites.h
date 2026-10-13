@@ -3,12 +3,33 @@
 #include "BuildingSpritePipelineCore.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include <chrono>
+namespace MiniMapRendererReadiness {struct AssemblyObservation;}
 namespace MiniMapBuildingSprites
 {
     void Reset(uint64_t generation);
     void Record(const MiniMapSpriteDiscoveryCore::Key&,MiniMapBuildingSpriteCore::State,const std::string&);
-    bool Queue(const MiniMapSpriteDiscoveryCore::Key&);
-    void Complete(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&);
+    MiniMapBuildingSpriteCore::Admission Queue(const MiniMapSpriteDiscoveryCore::Key&);
+    bool ReservationCurrent(const MiniMapSpriteDiscoveryCore::Key&);
+    bool WatchCurrent(const MiniMapSpriteDiscoveryCore::Key&,const std::vector<uint64_t>&);
+    bool StartCapture(const MiniMapSpriteDiscoveryCore::Key&);
+    bool DependencySnapshot(const MiniMapSpriteDiscoveryCore::Key&,MiniMapRendererReadiness::Dependencies&);
+    void WatchState(const MiniMapSpriteDiscoveryCore::Key&,MiniMapRendererReadiness::Dependencies::Watch);
+    bool WaitingDemand();
+    void FinishReevaluation(const MiniMapSpriteDiscoveryCore::Key&,double sourcePublication);
+    void AcknowledgeReevaluation(const MiniMapSpriteDiscoveryCore::Key&,bool);
+    void AbandonCapture(const MiniMapSpriteDiscoveryCore::Key&,bool transient=false) noexcept;
+    void ObserveResources(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapRendererReadiness::Result&);
+    void ObserveAssembly(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapRendererReadiness::AssemblyObservation&);
+    // GT notifications carry CPU-owned provider evidence, never render pointers.
+    MiniMapRendererReadiness::NotificationAck NotifyProviderChange(const MiniMapSpriteDiscoveryCore::Key&,
+        const MiniMapRendererReadiness::ProviderObservation&,const std::vector<uint64_t>& source);
+    std::array<uint64_t,5> PublicationWake(const MiniMapSpriteDiscoveryCore::Key&); // CPU-only meaningful change/registry epoch
+    bool RequestProviderReevaluation(const MiniMapSpriteDiscoveryCore::Key&,uint32_t provider);
+    bool TakeReadinessReevaluation(MiniMapSpriteDiscoveryCore::Key&,bool (*watchCapacity)());
+    bool TracksDependencies(const MiniMapSpriteDiscoveryCore::Key&);
+    void ObserveRegistry(const MiniMapSpriteDiscoveryCore::Registry&);
+    void ServiceRegistry(); // bounded CPU-only reconciliation, no native observations
+    void Complete(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&,const MiniMapRendererReadiness::Result&);
     struct DrawState;
     struct SpatialSubmission
     {
@@ -45,7 +66,7 @@ namespace MiniMapBuildingSprites
     void EndDraw(const DrawFrame&); // one generation-checked counter commit
     inline void RecordFallback(DrawFrame& frame){++frame.Fallbacks;}
     bool Draw(DrawFrame&,IModLoaderImGui*,PluginDrawList,const MiniMapMap::Transform&,const MiniMapBuildingCollector::Record&);
-    enum class Timing { DiscoveryService,CaptureService,TextureUpload,WidgetCpu,WidgetInterval,RegistryScan,RepresentationAudit,NativeClassResolution,Classification,RepresentationTraversal,AssemblyRecipe,CaptureAdmission,DiagnosticBuild,DiagnosticPublish,Count };
+    enum class Timing { DiscoveryService,CaptureService,TextureUpload,WidgetCpu,WidgetInterval,RegistryScan,RepresentationAudit,NativeClassResolution,Classification,RepresentationTraversal,AssemblyRecipe,CaptureAdmission,DiagnosticBuild,DiagnosticPublish,ReadinessService,ReadinessSample,Count };
     void RecordTiming(Timing,double milliseconds) noexcept;
     struct TimingScope
     {

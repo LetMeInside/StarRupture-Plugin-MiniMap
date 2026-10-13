@@ -84,6 +84,10 @@ namespace MiniMapSpriteDiscovery
         {
             DiagnosticWriter Writer;
             unsigned Dirty{};uint64_t WriterGeneration{},WriterErrors{};
+            // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY; one clock per gameplay generation.
+            uint64_t CaptureDelayGeneration{};
+            Clock::time_point CaptureDelayStarted{},CaptureDelayDeadline{};
+            bool CaptureDelayExpired=false;
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             MiniMapSpriteValidation::Scheduler<B::Snapshot> Validation;
             double NextValidationExport{};
@@ -100,6 +104,8 @@ namespace MiniMapSpriteDiscovery
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::DiscoveryWorldEnd,false);
             if(!world||!owner||world!=MiniMapMap::GetWorld())return;
             MiniMapMap::SetGameplayReady(false);
+            owner->CaptureDelayGeneration=0;owner->CaptureDelayExpired=false;
+            owner->CaptureDelayStarted={};owner->CaptureDelayDeadline={};
             const auto current=B::GetSnapshot();
             owner->Writer.Invalidate(0);owner->WriterGeneration=0;owner->Dirty=0;
             owner->Invalidate(current?current->Generation:owner->Published.Generation);
@@ -121,18 +127,21 @@ namespace MiniMapSpriteDiscovery
             const auto key=CopiedRecord(record).Identity;
             MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryCandidate);
             const auto start=Clock::now();
-            auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate);
+            auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate,!owner->CaptureDelayExpired);
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
             LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous audit duration, not a two-ms bounded unit",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
+            if(!owner->CaptureDelayExpired)return out; // validation/export continue, production handoff/state deferred
             if(out.Reason=="blueprint_blacklisted")
                 MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Reason);
             else if(out.Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
                 MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Classification.CachedPolicy.Reason);
             else if(out.Status!=V::Outcome::Eligible)
-                MiniMapBuildingSprites::Record(key,out.Status==V::Outcome::NoResident||
-                    out.Reason=="capture_backend_preflight_unavailable"||out.Reason=="capture_lifecycle_unavailable"?
-                    P::State::Unavailable:P::State::Unsupported,out.Reason);
+                // Deferred admission/unknown validation is not an unsupported
+                // renderer capability. In particular a provider reevaluation
+                // without advancement must retain the provisional quality record.
+                MiniMapBuildingSprites::Record(key,out.Status==V::Outcome::Unsupported?
+                    P::State::Unsupported:P::State::Unavailable,out.Reason);
             else MiniMapBuildingSprites::Record(key,P::State::Queued,out.Route+"; static_instances="+std::to_string(out.Static)+
                 "; skeletal_omitted="+std::to_string(out.Skeletal)+"; "+out.Reason);
             return out;
@@ -161,18 +170,51 @@ namespace MiniMapSpriteDiscovery
             if(owner->WriterGeneration!=owner->Published.Generation)
             {owner->WriterGeneration=owner->Published.Generation;owner->Writer.Invalidate(owner->WriterGeneration);owner->Dirty=0;}
             if(result!=C::Publication::None)owner->Dirty|=1;
+            if(owner->CaptureDelayGeneration&&owner->CaptureDelayGeneration!=owner->Published.Generation)
+            {owner->CaptureDelayGeneration=0;owner->CaptureDelayExpired=false;owner->CaptureDelayStarted={};owner->CaptureDelayDeadline={};}
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             auto& v=owner->Validation;
             if(result==C::Publication::Invalidated){v.Clear();owner->NextValidationExport=0;}
             if(result==C::Publication::Ready)v.Observe(owner->Published);
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::Reset(MiniMapMap::HasWorld()?owner->Published.Generation:0);
+            if(result==C::Publication::Ready)MiniMapBuildingSprites::ObserveRegistry(owner->Published);
+            try{MiniMapBuildingSprites::ServiceRegistry();}
+            catch(...){/* A failed view allocation preserves the prior view; retry CPU reconciliation. */}
             if(result==C::Publication::Ready)
                 for(size_t i=0;i<owner->Published.Count;++i)
                     MiniMapBuildingSprites::Record(owner->Published.Entries[i].Identity,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");
             const bool anchorsReady=[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
+            // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY. No waits, feature flag or per-building timers.
+            const auto captureSource=B::GetSnapshot();
+            if(!owner->CaptureDelayGeneration&&anchorsReady&&owner->Published.Complete()&&owner->Published.Count&&
+                captureSource&&captureSource->Complete&&captureSource->Generation==owner->Published.Generation&&
+                MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
+                std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0)
+            {
+                owner->CaptureDelayGeneration=owner->Published.Generation;owner->CaptureDelayStarted=Clock::now();
+                owner->CaptureDelayDeadline=owner->CaptureDelayStarted+std::chrono::seconds(60);
+                LOG_INFO("MiniMap: A.4.9h 60-second production capture delay started: generation=%llu elapsedSeconds=0.000",
+                    (unsigned long long)owner->CaptureDelayGeneration);
+            }
+            if(owner->CaptureDelayGeneration==owner->Published.Generation&&!owner->CaptureDelayExpired&&
+                owner->CaptureDelayGeneration&&Clock::now()>=owner->CaptureDelayDeadline)
+            {
+                owner->CaptureDelayExpired=true;
+                // Validation-only passes completed during the gate; reuse normal reevaluation once.
+                for(size_t i=0;i<owner->Published.Count;++i)v.RequestReevaluation(owner->Published.Entries[i].Identity);
+                LOG_INFO("MiniMap: A.4.9h 60-second production capture delay expired; normal capture resumed: generation=%llu elapsedSeconds=%.3f",
+                    (unsigned long long)owner->CaptureDelayGeneration,std::chrono::duration<double>(Clock::now()-owner->CaptureDelayStarted).count());
+            }
+            if(owner->CaptureDelayExpired&&anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapSmelterCapture::CanAcceptCandidate())
+            {
+                C::Key key;
+                if(MiniMapBuildingSprites::TakeReadinessReevaluation(key,&MiniMapSmelterCapture::HasResourceWatchCapacity)&&v.Complete())
+                    MiniMapBuildingSprites::AcknowledgeReevaluation(key,v.RequestReevaluation(key));
+            }
             const bool changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
                 v.Service(owner->Published,B::GetSnapshot(),&CopiedRecord,&ProcessCandidate);
+            if(changed&&owner->CaptureDelayExpired)MiniMapBuildingSprites::FinishReevaluation(v.LastCompletedKey,v.SourcePublication);
             if(now>=owner->NextPipelineExport)
             {owner->Dirty|=8;owner->NextPipelineExport=now+5;}
 #else

@@ -16,7 +16,8 @@ namespace MiniMapSpriteValidation
         MiniMapSpriteClassification::Observation Classification;
         Outcome Status=Outcome::Invalid;
         std::string Reason="not_attempted",Route="none",High="not_examined",Low="not_examined",Mass="not_examined",
-            Config="not_examined",AuthoredClass="not_examined",Selected="null",Details="{}",Inspection="{}",Profile="{}";
+            Config="not_examined",AuthoredClass="not_examined",Selected="null",Details="{}",Inspection="{}",Profile="{}",
+            CookedGeometry="{\"status\":\"not_attempted\"}",SkeletalMetadata="{\"status\":\"not_attempted\"}";
         size_t Static{},UniqueMeshes{},Skeletal{},Scene{},NonScene{},Nodes{},MaterialSlots{},OverrideSlots{},
             IdentityVisits{},GraphVisits{},AuditVisits{},Probes{};
         bool Root=false,Transforms=false,Materials=false,Resident=false,Truncated=false,Inherited=false,Child=false,OtherSkinned=false,DerivedStatic=false;
@@ -42,8 +43,22 @@ namespace MiniMapSpriteValidation
             QueueDeferred{};
         uint64_t Generation{};double SourcePublication{};
         bool Preparing=false,QueueTruncated=false,ScanTruncated=false;
+        D::Key LastCompletedKey;
         std::shared_ptr<const Snapshot> Held;
         void Clear(){*this={};}
+        bool RequestReevaluation(const D::Key& key)
+        {
+            if(key.Generation!=Generation)return false;
+            for(size_t i=0;i<Count;++i)if(Entries[i].Current&&Entries[i].Candidate.Identity==key)
+            {
+                if(!Entries[i].Done)return true;
+                Entries[i].Done=false;Entries[i].InstanceCount=0;
+                // Reuse existing bounded representative selection, not registry
+                // recreation or a synchronous full-definition scan.
+                Held.reset();Preparing=false;return true;
+            }
+            return false;
+        }
         void Observe(const D::Registry& registry)
         {
             if(registry.Generation!=Generation){Clear();Generation=registry.Generation;}
@@ -109,7 +124,7 @@ namespace MiniMapSpriteValidation
                     try {e.Validation=audit(Held->Records[e.Indices[0]],e.InstanceCount>1?&Held->Records[e.Indices[1]]:nullptr);}
                     catch(...) {e.Validation={};e.Validation.Reason="candidate_audit_exception";}
                 }
-                e.Done=true;
+                e.Done=true;LastCompletedKey=e.Candidate.Identity;
                 if(Held->Records.size()>D::RecordLimit||Complete())Held.reset();
                 return true; // at most one synchronous native audit opportunity per tick
             }
@@ -146,7 +161,8 @@ namespace MiniMapSpriteValidation
             {"identity_visits",std::to_string(r.IdentityVisits)},{"graph_visits",std::to_string(r.GraphVisits)},
             {"audit_visits",std::to_string(r.AuditVisits)},{"representative_probes",std::to_string(r.Probes)},
             {"truncated",J::Bool(r.Truncated||r.Details.size()>DetailLimit)},{"verified_safe_to_capture","false"},
-            {"authored_audit",details},{"static_component_inspection",r.Inspection},{"validation_profile",r.Profile}});
+            {"authored_audit",details},{"static_component_inspection",r.Inspection},{"validation_profile",r.Profile},
+            {"cooked_geometry",r.CookedGeometry},{"skeletal_source_metadata",r.SkeletalMetadata}});
     }
     template<class Snapshot> std::string Json(const Scheduler<Snapshot>& s,const D::Registry& registry,size_t limit=OutputLimit)
     {
