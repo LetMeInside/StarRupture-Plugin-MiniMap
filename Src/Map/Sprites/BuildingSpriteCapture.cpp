@@ -113,6 +113,28 @@ namespace MiniMapSmelterCapture
         CaptureClock::time_point componentsRegisteredAt{},captureSubmittedAt{};
         bool publicStaticCapture=false;
 
+        // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE. Same owner and retained objects.
+        uint64_t captureServiceSequence=0;
+        struct PreparedStaticCapture
+        {
+            bool Pending=false;
+            Native::Job* Job=nullptr;
+            SDK::UWorld* World=nullptr;
+            SDK::UClass* MeshClass=nullptr;
+            SDK::UClass* CaptureClass=nullptr;
+            SDK::UClass* TargetClass=nullptr;
+            SDK::UFunction* Function=nullptr; // owns the existing FindPublicCapture retain
+            void* Resource=nullptr;
+            std::array<double,3> Extent{},Center{};
+            uint64_t ServiceSequence=0;
+            CaptureClock::time_point PreparedAt{};
+        } preparedStatic;
+        void ClearPreparedStatic()
+        {
+            if(preparedStatic.Function)Drop(preparedStatic.Function);
+            preparedStatic={};
+        }
+
         SA::Footprint assemblyBounds;
         SA::Ledger assemblyComponents;
         SDK::UObject* assemblyRoots[SA::Assignments+SA::Limit]{};
@@ -949,6 +971,14 @@ namespace MiniMapSmelterCapture
         }
         void FailBeforeCapture(const char* reason)
         {
+            // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: cancel before native commitment.
+            if(preparedStatic.Pending)
+                LOG_WARN("MiniMap: A.4.9l pending static capture cancelled: generation=%llu building=%u job=%p preparationService=%llu currentService=%llu elapsedMs=%.3f reason=%s",
+                    (unsigned long long)assemblyRecipe.Generation,candidateRequest?candidateRequest->Source.BuildingId:0,
+                    static_cast<void*>(preparedStatic.Job),(unsigned long long)preparedStatic.ServiceSequence,
+                    (unsigned long long)captureServiceSequence,
+                    std::chrono::duration<double,std::milli>(CaptureClock::now()-preparedStatic.PreparedAt).count(),reason);
+            ClearPreparedStatic();
             if(candidateRequest&&!skeletalOnly&&(!std::strcmp(reason,"invalid_or_stale_source")||
                 !std::strcmp(reason,"candidate_revalidation_exception")||!std::strcmp(reason,"capture_lifecycle_unavailable")))
                 MiniMapBuildingSprites::AbandonCapture(candidateRequest->Candidate.Identity,true);
@@ -1091,6 +1121,62 @@ namespace MiniMapSmelterCapture
             }
             catch(const std::exception& e){LOG_ERROR("MiniMap: R2 PNG export failed: %s; native cleanup continues",e.what());}
             catch(...){LOG_ERROR("MiniMap: R2 PNG export failed: unknown exception; native cleanup continues");}
+        }
+        // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: extracted original dispatch tail.
+        // Legacy/skeletal callers still dispatch immediately; statics resume it once next tick.
+        void DispatchCapture(SDK::UClass* captureClass,SDK::UFunction* captureFunction,
+            void* builder,void* scene,const SDK::FVector& extent,const SDK::FVector& center)
+        {
+            const auto& native=Native::GetBindings();
+            bool committedJob=false;
+            captureSubmittedAt=CaptureClock::now();
+            if(publicStaticCapture)
+            {
+                if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(capture))||
+                    capture->Class!=captureClass||!capture->bVisible)
+                {FailBeforeCapture("public CaptureScene receiver/visibility prerequisite failed");return;}
+                // EngineTick callbacks run after the original engine tick, outside
+                // its end-of-frame update traversal. Public CaptureScene performs
+                // the deferred update flush missing from direct UpdateCapture.
+                // Mark conservatively BEFORE dispatch: an exception may follow
+                // render work submission. Such failures must retain all roots.
+                if(candidateRequest&&!skeletalOnly&&!MiniMapBuildingSprites::ReservationCurrent(candidateRequest->Candidate.Identity))
+                {FailBeforeCapture("provider advancement superseded before dispatch");return;}
+                committedJob=Native::MarkExternalCaptureCommitted(job);
+                if(!committedJob){FailBeforeCapture("public CaptureScene job commitment prerequisite failed");return;}
+                captureCommitted=true;
+                if(staticEvidenceActive&&candidateRequest)
+                    LOG_INFO("MiniMap: static capture lifecycle A4.6: generation=%llu building=%u attempt=1 components=%zu mode=public_CaptureScene registrationToSubmitMs=%.3f visible=%d detailMode=%u; deferred-update flush supplied by installed public contract; proxy/PSO/resident LOD readiness unobserved",
+                        (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,assemblyComponents.Count,
+                        std::chrono::duration<double,std::milli>(captureSubmittedAt-componentsRegisteredAt).count(),int(capture->bVisible),unsigned(capture->DetailMode));
+                MiniMapCallbackTiming::Phase dispatchTiming(MiniMapCallbackTiming::Id::CaptureSubmit);
+                uint8_t emptyFrame=0;
+                // No reentrant engine work between reservation validation and
+                // this dispatch boundary. A successful reservation was not an attempt.
+                if(candidateRequest&&!skeletalOnly&&!MiniMapBuildingSprites::StartCapture(candidateRequest->Candidate.Identity))
+                {finished=true;Native::Cancel(job);FailSpritePublication("capture_reservation_changed_after_commit; resources_retained");return;}
+                if(!Invoke(capture,captureFunction,emptyFrame))
+                {finished=true;Native::Cancel(job);FailSpritePublication("public_capture_dispatch_uncertain; resources_retained");LOG_ERROR("MiniMap: public CaptureScene dispatch uncertain; resources retained");return;}
+                if(staticEvidenceActive)
+                    LOG_INFO("MiniMap: static capture lifecycle A4.6: attempt=1 public dispatch returned in %.3fms; void call is not proof of drawable geometry; readback follows; retries=disabled",
+                        std::chrono::duration<double,std::milli>(CaptureClock::now()-captureSubmittedAt).count());
+            }
+            else
+            {
+                reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
+                reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
+                // Existing diagnostic commit boundary and retirement are unchanged.
+                reinterpret_cast<void(*)(void*)>(bindings.BuilderExecute)(builder);
+                captureCommitted=true;
+                committedJob=Native::MarkExternalCaptureCommitted(job);
+                reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
+                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+            }
+            if(!committedJob){finished=true;Native::Cancel(job);FailSpritePublication("committed_job_identity_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
+            LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, %s; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f",
+                Dimension,Dimension,skeletalOnly?"diagnostic skeletal-only reference render (no publication)":assemblyActive?"bounded static authored instances":"9 authored materials",extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
+            LOG_INFO("MiniMap: R2 GPU readback scheduling entered (copy submission reported separately)");
+            Native::Service(job,++frame);
         }
         void Submit(SDK::UWorld* world,const SDK::FVector& player)
         {
@@ -1368,55 +1454,84 @@ namespace MiniMapSmelterCapture
             ReportStaticCaptureEvidence(camera,center,extent,location);
             if(skeletalOnly)LOG_INFO("MiniMap: skeletal-only isolated assembly: registered members=1, exact show-only membership verified; width=%.3f; fixed anchor=(0,0,200000); static components absent, publication disabled",double(capture->OrthoWidth));
             else if(assemblyActive)LOG_INFO("MiniMap: R2.5b isolated static assembly: instances=%zu static-reference width=%.3f; fixed anchor=(0,0,200000); skeletal excluded",assemblyComponents.Count,double(capture->OrthoWidth));
-            bool committedJob=false;
-            captureSubmittedAt=CaptureClock::now();
+            // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE. All original preparation is complete.
             if(publicStaticCapture)
             {
-                if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(capture))||
-                    capture->Class!=captureClass||!capture->bVisible)
-                {FailBeforeCapture("public CaptureScene receiver/visibility prerequisite failed");return;}
-                // EngineTick callbacks run after the original engine tick, outside
-                // its end-of-frame update traversal. Public CaptureScene performs
-                // the deferred update flush missing from direct UpdateCapture.
-                // Mark conservatively BEFORE dispatch: an exception may follow
-                // render work submission. Such failures must retain all roots.
-                if(candidateRequest&&!skeletalOnly&&!MiniMapBuildingSprites::ReservationCurrent(candidateRequest->Candidate.Identity))
-                {FailBeforeCapture("provider advancement superseded before dispatch");return;}
-                committedJob=Native::MarkExternalCaptureCommitted(job);
-                if(!committedJob){FailBeforeCapture("public CaptureScene job commitment prerequisite failed");return;}
-                captureCommitted=true;
-                if(staticEvidenceActive&&candidateRequest)
-                    LOG_INFO("MiniMap: static capture lifecycle A4.6: generation=%llu building=%u attempt=1 components=%zu mode=public_CaptureScene registrationToSubmitMs=%.3f visible=%d detailMode=%u; deferred-update flush supplied by installed public contract; proxy/PSO/resident LOD readiness unobserved",
-                        (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,assemblyComponents.Count,
-                        std::chrono::duration<double,std::milli>(captureSubmittedAt-componentsRegisteredAt).count(),int(capture->bVisible),unsigned(capture->DetailMode));
-                MiniMapCallbackTiming::Phase dispatchTiming(MiniMapCallbackTiming::Id::CaptureSubmit);
-                uint8_t emptyFrame=0;
-                // No reentrant engine work between reservation validation and
-                // this dispatch boundary. A successful reservation was not an attempt.
-                if(candidateRequest&&!skeletalOnly&&!MiniMapBuildingSprites::StartCapture(candidateRequest->Candidate.Identity))
-                {finished=true;Native::Cancel(job);FailSpritePublication("capture_reservation_changed_after_commit; resources_retained");return;}
-                if(!Invoke(capture,functions.Items[4],emptyFrame))
-                {finished=true;Native::Cancel(job);FailSpritePublication("public_capture_dispatch_uncertain; resources_retained");LOG_ERROR("MiniMap: public CaptureScene dispatch uncertain; resources retained");return;}
-                if(staticEvidenceActive)
-                    LOG_INFO("MiniMap: static capture lifecycle A4.6: attempt=1 public dispatch returned in %.3fms; void call is not proof of drawable geometry; readback follows; retries=disabled",
-                        std::chrono::duration<double,std::milli>(CaptureClock::now()-captureSubmittedAt).count());
+                preparedStatic.Pending=true;preparedStatic.Job=job;preparedStatic.World=world;
+                preparedStatic.MeshClass=meshClass;preparedStatic.CaptureClass=captureClass;preparedStatic.TargetClass=targetClass;
+                preparedStatic.Resource=resource;preparedStatic.Function=functions.Items[4];functions.Items[4]=nullptr;
+                preparedStatic.Extent={extent.X,extent.Y,extent.Z};preparedStatic.Center={center.X,center.Y,center.Z};
+                preparedStatic.ServiceSequence=captureServiceSequence;preparedStatic.PreparedAt=CaptureClock::now();
+                LOG_INFO("MiniMap: A.4.9l static capture prepared; waiting for next engine tick: generation=%llu building=%u job=%p preparationService=%llu dispatchService=not_yet elapsedMs=0.000",
+                    (unsigned long long)assemblyRecipe.Generation,candidateRequest?candidateRequest->Source.BuildingId:0,
+                    static_cast<void*>(job),(unsigned long long)preparedStatic.ServiceSequence);
+                return; // no commitment, attempt consumption, capture or readback in this tick
             }
-            else
+            DispatchCapture(captureClass,nullptr,builder,scene,extent,center);
+        }
+        // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE. Called only from the existing guarded Tick.
+        void DispatchPreparedStatic()
+        {
+            if(captureServiceSequence<=preparedStatic.ServiceSequence)return;
+            const auto report=Native::Inspect(job);
+            if(!job||job!=preparedStatic.Job||captureCommitted||report.Current!=Native::Phase::ReadyToSubmit||
+                report.Result!=Native::Outcome::Pending||report.Callables||report.Outstanding||report.NativeEnqueueEverInvoked)
             {
-                reinterpret_cast<void(*)(void*,void*)>(bindings.BuilderConstruct)(builder,scene);
-                reinterpret_cast<void(*)(SDK::USceneCaptureComponent2D*,void*,void*)>(bindings.UpdateCapture)(capture,scene,builder);
-                // Existing diagnostic commit boundary and retirement are unchanged.
-                reinterpret_cast<void(*)(void*)>(bindings.BuilderExecute)(builder);
-                captureCommitted=true;
-                committedJob=Native::MarkExternalCaptureCommitted(job);
-                reinterpret_cast<void(*)(void*)>(bindings.BuilderDestroy)(builder);
-                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+                // Unexpected native ownership is quarantined by the existing failure path.
+                assemblyAssociationUncertain=true;FailBeforeCapture("prepared_static_job_ownership_changed");return;
             }
-            if(!committedJob){finished=true;Native::Cancel(job);FailSpritePublication("committed_job_identity_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
-            LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, %s; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f",
-                Dimension,Dimension,skeletalOnly?"diagnostic skeletal-only reference render (no publication)":assemblyActive?"bounded static authored instances":"9 authored materials",extent.X*2,extent.Y*2,center.X,center.Y,double(capture->OrthoWidth));
-            LOG_INFO("MiniMap: R2 GPU readback scheduling entered (copy submission reported separately)");
-            Native::Service(job,++frame);
+            if(!assemblyActive||skeletalOnly||!publicStaticCapture||!candidateRequest||!assemblyRootCount||
+                !MiniMapMap::GameplayReady()||preparedStatic.World!=recipeWorld||preparedStatic.World!=captureWorld||
+                preparedStatic.World!=MiniMapMap::GetWorld()||preparedStatic.World==endingWorld||cancelled.load())
+            {FailBeforeCapture("prepared_static_world_or_owner_invalidated");return;}
+            const auto decision=CheckCandidate(*candidateRequest,assemblyRecipe,preparedStatic.World,true);
+            if(!decision.Allowed()){FailBeforeCapture(decision.Reason);return;}
+            if(!MiniMapBuildingSprites::ReservationCurrent(candidateRequest->Candidate.Identity))
+            {FailBeforeCapture("prepared_static_reservation_invalidated");return;}
+            // Reuse the exact identity, registered/world and weak membership contracts from setup.
+            if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(capture))||
+                !MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(target))||
+                !MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(preparedStatic.Function)))
+            {assemblyAssociationUncertain=true;FailBeforeCapture("prepared_static_object_identity_invalid");return;}
+            if(capture->Class!=preparedStatic.CaptureClass||target->Class!=preparedStatic.TargetClass||
+                preparedStatic.Function->Outer!=preparedStatic.CaptureClass||capture->TextureTarget!=target||
+                target->SizeX!=Dimension||target->SizeY!=Dimension||!capture->bVisible||
+                reinterpret_cast<void*(*)(SDK::UTextureRenderTarget2D*)>(bindings.TargetResource)(target)!=preparedStatic.Resource)
+            {FailBeforeCapture("prepared_static_capture_or_target_changed");return;}
+            auto registeredInWorld=[&](SDK::UActorComponent* c,bool& ledger)
+            {
+                if(!MiniMapBuildingRepresentation::ValidateCaptureObject(reinterpret_cast<uintptr_t>(c)))
+                {assemblyAssociationUncertain=true;return false;}
+                uint8_t state=0;std::memcpy(&state,reinterpret_cast<const uint8_t*>(c)+0x94,1);
+                SDK::UWorld* current=nullptr;std::memcpy(&current,reinterpret_cast<const uint8_t*>(c)+0xa8,8);
+                ledger=(state&1)!=0;
+                if(current!=preparedStatic.World&&(ledger||current))assemblyAssociationUncertain=true;
+                return ledger&&current==preparedStatic.World;
+            };
+            uintptr_t members[SA::Limit+1]{};
+            if(assemblyComponents.Count!=assemblyRecipe.Count||!registeredInWorld(capture,captureRegistered))
+            {FailBeforeCapture("prepared_static_capture_registration_changed");return;}
+            for(size_t i=0;i<assemblyComponents.Count;++i)
+            {
+                auto& entry=assemblyComponents.Entries[i];auto* c=reinterpret_cast<SDK::UStaticMeshComponent*>(entry.Component);
+                if(!registeredInWorld(c,entry.Registered))
+                {FailBeforeCapture("prepared_static_component_registration_changed");return;}
+                if(c->Class!=preparedStatic.MeshClass)
+                {assemblyAssociationUncertain=true;FailBeforeCapture("prepared_static_component_class_changed");return;}
+                members[i]=entry.Component;
+            }
+            if(!assemblyComponents.Complete(assemblyRecipe.Count)||
+                !MiniMapBuildingRepresentation::ValidateCaptureMembership(reinterpret_cast<uintptr_t>(capture),members,assemblyComponents.Count))
+            {FailBeforeCapture("prepared_static_show_only_changed");return;}
+            const SDK::FVector extent(preparedStatic.Extent[0],preparedStatic.Extent[1],preparedStatic.Extent[2]);
+            const SDK::FVector center(preparedStatic.Center[0],preparedStatic.Center[1],preparedStatic.Center[2]);
+            LOG_INFO("MiniMap: A.4.9l next-tick static CaptureScene dispatch: generation=%llu building=%u job=%p preparationService=%llu dispatchService=%llu elapsedMs=%.3f; later engine tick only, render/GPU completion unobserved",
+                (unsigned long long)assemblyRecipe.Generation,candidateRequest->Source.BuildingId,static_cast<void*>(job),
+                (unsigned long long)preparedStatic.ServiceSequence,(unsigned long long)captureServiceSequence,
+                std::chrono::duration<double,std::milli>(CaptureClock::now()-preparedStatic.PreparedAt).count());
+            preparedStatic.Pending=false; // consume before dispatch; exceptions can never replay this submission
+            struct Finish {~Finish(){ClearPreparedStatic();}} finish;
+            DispatchCapture(preparedStatic.CaptureClass,preparedStatic.Function,nullptr,nullptr,extent,center);
         }
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
@@ -1426,6 +1541,9 @@ namespace MiniMapSmelterCapture
             if(scheduling.test_and_set(std::memory_order_acquire)){LOG_ERROR("MiniMap: R2 before-EndPlay overlaps capture scheduling; retirement NOT certified");return;}
             Scope scope;
             ClearResourceWatches();MiniMapRendererReadiness::ReleaseMetadata();
+            // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: clean while this world is current.
+            if(preparedStatic.Pending&&preparedStatic.World==world)
+                FailBeforeCapture("world_end_before_static_dispatch");
             endingWorld=world; // stop eligibility before native EndPlay, even before any capture
             if(pendingSkeletalTest&&pendingSkeletalTest->World==world)
             {RetirePendingSkeletalTest();LOG_INFO("MiniMap: skeletal-only pending diagnostic retired at matching world end");}
@@ -1443,11 +1561,26 @@ namespace MiniMapSmelterCapture
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureTick,true);
             if(stopping.load()||!GameThread()||scheduling.test_and_set(std::memory_order_acquire))return;
             Scope scope;
+            // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: one sequence per guarded GT tick.
+            ++captureServiceSequence;
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::CaptureService);
 #endif
             if(!finished||assemblyPending||pendingSkeletalTest)
                 try{ServiceResourceWatch(false);}catch(...){LOG_WARN("MiniMap: bounded watch retirement deferred after exception");}
+            // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: never service readback while prepared.
+            if(preparedStatic.Pending)
+            {
+                try{DispatchPreparedStatic();}
+                catch(...)
+                {
+                    if(!captureCommitted)FailBeforeCapture("deferred_static_dispatch_exception_before_commit");
+                    else {ClearPreparedStatic();Native::Cancel(job);finished=true;
+                        FailSpritePublication("capture_exception_after_commit; resources_retained");
+                        LOG_ERROR("MiniMap: A.4.9l static dispatch exception after commitment; resources retained");}
+                }
+                return;
+            }
             if(finished)
             {
                 if(assemblyActive)
@@ -1591,7 +1724,10 @@ namespace MiniMapSmelterCapture
             stopping.store(true,std::memory_order_release);cancelled.store(true,std::memory_order_release);
             // Shared job pointer is inspected only under the scheduling guard.
             if(!scheduling.test_and_set(std::memory_order_acquire))
-            {Scope scope;Native::Cancel(job);if(GameThread()){ClearResourceWatches();MiniMapRendererReadiness::ReleaseMetadata();RetirePendingSkeletalTest();Unregister();}}
+            {Scope scope;Native::Cancel(job);if(GameThread()){
+                // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: unsubmitted jobs need no GPU retirement.
+                if(preparedStatic.Pending)FailBeforeCapture("shutdown_before_static_dispatch");
+                ClearResourceWatches();MiniMapRendererReadiness::ReleaseMetadata();RetirePendingSkeletalTest();Unregister();}}
         }
         void BeginShutdown()
         {
