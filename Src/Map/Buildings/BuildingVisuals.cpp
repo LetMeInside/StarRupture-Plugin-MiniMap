@@ -2,6 +2,7 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
+#include "Config/Config.h"
 #include "Map/Sprites/BuildingSprites.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
@@ -14,6 +15,7 @@
 #include <iomanip>
 #include <numeric>
 #include <tuple>
+#include <algorithm>
 #ifndef MINIMAP_STAGE_C_VISUALS_ENABLED
 #define MINIMAP_STAGE_C_VISUALS_ENABLED 0
 #endif
@@ -300,8 +302,15 @@ namespace MiniMapBuildingVisuals
 #if defined(MINIMAP_BUILDING_SPRITES)
         auto spriteFrame=MiniMapBuildingSprites::BeginDraw();
 #endif
-        for(const auto index:snapshot->DrawOrder)
+        auto first=snapshot->DrawOrder.begin();
+        if(!MiniMapConfig::IsSplineRenderingEnabled())
+            // DrawKey sorts splines first. Skip the entire spline layer,
+            // including unresolved markers, without per-segment checks.
+            first=std::partition_point(first,snapshot->DrawOrder.end(),[&](size_t index)
+                {return snapshot->Instances[index].Spline;});
+        for(auto it=first;it!=snapshot->DrawOrder.end();++it)
         {
+            const auto index=*it;
             const auto& instance=snapshot->Instances[index];const bool spline=instance.Spline;
 #if defined(MINIMAP_BUILDING_SPRITES)
             // Draw before proxy culling: an authored assembly can extend beyond
