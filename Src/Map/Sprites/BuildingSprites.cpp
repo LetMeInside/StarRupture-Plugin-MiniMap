@@ -44,10 +44,7 @@ namespace MiniMapBuildingSprites
 
             std::array<TimingStats,size_t(Timing::Count)> Timings{};
             size_t Hits{},Fallbacks{},Completed{},Failed{},SuccessfulTypes{},UploadFailures{};
-            uint64_t UploadSequence{},RegistryRevision{};
-            std::array<MiniMapSpriteDiscoveryCore::Key,MiniMapSpriteDiscoveryCore::Capacity> RegistryKeys{};
-            size_t RegistryCount{},ReconcileCursor{},DependencyCursor{};
-            bool Reconcile=false;
+            uint64_t UploadSequence{};
             std::chrono::steady_clock::time_point NextDependencyService{};
             std::array<size_t,size_t(DrawCounter::Count)> DrawCounts{};
             size_t DiagnosticFrames{},DiagnosticReports{},SampledHandleChecks{},SampledInvalidHandles{};
@@ -196,6 +193,10 @@ namespace MiniMapBuildingSprites
     }
     void Record(const MiniMapSpriteDiscoveryCore::Key& key,P::State state,const std::string& reason)
     {AccessLock lock;RecordLocked(key,state,reason);}
+    bool AdoptCurrentCandidate(const MiniMapSpriteDiscoveryCore::Key& key)
+    {AccessLock lock;return owner&&owner->Jobs.AdoptCurrentCandidate(key);}
+    bool ServiceInitialization(double budgetMs)
+    {AccessLock lock;return owner&&owner->Jobs.ServiceInitialization(budgetMs);}
     void RecordForLease(const MiniMapCaptureLeases::Token& token,P::State state,const std::string& reason)
     {
         AccessLock lock;auto* e=owner?owner->Jobs.Find(token.Candidate):nullptr;
@@ -329,7 +330,7 @@ namespace MiniMapBuildingSprites
         AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
         if(!e)return {};
         const auto& d=e->Dependencies;
-        return {key.Generation,d.SourceRevision,d.ChangeRevision,owner->RegistryRevision,MiniMapRendererReadiness::ProviderEpoch()};
+        return {key.Generation,d.SourceRevision,d.ChangeRevision,owner->Jobs.MembershipRevision,MiniMapRendererReadiness::ProviderEpoch()};
     }
 
     bool RequestProviderReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,uint32_t id)
@@ -348,8 +349,9 @@ namespace MiniMapBuildingSprites
         const auto now=std::chrono::steady_clock::now();if(now<owner->NextDependencyService)return false;
         owner->NextDependencyService=now+std::chrono::milliseconds(50);
         // One CPU record per eligible invocation; Unknown-only has no native ticket.
-        if(!owner->RegistryCount)return false;
-        auto* selected=owner->Jobs.Find(owner->RegistryKeys[owner->DependencyCursor++%owner->RegistryCount]);
+        MiniMapSpriteDiscoveryCore::Key currentKey;
+        if(!owner->Jobs.NextCurrentKey(currentKey))return false;
+        auto* selected=owner->Jobs.Find(currentKey);
         if(!selected)return false;auto& e=*selected;auto& d=e.Dependencies;
         if(!d.Tracked||e.InFlight||d.EvaluationQueued||!SourceCurrent(e.Key))return false;
         const auto epoch=R::ProviderEpoch();
@@ -367,14 +369,14 @@ namespace MiniMapBuildingSprites
         if(!d.Reevaluate&&d.BlockedPublication==snapshot->PublishedAtSeconds&&d.BlockedObservation==d.ChangeRevision)return false;
         key=e.Key;return true;
     }
-    void ObserveRegistry(const MiniMapSpriteDiscoveryCore::Registry& registry)
+    bool ObserveRegistry(std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry> registry)
     {
-        AccessLock lock;
-        if(!owner||!registry.Complete()||registry.Generation!=owner->Jobs.Generation)return;
-        if(!owner->Jobs.ObserveRegistry(registry))
-        {LOG_WARN("MiniMap: renderer current-membership allocation failed; admission blocked until next complete publication");return;}
-        ++owner->RegistryRevision;owner->RegistryCount=registry.Count;
-        for(size_t i=0;i<registry.Count;++i)owner->RegistryKeys[i]=registry.Entries[i].Identity;
+        // Declared before the guard: potentially final publication ownership
+        // releases only after both owner-access and publication locks are gone.
+        RenderGeneration::RegistryPublication displaced;
+        bool accepted=false;
+        {AccessLock lock;if(owner)accepted=owner->Jobs.ObserveRegistry(registry,displaced);}
+        return accepted;
     }
     void ServiceRegistry() {} // Absence is admission currentness, never image/history eviction.
     void Complete(const MiniMapCaptureLeases::Token& token,const MiniMapStaticAssembly::Footprint& bounds,const std::vector<uint8_t>& rgba,const MiniMapRendererReadiness::Result& quality)
@@ -383,6 +385,7 @@ namespace MiniMapBuildingSprites
         TimingScope timing(Timing::TextureUpload);
         struct Finish {const MiniMapCaptureLeases::Token& Token;~Finish(){AbandonCapture(Token);}} finish{token};
         uint64_t uploadSequence=0,imageRevision=0;std::shared_ptr<RenderGeneration> target;
+        RenderGeneration::ScaleObservation scaleSample;
         // Game-thread completion only; no image work or uploads occur in Draw.
         {
             AccessLock lock;
@@ -392,23 +395,17 @@ namespace MiniMapBuildingSprites
             if(owner->UploadSequence==(std::numeric_limits<uint64_t>::max)())
             {++owner->Jobs.PublicationFailures;LOG_WARN("MiniMap: upload serial exhausted; capture image not uploaded");return;}
             uploadSequence=++owner->UploadSequence;target=owner->Generation;imageRevision=entry->ImageRevision;
+            scaleSample=target->CurrentScale(key);
         }
         if(!P::HasCoverage(rgba))
         {LOG_WARN("MiniMap: sprite processing rejected: empty or invalid 256x256 capture; building=%u",key.Building);
          RecordForLease(token,P::State::Failed,"empty_or_invalid_sprite_coverage; footprint_preserved");return;}
         const auto start=std::chrono::steady_clock::now();
-        double maxScale=1;
-        bool scaleKnown=false;
-        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-        if(snapshot&&snapshot->Complete&&snapshot->Generation==key.Generation&&
-            snapshot->Records.size()<=MiniMapSpriteDiscoveryCore::RecordLimit)
-            for(const auto& record:snapshot->Records)
-            {
-                if(!record.TransformValid||MiniMapSpriteCandidates::Copy(record).Identity!=key)continue;
-                bool supported=true;for(double v:record.Scale)supported&=std::isfinite(v)&&v>0&&v<=1000;
-                if(!supported)continue;
-                scaleKnown=true;maxScale=(std::max)({maxScale,record.Scale[0],record.Scale[1]});
-            }
+        // Complete immutable CURRENT membership supplies this exact-key maximum.
+        // The scale source is the accepted discovery publication, not a partial
+        // scan or a newer raw collector snapshot that has not been adopted.
+        const double maxScale=scaleSample.Values.Maximum;
+        const bool scaleKnown=scaleSample.Authoritative&&scaleSample.Values.Known;
         // The current loader Win32 backend uses framebuffer scale one and exposes no scale query.
         // Font/window resizing does not change MiniMap's ImGui-coordinate projection density.
         const double density=1/(100*MiniMapMap::MinimumMetersPerPixel)*maxScale;
@@ -459,7 +456,7 @@ namespace MiniMapBuildingSprites
                 AccessLock lock;
                 auto* entry=owner&&owner->Generation==target?target->Find(key):nullptr;
                 const bool current=owner&&owner->Generation==target&&SourceCurrent(key)&&entry&&entry->InFlight&&
-                    P::Queue::PublicationCurrent(*entry,token,leases)&&
+                    P::Queue::PublicationCurrent(*entry,token,leases)&&target->ScaleCurrent(key,scaleSample)&&
                     !(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality));
                 if(!texture->Handle)
                 {

@@ -24,6 +24,7 @@ namespace MiniMapBuildingRepresentation
     // Copied generation-owned metadata only; safe for readers, no native call.
     BlueprintIdentityResult GetBlueprintIdentity(const MiniMapBuildingCollector::Record&);
     bool ResolvePrerequisites();
+    void ServiceIdentityMaintenance(); // bounded CPU-only retired identity disposal, including inactive gameplay
     bool PrepareNativeClasses(); // one retained resident native class per service tick
     void Initialize();
     void Shutdown();

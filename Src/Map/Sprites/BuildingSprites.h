@@ -10,6 +10,8 @@ namespace MiniMapBuildingSprites
     void ServiceMaintenance(); // bounded CPU cleanup, including inactive gameplay
     void Shutdown(); // final CPU teardown; never certifies native retirement
     void Record(const MiniMapSpriteDiscoveryCore::Key&,MiniMapBuildingSpriteCore::State,const std::string&);
+    bool AdoptCurrentCandidate(const MiniMapSpriteDiscoveryCore::Key&); // exact current metadata, retry on false
+    bool ServiceInitialization(double budgetMs=2.0); // bounded pinned-plan progress; true only for latest membership
     MiniMapBuildingSpriteCore::Admission Queue(const MiniMapSpriteDiscoveryCore::Key&,MiniMapCaptureLeases::Token&);
     bool ReservationCurrent(const MiniMapCaptureLeases::Token&);
     bool WatchCurrent(const MiniMapSpriteDiscoveryCore::Key&,const std::vector<uint64_t>&);
@@ -33,7 +35,7 @@ namespace MiniMapBuildingSprites
     bool RequestProviderReevaluation(const MiniMapSpriteDiscoveryCore::Key&,uint32_t provider);
     bool TakeReadinessReevaluation(MiniMapSpriteDiscoveryCore::Key&,bool (*watchCapacity)());
     bool TracksDependencies(const MiniMapSpriteDiscoveryCore::Key&);
-    void ObserveRegistry(const MiniMapSpriteDiscoveryCore::Registry&);
+    bool ObserveRegistry(std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>);
     void ServiceRegistry(); // bounded CPU-only reconciliation, no native observations
     void Complete(const MiniMapCaptureLeases::Token&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&,const MiniMapRendererReadiness::Result&);
     struct DrawState;

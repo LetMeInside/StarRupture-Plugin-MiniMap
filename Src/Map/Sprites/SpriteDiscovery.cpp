@@ -29,7 +29,8 @@ namespace MiniMapSpriteDiscovery
     namespace
     {
         using Clock=std::chrono::steady_clock;
-        // CPU strings and filesystem paths only; no UObject or callback on worker.
+        // CPU strings, copied collector records and filesystem paths only;
+        // no UObject ownership, native calls or world scanning on the worker.
         // Four coalescing slots cap pending output at 1 MiB plus one in-flight file.
         class DiagnosticWriter
         {
@@ -38,13 +39,21 @@ namespace MiniMapSpriteDiscovery
             std::array<uint64_t,4> Generations{};
             std::atomic<uint64_t> Generation{},Failures{};
             bool Stopping=false;std::thread Worker;
+            std::shared_ptr<C::SourceRetirement<B::Snapshot>> Sources=std::make_shared<C::SourceRetirement<B::Snapshot>>();
             void Run() noexcept
             {
                 for(;;)
                 {
+                    // Collector records own only copied CPU geometry and strings.
+                    // Large vector/shared-metadata destruction never runs in Tick.
+                    if(Sources->ServiceOne())continue;
                     std::string json;size_t kind=0;uint64_t generation=0;
-                    {std::unique_lock lock(Mutex);Wake.wait(lock,[&]{return Stopping||Any();});
-                     if(Stopping)return;
+                    {std::unique_lock lock(Mutex);Wake.wait_for(lock,std::chrono::milliseconds(20),[&]{return Stopping||Any();});
+                     // Conditional P2: this drain does not wait for outstanding
+                     // aliases. Releases after worker exit may go unserviced;
+                     // ownership remains safe, but eventual reclamation is not assured.
+                     if(Stopping){lock.unlock();if(!Sources->DrainReleased())++Failures;return;}
+                     if(!Any())continue;
                      for(;kind<Pending.size();++kind)if(!Pending[kind].empty())break;
                      json=std::move(Pending[kind]);Pending[kind].clear();generation=Generations[kind];}
                     try {
@@ -67,6 +76,14 @@ namespace MiniMapSpriteDiscovery
             }
             bool Any()const {for(const auto& s:Pending)if(!s.empty())return true;return false;}
         public:
+            std::shared_ptr<const B::Snapshot> HoldSource(std::shared_ptr<const B::Snapshot> source)
+            {
+                if(!source)return {};
+                {std::scoped_lock lock(Mutex);
+                 if(Stopping)return {};
+                 if(!Worker.joinable())Worker=std::thread([this]{Run();});}
+                return Sources->Hold(std::move(source));
+            }
             void Invalidate(uint64_t generation)
             {std::scoped_lock lock(Mutex);Generation.store(generation);for(auto& s:Pending)s.clear();}
             void Publish(std::string json,size_t kind,uint64_t generation)
@@ -84,6 +101,8 @@ namespace MiniMapSpriteDiscovery
         {
             DiagnosticWriter Writer;
             unsigned Dirty{};uint64_t WriterGeneration{},WriterErrors{};
+            bool ConsumersReady=false;
+            bool ConsumerBlockedReported=false,SourceFailureReported=false;
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             MiniMapSpriteValidation::Scheduler<B::Snapshot> Validation;
             double NextValidationExport{};
@@ -102,7 +121,7 @@ namespace MiniMapSpriteDiscovery
             MiniMapMap::SetGameplayReady(false);
             const auto current=B::GetSnapshot();
             owner->Writer.Invalidate(0);owner->WriterGeneration=0;owner->Dirty=0;
-            owner->Invalidate(current?current->Generation:owner->Published.Generation);
+            owner->Invalidate(current?current->Generation:(owner->Published?owner->Published->Generation:0));
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::Reset(0);
 #endif
@@ -122,6 +141,9 @@ namespace MiniMapSpriteDiscovery
             MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryCandidate);
             const auto start=Clock::now();
             auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate);
+            // Partial observations cannot exclude or otherwise mutate renderer
+            // policy. Already-admitted native work retains its exact ownership.
+            if(out.Disposition==V::AuditDisposition::Interrupted)return out;
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
             LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous audit duration, not a two-ms bounded unit",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
@@ -146,7 +168,17 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_BUILDING_SPRITES)
         MiniMapBuildingSprites::ServiceMaintenance();
 #endif
-        if(!MiniMapMap::GameplayReady())return;
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+        MiniMapBuildingRepresentation::ServiceIdentityMaintenance();
+#endif
+        if(!MiniMapMap::GameplayReady())
+        {
+            if(owner){const auto start=Clock::now();owner->MaintainRetired(8,2.0);
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+                owner->Validation.MaintainRetired(8,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-start).count()));
+#endif
+            }return;
+        }
             if(!owner)return;
 #if defined(MINIMAP_BUILDING_SPRITES)
             MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::DiscoveryService);
@@ -156,29 +188,68 @@ namespace MiniMapSpriteDiscovery
             const double now=std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
             const auto tickStart=Clock::now();
             C::Publication result;
+            std::shared_ptr<const B::Snapshot> source;
+            try{source=owner->Writer.HoldSource(B::GetSnapshot());owner->SourceFailureReported=false;}
+            catch(...)
+            {
+                if(!owner->SourceFailureReported)LOG_WARN("MiniMap: discovery source-retirement preparation failed; admission deferred, scan retained");
+                owner->SourceFailureReported=true;owner->MaintainRetired(16,2.0);return;
+            }
             {
 #if defined(MINIMAP_BUILDING_SPRITES)
                 MiniMapBuildingSprites::TimingScope registryTiming(MiniMapBuildingSprites::Timing::RegistryScan);
 #endif
                 MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryRegistry);
-                result=owner->Service(B::GetSnapshot(),MiniMapMap::HasWorld(),now,&CopiedRecord);
+                const auto remaining=(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count());
+                result=owner->Service(source,MiniMapMap::HasWorld(),now,&CopiedRecord,remaining);
             }
-            if(owner->WriterGeneration!=owner->Published.Generation)
-            {owner->WriterGeneration=owner->Published.Generation;owner->Writer.Invalidate(owner->WriterGeneration);owner->Dirty=0;}
+            if(owner->WriterGeneration!=(owner->Published?owner->Published->Generation:0))
+            {owner->WriterGeneration=(owner->Published?owner->Published->Generation:0);owner->Writer.Invalidate(owner->WriterGeneration);owner->Dirty=0;}
             if(result!=C::Publication::None)owner->Dirty|=1;
+            const auto publication=owner->Published; // O(1) immutable owner, never a registry copy.
+            const bool compatible=publication&&publication->Complete()&&source&&publication->Generation==source->Generation;
+            const C::Registry empty; // Null is an invalidated/no-publication state, not authoritative empty membership.
+            const auto& registry=publication?*publication:empty;
+            if(result==C::Publication::Invalidated)owner->ConsumersReady=false;
+            if(result==C::Publication::Ready)
+            {
+                owner->ConsumersReady=false;
+                // Both membership and validation adoption are dynamic; native
+                // work remains gated until exact publication adoption completes.
+                if(!compatible&&!owner->ConsumerBlockedReported)
+                    LOG_WARN("MiniMap: complete discovery publication retained (%zu keys, %zu records); source generation invalid; native validation deferred",registry.Count,registry.SnapshotRecords);
+                owner->ConsumerBlockedReported=!compatible;
+            }
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             auto& v=owner->Validation;
             if(result==C::Publication::Invalidated){v.Clear();owner->NextValidationExport=0;}
-            if(result==C::Publication::Ready)v.Observe(owner->Published);
+            // Request incremental adoption of every complete publication.
+            if(result==C::Publication::Ready)v.Observe(publication,source?source->Generation:0);
+            v.MaintainRetired(16,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
+            const auto adoptionRemaining=(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count());
+            const bool adoptionCompleted=v.ServiceAdoption(adoptionRemaining);
+            const bool validationCurrent=v.ReadyFor(registry);
+            if(adoptionCompleted||v.AdoptionAllocationBlocked)
+            {
+                owner->Dirty|=2;
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+                owner->Dirty|=4;
+#endif
+            }
 #if defined(MINIMAP_BUILDING_SPRITES)
-            MiniMapBuildingSprites::Reset(MiniMapMap::HasWorld()?owner->Published.Generation:0);
-            if(result==C::Publication::Ready)MiniMapBuildingSprites::ObserveRegistry(owner->Published);
+            MiniMapBuildingSprites::Reset(MiniMapMap::HasWorld()?(owner->Published?owner->Published->Generation:0):0);
+            // O(1), allocation-free membership adoption; repeat calls are no-ops.
+            // Invalidated/null publication explicitly closes previous membership.
+            const bool rendererCurrent=MiniMapBuildingSprites::ObserveRegistry(publication);
             try{MiniMapBuildingSprites::ServiceRegistry();}
             catch(...){/* A failed view allocation preserves the prior view; retry CPU reconciliation. */}
-            if(result==C::Publication::Ready)
-                for(size_t i=0;i<owner->Published.Count;++i)
-                    MiniMapBuildingSprites::Record(owner->Published.Entries[i].Identity,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");
-            const bool anchorsReady=[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
+            // Initialization is resumable; no complete-publication metadata loop.
+            if(rendererCurrent&&publication&&!owner->ConsumersReady)
+            {
+                owner->ConsumersReady=MiniMapBuildingSprites::ServiceInitialization(
+                    (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
+            }
+            const bool anchorsReady=compatible&&validationCurrent&&rendererCurrent&&owner->ConsumersReady&&[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
             if(anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapSmelterCapture::CanAcceptCandidate())
             {
                 C::Key key;
@@ -186,12 +257,12 @@ namespace MiniMapSpriteDiscovery
                     MiniMapBuildingSprites::AcknowledgeReevaluation(key,v.RequestReevaluation(key));
             }
             const bool changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
-                v.Service(owner->Published,B::GetSnapshot(),&CopiedRecord,&ProcessCandidate);
+                v.Service(registry,source,&CopiedRecord,&ProcessCandidate,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
             if(changed)MiniMapBuildingSprites::FinishReevaluation(v.LastCompletedKey,v.SourcePublication);
             if(now>=owner->NextPipelineExport)
             {owner->Dirty|=8;owner->NextPipelineExport=now+5;}
 #else
-            const bool changed=MiniMapMap::HasWorld()&&v.Service(owner->Published,B::GetSnapshot(),&CopiedRecord,&MiniMapBuildingRepresentation::ValidateRepresentation);
+            const bool changed=compatible&&validationCurrent&&MiniMapMap::HasWorld()&&v.Service(registry,source,&CopiedRecord,&MiniMapBuildingRepresentation::ValidateRepresentation,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
 #endif
             if(result==C::Publication::Invalidated||((changed||result==C::Publication::Ready)&&
                 (v.Complete()||now>=owner->NextValidationExport)))
@@ -213,11 +284,35 @@ namespace MiniMapSpriteDiscovery
             MiniMapBuildingSprites::TimingScope buildTiming(MiniMapBuildingSprites::Timing::DiagnosticBuild);
 #endif
             MiniMapCallbackTiming::Phase diagnosticPhase(MiniMapCallbackTiming::Id::DiscoveryDiagnostics);
-            if(owner->Dirty&1){Publish(C::Json(owner->Published,C::OutputLimit,result==C::Publication::Invalidated));owner->Dirty&=~1u;}
+            if(owner->Dirty&1)
+            {
+                // Legacy detailed JSON counts definitions quadratically. Keep that
+                // bounded until its incremental serializer is implemented.
+                if(registry.Count<=C::DiagnosticCandidateLimit)Publish(C::Json(registry,C::OutputLimit,!publication));
+                else Publish(MiniMapRepresentationCore::Object({
+                    {"world_generation",std::to_string(registry.Generation)},
+                    {"source_publication_steady_seconds",MiniMapRepresentationCore::Number(registry.PublicationSeconds)},
+                    {"registry_complete",registry.Complete()?"true":"false"},
+                    {"distinct_candidate_keys",std::to_string(registry.Count)},
+                    {"snapshot_records",std::to_string(registry.SnapshotRecords)},
+                    {"output_truncated","true"},{"diagnostic_detail_omitted","true"},
+                    {"detail_omission_reason",MiniMapRepresentationCore::Quote("diagnostic_candidate_limit")},{"candidates","[]"}}));
+                owner->Dirty&=~1u;
+            }
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-            else if(owner->Dirty&2){Publish(MiniMapSpriteValidation::Json(v,owner->Published),true);owner->Dirty&=~2u;}
+            else if(owner->Dirty&2)
+            {
+                Publish(compatible&&validationCurrent?MiniMapSpriteValidation::Json(v,registry):
+                    MiniMapSpriteValidation::AdoptionStatusJson(v,registry),true);
+                owner->Dirty&=~2u;
+            }
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-            else if(owner->Dirty&4){Publish(MiniMapSpriteValidation::ClassificationJson(v,owner->Published),false,true);owner->Dirty&=~4u;}
+            else if(owner->Dirty&4)
+            {
+                Publish(compatible&&validationCurrent?MiniMapSpriteValidation::ClassificationJson(v,registry):
+                    MiniMapSpriteValidation::AdoptionStatusJson(v,registry,"R2.6b.4"),false,true);
+                owner->Dirty&=~4u;
+            }
 #endif
 #endif
 #if defined(MINIMAP_BUILDING_SPRITES)
@@ -237,10 +332,20 @@ namespace MiniMapSpriteDiscovery
     {
         if(!owner)return;auto* self=GetSelf();
         self->hooks->Engine->UnregisterOnTick(&Tick);self->hooks->World->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);
+        // Release every discovery-owned source alias before joining its CPU
+        // disposal worker. Final shutdown is a deliberate CPU drain boundary.
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+        owner->Validation.Clear();
+        while(owner->Validation.MaintainRetired(16,(std::numeric_limits<double>::max)())){}
+#endif
+        owner->Clear();
+        auto retirement=owner->Retirement;
         delete owner;owner=nullptr;
 #if defined(MINIMAP_BUILDING_SPRITES)
-        MiniMapBuildingSprites::Shutdown();
+        MiniMapBuildingSprites::Shutdown(); // Detach renderer-held discovery publications first.
 #endif
+        if(!retirement->DrainReleased())
+            LOG_WARN("MiniMap: discovery shutdown has retained registry readers; deferred retirement remains owned, future servicing required");
     }
 }
 #endif

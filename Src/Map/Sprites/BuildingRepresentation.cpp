@@ -1,6 +1,7 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentation.h"
+#include "BlueprintIdentityCacheCore.h"
 #include "Native/NativeApi.h"
 #include "RepresentationMetadataCore.h"
 #include "RepresentationSelectionCore.h"
@@ -117,17 +118,16 @@ namespace MiniMapBuildingRepresentation
         };
         size_t nativeAnchorCursor=0;
         // Tokens address definition metadata within a generation, never sprite identity.
-        struct BlueprintIdentities
+        struct BlueprintIdentities : MiniMapBlueprintIdentityCache::Store<BlueprintIdentityResult>
         {
-            struct Entry {std::array<int64_t,3> Definition{};BlueprintIdentityResult Result;bool AcquisitionReported=false,InventoryReported=false,NativeBodyReported=false;};
-            uint64_t Generation{};
-            std::array<Entry,MiniMapSpriteDiscoveryCore::Capacity> Entries{};
-            size_t Count{},Reported{},AcquisitionReports{},InventoryReports{},ProfileReports{},NativeBodyReports{};
-            bool LimitReported=false,ContractReported=false,CapacityReported=false;
+            size_t Reported{},AcquisitionReports{},InventoryReports{},ProfileReports{},NativeBodyReports{};
+            bool LimitReported=false,ContractReported=false;
+            void ResetGeneration(uint64_t generation=0)noexcept
+            {Reset(generation);Reported=AcquisitionReports=InventoryReports=ProfileReports=NativeBodyReports=0;LimitReported=ContractReported=false;}
         } blueprintIdentities;
         std::mutex blueprintIdentityAccess;
         void ClearBlueprintIdentities()
-        {std::scoped_lock lock(blueprintIdentityAccess);blueprintIdentities={};}
+        {std::scoped_lock lock(blueprintIdentityAccess);blueprintIdentities.ResetGeneration();}
         struct AuditMetrics
         {
             uint64_t ClassCalls{},ClassNs{},ClassHits{},InheritanceCalls{},InheritanceNs{},InheritanceHits{},IdentityHits{},FieldHits{},HoldCalls{},HoldNs{},Retained{},Released{},PrimaryRoots{},RecipeNs{},InspectionNs{};
@@ -278,13 +278,8 @@ namespace MiniMapBuildingRepresentation
                 if(!AuthoredFallback)return;
                 std::scoped_lock lock(blueprintIdentityAccess);
                 if(blueprintIdentities.Generation!=Record.Generation||blueprintIdentities.AcquisitionReports>=64)return;
-                // Reuse generation-owned identity metadata; no additional diagnostic registry.
-                for(size_t i=0;i<blueprintIdentities.Count;++i)
-                {
-                    auto& entry=blueprintIdentities.Entries[i];
-                    if(BlueprintIdentity.Path&&entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
-                    {if(entry.AcquisitionReported)return;entry.AcquisitionReported=true;}
-                }
+                if(BlueprintIdentity.Path)if(auto* path=blueprintIdentities.FindPath(*BlueprintIdentity.Path))
+                {if(path->AcquisitionReported)return;path->AcquisitionReported=true;}
                 ++blueprintIdentities.AcquisitionReports;
                 LOG_INFO("MiniMap: resident authored-class acquisition %zu/64: generation=%llu building=%u path=%s cachedConfig=null lookupAttempted=%d lookup=%s classValid=%d templates=%zu scsNodes=%zu static=%zu skeletal=%zu instanced=%zu instancedClassAvailable=%d validStaticMeshAssets=%zu auditedStatic=%zu horizontalSurface=unverified_template_geometry_requires_runtime_inspection captureRequested=%d recipe=%s reason=%s",
                     blueprintIdentities.AcquisitionReports,(unsigned long long)Record.Generation,Record.BuildingId,
@@ -531,49 +526,42 @@ namespace MiniMapBuildingRepresentation
             BlueprintIdentityResult ResolveAuthoredIdentity(uintptr_t definition) noexcept
             {
                 MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::ActorIdentity);
+                BlueprintIdentities::Ticket ticket;bool hasTicket=false;
                 try
                 {
-                if(Record.HasSpline)return {{},"spline_identity_not_requested"};
-                const std::array<int64_t,3> token={Record.DefinitionObjectIndex,Record.DefinitionIndex,Record.DefinitionNumber};
-                size_t slot=0;
-                {
-                    std::scoped_lock lock(blueprintIdentityAccess);
-                    if(blueprintIdentities.Generation!=Record.Generation)
-                    {blueprintIdentities={};blueprintIdentities.Generation=Record.Generation;}
-                    for(;slot<blueprintIdentities.Count;++slot)
-                        if(blueprintIdentities.Entries[slot].Definition==token)
-                        {
-                            // Only successful identities are final; failures may recover on a later bounded inspection.
-                            if(blueprintIdentities.Entries[slot].Result.Path)return blueprintIdentities.Entries[slot].Result;
-                            break;
-                        }
-                    if(slot==blueprintIdentities.Entries.size())
+                    if(Record.HasSpline)return {{},"spline_identity_not_requested"};
+                    const std::array<int64_t,3> token={Record.DefinitionObjectIndex,Record.DefinitionIndex,Record.DefinitionNumber};
                     {
-                        if(!blueprintIdentities.CapacityReported)
-                        {LOG_WARN("MiniMap: blueprint identity metadata capacity reached; unresolved definitions retain session-only rendering");blueprintIdentities.CapacityReported=true;}
-                        return {{},"identity_metadata_capacity"};
+                        std::scoped_lock lock(blueprintIdentityAccess);
+                        if(blueprintIdentities.Generation!=Record.Generation)blueprintIdentities.ResetGeneration(Record.Generation);
+                        ticket=blueprintIdentities.Ensure(Record.Generation,token);hasTicket=true;
+                        if(const auto* entry=blueprintIdentities.Find(token);entry->Identity.Path)return entry->Identity;
                     }
-                    if(slot==blueprintIdentities.Count)
-                    {blueprintIdentities.Entries[slot].Definition=token;++blueprintIdentities.Count;}
-                }
-                auto result=ConvertAuthoredIdentity(definition);
-                std::scoped_lock lock(blueprintIdentityAccess);
-                if(blueprintIdentities.Generation!=Record.Generation)return {{},"identity_generation_changed"};
-                // Multiple definitions referring to one blueprint share one owned string.
-                if(result.Path)for(size_t i=0;i<blueprintIdentities.Count;++i)
-                    if(const auto& existing=blueprintIdentities.Entries[i].Result.Path;i!=slot&&existing&&*existing==*result.Path)
-                    {result.Path=existing;break;}
-                blueprintIdentities.Entries[slot].Result=result;
-                if(blueprintIdentities.Reported<64)
-                {
-                    ++blueprintIdentities.Reported;
-                    LOG_INFO("MiniMap: authored ActorClass identity: generation=%llu building=%u definition=%d non_spline=true status=%s path=%s",
+                    auto converted=ConvertAuthoredIdentity(definition); // Original native conversion/lifetime contract.
+                    auto prepared=BlueprintIdentities::Prepare(converted); // Allocations before commit lock.
+                    BlueprintIdentityResult result;bool report=false,reportLimit=false;
+                    {
+                        std::scoped_lock lock(blueprintIdentityAccess);
+                        result=blueprintIdentities.Commit(ticket,prepared);
+                        if(!blueprintIdentities.Current(ticket))return result;
+                        if(blueprintIdentities.Reported<64){++blueprintIdentities.Reported;report=true;}
+                        else if(!blueprintIdentities.LimitReported){blueprintIdentities.LimitReported=true;reportLimit=true;}
+                    }
+                    // Formatting and unused converted/path-node destruction occur
+                    // outside the cache mutex. Returned paths are independently owned.
+                    if(report)LOG_INFO("MiniMap: authored ActorClass identity: generation=%llu building=%u definition=%d non_spline=true status=%s path=%s",
                         static_cast<unsigned long long>(Record.Generation),Record.BuildingId,Record.DefinitionObjectIndex,
                         result.Reason,C::Quote(result.Path?*result.Path:std::string{}).c_str());
+                    if(reportLimit)LOG_INFO("MiniMap: authored ActorClass diagnostic limit reached: generation=%llu limit=64",static_cast<unsigned long long>(Record.Generation));
+                    return result;
                 }
-                else if(!blueprintIdentities.LimitReported)
-                {LOG_INFO("MiniMap: authored ActorClass diagnostic limit reached: generation=%llu limit=64",static_cast<unsigned long long>(Record.Generation));blueprintIdentities.LimitReported=true;}
-                return result;
+                catch(const std::bad_alloc&)
+                {
+                    size_t failures;
+                    {std::scoped_lock lock(blueprintIdentityAccess);blueprintIdentities.AllocationFailed(hasTicket?&ticket:nullptr);failures=blueprintIdentities.AllocationFailures;}
+                    try{if(failures&&(failures&(failures-1))==0)LOG_WARN("MiniMap: blueprint identity allocation failures=%zu; resolution deferred without changing successful cached identities",failures);}
+                    catch(...){/* Allocation failure reporting cannot escape this noexcept resolver. */}
+                    return {{},"identity_metadata_allocation_failure"};
                 }
                 catch(...){return {{},"identity_resolution_exception"};}
             }
@@ -1062,12 +1050,8 @@ namespace MiniMapBuildingRepresentation
                 {
                     std::scoped_lock lock(blueprintIdentityAccess);
                     if(blueprintIdentities.Generation!=Record.Generation||blueprintIdentities.InventoryReports>=8)return "{}";
-                    for(size_t n=0;n<blueprintIdentities.Count;++n)
-                    {
-                        auto& entry=blueprintIdentities.Entries[n];
-                        if(BlueprintIdentity.Path&&entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
-                        {if(entry.InventoryReported)return "{}";entry.InventoryReported=true;}
-                    }
+                    if(BlueprintIdentity.Path)if(auto* path=blueprintIdentities.FindPath(*BlueprintIdentity.Path))
+                    {if(path->InventoryReported)return "{}";path->InventoryReported=true;}
                     ++blueprintIdentities.InventoryReports;
                 }
                 AuditElapsed inspectionElapsed(Metrics?&Metrics->InspectionNs:nullptr);
@@ -1281,8 +1265,7 @@ namespace MiniMapBuildingRepresentation
         std::scoped_lock lock(blueprintIdentityAccess);
         if(record.Generation!=blueprintIdentities.Generation)return {{},"identity_generation_mismatch"};
         const std::array<int64_t,3> token={record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber};
-        for(size_t i=0;i<blueprintIdentities.Count;++i)
-            if(blueprintIdentities.Entries[i].Definition==token)return blueprintIdentities.Entries[i].Result;
+        if(const auto* entry=blueprintIdentities.Find(token))return entry->Identity;
         return {};
     }
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
@@ -1357,7 +1340,11 @@ namespace MiniMapBuildingRepresentation
             context.ReportAuthoredAcquisition(out);
             metrics.PrimaryRoots=context.Roots.size();
         } // Context releases every strong root before return/file export.
-        catch(...){out={};out.Reason="native_audit_exception";}
+        catch(...)
+        {
+            out.MarkInterrupted();
+            try{out.Reason="native_audit_exception";}catch(...){out.Reason.clear();}
+        }
         // All Context roots have now been released. Times are inclusive/nested;
         // independent component-inspection validations are included in totals.
         const double total=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-auditStart).count();
@@ -1420,6 +1407,8 @@ namespace MiniMapBuildingRepresentation
     MiniMapSpriteValidation::Result ValidateAndCapture(const MiniMapBuildingCollector::Record& r,const MiniMapBuildingCollector::Record* a,bool deferCapture)
     {return ValidateRepresentationImpl(r,a,true,deferCapture);}
 #endif
+    void ServiceIdentityMaintenance()
+    {blueprintIdentities.Maintain(blueprintIdentityAccess,16,2.0);}
     bool PrepareNativeClasses()
     {
         if(nativeAnchorCursor==std::size(nativeAnchors))return true;
@@ -1599,7 +1588,9 @@ namespace MiniMapBuildingRepresentation
             const auto release=MiniMapSmelterCapture::GetBindings().Release;
             if(release)for(auto& anchor:nativeAnchors)if(anchor.Object)
             {reinterpret_cast<void(*)(SDK::UObject*)>(release)(reinterpret_cast<SDK::UObject*>(anchor.Object));anchor.Object=0;}
-            nativeAnchorCursor=0;ClearBlueprintIdentities();executing.clear();
+            nativeAnchorCursor=0;ClearBlueprintIdentities();
+            while(blueprintIdentities.Maintain(blueprintIdentityAccess,16,(std::numeric_limits<double>::max)())){}
+            executing.clear();
         }
     }
 }

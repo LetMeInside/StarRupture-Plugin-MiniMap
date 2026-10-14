@@ -77,7 +77,12 @@ namespace MiniMapSessionPublication
         size_t ImageSlots{},Pins{},SelectedCount{},SelectedBytes{},UnselectedCount{},UnselectedBytes{},WaitingCount{},VersionCount{};
         size_t AllocationFailures{},PublicationFailures{},CounterFailures{};
         bool Active=true,CurrentValid=false;
-        std::set<Key,Less> Current;
+        using RegistryPublication=std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>;
+        RegistryPublication Current;
+        RegistryPublication InitializationRegistry; // pinned CPU-only work plan, not authoritative membership
+        size_t InitializationCursor{},LastInitializationVisits{},LastInitializationAdoptions{};
+        uint64_t MembershipRevision{};size_t MembershipCursor{};
+        double MembershipPublication{};bool HasMembershipPublication=false;
         AllocationHook Fault=nullptr;
         explicit Store(uint64_t world):World(world){MiniMapBuildingSpriteCore::Policy::Reset(world);}
         void Check(Allocation at){if(Fault)Fault(at);}
@@ -107,6 +112,41 @@ namespace MiniMapSessionPublication
         }
         MiniMapBuildingSpriteCore::Entry* Set(const Key& key,MiniMapBuildingSpriteCore::State state,const std::string& reason)
         {auto* s=Observe(key);return s?SetEntry(*s,state,reason):nullptr;}
+        // Caller holds renderer owner-access throughout this transaction. A
+        // retained slot is acknowledgement even when Awaiting is intentionally
+        // ignored for an already captured/excluded/in-flight candidate.
+        bool AdoptCurrentCandidate(const Key& key)
+        {
+            if(!SourceCurrent(key))return false;
+            auto* slot=Observe(key);if(!slot)return false;
+            try {SetEntry(*slot,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");return true;}
+            catch(const std::bad_alloc&){AllocationFailed();return false;}
+        }
+        // External owner-access is held. Draw never reads these work cursors.
+        // Only the latest complete membership can acknowledge a candidate.
+        bool ServiceInitialization(double budgetMs=2.0)
+        {
+            namespace D=MiniMapSpriteDiscoveryCore;
+            const auto start=std::chrono::steady_clock::now();RegistryPublication latest;
+            LastInitializationVisits=LastInitializationAdoptions=0;
+            {std::scoped_lock lock(Mutex);if(!Active||!CurrentValid||!Current)return false;latest=Current;}
+            if(!InitializationRegistry||
+                (InitializationCursor==InitializationRegistry->Count&&InitializationRegistry!=latest))
+            {InitializationRegistry=latest;InitializationCursor=0;}
+            while(InitializationCursor<InitializationRegistry->Count&&LastInitializationVisits<D::VisitsPerTick&&
+                LastInitializationAdoptions<D::NewPerTick&&
+                std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<budgetMs)
+            {
+                const auto& key=InitializationRegistry->Entries[InitializationCursor].Identity;
+                ++LastInitializationVisits;
+                // Absent keys are obsolete work, not acknowledged metadata.
+                // Reordered but still-current keys MUST pass actual adoption.
+                if(latest->Index.find(key)!=latest->Index.end())
+                {if(!AdoptCurrentCandidate(key))return false;++LastInitializationAdoptions;}
+                ++InitializationCursor;
+            }
+            return InitializationRegistry==latest&&InitializationCursor==latest->Count;
+        }
         MiniMapBuildingSpriteCore::Admission QueueCapture(const Key& key,MiniMapCaptureLeases::Ledger& ledger,MiniMapCaptureLeases::Token& token)
         {auto* s=Observe(key);return s?Admit(*s,ledger,token):MiniMapBuildingSpriteCore::Admission::Capacity;}
         void FlushDemand(){if(Touched){auto* s=Touched;Touched=nullptr;SyncDemand(*s);
@@ -114,13 +154,60 @@ namespace MiniMapSessionPublication
                 if(!old){++CounterFailures;throw std::logic_error("sprite state counter underflow");}
                 --old;++StateCounts[size_t(s->Status)];s->CountedState=s->Status;}}}
         bool SourceCurrent(const Key& key)const
-        {return Active&&CurrentValid&&key.Generation==World&&Current.find(key)!=Current.end();}
-        bool ObserveRegistry(const MiniMapSpriteDiscoveryCore::Registry& registry)
         {
-            if(!registry.Complete()||registry.Generation!=World||!Active)return false;
-            try{Check(Allocation::Membership);std::set<Key,Less> prepared;for(size_t i=0;i<registry.Count;++i)prepared.insert(registry.Entries[i].Identity);
-                std::scoped_lock lock(Mutex);if(!Active)return false;Current.swap(prepared);CurrentValid=true;return true;}
-            catch(...){std::scoped_lock lock(Mutex);CurrentValid=false;++AllocationFailures;return false;}
+            std::scoped_lock lock(Mutex);
+            return Active&&CurrentValid&&Current&&key.Generation==World&&Current->Index.find(key)!=Current->Index.end();
+        }
+        struct ScaleObservation
+        {
+            MiniMapSpriteDiscoveryCore::ScaleAggregate Values;
+            uint64_t World{},Membership{};double PublicationSeconds{};bool Authoritative=false;
+        };
+        ScaleObservation CurrentScale(const Key& key)const
+        {
+            std::scoped_lock lock(Mutex);ScaleObservation sample;
+            if(!Active||!CurrentValid||!Current||!Current->Complete()||key.Generation!=World)return sample;
+            auto found=Current->Index.find(key);if(found==Current->Index.end())return sample;
+            sample.Values=Current->Entries[found->second].InstanceScale;sample.World=World;
+            sample.Membership=MembershipRevision;sample.PublicationSeconds=Current->PublicationSeconds;sample.Authoritative=true;return sample;
+        }
+        bool ScaleCurrent(const Key& key,const ScaleObservation& sample)const
+        {
+            std::scoped_lock lock(Mutex);
+            return sample.Authoritative&&Active&&CurrentValid&&Current&&Current->Complete()&&key.Generation==World&&sample.World==World&&
+                sample.Membership==MembershipRevision&&sample.PublicationSeconds==Current->PublicationSeconds&&Current->Index.find(key)!=Current->Index.end();
+        }
+        // The caller releases displaced ownership AFTER owner-access unlocks.
+        // Only core-owned publications are accepted: their final release enqueues
+        // bounded retirement instead of destroying a large registry on this thread.
+        bool ObserveRegistry(const RegistryPublication& registry,RegistryPublication& displaced)
+        {
+            namespace D=MiniMapSpriteDiscoveryCore;
+            if(displaced)return false;
+            std::scoped_lock lock(Mutex);
+            if(!Active)return false;
+            if(!registry){displaced=std::move(Current);CurrentValid=false;MembershipCursor=0;return true;}
+            if(!registry->Complete()||registry->Generation!=World||
+                !std::get_deleter<D::RetireRegistry>(registry)||!std::isfinite(registry->PublicationSeconds))return false;
+            // Keep the high-water mark even when failed adoption/null revocation
+            // clears Current, so an older scan cannot regain authorization.
+            if(HasMembershipPublication&&registry->PublicationSeconds<MembershipPublication)return false;
+            MembershipPublication=registry->PublicationSeconds;HasMembershipPublication=true;
+            if(CurrentValid&&Current==registry)return true;
+            try{Check(Allocation::Membership);} // Test seam only; no production allocation.
+            catch(...){displaced=std::move(Current);CurrentValid=false;MembershipCursor=0;++AllocationFailures;return false;}
+            if(MembershipRevision==(std::numeric_limits<uint64_t>::max)())
+            {displaced=std::move(Current);CurrentValid=false;MembershipCursor=0;++PublicationFailures;return false;}
+            displaced=std::move(Current);Current=registry;
+            CurrentValid=true;MembershipCursor=0;++MembershipRevision;return true;
+        }
+        // One CURRENT candidate per invocation, independent of historical slots.
+        bool NextCurrentKey(Key& key)
+        {
+            std::scoped_lock lock(Mutex);
+            if(!Active||!CurrentValid||!Current||!Current->Count)return false;
+            if(MembershipCursor>=Current->Count)MembershipCursor=0;
+            key=Current->Entries[MembershipCursor].Identity;++MembershipCursor;return true;
         }
         static bool Demand(const Slot& s)noexcept
         {const auto& d=s.Dependencies;return d.Tracked&&d.Demand&&d.ObservationWatch==MiniMapRendererReadiness::Dependencies::Watch::Waiting;}
@@ -215,7 +302,7 @@ namespace MiniMapSessionPublication
             {
                 typename Versions::node_type version;
                 typename decltype(Slots)::node_type slot;
-                typename decltype(Current)::node_type membership;
+                RegistryPublication membership;
                 std::unique_ptr<Upload> upload;
                 {
                     std::scoped_lock lock(Mutex);
@@ -226,10 +313,12 @@ namespace MiniMapSessionPublication
                         // first detach/reset before metadata retirement can run.
                         if(!retiredOwner)break;
                         if(Pins&&!finalDrain)break;
-                        // Current membership stays fixed-capacity upstream at this
-                        // checkpoint, but drain one node per unit here as well.
+                        // Detach shared membership in O(1); its custom deleter
+                        // enqueues discovery retirement outside this mutex.
                         if(Slots.empty()){
-                            if(Current.empty())break;membership=Current.extract(Current.begin());
+                            if(Current){membership=std::move(Current);CurrentValid=false;}
+                            else if(InitializationRegistry)membership=std::move(InitializationRegistry);
+                            else break;
                         }
                         else {
                         auto& s=Slots.begin()->second;
@@ -277,7 +366,7 @@ namespace MiniMapSessionPublication
         std::array<size_t,9> Metrics()const
         {std::scoped_lock lock(Mutex);return {Pins,Revisions.size(),VersionCount>=ImageSlots?VersionCount-ImageSlots:0,
             UnselectedCount,UnselectedBytes,AllocationFailures,PublicationFailures,CounterFailures,Slots.size()};}
-        bool Empty()const{std::scoped_lock lock(Mutex);return Slots.empty()&&Current.empty()&&!Pins;}
+        bool Empty()const{std::scoped_lock lock(Mutex);return Slots.empty()&&!Current&&!InitializationRegistry&&!Pins;}
     private:
         std::map<uint64_t,size_t> Revisions;
         Slot *DirtyHead{},*DirtyTail{},*BlockedHead{},*BlockedTail{};

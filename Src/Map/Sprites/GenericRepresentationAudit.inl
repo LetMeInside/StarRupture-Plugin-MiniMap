@@ -376,12 +376,8 @@ MiniMapSpriteValidation::Result GenericAudit()
         {
             std::scoped_lock lock(blueprintIdentityAccess);
             if(BlueprintIdentity.Path&&blueprintIdentities.Generation==Record.Generation&&blueprintIdentities.NativeBodyReports<64)
-                for(size_t i=0;i<blueprintIdentities.Count;++i)
-                {
-                    auto& entry=blueprintIdentities.Entries[i];
-                    if(entry.Result.Path&&*entry.Result.Path==*BlueprintIdentity.Path)
-                    {if(!entry.NativeBodyReported){entry.NativeBodyReported=true;++blueprintIdentities.NativeBodyReports;report=true;}break;}
-                }
+                if(auto* path=blueprintIdentities.FindPath(*BlueprintIdentity.Path);path&&!path->NativeBodyReported)
+                {path->NativeBodyReported=true;++blueprintIdentities.NativeBodyReports;report=true;}
         }
         if(report)LOG_INFO("MiniMap: native-main-body selection: generation=%llu path=%s considered=1 mainInputsVerified=%d materials=%d transform=%d omittedHidden=%zu omittedNullMesh=%zu exactDuplicates=%zu unresolvedVisible=%zu inheritedUnresolved=%d outcome=%s source=%s reason=%s; experimental static body; live equivalence unverified",
             (unsigned long long)Record.Generation,BlueprintIdentity.Path->c_str(),int(nativeBodySelected&&out.Materials&&out.Transforms&&!out.Truncated),int(out.Materials),int(out.Transforms),
