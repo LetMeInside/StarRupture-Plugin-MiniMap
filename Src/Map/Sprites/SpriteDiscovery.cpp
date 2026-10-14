@@ -143,6 +143,9 @@ namespace MiniMapSpriteDiscovery
         void Tick(float)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::DiscoveryTick,true);
+#if defined(MINIMAP_BUILDING_SPRITES)
+        MiniMapBuildingSprites::ServiceMaintenance();
+#endif
         if(!MiniMapMap::GameplayReady())return;
             if(!owner)return;
 #if defined(MINIMAP_BUILDING_SPRITES)
@@ -236,7 +239,7 @@ namespace MiniMapSpriteDiscovery
         self->hooks->Engine->UnregisterOnTick(&Tick);self->hooks->World->UnregisterOnBeforeWorldEndPlay(&BeforeEndPlay);
         delete owner;owner=nullptr;
 #if defined(MINIMAP_BUILDING_SPRITES)
-        MiniMapBuildingSprites::Reset(0);
+        MiniMapBuildingSprites::Shutdown();
 #endif
     }
 }

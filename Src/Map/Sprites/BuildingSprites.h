@@ -7,6 +7,8 @@ namespace MiniMapRendererReadiness {struct AssemblyObservation;}
 namespace MiniMapBuildingSprites
 {
     void Reset(uint64_t generation);
+    void ServiceMaintenance(); // bounded CPU cleanup, including inactive gameplay
+    void Shutdown(); // final CPU teardown; never certifies native retirement
     void Record(const MiniMapSpriteDiscoveryCore::Key&,MiniMapBuildingSpriteCore::State,const std::string&);
     MiniMapBuildingSpriteCore::Admission Queue(const MiniMapSpriteDiscoveryCore::Key&,MiniMapCaptureLeases::Token&);
     bool ReservationCurrent(const MiniMapCaptureLeases::Token&);

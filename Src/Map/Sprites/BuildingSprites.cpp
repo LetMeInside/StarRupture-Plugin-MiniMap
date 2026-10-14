@@ -8,7 +8,8 @@
 #include "plugin_helpers.h"
 #include <mutex>
 #include <limits>
-#include <unordered_map>
+#include "SessionSpritePublicationCore.h"
+#include <set>
 
 namespace MiniMapBuildingSprites
 {
@@ -21,9 +22,12 @@ namespace MiniMapBuildingSprites
         std::array<double,4> Region{0,0,1,1}; // Original capture coordinates, normalized; includes rounding margins.
         ~Texture(){if(Handle&&Free)Free(Handle);} // v70 deferred texture retirement.
     };
+    using RenderGeneration=MiniMapSessionPublication::Store<Texture>;
     struct DrawState
     {
-        std::unordered_map<MiniMapSpriteDiscoveryCore::Key,std::shared_ptr<Texture>,P::KeyHash> Ready;
+        std::shared_ptr<const RenderGeneration::Pin> Frame;
+        std::shared_ptr<Texture> Resolve(const MiniMapSpriteDiscoveryCore::Key& key)const
+        {return Frame?Frame->Owner->Resolve(*Frame,key):nullptr;}
     };
     namespace
     {
@@ -34,9 +38,10 @@ namespace MiniMapBuildingSprites
         };
         struct Owner
         {
-            P::Queue Jobs;
-            std::array<std::shared_ptr<Texture>,MiniMapSpriteDiscoveryCore::Capacity> Textures;
-            std::shared_ptr<const DrawState> View;
+            std::shared_ptr<RenderGeneration> Generation;
+            RenderGeneration& Jobs;
+            explicit Owner(uint64_t world):Generation(std::make_shared<RenderGeneration>(world)),Jobs(*Generation){}
+
             std::array<TimingStats,size_t(Timing::Count)> Timings{};
             size_t Hits{},Fallbacks{},Completed{},Failed{},SuccessfulTypes{},UploadFailures{};
             uint64_t UploadSequence{},RegistryRevision{};
@@ -50,16 +55,25 @@ namespace MiniMapBuildingSprites
             uint32_t ReportedDrawReasons{};
         };
         // Explicit lifetime through discovery; no owning static initializer.
-        Owner* owner=nullptr;
+        std::unique_ptr<Owner> owner;
+        MiniMapSessionPublication::ResetResult resetResult=MiniMapSessionPublication::ResetResult::WorldEnded;
+        uint64_t requestedGeneration{};size_t generationAllocationFailures{};
         std::mutex access;
+        std::shared_ptr<RenderGeneration> retired;
+        RenderGeneration* retiredTail=nullptr;
+        // The access lock serializes policy mutation. Draw only reads immutable
+        // image versions under Generation::Mutex, never policy Entry fields.
+        struct AccessLock
+        {
+            std::unique_lock<std::mutex> Lock{access};
+            ~AccessLock()noexcept{if(owner)try{owner->Jobs.FlushDemand();}catch(...){std::terminate();}}
+        };
         // The native request, not the renderer generation, owns this ledger.
         // Reset(0) must not make an old quarantined request look retired.
         MiniMapCaptureLeases::Ledger leases;
         bool SourceCurrent(const MiniMapSpriteDiscoveryCore::Key& key) // access held
         {
-            if(!owner||owner->Jobs.Generation!=key.Generation)return false;
-            for(size_t i=0;i<owner->RegistryCount;++i)if(owner->RegistryKeys[i]==key)return true;
-            return false;
+            return owner&&owner->Jobs.SourceCurrent(key);
         }
         MiniMapRendererReadiness::NotificationAck NotifyLocked(P::Entry& e,
             const MiniMapRendererReadiness::ProviderObservation& observation,const std::vector<uint64_t>& source)
@@ -119,95 +133,128 @@ namespace MiniMapBuildingSprites
     }
     void Reset(uint64_t generation)
     {
-        std::scoped_lock lock(access);
-        if(!owner&&generation)owner=new Owner;
-        if(owner&&owner->Jobs.Generation!=generation)
-        {if(owner->Completed)LOG_INFO("MiniMap: sprite draw view retired: generation=%llu nextGeneration=%llu completed=%zu submissions=%zu",
-            (unsigned long long)owner->Jobs.Generation,(unsigned long long)generation,owner->Completed,owner->Hits);
-         owner->View.reset();owner->Textures={};
-         owner->DrawCounts={};owner->DiagnosticFrames=owner->DiagnosticReports=0;
-         owner->SpatialReports=owner->SpatialCompleted=0;
-         owner->SampledHandleChecks=owner->SampledInvalidHandles=0;owner->ReportedDrawReasons=0;
-         owner->Timings={};owner->Jobs.Reset(generation);owner->Hits=owner->Fallbacks=owner->Completed=owner->Failed=owner->SuccessfulTypes=owner->UploadFailures=0;
-         owner->RegistryCount=owner->ReconcileCursor=owner->DependencyCursor=0;owner->Reconcile=false;owner->NextDependencyService={};}
-        if(!generation){delete owner;owner=nullptr;}
+        std::unique_ptr<Owner> previous;
+        MiniMapSessionPublication::ResetResult result;
+        {
+            AccessLock lock;requestedGeneration=generation;
+            result=MiniMapSessionPublication::TransitionOwner(owner,generation,
+                [](uint64_t world){return std::make_unique<Owner>(world);},
+                [](Owner& old){
+                    old.Jobs.FlushDemand();old.Generation->Invalidate();
+                    if(!retired)retiredTail=old.Generation.get();
+                    old.Generation->NextRetired=std::move(retired);retired=old.Generation;
+                },previous);
+            resetResult=result;
+            if(result==MiniMapSessionPublication::ResetResult::AllocationFailed)++generationAllocationFailures;
+        }
+        // previous is destroyed outside access/publication locks. Retired state
+        // preserves frame/CPU ownership; the native ledger is never reset here.
+        if(result==MiniMapSessionPublication::ResetResult::AllocationFailed)
+            LOG_WARN("MiniMap: renderer generation allocation FAILED: requested=%llu; new-world admission disabled; old CPU state retired, native lease unchanged",
+                (unsigned long long)generation);
+    }
+    void ServiceMaintenance()
+    {
+        const auto start=std::chrono::steady_clock::now();
+        std::shared_ptr<RenderGeneration> current,old;
+        {AccessLock lock;if(owner)current=owner->Generation;old=retired;}
+        size_t remaining=16;
+        if(current)remaining-=current->Maintain(old?8:remaining,2.0,false,false);
+        // One retired owner per opportunity. Rotation prevents a pinned old frame
+        // from blocking later owners; chain manipulation itself is allocation-free.
+        if(old&&remaining&&std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<2.0)
+            old->Maintain(remaining,2.0-std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+        std::shared_ptr<RenderGeneration> detached;
+        {AccessLock lock;if(old&&retired==old){
+            if(old->Empty()){detached=std::move(retired);retired=std::move(detached->NextRetired);if(!retired)retiredTail=nullptr;}
+            else if(old->NextRetired){auto head=std::move(retired);retired=std::move(head->NextRetired);
+                retiredTail->NextRetired=std::move(head);retiredTail=old.get();}
+        }}
+        // Empty-owner destruction outside all publication/owner-access locks.
+    }
+    void Shutdown()
+    {
+        Reset(0);
+        std::shared_ptr<RenderGeneration> owners;
+        {AccessLock lock;owners=std::move(retired);retiredTail=nullptr;}
+        // Final CPU ownership release is distinct from world reset. Existing host
+        // shutdown contract is still required: unregister does not drain callbacks.
+        while(owners){auto next=std::move(owners->NextRetired);
+            owners->DrainShutdown();owners=std::move(next);}
+        // Native lease ledger remains reachable for certified native shutdown.
     }
     static void RecordLocked(const MiniMapSpriteDiscoveryCore::Key& key,P::State state,const std::string& reason)
     {
         if(!owner)return;
-        std::shared_ptr<DrawState> view;
-        if(state==P::State::Excluded&&owner->View)
-        {view=std::make_shared<DrawState>(*owner->View);view->Ready.erase(key);}
-        auto* e=owner->Jobs.Set(key,state,reason);if(!e)return;
-        if(state==P::State::Excluded&&owner->Textures[size_t(e-owner->Jobs.Entries.data())])
-        {owner->View=std::move(view);} // policy veto hides the image; session cache still owns its pixels
+        auto* slot=owner->Jobs.Observe(key);if(!slot){
+            const auto failures=owner->Jobs.AllocationFailures;
+            if(failures&&(failures&(failures-1))==0)LOG_WARN("MiniMap: renderer slot allocation failed; failures=%zu; candidate retained upstream",failures);
+            return;}
+        if(state==P::State::Excluded&&!owner->Jobs.Exclude(*slot))
+        {LOG_WARN("MiniMap: renderer exclusion revision failure; generation=%llu",(unsigned long long)key.Generation);return;}
+        owner->Jobs.Set(key,state,reason);
     }
     void Record(const MiniMapSpriteDiscoveryCore::Key& key,P::State state,const std::string& reason)
-    {std::scoped_lock lock(access);RecordLocked(key,state,reason);}
+    {AccessLock lock;RecordLocked(key,state,reason);}
     void RecordForLease(const MiniMapCaptureLeases::Token& token,P::State state,const std::string& reason)
     {
-        std::scoped_lock lock(access);auto* e=owner?owner->Jobs.Find(token.Candidate):nullptr;
+        AccessLock lock;auto* e=owner?owner->Jobs.Find(token.Candidate):nullptr;
         if(e&&P::Queue::MatchesLease(*e,token,leases))RecordLocked(token.Candidate,state,reason);
     }
     bool ReturnLease(const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::RetirementReceipt& receipt) noexcept
-    {try{std::scoped_lock lock(access);return leases.Return(token,receipt);}catch(...){return false;}}
-    size_t ActiveLeaseCount(){std::scoped_lock lock(access);return leases.ActiveCount();}
+    {try{AccessLock lock;return leases.Return(token,receipt);}catch(...){return false;}}
+    size_t ActiveLeaseCount(){AccessLock lock;return leases.ActiveCount();}
     bool AcquireObservationLease(const MiniMapSpriteDiscoveryCore::Key& key,uint64_t sourceRevision,MiniMapCaptureLeases::Token& token)
     {
         // Called only by the guarded native owner after source validation and
         // request allocation. Does not grant a renderer admission or consume proof.
-        std::scoped_lock lock(access);return leases.Acquire(key,sourceRevision,token);
+        AccessLock lock;return leases.Acquire(key,sourceRevision,token);
     }
     P::Admission Queue(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapCaptureLeases::Token& token)
     {
-        std::scoped_lock lock(access);
+        AccessLock lock;
         if(!owner||key.Generation!=owner->Jobs.Generation)return P::Admission::InvalidGeneration;
         if(!SourceCurrent(key))return P::Admission::SourceUnavailable;
         const auto result=owner->Jobs.QueueCapture(key,leases,token);
         if(auto* e=owner->Jobs.Find(key))e->LastAdmission=result;return result;
     }
     bool WatchCurrent(const MiniMapSpriteDiscoveryCore::Key& key,const std::vector<uint64_t>& source)
-    {std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
+    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
         return e&&e->Dependencies.Tracked&&e->Dependencies.Source==source;}
     bool ReservationCurrent(const MiniMapCaptureLeases::Token& token)
-    {std::scoped_lock lock(access);auto* e=SourceCurrent(token.Candidate)?owner->Jobs.Find(token.Candidate):nullptr;return e&&P::Queue::MatchesLease(*e,token,leases)&&owner->Jobs.ReservationCurrent(*e);}
+    {AccessLock lock;auto* e=SourceCurrent(token.Candidate)?owner->Jobs.Find(token.Candidate):nullptr;return e&&P::Queue::MatchesLease(*e,token,leases)&&owner->Jobs.ReservationCurrent(*e);}
     bool StartCapture(const MiniMapCaptureLeases::Token& token)
-    {std::scoped_lock lock(access);auto* e=SourceCurrent(token.Candidate)?owner->Jobs.Find(token.Candidate):nullptr;return e&&P::Queue::MatchesLease(*e,token,leases)&&owner->Jobs.StartCapture(*e);}
+    {AccessLock lock;auto* e=SourceCurrent(token.Candidate)?owner->Jobs.Find(token.Candidate):nullptr;return e&&P::Queue::MatchesLease(*e,token,leases)&&owner->Jobs.StartCapture(*e);}
     void AbandonCapture(const MiniMapCaptureLeases::Token& token,bool transient) noexcept
     {
-        try{std::scoped_lock lock(access);if(owner)if(auto* e=owner->Jobs.Find(token.Candidate);e&&P::Queue::MatchesLease(*e,token,leases)){
+        try{AccessLock lock;if(owner)if(auto* e=owner->Jobs.Find(token.Candidate);e&&P::Queue::MatchesLease(*e,token,leases)){
             owner->Jobs.ReleaseCapture(*e,transient);
             if(transient){auto& d=e->Dependencies;const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
                 d.BlockedPublication=snapshot?snapshot->PublishedAtSeconds:-1;d.BlockedObservation=d.ChangeRevision;d.Reevaluate=false;}}}catch(...){}
     }
     bool DependencySnapshot(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapRendererReadiness::Dependencies& out)
-    {std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return false;out=e->Dependencies;return true;}
+    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return false;out=e->Dependencies;return true;}
     void WatchState(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapRendererReadiness::Dependencies::Watch state)
     {
         namespace R=MiniMapRendererReadiness;
         // A rooted watch retires independently, including while its key is
         // spatially absent. Keep the retained dependency ticket state accurate.
-        std::scoped_lock lock(access);auto* e=owner?owner->Jobs.Find(key):nullptr;if(!e)return;
+        AccessLock lock;auto* e=owner?owner->Jobs.Find(key):nullptr;if(!e)return;
         auto& d=e->Dependencies;d.ObservationWatch=state;
         if(state==R::Dependencies::Watch::None&&d.Demand)d.ObservationWatch=R::Dependencies::Watch::Waiting;
     }
     bool WaitingDemand()
     {
-        // CPU-only and fixed registry capacity, invoked only on a 50-ms watch
-        // service opportunity. No UObject work or inventory discovery.
-        std::scoped_lock lock(access);if(!owner)return false;
-        for(size_t i=0;i<owner->Jobs.Count;++i){const auto& d=owner->Jobs.Entries[i].Dependencies;
-            if(d.Tracked&&d.Demand&&d.ObservationWatch==MiniMapRendererReadiness::Dependencies::Watch::Waiting)return true;}
-        return false;
+        AccessLock lock;return owner&&owner->Jobs.WaitingCount!=0;
     }
     void AcknowledgeReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,bool accepted)
     {
-        std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e||!accepted)return;
+        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e||!accepted)return;
         auto& d=e->Dependencies;d.EvaluationQueued=true;d.EvaluationRevision=d.ObservationRevision;d.Reevaluate=false;
     }
     void FinishReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,double sourcePublication)
     {
-        std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return;
+        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return;
         auto& d=e->Dependencies;d.EvaluationQueued=false;
         // A successful observation that is merely waiting for capacity may
         // retry as soon as a slot opens. Missing representatives/exceptions wait
@@ -217,7 +264,7 @@ namespace MiniMapBuildingSprites
     }
     void ObserveResources(const MiniMapSpriteDiscoveryCore::Key& key,const MiniMapRendererReadiness::Result& resources)
     {
-        std::scoped_lock lock(access);if(!SourceCurrent(key)||resources.Generation.World!=key.Generation)return;
+        AccessLock lock;if(!SourceCurrent(key)||resources.Generation.World!=key.Generation)return;
         if(auto* entry=owner->Jobs.Find(key))
         {
             entry->Resources=resources;auto& d=entry->Dependencies;
@@ -233,7 +280,7 @@ namespace MiniMapBuildingSprites
         namespace R=MiniMapRendererReadiness;
         if(observation.TaskCount>observation.Tasks.size())return;
         ObserveResources(key,observation.Readiness);
-        std::scoped_lock lock(access);if(!SourceCurrent(key))return;
+        AccessLock lock;if(!SourceCurrent(key))return;
         if(auto* e=owner->Jobs.Find(key))
         {
             auto& d=e->Dependencies;
@@ -265,12 +312,12 @@ namespace MiniMapBuildingSprites
         }
     }
     bool TracksDependencies(const MiniMapSpriteDiscoveryCore::Key& key)
-    {std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;return e&&e->Dependencies.Tracked;}
+    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;return e&&e->Dependencies.Tracked;}
     MiniMapRendererReadiness::NotificationAck NotifyProviderChange(const MiniMapSpriteDiscoveryCore::Key& key,
         const MiniMapRendererReadiness::ProviderObservation& observation,const std::vector<uint64_t>& source)
     {
         namespace R=MiniMapRendererReadiness;using Ack=R::NotificationAck;
-        std::scoped_lock lock(access);
+        AccessLock lock;
         if(!SourceCurrent(key))return Ack::Invalidated; // complete registry membership/world guard
         auto* e=owner->Jobs.Find(key);if(!e)return Ack::Rejected;
         if(e->Status==P::State::Excluded||e->Status==P::State::Unsupported||
@@ -279,7 +326,7 @@ namespace MiniMapBuildingSprites
     }
     std::array<uint64_t,5> PublicationWake(const MiniMapSpriteDiscoveryCore::Key& key)
     {
-        std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
+        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
         if(!e)return {};
         const auto& d=e->Dependencies;
         return {key.Generation,d.SourceRevision,d.ChangeRevision,owner->RegistryRevision,MiniMapRendererReadiness::ProviderEpoch()};
@@ -290,19 +337,20 @@ namespace MiniMapBuildingSprites
         // For a future verified provider event whose dependency was previously
         // Unknown. This requests evaluation only; it never authorizes a recapture.
         const auto* p=MiniMapRendererReadiness::FindProvider(id);if(!p)return false;
-        std::scoped_lock lock(access);auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
+        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
         if(!e||!e->Dependencies.Tracked||!(e->Dependencies.Missing&p->Conditions))return false;
         e->Dependencies.Reevaluate=true;++e->Dependencies.ChangeRevision;return true;
     }
     bool TakeReadinessReevaluation(MiniMapSpriteDiscoveryCore::Key& key,bool (*watchCapacity)())
     {
         namespace R=MiniMapRendererReadiness;
-        std::scoped_lock lock(access);if(!owner)return false;
+        AccessLock lock;if(!owner)return false;
         const auto now=std::chrono::steady_clock::now();if(now<owner->NextDependencyService)return false;
         owner->NextDependencyService=now+std::chrono::milliseconds(50);
         // One CPU record per eligible invocation; Unknown-only has no native ticket.
-        if(!owner->Jobs.Count)return false;
-        auto& e=owner->Jobs.Entries[owner->DependencyCursor++%owner->Jobs.Count];auto& d=e.Dependencies;
+        if(!owner->RegistryCount)return false;
+        auto* selected=owner->Jobs.Find(owner->RegistryKeys[owner->DependencyCursor++%owner->RegistryCount]);
+        if(!selected)return false;auto& e=*selected;auto& d=e.Dependencies;
         if(!d.Tracked||e.InFlight||d.EvaluationQueued||!SourceCurrent(e.Key))return false;
         const auto epoch=R::ProviderEpoch();
         if(d.ProviderEpoch!=epoch){d.Reevaluate|=(d.Missing&R::ProviderConditions())!=0;d.ProviderEpoch=epoch;}
@@ -321,40 +369,29 @@ namespace MiniMapBuildingSprites
     }
     void ObserveRegistry(const MiniMapSpriteDiscoveryCore::Registry& registry)
     {
-        std::scoped_lock lock(access);
-        if(!owner||registry.Generation!=owner->Jobs.Generation||!registry.Complete())return;
+        AccessLock lock;
+        if(!owner||!registry.Complete()||registry.Generation!=owner->Jobs.Generation)return;
+        if(!owner->Jobs.ObserveRegistry(registry))
+        {LOG_WARN("MiniMap: renderer current-membership allocation failed; admission blocked until next complete publication");return;}
         ++owner->RegistryRevision;owner->RegistryCount=registry.Count;
         for(size_t i=0;i<registry.Count;++i)owner->RegistryKeys[i]=registry.Entries[i].Identity;
-        owner->ReconcileCursor=0;owner->Reconcile=true;
     }
-    void ServiceRegistry()
-    {
-        std::scoped_lock lock(access);if(!owner||!owner->Reconcile)return;
-        // One CPU entry and at most 256 key comparisons, only after registry publication.
-        if(owner->ReconcileCursor==owner->Jobs.Count){owner->Reconcile=false;return;}
-        auto& e=owner->Jobs.Entries[owner->ReconcileCursor];bool present=false;
-        for(size_t i=0;i<owner->RegistryCount;++i)if(owner->RegistryKeys[i]==e.Key){present=true;break;}
-        if(!present)
-        {
-            // Session cache: spatial absence closes SourceCurrent admission but
-            // does not evict pixels, image quality, history or resource proofs.
-            // Collector records control which retained keys are drawn.
-        }
-        ++owner->ReconcileCursor;
-    }
+    void ServiceRegistry() {} // Absence is admission currentness, never image/history eviction.
     void Complete(const MiniMapCaptureLeases::Token& token,const MiniMapStaticAssembly::Footprint& bounds,const std::vector<uint8_t>& rgba,const MiniMapRendererReadiness::Result& quality)
     {
         const auto& key=token.Candidate;
         TimingScope timing(Timing::TextureUpload);
         struct Finish {const MiniMapCaptureLeases::Token& Token;~Finish(){AbandonCapture(Token);}} finish{token};
-        uint64_t uploadSequence=0;
+        uint64_t uploadSequence=0,imageRevision=0;std::shared_ptr<RenderGeneration> target;
         // Game-thread completion only; no image work or uploads occur in Draw.
         {
-            std::scoped_lock lock(access);
+            AccessLock lock;
             const auto* entry=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
             if(!entry||!entry->InFlight||!P::Queue::PublicationCurrent(*entry,token,leases))return;
             if(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality))return;
-            uploadSequence=++owner->UploadSequence;
+            if(owner->UploadSequence==(std::numeric_limits<uint64_t>::max)())
+            {++owner->Jobs.PublicationFailures;LOG_WARN("MiniMap: upload serial exhausted; capture image not uploaded");return;}
+            uploadSequence=++owner->UploadSequence;target=owner->Generation;imageRevision=entry->ImageRevision;
         }
         if(!P::HasCoverage(rgba))
         {LOG_WARN("MiniMap: sprite processing rejected: empty or invalid 256x256 capture; building=%u",key.Building);
@@ -392,9 +429,10 @@ namespace MiniMapBuildingSprites
             width,height,processed.Ratio,extent,density*100,maxScale,processed.Insufficient?"true":"false",elapsed,processed.Reason,useProcessed?"false":"true");
         auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
         if(!api||!api->LoadFromRGBA||!api->FreeTexture||!api->GetFreeSlotCount||!api->GetFreeSlotCount())
-        {{std::scoped_lock lock(access);if(owner)++owner->UploadFailures;}
+        {{AccessLock lock;if(owner)++owner->UploadFailures;}
          LOG_WARN("MiniMap: sprite publication failed: texture upload unavailable or capacity; building=%u",key.Building);
          RecordForLease(token,P::State::Failed,"texture_upload_unavailable_or_capacity");return;}
+        bool preparing=false;
         try
         {
             // Loader names are a deduplication key: the first image wins. Give
@@ -402,61 +440,74 @@ namespace MiniMapBuildingSprites
             const auto name="MiniMap_Building_session_"+MiniMapSpriteDiscoveryCore::KeyText(key)+
                 "_Image_"+std::to_string(uploadSequence);
             auto texture=std::make_shared<Texture>();texture->Free=api->FreeTexture;texture->Bounds=bounds;texture->Region=region;
+            preparing=true;auto prepared=target->Prepare(texture);preparing=false;
+            std::string reason="provisional_session_sprite; renderer_quality_uncertified; static_reference_only";
+            std::string certifiedReason="quality_certified_session_sprite";
             try {texture->Handle=api->LoadFromRGBA(pixels->data(),int(width),int(height),name.c_str());}catch(...){texture->Handle=nullptr;}
+            if(!texture->Handle){AccessLock lock;if(owner&&owner->Generation==target)++owner->UploadFailures;}
             if(!texture->Handle&&useProcessed&&!processed.Passthrough)
             {
                 // A failed processed upload may retry the original validated canvas once.
                 texture->Region={0,0,1,1};width=height=256;
                 LOG_WARN("MiniMap: processed sprite upload failed; original canvas fallback; building=%u",key.Building);
                 try {texture->Handle=api->LoadFromRGBA(rgba.data(),256,256,name.c_str());}catch(...){texture->Handle=nullptr;}
+                if(!texture->Handle){AccessLock lock;if(owner&&owner->Generation==target)++owner->UploadFailures;}
             }
-            std::scoped_lock lock(access);if(!SourceCurrent(key))return;auto* entry=owner->Jobs.Find(key);
-            if(!entry||!entry->InFlight||!P::Queue::PublicationCurrent(*entry,token,leases))return;
-            if(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality))return;
-            if(!texture->Handle)
-            {entry->InFlight=false;if(!owner->Textures[size_t(entry-owner->Jobs.Entries.data())])entry->Status=P::State::Failed;entry->Reason="texture_upload_failed; previous_sprite_retained_if_present";++owner->Failed;++owner->UploadFailures;
-             LOG_WARN("MiniMap: sprite publication failed: upload; building=%u",key.Building);return;}
-            const auto& previous=owner->Textures[size_t(entry-owner->Jobs.Entries.data())];
-            if(previous&&(previous->Bounds.Min!=bounds.Min||previous->Bounds.Max!=bounds.Max))
-            {entry->InFlight=false;entry->Reason="replacement_canvas_changed; previous_sprite_retained";return;}
-            // Stable key and authored canvas; cropped UV region may change.
-            // Construct the complete immutable view before committing either pixels or metadata.
-            auto view=std::make_shared<DrawState>();view->Ready.reserve(P::Capacity);
-            for(size_t i=0;i<owner->Jobs.Count;++i)
-                if((owner->Jobs.Entries[i].Status==P::State::Ready||owner->Jobs.Entries[i].Status==P::State::Provisional)&&owner->Textures[i])
-                    view->Ready.emplace(owner->Jobs.Entries[i].Key,owner->Textures[i]);
-            view->Ready.insert_or_assign(key,texture);
-            const bool certified=CertifiedForEntry(*entry,quality);
-            std::string reason=certified?"quality_certified_session_sprite":
-                "provisional_session_sprite; renderer_quality_uncertified; static_reference_only";
-            // No allocating metadata operations after beginning the commit.
-            entry->Reason.swap(reason);
             texture->RawBytes=size_t(width)*size_t(height)*4;
-            if(!entry->ImageRevision)++owner->SuccessfulTypes;
-            owner->Textures[size_t(entry-owner->Jobs.Entries.data())]=std::move(texture);
-            entry->Quality=quality;entry->InFlight=false;++entry->ImageRevision;
-            entry->Status=certified?P::State::Ready:P::State::Provisional;
-            if(certified)entry->Dependencies.Tracked=false;
-            ++owner->Completed;owner->View=std::move(view);
-            const auto memory=MiniMapSessionTextures::Inspect(owner->Textures);
-            LOG_INFO("MiniMap: session sprite cache: retained=%zu rawRGBABytes=%zu activeNativeLeases=%zu successfulCaptures=%zu successfulTypes=%zu loaderUploadFailures=%zu",
-                memory.Count,memory.RawBytes,leases.ActiveCount(),owner->Completed,owner->SuccessfulTypes,owner->UploadFailures);
-            int backendWidth=0,backendHeight=0;
-            if(api->GetSize)api->GetSize(owner->Textures[size_t(entry-owner->Jobs.Entries.data())]->Handle,&backendWidth,&backendHeight);
-            LOG_INFO("MiniMap: general building sprite displayed (quality separately recorded): building=%u; session texture published %zux%zu; static reference only",key.Building,width,height);
-            LOG_INFO("MiniMap: sprite publication draw view: key=%s ready=%zu requested=%zux%zu backend=%dx%d",
-                MiniMapSpriteDiscoveryCore::KeyText(key).c_str(),owner->View->Ready.size(),width,height,backendWidth,backendHeight);
+            bool accepted=false;size_t cached=0,bytes=0,active=0;
+            {
+                AccessLock lock;
+                auto* entry=owner&&owner->Generation==target?target->Find(key):nullptr;
+                const bool current=owner&&owner->Generation==target&&SourceCurrent(key)&&entry&&entry->InFlight&&
+                    P::Queue::PublicationCurrent(*entry,token,leases)&&
+                    !(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality));
+                if(!texture->Handle)
+                {
+                    if(current){++owner->Failed;entry->InFlight=false;
+                        if(!entry->Cached)entry->Status=P::State::Failed;}
+                }
+                else if(!current||(entry->Cached&&(entry->Cached->Bounds.Min!=bounds.Min||entry->Cached->Bounds.Max!=bounds.Max)))
+                {
+                    // Uploaded handles always have a preallocated owned disposition.
+                    if(entry)target->RetainUnselected(*entry,prepared);
+                }
+                else if(target->Commit(*entry,prepared,token.SourceRevision,imageRevision))
+                {
+                    const bool certified=CertifiedForEntry(*entry,quality);
+                    entry->Reason.swap(certified?certifiedReason:reason);
+                    if(!entry->ImageRevision)++owner->SuccessfulTypes;
+                    entry->Quality=quality;entry->InFlight=false;++entry->ImageRevision;
+                    entry->Status=certified?P::State::Ready:P::State::Provisional;
+                    if(certified)entry->Dependencies.Tracked=false;
+                    ++owner->Completed;accepted=true;
+                    cached=target->SelectedCount;bytes=target->SelectedBytes;active=leases.ActiveCount();
+                }
+                else target->RetainUnselected(*entry,prepared);
+            }
+            // Backend/UI/formatting and final prepared references are outside publication locks.
+            if(accepted)
+            {
+                int backendWidth=0,backendHeight=0;if(api->GetSize)api->GetSize(texture->Handle,&backendWidth,&backendHeight);
+                LOG_INFO("MiniMap: session sprite cache: retained=%zu rawRGBABytes=%zu activeNativeLeases=%zu",cached,bytes,active);
+                LOG_INFO("MiniMap: sprite publication draw view: key=%s requested=%zux%zu backend=%dx%d",
+                    MiniMapSpriteDiscoveryCore::KeyText(key).c_str(),width,height,backendWidth,backendHeight);
+            }
         }
+        catch(const std::bad_alloc&)
+        {if(!preparing)target->AllocationFailed();
+         LOG_WARN("MiniMap: sprite publication allocation failed; building=%u",key.Building);
+         try{RecordForLease(token,P::State::Failed,"texture_publication_allocation_failure");}catch(...){} }
         catch(...)
-        {LOG_WARN("MiniMap: sprite publication failed: allocation or view construction; building=%u",key.Building);
-         RecordForLease(token,P::State::Failed,"texture_publication_exception");}
+        {LOG_WARN("MiniMap: sprite publication exception; building=%u",key.Building);
+         try{RecordForLease(token,P::State::Failed,"texture_publication_exception");}catch(...){} }
     }
     DrawFrame BeginDraw()
     {
-        std::scoped_lock lock(access);DrawFrame frame;
+        AccessLock lock;DrawFrame frame;
         if(owner)
         {
-            frame.Generation=owner->Jobs.Generation;frame.View=owner->View;frame.ReportedReasons=owner->ReportedDrawReasons;
+            frame.Generation=owner->Jobs.Generation;frame.ReportedReasons=owner->ReportedDrawReasons;
+            try{auto view=std::make_shared<DrawState>();view->Frame=owner->Generation->Begin();if(view->Frame)frame.View=std::move(view);}catch(...){owner->Jobs.AllocationFailed();}
             if(owner->Completed&&owner->SpatialReports<8&&
                 (owner->SpatialCompleted!=owner->Completed||owner->DiagnosticFrames==59||owner->DiagnosticFrames==299))
                 try{frame.Spatial=std::make_unique<SpatialSnapshot>();}catch(...){} // Diagnostics cannot prevent drawing.
@@ -465,7 +516,8 @@ namespace MiniMapBuildingSprites
     }
     void EndDraw(const DrawFrame& frame)
     {
-        std::scoped_lock lock(access);if(!owner||owner->Jobs.Generation!=frame.Generation)return;
+        AccessLock lock;if(!owner||owner->Jobs.Generation!=frame.Generation||
+            (frame.View&&frame.View->Frame->Owner!=owner->Generation))return;
         owner->Hits+=frame.Hits;owner->Fallbacks+=frame.Fallbacks;
         for(size_t i=0;i<frame.Counts.size();++i)owner->DrawCounts[i]+=frame.Counts[i];
         if(frame.Spatial)
@@ -509,13 +561,12 @@ namespace MiniMapBuildingSprites
             int backendWidth=0,backendHeight=0;
             if(frame.View)
             {
-                const auto found=frame.View->Ready.find(frame.SampleKey);
+                auto image=frame.View->Resolve(frame.SampleKey);
                 auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
-                if(found!=frame.View->Ready.end()&&found->second&&api&&api->GetSize)
+                if(image&&api&&api->GetSize)
                 {
-                    api->GetSize(found->second->Handle,&backendWidth,&backendHeight);
-                    ++owner->SampledHandleChecks;
-                    owner->SampledInvalidHandles+=backendWidth<=0||backendHeight<=0;
+                    api->GetSize(image->Handle,&backendWidth,&backendHeight);
+                    ++owner->SampledHandleChecks;owner->SampledInvalidHandles+=backendWidth<=0||backendHeight<=0;
                 }
             }
             LOG_INFO("MiniMap: sprite draw sample: reason=%s key=%s representativePublishedKey=%s valid(definition,visual,transform)=%d,%d,%d backend=%dx%d position=(%.9g,%.9g,%.9g) scale=(%.9g,%.9g,%.9g) quaternion=(%.9g,%.9g,%.9g,%.9g) region=(%.9g,%.9g,%.9g,%.9g) geometry=%d projected=%d world=(%.9g,%.9g;%.9g,%.9g;%.9g,%.9g;%.9g,%.9g) screen=(%.9g,%.9g;%.9g,%.9g;%.9g,%.9g;%.9g,%.9g)",
@@ -539,7 +590,7 @@ namespace MiniMapBuildingSprites
         {
             ++owner->DiagnosticReports;const auto& c=owner->DrawCounts;
             LOG_INFO("MiniMap: sprite draw counters: generation=%llu framesAfterPublication=%zu ready=%zu calls=%zu noReadyView=%zu generationMismatch=%zu invalidInputs=%zu lookupAttempts=%zu lookupMisses=%zu lookupMatches=%zu invalidTransforms=%zu quadFailures=%zu projectionFailures=%zu viewportRejections=%zu budgetRejections=%zu fogRejections=%zu invalidHandles=%zu submissions=%zu sampledBackendHandleChecks=%zu sampledBackendInvalidHandles=%zu",
-                (unsigned long long)frame.Generation,owner->DiagnosticFrames,frame.View?frame.View->Ready.size():0,
+                (unsigned long long)frame.Generation,owner->DiagnosticFrames,owner->Jobs.SelectedCount,
                 c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11],c[12],c[13],c[14],owner->SampledHandleChecks,owner->SampledInvalidHandles);
         }
     }
@@ -557,12 +608,7 @@ namespace MiniMapBuildingSprites
             frame.SamplePosition=record.Position;frame.SampleScale=record.Scale;frame.SampleRotation=record.Rotation;
             frame.SampleViewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
                 transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2};
-            if(frame.View&&!frame.View->Ready.empty())
-            {
-                frame.SamplePublishedKey=frame.View->Ready.begin()->first;
-                for(const auto& [key,value]:frame.View->Ready)if(key.Building==record.BuildingId)
-                {frame.SamplePublishedKey=key;break;}
-            }
+            frame.SamplePublishedKey=frame.SampleKey; // Exact queried key, never a history scan.
             if(texture)frame.SampleRegion=texture->Region;
             if(quad){frame.SampleWorld=*quad;frame.SampleGeometry=true;}
             if(screen){for(size_t i=0;i<4;++i)frame.SampleScreen[i]={(*screen)[i].X,(*screen)[i].Y};frame.SampleProjection=true;}
@@ -571,17 +617,16 @@ namespace MiniMapBuildingSprites
         if(record.Generation!=frame.Generation)
         {count(DrawCounter::GenerationMismatch);sample(DrawCounter::GenerationMismatch);return false;}
         // No native reads or key lookup for an empty immutable view.
-        if(!frame.View||frame.View->Ready.empty())
+        if(!frame.View)
         {count(DrawCounter::NoReadyView);sample(DrawCounter::NoReadyView);return false;}
         const auto copy=MiniMapSpriteCandidates::Copy(record);
         if(!copy.DefinitionValid||!copy.VisualInputsValid)
         {count(DrawCounter::InvalidInputs);sample(DrawCounter::InvalidInputs);return false;}
         count(DrawCounter::LookupAttempts);
-        const auto found=frame.View->Ready.find(copy.Identity);
-        if(found==frame.View->Ready.end())
+        auto texture=frame.View->Resolve(copy.Identity);
+        if(!texture)
         {count(DrawCounter::LookupMisses);sample(DrawCounter::LookupMisses);return false;}
         count(DrawCounter::LookupMatches);
-        const auto& texture=found->second; // frame owns the texture through draw submission
         if(!texture||!texture->Handle)
         {count(DrawCounter::InvalidHandle);sample(DrawCounter::InvalidHandle,texture.get());return false;}
         std::array<std::array<double,2>,4> quad{};
@@ -622,11 +667,15 @@ namespace MiniMapBuildingSprites
     }
     void RecordTiming(Timing kind,double ms) noexcept
     {
-        try {std::scoped_lock lock(access);if(owner&&size_t(kind)<owner->Timings.size())owner->Timings[size_t(kind)].Add(ms);}catch(...){}
+        try {AccessLock lock;if(owner&&size_t(kind)<owner->Timings.size())owner->Timings[size_t(kind)].Add(ms);}catch(...){}
     }
     std::string Diagnostics()
     {
-        std::scoped_lock lock(access);if(!owner)return "{}";
+        AccessLock lock;
+        const auto lifecycle=J::Object({{"requested_renderer_generation",std::to_string(requestedGeneration)},
+            {"renderer_reset_result",std::to_string(unsigned(resetResult))},
+            {"renderer_generation_allocation_failures",std::to_string(generationAllocationFailures)}});
+        if(!owner)return lifecycle;
         const char* names[]={"discovery_service","capture_service","texture_upload","widget_cpu","widget_interval","registry_scan","representation_audit","native_class_resolution","classification","representation_traversal","assembly_recipe","capture_admission","diagnostic_build","diagnostic_publish","readiness_service","readiness_sample"};
         std::string timings="{";
         for(size_t i=0;i<owner->Timings.size();++i)
@@ -636,8 +685,14 @@ namespace MiniMapBuildingSprites
                 {"last",J::Number(t.Last)},{"min",J::Number(t.Calls?t.Min:0)},{"total",J::Number(t.Total)},{"max",J::Number(t.Max)},{"mean",J::Number(t.Calls?t.Total/double(t.Calls):0)}});
         }
         timings+="}";
-        return P::Json(owner->Jobs,owner->Hits,owner->Fallbacks,MiniMapSmelterCapture::CandidateServiceStatus(),timings,
-            leases.ActiveCount(),MiniMapSessionTextures::Inspect(owner->Textures),owner->SuccessfulTypes,owner->UploadFailures);
+        const auto metrics=owner->Jobs.Metrics();
+        auto json=P::Json(owner->Jobs,owner->Hits,owner->Fallbacks,MiniMapSmelterCapture::CandidateServiceStatus(),timings,
+            leases.ActiveCount(),MiniMapSessionTextures::Memory{owner->Jobs.SelectedCount,owner->Jobs.SelectedBytes},owner->SuccessfulTypes,owner->UploadFailures);
+        json.pop_back();
+        const char* metricNames[]={"active_frame_pins","active_pinned_revisions","prior_version_nodes_awaiting_reclamation","uploaded_unselected_textures",
+            "uploaded_unselected_raw_rgba_bytes","renderer_allocation_failures","renderer_publication_failures","renderer_counter_failures","historical_renderer_slots"};
+        for(size_t i=0;i<metrics.size();++i)json+=","+J::Quote(metricNames[i])+":"+std::to_string(metrics[i]);
+        json+=",\"waiting_dependency_demand\":"+std::to_string(owner->Jobs.WaitingCount)+",\"renderer_lifecycle\":"+lifecycle+"}";return json;
     }
 }
 #endif

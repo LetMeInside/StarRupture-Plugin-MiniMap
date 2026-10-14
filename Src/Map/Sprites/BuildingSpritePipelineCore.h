@@ -4,6 +4,7 @@
 #include "StaticAssemblyCaptureCore.h"
 #include "CaptureLeaseCore.h"
 #include "SessionTextureAccountingCore.h"
+#include <map>
 
 namespace MiniMapBuildingSpriteCore
 {
@@ -34,18 +35,12 @@ namespace MiniMapBuildingSpriteCore
         Admission LastAdmission=Admission::NoAdvancement;
         MiniMapCaptureLeases::Token Lease;
         uint64_t ImageRevision{};bool InFlight=false,InitialAdmission=false; };
-    struct Queue
+    struct Policy
     {
-        std::array<Entry,MiniMapSpriteDiscoveryCore::Capacity> Entries{};size_t Count{},Captures{},InitialAdmissions{};uint64_t Generation{};
-        void Reset(uint64_t generation){for(auto& e:Entries)e=Entry{};
-            Count=Captures=InitialAdmissions=0;Generation=generation;} // does not reset native lease ownership
-        Entry* Find(const MiniMapSpriteDiscoveryCore::Key& key)
-        {for(size_t i=0;i<Count;++i)if(Entries[i].Key==key)return &Entries[i];return nullptr;}
-        Entry* Observe(const MiniMapSpriteDiscoveryCore::Key& key)
-        {if(!key.Generation||key.Generation!=Generation)return nullptr;if(auto* e=Find(key))return e;
-        if(Count==Entries.size())return nullptr;auto& e=Entries[Count++];e.Key=key;return &e;}
-        Entry* Set(const MiniMapSpriteDiscoveryCore::Key& key,State state,const std::string& reason)
-        {auto* e=Observe(key);if(!e)return nullptr;
+        size_t Captures{},InitialAdmissions{};uint64_t Generation{};
+        void Reset(uint64_t generation){Captures=InitialAdmissions=0;Generation=generation;}
+        Entry* SetEntry(Entry& entry,State state,const std::string& reason)
+        {auto* e=&entry;
         if(state==State::Awaiting&&e->Status!=State::Awaiting)return nullptr;
         if(state==State::Queued&&!e->InFlight)return nullptr; // source evaluation is not capture reservation
         if((e->Status==State::Ready||e->Status==State::Provisional)&&state!=State::Excluded)
@@ -81,14 +76,7 @@ namespace MiniMapBuildingSpriteCore
                 r.Reserved=EligibleProof(d,r)?r.AdvancementRevision:0;
                 d.ReservedAdvancement=(std::max)(d.ReservedAdvancement,r.Reserved);}
         }
-        Admission QueueCapture(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
-        {
-            if(!key.Generation||key.Generation!=Generation)return Admission::InvalidGeneration;
-            auto* e=Observe(key);if(!e)return Admission::Capacity;
-            return Admit(*e,leases,token);
-        }
-        // Separate from fixed metadata storage so policy can be exercised with
-        // arbitrary candidate bookkeeping without redesigning that storage.
+        // Storage-independent authority; renderer owns stable candidate records.
         Admission Admit(Entry& entry,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
         {
             auto* e=&entry;
@@ -156,12 +144,28 @@ namespace MiniMapBuildingSpriteCore
             if(e.Status==State::Queued)e.Status=State::Failed;
         }
     };
-    inline std::string Json(const Queue& q,size_t hits=0,size_t fallbacks=0,const char* service="not_reported",const std::string& timings="{}",
+    // Compatibility storage for portable policy clients. Production renderer uses
+    // co-located image/policy slots instead. No distinct-identity capacity ceiling.
+    struct KeyLess {bool operator()(const MiniMapSpriteDiscoveryCore::Key& a,const MiniMapSpriteDiscoveryCore::Key& b)const noexcept{return a.Values()<b.Values();}};
+    struct Queue : Policy
+    {
+        std::map<MiniMapSpriteDiscoveryCore::Key,Entry,KeyLess> Entries;
+        size_t Count{};
+        auto Counts()const{std::array<size_t,8> counts{};for(const auto& [key,e]:Entries)++counts[size_t(e.Status)];return counts;}
+        void Reset(uint64_t generation){Entries.clear();Count=0;Policy::Reset(generation);}
+        Entry* Find(const MiniMapSpriteDiscoveryCore::Key& key){auto it=Entries.find(key);return it==Entries.end()?nullptr:&it->second;}
+        Entry* Observe(const MiniMapSpriteDiscoveryCore::Key& key){if(!key.Generation||key.Generation!=Generation)return nullptr;
+            auto [it,added]=Entries.try_emplace(key);if(added){it->second.Key=key;++Count;}return &it->second;}
+        Entry* Set(const MiniMapSpriteDiscoveryCore::Key& key,State state,const std::string& reason){auto* e=Observe(key);return e?SetEntry(*e,state,reason):nullptr;}
+        Admission QueueCapture(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
+        {auto* e=Observe(key);return e?Admit(*e,leases,token):Admission::InvalidGeneration;}
+    };
+    template<class Q> inline std::string Json(const Q& q,size_t hits=0,size_t fallbacks=0,const char* service="not_reported",const std::string& timings="{}",
         size_t activeLeases=0,MiniMapSessionTextures::Memory textureMemory={},size_t successfulTypes=0,size_t uploadFailures=0)
     {
         namespace J=MiniMapRepresentationCore;J::JsonArray rows;rows.Limit=200*1024;
-        std::array<size_t,8> counts{};
-        for(size_t i=0;i<q.Count;++i){const auto& e=q.Entries[i];++counts[size_t(e.Status)];
+        const auto counts=q.Counts();
+        for(const auto& [key,e]:q.Entries){if(rows.Truncated)break;
             rows.Add(J::Object({{"session_candidate",J::Quote(MiniMapSpriteDiscoveryCore::KeyText(e.Key))},
                 {"image_revision",std::to_string(e.ImageRevision)},
                 {"image_quality_readiness",J::Quote(MiniMapRendererReadiness::Label(e.Quality.State))},
