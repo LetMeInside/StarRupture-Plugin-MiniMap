@@ -2,10 +2,12 @@
 #include "SpriteCaptureCore.h"
 #include "RendererReadinessCore.h"
 #include "StaticAssemblyCaptureCore.h"
+#include "CaptureLeaseCore.h"
+#include "SessionTextureAccountingCore.h"
 
 namespace MiniMapBuildingSpriteCore
 {
-    constexpr size_t Capacity=32; // 8 MiB of 256x256 RGBA textures, plus loader overhead.
+    constexpr size_t Capacity=32; // Native resource ceiling; the capture owner remains serialized at one.
     struct KeyHash
     {
         size_t operator()(const MiniMapSpriteDiscoveryCore::Key& k)const noexcept
@@ -30,12 +32,13 @@ namespace MiniMapBuildingSpriteCore
         MiniMapRendererReadiness::Result Quality,Resources;
         MiniMapRendererReadiness::Dependencies Dependencies;
         Admission LastAdmission=Admission::NoAdvancement;
-        uint64_t ImageRevision{};bool InFlight=false,Reserved=false; };
+        MiniMapCaptureLeases::Token Lease;
+        uint64_t ImageRevision{};bool InFlight=false,InitialAdmission=false; };
     struct Queue
     {
-        std::array<Entry,MiniMapSpriteDiscoveryCore::Capacity> Entries{};size_t Count{},Captures{},Reservations{};uint64_t Generation{};
+        std::array<Entry,MiniMapSpriteDiscoveryCore::Capacity> Entries{};size_t Count{},Captures{},InitialAdmissions{};uint64_t Generation{};
         void Reset(uint64_t generation){for(auto& e:Entries)e=Entry{};
-            Count=Captures=Reservations=0;Generation=generation;} // no multi-megabyte stack temporary
+            Count=Captures=InitialAdmissions=0;Generation=generation;} // does not reset native lease ownership
         Entry* Find(const MiniMapSpriteDiscoveryCore::Key& key)
         {for(size_t i=0;i<Count;++i)if(Entries[i].Key==key)return &Entries[i];return nullptr;}
         Entry* Observe(const MiniMapSpriteDiscoveryCore::Key& key)
@@ -78,15 +81,22 @@ namespace MiniMapBuildingSpriteCore
                 r.Reserved=EligibleProof(d,r)?r.AdvancementRevision:0;
                 d.ReservedAdvancement=(std::max)(d.ReservedAdvancement,r.Reserved);}
         }
-        Admission QueueCapture(const MiniMapSpriteDiscoveryCore::Key& key)
+        Admission QueueCapture(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
         {
             if(!key.Generation||key.Generation!=Generation)return Admission::InvalidGeneration;
             auto* e=Observe(key);if(!e)return Admission::Capacity;
+            return Admit(*e,leases,token);
+        }
+        // Separate from fixed metadata storage so policy can be exercised with
+        // arbitrary candidate bookkeeping without redesigning that storage.
+        Admission Admit(Entry& entry,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
+        {
+            auto* e=&entry;
+            if(!e->Key.Generation||e->Key.Generation!=Generation)return Admission::InvalidGeneration;
             if(e->InFlight)return Admission::AlreadyInFlight;
             if(e->Status==State::Excluded||e->Status==State::Unsupported)return Admission::Terminal;
             const auto advance=EligibleAdvancement(*e);
-            e->Dependencies.UpgradeReservation=e->Reserved;
-            if(e->Reserved)
+            if(e->InitialAdmission)
             {
                 if(!advance){const auto& d=e->Dependencies;
                     bool rejected=false,consumed=false;
@@ -96,11 +106,13 @@ namespace MiniMapBuildingSpriteCore
                     if(rejected)return Admission::SetupRejected;if(consumed)return Admission::AdvancementConsumed;
                     return d.AdvancementRevision?Admission::StaleAdvancement:Admission::NoAdvancement;}
             }
-            else
-            {
-                if(Reservations>=Capacity)return Admission::Capacity;
-                e->Reserved=true;++Reservations;
-            }
+            MiniMapCaptureLeases::Token acquired;
+            if(!leases.Acquire(e->Key,e->Dependencies.SourceRevision,acquired))return Admission::Capacity;
+            // No allocation or native dispatch after acquisition. All following
+            // scalar writes commit the exact handoff atomically under the caller's guard.
+            e->Dependencies.UpgradeReservation=e->InitialAdmission;
+            if(!e->InitialAdmission){e->InitialAdmission=true;++InitialAdmissions;}
+            e->Lease=acquired;token=acquired;
             CoverCurrentProofs(*e);
             e->Dependencies.ReservedSource=e->Dependencies.SourceRevision;
             e->Dependencies.AttemptStarted=false;e->InFlight=true;
@@ -116,6 +128,10 @@ namespace MiniMapBuildingSpriteCore
             if(d.UpgradeReservation&&!EligibleAdvancement(e))return false;
             return true;
         }
+        static bool MatchesLease(const Entry& e,const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::Ledger& leases) noexcept
+        {return e.Lease==token&&leases.Holds(token);}
+        static bool PublicationCurrent(const Entry& e,const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::Ledger& leases) noexcept
+        {return MatchesLease(e,token,leases)&&e.Dependencies.SourceRevision==token.SourceRevision;}
         bool StartCapture(Entry& e)
         {
             if(!ReservationCurrent(e))return false;
@@ -140,7 +156,8 @@ namespace MiniMapBuildingSpriteCore
             if(e.Status==State::Queued)e.Status=State::Failed;
         }
     };
-    inline std::string Json(const Queue& q,size_t hits=0,size_t fallbacks=0,const char* service="not_reported",const std::string& timings="{}")
+    inline std::string Json(const Queue& q,size_t hits=0,size_t fallbacks=0,const char* service="not_reported",const std::string& timings="{}",
+        size_t activeLeases=0,MiniMapSessionTextures::Memory textureMemory={},size_t successfulTypes=0,size_t uploadFailures=0)
     {
         namespace J=MiniMapRepresentationCore;J::JsonArray rows;rows.Limit=200*1024;
         std::array<size_t,8> counts{};
@@ -183,6 +200,12 @@ namespace MiniMapBuildingSpriteCore
             {"visual_equivalence",J::Quote("shared authored static reference only; runtime/customization variants unsupported")},
             {"live_building_complete","false"},{"capture_limit",std::to_string(Capacity)},
             {"capture_attempts",std::to_string(q.Captures)},
+            {"historical_initial_admissions",std::to_string(q.InitialAdmissions)},
+            {"active_native_capture_leases",std::to_string(activeLeases)},
+            {"retained_texture_count",std::to_string(textureMemory.Count)},
+            {"retained_texture_raw_rgba_bytes",std::to_string(textureMemory.RawBytes)},
+            {"historical_successfully_captured_types",std::to_string(successfulTypes)},
+            {"loader_upload_failures",std::to_string(uploadFailures)},
             {"output_truncated",J::Bool(rows.Truncated)},{"candidates",rows.String()}});
     }
     template<class Read> bool Revealed(double minX,double minY,double maxX,double maxY,
