@@ -1,6 +1,7 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_BUILDING_SPRITES)
 #include "BuildingSpritePipelineCore.h"
+#include "CaptureDispatchCore.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include <chrono>
 namespace MiniMapRendererReadiness {struct AssemblyObservation;}
@@ -24,6 +25,15 @@ namespace MiniMapBuildingSprites
     void AbandonCapture(const MiniMapCaptureLeases::Token&,bool transient=false) noexcept;
     void RecordForLease(const MiniMapCaptureLeases::Token&,MiniMapBuildingSpriteCore::State,const std::string&);
     bool ReturnLease(const MiniMapCaptureLeases::Token&,const MiniMapCaptureLeases::RetirementReceipt&) noexcept;
+    MiniMapCaptureDispatch::RendererEvidence InspectDispatch(const MiniMapSpriteDiscoveryCore::Key&,
+        const std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>&) noexcept; // read-only, no allocation
+    MiniMapCaptureLeases::Inspection InspectLease(const MiniMapCaptureLeases::Token&) noexcept;
+    MiniMapCaptureLeases::Snapshot ObserveLeases() noexcept;
+    MiniMapCaptureLeases::ArmResult ArmRetirementObservation(const MiniMapCaptureLeases::Snapshot&,const MiniMapSpriteDiscoveryCore::Key&) noexcept;
+    void SealRetirementObservation(const MiniMapCaptureLeases::ObservationTicket&) noexcept;
+    MiniMapCaptureLeases::RetirementObservation ObserveRetirement(const MiniMapCaptureLeases::ObservationTicket&) noexcept;
+    bool AcknowledgeRetirement(const MiniMapCaptureLeases::ObservationTicket&,const MiniMapCaptureLeases::Token&) noexcept;
+    bool CancelUnadmittedObservation(const MiniMapCaptureLeases::ObservationTicket&) noexcept;
     size_t ActiveLeaseCount(); // Independent of renderer generation reset; combine with native CanAcceptCandidate.
     bool AcquireObservationLease(const MiniMapSpriteDiscoveryCore::Key&,uint64_t sourceRevision,MiniMapCaptureLeases::Token&);
     void ObserveResources(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapRendererReadiness::Result&);
@@ -52,14 +62,14 @@ namespace MiniMapBuildingSprites
     enum class DrawCounter : size_t
     {
         Calls,NoReadyView,GenerationMismatch,InvalidInputs,LookupAttempts,LookupMisses,LookupMatches,
-        InvalidTransform,QuadFailure,ProjectionFailure,ViewportRejection,BudgetRejection,FogRejection,
+        InvalidTransform,QuadFailure,ProjectionFailure,ViewportRejection,FogRejection,
         InvalidHandle,Submissions,Count
     };
     struct DrawFrame
     {
         std::shared_ptr<const DrawState> View;
         uint64_t Generation{};
-        size_t Hits{},Fallbacks{},Budget=128;
+        size_t Hits{},Fallbacks{};
         std::unique_ptr<SpatialSnapshot> Spatial; // At most eight diagnostic frames per generation.
         std::array<size_t,size_t(DrawCounter::Count)> Counts{};
         uint32_t ReportedReasons{};

@@ -146,6 +146,7 @@ namespace MiniMapRendererReadiness
             observation.Readiness=Evaluate(components.data(),observation.Readiness.Components,observation.Readiness.Generation);
             observation.Readiness.Unknown|=unresolved;
             if(!observation.Readiness.Unsupported&&observation.Readiness.Unknown)observation.Readiness.State=RenderReadiness::Unknown;
+            PreserveVisualUncertainty(observation.Readiness,observation.VisualIncomplete);
         }
 
     }
@@ -191,7 +192,7 @@ namespace MiniMapRendererReadiness
     }
     AssemblyObservation ObserveRetainedAssembly(const MiniMapStaticAssembly::Recipe& recipe,const Dependencies* baseline)
     {
-        AssemblyObservation out;out.Readiness.Generation.World=recipe.Generation;
+        AssemblyObservation out;out.Readiness.Generation.World=recipe.Generation;out.VisualIncomplete=recipe.VisualIncomplete;
         out.Readiness.Unknown=(uint32_t(1)<<unsigned(Condition::Count))-1;
         if(!OnGameThread())return out;
         static const bool version=MiniMapReadbackNative::MatchesCaptureRetirementBuild();
@@ -213,6 +214,7 @@ namespace MiniMapRendererReadiness
         for(size_t i=0;i<recipe.Count;++i){const auto& v=recipe.Instances[i];object(v.Mesh);out.Source.push_back(v.ComponentIndex);
             values(v.Transform.T);values(v.Transform.R);values(v.Transform.S);values(v.LocalBounds.Origin);values(v.LocalBounds.Extent);
             out.Source.push_back(v.MaterialCount);for(size_t m=0;m<v.MaterialCount;++m){object(v.Materials[m]);out.Source.push_back(v.Overrides[m]);}}
+        if(recipe.VisualIncomplete){out.Source.push_back(UINT64_MAX);out.Source.push_back(1);}
         for(size_t i=0;i<recipe.Count;++i)
         {
             const auto p=recipe.Instances[i].Mesh;size_t n=0;
@@ -239,7 +241,8 @@ namespace MiniMapRendererReadiness
                         r.NameIndex==t.Resource.Name&&r.NameNumber==t.Resource.Number)t.Evidence=r.Evidence;}
             ProviderObservation change;ObserveTask(out,i,change);
         }
-        out.Reason="renderer_readiness_unknown_scene_view_material_contract";return out;
+        PreserveVisualUncertainty(out.Readiness,recipe.VisualIncomplete);
+        out.Reason=recipe.VisualIncomplete?"supported_static_subset_visual_completeness_unverified":"renderer_readiness_unknown_scene_view_material_contract";return out;
     }
 }
 #endif

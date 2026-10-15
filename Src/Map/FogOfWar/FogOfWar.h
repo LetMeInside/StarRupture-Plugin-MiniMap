@@ -24,6 +24,10 @@ namespace MiniMapFogOfWar
     // Conservative entire AABB, bounded copied mask read; never native scanning.
     bool IsNativeWorldRectangleRevealed(double minX,double minY,double maxX,double maxY);
 
+    // Bounded sufficient opacity proof. Unknown data or budget exhaustion returns false.
+    bool IsWorldRectangleFullyObscured(double minX,double minY,double maxX,double maxY,
+        const MiniMapMap::Transform& transform);
+
     // Effective visual exposure, including the temporary local feather.
     // Reads the copied FOW snapshot; does not change persistent exploration.
     float GetRenderedVisibilityAtWorldPosition(

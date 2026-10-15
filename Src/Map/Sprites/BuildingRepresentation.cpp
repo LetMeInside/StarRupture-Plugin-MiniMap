@@ -234,7 +234,7 @@ namespace MiniMapBuildingRepresentation
             uintptr_t Class=0,Actor=0,Component=0,Scene=0,MeshComponent=0,StaticComponent=0,
                 SkeletalComponent=0,SkinnedComponent=0,StaticMesh=0,SkeletalMesh=0,SkinnedAsset=0,
                 Material=0,Blueprint=0,SCS=0,Node=0,Handler=0,Child=0,Placement=0,Config=0,Trait=0,Visual=0,Cosmetic=0;
-            bool Truncated=false,Invalid=false;
+            bool Truncated=false,Invalid=false,DiagnosticTruncated=false;
             size_t NodeCount=0;
             std::string Selected="null",SelectedTier="none",Status="unavailable",Reason="no safe resident representation";
             MiniMapBuildingCollector::Record Record{};
@@ -646,7 +646,7 @@ namespace MiniMapBuildingRepresentation
                     const auto material=Value<uintptr_t>(item,0);
                     slots.Add(C::Object({{"slot",std::to_string(slot)},{"material",Ref(material,Material)}}));
                 });
-                if(slots.Truncated)Truncated=true;
+                if(slots.Truncated)DiagnosticTruncated=true;
                 return slots.String();
             }
             void Edge(uintptr_t from,uintptr_t to,const std::string& kind,const char* status="present")
@@ -876,7 +876,7 @@ namespace MiniMapBuildingRepresentation
                     {"use_transform_offset",C::Bool(Value<uint8_t>(descriptor,0x18)!=0)},
                     {"descriptor_transform_offset",Transform(descriptor+0x20)},{"raw_transform_offsets",offsets.String()},
                     {"renderer_equivalent_transforms","false"},{"provenance",C::Quote("resident visualization trait; raw inputs only")}}));
-                Truncated|=meshes.Truncated||offsets.Truncated;
+                DiagnosticTruncated|=meshes.Truncated||offsets.Truncated;
                 return validMesh;
             }
             template<class Visitor> bool ProbeArray(uintptr_t header,size_t stride,size_t alignment,size_t limit,Visitor visitor)
@@ -1279,8 +1279,8 @@ namespace MiniMapBuildingRepresentation
         if(!objectArray||!engine||!bindings.GameThread||!bindings.Retain||!bindings.Release||stopped.load()||
             !reinterpret_cast<bool(*)()>(bindings.GameThread)()||!world||world==endingWorld||!snapshot||
             !snapshot->Complete||snapshot->Generation!=record.Generation)
-        {out.Reason="native_facility_or_world_generation_unavailable";return out;}
-        if(executing.test_and_set(std::memory_order_acquire)){out.Reason="representation_service_busy";return out;}
+        {out.MarkDeferred(V::AuditWait::NativePrerequisites);out.Reason="native_facility_or_world_generation_unavailable";return out;}
+        if(executing.test_and_set(std::memory_order_acquire)){out.MarkDeferred(V::AuditWait::NativeOwnerBusy);out.Reason="representation_service_busy";return out;}
         struct Leave {~Leave(){executing.clear(std::memory_order_release);}} leave;
         const auto auditStart=std::chrono::steady_clock::now();
         MiniMapNative::ValidationProfile validationProfile;
@@ -1293,7 +1293,7 @@ namespace MiniMapBuildingRepresentation
 #endif
             Context context;context.Metrics=&metrics;context.GenericValidation=true;context.CaptureRequested=captureRequested;context.Record=record;
             context.DeferCapture=deferCapture;
-            if(!context.Initialize()){out.Reason="resident_native_class_anchors_unavailable";return out;}
+            if(!context.Initialize()){out.MarkDeferred(V::AuditWait::NativePrerequisites);out.Reason="resident_native_class_anchors_unavailable";return out;}
             auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);out.Probes=1;
             if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::StaleEntity&&alternate&&
                 alternate->Generation==record.Generation&&alternate->DefinitionObjectIndex==record.DefinitionObjectIndex&&
@@ -1302,6 +1302,11 @@ namespace MiniMapBuildingRepresentation
                 context.Record=*alternate;context.ProbeResult={};
                 status=MiniMapBuildingCollector::VisitDiagnosticDefinition(context.Record,&ProbeVisit,&context);++out.Probes;
             }
+            auto unavailable=[](MiniMapBuildingCollector::DiagnosticVisitStatus status)
+            {
+                using S=MiniMapBuildingCollector::DiagnosticVisitStatus;
+                return status==S::CollectorUnavailable||status==S::WorldGenerationChanged||status==S::StaleEntity||status==S::ParametersUnavailable;
+            };
             const auto probes=out.Probes;
             if(status==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited)
             {
@@ -1313,7 +1318,7 @@ namespace MiniMapBuildingRepresentation
                 if(full==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited&&context.AuditClass)out=context.GenericAudit();
                 else if(full==MiniMapBuildingCollector::DiagnosticVisitStatus::Visited&&context.SelectedTier=="mass_ism")
                 {out.Resident=true;out.Route="mass_ism";out.Status=V::Outcome::Unsupported;out.Reason="resident_mass_only_alternative; renderer_equivalent_transform_chain_not_verified";}
-                else out.Reason="selected_representation_revalidation_failed";
+                else {out.Reason="selected_representation_revalidation_failed";if(unavailable(full))out.MarkDeferred(V::AuditWait::SourceUnavailable);}
             }
             else
             {
@@ -1323,11 +1328,13 @@ namespace MiniMapBuildingRepresentation
                 out.Reason=status==VisitStatus::StaleEntity?"stale_entity":status==VisitStatus::WorldGenerationChanged?"world_generation_changed":
                     !context.ProbeResult.Reasons.empty()?context.ProbeResult.Reasons.front():"collector_instance_unavailable";
                 out.Truncated=context.ProbeResult.Truncated||context.Work.Exhausted||context.Graph.Truncated;
+                if(unavailable(status))out.MarkDeferred(V::AuditWait::SourceUnavailable);
             }
             out.Probes=probes;out.High=context.ProbeResult.HighStatus;out.Low=context.ProbeResult.LowStatus;
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
             out.Classification=context.Classification;
 #endif
+            out.DiagnosticTruncated|=context.DiagnosticTruncated;
             out.Config=context.ProbeResult.CachedConfig;out.AuthoredClass=context.AuthoredClassStatus;
             out.Mass=context.ProbeResult.Mesh?"validated_resident_mesh_assignments":context.ProbeResult.MassStatus;
             out.IdentityVisits=context.Work.SelectionVisits+context.Work.RepresentationVisits;
@@ -1336,7 +1343,7 @@ namespace MiniMapBuildingRepresentation
             {out.Truncated=true;if(out.Status==V::Outcome::Eligible){out.Status=V::Outcome::Conditional;out.Reason="selection_probe_incomplete";}}
             const auto current=MiniMapBuildingCollector::GetSnapshot();
             if(world!=MiniMapMap::GetWorld()||!current||current->Generation!=record.Generation)
-            {out.Status=V::Outcome::Invalid;out.Reason="world_generation_changed_during_audit";}
+            {out.MarkDeferred(V::AuditWait::SourceUnavailable);out.Reason="world_generation_changed_during_audit";}
             context.ReportAuthoredAcquisition(out);
             metrics.PrimaryRoots=context.Roots.size();
         } // Context releases every strong root before return/file export.

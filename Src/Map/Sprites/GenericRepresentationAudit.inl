@@ -101,6 +101,9 @@ MiniMapSpriteValidation::Result GenericAudit()
         nativeBodySelected&=!StaticObservationOverflow&&!GenericInherited&&!GenericChild&&!unresolvedSkinned;
     }
     std::map<std::string,size_t> recipeIndexes;
+    size_t omittedDerived=0,omittedNative=0;
+    bool subsetSelected=false;
+    MiniMapStaticAssembly::SubsetSelection subset;
     std::string skeletalTestNode;
     // First capture-requested skeletal candidate only; reuse evaluated audit data.
     static bool skeletalAdmissionReported=false;
@@ -139,13 +142,30 @@ MiniMapSpriteValidation::Result GenericAudit()
         n.Metadata=n.Scene?C::Object({{"visible",C::Bool(Value<uint8_t>(component,0x1a0)&32)},
             {"hidden_in_game",C::Bool(Value<uint8_t>(component,0x1a1)&8)}}):"null";
         const bool isStatic=Is(component,StaticComponent,0x590),isSkeletal=!isStatic&&Is(component,SkeletalComponent,0x598);
+        uint8_t authoredVisible=0,authoredHidden=0;
+        const bool visibilityKnown=!isStatic||(Read(component,0x1a0,authoredVisible)&&Read(component,0x1a1,authoredHidden));
+        if(!visibilityKnown)sourceValid=false;
+        const bool nonDrawable=isStatic&&MiniMapStaticAssembly::AuthoredStaticMembership(
+            Value<uintptr_t>(component,0x10)==StaticComponent,visibilityKnown,(authoredVisible&32)!=0,(authoredHidden&8)!=0)==
+                MiniMapStaticAssembly::DrawableMembership::Noncontributing;
         // A subclass may contain spline/instance/procedural geometry. Its base
         // mesh field alone cannot certify an ordinary rigid-mesh recipe.
         const bool bodyOmitted=nativeBodySelected&&isStatic&&
             (bodyOmissions.contains(component)||component==nativeMain);
-        if(isStatic&&!bodyOmitted&&Value<uintptr_t>(component,0x10)!=StaticComponent)out.DerivedStatic=true;
-        n.Kind=isStatic&&!bodyOmitted?"static":isSkeletal?"skeletal":"none";
-        if((isStatic&&!bodyOmitted)||isSkeletal)
+        const bool derived=isStatic&&!bodyOmitted&&Value<uintptr_t>(component,0x10)!=StaticComponent;
+        if(derived)out.DerivedStatic=true;
+        const bool omitDerived=CaptureRequested&&derived;
+        n.Kind=isStatic&&!bodyOmitted&&!omitDerived?"static":isSkeletal?"skeletal":"none";
+        if(omitDerived)
+        {
+            // Keep the hierarchy node for independently resolvable children.
+            // No instance/spline/procedural placement is inferred from the base mesh.
+            ++omittedDerived;
+            records.Add(C::Object({{"component_id",C::Quote(n.Component)},{"scs_node_id",C::Quote(n.Id)},
+                {"component_class",Ref(Value<uintptr_t>(component,0x10),Class)},
+                {"drawable_capture_member","false"},{"omission",C::Quote("derived_static_rendering_semantics_unverified")}}));
+        }
+        if((isStatic&&!bodyOmitted&&!omitDerived)||isSkeletal)
         {
             const auto found=AuditAssignments.find(component);const uintptr_t mesh=found==AuditAssignments.end()?0:found->second;
             const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh,isStatic?0x170:0x1b0)&&Hold(mesh);
@@ -163,6 +183,7 @@ MiniMapSpriteValidation::Result GenericAudit()
             const auto proposed=A::ProposedMaterials(defaults,overridden);C::JsonArray mapping;
             bool present=!proposed.empty();
             for(const auto& slot:proposed){present&=slot.Valid;mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},{"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));}
+            DiagnosticTruncated|=mapping.Truncated;
             input.Mapping=mapping.String();input.Valid=defaultsValid&&overridesValid&&present;
             // Only the first capture-requested skeletal component. The helper
             // reports the same validation/retention decisions used for admission.
@@ -185,7 +206,9 @@ MiniMapSpriteValidation::Result GenericAudit()
                         int(slot.Valid),int(mapped),!slot.Valid?"effective_slot_absent_or_invalid":!mapped?"pointer_mapping_missing":"none");
                 }
             }
-            if(isStatic)
+            // Keep the node, attachment/material checks and transform resolution;
+            // only its own proven noncontributing drawable is omitted.
+            if(isStatic&&!nonDrawable)
             {
                 if(recipe.Count>=MiniMapStaticAssembly::Limit)AuditTruncated=true;
                 else
@@ -254,7 +277,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         if(duplicate||!Is(p,StaticComponent,0x590))continue;
         if(Value<uintptr_t>(p,0x10)!=StaticComponent){out.DerivedStatic=true;continue;}
         const auto mesh=Value<uintptr_t>(p,0x588);if(!mesh)continue;
-        if(scsStatic){mixedNative=true;continue;}
+        if(scsStatic){mixedNative=true;++omittedNative;continue;} // Select the SCS route; never guess additive equivalence.
         if(!Is(mesh,StaticMesh,0x278)||!Hold(mesh,0x278)){sourceValid=false;continue;}
         if(recipe.Count>=MiniMapStaticAssembly::Limit){AuditTruncated=true;break;}
         A::Node n;n.Id="native:"+componentId;n.Component=componentId;n.Kind="static";n.Scene=true;n.Mesh=Id(mesh);
@@ -268,6 +291,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         const auto overrides=AuditMaterials(p+0x530,8,overridesValid,input.Overrides);
         const auto proposed=A::ProposedMaterials(defaults,overrides);input.Valid=defaultsValid&&overridesValid&&!proposed.empty();
         C::JsonArray mapping;for(const auto& slot:proposed)mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},{"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));
+        DiagnosticTruncated|=mapping.Truncated;
         input.Mapping=mapping.String();out.MaterialSlots+=defaults.size();out.OverrideSlots+=overrides.size();
         auto& r=recipe.Instances[recipe.Count];recipeIndexes[n.Id]=recipe.Count++;
         r.Mesh=mesh;r.ComponentIndex=uint32_t(Value<int32_t>(p,0xc));r.Visible=(Value<uint8_t>(p,0x1a0)&32)!=0;r.Hidden=(Value<uint8_t>(p,0x1a1)&8)!=0;
@@ -301,6 +325,8 @@ MiniMapSpriteValidation::Result GenericAudit()
         records.Add(C::Object({{"component_id",C::Quote(n.Component)},{"scs_node_id",C::Quote(id)},
             {"source",C::Quote(directTransforms.contains(id)?"verified_direct_cdo_component_field":"selected_actor_scs_template")},
             {"kind",C::Quote(n.Kind)},{"mesh_id",n.Mesh.empty()?"null":C::Quote(n.Mesh)},
+            {"recipe_input_collected",C::Bool(recipeIndexes.contains(id))},
+            {"drawable_capture_member",C::Bool(recipeIndexes.contains(id)&&recipe.Instances[recipeIndexes.at(id)].Verified)},
             {"parent_scs_node_id",n.Parent.empty()?"null":C::Quote(n.Parent)},{"native_parent_id",n.NativeParent.empty()?"null":C::Quote(n.NativeParent)},
             {"local_transform",n.InputsValid?A::Json(n.Local):"null"},
             {"effective_root_relative_transform",transform.Status=="verified"?A::Json(transform.Effective):"null"},
@@ -312,8 +338,8 @@ MiniMapSpriteValidation::Result GenericAudit()
     }
     out.Nodes=AuditNodes.size();out.UniqueMeshes=meshes.size();out.Inherited=GenericInherited;out.Child=GenericChild;
     out.Transforms&=sourceValid;out.Materials&=sourceValid;
-    out.Truncated=Truncated||Invalid||Graph.Truncated||Work.Exhausted||AuditTruncated||AuditCollectionTruncated||
-        records.Truncated||nativeRecords.Truncated||Sources.Truncated||Components.Truncated||Mass.Truncated||Relationships.Truncated||Candidates.Truncated;
+    out.Truncated=Truncated||Invalid||Graph.Truncated||Work.Exhausted||AuditTruncated||AuditCollectionTruncated;
+    out.DiagnosticTruncated=DiagnosticTruncated||records.Truncated||nativeRecords.Truncated||Sources.Truncated||Components.Truncated||Mass.Truncated||Relationships.Truncated||Candidates.Truncated;
     std::string scsStatus="not_blueprint_class";
     if(Is(AuditClass,Blueprint,0x360))
     {
@@ -342,12 +368,13 @@ MiniMapSpriteValidation::Result GenericAudit()
         {"classification",C::Quote("unknown")},{"live_actor_equivalence",C::Quote("not_established")},
         {"customization_application",C::Quote("copied tint key only; not applied to template materials")},
         {"source_retention_for_future_capture",C::Quote("not_attempted; all audit roots released synchronously")}});
-    if(out.Details.size()>V::DetailLimit){out.Details="{\"truncated\":true}";out.Truncated=true;}
+    out.DiagnosticTruncated|=Candidates.String().size()>=2048;
+    V::BoundDiagnosticDetails(out);
     out.Status=V::Classify(out,Record.HasSpline);
     if(mixedNative||authoredMainMeshUnresolved)out.Status=V::Outcome::Conditional;
     out.Reason=authoredMainMeshUnresolved?"authored_class_main_mesh_unresolved; connector_templates_cannot_certify_building_body":mixedNative?"native_and_scs_static_routes_both_present; additive_equivalence_unverified":out.Status==V::Outcome::Eligible?"bounded_selected_class_authored_static_inputs; future_capture_retention_and_lifecycle_gate_required":
         Record.HasSpline?"instance_specific_spline_geometry":!out.Static?"no_selected_scs_static_meshes; native_only_or_skeletal_or_procedural_path_unsupported":
-        out.Truncated?"bounded_traversal_or_output_incomplete":!out.Root?"native_root_unavailable":
+        out.Truncated?"bounded_operational_evidence_incomplete":!out.Root?"native_root_unavailable":
         out.Inherited?"inherited_component_selection_unverified":out.Child?"child_actor_contributions_not_composed":
         out.OtherSkinned?"other_skinned_component_not_audited":out.DerivedStatic?"derived_static_component_extra_geometry_semantics_unverified":
         !out.Transforms?"attachment_socket_absolute_or_transform_unresolved":"stored_material_inputs_incomplete";
@@ -383,6 +410,64 @@ MiniMapSpriteValidation::Result GenericAudit()
             (unsigned long long)Record.Generation,BlueprintIdentity.Path->c_str(),int(nativeBodySelected&&out.Materials&&out.Transforms&&!out.Truncated),int(out.Materials),int(out.Transforms),
             omittedHidden,omittedNull,duplicates,unresolvedVisible,int(GenericInherited),V::Label(out.Status),out.Route.c_str(),out.Reason.c_str());
     }
+    if(CaptureRequested&&out.Status==V::Outcome::Conditional&&!Record.HasSpline)
+    {
+        recipe.Complete=!out.Truncated;
+        // A missing native main body leaves visual completeness unverified.
+        // Independently verified SCS members still use the existing subset safety checks.
+        subsetSelected=V::ValidateSupportedSubset(out,recipe,
+            sourceValid&&!StaticObservationOverflow,subset);
+        if(subsetSelected)
+        {
+            out.Route="supported_static_subset";
+            out.Reason="verified_static_subset; omitted_contributions_visual_completeness_unverified";
+            // This describes deliberate selection separately from traversal loss.
+            out.Details=C::Object({
+                {"bounded_audit",out.Details},
+                {"supported_static_subset",C::Object({
+                    {"included",std::to_string(recipe.Count)},
+                    {"omitted_derived",std::to_string(omittedDerived)},
+                    {"omitted_distinct_native_route",std::to_string(omittedNative)},
+                    {"omitted_unverified_or_nondrawable_inputs",std::to_string(subset.Omitted)},
+                    {"exact_equivalent_duplicates",std::to_string(subset.Duplicates)},
+                    {"visual_completeness_verified","false"}
+                })}
+            });
+            V::BoundDiagnosticDetails(out);
+        }
+    }
+    // Lifetime extends through the synchronous offer, which independently retains
+    // every included asset. Never borrow roots from an exhausted SCS audit scope.
+    std::unique_ptr<Context> independentNative;
+    bool nativeSubsetSelected=false;
+    if(CaptureRequested&&out.Status==V::Outcome::Conditional&&!Record.HasSpline&&
+        ProbeResult.DefinitionIdentity=="valid"&&!ProbeResult.Truncated&&!ProbeResult.Incomplete)
+    {
+        independentNative=std::make_unique<Context>();auto& d=*independentNative;
+        d.Metrics=Metrics;d.Class=Class;d.Actor=Actor;d.Scene=Scene;d.StaticComponent=StaticComponent;
+        d.StaticMesh=StaticMesh;d.Material=Material;d.FullTraversal=true;d.AuditActive=true;
+        MiniMapStaticAssembly::Recipe nativeRecipe;const char* failure=nullptr;
+        const bool nativeVerified=d.AuditIndependentNativeMain(AuditClass,Record.Generation,recipe.HighDetail,nativeRecipe,failure);
+        const bool visualTraversalIncomplete=out.Truncated;
+        nativeSubsetSelected=nativeVerified&&V::ValidateIndependentNativeSubset(out,nativeRecipe,true);
+        if(nativeSubsetSelected)
+        {
+            recipe=std::move(nativeRecipe);
+            out.Route="independent_native_main_static_subset";
+            out.Reason="verified_native_main_only; omitted_scs_and_other_contributions_visual_completeness_unverified";
+        }
+        out.Details=C::Object({
+            {"bounded_visual_audit",out.Details},
+            {"independent_native_main",C::Object({
+                {"selected",C::Bool(nativeSubsetSelected)},
+                {"included_members",nativeSubsetSelected?"1":"0"},
+                {"omitted_visual_traversal_incomplete",C::Bool(visualTraversalIncomplete)},
+                {"failure",failure?C::Quote(failure):"null"},
+                {"visual_completeness_verified","false"}
+            })}
+        });
+        out.DiagnosticTruncated|=d.DiagnosticTruncated;V::BoundDiagnosticDetails(out);
+    }
     if(CaptureRequested&&!skeletalAdmission.Node.empty()&&!skeletalAdmissionReported)
     {
         skeletalAdmissionReported=true;const auto& d=skeletalAdmission;
@@ -402,6 +487,13 @@ MiniMapSpriteValidation::Result GenericAudit()
             skeletalSummaryReports,(unsigned long long)Record.Generation,Record.BuildingId,out.Skeletal,int(recipe.SkeletalTest.Present),V::Label(out.Status),out.Reason.c_str());
     }
 #if defined(MINIMAP_BUILDING_SPRITES)
+    // Read-only audit fence, also for ValidateRepresentation (CaptureRequested=false).
+    // The scheduler commits it only after completed-result and exact-source checks.
+    if(out.Status==V::Outcome::Eligible&&out.Disposition==V::AuditDisposition::Completed)
+    {
+        const auto auditSource=MiniMapBuildingSprites::InspectDispatch(MiniMapSpriteCandidates::Copy(Record).Identity,{});
+        if(auditSource.Current&&auditSource.KeyAdopted)out.AuditRendererRevision=auditSource.SourceRevision;
+    }
     if(CaptureRequested&&out.Status==V::Outcome::Eligible)
     {
         recipe.Complete=!out.Truncated;
@@ -410,7 +502,8 @@ MiniMapSpriteValidation::Result GenericAudit()
         candidate.CanonicalBlueprint=BlueprintIdentity.Path;
         candidate.Classification=Classification.CachedPolicy;
         candidate.ClassificationObserved=Classification.Fixed&&Classification.Subclass&&!Classification.Truncated&&Classification.InteriorTag!="unknown";
-        candidate.RepresentationVerified=out.Root&&out.Transforms&&out.Materials&&!out.Inherited&&!out.Child&&!out.DerivedStatic&&!out.OtherSkinned;
+        candidate.RepresentationVerified=nativeSubsetSelected||subsetSelected||
+            (out.Root&&out.Transforms&&out.Materials&&!out.Inherited&&!out.Child&&!out.DerivedStatic&&!out.OtherSkinned);
         candidate.Truncated=out.Truncated||Classification.Truncated;
         candidate.ActorObject=Value<int32_t>(AuditClass,0xc);const auto name=Value<Name>(AuditClass,0x18);
         candidate.ActorName=name.Index;candidate.ActorNumber=name.Number;
@@ -418,12 +511,14 @@ MiniMapSpriteValidation::Result GenericAudit()
         // An unresolved identity preserves the existing session-only capture path.
         if(candidate.CanonicalBlueprint&&IsBlueprintBlacklisted(*candidate.CanonicalBlueprint))
         {out.Status=V::Outcome::Unsupported;out.Reason="blueprint_blacklisted";return out;}
+        V::ValidateStaticRecipe(out,recipe);
+        if(out.Status!=V::Outcome::Eligible)return out; // Same recipe authority, no offer/lease/GPU work.
         // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY: validation stays capture-grade.
         if(!DeferCapture)
         {
             const auto decision=MiniMapSmelterCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
-            out.Reason=decision.Reason;
-            if(!decision.Allowed())out.Status=V::Outcome::Conditional;
+            out.RecordHandoff(decision);out.Reason=decision.Reason;
+            if(out.Disposition==V::AuditDisposition::Completed&&!decision.Allowed())out.Status=V::Outcome::Conditional;
         }
     }
 #endif

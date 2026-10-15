@@ -224,6 +224,21 @@ namespace MiniMapBuildingSpriteCore
         for(int y=int(b);y<=int(d);++y)for(int x=int(a);x<=int(c);++x)if(!read(x,y))return false;
         return true;
     }
+    // A sufficient opacity proof for the overlay's coarse cells. Unknown samples,
+    // native interpolation edges and local awareness must all remain drawable.
+    template<class Read> bool OpaqueFogCell(int x,int y,bool localFeather,Read read)
+    {
+        if(localFeather)return false;
+        for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)
+        {uint8_t value=0;if(!read(x+dx,y+dy,value)||value!=0)return false;}
+        return true;
+    }
+    template<class Opaque> bool FullyObscured(double minX,double minY,double maxX,double maxY,
+        double pivotX,double pivotY,double scale,int logical,size_t limit,Opaque opaque)
+    {
+        // Reuse the bounded inclusive cell walk; false means opacity was not proven.
+        return Revealed(minX,minY,maxX,maxY,pivotX,pivotY,scale,logical,limit,opaque);
+    }
     // PNG camera right=+X, up=-Y, hence image top-left is local (-X,-Y).
     // Only upright, positive-scale instances can reuse this reference projection.
     inline bool Quad(const std::array<double,3>& position,const std::array<double,4>& q,

@@ -5,6 +5,9 @@
 #include "SpriteCandidateIdentity.h"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
 #include "SpriteValidationCore.h"
+#if defined(MINIMAP_BUILDING_SPRITES)
+#include "CaptureFifoRuntimeCore.h"
+#endif
 #include "BuildingRepresentation.h"
 #endif
 #include "plugin.h"
@@ -105,6 +108,9 @@ namespace MiniMapSpriteDiscovery
             bool ConsumerBlockedReported=false,SourceFailureReported=false;
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             MiniMapSpriteValidation::Scheduler<B::Snapshot> Validation;
+#if defined(MINIMAP_BUILDING_SPRITES)
+            MiniMapCaptureFifoRuntime::Runtime<B::Snapshot> Fifo;
+#endif
             double NextValidationExport{};
             double NextPipelineExport{};
 #endif
@@ -127,6 +133,9 @@ namespace MiniMapSpriteDiscovery
 #endif
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             owner->Validation.Clear();owner->NextValidationExport=0;
+#if defined(MINIMAP_BUILDING_SPRITES)
+            if constexpr(MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled)owner->Fifo.CancelGeneration(0);
+#endif
 #endif
         }
         C::Input CopiedRecord(const B::Record& r)
@@ -134,16 +143,16 @@ namespace MiniMapSpriteDiscovery
             return MiniMapSpriteCandidates::Copy(r);
         }
 #if defined(MINIMAP_BUILDING_SPRITES)
-        MiniMapSpriteValidation::Result ProcessCandidate(const B::Record& record,const B::Record* alternate)
+        MiniMapSpriteValidation::Result ProcessCandidateImpl(const B::Record& record,const B::Record* alternate,bool auditOnly)
         {
             namespace P=MiniMapBuildingSpriteCore;namespace V=MiniMapSpriteValidation;
             const auto key=CopiedRecord(record).Identity;
             MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryCandidate);
             const auto start=Clock::now();
-            auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate);
+            auto out=MiniMapBuildingRepresentation::ValidateAndCapture(record,alternate,auditOnly);
             // Partial observations cannot exclude or otherwise mutate renderer
             // policy. Already-admitted native work retains its exact ownership.
-            if(out.Disposition==V::AuditDisposition::Interrupted)return out;
+            if(out.Disposition!=V::AuditDisposition::Completed)return out;
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
             LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous audit duration, not a two-ms bounded unit",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
@@ -161,12 +170,34 @@ namespace MiniMapSpriteDiscovery
                 "; skeletal_omitted="+std::to_string(out.Skeletal)+"; "+out.Reason);
             return out;
         }
+        MiniMapSpriteValidation::Result ProcessCandidate(const B::Record& record,const B::Record* alternate)
+        {return ProcessCandidateImpl(record,alternate,false);}
+        struct FifoHooks
+        {
+            decltype(&CopiedRecord) Copy=&CopiedRecord;
+            auto Renderer(const C::Key& key,const std::shared_ptr<const C::Registry>& root){return MiniMapBuildingSprites::InspectDispatch(key,root);}
+            auto Owner(){return MiniMapSmelterCapture::ObserveNativeOwner();}
+            auto Audit(const B::Record& a,const B::Record* b){return ProcessCandidateImpl(a,b,true);}
+            auto Handoff(const B::Record& a,const B::Record* b){return ProcessCandidate(a,b);}
+            auto Arm(const MiniMapCaptureDispatch::OwnerObservation& before,const C::Key& key){return MiniMapSmelterCapture::ArmRetirementObservation(before,key);}
+            auto Reconcile(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapSmelterCapture::ReconcileRetirementObservation(ticket);}
+            auto Observe(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::ObserveRetirement(ticket);}
+            bool Acknowledge(const MiniMapCaptureLeases::ObservationTicket& ticket,const MiniMapCaptureLeases::Token& lease)noexcept{return MiniMapBuildingSprites::AcknowledgeRetirement(ticket,lease);}
+            bool CancelObservation(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::CancelUnadmittedObservation(ticket);}
+            void AuditFinished(const C::Key& key,double source){MiniMapBuildingSprites::FinishReevaluation(key,source);}
+        };
 #endif
         void Tick(float)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::DiscoveryTick,true);
 #if defined(MINIMAP_BUILDING_SPRITES)
         MiniMapBuildingSprites::ServiceMaintenance();
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
+        if(owner&&MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled){
+            FifoHooks hooks;owner->Fifo.Reconcile(hooks);
+            owner->Fifo.Work.MaintainRetired(0.25,4);
+        }
+#endif
 #endif
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
         MiniMapBuildingRepresentation::ServiceIdentityMaintenance();
@@ -222,7 +253,11 @@ namespace MiniMapSpriteDiscovery
             }
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             auto& v=owner->Validation;
-            if(result==C::Publication::Invalidated){v.Clear();owner->NextValidationExport=0;}
+            if(result==C::Publication::Invalidated){v.Clear();owner->NextValidationExport=0;
+#if defined(MINIMAP_BUILDING_SPRITES)
+                if constexpr(MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled)owner->Fifo.CancelGeneration(0);
+#endif
+            }
             // Request incremental adoption of every complete publication.
             if(result==C::Publication::Ready)v.Observe(publication,source?source->Generation:0);
             v.MaintainRetired(16,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
@@ -249,16 +284,38 @@ namespace MiniMapSpriteDiscovery
                 owner->ConsumersReady=MiniMapBuildingSprites::ServiceInitialization(
                     (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
             }
-            const bool anchorsReady=compatible&&validationCurrent&&rendererCurrent&&owner->ConsumersReady&&[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
-            if(anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapSmelterCapture::CanAcceptCandidate())
+            const bool anchorsReady=!MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled&&compatible&&validationCurrent&&rendererCurrent&&owner->ConsumersReady&&[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
+            constexpr bool fifoEnabled=MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled;
+            if(!fifoEnabled&&anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapSmelterCapture::CanAcceptCandidate())
             {
                 C::Key key;
                 if(MiniMapBuildingSprites::TakeReadinessReevaluation(key,&MiniMapSmelterCapture::HasResourceWatchCapacity)&&v.Complete())
                     MiniMapBuildingSprites::AcknowledgeReevaluation(key,v.RequestReevaluation(key));
             }
-            const bool changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
+            bool changed=false;
+            if constexpr(fifoEnabled)
+            {
+                if(compatible&&MiniMapMap::HasWorld()&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0)
+                {
+                    FifoHooks hooks;
+                    try{
+                        C::Key wake;
+                        if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapSmelterCapture::HasResourceWatchCapacity)){
+                            const auto work=owner->Fifo.Work.Inspect(wake);
+                            const bool idle=work&&work->Status!=MiniMapCaptureWork::State::Considering&&
+                                work->Status!=MiniMapCaptureWork::State::NativeAdmitted&&work->Status!=MiniMapCaptureWork::State::Uncertain;
+                            const bool accepted=idle&&v.RequestExactReevaluation(wake,publication);
+                            if(accepted){owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Advancement);owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Source);}
+                            MiniMapBuildingSprites::AcknowledgeReevaluation(wake,accepted);
+                        }
+                        if(MiniMapBuildingRepresentation::PrepareNativeClasses())changed=owner->Fifo.Service(v,source,hooks,
+                            (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
+                    }catch(...){if(owner->Fifo.Failures++==0)LOG_WARN("MiniMap: FIFO CPU service interrupted; existing native observation retained; admission deferred");}
+                }
+            }
+            else changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
                 v.Service(registry,source,&CopiedRecord,&ProcessCandidate,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
-            if(changed)MiniMapBuildingSprites::FinishReevaluation(v.LastCompletedKey,v.SourcePublication);
+            if(changed&&!fifoEnabled)MiniMapBuildingSprites::FinishReevaluation(v.LastCompletedKey,v.SourcePublication);
             if(now>=owner->NextPipelineExport)
             {owner->Dirty|=8;owner->NextPipelineExport=now+5;}
 #else
@@ -320,6 +377,25 @@ namespace MiniMapSpriteDiscovery
 #endif
         }
     }
+#if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION) && defined(MINIMAP_BUILDING_SPRITES)
+    MiniMapCaptureDispatch::Readiness QueryDispatchReadiness(const C::Key& key,MiniMapCaptureWork::Revision expected) noexcept
+    {
+        try{
+            const auto native=MiniMapSmelterCapture::ObserveNativeOwner();
+            if(!native.QueryAllowed)return {};
+            if(!owner)return {MiniMapCaptureDispatch::State::Cancelled,MiniMapCaptureDispatch::Reason::Generation};
+            // Scheduling-thread CPU borrow: no native callbacks or ownership escape during this query.
+            const auto source=B::GetSnapshot();
+            if(!source||!source->Complete)return {};
+            if(key.Generation!=source->Generation||owner->Validation.Generation!=key.Generation)
+                return {MiniMapCaptureDispatch::State::Cancelled,MiniMapCaptureDispatch::Reason::Generation};
+            if(!MiniMapMap::GameplayReady())return {};
+            const auto latest=owner->Published;
+            const auto renderer=MiniMapBuildingSprites::InspectDispatch(key,latest);
+            return MiniMapCaptureDispatch::Query(owner->Validation,latest,key,expected,renderer,source->Generation,source->PublishedAtSeconds,native.Available);
+        }catch(...){return {};}
+    }
+#endif
     void Initialize()
     {
         auto* self=GetSelf();if(owner||!self||!self->hooks||!self->hooks->Engine||!self->hooks->World)return;

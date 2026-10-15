@@ -2,7 +2,6 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
-#include "Config/Config.h"
 #include "Map/Sprites/BuildingSprites.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
@@ -303,7 +302,7 @@ namespace MiniMapBuildingVisuals
         auto spriteFrame=MiniMapBuildingSprites::BeginDraw();
 #endif
         auto first=snapshot->DrawOrder.begin();
-        if(!MiniMapConfig::IsSplineRenderingEnabled())
+        if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)
             // DrawKey sorts splines first. Skip the entire spline layer,
             // including unresolved markers, without per-segment checks.
             first=std::partition_point(first,snapshot->DrawOrder.end(),[&](size_t index)

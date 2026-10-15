@@ -37,6 +37,7 @@ namespace MiniMapRendererReadiness
         size_t UniqueMeshes{};
         std::array<ObservationTask,16> Tasks{};
         size_t TaskCount{};
+        bool VisualIncomplete=false;
         const char* Reason="renderer_readiness_unknown";
     };
     // GT only, caller holds independent strong references to every recipe asset.

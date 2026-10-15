@@ -122,7 +122,7 @@ namespace MiniMapBuildingSprites
         {
             const char* labels[]={"calls","no_ready_view","generation_mismatch","invalid_candidate_inputs",
                 "lookup_attempts","lookup_misses","lookup_matches","invalid_instance_transform",
-                "quad_validation_failure","projection_failure","viewport_rejection","budget_rejection",
+                "quad_validation_failure","projection_failure","viewport_rejection",
                 "fog_of_war_rejection","invalid_texture_handle","image_quad_submissions"};
             return size_t(reason)<size_t(DrawCounter::Count)?labels[size_t(reason)]:"none";
         }
@@ -204,6 +204,30 @@ namespace MiniMapBuildingSprites
     }
     bool ReturnLease(const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::RetirementReceipt& receipt) noexcept
     {try{AccessLock lock;return leases.Return(token,receipt);}catch(...){return false;}}
+    MiniMapCaptureDispatch::RendererEvidence InspectDispatch(const MiniMapSpriteDiscoveryCore::Key& key,
+        const std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>& latest) noexcept
+    {
+        try{
+            // Raw lock: observational queries must not FlushDemand or mutate policy.
+            std::scoped_lock lock(access);MiniMapCaptureDispatch::RendererEvidence out;
+            if(owner)out=owner->Jobs.InspectDispatch(key,latest);
+            out.LeaseHeld=leases.ActiveCount()!=0;return out;
+        }catch(...){return {};}
+    }
+    MiniMapCaptureLeases::Inspection InspectLease(const MiniMapCaptureLeases::Token& token) noexcept
+    {try{std::scoped_lock lock(access);return leases.Inspect(token);}catch(...){return MiniMapCaptureLeases::Inspection::Unknown;}}
+    MiniMapCaptureLeases::Snapshot ObserveLeases() noexcept
+    {try{std::scoped_lock lock(access);return leases.Observe();}catch(...){return {};}}
+    MiniMapCaptureLeases::ArmResult ArmRetirementObservation(const MiniMapCaptureLeases::Snapshot& before,const MiniMapSpriteDiscoveryCore::Key& key) noexcept
+    {try{std::scoped_lock lock(access);return leases.ArmRetirement(before,key);}catch(...){return {};}}
+    void SealRetirementObservation(const MiniMapCaptureLeases::ObservationTicket& ticket) noexcept
+    {try{std::scoped_lock lock(access);leases.SealObservation(ticket);}catch(...){/* Unsealed evidence stays quarantined by the guarded reconciliation contract. */}}
+    MiniMapCaptureLeases::RetirementObservation ObserveRetirement(const MiniMapCaptureLeases::ObservationTicket& ticket) noexcept
+    {try{std::scoped_lock lock(access);return leases.ObserveRetirement(ticket);}catch(...){return {};}}
+    bool AcknowledgeRetirement(const MiniMapCaptureLeases::ObservationTicket& ticket,const MiniMapCaptureLeases::Token& token) noexcept
+    {try{std::scoped_lock lock(access);return leases.AcknowledgeRetirement(ticket,token);}catch(...){return false;}}
+    bool CancelUnadmittedObservation(const MiniMapCaptureLeases::ObservationTicket& ticket) noexcept
+    {try{std::scoped_lock lock(access);return leases.CancelUnadmittedObservation(ticket);}catch(...){return false;}}
     size_t ActiveLeaseCount(){AccessLock lock;return leases.ActiveCount();}
     bool AcquireObservationLease(const MiniMapSpriteDiscoveryCore::Key& key,uint64_t sourceRevision,MiniMapCaptureLeases::Token& token)
     {
@@ -586,9 +610,9 @@ namespace MiniMapBuildingSprites
             ++owner->DiagnosticFrames>=reportFrames[owner->DiagnosticReports])
         {
             ++owner->DiagnosticReports;const auto& c=owner->DrawCounts;
-            LOG_INFO("MiniMap: sprite draw counters: generation=%llu framesAfterPublication=%zu ready=%zu calls=%zu noReadyView=%zu generationMismatch=%zu invalidInputs=%zu lookupAttempts=%zu lookupMisses=%zu lookupMatches=%zu invalidTransforms=%zu quadFailures=%zu projectionFailures=%zu viewportRejections=%zu budgetRejections=%zu fogRejections=%zu invalidHandles=%zu submissions=%zu sampledBackendHandleChecks=%zu sampledBackendInvalidHandles=%zu",
+            LOG_INFO("MiniMap: sprite draw counters: generation=%llu framesAfterPublication=%zu ready=%zu calls=%zu noReadyView=%zu generationMismatch=%zu invalidInputs=%zu lookupAttempts=%zu lookupMisses=%zu lookupMatches=%zu invalidTransforms=%zu quadFailures=%zu projectionFailures=%zu viewportRejections=%zu fogRejections=%zu invalidHandles=%zu submissions=%zu sampledBackendHandleChecks=%zu sampledBackendInvalidHandles=%zu",
                 (unsigned long long)frame.Generation,owner->DiagnosticFrames,owner->Jobs.SelectedCount,
-                c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11],c[12],c[13],c[14],owner->SampledHandleChecks,owner->SampledInvalidHandles);
+                c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11],c[12],c[13],owner->SampledHandleChecks,owner->SampledInvalidHandles);
         }
     }
     bool Draw(DrawFrame& frame,IModLoaderImGui* ui,PluginDrawList dl,const MiniMapMap::Transform& transform,const MiniMapBuildingCollector::Record& record)
@@ -631,8 +655,8 @@ namespace MiniMapBuildingSprites
         {count(DrawCounter::InvalidTransform);sample(DrawCounter::InvalidTransform,texture.get());return false;}
         if(!P::Quad(record.Position,record.Rotation,record.Scale,texture->Bounds,quad,texture->Region))
         {count(DrawCounter::QuadFailure);sample(DrawCounter::QuadFailure,texture.get());return false;}
-        // Require every FOW cell intersecting the entire sprite AABB revealed.
-        // Fails closed at the mask-read budget; no geometry leaks through holes.
+        // Cull only proven opaque coverage; partial/unknown fog stays drawable
+        // beneath the overlay, including the local-awareness feather.
         std::array<MiniMapMap::ScreenPoint,4> p;
         for(size_t i=0;i<4;++i)if(!transform.WorldToScreen(quad[i][0],quad[i][1],p[i]))
         {count(DrawCounter::ProjectionFailure);sample(DrawCounter::ProjectionFailure,texture.get(),&quad);return false;}
@@ -641,11 +665,9 @@ namespace MiniMapBuildingSprites
         if(ex<transform.CenterX-transform.Width/2||sx>transform.CenterX+transform.Width/2||
             ey<transform.CenterY-transform.Height/2||sy>transform.CenterY+transform.Height/2)
         {count(DrawCounter::ViewportRejection);sample(DrawCounter::ViewportRejection,texture.get(),&quad,&p);return false;}
-        if(!frame.Budget)
-        {count(DrawCounter::BudgetRejection);sample(DrawCounter::BudgetRejection,texture.get(),&quad,&p);return false;}--frame.Budget;
         double minX=quad[0][0],minY=quad[0][1],maxX=minX,maxY=minY;
         for(const auto& v:quad){minX=(std::min)(minX,v[0]);minY=(std::min)(minY,v[1]);maxX=(std::max)(maxX,v[0]);maxY=(std::max)(maxY,v[1]);}
-        if(!MiniMapFogOfWar::IsNativeWorldRectangleRevealed(minX,minY,maxX,maxY))
+        if(MiniMapFogOfWar::IsWorldRectangleFullyObscured(minX,minY,maxX,maxY,transform))
         {count(DrawCounter::FogRejection);sample(DrawCounter::FogRejection,texture.get(),&quad,&p);return false;}
         ui->DL_AddImageQuad(dl,texture->Handle,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,p[3].X,p[3].Y,0,0,1,0,1,1,0,1,0xffffffff);
         if(frame.Spatial&&frame.Spatial->Count<frame.Spatial->Entries.size())

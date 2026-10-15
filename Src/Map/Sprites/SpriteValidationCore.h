@@ -1,8 +1,10 @@
 #pragma once
 #include "SpriteDiscoveryCore.h"
 #include "SpriteClassificationCore.h"
+#include "SpriteCaptureCore.h"
 #include <type_traits>
 #include <stdexcept>
+#include <atomic>
 
 namespace MiniMapSpriteValidation
 {
@@ -10,7 +12,10 @@ namespace MiniMapSpriteValidation
     namespace J=MiniMapRepresentationCore;
     inline constexpr size_t DetailLimit=16384,OutputLimit=256*1024;
     enum class Outcome { Eligible,Conditional,Unsupported,NoResident,Invalid };
-    enum class AuditDisposition { Completed,Interrupted };
+    enum class AuditDisposition { Completed,Deferred,Interrupted };
+    enum class AuditWait { None,SourceUnavailable,NativeOwnerBusy,NativePrerequisites };
+    inline const char* DispositionLabel(AuditDisposition d,bool done)
+    {return d==AuditDisposition::Interrupted?"interrupted":d==AuditDisposition::Deferred?"deferred":done?"completed":"pending";}
     inline const char* Label(Outcome o)
     {switch(o){case Outcome::Eligible:return "generic_static_template_eligible";case Outcome::Conditional:return "conditional";
     case Outcome::Unsupported:return "unsupported_current_method";case Outcome::NoResident:return "no_validated_resident_representation";default:return "invalid_or_stale";}}
@@ -19,15 +24,52 @@ namespace MiniMapSpriteValidation
         MiniMapSpriteClassification::Observation Classification;
         Outcome Status=Outcome::Invalid;
         AuditDisposition Disposition=AuditDisposition::Completed;
+        AuditWait Wait=AuditWait::None;
+        MiniMapSpriteCapture::Decision Handoff;
+        MiniMapStaticAssembly::RecipeValidation RecipeCheck;
+        // Observed before any offer; zero is a valid initial renderer revision, not an invented source.
+        std::optional<uint64_t> AuditRendererRevision;
         std::string Reason="not_attempted",Route="none",High="not_examined",Low="not_examined",Mass="not_examined",
             Config="not_examined",AuthoredClass="not_examined",Selected="null",Details="{}",Inspection="{}",Profile="{}",
             CookedGeometry="{\"status\":\"not_attempted\"}",SkeletalMetadata="{\"status\":\"not_attempted\"}";
         size_t Static{},UniqueMeshes{},Skeletal{},Scene{},NonScene{},Nodes{},MaterialSlots{},OverrideSlots{},
             IdentityVisits{},GraphVisits{},AuditVisits{},Probes{};
         bool Root=false,Transforms=false,Materials=false,Resident=false,Truncated=false,Inherited=false,Child=false,OtherSkinned=false,DerivedStatic=false;
+        // Truncated describes operational evidence only; output caps never veto a recipe.
+        bool DiagnosticTruncated=false;
+        void MarkDeferred(AuditWait wait)noexcept{Disposition=AuditDisposition::Deferred;Wait=wait;Status=Outcome::Invalid;}
         // Allocation-free even when the operational failure is bad_alloc.
-        void MarkInterrupted()noexcept{Disposition=AuditDisposition::Interrupted;Status=Outcome::Invalid;}
+        // A thrown adapter may have crossed native commitment before returning.
+        // Uncertain is not permission to replay; the native owner remains authoritative.
+        void MarkInterrupted()noexcept{Disposition=AuditDisposition::Interrupted;Wait=AuditWait::None;Status=Outcome::Invalid;
+            if(Handoff.Handoff!=MiniMapSpriteCapture::HandoffOutcome::Admitted)Handoff.Handoff=MiniMapSpriteCapture::HandoffOutcome::Uncertain;}
+        void RecordHandoff(const MiniMapSpriteCapture::Decision& decision)noexcept
+        {Handoff=decision;if(decision.Why==MiniMapSpriteCapture::Cause::RecipeInvalid)RecipeCheck=decision.RecipeCheck;
+            if(decision.Why==MiniMapSpriteCapture::Cause::OperationalException)MarkInterrupted();}
     };
+    inline void ValidateStaticRecipe(Result& result,const MiniMapStaticAssembly::Recipe& recipe)
+    {
+        MiniMapStaticAssembly::Footprint bounds;result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
+        if(const auto* reason=MiniMapStaticAssembly::Label(result.RecipeCheck.Failure))
+        {result.Status=Outcome::Conditional;result.Reason=reason;}
+    }
+    inline void BoundDiagnosticDetails(Result& r)
+    {if(r.Details.size()>DetailLimit){r.Details="{\"truncated\":true}";r.DiagnosticTruncated=true;}}
+    inline bool ValidateSupportedSubset(Result& result,MiniMapStaticAssembly::Recipe& recipe,bool sourceVerified,
+        MiniMapStaticAssembly::SubsetSelection& selection)
+    {
+        // Unknown inherited selection, traversal bounds and source identity still
+        // block. A socket failure on an omitted sibling is not a fabricated transform.
+        if(!sourceVerified||result.Disposition!=AuditDisposition::Completed||!result.Resident||!result.Root||result.Truncated||result.Inherited||result.Child||
+            result.Skeletal||result.OtherSkinned)return false;
+        selection=MiniMapStaticAssembly::SelectSupportedSubset(recipe);
+        if(selection.Conflict)return false;
+        MiniMapStaticAssembly::Footprint bounds;
+        result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
+        if(result.RecipeCheck.Failure!=MiniMapStaticAssembly::RecipeFailure::None)return false;
+        recipe.VisualIncomplete=true;result.Status=Outcome::Eligible;
+        return true;
+    }
     inline Outcome Classify(const Result& r,bool spline)
     {
         if(spline)return Outcome::Unsupported;
@@ -36,14 +78,42 @@ namespace MiniMapSpriteValidation
         if(r.Truncated||!r.Root||!r.Transforms||!r.Materials||r.Inherited||r.Child||r.OtherSkinned||r.DerivedStatic)return Outcome::Conditional;
         return Outcome::Eligible;
     }
+    inline bool ValidateIndependentNativeSubset(Result& result,const MiniMapStaticAssembly::Recipe& recipe,bool sourceVerified)
+    {
+        // The caller supplies an independently rooted, fully validated native
+        // recipe. Full SCS traversal/inheritance flags describe omitted visuals.
+        if(!sourceVerified||result.Disposition!=AuditDisposition::Completed||!result.Resident||
+            recipe.Count!=1||!recipe.General||!recipe.VisualIncomplete)return false;
+        MiniMapStaticAssembly::Footprint bounds;
+        result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
+        if(result.RecipeCheck.Failure!=MiniMapStaticAssembly::RecipeFailure::None)return false;
+        result.Root=result.Transforms=result.Materials=true;result.Truncated=false;result.Status=Outcome::Eligible;
+        return true;
+    }
+    struct AuditProvenance
+    {uint64_t Generation{},Serial{},Membership{};double SourcePublication{};std::optional<uint64_t> RendererRevision;};
     struct Attempt
     {
         D::Candidate Candidate;Result Validation;
+        std::optional<AuditProvenance> Provenance;
         std::array<size_t,2> Indices{};size_t InstanceCount{};
-        uint64_t MembershipEpoch{},RepresentativeEpoch{};
+        uint64_t MembershipEpoch{},RepresentativeEpoch{},AuditedMembershipEpoch{};
+        double AuditedSourcePublication{};
         double RecoveryPublication{};
+        uint64_t AuditSerial{};bool Auditing=false;
         bool Done=false,MissingRepresentative=false,RecoveryRequired=false;
     };
+    // Reusable FIFO preflight evidence, not current membership or native admission.
+    // The native handoff still rebuilds and validates the recipe. Explicit provider
+    // reevaluation clears Done/provenance; transport epochs do not rewrite this receipt.
+    inline bool ReusableEligibleEvidence(const Attempt& e,uint64_t generation)noexcept
+    {
+        const auto& p=e.Provenance;
+        return e.Done&&!e.RecoveryRequired&&e.Validation.Disposition==AuditDisposition::Completed&&
+            e.Validation.Status==Outcome::Eligible&&e.Candidate.Identity.Generation==generation&&p&&
+            p->Generation==generation&&p->Serial==e.AuditSerial&&p->Membership==e.AuditedMembershipEpoch&&
+            p->SourcePublication==e.AuditedSourcePublication&&std::isfinite(p->SourcePublication)&&p->RendererRevision.has_value();
+    }
     // Stable ordinal cells plus exact-key lookup, detached in O(1) on reset.
     // No native request ever owns an Attempt pointer.
     class AttemptStorage
@@ -57,6 +127,8 @@ namespace MiniMapSpriteValidation
         Attempt& operator[](size_t i){return Active->Cells.at(i);}
         const Attempt& operator[](size_t i)const{return Active->Cells.at(i);}
         Attempt* Find(const D::Key& key)
+        {if(!Active)return nullptr;auto it=Active->Index.find(key);return it==Active->Index.end()?nullptr:&Active->Cells.at(it->second);}
+        const Attempt* Find(const D::Key& key)const
         {if(!Active)return nullptr;auto it=Active->Index.find(key);return it==Active->Index.end()?nullptr:&Active->Cells.at(it->second);}
         Attempt& Insert(const D::Candidate& candidate)
         {
@@ -87,13 +159,30 @@ namespace MiniMapSpriteValidation
         }
         ~AttemptStorage(){Retire();while(Maintain(16,(std::numeric_limits<double>::max)())){}} // Final shutdown only.
     };
+    inline std::atomic<uint64_t> NextExactOwner{};
+    inline uint64_t AllocateExactOwner()noexcept
+    {auto value=NextExactOwner.load();while(value!=UINT64_MAX)if(NextExactOwner.compare_exchange_weak(value,value+1))return value+1;return 0;}
+    enum class ExactState { Completed,Deferred,Interrupted,Stale,Cancelled };
+    enum class ExactReason { None,Generation,Publication,AdoptionPending,MissingKey,RecordChanged,AlreadyCompleted,
+        RecoveryPending,SourceUnavailable,SourceInUse,RepresentativePending,RepresentativeUnavailable,Busy,AllocationFailure,Budget,CounterExhausted,TicketChanged };
+    struct ExactServiceResult {ExactState Status=ExactState::Deferred;ExactReason Why=ExactReason::None;bool Invoked=false;};
     template<class Snapshot> struct Scheduler
     {
         AttemptStorage Entries;size_t Count{},Cursor{},CpuVisits{},NativeAudits{},LastCpuVisits{},QueueDeferred{};
         uint64_t Generation{};double SourcePublication{};
+        const uint64_t ExactOwner=AllocateExactOwner();
+        uint64_t ExactEpoch=1; // Never reset to an earlier epoch, including Clear/reuse of the same world key.
+
         bool Preparing=false,QueueTruncated=false,ScanTruncated=false;
         D::Key LastCompletedKey;std::shared_ptr<const Snapshot> Held;
         using RegistryPublication=std::shared_ptr<const D::Registry>;
+        struct ExactRequest
+        {
+            D::Key Key;RegistryPublication Registry;std::shared_ptr<const Snapshot> Source;
+            uint64_t Owner{},Epoch{},Membership{},RecordSerial{};double SourcePublication{};
+            bool RepresentativesOnly=false;
+        };
+        struct ExactPreparation {ExactServiceResult Result;std::optional<ExactRequest> Request;};
         // One pinned work plan, one latest target, one committed result view.
         // Supersession coalesces the target; it never restarts in-flight adoption.
         RegistryPublication PendingRegistry,AdoptedRegistry,LatestRegistry;
@@ -106,6 +195,7 @@ namespace MiniMapSpriteValidation
         size_t MaintainRetired(size_t limit=16,double budgetMs=2.0){return Entries.Maintain(limit,budgetMs);}
         void Clear()noexcept
         {
+            if(ExactEpoch)ExactEpoch=ExactEpoch==UINT64_MAX?0:ExactEpoch+1;
             Entries.Retire();Count=Cursor=CpuVisits=NativeAudits=LastCpuVisits=QueueDeferred=0;
             Generation=0;SourcePublication=0;Preparing=QueueTruncated=ScanTruncated=false;
             LastCompletedKey={};Held.reset();PendingRegistry.reset();AdoptedRegistry.reset();LatestRegistry.reset();
@@ -117,11 +207,50 @@ namespace MiniMapSpriteValidation
         bool ReadyFor(const D::Registry& r)const noexcept
         {return !Adopting&&!AdoptionBlocked&&AdoptedRegistry==LatestRegistry&&AdoptedRegistry.get()==&r&&r.Complete()&&Generation==r.Generation;}
         bool IsCurrent(const Attempt& e)const noexcept{return CurrentEpoch&&e.MembershipEpoch==CurrentEpoch;}
+        // FIFO-only acknowledgement: the record must have been visited in the
+        // exact latest plan, not merely retained from an older pinned plan.
+        uint64_t AdoptionEpoch(const D::Key& key,const RegistryPublication& registry)const noexcept
+        {
+            if(AdoptionBlocked||!registry||registry!=LatestRegistry||!registry->Complete()||registry->Generation!=Generation||key.Generation!=Generation||
+                registry->Index.find(key)==registry->Index.end())return 0;
+            const auto* e=Entries.Find(key);if(!e)return 0;
+            const auto epoch=Adopting?(PendingRegistry==registry?PendingEpoch:0):(AdoptedRegistry==registry?CurrentEpoch:0);
+            return epoch&&e->MembershipEpoch==epoch?epoch:0;
+        }
+        bool RequestExactReevaluation(const D::Key& key,const RegistryPublication& registry)
+        {
+            const auto epoch=AdoptionEpoch(key,registry);if(!epoch)return false;
+            auto* e=Entries.Find(key);if(e->Auditing||e->AuditSerial==UINT64_MAX)return false;
+            if(e->Done){auto& count=Adopting?AdoptionDone:CompletedCurrent;auto& outcomes=Adopting?AdoptionOutcomes:Outcomes;
+                if(!count||!outcomes[size_t(e->Validation.Status)])throw std::logic_error("validation completion counter underflow");
+                --count;--outcomes[size_t(e->Validation.Status)];e->Done=false;}
+            ++e->AuditSerial;e->Provenance.reset();e->RecoveryRequired=false;e->MissingRepresentative=false;
+            Held.reset();Preparing=false;WaitingForSource=false;return true;
+        }
+        bool RecordRecipeRejection(const D::Key& key,const RegistryPublication& registry,uint64_t serial,Result& rejection)
+        {
+            // Exact current audit + proven non-admission is checked by the caller.
+            // Retain the failed evidence, not a permanent negative cache: no existing
+            // provider necessarily observes the assignments that made it invalid.
+            if(!AdoptionEpoch(key,registry)||rejection.Disposition!=AuditDisposition::Completed||
+                rejection.Handoff.Handoff!=MiniMapSpriteCapture::HandoffOutcome::Rejected||
+                rejection.Handoff.Why!=MiniMapSpriteCapture::Cause::RecipeInvalid||
+                rejection.RecipeCheck.Failure==MiniMapStaticAssembly::RecipeFailure::None)return false;
+            auto* e=Entries.Find(key);
+            if(!e||!e->Done||e->Auditing||e->AuditSerial!=serial||e->Validation.Status!=Outcome::Eligible)return false;
+            auto& outcomes=Adopting?AdoptionOutcomes:Outcomes;
+            if(!outcomes[size_t(Outcome::Eligible)])throw std::logic_error("validation recipe rejection counter underflow");
+            --outcomes[size_t(Outcome::Eligible)];++outcomes[size_t(Outcome::Conditional)];
+            e->Validation.Status=Outcome::Conditional;e->Validation.RecipeCheck=rejection.RecipeCheck;
+            e->Validation.Handoff=rejection.Handoff;e->Validation.Reason.swap(rejection.Reason);return true;
+        }
         bool RequestReevaluation(const D::Key& key)
         {
             if(Adopting||AdoptionBlocked||!AdoptedRegistry||key.Generation!=Generation)return false;
-            auto* e=Entries.Find(key);if(!e||!IsCurrent(*e))return false;
+            auto* e=Entries.Find(key);if(!e||!IsCurrent(*e)||e->Auditing)return false;
+            if(e->AuditSerial==UINT64_MAX)return false;
             if(e->Done){if(!CompletedCurrent||!Outcomes[size_t(e->Validation.Status)])throw std::logic_error("validation completion counter underflow");--CompletedCurrent;--Outcomes[size_t(e->Validation.Status)];e->Done=false;}
+            ++e->AuditSerial;e->Provenance.reset();
             e->RecoveryRequired=false;e->MissingRepresentative=false;Held.reset();Preparing=false;WaitingForSource=false;return true;
         }
         bool BeginAdoption()
@@ -164,11 +293,83 @@ namespace MiniMapSpriteValidation
         }
         bool Complete()const{return !Adopting&&!AdoptionBlocked&&AdoptedRegistry&&AdoptedRegistry==LatestRegistry&&CompletedCurrent==AdoptedRegistry->Count;}
         size_t Processed()const{return CompletedCurrent;}
+        // Legacy entry point retains registry-order selection and the same scan/recovery authority.
         template<class Get,class Audit> bool Service(const D::Registry& registry,std::shared_ptr<const Snapshot> latest,Get get,Audit audit,double budgetMs=2.0)
+        {return ServiceImpl(registry,std::move(latest),std::move(get),std::move(audit),budgetMs);}
+        ExactPreparation PrepareExact(const D::Key& key,const RegistryPublication& registry,std::shared_ptr<const Snapshot> latest,bool representativesOnly=false)
+        {
+            if(!ExactOwner||!ExactEpoch||!Generation||key.Generation!=Generation)return {{ExactState::Cancelled,ExactReason::Generation},{}};
+            if(!registry||registry!=LatestRegistry||registry->Generation!=Generation||!registry->Complete())return {{ExactState::Stale,ExactReason::Publication},{}};
+            if(registry->Index.find(key)==registry->Index.end())return {{ExactState::Stale,ExactReason::MissingKey},{}};
+            const auto epoch=AdoptionEpoch(key,registry);
+            if(!epoch)return {{ExactState::Deferred,ExactReason::AdoptionPending},{}};
+            auto* entry=Entries.Find(key);
+            if(!entry||entry->MembershipEpoch!=epoch)return {{ExactState::Stale,ExactReason::RecordChanged},{}};
+            if(entry->Auditing)return {{ExactState::Deferred,ExactReason::Busy},{}};
+            if(representativesOnly&&!ReusableEligibleEvidence(*entry,Generation))return {{ExactState::Deferred,ExactReason::RecordChanged},{}};
+            if(entry->Done&&!representativesOnly){
+                if(entry->AuditedMembershipEpoch!=epoch||entry->AuditedSourcePublication<registry->PublicationSeconds)
+                    return {{ExactState::Stale,ExactReason::RecordChanged},{}};
+                return {{ExactState::Completed,ExactReason::AlreadyCompleted},{}};
+            }
+            if(entry->AuditSerial==UINT64_MAX)return {{ExactState::Deferred,ExactReason::CounterExhausted},{}};
+            if(!latest||!latest->Complete||latest->Generation!=Generation||!std::isfinite(latest->PublishedAtSeconds)||latest->PublishedAtSeconds<registry->PublicationSeconds)
+                return {{ExactState::Deferred,ExactReason::SourceUnavailable},{}};
+            if(entry->RecoveryRequired){
+                if(latest->PublishedAtSeconds<=entry->RecoveryPublication)return {{ExactState::Deferred,ExactReason::RecoveryPending},{}};
+                // A meaningful new source may wake recovery. Never restart an unfinished scan.
+                if(Held&&Held->PublishedAtSeconds<=entry->RecoveryPublication){
+                    if(Preparing)return {{ExactState::Deferred,ExactReason::SourceInUse},{}};
+                    Held.reset();WaitingForSource=false;
+                }
+            }
+            if(entry->MissingRepresentative&&Held&&!Preparing&&latest->PublishedAtSeconds>Held->PublishedAtSeconds){Held.reset();WaitingForSource=false;}
+            if(Held&&!Preparing&&!entry->MissingRepresentative&&entry->RepresentativeEpoch!=ScanEpoch){Held.reset();WaitingForSource=false;}
+            auto source=Held?Held:std::move(latest);
+            if(entry->RecoveryRequired&&source->PublishedAtSeconds<=entry->RecoveryPublication)return {{ExactState::Deferred,ExactReason::RecoveryPending},{}};
+            return {{ExactState::Deferred,ExactReason::RepresentativePending},
+                ExactRequest{key,registry,source,ExactOwner,ExactEpoch,epoch,entry->AuditSerial,source->PublishedAtSeconds,representativesOnly}};
+        }
+        // Audit-only callback contract: use the existing representation auditor, never a capture offer.
+        // Sources are the existing immutable/retirement-backed collector aliases; no native state is retained.
+        template<class Get,class Audit> ExactServiceResult ServiceExact(const ExactRequest& request,Get get,Audit audit,double budgetMs=2.0)
+        {
+            if(!ExactOwner||request.Owner!=ExactOwner||!ExactEpoch||request.Epoch!=ExactEpoch||request.Key.Generation!=Generation)return {ExactState::Cancelled,ExactReason::Generation};
+            if(!request.Registry||request.Registry!=LatestRegistry||!request.Registry->Complete())return {ExactState::Stale,ExactReason::Publication};
+            if(request.Registry->Index.find(request.Key)==request.Registry->Index.end())return {ExactState::Stale,ExactReason::MissingKey};
+            const auto epoch=AdoptionEpoch(request.Key,request.Registry);
+            if(!epoch)return {ExactState::Deferred,ExactReason::AdoptionPending};
+            auto* entry=Entries.Find(request.Key);
+            if(!entry||request.Membership!=epoch||entry->MembershipEpoch!=epoch||entry->AuditSerial!=request.RecordSerial)return {ExactState::Stale,ExactReason::RecordChanged};
+            if(entry->Auditing)return {ExactState::Deferred,ExactReason::Busy};
+            if(request.RepresentativesOnly&&!ReusableEligibleEvidence(*entry,Generation))return {ExactState::Stale,ExactReason::RecordChanged};
+            if(entry->Done&&!request.RepresentativesOnly)return {ExactState::Completed,ExactReason::AlreadyCompleted};
+            if(!request.Source||!request.Source->Complete||request.Source->Generation!=Generation||
+                !std::isfinite(request.SourcePublication)||request.Source->PublishedAtSeconds!=request.SourcePublication||request.SourcePublication<request.Registry->PublicationSeconds)
+                return {ExactState::Stale,ExactReason::SourceUnavailable};
+            if(Held&&Held!=request.Source)return {ExactState::Deferred,ExactReason::SourceInUse};
+            if(entry->RecoveryRequired&&request.SourcePublication<=entry->RecoveryPublication)return {ExactState::Deferred,ExactReason::RecoveryPending};
+            bool invoked=false;
+            try{ServiceImpl(*request.Registry,request.Source,std::move(get),std::move(audit),budgetMs,&request,&invoked);}
+            catch(const std::bad_alloc&){return {ExactState::Deferred,ExactReason::AllocationFailure,invoked};}
+            if(request.Epoch!=ExactEpoch||request.Key.Generation!=Generation)return {ExactState::Cancelled,ExactReason::Generation,invoked};
+            if(request.Registry!=LatestRegistry||AdoptionEpoch(request.Key,request.Registry)!=request.Membership)return {ExactState::Stale,ExactReason::Publication,invoked};
+            entry=Entries.Find(request.Key);
+            if(!entry||entry->MembershipEpoch!=request.Membership)return {ExactState::Stale,ExactReason::RecordChanged,invoked};
+            if(invoked)return {entry->Validation.Disposition==AuditDisposition::Interrupted?ExactState::Interrupted:
+                entry->Validation.Disposition==AuditDisposition::Deferred?ExactState::Deferred:ExactState::Completed,ExactReason::None,true};
+            if(ScanAllocationBlocked)return {ExactState::Deferred,ExactReason::AllocationFailure};
+            if(Preparing)return {ExactState::Deferred,ExactReason::RepresentativePending};
+            if(entry->RepresentativeEpoch!=ScanEpoch||!entry->InstanceCount)return {ExactState::Deferred,ExactReason::RepresentativeUnavailable};
+            if(request.RepresentativesOnly)return {ExactState::Completed,ExactReason::AlreadyCompleted};
+            return {ExactState::Deferred,ExactReason::Budget};
+        }
+    private:
+        template<class Get,class Audit> bool ServiceImpl(const D::Registry& registry,std::shared_ptr<const Snapshot> latest,Get get,Audit audit,double budgetMs,const ExactRequest* exact=nullptr,bool* invoked=nullptr)
         {
             const auto start=std::chrono::steady_clock::now();LastCpuVisits=LastSelectionVisits=0;ScanAllocationBlocked=false;
-            if(!ReadyFor(registry)||!latest||latest->Generation!=Generation||!latest->Complete||
-                latest->PublishedAtSeconds<registry.PublicationSeconds||Complete())return false;
+            if((exact?AdoptionEpoch(exact->Key,exact->Registry)!=exact->Membership:!ReadyFor(registry))||!latest||latest->Generation!=Generation||!latest->Complete||
+                latest->PublishedAtSeconds<registry.PublicationSeconds||(!exact&&Complete()))return false;
             if(!Held)
             {
                 if(WaitingForSource&&latest->PublishedAtSeconds<=BlockedSourcePublication)return false;
@@ -182,7 +383,8 @@ namespace MiniMapSpriteValidation
                 {
                     try{
                         const auto r=get(Held->Records[Cursor]);
-                        if(r.DefinitionValid&&r.VisualInputsValid)if(auto* e=Entries.Find(r.Identity);e&&IsCurrent(*e)&&!e->Done&&
+                        if(r.DefinitionValid&&r.VisualInputsValid)if(auto* e=Entries.Find(r.Identity);e&&(exact?AdoptionEpoch(r.Identity,exact->Registry)!=0:IsCurrent(*e))&&
+                            (!e->Done||(exact&&exact->RepresentativesOnly&&r.Identity==exact->Key))&&
                             (!e->RecoveryRequired||SourcePublication>e->RecoveryPublication))
                         {
                             // A new complete source wakes interrupted work even
@@ -197,25 +399,46 @@ namespace MiniMapSpriteValidation
                 }
                 Preparing=Cursor<Held->Records.size();if(Preparing)return false;
             }
-            while(AuditCursor<registry.Count&&LastSelectionVisits<D::VisitsPerTick&&
+            // Refresh CPU representatives only. Never invoke an audit or mutate its
+            // receipt/counts/proofs merely to acknowledge a newer publication.
+            if(exact&&exact->RepresentativesOnly)return false;
+            while((exact?LastSelectionVisits==0:AuditCursor<registry.Count)&&LastSelectionVisits<D::VisitsPerTick&&
                 std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<budgetMs)
             {
-                auto* e=Entries.Find(registry.Entries[AuditCursor++].Identity);++LastSelectionVisits;
-                if(!e||!IsCurrent(*e)||e->Done||e->RecoveryRequired)continue;
+                Attempt* e=nullptr;
+                if(exact)e=Entries.Find(exact->Key);
+                else e=Entries.Find(registry.Entries[AuditCursor++].Identity);
+                ++LastSelectionVisits;
+                if(!e||(exact?e->MembershipEpoch!=exact->Membership:!IsCurrent(*e))||e->Done||e->RecoveryRequired||e->Auditing)continue;
+                if(exact&&e->AuditSerial!=exact->RecordSerial)return false;
+                if(e->AuditSerial==UINT64_MAX)return false;
                 if(e->RepresentativeEpoch!=ScanEpoch||!e->InstanceCount){e->MissingRepresentative=true;continue;}
                 e->MissingRepresentative=false;++NativeAudits;
                 // Native calls may reenter a world/source transition. Pin CPU
                 // retirement and source ownership for the synchronous borrow,
                 // then revalidate before mutating completion state.
                 AttemptStorage::Borrow borrow(Entries);const auto source=Held;
-                const auto publication=AdoptedRegistry;const auto world=Generation;const auto epoch=CurrentEpoch;const auto key=e->Candidate.Identity;
-                auto current=[&]{return Generation==world&&CurrentEpoch==epoch&&AdoptedRegistry==publication&&ReadyFor(registry)&&Entries.Find(key)==e;};
+                const auto publication=exact?exact->Registry:AdoptedRegistry;const auto world=Generation;const auto epoch=exact?exact->Membership:CurrentEpoch;const auto key=e->Candidate.Identity;const auto auditSourcePublication=SourcePublication;
+                auto current=[&]{return Generation==world&&Entries.Find(key)==e&&(exact?
+                    AdoptionEpoch(key,publication)==epoch:CurrentEpoch==epoch&&AdoptedRegistry==publication&&ReadyFor(registry));};
+                e->Auditing=true;++e->AuditSerial;e->Provenance.reset();
+                struct AuditScope {Attempt& Record;~AuditScope(){Record.Auditing=false;}} auditScope{*e};
+                if(invoked)*invoked=true;
                 try {auto result=audit(source->Records[e->Indices[0]],e->InstanceCount>1?&source->Records[e->Indices[1]]:nullptr);
                     if(!current())return false;e->Validation=std::move(result);}
                 catch(...){if(!current())return false;e->Validation.MarkInterrupted();}
-                if(e->Validation.Disposition==AuditDisposition::Interrupted)
-                {e->RecoveryRequired=true;e->RecoveryPublication=SourcePublication;++ScanFailures;LastCompletedKey=e->Candidate.Identity;return true;}
-                e->Done=true;++CompletedCurrent;++Outcomes[size_t(e->Validation.Status)];LastCompletedKey=e->Candidate.Identity;
+                e->AuditedMembershipEpoch=epoch;e->AuditedSourcePublication=auditSourcePublication;
+                // Deferral reuses source/explicit wakes; no timer retry or FIFO here.
+                if(e->Validation.Disposition!=AuditDisposition::Completed)
+                {e->RecoveryRequired=true;e->RecoveryPublication=SourcePublication;
+                    if(e->Validation.Disposition==AuditDisposition::Interrupted)++ScanFailures;LastCompletedKey=e->Candidate.Identity;return true;}
+                // Commit scalar provenance only after the result/current-source checks. No allocation or native entitlement.
+                if(e->Validation.Status==Outcome::Eligible)
+                    e->Provenance=AuditProvenance{world,e->AuditSerial,epoch,auditSourcePublication,e->Validation.AuditRendererRevision};
+                e->Done=true;
+                if(Adopting&&epoch==PendingEpoch){++AdoptionDone;++AdoptionOutcomes[size_t(e->Validation.Status)];}
+                else {++CompletedCurrent;++Outcomes[size_t(e->Validation.Status)];}
+                LastCompletedKey=e->Candidate.Identity;
                 TotalIdentityVisits+=e->Validation.IdentityVisits;TotalGraphVisits+=e->Validation.GraphVisits;TotalAuditVisits+=e->Validation.AuditVisits;
                 if(Complete())Held.reset();return true;
             }
@@ -223,9 +446,10 @@ namespace MiniMapSpriteValidation
             // wait for a newer complete source or explicit reevaluation. Avoiding
             // unchanged-input rescans means recovery need not be immediate; if
             // no trigger arrives, progress may stall without corrupting prior results.
-            if(AuditCursor==registry.Count){BlockedSourcePublication=SourcePublication;WaitingForSource=true;Held.reset();}
+            if(!exact&&AuditCursor==registry.Count){BlockedSourcePublication=SourcePublication;WaitingForSource=true;Held.reset();}
             return false;
         }
+    public:
     };
     template<class Snapshot> std::string AdoptionStatusJson(const Scheduler<Snapshot>& s,const D::Registry& registry,const char* stage="R2.6b")
     {
@@ -255,7 +479,12 @@ namespace MiniMapSpriteValidation
             {"definition_object_index",std::to_string(c.Identity.DefinitionObject)},
             {"definition_fname_index",std::to_string(c.Identity.NameIndex)},{"definition_fname_number",std::to_string(c.Identity.NameNumber)},
             {"key_current",J::Bool(current)},{"processed",J::Bool(e.Done)},{"representative_unavailable",J::Bool(e.MissingRepresentative)},{"recovery_required",J::Bool(e.RecoveryRequired)},
-            {"audit_disposition",J::Quote(r.Disposition==AuditDisposition::Interrupted?"interrupted":e.Done?"completed":"pending")},
+            {"audit_disposition",J::Quote(DispositionLabel(r.Disposition,e.Done))},
+            {"capture_handoff",J::Quote(MiniMapSpriteCapture::Label(r.Handoff.Handoff))},
+            {"recipe_failure",r.RecipeCheck.Failure==MiniMapStaticAssembly::RecipeFailure::None?"null":J::Quote(MiniMapStaticAssembly::Label(r.RecipeCheck.Failure))},
+            {"recipe_failure_instance",r.RecipeCheck.Instance==SIZE_MAX?"null":std::to_string(r.RecipeCheck.Instance)},
+            {"capture_admission",r.Handoff.Admission?std::to_string(int(*r.Handoff.Admission)):"null"},
+            {"audit_wait",std::to_string(unsigned(r.Wait))},
             {"recovery_trigger",J::Quote(e.RecoveryRequired?"newer_complete_source_or_explicit_reevaluation":"none")},
             {"recovery_source_publication",J::Number(e.RecoveryPublication)},
             {"human_readable_name","null"},{"name_provenance",J::Quote("no verified bounded runtime name conversion; offline enum labels are not asset display names")},
@@ -278,7 +507,8 @@ namespace MiniMapSpriteValidation
             {"instance_specific_spline",J::Bool(c.Identity.Spline)},
             {"identity_visits",std::to_string(r.IdentityVisits)},{"graph_visits",std::to_string(r.GraphVisits)},
             {"audit_visits",std::to_string(r.AuditVisits)},{"representative_probes",std::to_string(r.Probes)},
-            {"truncated",J::Bool(r.Truncated||r.Details.size()>DetailLimit)},{"verified_safe_to_capture","false"},
+            {"operational_incomplete",J::Bool(r.Truncated)},{"diagnostic_truncated",J::Bool(r.DiagnosticTruncated||r.Details.size()>DetailLimit)},
+            {"truncated",J::Bool(r.Truncated||r.DiagnosticTruncated||r.Details.size()>DetailLimit)},{"verified_safe_to_capture","false"},
             {"authored_audit",details},{"static_component_inspection",r.Inspection},{"validation_profile",r.Profile},
             {"cooked_geometry",r.CookedGeometry},{"skeletal_source_metadata",r.SkeletalMetadata}});
     }
@@ -340,7 +570,7 @@ namespace MiniMapSpriteValidation
                 {"definition_fname_index",std::to_string(e.Candidate.Identity.NameIndex)},
                 {"definition_fname_number",std::to_string(e.Candidate.Identity.NameNumber)},
                 {"observed_instance_count",std::to_string(e.Candidate.Instances)},{"processed",J::Bool(e.Done)},{"representative_unavailable",J::Bool(e.MissingRepresentative)},{"recovery_required",J::Bool(e.RecoveryRequired)},
-                {"audit_disposition",J::Quote(e.Validation.Disposition==AuditDisposition::Interrupted?"interrupted":e.Done?"completed":"pending")},
+                {"audit_disposition",J::Quote(DispositionLabel(e.Validation.Disposition,e.Done))},
                 {"recovery_trigger",J::Quote(e.RecoveryRequired?"newer_complete_source_or_explicit_reevaluation":"none")},
                 {"observation",MiniMapSpriteClassification::Json(o)}});
             if(rows.size()+row.size()+4096>limit)break;

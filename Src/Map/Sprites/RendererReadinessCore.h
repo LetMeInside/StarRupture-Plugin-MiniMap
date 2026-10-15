@@ -82,6 +82,12 @@ namespace MiniMapRendererReadiness
             r.Pending?RenderReadiness::Pending:RenderReadiness::Ready;
         return r;
     }
+    inline void PreserveVisualUncertainty(Result& result,bool incomplete)noexcept
+    {
+        if(!incomplete)return;
+        result.Unknown|=Bit(Condition::Representation);
+        if(!result.Unsupported)result.State=RenderReadiness::Unknown;
+    }
     // Preliminary GT cache observation. No RHI or actual selected-route proof.
     struct MeshState
     {

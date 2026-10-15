@@ -243,9 +243,9 @@ namespace MiniMapSmelterCapture
             try
             {
             auto& candidate=request.Candidate;
-            if(!candidate.General||candidate.General!=recipe.General)return {P::State::Rejected,"candidate_recipe_mode_mismatch"};
+            if(!candidate.General||candidate.General!=recipe.General)return {P::State::Rejected,"candidate_recipe_mode_mismatch",P::Cause::RecipeInvalid};
             if(candidate.Classification.ExcludeFromMiniMap==P::K::Exclusion::Exclude||candidate.Classification.Reason=="InteriorTag")
-                return {P::State::Rejected,"classification_excluded"};
+                return {P::State::Rejected,"classification_excluded",P::Cause::Policy};
             const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
             const auto copied=MiniMapSpriteCandidates::Copy(request.Source);
             P::Evidence evidence;
@@ -267,7 +267,8 @@ namespace MiniMapSmelterCapture
                 candidate.RepresentationVerified&=klass->Index==candidate.ActorObject&&
                     klass->Name.ComparisonIndex==candidate.ActorName&&klass->Name.Number==candidate.ActorNumber;
             }
-            SA::Footprint bounds;evidence.RecipeVerified=SA::Validate(recipe,bounds)==nullptr;
+            SA::Footprint bounds;evidence.RecipeCheck=SA::ValidateTyped(recipe,bounds);
+            evidence.RecipeVerified=evidence.RecipeCheck.Failure==SA::RecipeFailure::None;
             RetirementOperations retirement;
             const bool gameThread=GameThread(),renderer=Native::CaptureRetirementRendererAvailable(),fence=retirement.Available();
             const bool ownership=bindings.Retain&&bindings.Release;
@@ -279,7 +280,7 @@ namespace MiniMapSmelterCapture
             evidence.SourcesRetained=retained;
             return P::Decide(candidate,evidence,true);
             }
-            catch(...){return {P::State::Rejected,"candidate_revalidation_exception"};}
+            catch(...){return {P::State::Rejected,"candidate_revalidation_exception",P::Cause::OperationalException};}
         }
         void WatchResources(const CandidateRequest& request,const SA::Recipe& recipe,SDK::UWorld* world)
         {
@@ -1860,6 +1861,67 @@ namespace MiniMapSmelterCapture
     bool CanAcceptCandidate()
     {
         if(!MiniMapMap::GameplayReady())return false;return resolved&&registered&&GameThread()&&!stopping.load()&&finished&&baselineRetired&&!job&&!mesh&&!capture&&!target&&!assemblyActive&&!assemblyPending&&!assemblyRootCount&&!pendingSkeletalTest&&!ownerLease;}
+    MiniMapCaptureLeases::ScopedArmResult ArmRetirementObservation(const MiniMapCaptureDispatch::OwnerObservation& before,
+        const MiniMapSpriteDiscoveryCore::Key& key) noexcept
+    {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        try{if(GameThread()&&before.QueryAllowed&&before.Available&&!before.NativeOwner&&CanAcceptCandidate()){
+            const auto arm=MiniMapBuildingSprites::ArmRetirementObservation(before.Leases,key);
+            return {arm.Status,arm.Ticket,MiniMapCaptureLeases::ObservationFence(arm.Ticket,&MiniMapBuildingSprites::SealRetirementObservation)};
+        }}catch(...){}
+#endif
+        return {};
+    }
+    MiniMapCaptureDispatch::AttemptReconciliation ReconcileRetirementObservation(const MiniMapCaptureLeases::ObservationTicket& ticket) noexcept
+    {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        try{if(GameThread()){
+            const auto observation=MiniMapBuildingSprites::ObserveRetirement(ticket);
+            if(observation.Sealed&&observation.State==MiniMapCaptureLeases::ObservationState::NotAdmitted)
+                return {{MiniMapCaptureDispatch::OwnerState::NotAdmitted,false},{}};
+            if(observation.Sealed&&observation.Lease)return {ReconcileNativeOwner(observation.Lease),observation.Lease};
+        }}catch(...){}
+#endif
+        // Awaiting admission is NOT proof that a handoff has definitively ended.
+        return {};
+    }
+    MiniMapCaptureDispatch::OwnerObservation ObserveNativeOwner() noexcept
+    {
+        MiniMapCaptureDispatch::OwnerObservation out;
+#if defined(MINIMAP_BUILDING_SPRITES)
+        try{
+            if(!GameThread())return out;
+            out.QueryAllowed=true;out.NativeOwner=ownerLease;out.Leases=MiniMapBuildingSprites::ObserveLeases();
+            out.Available=out.Leases.Incarnation&&out.Leases.State==MiniMapCaptureLeases::Ownership::Returned&&CanAcceptCandidate();
+        }catch(...){return {};}
+#endif
+        return out;
+    }
+    MiniMapCaptureDispatch::Reconciliation ReconcileNativeOwner(const MiniMapCaptureLeases::Token& token) noexcept
+    {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        try{
+            if(!GameThread())return {};
+            MiniMapCaptureDispatch::OwnerEvidence evidence;
+            evidence.GameThread=true;evidence.OwnerMatches=bool(token)&&ownerLease==token;
+            evidence.RequestMatches=candidateRequest&&candidateRequest->Lease==token;
+            evidence.CapturePending=assemblyPending||assemblyActive||job||preparedStatic.Pending||pendingSkeletalTest;
+            // A newly queued request inherits the prior idle finished/cancelled flags until Tick prepares it.
+            evidence.CleanupPending=retirementPending||(!assemblyPending&&(cancelled.load()||finished));
+            evidence.Uncertain=assemblyAssociationUncertain||(finished&&job&&!retirementPending);
+            return MiniMapCaptureDispatch::Reconcile(MiniMapBuildingSprites::InspectLease(token),evidence);
+        }catch(...){return {};}
+#else
+        (void)token;return {};
+#endif
+    }
+    MiniMapCaptureDispatch::AttemptReconciliation ReconcileNativeAttempt(const MiniMapCaptureDispatch::OwnerObservation& before,
+        const MiniMapSpriteDiscoveryCore::Key& key,uint64_t sourceRevision) noexcept
+    {
+        auto result=MiniMapCaptureDispatch::Correlate(before,ObserveNativeOwner(),key,sourceRevision);
+        if(result.Identity)result.Owner=ReconcileNativeOwner(*result.Identity);
+        return result;
+    }
     const char* CandidateServiceStatus()
     {
         if(!resolved||!registered)return "native_capture_unavailable";
@@ -1878,15 +1940,16 @@ namespace MiniMapSmelterCapture
 #endif
         namespace P=MiniMapSpriteCapture;
 #if !defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
-        (void)candidate;(void)source;(void)recipe;(void)world;return {P::State::Rejected,"static_assembly_experiment_disabled"};
+        (void)candidate;(void)source;(void)recipe;(void)world;return P::Decision{P::State::Rejected,"static_assembly_experiment_disabled",P::Cause::UnsupportedRepresentation}.RejectedOffer();
 #else
-        if(!candidate.General)return {P::State::Rejected,"unsupported_candidate_mode"};
-        if(!GameThread()||stopping.load()||!CanAcceptCandidate()||scheduling.test_and_set(std::memory_order_acquire))return {P::State::Rejected,"capture_owner_unavailable_or_already_attempted"};
+        if(!candidate.General)return P::Decision{P::State::Rejected,"unsupported_candidate_mode",P::Cause::UnsupportedRepresentation}.RejectedOffer();
+        if(!GameThread()||stopping.load())return P::Decision{P::State::Rejected,"capture_lifecycle_unavailable",P::Cause::LifecycleUnavailable}.RejectedOffer();
+        if(!CanAcceptCandidate()||scheduling.test_and_set(std::memory_order_acquire))return P::Decision{P::State::Rejected,"capture_owner_unavailable_or_already_attempted",P::Cause::NativeOwnerBusy}.RejectedOffer();
         Scope scope;
         skeletalOnly=false;
         struct Rollback {bool Committed=false;~Rollback(){if(!Committed)ReleaseAssemblySources();}} rollback;
         if(candidate.Classification.ExcludeFromMiniMap==P::K::Exclusion::Exclude||candidate.Classification.Reason=="InteriorTag")
-            return {P::State::Rejected,"classification_excluded"};
+            return P::Decision{P::State::Rejected,"classification_excluded",P::Cause::Policy}.RejectedOffer();
         // The old startup capture ran Preflight in Submit before any assembly
         // handoff. General mode deliberately skips that capture. Initialize the
         // validated GPU-count snapshot here, BEFORE CheckCandidate consumes it.
@@ -1894,17 +1957,17 @@ namespace MiniMapSmelterCapture
         // never write the snapshot from render-thread callbacks or in-flight checks.
         if(!Native::Preflight())
         {LOG_WARN("MiniMap: general sprite admission preflight rejected: %s; no sources retained or capture submitted",Native::Status());
-         return {P::State::Rejected,"capture_backend_preflight_unavailable"};}
+         return P::Decision{P::State::Rejected,"capture_backend_preflight_unavailable",P::Cause::BackendUnavailable}.RejectedOffer();}
         LOG_INFO("MiniMap: general sprite admission preflight complete; idle owner, RHI/threading/GPU-count/backend verified");
         auto request=std::make_unique<CandidateRequest>(CandidateRequest{candidate,source});
         const auto decision=CheckCandidate(*request,recipe,world,false);
         LOG_INFO("MiniMap: R2.7a candidate=%s classification=%s representation=%s eligibility=%s",
             P::D::KeyText(candidate.Identity).c_str(),P::K::Label(request->Candidate.Classification.ExcludeFromMiniMap),
             request->Candidate.RepresentationVerified?"verified_static_reference":"unverified",decision.Reason);
-        if(!decision.MayRetain())return decision;
+        if(!decision.MayRetain())return decision.RejectedOffer();
         SA::Footprint footprint;
         const auto* reason=SA::Validate(recipe,footprint);
-        if(reason)return {P::State::Rejected,reason};
+        if(reason)return P::Decision{P::State::Rejected,reason,P::Cause::RecipeInvalid}.RejectedOffer();
         auto retain=[&](uintptr_t p)
         {
             if(!MiniMapBuildingRepresentation::ValidateCaptureObject(p))return false;
@@ -1913,22 +1976,22 @@ namespace MiniMapSmelterCapture
             if(assemblyRootCount>=std::size(assemblyRoots))return false;
             Hold(object);assemblyRoots[assemblyRootCount++]=object;return true;
         };
-        if(!retain(recipe.ActorClass))return {P::State::Rejected,"actor_class_retention_failed"};
+        if(!retain(recipe.ActorClass))return P::Decision{P::State::Rejected,"actor_class_retention_failed",P::Cause::RetentionUnavailable}.RejectedOffer();
         for(size_t i=0;i<recipe.Count;++i)
         {
-            if(!retain(recipe.Instances[i].Mesh))return {P::State::Rejected,"mesh_retention_failed"};
+            if(!retain(recipe.Instances[i].Mesh))return P::Decision{P::State::Rejected,"mesh_retention_failed",P::Cause::RetentionUnavailable}.RejectedOffer();
             for(size_t s=0;s<recipe.Instances[i].MaterialCount;++s)
-                if(!retain(recipe.Instances[i].Materials[s]))return {P::State::Rejected,"material_retention_failed"};
+                if(!retain(recipe.Instances[i].Materials[s]))return P::Decision{P::State::Rejected,"material_retention_failed",P::Cause::RetentionUnavailable}.RejectedOffer();
         }
         const auto retained=CheckCandidate(*request,recipe,world,true);
-        if(!retained.Allowed())return retained;
+        if(!retained.Allowed())return retained.RejectedOffer();
         MiniMapRendererReadiness::Dependencies baseline;
         MiniMapBuildingSprites::DependencySnapshot(candidate.Identity,baseline);
         request->Observation=MiniMapRendererReadiness::ObserveRetainedAssembly(recipe,&baseline);
         assemblyRecipe=recipe;assemblyBounds=footprint;recipeWorld=static_cast<SDK::UWorld*>(world);assemblyPending=true;
 #if defined(MINIMAP_BUILDING_SPRITES)
         if(!PrepareResourcePublication(candidate.Identity,request->Observation))
-            return {P::State::Rejected,"resource_advancement_publication_pending"};
+            return P::Decision{P::State::Rejected,"resource_advancement_publication_pending",P::Cause::ResourcePublicationPending}.RejectedOffer();
         MiniMapBuildingSprites::ObserveAssembly(candidate.Identity,request->Observation);
         // Reevaluation may discover pending work without justifying another GPU
         // capture. Keep that observation ticket independently of capture admission.
@@ -1942,7 +2005,11 @@ namespace MiniMapSmelterCapture
         {
             // Observation-only source evaluation is successful without reserving
             // a GPU capture. No boolean rejection can erase its CPU advancement.
-            return retained;
+            auto observation=retained.WithHandoff(P::HandoffOutcome::ObservationOnly);
+            observation.Admission=admission;
+            const auto source=MiniMapBuildingSprites::InspectDispatch(candidate.Identity,{});
+            if(source.Current&&source.SourceKnown)observation.SourceRevision=source.SourceRevision;
+            return observation;
         }
 #endif
         ownerLease=request->Lease;
@@ -1951,7 +2018,12 @@ namespace MiniMapSmelterCapture
         LOG_INFO("MiniMap: renderer readiness A4.9: quality=Unknown; safe capture admitted for provisional session display; upgrades require actual engine-resource improvement");
         LOG_INFO("MiniMap: validated authored recipe handed off with independent strong roots; provisional capture scheduled");
         LOG_INFO("MiniMap: progressive capture accepted: %s; renderer quality unknown; provisional session sprite permitted; no persistent cache or atlas",retained.Reason);
-        return retained;
+        auto accepted=retained.WithHandoff(P::HandoffOutcome::Admitted);
+#if defined(MINIMAP_BUILDING_SPRITES)
+        accepted.Admission=MiniMapBuildingSpriteCore::Admission::Accepted;
+        accepted.SourceRevision=ownerLease.SourceRevision;accepted.NativeLease=ownerLease;
+#endif
+        return accepted;
 #endif
     }
     bool ResolvePrerequisites()

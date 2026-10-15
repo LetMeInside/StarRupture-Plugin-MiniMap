@@ -11,13 +11,6 @@ namespace
             ConfigValueType::Boolean,
             "true",
             "Enable or disable MiniMap"
-        },
-        {
-            "Rendering",
-            "SplineRenderingEnabled",
-            ConfigValueType::Boolean,
-            "false",
-            "Draw spline-based walkways, rails and related geometry on MiniMap"
         }
     };
 
@@ -28,7 +21,6 @@ namespace
     };
 
     bool g_enabled = MiniMapConfig::DefaultEnabled;
-    bool g_splineRenderingEnabled = MiniMapConfig::DefaultSplineRenderingEnabled;
 }
 
 namespace MiniMapConfig
@@ -49,19 +41,12 @@ namespace MiniMapConfig
 
         self->config->ValidateConfig(self, &SCHEMA);
         g_enabled = self->config->ReadBool(self, "General", "Enabled", DefaultEnabled);
-        g_splineRenderingEnabled = self->config->ReadBool(self, "Rendering", "SplineRenderingEnabled", DefaultSplineRenderingEnabled);
         LOG_INFO("MiniMap: Enabled = %s", g_enabled ? "true" : "false");
-        LOG_INFO("MiniMap: SplineRenderingEnabled = %s", g_splineRenderingEnabled ? "true" : "false");
         return true;
     }
 
     bool IsEnabled()
     {
         return g_enabled;
-    }
-
-    bool IsSplineRenderingEnabled()
-    {
-        return g_splineRenderingEnabled;
     }
 }

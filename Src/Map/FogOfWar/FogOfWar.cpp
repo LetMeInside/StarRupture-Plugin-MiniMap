@@ -1343,6 +1343,20 @@ namespace MiniMapFogOfWar
             [](int x,int y){uint8_t value=0;return TryGetMaskByte(x,y,value)&&value==255;});
     }
 
+    bool IsWorldRectangleFullyObscured(double minX,double minY,double maxX,double maxY,
+        const MiniMapMap::Transform& transform)
+    {
+        if(!g_snapshot.Valid||!g_blackFogTexture||!transform.Valid||
+            !std::isfinite(transform.PixelsPerWorldUnit)||transform.PixelsPerWorldUnit<=0||
+            !std::isfinite(transform.PlayerWorldX)||!std::isfinite(transform.PlayerWorldY))return false;
+        // At most 64 cells / 576 copied-mask reads. This stronger-than-necessary
+        // test certifies coarse opaque overlay coverage without sampling sprite pixels.
+        return MiniMapBuildingSpriteCore::FullyObscured(minX,minY,maxX,maxY,
+            kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
+            [&](int x,int y){return MiniMapBuildingSpriteCore::OpaqueFogCell(x,y,
+                CellIntersectsLocalFeather(x,y,transform),TryGetMaskByte);});
+    }
+
     float GetRenderedVisibilityAtWorldPosition(
         double worldX,
         double worldY,

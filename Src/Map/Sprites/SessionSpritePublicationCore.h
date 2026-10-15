@@ -1,5 +1,6 @@
 #pragma once
 #include "BuildingSpritePipelineCore.h"
+#include "CaptureDispatchCore.h"
 #include <map>
 #include <list>
 #include <set>
@@ -39,7 +40,7 @@ namespace MiniMapSessionPublication
         {Image Pixels;std::unique_ptr<Upload> Next;explicit Upload(Image image):Pixels(std::move(image)){};};
         struct Slot : MiniMapBuildingSpriteCore::Entry
         {
-            uint64_t SlotId{};
+            uint64_t SlotId{},AdoptedMembership{};
             Image Cached;
             Versions Images;
             typename Versions::node_type Invisible;
@@ -119,7 +120,7 @@ namespace MiniMapSessionPublication
         {
             if(!SourceCurrent(key))return false;
             auto* slot=Observe(key);if(!slot)return false;
-            try {SetEntry(*slot,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");return true;}
+            try {SetEntry(*slot,MiniMapBuildingSpriteCore::State::Awaiting,"pending_bounded_validation");slot->AdoptedMembership=MembershipRevision;return true;}
             catch(const std::bad_alloc&){AllocationFailed();return false;}
         }
         // External owner-access is held. Draw never reads these work cursors.
@@ -157,6 +158,23 @@ namespace MiniMapSessionPublication
         {
             std::scoped_lock lock(Mutex);
             return Active&&CurrentValid&&Current&&key.Generation==World&&Current->Index.find(key)!=Current->Index.end();
+        }
+        MiniMapCaptureDispatch::RendererEvidence InspectDispatch(const Key& key,const RegistryPublication& latest)const
+        {
+            // External owner-access serializes policy; this lock protects membership/map readers.
+            std::scoped_lock lock(Mutex);MiniMapCaptureDispatch::RendererEvidence out;out.Generation=World;
+            out.Current=Active&&CurrentValid&&Current&&key.Generation==World&&Current->Index.find(key)!=Current->Index.end()&&(!latest||Current==latest);
+            if(!out.Current)return out;
+            const auto found=Slots.find(key);if(found==Slots.end())return out;
+            const auto& slot=found->second;
+            out.MetadataReady=InitializationRegistry==Current&&InitializationCursor==Current->Count;
+            out.KeyAdopted=MembershipRevision&&slot.AdoptedMembership==MembershipRevision;
+            out.SourceKnown=slot.Dependencies.Tracked&&!slot.Dependencies.Source.empty();
+            out.SourceRevision=slot.Dependencies.SourceRevision;out.ImageRevision=slot.ImageRevision;
+            out.InitialAdmission=slot.InitialAdmission;out.InFlight=slot.InFlight;
+            out.PolicyState=slot.Status;out.HasCachedImage=bool(slot.Cached);
+            out.Terminal=slot.Status==MiniMapBuildingSpriteCore::State::Excluded||slot.Status==MiniMapBuildingSpriteCore::State::Unsupported;
+            out.Advancement=EligibleAdvancement(slot);return out;
         }
         struct ScaleObservation
         {

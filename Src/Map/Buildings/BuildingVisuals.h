@@ -6,6 +6,8 @@
 
 namespace MiniMapBuildingVisuals
 {
+    // Temporary internal gate; preserve collection and the complete spline drawing path.
+    inline constexpr bool SplineRenderingEnabled = false;
     bool Initialize(IPluginSelf* self);
     void Reset();
     void Shutdown();
