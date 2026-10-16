@@ -487,6 +487,23 @@ MiniMapSpriteValidation::Result GenericAudit()
             skeletalSummaryReports,(unsigned long long)Record.Generation,Record.BuildingId,out.Skeletal,int(recipe.SkeletalTest.Present),V::Label(out.Status),out.Reason.c_str());
     }
 #if defined(MINIMAP_BUILDING_SPRITES)
+    // Offer the same normal candidate to the private owner before static-recipe
+    // eligibility. Skeletal-only/inherited recipes may be unsupported by copying
+    // while their complete Blueprint still has a verified construction contract.
+    // No result, policy, lease, FIFO order or production disposition is changed.
+    if(CaptureRequested&&!DeferCapture&&AuditClass&&cdo&&ProbeResult.DefinitionIdentity=="valid"&&
+        !ProbeResult.Truncated&&!ProbeResult.Incomplete)
+    {
+        MiniMapSpriteCapture::Candidate parallel;parallel.General=true;
+        parallel.Identity=MiniMapSpriteCandidates::Copy(Record).Identity;
+        parallel.CanonicalBlueprint=BlueprintIdentity.Path;
+        parallel.Classification=Classification.CachedPolicy;
+        parallel.ClassificationObserved=Classification.Fixed&&Classification.Subclass&&!Classification.Truncated&&Classification.InteriorTag!="unknown";
+        parallel.ActorObject=Value<int32_t>(AuditClass,0xc);const auto name=Value<Name>(AuditClass,0x18);
+        parallel.ActorName=name.Index;parallel.ActorNumber=name.Number;
+        parallel.Tier=recipe.HighDetail?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Low;
+        MiniMapSmelterCapture::OfferParallelBlueprint(parallel,AuditClass,Record.BuildingId,MiniMapMap::GetWorld());
+    }
     // Read-only audit fence, also for ValidateRepresentation (CaptureRequested=false).
     // The scheduler commits it only after completed-result and exact-source checks.
     if(out.Status==V::Outcome::Eligible&&out.Disposition==V::AuditDisposition::Completed)

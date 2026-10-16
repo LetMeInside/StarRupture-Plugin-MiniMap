@@ -166,6 +166,9 @@ static void OnExperienceLoadComplete()
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     SetServicesAdmitted(true);
+#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+    MiniMapSmelterCapture::OnGameplaySessionReady(MiniMapMap::GetWorld(), g_worldGeneration);
+#endif
     MiniMapUI::Show();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
 }

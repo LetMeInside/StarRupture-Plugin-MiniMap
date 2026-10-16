@@ -138,6 +138,10 @@
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
+    <ClInclude Include="Map\Sprites\PrivateCaptureWorld.h" />
+    <ClInclude Include="Map\Sprites\PrivateCaptureWorldBindings.inl" />
+    <ClInclude Include="Map\Sprites\PrivateCaptureWorldActors.inl" />
+    <ClInclude Include="Map\Sprites\SceneCaptureConfiguration.h" />
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain\Terrain.h" />
     <ClInclude Include="Native\TextureAccess.h" />
@@ -194,6 +198,11 @@
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
+    <ClCompile Include="Map\Sprites\PrivateCaptureWorld.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">false</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Native\Fingerprints.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />

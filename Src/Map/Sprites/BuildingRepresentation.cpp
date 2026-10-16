@@ -1,6 +1,9 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 #include "BuildingRepresentation.h"
+#include "Native/DefinitionDiagnosticCore.h"
+#include <set>
+#include <map>
 #include "BlueprintIdentityCacheCore.h"
 #include "Native/NativeApi.h"
 #include "RepresentationMetadataCore.h"
@@ -1215,18 +1218,139 @@ namespace MiniMapBuildingRepresentation
         };
         bool Visit(const SDK::UObject* definition,void* context)
         {return static_cast<Context*>(context)->Discover(reinterpret_cast<uintptr_t>(definition));}
+        // Temporary Stage A.1 instrumentation. No admission authority.
+        MiniMapDefinitionDiagnostic::Session& DefinitionDiagnosticSession()
+        {static MiniMapDefinitionDiagnostic::Session session;return session;}
+        void SummarizeDefinitionDiagnostic()noexcept
+        {
+            try
+            {
+            auto& diagnosticSession=DefinitionDiagnosticSession();if(!diagnosticSession.Generation||diagnosticSession.SummaryWritten)return;diagnosticSession.SummaryWritten=true;
+            LOG_INFO("MiniMap: event=definition_diagnostic_summary generation=%llu tokens_observed=%zu zero_tokens=%zu nonzero_tokens=%zu attempts=%zu exact_matches=%zu mismatches=%zu completed_scopes=%zu configuration_changes=%zu source_changes=%zu replacements=%zu unchanged_visits=%zu suppressed=%zu interruptions=%zu token_read_failures=%zu zero_skips=%zu targets_11_227_229_336_238=%d%d%d%d%d; instance_disappearance=not_exercised no_continuous_polling=1 absence_of_change_not_proven=1",
+                (unsigned long long)diagnosticSession.Generation,diagnosticSession.Observed,diagnosticSession.Zero,diagnosticSession.Nonzero,diagnosticSession.Attempts,diagnosticSession.Matches,diagnosticSession.Mismatches,diagnosticSession.CompletedScopes,
+                diagnosticSession.ConfigChanges,diagnosticSession.SourceChanges,diagnosticSession.Replacements,diagnosticSession.Unchanged,diagnosticSession.Suppressed,diagnosticSession.Interruptions,diagnosticSession.TokenReadFailures,diagnosticSession.ZeroSkips,
+                int(diagnosticSession.Samples[0].Used),int(diagnosticSession.Samples[1].Used),int(diagnosticSession.Samples[2].Used),int(diagnosticSession.Samples[3].Used),int(diagnosticSession.Samples[4].Used));
+            for(size_t i=0;i<diagnosticSession.Rejections.size();++i)if(diagnosticSession.Rejections[i])
+                LOG_INFO("MiniMap: event=definition_diagnostic_rejections generation=%llu status=%s count=%zu",
+                    (unsigned long long)diagnosticSession.Generation,MiniMapDefinitionAcquisition::Label(MiniMapDefinitionAcquisition::Status(i)),diagnosticSession.Rejections[i]);
+            }
+            catch(...){/* Summary failure must not interrupt world retirement. */}
+        }
+        struct DefinitionSlotReader
+        {
+            bool Read(uintptr_t p,int32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+            bool Read(uintptr_t p,uint32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+            bool Read(uintptr_t p,uintptr_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+        };
+        MiniMapDefinitionDiagnostic::Identity DefinitionObjectIdentity(uintptr_t p)
+        {
+            MiniMapDefinitionDiagnostic::Identity result;result.Present=p!=0;if(!p||!Identity(p))return result;
+            DefinitionSlotReader reader;MiniMapDefinitionAcquisition::Slot slot;
+            result.Index=Value<int32_t>(p,0xc);const auto name=Value<Name>(p,0x18);
+            if(MiniMapDefinitionAcquisition::ReadSlot(reader,objectArray,result.Index,slot)!=MiniMapDefinitionAcquisition::Status::Success||slot.Object!=p)return result;
+            result.Serial=slot.Serial;result.NameIndex=name.Index;result.NameNumber=name.Number;result.Validated=true;return result;
+        }
+        bool DefinitionFields(uintptr_t p,MiniMapDefinitionDiagnostic::Observation& out)
+        {
+            uintptr_t config{};
+            if(!Read(p,0x150,config)||!Read(p,0x38,out.AuthoredReference)||!Read(p,0x58,out.SubpathBounds))return false;
+            out.Config=DefinitionObjectIdentity(config);return true;
+        }
+        void CompareDefinition(const SDK::UObject* definition,Context& original)noexcept
+        {
+            namespace D=MiniMapDefinitionAcquisition;namespace G=MiniMapDefinitionDiagnostic;
+            const auto thread=MiniMapSmelterCapture::GetBindings().GameThread;
+            if(!thread||!reinterpret_cast<bool(*)()>(thread)()||original.ProbeResult.DefinitionIdentity!="valid")return;
+            auto& session=DefinitionDiagnosticSession();
+            try
+            {
+                if(session.Generation&&session.Generation!=original.Record.Generation)SummarizeDefinitionDiagnostic();
+                if(session.Generation!=original.Record.Generation){session=G::Session{};session.Generation=original.Record.Generation;}
+                const auto snapshot=MiniMapBuildingCollector::GetSnapshot();if(!snapshot)return;
+                const auto originalPointer=reinterpret_cast<uintptr_t>(definition);
+                // Read-only copy BEFORE checked acquisition. Neither this reader
+                // nor ValidateObjectIdentity calls AllocateSerialNumber/weak assignment.
+                DefinitionSlotReader reader;D::Slot slot;
+                const auto readStatus=D::ReadSlot(reader,objectArray,original.Record.DefinitionObjectIndex,slot);
+                if(readStatus!=D::Status::Success){
+                    if(session.TokenReadFailures++<4)LOG_INFO("MiniMap: event=definition_token_unavailable generation=%llu building=%u index=%d status=%s",
+                        (unsigned long long)session.Generation,original.Record.BuildingId,original.Record.DefinitionObjectIndex,D::Label(readStatus));return;}
+                G::Observation observed;
+                observed.Token={original.Record.Generation,snapshot->PublishedAtSeconds,original.Record.DefinitionObjectIndex,slot.Serial,
+                    original.Record.DefinitionIndex,original.Record.DefinitionNumber,original.Record.BuildingId};
+                if(!DefinitionFields(originalPointer,observed)){
+                    if(session.TokenReadFailures++<4)LOG_INFO("MiniMap: event=definition_token_unavailable generation=%llu building=%u index=%d serial=%d status=unreadable_definition_fields checked_acquisition_attempted=0",
+                        (unsigned long long)session.Generation,observed.Token.Building,observed.Token.Index,observed.Token.Serial);return;}
+                observed.AuthoredClass=DefinitionObjectIdentity(original.AuthoredClass);
+                observed.High=DefinitionObjectIdentity(original.ProbeResult.High);observed.Low=DefinitionObjectIdentity(original.ProbeResult.Low);
+                observed.Route=unsigned(original.ProbeResult.Route);observed.HighStatus=original.ProbeResult.HighStatus;
+                observed.LowStatus=original.ProbeResult.LowStatus;observed.AuthoredStatus=original.AuthoredClassStatus;
+                if(original.BlueprintIdentity.Path)observed.CanonicalBlueprint=*original.BlueprintIdentity.Path;
+                const auto selected=session.Select(observed);if(!selected.Record)return;
+                const auto previousStatus=selected.Record->LastStatus;
+                const auto name=Value<Name>(originalPointer,0x18);
+                const bool identityMatch=slot.Object==originalPointer&&Value<int32_t>(originalPointer,0xc)==observed.Token.Index&&
+                    name.Index==observed.Token.NameIndex&&name.Number==observed.Token.NameNumber&&Value<uint32_t>(originalPointer,0x170)==observed.Token.Building;
+                LOG_INFO("MiniMap: event=definition_token_observed generation=%llu building=%u index=%d serial=%d serial_zero=%d identity_match=%d previously_sampled=%d change=%s config_present=%d config_index=%d config_serial=%d route=%u high=%s low=%s; observed_before_acquisition=1 serial_allocation=0 selection_metadata=authoritative_only",
+                    (unsigned long long)session.Generation,observed.Token.Building,observed.Token.Index,observed.Token.Serial,int(slot.Serial==0),int(identityMatch),
+                    int(selected.PreviouslySampled),G::Label(selected.Why),int(observed.Config.Present),observed.Config.Index,observed.Config.Serial,
+                    observed.Route,observed.HighStatus.c_str(),observed.LowStatus.c_str());
+                if(slot.Serial==0){++session.ZeroSkips;selected.Record->LastStatus=D::Status::InvalidToken;
+                    LOG_INFO("MiniMap: event=definition_serial_zero generation=%llu building=%u index=%d checked_acquisition_attempted=0",
+                        (unsigned long long)session.Generation,observed.Token.Building,observed.Token.Index);return;}
+                struct Comparison
+                {
+                    const G::Observation& Expected;uintptr_t Original;
+                    int32_t AcquiredIndex=-1,AcquiredSerial{};bool Lifetime=false,Fields=false;
+                } comparison{observed,originalPointer};
+                D::ScopeObservation scope;auto status=D::Status::DefinitionMismatch;
+                if(identityMatch){++session.Attempts;
+                    status=VisitResidentDefinition(observed.Token,[](const SDK::UObject* object,void* state)
+                    {
+                        auto& c=*static_cast<Comparison*>(state);const auto p=reinterpret_cast<uintptr_t>(object);
+                        DefinitionSlotReader reader;D::Slot acquired;G::Observation fields;
+                        c.AcquiredIndex=Value<int32_t>(p,0xc);
+                        if(D::ReadSlot(reader,objectArray,c.AcquiredIndex,acquired)!=D::Status::Success)return;
+                        c.AcquiredSerial=acquired.Serial;
+                        const auto name=Value<Name>(p,0x18);
+                        c.Lifetime=p==c.Original&&acquired.Object==p&&c.AcquiredIndex==c.Expected.Token.Index&&c.AcquiredSerial==c.Expected.Token.Serial&&
+                            name.Index==c.Expected.Token.NameIndex&&name.Number==c.Expected.Token.NameNumber&&Value<uint32_t>(p,0x170)==c.Expected.Token.Building;
+                        c.Fields=DefinitionFields(p,fields)&&fields.Config==c.Expected.Config&&fields.AuthoredReference==c.Expected.AuthoredReference&&fields.SubpathBounds==c.Expected.SubpathBounds;
+                    },&comparison,&scope);
+                }
+                const bool match=comparison.Lifetime&&comparison.Fields;
+                session.Complete(*selected.Record,status,match,scope);
+                LOG_INFO("MiniMap: event=%s generation=%llu building=%u expected_index=%d expected_serial=%d acquired_index=%d acquired_serial=%d lifetime_match=%d fields_match=%d status=%s previous_status=%s readiness_changed=%d",
+                    status==D::Status::Success&&match?"definition_acquisition_match":"definition_acquisition_rejected",
+                    (unsigned long long)session.Generation,observed.Token.Building,observed.Token.Index,observed.Token.Serial,comparison.AcquiredIndex,comparison.AcquiredSerial,
+                    int(comparison.Lifetime),int(comparison.Fields),D::Label(status),selected.PreviouslySampled?D::Label(previousStatus):"not_sampled",int(selected.PreviouslySampled&&previousStatus!=status));
+                LOG_INFO("MiniMap: event=definition_retain_scope_completed generation=%llu building=%u retain_reached=%u addref_returned=%u retained_scopes=%u post_retain_validated=%d visitor_entered=%d visitor_returned=%d release_reached=%u release_returned=%u interrupted=%d; engine_refcount_not_inspected=1",
+                    (unsigned long long)session.Generation,observed.Token.Building,scope.RetainReached,scope.RetainReturned,scope.Retained,
+                    int(scope.PostRetainValidated),int(scope.VisitorEntered),int(scope.VisitorReturned),scope.ReleaseReached,scope.ReleaseReturned,int(scope.Interrupted));
+            }
+            catch(...){++session.Interruptions;/* Diagnostic failure cannot change authoritative completion. */}
+        }
         bool ProbeVisit(const SDK::UObject* definition,void* context)
-        {return static_cast<Context*>(context)->ProbeDefinition(reinterpret_cast<uintptr_t>(definition));}
+        {
+            auto& c=*static_cast<Context*>(context);
+            const bool accepted=c.ProbeDefinition(reinterpret_cast<uintptr_t>(definition));
+            CompareDefinition(definition,c);
+            return accepted;
+        }
 
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
             if(!world||world!=MiniMapMap::GetWorld())return;
             const auto gameThread=MiniMapSmelterCapture::GetBindings().GameThread;
-            if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)()){endingWorld=world;ClearBlueprintIdentities();}
+            if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)()){SummarizeDefinitionDiagnostic();endingWorld=world;ClearBlueprintIdentities();}
             else stopped.store(true);
         }
-        void StopImpl(){stopped.store(true);}
+        void StopImpl(){
+            const auto thread=MiniMapSmelterCapture::GetBindings().GameThread;
+            if(thread&&reinterpret_cast<bool(*)()>(thread)())SummarizeDefinitionDiagnostic();
+            stopped.store(true);
+        }
         void Stop()
         {
             MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationStop,false);
@@ -1478,6 +1602,60 @@ namespace MiniMapBuildingRepresentation
         reinterpret_cast<void(*)(SDK::UObject*)>(b.Release)(reinterpret_cast<SDK::UObject*>(object));
     }
     bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
+    MiniMapDefinitionAcquisition::Status VisitResidentDefinition(
+        const MiniMapDefinitionAcquisition::Token& token,void(*visitor)(const SDK::UObject*,void*),void* state,
+        MiniMapDefinitionAcquisition::ScopeObservation* observation)
+    {
+        namespace D=MiniMapDefinitionAcquisition;
+        if(observation)*observation={};
+        const auto& b=MiniMapSmelterCapture::GetBindings();
+        if(!b.GameThread||!b.Retain||!b.Release||!objectArray||!visitor)return D::Status::FacilitiesUnavailable;
+        if(!reinterpret_cast<bool(*)()>(b.GameThread)())return D::Status::WrongThread;
+        if(stopped.load()||!MiniMapMap::GameplayReady())return D::Status::FacilitiesUnavailable;
+        // The loader calls this synchronous game-thread scope after engine Tick.
+        // UE 5.6 GCScopeLock::LockAsync/TryLockAsync are no-ops on this thread.
+        // No engine dispatch, loading or yield occurs between slot check/AddRef.
+        try
+        {
+            Context context;
+            // Acquire only the class anchors needed for definition compatibility;
+            // capture-resource availability is not definition acquisition evidence.
+            context.Class=context.Find(L"/Script/CoreUObject.Class");
+            if(!context.Class||!context.CheckIdentity(context.Class,0x200)||
+                Value<uintptr_t>(context.Class,0x10)!=context.Class)return D::Status::FacilitiesUnavailable;
+            context.Placement=context.NativeClass(L"/Script/AuActorPlacement.AuActorPlacementData");
+            if(!context.Placement)return D::Status::FacilitiesUnavailable;
+            struct Ops
+            {
+                Context& C;const MiniMapSmelterCapture::Bindings& B;
+                bool GameThread()const{return reinterpret_cast<bool(*)()>(B.GameThread)();}
+                bool Available()const{return !stopped.load()&&B.Retain&&B.Release;}
+                bool Read(uintptr_t p,int32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+                bool Read(uintptr_t p,uint32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+                bool Read(uintptr_t p,uintptr_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
+                D::Status Current(const D::Token& t)const
+                {
+                    const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+                    if(!MiniMapMap::GetWorld()||MiniMapMap::GetWorld()==endingWorld||!snapshot||snapshot->Generation!=t.Generation)return D::Status::WorldChanged;
+                    if(!snapshot->Complete||snapshot->PublishedAtSeconds!=t.Publication)return D::Status::PublicationChanged;
+                    return D::Status::Success;
+                }
+                D::Status Compatible(uintptr_t p)
+                {
+                    if(!MiniMapNative::IsMemoryRangeReadable(p,0x174,8))return D::Status::UnreadableObject;
+                    const bool compatible=C.Is(p,C.Placement,0x174);
+                    if(C.Work.Exhausted||C.Graph.Truncated)return D::Status::FacilitiesUnavailable;
+                    return compatible?D::Status::Success:D::Status::WrongClass;
+                }
+                bool Retain(uintptr_t p)noexcept
+                {reinterpret_cast<void(*)(SDK::UObject*)>(B.Retain)(reinterpret_cast<SDK::UObject*>(p));return true;}
+                void Release(uintptr_t p)noexcept
+                {reinterpret_cast<void(*)(SDK::UObject*)>(B.Release)(reinterpret_cast<SDK::UObject*>(p));}
+            } ops{context,b};
+            return D::Visit(ops,objectArray,token,[&](uintptr_t p){visitor(reinterpret_cast<const SDK::UObject*>(p),state);},observation);
+        }
+        catch(...){if(observation)observation->Interrupted=true;return D::Status::Interrupted;}
+    }
     bool RevalidateCaptureSource(const MiniMapBuildingCollector::Record& record,MiniMapSpriteClassification::Observation& observation)
     {
         observation={};

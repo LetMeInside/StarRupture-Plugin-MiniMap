@@ -7,6 +7,7 @@ namespace MiniMapBuildingCollector { struct Record; }
 namespace MiniMapSmelterCapture { bool ResolvePrerequisites(); void Initialize(); void Shutdown(); }
 namespace MiniMapSmelterCapture
 {
+    void OnGameplaySessionReady(void* world, uint64_t generation) noexcept;
     bool HasResourceWatchCapacity(); // GT, bounded ticket-array inspection only
     // GT only: reserve evidence before handoff. Keep Fence on the synchronous
     // dispatch stack and Close it before reconciliation. Retain the CPU Ticket
@@ -17,6 +18,10 @@ namespace MiniMapSmelterCapture
     MiniMapCaptureDispatch::Reconciliation ReconcileNativeOwner(const MiniMapCaptureLeases::Token&) noexcept;
     MiniMapCaptureDispatch::AttemptReconciliation ReconcileNativeAttempt(const MiniMapCaptureDispatch::OwnerObservation& before,
         const MiniMapSpriteDiscoveryCore::Key&,uint64_t sourceRevision) noexcept;
+    // Same candidate audit opportunity, independent of static recipe eligibility.
+    // Never reserves/publishes production sprites or changes the audit result.
+    void OfferParallelBlueprint(const MiniMapSpriteCapture::Candidate&, uintptr_t visualClass,
+        uint32_t buildingId, void* gameplayWorld) noexcept;
     bool CanAcceptCandidate(); // game-thread, no native work; one active owner
     const char* CandidateServiceStatus(); // game-thread diagnostics only
     // Synchronous game-thread handoff; on success acquire independent native

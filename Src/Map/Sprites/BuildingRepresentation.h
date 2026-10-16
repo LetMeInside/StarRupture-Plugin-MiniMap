@@ -5,12 +5,20 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include "Native/DefinitionAcquisitionCore.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
 namespace MiniMapSpriteValidation { struct Result; }
 namespace MiniMapBuildingCollector { struct Record; }
 namespace MiniMapSpriteClassification { struct Observation; }
+namespace SDK { class UObject; }
 namespace MiniMapBuildingRepresentation
 {
+    // Stage A only: ordinary loader post-engine game tick, never GC callbacks.
+    // No scheduling/admission authority. Borrow ends with visitor;
+    // never store the pointer or invoke loading/GC/yield operations in visitor.
+    MiniMapDefinitionAcquisition::Status VisitResidentDefinition(
+        const MiniMapDefinitionAcquisition::Token&,void(*visitor)(const SDK::UObject*,void*),void*,
+        MiniMapDefinitionAcquisition::ScopeObservation* observation=nullptr);
     struct BlueprintIdentityResult
     {
         std::shared_ptr<const std::string> Path;

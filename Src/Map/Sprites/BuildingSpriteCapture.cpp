@@ -1,6 +1,8 @@
 #include "CallbackTiming.h"
 #if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSpriteCapture.h"
+#include "PrivateCaptureWorld.h"
+#include "SceneCaptureConfiguration.h"
 #include "StaticAssemblyCaptureCore.h"
 #include "SpriteCaptureCore.h"
 #include "RendererReadiness.h"
@@ -31,6 +33,7 @@ namespace MiniMapSmelterCapture
     namespace Native = MiniMapReadbackNative;
     namespace
     {
+        MiniMapSpriteCapture::PrivateCaptureWorld privateWorld;
         Bindings bindings{};
         bool resolved=false, registered=false, attempted=false, finished=false;
         std::atomic<bool> stopping{false}, cancelled{false};
@@ -1146,6 +1149,7 @@ namespace MiniMapSmelterCapture
                     // validity permits provisional display, never quality inference.
                     if(!CheckCandidate(*candidateRequest,assemblyRecipe,captureWorld,true).Allowed())
                     {FailSpritePublication("capture_source_changed_before_publication");return;}
+                    privateWorld.ObserveProduction(candidateRequest->Candidate,image.Rgba.data(),image.Rgba.size());
                     MiniMapBuildingSprites::Complete(candidateRequest->Lease,assemblyBounds,image.Rgba,
                         candidateRequest->Observation.Readiness);
                     candidateRequest->PublicationFinished=true; // completion/failure recorded by publication
@@ -1380,22 +1384,7 @@ namespace MiniMapSmelterCapture
             meshTransform.NewRotation=SDK::FRotator(0,0,0);meshTransform.bTeleport=true;
             if(!Invoke(mesh,functions.Items[1],meshTransform)){FailBeforeCapture("mesh transform dispatch failed");return;}
             }
-            capture->PrimaryComponentTick.bCanEverTick=false; capture->bReplicates=false;
-            capture->bAutoActivate=false; capture->bCanEverAffectNavigation=false;
-            capture->bCaptureEveryFrame=false;capture->bCaptureOnMovement=false;
-            capture->bAlwaysPersistRenderingState=false;capture->bUseRayTracingIfEnabled=false;
-            capture->ProjectionType=SDK::ECameraProjectionMode::Orthographic;
-            capture->PrimitiveRenderMode=SDK::ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
-            capture->CaptureSource=SDK::ESceneCaptureSource::SCS_SceneColorHDR;
-            capture->CompositeMode=SDK::ESceneCaptureCompositeMode::SCCM_Overwrite;
-            capture->OrthoWidth=float(2.0*(std::max)(extent.X,extent.Y)*1.1);
-            capture->bAutoCalculateOrthoPlanes=true;capture->bUpdateOrthoPlanes=true;
-            capture->bUseCameraHeightAsViewTarget=false; capture->bEnableOrthographicTiling=false;
-            capture->bRenderInMainRenderer=false;capture->bMainViewFamily=false;
-            capture->bMainViewResolution=false;capture->bMainViewCamera=false;
-            capture->bInheritMainViewCameraPostProcessSettings=false;
-            capture->PostProcessBlendWeight=0;capture->bEnableClipPlane=false;
-            capture->bUseCustomProjectionMatrix=false;
+            MiniMapSpriteCapture::ConfigureSceneCapture(capture,extent);
             SDK::FEngineShowFlagsSetting flags[10]{};
             const wchar_t* names[]={L"Fog",L"Atmosphere",L"VolumetricFog",L"Cloud",L"MotionBlur",L"TemporalAA",L"AntiAliasing",L"PostProcessing",L"Bloom",L"EyeAdaptation"};
             for(int i=0;i<10;++i){flags[i].ShowFlagName=SDK::FString(names[i]);flags[i].Enabled=false;}
@@ -1647,6 +1636,7 @@ namespace MiniMapSmelterCapture
             if(!GameThread()){LOG_ERROR("MiniMap: R2 before-EndPlay is not game thread; component retirement NOT certified");return;}
             if(scheduling.test_and_set(std::memory_order_acquire)){LOG_ERROR("MiniMap: R2 before-EndPlay overlaps capture scheduling; retirement NOT certified");return;}
             Scope scope;
+            privateWorld.EndSession(world);
             ClearResourceWatches();MiniMapRendererReadiness::ReleaseMetadata();
             // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: clean while this world is current.
             if(preparedStatic.Pending&&preparedStatic.World==world)
@@ -1668,6 +1658,7 @@ namespace MiniMapSmelterCapture
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CaptureTick,true);
             if(stopping.load()||!GameThread()||scheduling.test_and_set(std::memory_order_acquire))return;
             Scope scope;
+            privateWorld.Service(); // Same worker tick: independent private job, never production publication.
             // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: one sequence per guarded GT tick.
             ++captureServiceSequence;
 #if defined(MINIMAP_BUILDING_SPRITES)
@@ -1839,6 +1830,7 @@ namespace MiniMapSmelterCapture
             // Shared job pointer is inspected only under the scheduling guard.
             if(!scheduling.test_and_set(std::memory_order_acquire))
             {Scope scope;Native::Cancel(job);if(GameThread()){
+                privateWorld.EndSession(MiniMapMap::GetWorld());
                 // A.4.9l TEMPORARY NEXT-TICK STATIC CAPTURE: unsubmitted jobs need no GPU retirement.
                 if(preparedStatic.Pending)FailBeforeCapture("shutdown_before_static_dispatch");
                 // One nonblocking retirement opportunity; never wait during shutdown.
@@ -1858,6 +1850,14 @@ namespace MiniMapSmelterCapture
     }
     bool HasResourceWatchCapacity()
     {for(const auto* w:resourceWatches)if(!w)return true;return false;}
+    void OfferParallelBlueprint(const MiniMapSpriteCapture::Candidate& candidate, uintptr_t type,
+        uint32_t building, void* gameplayWorld) noexcept
+    {
+        if (!resolved || !registered || !GameThread() || stopping.load() ||
+            scheduling.test_and_set(std::memory_order_acquire)) return;
+        Scope scope;
+        privateWorld.OfferCandidate(candidate,type,building,gameplayWorld);
+    }
     bool CanAcceptCandidate()
     {
         if(!MiniMapMap::GameplayReady())return false;return resolved&&registered&&GameThread()&&!stopping.load()&&finished&&baselineRetired&&!job&&!mesh&&!capture&&!target&&!assemblyActive&&!assemblyPending&&!assemblyRootCount&&!pendingSkeletalTest&&!ownerLease;}
@@ -2025,6 +2025,17 @@ namespace MiniMapSmelterCapture
 #endif
         return accepted;
 #endif
+    }
+    void OnGameplaySessionReady(void* world, uint64_t generation) noexcept
+    {
+        if (!registered || stopping.load() || !world || !generation)
+        { LOG_WARN("MiniMap: private_capture_world step=owner_readiness outcome=failure reason=capture_worker_or_session_unavailable"); return; }
+        if (!GameThread())
+        { LOG_ERROR("MiniMap: private_capture_world step=game_thread outcome=failure reason=session_notification_off_thread"); return; }
+        if (scheduling.test_and_set(std::memory_order_acquire))
+        { LOG_ERROR("MiniMap: private_capture_world step=owner_readiness outcome=failure reason=session_notification_overlaps_worker"); return; }
+        Scope scope;
+        privateWorld.OnSessionReady(world, generation);
     }
     bool ResolvePrerequisites()
     {

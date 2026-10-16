@@ -169,7 +169,14 @@ namespace MiniMapReadbackNative
     {
         const auto& b = GetBindings();
         if (!b.GpuCount) return false;
-        GNumExplicitGPUsForRendering = *reinterpret_cast<const uint32*>(b.GpuCount);
+        const auto count = *reinterpret_cast<const uint32*>(b.GpuCount);
+        // The existing game-thread preflight precedes the first job. Afterwards
+        // header-inline RHI code may read this snapshot on either render job;
+        // never rewrite it while another renderer can have callbacks in flight.
+        if (!count || count > 8) return false;
+        if (!GNumExplicitGPUsForRendering) GNumExplicitGPUsForRendering = count;
+        else if (GNumExplicitGPUsForRendering != count)
+        { SetStatus("GPU-count changed after immutable readback snapshot"); return false; }
         const bool ready = Operations::Prerequisites();
         if (!ready) SetStatus("RHI initialization/threading/GPU-count/backend prerequisite unavailable");
         return ready;
