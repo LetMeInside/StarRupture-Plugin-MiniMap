@@ -10,6 +10,7 @@
 #include "Native/TextureAccess.h"
 #include "Native/BC3Decode.h"
 #include "plugin_helpers.h"
+#include "Native/MapMenuDevSettingsLookup.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
@@ -104,40 +105,6 @@ namespace
                 sizeof(value));
         }
         return value;
-    }
-
-    SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
-    {
-        if (g_foundablesSelf == nullptr ||
-            g_foundablesSelf->hooks == nullptr ||
-            g_foundablesSelf->hooks->ObjectWalker == nullptr)
-        {
-            return nullptr;
-        }
-
-        auto* walker = g_foundablesSelf->hooks->ObjectWalker;
-        if (!walker->IsReady())
-        {
-            return nullptr;
-        }
-
-        PluginObjectInfo objects[8] = {};
-
-        const int count =
-            walker->FindObjectsByClassNameInto(
-                "CrMapMenuDevSettings",
-                PluginObjectLookup_CDOOnly,
-                objects,
-                8);
-
-        if (count != 1 ||
-            objects[0].object == nullptr)
-        {
-            return nullptr;
-        }
-
-        return static_cast<SDK::UCrMapMenuDevSettings*>(
-            objects[0].object);
     }
 
     SDK::UCrPlayerMapMenuDataComponent* GetLocalMapDataComponent()
@@ -648,7 +615,7 @@ namespace
 
         if (g_devSettings == nullptr)
         {
-            g_devSettings = FindMapMenuDevSettingsCDO();
+            g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(g_foundablesSelf, false);
 
             if (g_devSettings == nullptr)
             {

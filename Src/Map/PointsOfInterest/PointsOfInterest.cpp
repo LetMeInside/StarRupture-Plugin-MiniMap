@@ -11,6 +11,7 @@
 #include "Native/TextureAccess.h"
 #include "Native/BC3Decode.h"
 #include "plugin_helpers.h"
+#include "Native/MapMenuDevSettingsLookup.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
@@ -212,46 +213,6 @@ namespace
      */
     std::unordered_map<uint32_t, PluginTextureHandle>
         g_iconCache;
-
-
-    SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
-    {
-        if (g_self == nullptr ||
-            g_self->hooks == nullptr ||
-            g_self->hooks->ObjectWalker == nullptr)
-        {
-            return nullptr;
-        }
-
-        auto* walker =
-            g_self->hooks->ObjectWalker;
-
-        if (!walker->IsReady())
-        {
-            return nullptr;
-        }
-
-        PluginObjectInfo objects[8] = {};
-
-        const int count =
-            walker->FindObjectsByClassNameInto(
-                "CrMapMenuDevSettings",
-                PluginObjectLookup_CDOOnly,
-                objects,
-                8);
-
-        if (count !=
-                1 ||
-            objects[0].object ==
-                nullptr)
-        {
-            return nullptr;
-        }
-
-        return static_cast<
-            SDK::UCrMapMenuDevSettings*>(
-                objects[0].object);
-    }
 
 
     SDK::UCrPlayerMapMenuDataComponent*
@@ -956,7 +917,7 @@ namespace
             nullptr)
         {
             g_devSettings =
-                FindMapMenuDevSettingsCDO();
+                MiniMapNative::FindMapMenuDevSettingsCDO(g_self, false);
 
             if (g_devSettings ==
                 nullptr)

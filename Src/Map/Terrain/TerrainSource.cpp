@@ -9,6 +9,7 @@
 
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
+#include "Native/MapMenuDevSettingsLookup.h"
 
 #include <cmath>
 
@@ -16,71 +17,6 @@ namespace
 {
     IPluginSelf* g_sourceSelf = nullptr;
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
-
-
-    SDK::UCrMapMenuDevSettings* FindMapMenuDevSettingsCDO()
-    {
-        if (g_sourceSelf == nullptr ||
-            g_sourceSelf->hooks == nullptr ||
-            g_sourceSelf->hooks->ObjectWalker == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: ObjectWalker is unavailable");
-
-            return nullptr;
-        }
-
-        auto* walker =
-            g_sourceSelf->hooks->ObjectWalker;
-
-        if (!walker->IsReady())
-        {
-            LOG_ERROR(
-                "MiniMap: ObjectWalker is not ready");
-
-            return nullptr;
-        }
-
-        PluginObjectInfo objects[8] = {};
-
-        const int count =
-            walker->FindObjectsByClassNameInto(
-                "CrMapMenuDevSettings",
-                PluginObjectLookup_CDOOnly,
-                objects,
-                8);
-
-        LOG_INFO(
-            "MiniMap: found %d CrMapMenuDevSettings CDO(s)",
-            count);
-
-        const int loggedCount =
-            count < 8 ? count : 8;
-
-        for (int i = 0; i < loggedCount; ++i)
-        {
-            LOG_INFO(
-                "MiniMap: DevSettings CDO [%d]: "
-                "object=%p name=%s class=%s",
-                i,
-                objects[i].object,
-                objects[i].objectName,
-                objects[i].className);
-        }
-
-        if (count != 1 ||
-            objects[0].object == nullptr)
-        {
-            LOG_WARN(
-                "MiniMap: expected exactly one "
-                "CrMapMenuDevSettings CDO");
-
-            return nullptr;
-        }
-
-        return static_cast<SDK::UCrMapMenuDevSettings*>(
-            objects[0].object);
-    }
 
 
     SDK::UCrMapMenuTerrainData* LoadTerrainData()
@@ -100,7 +36,7 @@ namespace
         if (g_devSettings == nullptr)
         {
             g_devSettings =
-                FindMapMenuDevSettingsCDO();
+                MiniMapNative::FindMapMenuDevSettingsCDO(g_sourceSelf, true);
 
             if (g_devSettings == nullptr)
             {
