@@ -1357,31 +1357,6 @@ namespace MiniMapBuildingRepresentation
             StopImpl();
         }
 
-        bool MatchingBuild()
-        {
-            // Guard direct read contracts with the installed executable's RSDS
-            // GUID/age, not just signatures shared by other Unreal builds.
-            const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-            if(!Readable(base,sizeof(IMAGE_DOS_HEADER)))return false;
-            const auto dos=Value<IMAGE_DOS_HEADER>(base,0);
-            if(dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>1024*1024)return false;
-            IMAGE_NT_HEADERS64 nt{};
-            if(!Read(base,size_t(dos.e_lfanew),nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64)return false;
-            const auto dir=nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-            if(!dir.VirtualAddress||dir.Size>4096||dir.Size%sizeof(IMAGE_DEBUG_DIRECTORY)||dir.VirtualAddress>nt.OptionalHeader.SizeOfImage||
-                dir.Size>nt.OptionalHeader.SizeOfImage-dir.VirtualAddress||!Readable(base+dir.VirtualAddress,dir.Size))return false;
-            constexpr uint8_t guid[16]={0xa9,0xae,0xcb,0x41,0xc3,0x7a,0xda,0x99,0xb9,0x47,0xa1,0xdb,0x9c,0x10,0x21,0xed};
-            for(size_t i=0;i<dir.Size/sizeof(IMAGE_DEBUG_DIRECTORY);++i)
-            {
-                const auto d=Value<IMAGE_DEBUG_DIRECTORY>(base+dir.VirtualAddress,i*sizeof(IMAGE_DEBUG_DIRECTORY));
-                if(d.Type!=IMAGE_DEBUG_TYPE_CODEVIEW||d.SizeOfData<24||d.AddressOfRawData>nt.OptionalHeader.SizeOfImage||
-                    d.SizeOfData>nt.OptionalHeader.SizeOfImage-d.AddressOfRawData||!Readable(base+d.AddressOfRawData,24))continue;
-                const auto data=base+d.AddressOfRawData;
-                if(Value<uint32_t>(data,0)==0x53445352&&Value<uint32_t>(data,20)==1&&
-                    std::memcmp(reinterpret_cast<const void*>(data+4),guid,16)==0)return true;
-            }
-            return false;
-        }
     }
     BlueprintIdentityResult GetBlueprintIdentity(const MiniMapBuildingCollector::Record& record)
     {
@@ -1736,7 +1711,7 @@ namespace MiniMapBuildingRepresentation
     }
     bool ResolvePrerequisites()
     {
-        if(!MatchingBuild()){LOG_WARN("MiniMap: R2.4 matching CL-127004 executable identity unavailable; disabled");return false;}
+        if(!MiniMapReadbackNative::MatchesCaptureRetirementBuild()){LOG_WARN("MiniMap: R2.4 matching CL-127004 executable identity unavailable; disabled");return false;}
         const auto anchor=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::ObjectArrayAnchor,false);
         if(!anchor||Value<uint8_t>(anchor,0x15)!=0x48||Value<uint8_t>(anchor,0x16)!=0x8d||Value<uint8_t>(anchor,0x17)!=0x0d)return false;
         const auto displacement=Value<int32_t>(anchor,0x18);

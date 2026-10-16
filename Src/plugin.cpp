@@ -34,6 +34,7 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
 #include "Map/Terrain/TerrainCache.h"
+#include "CacheIdentity.h"
 #include "Map/Map.h"
 #include <cstdint>
 #endif
@@ -224,6 +225,9 @@ extern "C"
         bool PluginInit(IPluginSelf* self)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInit,false,self);
+#ifdef MODLOADER_CLIENT_BUILD
+        MiniMapCacheIdentity::Reset();
+#endif
         g_self = self;
 
         if (g_self == nullptr ||
@@ -256,57 +260,16 @@ extern "C"
             return false;
         }
 
-        bool hasLegacyTerrainCache = false;
+        std::filesystem::path terrainRoot;
+        const char* cacheFailure = nullptr;
+        if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
+            !MiniMapCacheIdentity::Initialize(terrainRoot.parent_path(),
+                &MiniMapTerrainCache::Clear, cacheFailure))
         {
-            std::filesystem::path terrainCacheRoot;
-            if (MiniMapTerrainCache::GetCacheRoot(terrainCacheRoot))
-            {
-                std::error_code error;
-                std::filesystem::recursive_directory_iterator iterator(
-                    terrainCacheRoot,
-                    error);
-                const std::filesystem::recursive_directory_iterator end;
-
-                if (error != std::errc::no_such_file_or_directory && error)
-                {
-                    LOG_WARN(
-                        "MiniMap: failed to inspect terrain cache for legacy files: %s",
-                        error.message().c_str());
-                }
-                else
-                {
-                    while (iterator != end && !error)
-                    {
-                        const auto& entry = *iterator;
-                        if (entry.path().extension() == L".mmc" &&
-                            entry.is_regular_file(error))
-                        {
-                            hasLegacyTerrainCache = true;
-                            break;
-                        }
-
-                        if (error)
-                        {
-                            break;
-                        }
-
-                        iterator.increment(error);
-                    }
-
-                    if (error)
-                    {
-                        LOG_WARN(
-                            "MiniMap: failed while inspecting terrain cache for legacy files: %s",
-                            error.message().c_str());
-                    }
-                }
-            }
-        }
-
-        if (hasLegacyTerrainCache &&
-            !MiniMapTerrainCache::Clear())
-        {
-            // Clear() reports its own failure; continue plugin initialization.
+            LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
+                cacheFailure ? cacheFailure : "cache root unavailable");
+            g_self = nullptr;
+            return false;
         }
 
         if (!MiniMapUI::Initialize(
@@ -314,6 +277,8 @@ extern "C"
         {
             LOG_ERROR(
                 "MiniMap: UI initialization failed");
+
+            MiniMapCacheIdentity::Reset();
 
             g_self = nullptr;
             return false;
@@ -508,6 +473,7 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+        MiniMapCacheIdentity::Reset();
         g_worldEnding=true;
         SetServicesAdmitted(false);
         MiniMapUI::Hide();
