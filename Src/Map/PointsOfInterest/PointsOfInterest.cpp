@@ -21,7 +21,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -62,42 +61,6 @@ namespace
     constexpr uint8_t kAbandonedBaseType =
         2;
 
-    constexpr std::ptrdiff_t kActorRootComponentOffset =
-        0x1B8;
-
-    constexpr std::ptrdiff_t kActorStateOffset =
-        0x2E8;
-
-    constexpr std::ptrdiff_t kActorTypeOffset =
-        0x2E9;
-
-    constexpr std::ptrdiff_t kActorGuidOffset =
-        0x354;
-
-    constexpr std::ptrdiff_t kCategoryIconOffset =
-        0x50;
-
-    constexpr std::ptrdiff_t kCategoryCanHideByFogOffset =
-        0x101;
-
-    constexpr std::ptrdiff_t kCategoryLegendFilterOffset =
-        0x108;
-
-    constexpr std::ptrdiff_t kCategoryUnknownIconOffset =
-        0x110;
-
-    constexpr std::ptrdiff_t kCategoryCompletedBaseIconOffset =
-        0x1C0;
-
-    constexpr std::ptrdiff_t kReplicatorDataArrayOffset =
-        0x3F8;
-
-    constexpr std::ptrdiff_t kAbandonBaseRecordGuidOffset =
-        0x0C;
-
-    constexpr std::size_t kAbandonBaseRecordStride =
-        0x78;
-
     constexpr int32_t kMaximumReasonableAbandonBaseRecords =
         4096;
 
@@ -127,23 +90,6 @@ namespace
 
     static_assert(
         sizeof(NativeActorArray) ==
-        0x10);
-
-
-    struct NativeAbandonBaseArray
-    {
-        uint8_t* Data =
-            nullptr;
-
-        int32_t Num =
-            0;
-
-        int32_t Max =
-            0;
-    };
-
-    static_assert(
-        sizeof(NativeAbandonBaseArray) ==
         0x10);
 
 
@@ -256,87 +202,6 @@ namespace
         return
             player->
                 PlayerMapMenuDataComponent;
-    }
-
-
-    uint8_t ReadByte(
-        const void* object,
-        std::ptrdiff_t offset)
-    {
-        uint8_t value =
-            0;
-
-        if (object !=
-            nullptr)
-        {
-            std::memcpy(
-                &value,
-                static_cast<const uint8_t*>(
-                    object) +
-                    offset,
-                sizeof(value));
-        }
-
-        return value;
-    }
-
-
-    POIGuid ReadGuid(
-        const SDK::AActor* actor)
-    {
-        POIGuid guid = {};
-
-        if (actor !=
-            nullptr)
-        {
-            std::memcpy(
-                &guid,
-                reinterpret_cast<const uint8_t*>(
-                    actor) +
-                    kActorGuidOffset,
-                sizeof(guid));
-        }
-
-        return guid;
-    }
-
-
-    SDK::USceneComponent* ReadRootComponent(
-        const SDK::AActor* actor)
-    {
-        SDK::USceneComponent* component =
-            nullptr;
-
-        if (actor !=
-            nullptr)
-        {
-            std::memcpy(
-                &component,
-                reinterpret_cast<const uint8_t*>(
-                    actor) +
-                    kActorRootComponentOffset,
-                sizeof(component));
-        }
-
-        return component;
-    }
-
-
-    const SDK::FSlateBrush* BrushAt(
-        const SDK::UCrMapMenuPOIData* category,
-        std::ptrdiff_t offset)
-    {
-        if (category ==
-            nullptr)
-        {
-            return nullptr;
-        }
-
-        return reinterpret_cast<
-            const SDK::FSlateBrush*>(
-                reinterpret_cast<const uint8_t*>(
-                    category) +
-                offset);
     }
 
 
@@ -487,59 +352,44 @@ namespace
             return nullptr;
         }
 
-        NativeAbandonBaseArray array = {};
+        const auto& entries = replicator->AbandonBaseDataContainer.AbandonBaseData;
+        const auto* data = entries.GetDataPtr();
+        const int32_t count = entries.Num();
+        const int32_t capacity = entries.Max();
 
-        std::memcpy(
-            &array,
-            reinterpret_cast<const uint8_t*>(
-                replicator) +
-                kReplicatorDataArrayOffset,
-            sizeof(array));
-
-        if (array.Num < 0 ||
-            array.Max < array.Num ||
-            array.Num >
+        if (count < 0 ||
+            capacity < count ||
+            count >
                 kMaximumReasonableAbandonBaseRecords ||
-            array.Max >
+            capacity >
                 kMaximumReasonableAbandonBaseRecords)
         {
             return nullptr;
         }
 
-        if (array.Num == 0)
+        if (count == 0)
         {
             return nullptr;
         }
 
-        if (array.Data == nullptr)
+        if (data == nullptr)
         {
             return nullptr;
         }
 
         for (int32_t index = 0;
-            index < array.Num;
+            index < count;
             ++index)
         {
-            const uint8_t* record =
-                array.Data +
-                static_cast<std::size_t>(
-                    index) *
-                kAbandonBaseRecordStride;
-
-            POIGuid recordGuid = {};
-
-            std::memcpy(
-                &recordGuid,
-                record +
-                    kAbandonBaseRecordGuidOffset,
-                sizeof(recordGuid));
+            const auto& record = data[index];
+            const auto& id = record.AbandonBasePOIId;
+            const POIGuid recordGuid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
+                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
 
             if (recordGuid ==
                 guid)
             {
-                return reinterpret_cast<
-                    const SDK::FCrAbandonBaseData*>(
-                        record);
+                return &record;
             }
         }
 
@@ -617,31 +467,15 @@ namespace
             return nullptr;
         }
 
-        std::ptrdiff_t brushOffset =
-            kCategoryIconOffset;
+        const SDK::FSlateBrush* brush = &category->Icon;
 
-        if (variant ==
-            IconVariant::Unknown)
+        if (variant == IconVariant::Unknown)
         {
-            brushOffset =
-                kCategoryUnknownIconOffset;
+            brush = &category->UnknownIcon;
         }
-        else if (variant ==
-            IconVariant::Completed)
+        else if (variant == IconVariant::Completed)
         {
-            brushOffset =
-                kCategoryCompletedBaseIconOffset;
-        }
-
-        const SDK::FSlateBrush* brush =
-            BrushAt(
-                category,
-                brushOffset);
-
-        if (brush ==
-            nullptr)
-        {
-            return nullptr;
+            brush = &category->AbandonBaseCompletedIcon;
         }
 
         SDK::UTexture2D* texture =
@@ -726,10 +560,8 @@ namespace
             return false;
         }
 
-        const uint8_t state =
-            ReadByte(
-                actor,
-                kActorStateOffset);
+        const auto* marker = static_cast<const SDK::ACrPointOfInterestMarkerActor*>(actor);
+        const uint8_t state = static_cast<uint8_t>(marker->PointOfInterestState);
 
         if (state ==
                 kStateHidden ||
@@ -747,10 +579,7 @@ namespace
             return false;
         }
 
-        const uint8_t poiType =
-            ReadByte(
-                actor,
-                kActorTypeOffset);
+        const uint8_t poiType = static_cast<uint8_t>(marker->PointOfInterestType);
 
         const SDK::UCrMapMenuPOIData* category =
             native->
@@ -772,9 +601,7 @@ namespace
         const uint8_t leafFilter =
             unknown
                 ? kUnknownFilter
-                : ReadByte(
-                    category,
-                    kCategoryLegendFilterOffset);
+                : static_cast<uint8_t>(category->LegendFilter);
 
         if (!native->
                 pointsOfInterest.
@@ -785,9 +612,9 @@ namespace
             return false;
         }
 
-        const POIGuid guid =
-            ReadGuid(
-                actor);
+        const auto& id = marker->Guid;
+        const POIGuid guid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
+                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
 
         IconVariant iconVariant =
             unknown
@@ -838,9 +665,7 @@ namespace
             return false;
         }
 
-        SDK::USceneComponent* root =
-            ReadRootComponent(
-                actor);
+        SDK::USceneComponent* root = actor->RootComponent;
 
         if (root ==
             nullptr)
@@ -856,11 +681,7 @@ namespace
                 root,
                 &location);
 
-        const bool canHideByFog =
-            ReadByte(
-                category,
-                kCategoryCanHideByFogOffset) !=
-            0;
+        const bool canHideByFog = category->CanBeHiddenByFogOfWar;
 
         if (canHideByFog &&
             !MiniMapFogOfWar::
