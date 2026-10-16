@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
 #include "NativeApi.h"
@@ -98,7 +98,7 @@ namespace MiniMapReadbackNative
         return 0;
     }
 
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     bool MatchesCaptureRetirementBuild()
     {
         const uintptr_t base =

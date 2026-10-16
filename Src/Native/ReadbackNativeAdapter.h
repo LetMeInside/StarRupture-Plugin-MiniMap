@@ -1,9 +1,9 @@
 #pragma once
 
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include <cstdint>
 #include "CaptureRetirementCore.h"
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "FloatReadbackPixels.h"
 #endif
 namespace MiniMapReadbackNative
@@ -35,7 +35,7 @@ namespace MiniMapReadbackNative
         double CompletionMs = 0;
     };
     // One job; native objects remain private to this TU's render commands.
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Resource is GC-protected by the game-thread capture owner through retirement.
     Job* CreateExternalJob(void* resource, uint32_t width, uint32_t height);
     // Owner may call ONLY before builder Execute; no capture may reference it yet.

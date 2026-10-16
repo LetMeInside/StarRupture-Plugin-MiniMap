@@ -1,6 +1,6 @@
 #pragma once
 #include "RendererReadinessCore.h"
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 namespace MiniMapStaticAssembly {struct Recipe;}
 namespace MiniMapRendererReadiness
 {

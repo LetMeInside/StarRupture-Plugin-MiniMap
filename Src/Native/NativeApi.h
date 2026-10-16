@@ -5,11 +5,26 @@
 #include <cstdint>
 #include <cstddef>
 
+class FRHIComputeCommandList;
+struct FRHITransitionInfo;
+template<typename InElementType, typename InSizeType> class TArrayView;
+enum class ERHITransitionCreateFlags;
+
 namespace SDK
 {
+    class UActorComponent;
+    class UTextureRenderTarget2D;
+    class UStaticMeshComponent;
+    class UStaticMesh;
+    class UPrimitiveComponent;
+    class UMeshComponent;
+    class UMaterialInterface;
+    class USceneCaptureComponent2D;
+    struct FTransform;
     enum class EMassFragmentAccess : uint8_t;
     enum class EMassFragmentPresence : uint8_t;
     class UObject;
+    template<typename ClassType> class TSubclassOf;
     class UTexture2D;
     class UStreamableRenderAsset;
 
@@ -42,6 +57,18 @@ namespace MiniMapNative
 {
     struct AssetApi
     {
+        using SpawnObjectFn = SDK::UObject* (*)(const SDK::TSubclassOf<SDK::UObject>*, SDK::UObject*);
+        SpawnObjectFn spawnObject = nullptr;
+        using GetTransientPackageFn = SDK::UObject* (*)();
+        GetTransientPackageFn getTransientPackage = nullptr;
+        using SetObjectFlagsFn = void (*)(SDK::UObject*, uint32_t);
+        SetObjectFlagsFn setObjectFlags = nullptr;
+        using RetainObjectFn = void (*)(SDK::UObject*);
+        RetainObjectFn retainObject = nullptr;
+        // Native GExitPurge-guarded wrapper; never substitute direct ReleaseRef.
+        using ReleaseObjectFn = void (*)(SDK::UObject*);
+        ReleaseObjectFn releaseObject = nullptr;
+
         using LoadSynchronousFn =
             SDK::UObject* (*)(void*);
 
@@ -51,6 +78,23 @@ namespace MiniMapNative
 
     struct PlayerApi
     {
+        using RegisterComponentFn = void (*)(SDK::UActorComponent*, SDK::UWorld*, void*);
+        RegisterComponentFn registerComponent = nullptr;
+        using UnregisterComponentFn = void (*)(SDK::UActorComponent*);
+        UnregisterComponentFn unregisterComponent = nullptr;
+        using DestroyComponentFn = void (*)(SDK::UActorComponent*, bool);
+        DestroyComponentFn destroyComponent = nullptr;
+        using SetStaticMeshFn = bool (*)(SDK::UStaticMeshComponent*, SDK::UStaticMesh*);
+        SetStaticMeshFn setStaticMesh = nullptr;
+        using SetVisibleInSceneCaptureOnlyFn = void (*)(SDK::UPrimitiveComponent*, bool);
+        SetVisibleInSceneCaptureOnlyFn setVisibleInSceneCaptureOnly = nullptr;
+        using IsGameThreadFn = bool (*)();
+        IsGameThreadFn isGameThread = nullptr;
+        using SetMaterialFn = void (*)(SDK::UMeshComponent*, int32_t, SDK::UMaterialInterface*);
+        SetMaterialFn setMaterial = nullptr;
+        using SetWorldTransformFn = void (*)(SDK::USceneComponent*, const SDK::FTransform&, bool, void*, uint8_t);
+        SetWorldTransformFn setWorldTransform = nullptr;
+
         using GetFirstPlayerControllerFn =
             SDK::APlayerController* (*)(
                 const SDK::UWorld*);
@@ -284,6 +328,31 @@ namespace MiniMapNative
 
     struct TextureApi
     {
+        using InitRenderTargetFn = void (*)(SDK::UTextureRenderTarget2D*, uint32_t, uint32_t, uint8_t, bool);
+        InitRenderTargetFn initRenderTarget = nullptr;
+        using GetRenderTargetResourceFn = void* (*)(SDK::UTextureRenderTarget2D*);
+        GetRenderTargetResourceFn getRenderTargetResource = nullptr;
+        using RenderGraphBuilderConstructFn = void (*)(void*, void*);
+        RenderGraphBuilderConstructFn renderGraphBuilderConstruct = nullptr;
+        using RenderGraphBuilderExecuteFn = void (*)(void*);
+        RenderGraphBuilderExecuteFn renderGraphBuilderExecute = nullptr;
+        using RenderGraphBuilderDestroyFn = void (*)(void*);
+        RenderGraphBuilderDestroyFn renderGraphBuilderDestroy = nullptr;
+        using UpdateSceneCaptureFn = void (*)(SDK::USceneCaptureComponent2D*, void*, void*);
+        UpdateSceneCaptureFn updateSceneCapture = nullptr;
+        using TransitionResourcesFn = void (*)(FRHIComputeCommandList*, TArrayView<const FRHITransitionInfo, int32_t>, ERHITransitionCreateFlags);
+        TransitionResourcesFn transitionResources = nullptr;
+        using RenderFenceConstructFn = void (*)(void*);
+        RenderFenceConstructFn renderFenceConstruct = nullptr;
+        using RenderFenceDestroyFn = void (*)(void*);
+        RenderFenceDestroyFn renderFenceDestroy = nullptr;
+        using RenderFenceBeginFn = void (*)(void*, int32_t);
+        RenderFenceBeginFn renderFenceBegin = nullptr;
+        using RenderFencePollFn = bool (*)(const void*);
+        RenderFencePollFn renderFencePoll = nullptr;
+        using ShowOnlyComponentExecFn = void (*)(void*, void*, void*);
+        ShowOnlyComponentExecFn showOnlyComponentExec = nullptr;
+
         using GetBrushTextureFn =
             SDK::UTexture2D* (*)(
                 const SDK::FSlateBrush&);

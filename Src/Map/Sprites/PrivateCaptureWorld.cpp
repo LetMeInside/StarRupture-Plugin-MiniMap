@@ -1,4 +1,4 @@
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "PrivateCaptureWorld.h"
 #include "SpriteCaptureCore.h"
 #include "SceneCaptureConfiguration.h"
@@ -12,7 +12,6 @@
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Native/ReadbackNativeBindings.h"
-#include "Native/SmelterCaptureNativeBindings.h"
 #include "Map/Sprites/BuildingRepresentation.h"
 #include "Map/Sprites/RepresentationMetadataPatterns.h"
 #include "Map/Map.h"
@@ -115,8 +114,7 @@ struct PrivateCaptureWorld::Implementation
         uint64_t Generation{};
         uintptr_t Base{}, Array{}, CreateFn{}, InitFn{}, UpdateFn{}, CleanupFn{};
         uintptr_t ContextFn{}, SubsystemFn{}, LockingFn{}, PurgeFn{}, ReachabilityFn{}, TickFn{}, VisibilityPendingFn{};
-        Root Retain{}, Release{};
-        Predicate GameThread{};
+        bool NativePrerequisitesVerified = false;
         Reference Private, Subsystems[3], Package, PersistentLevel, WorldSettings;
         uintptr_t Scene{};
         Baseline Before;
@@ -142,7 +140,7 @@ struct PrivateCaptureWorld::Implementation
     }
     bool CheckOwned(Reference& ref)
     {
-        if (!ref.Owned || ref.Uncertain || !state.GameThread || !state.GameThread()) return false;
+        if (!ref.Owned || ref.Uncertain || !state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread()) return false;
         Identity now;
         if (!Identify(ref.Object.Bits, now) || now.Bits != ref.Object.Bits || now.Index != ref.Object.Index) return false;
         if (now.Serial == ref.Object.Serial) return true;
@@ -208,11 +206,11 @@ struct PrivateCaptureWorld::Implementation
                     InitializationValues values;
                     *created = reinterpret_cast<Create>(state.CreateFn)(7, false, SDK::FName{}, 0, false, 5, &values, true);
                 } break;
-            case Operation::Retain: state.Retain(object); break;
+            case Operation::Retain: reinterpret_cast<Root>(MiniMapNative::Get()->asset.retainObject)(object); break;
             case Operation::Initialize: reinterpret_cast<Init>(state.InitFn)(object, InitializationValues{}); break;
             case Operation::UpdateComponents: reinterpret_cast<Update>(state.UpdateFn)(object, false, false, nullptr); break;
             case Operation::CleanupWorld: reinterpret_cast<Cleanup>(state.CleanupFn)(object, true, true, 0); break;
-            case Operation::Release: state.Release(object); break;
+            case Operation::Release: reinterpret_cast<Root>(MiniMapNative::Get()->asset.releaseObject)(object); break;
             }
             LOG_INFO("MiniMap: private_capture_world step=%s outcome=success evidence=normal_return_only", name);
             return true;
@@ -474,27 +472,26 @@ struct PrivateCaptureWorld::Implementation
         state.LockingFn = state.Base + entries[6].Rva; state.PurgeFn = state.Base + entries[7].Rva;
         state.ReachabilityFn = state.Base + entries[8].Rva; state.TickFn = state.Base + entries[9].Rva;
         state.VisibilityPendingFn = state.Base + entries[10].Rva;
-        const auto& native = MiniMapSmelterCapture::GetBindings();
+        const auto& native=*MiniMapNative::Get();
         // The existing resolver deliberately binds the GExitPurge-guarded
         // Release wrapper, not the direct ReleaseRef entry (entries[12]).
         // Both the wrapper and its branch target are fingerprinted above.
-        const bool retainVerified = native.Retain == state.Base + entries[11].Rva;
-        const bool releaseVerified = native.Release == state.Base + entries[13].Rva;
-        const bool threadVerified = native.GameThread == state.Base + entries[14].Rva;
+        const bool retainVerified = reinterpret_cast<uintptr_t>(native.asset.retainObject) == state.Base + entries[11].Rva;
+        const bool releaseVerified = reinterpret_cast<uintptr_t>(native.asset.releaseObject) == state.Base + entries[13].Rva;
+        const bool threadVerified = reinterpret_cast<uintptr_t>(native.player.isGameThread) == state.Base + entries[14].Rva;
         LOG_INFO("MiniMap: private_capture_world prerequisites AddRef=%s Release=%s GameThread=%s",
-                 retainVerified ? "verified" : (native.Retain ? "mismatch" : "missing"),
-                 releaseVerified ? "verified_guarded_wrapper" : (native.Release ? "mismatch" : "missing"),
-                 threadVerified ? "verified" : (native.GameThread ? "mismatch" : "missing"));
+                 retainVerified ? "verified" : (native.asset.retainObject ? "mismatch" : "missing"),
+                 releaseVerified ? "verified_guarded_wrapper" : (native.asset.releaseObject ? "mismatch" : "missing"),
+                 threadVerified ? "verified" : (native.player.isGameThread ? "mismatch" : "missing"));
         state.Failure = "existing_AddRef_binding_missing_or_mismatch";
         if (!retainVerified) return false;
         state.Failure = "existing_Release_wrapper_binding_missing_or_mismatch";
         if (!releaseVerified) return false;
         state.Failure = "existing_GameThread_binding_missing_or_mismatch";
         if (!threadVerified) return false;
-        state.GameThread = reinterpret_cast<Predicate>(native.GameThread);
-        state.Retain = reinterpret_cast<Root>(native.Retain); state.Release = reinterpret_cast<Root>(native.Release);
+        state.NativePrerequisitesVerified = true;
         state.Failure = "wrong_game_thread";
-        const bool gameThread = state.GameThread();
+        const bool gameThread = MiniMapNative::Get()->player.isGameThread();
         if (!Step("game_thread", gameThread, gameThread ? "verified" : "wrong_thread")) return false;
         // The verified wrapper reads GExitPurge at RVA 0xe268c10 and skips
         // ReleaseRef when set. Reject teardown before acquiring any references.
@@ -622,7 +619,7 @@ struct PrivateCaptureWorld::Implementation
         if (blueprint.Active && !blueprint.CaptureUsed) BeginBlueprintRetirement();
         if (blueprint.Active) { BlueprintQuarantine("session_end_with_private_work"); return; }
         if (state.Current == Phase::Quarantined) return;
-        if (!Step("cleanup_admission", state.GameThread && state.GameThread() && CleanupPreconditions(),
+        if (!Step("cleanup_admission", state.NativePrerequisitesVerified && MiniMapNative::Get() && MiniMapNative::Get()->player.isGameThread && MiniMapNative::Get()->player.isGameThread() && CleanupPreconditions(),
                   "requires_owned_isolated_world_unchanged_session_quiet_GC_no_streaming_or_visibility_no_private_work"))
         { Quarantine("cleanup_admission_failed"); return; }
 
@@ -661,7 +658,7 @@ struct PrivateCaptureWorld::Implementation
         // Boundary-only copied slot observation; never dereference released objects.
         if (!state.ReferencesReleased) return;
         DefinitionSlots::Slot slot; SlotReader reader;
-        const bool observed = state.GameThread && state.GameThread() && QuietGC() &&
+        const bool observed = state.NativePrerequisitesVerified && MiniMapNative::Get() && MiniMapNative::Get()->player.isGameThread && MiniMapNative::Get()->player.isGameThread() && QuietGC() &&
             DefinitionSlots::ReadSlot(reader, state.Array, state.Private.Object.Index, slot) == DefinitionSlots::Status::Success &&
             (!slot.Object || slot.Object != state.Private.Object.Bits ||
              (state.Private.Object.Serial > 0 && slot.Serial != state.Private.Object.Serial));
@@ -727,7 +724,7 @@ bool PrivateCaptureWorld::ValidateReady(void* world, uint64_t generation) noexce
     if (!impl || impl->state.Current != Implementation::Phase::Ready) return false;
     try {
         if (world == impl->state.SessionWorld && generation == impl->state.Generation &&
-            impl->state.GameThread && impl->state.GameThread() && impl->QuietGC() &&
+            impl->state.NativePrerequisitesVerified && MiniMapNative::Get() && MiniMapNative::Get()->player.isGameThread && MiniMapNative::Get()->player.isGameThread() && impl->QuietGC() &&
             impl->Unchanged() && impl->PrivateState(true)) return true;
         impl->Quarantine("request_session_or_persistent_ownership_invalid");
     } catch (...) { impl->Quarantine("ownership_validation_exception"); }

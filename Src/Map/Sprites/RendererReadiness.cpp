@@ -1,9 +1,8 @@
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "RendererReadiness.h"
 #include "StaticAssemblyCaptureCore.h"
 #include "BuildingRepresentation.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Native/SmelterCaptureNativeBindings.h"
 #include "Native/NativeApi.h"
 #include <Engine_classes.hpp>
 #include <cstring>
@@ -37,8 +36,9 @@ namespace MiniMapRendererReadiness
         std::array<Provider,8> providers{};size_t providerCount=0;uint64_t providerEpoch=0,resourceVersion=0,observationRevision=0;
         bool OnGameThread()
         {
-            const auto& b=MiniMapSmelterCapture::GetBindings();
-            return b.GameThread&&reinterpret_cast<bool(*)()>(b.GameThread)();
+            if (!MiniMapNative::Get()) return false;
+            const auto& b=*MiniMapNative::Get();
+            return b.player.isGameThread&&b.player.isGameThread();
         }
         MeshState ObserveMesh(const PreparedResource& resource)
         {

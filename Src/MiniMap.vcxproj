@@ -116,14 +116,11 @@
     <ClInclude Include="Map\Sprites\SpriteCaptureCore.h" />
     <ClInclude Include="Map\Sprites\BuildingSpritePipelineCore.h" />
     <ClInclude Include="Map\Sprites\BuildingSprites.h" />
-    <ClInclude Include="Native\StaticAssemblyCapturePatterns.inl" />
     <ClInclude Include="Map\Sprites\AssemblyRecipeAudit.inl" />
     <ClInclude Include="Map\Sprites\GenericRepresentationAudit.inl" />
     <ClInclude Include="Map\Sprites\SpriteClassificationAudit.inl" />
     <ClInclude Include="Map\Sprites\RepresentationMetadataPatterns.h" />
-    <ClInclude Include="Native\SmelterCaptureNativeBindings.h" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
-    <None Include="Native\SmelterCapturePatterns.inl" />
     <ClInclude Include="Native\ReadbackNativeBindings.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
@@ -176,7 +173,7 @@
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
-      <AdditionalIncludeDirectories Condition="'$(MiniMapStageR2SmelterCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(MiniMapStageR2BuildingCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />

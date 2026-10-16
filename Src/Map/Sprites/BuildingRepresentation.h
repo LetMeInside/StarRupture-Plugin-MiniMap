@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 #include "Native/DefinitionAcquisitionCore.h"
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 namespace MiniMapSpriteValidation { struct Result; }
 namespace MiniMapBuildingCollector { struct Record; }
 namespace MiniMapSpriteClassification { struct Observation; }

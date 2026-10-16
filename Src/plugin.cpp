@@ -90,12 +90,12 @@ void OnPluginLoadHooks(
     LOG_INFO(
         "MiniMap: native API initialized");
 
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
 #endif
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-    MiniMapSmelterCapture::ResolvePrerequisites();
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+    MiniMapBuildingCapture::ResolvePrerequisites();
     MiniMapBuildingRepresentation::ResolvePrerequisites();
 #endif
 
@@ -167,8 +167,8 @@ static void OnExperienceLoadComplete()
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     SetServicesAdmitted(true);
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-    MiniMapSmelterCapture::OnGameplaySessionReady(MiniMapMap::GetWorld(), g_worldGeneration);
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+    MiniMapBuildingCapture::OnGameplaySessionReady(MiniMapMap::GetWorld(), g_worldGeneration);
 #endif
     MiniMapUI::Show();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
@@ -435,8 +435,8 @@ extern "C"
             static_cast<unsigned long long>(
                 g_resolvedAddresses.memoryFree));
 
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-        MiniMapSmelterCapture::Initialize();
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        MiniMapBuildingCapture::Initialize();
         MiniMapBuildingRepresentation::Initialize();
 #endif
 #if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
@@ -480,8 +480,8 @@ extern "C"
 #if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
         MiniMapSpriteDiscovery::Shutdown();
 #endif
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
-        MiniMapSmelterCapture::Shutdown();
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        MiniMapBuildingCapture::Shutdown();
         MiniMapBuildingRepresentation::Shutdown();
 #endif
 

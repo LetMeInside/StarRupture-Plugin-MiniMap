@@ -102,7 +102,7 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Caller must be on the game thread. Borrowing ends when visitor returns.
     // Revalidates the Mass identity; does not resolve the copied UObject index.
     enum class DiagnosticVisitStatus { Visited,VisitorRejected,CollectorUnavailable,WorldGenerationChanged,InvalidCopiedDefinition,StaleEntity,ParametersUnavailable };

@@ -5,7 +5,7 @@
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "Map/Sprites/BuildingRepresentation.h"
 #endif
 #include "DebugText.h"
@@ -141,7 +141,7 @@ namespace
             if(type==base) return true;
         return false;
     }
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     std::array<uintptr_t,18> g_metadataRoots{};
     size_t g_metadataCount=0,g_metadataStep=0;
     Clock::time_point g_metadataRetry{};
@@ -454,7 +454,7 @@ namespace
 #endif
         g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
         g_curveScratch={};
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
         g_metadataRoots={};g_metadataCount=g_metadataStep=0;g_metadataRetry={};
 #endif
@@ -694,7 +694,7 @@ namespace
             if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             const auto definition=g_definitions.find(Key(r.DefinitionObjectIndex,r.BuildingId));
             if(definition!=g_definitions.end()&&definition->second.NameIndex==r.DefinitionIndex&&definition->second.NameNumber==r.DefinitionNumber)
             {
@@ -898,7 +898,7 @@ namespace MiniMapBuildingCollector
         std::scoped_lock lock(g_mutex); g_viewRadius=std::isfinite(radius)?radius:0;
     }
     std::shared_ptr<const Snapshot> GetSnapshot() { std::scoped_lock lock(g_mutex); return g_snapshot; }
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record& r,bool(*visitor)(const SDK::UObject*,void*),void* context)
     {
         const auto* n=MiniMapNative::Get();

@@ -1,11 +1,11 @@
 #pragma once
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "CaptureDispatchCore.h"
 namespace MiniMapStaticAssembly { struct Recipe; }
 namespace MiniMapSpriteCapture { struct Candidate;struct Decision; }
 namespace MiniMapBuildingCollector { struct Record; }
-namespace MiniMapSmelterCapture { bool ResolvePrerequisites(); void Initialize(); void Shutdown(); }
-namespace MiniMapSmelterCapture
+namespace MiniMapBuildingCapture { bool ResolvePrerequisites(); void Initialize(); void Shutdown(); }
+namespace MiniMapBuildingCapture
 {
     void OnGameplaySessionReady(void* world, uint64_t generation) noexcept;
     bool HasResourceWatchCapacity(); // GT, bounded ticket-array inspection only

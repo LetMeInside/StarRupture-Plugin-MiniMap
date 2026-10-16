@@ -3,7 +3,7 @@
 
 #include "BuildingInventory.h"
 #include "BuildingCollector.h"
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "Map/Sprites/BuildingRepresentation.h"
 #endif
 #include "Map/Map.h"
@@ -34,7 +34,7 @@ namespace
     SDK::UScriptStruct *g_building = nullptr, *g_transform = nullptr, *g_spline = nullptr;
     alignas(16) std::array<std::byte, 0x350> g_query = {};
     Clock::time_point g_nextPoll = {}, g_nextWarning = {};
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     std::array<uintptr_t,3> g_metadataRoots{};size_t g_metadataCount=0;
     Clock::time_point g_metadataRetry{};
 #endif
@@ -54,7 +54,7 @@ namespace
         if (g_constructed)
             if (const auto* native = MiniMapNative::Get()) native->mass.queryDestruct(g_query.data());
         g_constructed = false; g_query = {};
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
         g_metadataRoots={};g_metadataCount=0;g_metadataRetry={};
 #endif
@@ -66,7 +66,7 @@ namespace
             reason, static_cast<unsigned long long>(g_generation));
     }
 
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     SDK::UScriptStruct* FindStruct(const wchar_t* path,size_t size)
     {
         const auto p=MiniMapBuildingRepresentation::AcquireResidentMetadata(path,true,size);
@@ -98,7 +98,7 @@ namespace
         if (g_constructed && world == g_world && subsystem == g_subsystem && manager == g_manager) return true;
         if (g_constructed) Clear("world/manager changed");
         if (!manager || !g_inventorySelf->hooks->ObjectWalker->IsReady()) return false;
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         if(Clock::now()<g_metadataRetry)return false;
         if(!g_building){g_building=FindStruct(L"/Script/Chimera.CrMassBuildingTag",sizeof(SDK::FCrMassBuildingTag));return false;}
         if(!g_transform){g_transform=FindStruct(L"/Script/MassCommon.TransformFragment",sizeof(SDK::FTransform));return false;}
@@ -179,7 +179,7 @@ namespace
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::InventoryTick,true);
         if(!MiniMapMap::GameplayReady())return;
         if (!g_ready || !MiniMapMap::HasWorld() || Clock::now() < g_nextPoll) return;
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         // Metadata setup is serviced once per tick; the 10-second oracle cadence
         // begins only after the native query is ready.
         if(!g_constructed){const auto* native=MiniMapNative::Get();if(!native||!EnsureQuery(*native))return;}

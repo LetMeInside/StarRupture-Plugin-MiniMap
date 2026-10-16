@@ -174,6 +174,40 @@ namespace MiniMapNative
             return false;
         }
 
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        if (!addresses.spawnObject) return false;
+        if (!addresses.getTransientPackage) return false;
+        if (!addresses.setObjectFlags) return false;
+        if (!addresses.retainObject) return false;
+        if (!addresses.releaseObject) return false;
+        if (!addresses.registerComponent) return false;
+        if (!addresses.unregisterComponent) return false;
+        if (!addresses.destroyComponent) return false;
+        if (!addresses.initRenderTarget) return false;
+        if (!addresses.getRenderTargetResource) return false;
+        if (!addresses.setStaticMesh) return false;
+        if (!addresses.setVisibleInSceneCaptureOnly) return false;
+        if (!addresses.renderGraphBuilderConstruct) return false;
+        if (!addresses.renderGraphBuilderExecute) return false;
+        if (!addresses.renderGraphBuilderDestroy) return false;
+        if (!addresses.updateSceneCapture) return false;
+        if (!addresses.transitionResources) return false;
+        if (!addresses.isGameThread) return false;
+        if (!addresses.renderFenceConstruct) return false;
+        if (!addresses.renderFenceDestroy) return false;
+        if (!addresses.renderFenceBegin) return false;
+        if (!addresses.renderFencePoll) return false;
+#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
+        if (!addresses.setMaterial) return false;
+#endif
+#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
+        if (!addresses.setWorldTransform) return false;
+#endif
+#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
+        if (!addresses.showOnlyComponentExec) return false;
+#endif
+#endif
+
         g_nativeApi.asset.loadSynchronous =
             reinterpret_cast<AssetApi::LoadSynchronousFn>(
                 addresses.softObjectLoadSynchronous);
@@ -361,6 +395,37 @@ namespace MiniMapNative
         g_nativeApi.gridDiagnostic.destructItems = reinterpret_cast<GridDiagnosticApi::DestructItemsFn>(addresses.gridDestructResultItems);
         g_nativeApi.gridDiagnostic.viewConstruct = reinterpret_cast<GridDiagnosticApi::ViewConstructFn>(addresses.massEntityViewConstruct);
         g_nativeApi.gridDiagnostic.viewHasTag = reinterpret_cast<GridDiagnosticApi::ViewHasTagFn>(addresses.massEntityViewHasTag);
+
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        g_nativeApi.asset.spawnObject = reinterpret_cast<decltype(g_nativeApi.asset.spawnObject)>(addresses.spawnObject);
+        g_nativeApi.asset.getTransientPackage = reinterpret_cast<decltype(g_nativeApi.asset.getTransientPackage)>(addresses.getTransientPackage);
+        g_nativeApi.asset.setObjectFlags = reinterpret_cast<decltype(g_nativeApi.asset.setObjectFlags)>(addresses.setObjectFlags);
+        g_nativeApi.asset.retainObject = reinterpret_cast<decltype(g_nativeApi.asset.retainObject)>(addresses.retainObject);
+        g_nativeApi.asset.releaseObject = reinterpret_cast<decltype(g_nativeApi.asset.releaseObject)>(addresses.releaseObject);
+        g_nativeApi.player.registerComponent = reinterpret_cast<decltype(g_nativeApi.player.registerComponent)>(addresses.registerComponent);
+        g_nativeApi.player.unregisterComponent = reinterpret_cast<decltype(g_nativeApi.player.unregisterComponent)>(addresses.unregisterComponent);
+        g_nativeApi.player.destroyComponent = reinterpret_cast<decltype(g_nativeApi.player.destroyComponent)>(addresses.destroyComponent);
+        g_nativeApi.texture.initRenderTarget = reinterpret_cast<decltype(g_nativeApi.texture.initRenderTarget)>(addresses.initRenderTarget);
+        g_nativeApi.texture.getRenderTargetResource = reinterpret_cast<decltype(g_nativeApi.texture.getRenderTargetResource)>(addresses.getRenderTargetResource);
+        g_nativeApi.player.setStaticMesh = reinterpret_cast<decltype(g_nativeApi.player.setStaticMesh)>(addresses.setStaticMesh);
+        g_nativeApi.player.setVisibleInSceneCaptureOnly = reinterpret_cast<decltype(g_nativeApi.player.setVisibleInSceneCaptureOnly)>(addresses.setVisibleInSceneCaptureOnly);
+        g_nativeApi.texture.renderGraphBuilderConstruct = reinterpret_cast<decltype(g_nativeApi.texture.renderGraphBuilderConstruct)>(addresses.renderGraphBuilderConstruct);
+        g_nativeApi.texture.renderGraphBuilderExecute = reinterpret_cast<decltype(g_nativeApi.texture.renderGraphBuilderExecute)>(addresses.renderGraphBuilderExecute);
+        g_nativeApi.texture.renderGraphBuilderDestroy = reinterpret_cast<decltype(g_nativeApi.texture.renderGraphBuilderDestroy)>(addresses.renderGraphBuilderDestroy);
+        g_nativeApi.texture.updateSceneCapture = reinterpret_cast<decltype(g_nativeApi.texture.updateSceneCapture)>(addresses.updateSceneCapture);
+        g_nativeApi.texture.transitionResources = reinterpret_cast<decltype(g_nativeApi.texture.transitionResources)>(addresses.transitionResources);
+        g_nativeApi.player.isGameThread = reinterpret_cast<decltype(g_nativeApi.player.isGameThread)>(addresses.isGameThread);
+        g_nativeApi.texture.renderFenceConstruct = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceConstruct)>(addresses.renderFenceConstruct);
+        g_nativeApi.texture.renderFenceDestroy = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceDestroy)>(addresses.renderFenceDestroy);
+        g_nativeApi.texture.renderFenceBegin = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceBegin)>(addresses.renderFenceBegin);
+        g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
+#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
+        g_nativeApi.player.setMaterial = reinterpret_cast<decltype(g_nativeApi.player.setMaterial)>(addresses.setMaterial);
+        g_nativeApi.player.setWorldTransform = reinterpret_cast<decltype(g_nativeApi.player.setWorldTransform)>(addresses.setWorldTransform);
+        g_nativeApi.texture.showOnlyComponentExec = reinterpret_cast<decltype(g_nativeApi.texture.showOnlyComponentExec)>(addresses.showOnlyComponentExec);
+
+#endif
+#endif
 
         g_initialized = true;
 

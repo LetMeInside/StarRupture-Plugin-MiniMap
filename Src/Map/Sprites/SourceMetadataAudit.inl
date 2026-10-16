@@ -44,7 +44,7 @@ SDK::UFunction* MetadataFunction(const wchar_t* ownerPath,const wchar_t* name,bo
 }
 template<class Params> bool MetadataCall(uintptr_t receiver,SDK::UFunction* fn,Params& params)
 {
-    auto* hooks=GetHooks();const auto gt=MiniMapSmelterCapture::GetBindings().GameThread;
+    auto* hooks=GetHooks();const auto gt=MiniMapNative::Get()?MiniMapNative::Get()->player.isGameThread:nullptr;
     return fn&&Held.contains(receiver)&&gt&&reinterpret_cast<bool(*)()>(gt)()&&
         hooks&&hooks->ObjectWalker&&hooks->ObjectWalker->InvokeResolvedUFunction&&
         hooks->ObjectWalker->InvokeResolvedUFunction(reinterpret_cast<void*>(receiver),fn,&params);

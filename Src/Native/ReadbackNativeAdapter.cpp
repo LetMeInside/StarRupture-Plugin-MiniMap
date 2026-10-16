@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "ReadbackUEConfiguration.h"
 #define RHI_API
 #define RENDERCORE_API
@@ -9,15 +9,15 @@
 #include "Containers/ResourceArray.h"
 #include "ReadbackNativeAdapter.h"
 #include "ReadbackNativeBindings.h"
+#include "NativeApi.h"
 #include <cstddef>
 #include <cstring>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <new>
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "RHITransition.h"
-#include "SmelterCaptureNativeBindings.h"
 #include <vector>
 class FRHIComputeCommandList;
 #endif
@@ -204,7 +204,7 @@ namespace MiniMapReadbackNative
         // Render-thread-only: no UObject/world/component references.
         FTextureRHIRef Texture;
         FRHIGPUTextureReadback* Readback = nullptr;
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         bool External = false;
         bool CaptureCommitted = false; // game-thread only
         void* TargetResource = nullptr;
@@ -284,7 +284,7 @@ namespace MiniMapReadbackNative
                 static_assert(sizeof(FRHITransitionInfo)==0x30 && sizeof(TArrayView<const FRHITransitionInfo>)==0x10);
                 static_assert(sizeof(FRHISubresourceRange)==6 && sizeof(FRHITexture)==0x60);
                 static_assert(offsetof(FRHITransitionInfo,Texture)==8 && offsetof(FRHITransitionInfo,AccessAfter)==0x18);
-                const auto transition=reinterpret_cast<TransitionFn>(MiniMapSmelterCapture::GetBindings().Transition);
+                const auto transition=reinterpret_cast<TransitionFn>(MiniMapNative::Get()->texture.transitionResources);
                 const FRHITransitionInfo before(job->Texture.GetReference(),ERHIAccess::SRVMask,ERHIAccess::CopySrc);
                 transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&before,1),ERHITransitionCreateFlags::None);
                 reinterpret_cast<CopyFn>(GetBindings().Copy)(job->Readback,list,job->Texture.GetReference(),FIntVector(0,0,0),0,FIntVector(job->Width,job->ImageHeight,1));
@@ -366,7 +366,7 @@ namespace MiniMapReadbackNative
         static_assert(sizeof(UE::Core::Private::Function::TFunction_OwnedObject<Command, true, false>) <= 24);
     }
 
-#if defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     Job* CreateExternalJob(void* resource,uint32_t width,uint32_t height)
     {
         if (!resource || !width || !height || width>4096 || height>4096) return nullptr;

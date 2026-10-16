@@ -492,22 +492,22 @@ bool BlueprintNative(unsigned operation, uintptr_t object, uintptr_t argument = 
 {
     __try
     {
-        const auto& b = MiniMapSmelterCapture::GetBindings();
+        const auto& b=*MiniMapNative::Get();
         switch (operation)
         {
         case 0: {
             const Class* type = reinterpret_cast<Class*>(argument);
             struct Subclass { const Class* Type; } value{type};
-            *result = reinterpret_cast<uintptr_t(*)(const Subclass*,uintptr_t)>(b.Spawn)(&value,object);
+            *result = reinterpret_cast<uintptr_t(*)(const Subclass*,uintptr_t)>(b.asset.spawnObject)(&value,object);
             break;
         }
-        case 1: reinterpret_cast<void(*)(uintptr_t,uint32_t)>(b.Flags)(object,0x40); break;
-        case 2: reinterpret_cast<void(*)(uintptr_t,uintptr_t,void*)>(b.Register)(object,argument,nullptr); break;
-        case 3: reinterpret_cast<void(*)(uintptr_t)>(b.Unregister)(object); break;
+        case 1: reinterpret_cast<void(*)(uintptr_t,uint32_t)>(b.asset.setObjectFlags)(object,0x40); break;
+        case 2: reinterpret_cast<void(*)(uintptr_t,uintptr_t,void*)>(b.player.registerComponent)(object,argument,nullptr); break;
+        case 3: reinterpret_cast<void(*)(uintptr_t)>(b.player.unregisterComponent)(object); break;
         case 4: *result = reinterpret_cast<bool(*)(uintptr_t,bool,bool)>(state.Base + actorEntries[0].Rva)(object,false,false); break;
-        case 5: reinterpret_cast<void(*)(uintptr_t,bool)>(b.DestroyComponent)(object,false); break;
-        case 6: reinterpret_cast<void(*)(uintptr_t,uint32_t,uint32_t,uint8_t,bool)>(b.InitTarget)(object,256,256,10,true); break;
-        case 7: *result = reinterpret_cast<uintptr_t(*)(uintptr_t)>(b.TargetResource)(object); break;
+        case 5: reinterpret_cast<void(*)(uintptr_t,bool)>(b.player.destroyComponent)(object,false); break;
+        case 6: reinterpret_cast<void(*)(uintptr_t,uint32_t,uint32_t,uint8_t,bool)>(b.texture.initRenderTarget)(object,256,256,10,true); break;
+        case 7: *result = reinterpret_cast<uintptr_t(*)(uintptr_t)>(b.texture.getRenderTargetResource)(object); break;
         default: return false;
         }
         return true;
@@ -583,14 +583,14 @@ struct BlueprintRetirementOperations
     Implementation* Owner;
     bool Available() const
     {
-        const auto& b=MiniMapSmelterCapture::GetBindings();
-        return Owner->state.GameThread && Owner->state.GameThread() && MiniMapReadbackNative::CaptureRetirementRendererAvailable() &&
-            b.RetirementConstruct && b.RetirementDestroy && b.RetirementBegin && b.RetirementPoll;
+        const auto& b=*MiniMapNative::Get();
+        return Owner->state.NativePrerequisitesVerified && MiniMapNative::Get() && MiniMapNative::Get()->player.isGameThread && MiniMapNative::Get()->player.isGameThread() && MiniMapReadbackNative::CaptureRetirementRendererAvailable() &&
+            b.texture.renderFenceConstruct && b.texture.renderFenceDestroy && b.texture.renderFenceBegin && b.texture.renderFencePoll;
     }
-    bool Construct(void* storage) const { reinterpret_cast<void(*)(void*)>(MiniMapSmelterCapture::GetBindings().RetirementConstruct)(storage); return true; }
-    bool Begin(void* storage) const { reinterpret_cast<void(*)(void*,int32_t)>(MiniMapSmelterCapture::GetBindings().RetirementBegin)(storage,1); return true; }
-    bool Poll(void* storage) const { return reinterpret_cast<bool(*)(const void*)>(MiniMapSmelterCapture::GetBindings().RetirementPoll)(storage); }
-    void Destroy(void* storage) const { reinterpret_cast<void(*)(void*)>(MiniMapSmelterCapture::GetBindings().RetirementDestroy)(storage); }
+    bool Construct(void* storage) const { reinterpret_cast<void(*)(void*)>(MiniMapNative::Get()->texture.renderFenceConstruct)(storage); return true; }
+    bool Begin(void* storage) const { reinterpret_cast<void(*)(void*,int32_t)>(MiniMapNative::Get()->texture.renderFenceBegin)(storage,1); return true; }
+    bool Poll(void* storage) const { return reinterpret_cast<bool(*)(const void*)>(MiniMapNative::Get()->texture.renderFencePoll)(storage); }
+    void Destroy(void* storage) const { reinterpret_cast<void(*)(void*)>(MiniMapNative::Get()->texture.renderFenceDestroy)(storage); }
 };
 // Only callable contiguously after THIS owner's admitted engine destruction.
 // It deliberately does not call Identify or modify its live-object policy.
@@ -819,7 +819,7 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     attemptedBlueprints.insert(key); // terminal for this visual identity in this session
     blueprint={}; blueprint.Active=true; blueprint.Id=id; blueprint.Building=building; blueprint.Key=key;
     blueprint.Failure="Blueprint class identity is incomplete";
-    if (!state.GameThread || !state.GameThread())
+    if (!state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread())
     { BlueprintSkipBeforeConstruction("candidate was not offered on the Unreal game thread"); return; }
     if (gameplay!=state.SessionWorld)
     { BlueprintQuarantine("candidate gameplay world does not match the private capture session"); return; }
@@ -931,7 +931,7 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
 }
 void ServiceBlueprint()
 {
-    if (!state.GameThread || !state.GameThread()) { BlueprintQuarantine("service_off_game_thread"); return; }
+    if (!state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread()) { BlueprintQuarantine("service_off_game_thread"); return; }
     ++blueprintTick;
     if (!blueprint.Active || blueprint.Current==BlueprintPhase::Quarantined) return;
     if (!QuietGC() || !Unchanged() || !PrivateState(true)) { BlueprintQuarantine("service_native_lifetime_or_world_baseline_changed"); return; }

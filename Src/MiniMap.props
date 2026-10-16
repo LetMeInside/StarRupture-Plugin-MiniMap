@@ -5,8 +5,8 @@
     <!-- Independent development gate for unfinished Stage C visuals; safe default is OFF. -->
     <MiniMapStageCVisuals Condition="'$(MiniMapStageCVisuals)' == ''">false</MiniMapStageCVisuals>
     <!-- R2 diagnostic capture/export is enabled in normal Client Release builds. -->
-    <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR2SmelterCapture>
-    <MiniMapStageR2SmelterCapture Condition="'$(MiniMapStageR2SmelterCapture)' == ''">false</MiniMapStageR2SmelterCapture>
+    <MiniMapStageR2BuildingCapture Condition="'$(MiniMapStageR2BuildingCapture)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR2BuildingCapture>
+    <MiniMapStageR2BuildingCapture Condition="'$(MiniMapStageR2BuildingCapture)' == ''">false</MiniMapStageR2BuildingCapture>
     <MiniMapStageR25bStaticAssembly Condition="'$(MiniMapStageR25bStaticAssembly)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR25bStaticAssembly>
     <MiniMapStageR25bStaticAssembly Condition="'$(MiniMapStageR25bStaticAssembly)' == ''">false</MiniMapStageR25bStaticAssembly>
     <MiniMapStageR26aSpriteDiscovery Condition="'$(MiniMapStageR26aSpriteDiscovery)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR26aSpriteDiscovery>
@@ -40,19 +40,19 @@
   <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true' And '$(MiniMapStageCVisuals)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_C_VISUALS_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapStageR2SmelterCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R2_SMELTER_CAPTURE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  <ItemDefinitionGroup Condition="'$(MiniMapStageR2BuildingCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R2_BUILDING_CAPTURE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapStageR25bStaticAssembly)' == 'true' And '$(MiniMapStageR2SmelterCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
+  <ItemDefinitionGroup Condition="'$(MiniMapStageR25bStaticAssembly)' == 'true' And '$(MiniMapStageR2BuildingCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R25B_STATIC_ASSEMBLY=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapStageR26aSpriteDiscovery)' == 'true' And '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R26A_SPRITE_DISCOVERY=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapStageR26bSpriteValidation)' == 'true' And '$(MiniMapStageR26aSpriteDiscovery)' == 'true' And '$(MiniMapStageR2SmelterCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
+  <ItemDefinitionGroup Condition="'$(MiniMapStageR26bSpriteValidation)' == 'true' And '$(MiniMapStageR26aSpriteDiscovery)' == 'true' And '$(MiniMapStageR2BuildingCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R26B_SPRITE_VALIDATION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapStageR26bSpriteValidation)' == 'true' And '$(MiniMapStageR26aSpriteDiscovery)' == 'true' And '$(MiniMapStageR2SmelterCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
+  <ItemDefinitionGroup Condition="'$(MiniMapStageR26bSpriteValidation)' == 'true' And '$(MiniMapStageR26aSpriteDiscovery)' == 'true' And '$(MiniMapStageR2BuildingCapture)' == 'true' And '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_R26B4_CLASSIFICATION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapStageR26bSpriteValidation)' == 'true' And '$(MiniMapStageR25bStaticAssembly)' == 'true' And '$(Configuration)' == 'Client Release'">

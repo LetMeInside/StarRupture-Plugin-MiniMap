@@ -702,7 +702,7 @@ namespace MiniMapBuildingSprites
         }
         timings+="}";
         const auto metrics=owner->Jobs.Metrics();
-        auto json=P::Json(owner->Jobs,owner->Hits,owner->Fallbacks,MiniMapSmelterCapture::CandidateServiceStatus(),timings,
+        auto json=P::Json(owner->Jobs,owner->Hits,owner->Fallbacks,MiniMapBuildingCapture::CandidateServiceStatus(),timings,
             leases.ActiveCount(),MiniMapSessionTextures::Memory{owner->Jobs.SelectedCount,owner->Jobs.SelectedBytes},owner->SuccessfulTypes,owner->UploadFailures);
         json.pop_back();
         const char* metricNames[]={"active_frame_pins","active_pinned_revisions","prior_version_nodes_awaiting_reclamation","uploaded_unselected_textures",

@@ -1,5 +1,5 @@
 #include "CallbackTiming.h"
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_SMELTER_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "BuildingRepresentation.h"
 #include "Native/DefinitionDiagnosticCore.h"
 #include <set>
@@ -17,7 +17,6 @@
 #endif
 #include "RepresentationMetadataPatterns.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Native/SmelterCaptureNativeBindings.h"
 #include "BuildingSpriteCapture.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Map.h"
@@ -278,7 +277,7 @@ namespace MiniMapBuildingRepresentation
             {if(AuditVisits>=A::VisitLimit){AuditTruncated=true;return false;}++AuditVisits;return true;}
             ~Context()
             {
-                const auto address=MiniMapSmelterCapture::GetBindings().Release;
+                const auto address=MiniMapNative::Get()->asset.releaseObject;
                 for(auto it=Roots.rbegin();it!=Roots.rend();++it)
                 {
                     reinterpret_cast<void(*)(SDK::UObject*)>(address)(reinterpret_cast<SDK::UObject*>(*it));
@@ -292,7 +291,7 @@ namespace MiniMapBuildingRepresentation
                 if(Held.insert(p).second)
                 {
                     Roots.push_back(p);
-                    reinterpret_cast<void(*)(SDK::UObject*)>(MiniMapSmelterCapture::GetBindings().Retain)(reinterpret_cast<SDK::UObject*>(p));
+                    MiniMapNative::Get()->asset.retainObject(reinterpret_cast<SDK::UObject*>(p));
                     if(Metrics)++Metrics->Retained;
                 }
                 return true;
@@ -407,9 +406,9 @@ namespace MiniMapBuildingRepresentation
                 {return BlueprintIdentityResult{{},status};};
                 try
                 {
-                    auto* hooks=GetHooks();const auto& bindings=MiniMapSmelterCapture::GetBindings();
+                    auto* hooks=GetHooks();const auto* bindings=MiniMapNative::Get();
                     auto* memory=hooks?hooks->Memory:nullptr;auto* invocation=hooks?hooks->ObjectWalker:nullptr;
-                    if(!bindings.GameThread||!reinterpret_cast<bool(*)()>(bindings.GameThread)()||
+                    if(!bindings||!bindings->player.isGameThread||!bindings||!bindings->player.isGameThread()||
                         !memory||!memory->IsAllocatorAvailable||!memory->IsAllocatorAvailable()||!memory->Free||
                         !invocation||!invocation->InvokeResolvedUFunction)
                     {return report("invocation_or_engine_allocator_unavailable");}
@@ -1207,7 +1206,7 @@ namespace MiniMapBuildingRepresentation
         void CompareDefinition(const SDK::UObject* definition,Context& original)noexcept
         {
             namespace D=MiniMapDefinitionAcquisition;namespace G=MiniMapDefinitionDiagnostic;
-            const auto thread=MiniMapSmelterCapture::GetBindings().GameThread;
+            const auto thread=MiniMapNative::Get()?MiniMapNative::Get()->player.isGameThread:nullptr;
             if(!thread||!reinterpret_cast<bool(*)()>(thread)()||original.ProbeResult.DefinitionIdentity!="valid")return;
             auto& session=DefinitionDiagnosticSession();
             try
@@ -1290,12 +1289,12 @@ namespace MiniMapBuildingRepresentation
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::RepresentationWorldEnd,false);
             if(!world||world!=MiniMapMap::GetWorld())return;
-            const auto gameThread=MiniMapSmelterCapture::GetBindings().GameThread;
+            const auto gameThread=MiniMapNative::Get()?MiniMapNative::Get()->player.isGameThread:nullptr;
             if(gameThread&&reinterpret_cast<bool(*)()>(gameThread)()){SummarizeDefinitionDiagnostic();endingWorld=world;ClearBlueprintIdentities();}
             else stopped.store(true);
         }
         void StopImpl(){
-            const auto thread=MiniMapSmelterCapture::GetBindings().GameThread;
+            const auto thread=MiniMapNative::Get()?MiniMapNative::Get()->player.isGameThread:nullptr;
             if(thread&&reinterpret_cast<bool(*)()>(thread)())SummarizeDefinitionDiagnostic();
             stopped.store(true);
         }
@@ -1321,10 +1320,10 @@ namespace MiniMapBuildingRepresentation
     {
         namespace V=MiniMapSpriteValidation;
         V::Result out;
-        const auto& bindings=MiniMapSmelterCapture::GetBindings();
+        const auto* bindings=MiniMapNative::Get();
         const auto snapshot=MiniMapBuildingCollector::GetSnapshot();auto* world=MiniMapMap::GetWorld();
-        if(!objectArray||!engine||!bindings.GameThread||!bindings.Retain||!bindings.Release||stopped.load()||
-            !reinterpret_cast<bool(*)()>(bindings.GameThread)()||!world||world==endingWorld||!snapshot||
+        if(!objectArray||!engine||!bindings||!bindings->player.isGameThread||!bindings->asset.retainObject||!bindings->asset.releaseObject||stopped.load()||
+            !bindings||!bindings->player.isGameThread()||!world||world==endingWorld||!snapshot||
             !snapshot->Complete||snapshot->Generation!=record.Generation)
         {out.MarkDeferred(V::AuditWait::NativePrerequisites);out.Reason="native_facility_or_world_generation_unavailable";return out;}
         if(executing.test_and_set(std::memory_order_acquire)){out.MarkDeferred(V::AuditWait::NativeOwnerBusy);out.Reason="representation_service_busy";return out;}
@@ -1466,9 +1465,9 @@ namespace MiniMapBuildingRepresentation
     bool PrepareNativeClasses()
     {
         if(nativeAnchorCursor==std::size(nativeAnchors))return true;
-        const auto& b=MiniMapSmelterCapture::GetBindings();
-        if(!MiniMapMap::GameplayReady()||!engine||!objectArray||!b.GameThread||!b.Retain||!b.Release||
-            !reinterpret_cast<bool(*)()>(b.GameThread)())return false;
+        const auto* b=MiniMapNative::Get();
+        if(!MiniMapMap::GameplayReady()||!engine||!objectArray||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||
+            !b->player.isGameThread())return false;
 #if defined(MINIMAP_BUILDING_SPRITES)
         MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::NativeClassResolution);
 #endif
@@ -1479,7 +1478,7 @@ namespace MiniMapBuildingRepresentation
         using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
         const auto p=reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(engine->GetStaticFindObjectByNameAddress())(nullptr,nullptr,anchor.Path,false));
         if(Identity(p,sizeof(SDK::UClass)))
-        {reinterpret_cast<void(*)(SDK::UObject*)>(b.Retain)(reinterpret_cast<SDK::UObject*>(p));anchor.Object=p;}
+        {b->asset.retainObject(reinterpret_cast<SDK::UObject*>(p));anchor.Object=p;}
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(ms>=2.0){LOG_WARN("MiniMap: resident class preparation took %.3f ms; one noninterruptible lookup: %ls",ms,anchor.Path);}
         return nativeAnchorCursor==std::size(nativeAnchors);
@@ -1487,22 +1486,21 @@ namespace MiniMapBuildingRepresentation
     uintptr_t AcquireResidentMetadata(const wchar_t* path,bool scriptStruct,size_t instanceSize)
     {
         MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::ResidentMetadata);
-        const auto& b=MiniMapSmelterCapture::GetBindings();
+        const auto* b=MiniMapNative::Get();
         if(!path||std::wcsncmp(path,L"/Script/",8)!=0||!instanceSize||instanceSize>INT32_MAX||
-            !engine||!objectArray||stopped.load()||!MiniMapMap::GameplayReady()||!b.GameThread||!b.Retain||!b.Release||
-            !reinterpret_cast<bool(*)()>(b.GameThread)())return 0;
+            !engine||!objectArray||stopped.load()||!MiniMapMap::GameplayReady()||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||
+            !b->player.isGameThread())return 0;
         const auto address=engine->GetStaticFindObjectByNameAddress();if(!address)return 0;
         using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
         const auto find=reinterpret_cast<Find>(address);
         auto* classType=find(nullptr,nullptr,L"/Script/CoreUObject.Class",false);
         if(!Identity(reinterpret_cast<uintptr_t>(classType),sizeof(SDK::UClass))||classType->Class!=classType)return 0;
-        using Root=void(*)(SDK::UObject*);
-        const auto retain=reinterpret_cast<Root>(b.Retain),release=reinterpret_cast<Root>(b.Release);
+        const auto retain=b->asset.retainObject;
         retain(classType);
-        struct Drop {SDK::UObject* Object;Root Release;~Drop(){if(Object)Release(Object);}} classRoot{classType,release};
+        struct Drop {SDK::UObject* Object;~Drop(){if(Object)MiniMapNative::Get()->asset.releaseObject(Object);}} classRoot{classType};
         auto* expected=scriptStruct?find(static_cast<SDK::UClass*>(classType),nullptr,L"/Script/CoreUObject.ScriptStruct",true):classType;
         if(!Identity(reinterpret_cast<uintptr_t>(expected),sizeof(SDK::UClass))||expected->Class!=classType)return 0;
-        retain(expected);Drop expectedRoot{expected,release};
+        retain(expected);Drop expectedRoot{expected};
         // Exact class filtering plus full UObject identity precede typed access.
         // StaticFindObject is a resident hash lookup, never a package/load request.
         auto* object=find(static_cast<SDK::UClass*>(expected),nullptr,path,true);
@@ -1519,10 +1517,10 @@ namespace MiniMapBuildingRepresentation
     void ReleaseResidentMetadata(uintptr_t object)
     {
         if(!object)return;
-        const auto& b=MiniMapSmelterCapture::GetBindings();
-        if(!b.GameThread||!b.Release||!reinterpret_cast<bool(*)()>(b.GameThread)())
+        const auto* b=MiniMapNative::Get();
+        if(!b||!b->player.isGameThread||!b->asset.releaseObject||!b->player.isGameThread())
         {LOG_ERROR("MiniMap: resident metadata release off game thread/unavailable; root retained, unload safety unverified");return;}
-        reinterpret_cast<void(*)(SDK::UObject*)>(b.Release)(reinterpret_cast<SDK::UObject*>(object));
+        b->asset.releaseObject(reinterpret_cast<SDK::UObject*>(object));
     }
     bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
     MiniMapDefinitionAcquisition::Status VisitResidentDefinition(
@@ -1531,9 +1529,9 @@ namespace MiniMapBuildingRepresentation
     {
         namespace D=MiniMapDefinitionAcquisition;
         if(observation)*observation={};
-        const auto& b=MiniMapSmelterCapture::GetBindings();
-        if(!b.GameThread||!b.Retain||!b.Release||!objectArray||!visitor)return D::Status::FacilitiesUnavailable;
-        if(!reinterpret_cast<bool(*)()>(b.GameThread)())return D::Status::WrongThread;
+        const auto* b=MiniMapNative::Get();
+        if(!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||!objectArray||!visitor)return D::Status::FacilitiesUnavailable;
+        if(!b||!b->player.isGameThread())return D::Status::WrongThread;
         if(stopped.load()||!MiniMapMap::GameplayReady())return D::Status::FacilitiesUnavailable;
         // The loader calls this synchronous game-thread scope after engine Tick.
         // UE 5.6 GCScopeLock::LockAsync/TryLockAsync are no-ops on this thread.
@@ -1550,9 +1548,9 @@ namespace MiniMapBuildingRepresentation
             if(!context.Placement)return D::Status::FacilitiesUnavailable;
             struct Ops
             {
-                Context& C;const MiniMapSmelterCapture::Bindings& B;
-                bool GameThread()const{return reinterpret_cast<bool(*)()>(B.GameThread)();}
-                bool Available()const{return !stopped.load()&&B.Retain&&B.Release;}
+                Context& C;
+                bool GameThread()const{return MiniMapNative::Get()->player.isGameThread();}
+                bool Available()const{return !stopped.load()&&MiniMapNative::Get()->asset.retainObject&&MiniMapNative::Get()->asset.releaseObject;}
                 bool Read(uintptr_t p,int32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
                 bool Read(uintptr_t p,uint32_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
                 bool Read(uintptr_t p,uintptr_t& v){return MiniMapNative::ReadMemory(p,&v,sizeof(v));}
@@ -1570,10 +1568,10 @@ namespace MiniMapBuildingRepresentation
                     return compatible?D::Status::Success:D::Status::WrongClass;
                 }
                 bool Retain(uintptr_t p)noexcept
-                {reinterpret_cast<void(*)(SDK::UObject*)>(B.Retain)(reinterpret_cast<SDK::UObject*>(p));return true;}
+                {MiniMapNative::Get()->asset.retainObject(reinterpret_cast<SDK::UObject*>(p));return true;}
                 void Release(uintptr_t p)noexcept
-                {reinterpret_cast<void(*)(SDK::UObject*)>(B.Release)(reinterpret_cast<SDK::UObject*>(p));}
-            } ops{context,b};
+                {MiniMapNative::Get()->asset.releaseObject(reinterpret_cast<SDK::UObject*>(p));}
+            } ops{context};
             return D::Visit(ops,objectArray,token,[&](uintptr_t p){visitor(reinterpret_cast<const SDK::UObject*>(p),state);},observation);
         }
         catch(...){if(observation)observation->Interrupted=true;return D::Status::Interrupted;}
@@ -1582,10 +1580,10 @@ namespace MiniMapBuildingRepresentation
     {
         observation={};
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-        const auto& b=MiniMapSmelterCapture::GetBindings();
+        const auto* b=MiniMapNative::Get();
         const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-        if(!objectArray||stopped.load()||!b.GameThread||!reinterpret_cast<bool(*)()>(b.GameThread)()||
-            !b.Retain||!b.Release||!MiniMapMap::GetWorld()||MiniMapMap::GetWorld()==endingWorld||
+        if(!objectArray||stopped.load()||!b||!b->player.isGameThread||!b||!b->player.isGameThread()||
+            !b->asset.retainObject||!b->asset.releaseObject||!MiniMapMap::GetWorld()||MiniMapMap::GetWorld()==endingWorld||
             !snapshot||!snapshot->Complete||snapshot->Generation!=record.Generation)return false;
         Context context;context.Record=record;
         if(!context.Initialize())return false;
@@ -1677,9 +1675,9 @@ namespace MiniMapBuildingRepresentation
     void Initialize()
     {
         if(registered||!objectArray)return;
-        const auto& b=MiniMapSmelterCapture::GetBindings();
+        const auto* b=MiniMapNative::Get();
         auto* hooks=GetHooks();
-        if(!hooks||!hooks->Engine||!hooks->World||!b.GameThread||!b.Retain||!b.Release)return;
+        if(!hooks||!hooks->Engine||!hooks->World||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject)return;
         engine=hooks->Engine;worlds=hooks->World;
         if(!engine->GetStaticFindObjectByNameAddress||!engine->GetStaticFindObjectByNameAddress()||
             !engine->RegisterOnShutdown||!engine->UnregisterOnShutdown||!worlds->RegisterOnBeforeWorldEndPlay||!worlds->UnregisterOnBeforeWorldEndPlay)return;
@@ -1693,7 +1691,7 @@ namespace MiniMapBuildingRepresentation
         if(executing.test_and_set()){LOG_ERROR("MiniMap: R2.4 shutdown overlaps synchronous representation service; DLL unload not certified");}
         else
         {
-            const auto release=MiniMapSmelterCapture::GetBindings().Release;
+            const auto release=MiniMapNative::Get()?MiniMapNative::Get()->asset.releaseObject:nullptr;
             if(release)for(auto& anchor:nativeAnchors)if(anchor.Object)
             {reinterpret_cast<void(*)(SDK::UObject*)>(release)(reinterpret_cast<SDK::UObject*>(anchor.Object));anchor.Object=0;}
             nativeAnchorCursor=0;ClearBlueprintIdentities();

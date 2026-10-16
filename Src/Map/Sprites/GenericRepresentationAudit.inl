@@ -503,7 +503,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         parallel.ActorObject=int32_t(reinterpret_cast<const SDK::UObject*>(AuditClass)->Index);const auto name=reinterpret_cast<const SDK::UObject*>(AuditClass)->Name;
         parallel.ActorName=name.ComparisonIndex;parallel.ActorNumber=name.Number;
         parallel.Tier=recipe.HighDetail?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Low;
-        MiniMapSmelterCapture::OfferParallelBlueprint(parallel,AuditClass,Record.BuildingId,MiniMapMap::GetWorld());
+        MiniMapBuildingCapture::OfferParallelBlueprint(parallel,AuditClass,Record.BuildingId,MiniMapMap::GetWorld());
     }
     // Read-only audit fence, also for ValidateRepresentation (CaptureRequested=false).
     // The scheduler commits it only after completed-result and exact-source checks.
@@ -534,7 +534,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         // A.4.9h TEMPORARY 60-SECOND CAPTURE DELAY: validation stays capture-grade.
         if(!DeferCapture)
         {
-            const auto decision=MiniMapSmelterCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
+            const auto decision=MiniMapBuildingCapture::OfferStaticAssembly(candidate,Record,recipe,MiniMapMap::GetWorld());
             out.RecordHandoff(decision);out.Reason=decision.Reason;
             if(out.Disposition==V::AuditDisposition::Completed&&!decision.Allowed())out.Status=V::Outcome::Conditional;
         }

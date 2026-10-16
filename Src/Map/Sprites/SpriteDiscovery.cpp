@@ -176,11 +176,11 @@ namespace MiniMapSpriteDiscovery
         {
             decltype(&CopiedRecord) Copy=&CopiedRecord;
             auto Renderer(const C::Key& key,const std::shared_ptr<const C::Registry>& root){return MiniMapBuildingSprites::InspectDispatch(key,root);}
-            auto Owner(){return MiniMapSmelterCapture::ObserveNativeOwner();}
+            auto Owner(){return MiniMapBuildingCapture::ObserveNativeOwner();}
             auto Audit(const B::Record& a,const B::Record* b){return ProcessCandidateImpl(a,b,true);}
             auto Handoff(const B::Record& a,const B::Record* b){return ProcessCandidate(a,b);}
-            auto Arm(const MiniMapCaptureDispatch::OwnerObservation& before,const C::Key& key){return MiniMapSmelterCapture::ArmRetirementObservation(before,key);}
-            auto Reconcile(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapSmelterCapture::ReconcileRetirementObservation(ticket);}
+            auto Arm(const MiniMapCaptureDispatch::OwnerObservation& before,const C::Key& key){return MiniMapBuildingCapture::ArmRetirementObservation(before,key);}
+            auto Reconcile(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingCapture::ReconcileRetirementObservation(ticket);}
             auto Observe(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::ObserveRetirement(ticket);}
             bool Acknowledge(const MiniMapCaptureLeases::ObservationTicket& ticket,const MiniMapCaptureLeases::Token& lease)noexcept{return MiniMapBuildingSprites::AcknowledgeRetirement(ticket,lease);}
             bool CancelObservation(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::CancelUnadmittedObservation(ticket);}
@@ -288,7 +288,7 @@ namespace MiniMapSpriteDiscovery
                 FifoHooks hooks;
                 try{
                     C::Key wake;
-                    if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapSmelterCapture::HasResourceWatchCapacity)){
+                    if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapBuildingCapture::HasResourceWatchCapacity)){
                         const auto work=owner->Fifo.Work.Inspect(wake);
                         const bool idle=work&&work->Status!=MiniMapCaptureWork::State::Considering&&
                             work->Status!=MiniMapCaptureWork::State::NativeAdmitted&&work->Status!=MiniMapCaptureWork::State::Uncertain;
@@ -365,7 +365,7 @@ namespace MiniMapSpriteDiscovery
     MiniMapCaptureDispatch::Readiness QueryDispatchReadiness(const C::Key& key,MiniMapCaptureWork::Revision expected) noexcept
     {
         try{
-            const auto native=MiniMapSmelterCapture::ObserveNativeOwner();
+            const auto native=MiniMapBuildingCapture::ObserveNativeOwner();
             if(!native.QueryAllowed)return {};
             if(!owner)return {MiniMapCaptureDispatch::State::Cancelled,MiniMapCaptureDispatch::Reason::Generation};
             // Scheduling-thread CPU borrow: no native callbacks or ownership escape during this query.
