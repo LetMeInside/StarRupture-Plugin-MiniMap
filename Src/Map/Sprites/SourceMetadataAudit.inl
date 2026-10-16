@@ -8,7 +8,7 @@ SDK::UFunction* MetadataFunction(const wchar_t* ownerPath,const wchar_t* name,bo
         reinterpret_cast<SDK::UClass*>(functionClass),reinterpret_cast<SDK::UObject*>(owner),name,true));
     if(!Is(address,functionClass,sizeof(SDK::UFunction))||!Hold(address,sizeof(SDK::UFunction)))return nullptr;
     auto* fn=reinterpret_cast<SDK::UFunction*>(address);
-    const uint16_t frame=bounds?0x38:indexed?8:4;
+    const uint16_t frame=bounds?sizeof(SDK::Params::SkeletalMesh_GetImportedBounds):indexed?sizeof(SDK::Params::StaticMesh_GetNumSections):sizeof(SDK::Params::StaticMesh_GetNumLODs);
     if(fn->Outer!=reinterpret_cast<SDK::UObject*>(owner)||!fn->ExecFunction||
         !(uint32_t(fn->FunctionFlags)&0x400)||(uint32_t(fn->FunctionFlags)&0x2000)||
         Value<uint8_t>(address,0xb4)!=(indexed?2:1)||Value<uint16_t>(address,0xb6)!=frame)return nullptr;
@@ -21,20 +21,20 @@ SDK::UFunction* MetadataFunction(const wchar_t* ownerPath,const wchar_t* name,bo
     for(auto* field=fn->ChildProperties;field;field=field->Next)
     {
         if(++visits>(indexed?2u:1u)||!Readable(reinterpret_cast<uintptr_t>(field),sizeof(SDK::FProperty),8)||
-            !Readable(reinterpret_cast<uintptr_t>(field->ClassPrivate),0x18,8))return nullptr;
+            !Readable(reinterpret_cast<uintptr_t>(field->ClassPrivate),offsetof(SDK::FFieldClass,CastFlags)+sizeof(uint64_t),alignof(SDK::FFieldClass)))return nullptr;
         const auto* p=reinterpret_cast<const SDK::FProperty*>(field);
-        uintptr_t owning=0;std::memcpy(&owning,&p->Owner,8);
+        const auto owning=reinterpret_cast<uintptr_t>(p->Owner.Container.Object);
         const bool returned=(p->PropertyFlags&0x400)!=0;const unsigned bit=returned?1:2;
         if((owning&~uintptr_t(1))!=address||!(owning&1)||!(p->PropertyFlags&0x80)||p->ArrayDim!=1||
-            p->Offset!=(returned&&indexed?4:0)||p->ElementSize!=(bounds?0x38:4)||(seen&bit)||
+            p->Offset!=(returned&&indexed?offsetof(SDK::Params::StaticMesh_GetNumSections,ReturnValue):offsetof(SDK::Params::StaticMesh_GetNumSections,InLOD))||p->ElementSize!=(bounds?sizeof(SDK::FBoxSphereBounds):sizeof(int32_t))||(seen&bit)||
             (!returned&&(!indexed||(p->PropertyFlags&(0x100|0x8000000)))))return nullptr;
         const auto kind=bounds?SDK::EClassCastFlags::StructProperty:SDK::EClassCastFlags::IntProperty;
         if(!(p->ClassPrivate->CastFlags&uint64_t(kind)))return nullptr;
         if(bounds)
         {
-            if(!Readable(reinterpret_cast<uintptr_t>(p),0x78,8))return nullptr;
-            uintptr_t type=0;std::memcpy(&type,reinterpret_cast<const uint8_t*>(p)+0x70,8);
-            const auto expected=AcquireResidentMetadata(L"/Script/CoreUObject.BoxSphereBounds",true,0x38);
+            if(!Readable(reinterpret_cast<uintptr_t>(p),sizeof(SDK::FStructProperty),alignof(SDK::FStructProperty)))return nullptr;
+            const auto type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::FStructProperty*>(p)->Struct);
+            const auto expected=AcquireResidentMetadata(L"/Script/CoreUObject.BoxSphereBounds",true,sizeof(SDK::FBoxSphereBounds));
             if(!expected)return nullptr;
             const bool equal=type==expected;ReleaseResidentMetadata(expected);if(!equal)return nullptr;
         }
@@ -71,11 +71,6 @@ static std::string MetadataBounds(const SDK::FBoxSphereBounds& b)
 template<class Sources> void SourceMetadata(const MiniMapStaticAssembly::Recipe& recipe,const Sources& skeletal,
     size_t skeletalCount,bool skeletalTruncated,MiniMapSpriteValidation::Result& out)
 {
-    static_assert(sizeof(SDK::Params::StaticMesh_GetNumLODs)==4);
-    static_assert(sizeof(SDK::Params::StaticMesh_GetNumSections)==8&&offsetof(SDK::Params::StaticMesh_GetNumSections,ReturnValue)==4);
-    static_assert(sizeof(SDK::Params::StaticMesh_GetNumTriangles)==8&&offsetof(SDK::Params::StaticMesh_GetNumTriangles,ReturnValue)==4);
-    static_assert(sizeof(SDK::Params::StaticMesh_GetNumVertices)==8&&offsetof(SDK::Params::StaticMesh_GetNumVertices,ReturnValue)==4);
-    static_assert(sizeof(SDK::Params::SkeletalMesh_GetImportedBounds)==0x38);
     constexpr size_t LodLimit=8;
     C::JsonArray geometry,sources;geometry.Limit=12*1024;sources.Limit=24*1024;
     std::set<uintptr_t> measured;std::array<SDK::UFunction*,4> functions{};bool resolved=false;
@@ -116,8 +111,8 @@ template<class Sources> void SourceMetadata(const MiniMapStaticAssembly::Recipe&
         const bool valid=s.Valid&&Is(s.Mesh,SkeletalMesh,sizeof(SDK::USkeletalMesh))&&Hold(s.Mesh,sizeof(SDK::USkeletalMesh));
         SDK::Params::SkeletalMesh_GetImportedBounds imported{};const bool got=valid&&MetadataCall(s.Mesh,bounds,imported);
         bool defaultsValid=false,overridesValid=false;std::string defaults="[]",overrides="[]";
-        const auto def=valid?AuditMaterials(s.Mesh+offsetof(SDK::USkeletalMesh,Materials),sizeof(SDK::FSkeletalMaterial),defaultsValid,defaults,true):std::vector<A::Slot>{};
-        const auto over=component?AuditMaterials(s.Component+offsetof(SDK::UMeshComponent,OverrideMaterials),8,overridesValid,overrides,true):std::vector<A::Slot>{};
+        const auto def=valid?AuditMaterials(reinterpret_cast<const SDK::USkeletalMesh*>(s.Mesh)->Materials,defaultsValid,defaults,true):std::vector<A::Slot>{};
+        const auto over=component?AuditMaterials(reinterpret_cast<const SDK::UMeshComponent*>(s.Component)->OverrideMaterials,overridesValid,overrides,true):std::vector<A::Slot>{};
         C::JsonArray effective;for(const auto& slot:A::ProposedMaterials(def,over))
             effective.Add(C::Object({{"slot",std::to_string(slot.Index)},{"valid",C::Bool(slot.Valid)},
                 {"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));

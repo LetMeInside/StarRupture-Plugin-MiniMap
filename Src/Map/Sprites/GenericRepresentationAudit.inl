@@ -15,15 +15,15 @@ MiniMapSpriteValidation::Result GenericAudit()
     uintptr_t cdo=0,root=0,nativeMain=0;bool authoredMainMeshUnresolved=false;
     if(AuditClass&&ClassObject(AuditClass)&&Derives(AuditClass,Actor))
     {
-        cdo=Value<uintptr_t>(AuditClass,0x110);
-        if(!Is(cdo,AuditClass,0x1c0)||!(Value<uint32_t>(cdo,8)&0x10)||!Hold(cdo,0x1c0))cdo=0;
+        cdo=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UClass*>(AuditClass)->ClassDefaultObject);
+        if(!Is(cdo,AuditClass)||!(uint32_t(reinterpret_cast<const SDK::UObject*>(cdo)->Flags)&0x10)||!Hold(cdo))cdo=0;
     }
     if(cdo)
     {
-        root=Value<uintptr_t>(cdo,0x1b8);
-        if(!Is(root,Scene,0x250)||!Hold(root,0x250))root=0;
+        root=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::AActor*>(cdo)->RootComponent);
+        if(!Is(root,Scene)||!Hold(root))root=0;
         const auto buildingBase=NativeClass(L"/Script/Chimera.CrBuildingActorBase");
-        const bool building=buildingBase&&Derives(AuditClass,buildingBase)&&Is(cdo,AuditClass,0x2e8);
+        const bool building=buildingBase&&Derives(AuditClass,buildingBase)&&Is(cdo,AuditClass);
         // An authored building CDO may expose connectors before native initialization
         // establishes its main mesh. Those templates alone cannot certify the body.
         if(AuthoredFallback)
@@ -31,22 +31,22 @@ MiniMapSpriteValidation::Result GenericAudit()
             if(!buildingBase)authoredMainMeshUnresolved=true;
             else if(Derives(AuditClass,buildingBase))
             {
-                const auto main=building?Value<uintptr_t>(cdo,0x2e0):0;
+                const auto main=building?reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo)->MainMeshComponent):0;
                 nativeMain=main;
-                authoredMainMeshUnresolved=!main||!Is(main,StaticComponent,0x590)||!Hold(main,0x590)||
-                    !Is(Value<uintptr_t>(main,0x588),StaticMesh,0x170);
+                authoredMainMeshUnresolved=!main||!Is(main,StaticComponent)||!Hold(main)||
+                    !Is(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(main)->StaticMesh),StaticMesh);
             }
         }
-        const std::pair<size_t,const char*> fields[]={{0x1b8,"RootComponent"},{0x2d8,"MainComponent"},{0x2e0,"MainMeshComponent"}};
+        const std::pair<uintptr_t,const char*> fields[]={{reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::AActor*>(cdo)->RootComponent),"RootComponent"},{building?reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo)->MainComponent):0,"MainComponent"},{building?reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo)->MainMeshComponent):0,"MainMeshComponent"}};
         for(size_t f=0;f<(building?3u:1u);++f)
         {
             if(!AuditSpend())break;
-            const auto p=Value<uintptr_t>(cdo,fields[f].first);
-            const bool ok=p&&Is(p,f==2?StaticComponent:Scene,0x250)&&Hold(p,0x250);
-            Name name{};if(ok)Read(p,0x18,name);
+            const auto p=fields[f].first;
+            const bool ok=p&&Is(p,f==2?StaticComponent:Scene)&&Hold(p);
+            const auto name=ok?reinterpret_cast<const SDK::UObject*>(p)->Name:SDK::FName{};
             nativeRecords.Add(C::Object({{"field",C::Quote(fields[f].second)},
                 {"status",C::Quote(!p?"absent":ok?"verified":"invalid")},{"component",ok?Ref(p,Scene):"null"}}));
-            if(ok){const auto id=Id(p);names.push_back({id,{name.Index,name.Number}});pointers[id]=p;}
+            if(ok){const auto id=Id(p);names.push_back({id,{name.ComparisonIndex,name.Number}});pointers[id]=p;}
         }
     }
     out.Root=root!=0;out.Transforms=true;out.Materials=true;
@@ -63,29 +63,27 @@ MiniMapSpriteValidation::Result GenericAudit()
     // never become omissions, and exact component identity is the only duplicate rule.
     const bool nativeBodyConsidered=AuthoredFallback&&CaptureRequested&&(nativeMain||authoredMainMeshUnresolved);
     bool nativeBodySelected=nativeBodyConsidered&&!authoredMainMeshUnresolved&&out.Root&&
-        Is(nativeMain,StaticComponent,0x590)&&Hold(nativeMain,0x590)&&
-        Value<uintptr_t>(nativeMain,0x10)==StaticComponent;
+        Is(nativeMain,StaticComponent)&&Hold(nativeMain)&&
+        reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(nativeMain)->Class)==StaticComponent;
     size_t omittedHidden=0,omittedNull=0,duplicates=0,unresolvedVisible=0;
     bool unresolvedSkinned=false;
     std::set<uintptr_t> bodyOmissions,bodyExamined;
     if(nativeBodyConsidered)
     {
-        uint8_t visible=0,hidden=0;
-        nativeBodySelected=nativeBodySelected&&Read(nativeMain,0x1a0,visible)&&Read(nativeMain,0x1a1,hidden)&&
-            (visible&32)!=0&&(hidden&8)==0;
+        const auto* visibility=reinterpret_cast<const SDK::USceneComponent*>(nativeMain);
+        nativeBodySelected=nativeBodySelected&&visibility->bVisible&&!visibility->bHiddenInGame;
         auto examine=[&](uintptr_t component)
         {
             if(!bodyExamined.insert(component).second)return;
             if(component==nativeMain)return;
-            if(!Is(component,StaticComponent,0x590)||!Hold(component,0x590))
+            if(!Is(component,StaticComponent)||!Hold(component))
             {++unresolvedVisible;nativeBodySelected=false;return;}
-            uint8_t v=0,h=0;uintptr_t mesh=0;
-            if(!Read(component,0x1a0,v)||!Read(component,0x1a1,h)||!Read(component,0x588,mesh))
-            {++unresolvedVisible;nativeBodySelected=false;return;}
-            if(!(v&32)||(h&8)){++omittedHidden;bodyOmissions.insert(component);return;}
+            const auto* visibility=reinterpret_cast<const SDK::USceneComponent*>(component);
+            const auto mesh=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(component)->StaticMesh);
+            if(!visibility->bVisible||visibility->bHiddenInGame){++omittedHidden;bodyOmissions.insert(component);return;}
             // A null base mesh does not prove that a derived/instanced component
             // contributes no geometry. Its additional semantics remain unsupported.
-            if(!mesh&&Value<uintptr_t>(component,0x10)==StaticComponent&&
+            if(!mesh&&reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class)==StaticComponent&&
                 (!AuditAssignments.contains(component)||!AuditAssignments.at(component)))
             {++omittedNull;bodyOmissions.insert(component);return;}
             ++unresolvedVisible;nativeBodySelected=false;
@@ -93,7 +91,7 @@ MiniMapSpriteValidation::Result GenericAudit()
         for(const auto& observation:StaticObservations)
         {if(observation.Component==nativeMain)++duplicates;examine(observation.Component);}
         for(const auto& [_,component]:pointers)
-            if(Is(component,StaticComponent,0x590))examine(component);
+            if(Is(component,StaticComponent))examine(component);
         // ComponentTemplates can contain geometry outside the selected SCS list.
         // This static-body route cannot certify any such skinned contribution.
         for(const auto component:ComponentSet)
@@ -119,40 +117,40 @@ MiniMapSpriteValidation::Result GenericAudit()
     std::map<std::string,A::Result> directTransforms;
     for(const auto p:AuditNodes)
     {
-        if(!AuditSpend()||!Is(p,Node,0xd8)||!Hold(p,0xd8)){sourceValid=false;break;}
+        if(!AuditSpend()||!Is(p,Node)||!Hold(p)){sourceValid=false;break;}
         A::Node n;n.Id=Id(p);
-        const auto component=Value<uintptr_t>(p,0x30),declared=Value<uintptr_t>(p,0x28);
-        if(!ClassObject(declared)||!Derives(declared,Component)||!Is(component,declared,0xb8)||!Hold(component,0xb8))
+        const auto* node=reinterpret_cast<const SDK::USCS_Node*>(p);
+        const auto component=reinterpret_cast<uintptr_t>(node->ComponentTemplate),declared=reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(node->ComponentClass));
+        if(!ClassObject(declared)||!Derives(declared,Component)||!Is(component,declared)||!Hold(component))
         {sourceValid=false;continue;}
         n.Component=Id(component);n.ParentConflict=AuditConflictingParents.contains(n.Id);
         if(const auto found=AuditParents.find(n.Id);found!=AuditParents.end())n.Parent=found->second;
-        const auto attach=Value<Name>(p,0x80);n.Socket=attach.Index!=0||attach.Number!=0;
-        if(Value<uint8_t>(p,0x98)!=0)
+        const auto attach=reinterpret_cast<const SDK::USCS_Node*>(p)->AttachToName;n.Socket=attach.ComparisonIndex!=0||attach.Number!=0;
+        if(uint8_t(reinterpret_cast<const SDK::USCS_Node*>(p)->bIsParentComponentNative)!=0)
         {
             if(!n.Parent.empty())n.ParentConflict=true;
-            const auto parent=Value<Name>(p,0x88);bool ambiguous=false;
-            n.NativeParent=A::Match({parent.Index,parent.Number},names,ambiguous);
+            const auto parent=reinterpret_cast<const SDK::USCS_Node*>(p)->ParentComponentOrVariableName;bool ambiguous=false;
+            n.NativeParent=A::Match({parent.ComparisonIndex,parent.Number},names,ambiguous);
             if(ambiguous)n.ParentConflict=true;
             if(!ambiguous&&!n.NativeParent.empty()&&root)
             {std::set<uintptr_t> active;C::JsonArray chain;native[n.NativeParent]=AuditNativeChain(pointers.at(n.NativeParent),root,active,0,chain);}
         }
-        n.Scene=Is(component,Scene,0x250);bool socket=false;
-        if(n.Scene){n.InputsValid=AuditTransform(component,n.Local,n.Absolute,socket);n.TemplateAttachment=Value<uintptr_t>(component,0xc8)!=0;}
+        n.Scene=Is(component,Scene);bool socket=false;
+        if(n.Scene){n.InputsValid=AuditTransform(component,n.Local,n.Absolute,socket);n.TemplateAttachment=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USceneComponent*>(component)->AttachParent)!=0;}
         n.Socket|=socket;
-        n.Metadata=n.Scene?C::Object({{"visible",C::Bool(Value<uint8_t>(component,0x1a0)&32)},
-            {"hidden_in_game",C::Bool(Value<uint8_t>(component,0x1a1)&8)}}):"null";
-        const bool isStatic=Is(component,StaticComponent,0x590),isSkeletal=!isStatic&&Is(component,SkeletalComponent,0x598);
-        uint8_t authoredVisible=0,authoredHidden=0;
-        const bool visibilityKnown=!isStatic||(Read(component,0x1a0,authoredVisible)&&Read(component,0x1a1,authoredHidden));
-        if(!visibilityKnown)sourceValid=false;
+        n.Metadata=n.Scene?C::Object({{"visible",C::Bool(reinterpret_cast<const SDK::USceneComponent*>(component)->bVisible)},
+            {"hidden_in_game",C::Bool(reinterpret_cast<const SDK::USceneComponent*>(component)->bHiddenInGame)}}):"null";
+        const bool isStatic=Is(component,StaticComponent),isSkeletal=!isStatic&&Is(component,SkeletalComponent);
+        const auto* visibility=reinterpret_cast<const SDK::USceneComponent*>(component);
+
         const bool nonDrawable=isStatic&&MiniMapStaticAssembly::AuthoredStaticMembership(
-            Value<uintptr_t>(component,0x10)==StaticComponent,visibilityKnown,(authoredVisible&32)!=0,(authoredHidden&8)!=0)==
+            reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class)==StaticComponent,true,isStatic&&visibility->bVisible,isStatic&&visibility->bHiddenInGame)==
                 MiniMapStaticAssembly::DrawableMembership::Noncontributing;
         // A subclass may contain spline/instance/procedural geometry. Its base
         // mesh field alone cannot certify an ordinary rigid-mesh recipe.
         const bool bodyOmitted=nativeBodySelected&&isStatic&&
             (bodyOmissions.contains(component)||component==nativeMain);
-        const bool derived=isStatic&&!bodyOmitted&&Value<uintptr_t>(component,0x10)!=StaticComponent;
+        const bool derived=isStatic&&!bodyOmitted&&reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class)!=StaticComponent;
         if(derived)out.DerivedStatic=true;
         const bool omitDerived=CaptureRequested&&derived;
         n.Kind=isStatic&&!bodyOmitted&&!omitDerived?"static":isSkeletal?"skeletal":"none";
@@ -162,13 +160,13 @@ MiniMapSpriteValidation::Result GenericAudit()
             // No instance/spline/procedural placement is inferred from the base mesh.
             ++omittedDerived;
             records.Add(C::Object({{"component_id",C::Quote(n.Component)},{"scs_node_id",C::Quote(n.Id)},
-                {"component_class",Ref(Value<uintptr_t>(component,0x10),Class)},
+                {"component_class",Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class),Class)},
                 {"drawable_capture_member","false"},{"omission",C::Quote("derived_static_rendering_semantics_unverified")}}));
         }
         if((isStatic&&!bodyOmitted&&!omitDerived)||isSkeletal)
         {
             const auto found=AuditAssignments.find(component);const uintptr_t mesh=found==AuditAssignments.end()?0:found->second;
-            const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh,isStatic?0x170:0x1b0)&&Hold(mesh);
+            const bool valid=mesh&&Is(mesh,isStatic?StaticMesh:SkeletalMesh)&&Hold(mesh);
             // Preserve source tokens before material rejection; no admission state changes.
             if(isSkeletal)
             {
@@ -178,8 +176,8 @@ MiniMapSpriteValidation::Result GenericAudit()
             if(!valid)sourceValid=false;else n.Mesh=Id(mesh);
             bool defaultsValid=false,overridesValid=false;MeshInput input;
             const bool diagnoseMaterials=CaptureRequested&&!skeletalAdmissionReported&&isSkeletal&&skeletalAdmission.Node.empty();
-            const auto defaults=valid?AuditMaterials(mesh+(isStatic?0x160:0x1a0),isStatic?0x38:0x30,defaultsValid,input.Defaults,diagnoseMaterials):std::vector<A::Slot>{};
-            const auto overridden=AuditMaterials(component+0x530,8,overridesValid,input.Overrides,diagnoseMaterials);
+            const auto defaults=valid?(isStatic?AuditMaterials(reinterpret_cast<const SDK::UStaticMesh*>(mesh)->StaticMaterials,defaultsValid,input.Defaults,diagnoseMaterials):AuditMaterials(reinterpret_cast<const SDK::USkeletalMesh*>(mesh)->Materials,defaultsValid,input.Defaults,diagnoseMaterials)):std::vector<A::Slot>{};
+            const auto overridden=AuditMaterials(reinterpret_cast<const SDK::UMeshComponent*>(component)->OverrideMaterials,overridesValid,input.Overrides,diagnoseMaterials);
             const auto proposed=A::ProposedMaterials(defaults,overridden);C::JsonArray mapping;
             bool present=!proposed.empty();
             for(const auto& slot:proposed){present&=slot.Valid;mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},{"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));}
@@ -214,10 +212,11 @@ MiniMapSpriteValidation::Result GenericAudit()
                 else
                 {
                     recipeIndexes[n.Id]=recipe.Count;auto& r=recipe.Instances[recipe.Count++];
-                    r.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));r.Mesh=valid?mesh:0;
-                    r.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;r.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
-                    r.Verified=valid&&input.Valid&&proposed.size()<=MiniMapStaticAssembly::Slots&&Is(mesh,StaticMesh,0x278)&&
-                        Read(mesh,0x240,r.LocalBounds.Origin)&&Read(mesh,0x258,r.LocalBounds.Extent);
+                    r.ComponentIndex=uint32_t(int32_t(reinterpret_cast<const SDK::UObject*>(component)->Index));r.Mesh=valid?mesh:0;
+                    r.Visible=reinterpret_cast<const SDK::USceneComponent*>(component)->bVisible;r.Hidden=reinterpret_cast<const SDK::USceneComponent*>(component)->bHiddenInGame;
+                    r.Verified=valid&&input.Valid&&proposed.size()<=MiniMapStaticAssembly::Slots&&Is(mesh,StaticMesh);
+                    if(r.Verified){const auto& b=reinterpret_cast<const SDK::UStaticMesh*>(mesh)->ExtendedBounds;
+                        r.LocalBounds.Origin={b.Origin.X,b.Origin.Y,b.Origin.Z};r.LocalBounds.Extent={b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z};}
                     r.MaterialCount=(std::min)(proposed.size(),MiniMapStaticAssembly::Slots);
                     for(const auto& slot:proposed)
                     {
@@ -232,20 +231,20 @@ MiniMapSpriteValidation::Result GenericAudit()
             {
                 auto& d=skeletalAdmission;d.Node=n.Id;d.Asset=valid;d.Defaults=defaultsValid;d.Overrides=overridesValid;
                 d.Materials=input.Valid;d.MaterialCount=proposed.size();d.Capacity=proposed.size()<=MiniMapStaticAssembly::Slots;
-                d.Exact=Value<uintptr_t>(component,0x10)==SkeletalComponent;d.Derives=isSkeletal; // Is already validated inheritance
-                d.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;d.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                d.Exact=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class)==SkeletalComponent;d.Derives=isSkeletal; // Is already validated inheritance
+                d.Visible=reinterpret_cast<const SDK::USceneComponent*>(component)->bVisible;d.Hidden=reinterpret_cast<const SDK::USceneComponent*>(component)->bHiddenInGame;
                 for(const auto& slot:proposed)
                     d.SlotPointers&=slot.Index<proposed.size()&&slot.Valid&&AuditMaterialPointers.contains(slot.Material);
             }
             // Retain no new roots here: the capture owner independently validates
             // and retains this optional record before the synchronous audit ends.
             if(isSkeletal&&!recipe.SkeletalTest.Present&&valid&&input.Valid&&
-                proposed.size()<=MiniMapStaticAssembly::Slots&&Value<uintptr_t>(component,0x10)==SkeletalComponent)
+                proposed.size()<=MiniMapStaticAssembly::Slots&&reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class)==SkeletalComponent)
             {
                 auto& test=recipe.SkeletalTest;auto& r=test.Input;
                 test.Present=true;test.Template=component;test.ComponentClass=SkeletalComponent;skeletalTestNode=n.Id;
-                r.Mesh=mesh;r.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));
-                r.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;r.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                r.Mesh=mesh;r.ComponentIndex=uint32_t(int32_t(reinterpret_cast<const SDK::UObject*>(component)->Index));
+                r.Visible=reinterpret_cast<const SDK::USceneComponent*>(component)->bVisible;r.Hidden=reinterpret_cast<const SDK::USceneComponent*>(component)->bHiddenInGame;
                 r.Verified=true;r.MaterialCount=proposed.size();
                 for(const auto& slot:proposed)
                 {
@@ -274,28 +273,30 @@ MiniMapSpriteValidation::Result GenericAudit()
         bool duplicate=false;for(const auto& [_,n]:nodes)duplicate|=n.Component==componentId&&
             !(nativeBodySelected&&p==nativeMain&&n.Kind=="none");
         if(nativeBodySelected&&p!=nativeMain)continue;
-        if(duplicate||!Is(p,StaticComponent,0x590))continue;
-        if(Value<uintptr_t>(p,0x10)!=StaticComponent){out.DerivedStatic=true;continue;}
-        const auto mesh=Value<uintptr_t>(p,0x588);if(!mesh)continue;
+        if(duplicate||!Is(p,StaticComponent))continue;
+        if(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Class)!=StaticComponent){out.DerivedStatic=true;continue;}
+        const auto mesh=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(p)->StaticMesh);if(!mesh)continue;
         if(scsStatic){mixedNative=true;++omittedNative;continue;} // Select the SCS route; never guess additive equivalence.
-        if(!Is(mesh,StaticMesh,0x278)||!Hold(mesh,0x278)){sourceValid=false;continue;}
+        if(!Is(mesh,StaticMesh)||!Hold(mesh)){sourceValid=false;continue;}
         if(recipe.Count>=MiniMapStaticAssembly::Limit){AuditTruncated=true;break;}
         A::Node n;n.Id="native:"+componentId;n.Component=componentId;n.Kind="static";n.Scene=true;n.Mesh=Id(mesh);
         bool socket=false;n.InputsValid=AuditTransform(p,n.Local,n.Absolute,socket);n.Socket=socket;
         n.Metadata=C::Object({{"source",C::Quote("verified_direct_cdo_component_field")},
-            {"visible",C::Bool(Value<uint8_t>(p,0x1a0)&32)},{"hidden_in_game",C::Bool(Value<uint8_t>(p,0x1a1)&8)}});
+            {"visible",C::Bool(reinterpret_cast<const SDK::USceneComponent*>(p)->bVisible)},{"hidden_in_game",C::Bool(reinterpret_cast<const SDK::USceneComponent*>(p)->bHiddenInGame)}});
         std::set<uintptr_t> active;C::JsonArray chain;
         directTransforms[n.Id]=AuditNativeChain(p,root,active,0,chain);
         MeshInput input;bool defaultsValid=false,overridesValid=false;
-        const auto defaults=AuditMaterials(mesh+0x160,0x38,defaultsValid,input.Defaults);
-        const auto overrides=AuditMaterials(p+0x530,8,overridesValid,input.Overrides);
+        const auto defaults=AuditMaterials(reinterpret_cast<const SDK::UStaticMesh*>(mesh)->StaticMaterials,defaultsValid,input.Defaults);
+        const auto overrides=AuditMaterials(reinterpret_cast<const SDK::UMeshComponent*>(p)->OverrideMaterials,overridesValid,input.Overrides);
         const auto proposed=A::ProposedMaterials(defaults,overrides);input.Valid=defaultsValid&&overridesValid&&!proposed.empty();
         C::JsonArray mapping;for(const auto& slot:proposed)mapping.Add(C::Object({{"slot",std::to_string(slot.Index)},{"material_id",slot.Valid?C::Quote(slot.Material):"null"}}));
         DiagnosticTruncated|=mapping.Truncated;
         input.Mapping=mapping.String();out.MaterialSlots+=defaults.size();out.OverrideSlots+=overrides.size();
         auto& r=recipe.Instances[recipe.Count];recipeIndexes[n.Id]=recipe.Count++;
-        r.Mesh=mesh;r.ComponentIndex=uint32_t(Value<int32_t>(p,0xc));r.Visible=(Value<uint8_t>(p,0x1a0)&32)!=0;r.Hidden=(Value<uint8_t>(p,0x1a1)&8)!=0;
-        r.Verified=input.Valid&&proposed.size()<=MiniMapStaticAssembly::Slots&&Read(mesh,0x240,r.LocalBounds.Origin)&&Read(mesh,0x258,r.LocalBounds.Extent);
+        r.Mesh=mesh;r.ComponentIndex=uint32_t(int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index));r.Visible=reinterpret_cast<const SDK::USceneComponent*>(p)->bVisible;r.Hidden=reinterpret_cast<const SDK::USceneComponent*>(p)->bHiddenInGame;
+        const auto& b=reinterpret_cast<const SDK::UStaticMesh*>(mesh)->ExtendedBounds;
+        r.LocalBounds.Origin={b.Origin.X,b.Origin.Y,b.Origin.Z};r.LocalBounds.Extent={b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z};
+        r.Verified=input.Valid&&proposed.size()<=MiniMapStaticAssembly::Slots;
         r.MaterialCount=(std::min)(proposed.size(),MiniMapStaticAssembly::Slots);
         for(const auto& slot:proposed)
         {
@@ -341,10 +342,10 @@ MiniMapSpriteValidation::Result GenericAudit()
     out.Truncated=Truncated||Invalid||Graph.Truncated||Work.Exhausted||AuditTruncated||AuditCollectionTruncated;
     out.DiagnosticTruncated=DiagnosticTruncated||records.Truncated||nativeRecords.Truncated||Sources.Truncated||Components.Truncated||Mass.Truncated||Relationships.Truncated||Candidates.Truncated;
     std::string scsStatus="not_blueprint_class";
-    if(Is(AuditClass,Blueprint,0x360))
+    if(Is(AuditClass,Blueprint))
     {
-        const auto scs=Value<uintptr_t>(AuditClass,0x268);
-        scsStatus=!scs?"absent":Is(scs,SCS,0xb0)?"resident_validated":"invalid_or_unavailable";
+        const auto scs=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UBlueprintGeneratedClass*>(AuditClass)->SimpleConstructionScript);
+        scsStatus=!scs?"absent":Is(scs,SCS)?"resident_validated":"invalid_or_unavailable";
     }
     out.Truncated|=Work.Exhausted;
     out.Details=C::Object({{"existing_cdo_status",C::Quote(cdo?"resident_validated":"unavailable_or_invalid")},
@@ -499,8 +500,8 @@ MiniMapSpriteValidation::Result GenericAudit()
         parallel.CanonicalBlueprint=BlueprintIdentity.Path;
         parallel.Classification=Classification.CachedPolicy;
         parallel.ClassificationObserved=Classification.Fixed&&Classification.Subclass&&!Classification.Truncated&&Classification.InteriorTag!="unknown";
-        parallel.ActorObject=Value<int32_t>(AuditClass,0xc);const auto name=Value<Name>(AuditClass,0x18);
-        parallel.ActorName=name.Index;parallel.ActorNumber=name.Number;
+        parallel.ActorObject=int32_t(reinterpret_cast<const SDK::UObject*>(AuditClass)->Index);const auto name=reinterpret_cast<const SDK::UObject*>(AuditClass)->Name;
+        parallel.ActorName=name.ComparisonIndex;parallel.ActorNumber=name.Number;
         parallel.Tier=recipe.HighDetail?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Low;
         MiniMapSmelterCapture::OfferParallelBlueprint(parallel,AuditClass,Record.BuildingId,MiniMapMap::GetWorld());
     }
@@ -522,8 +523,8 @@ MiniMapSpriteValidation::Result GenericAudit()
         candidate.RepresentationVerified=nativeSubsetSelected||subsetSelected||
             (out.Root&&out.Transforms&&out.Materials&&!out.Inherited&&!out.Child&&!out.DerivedStatic&&!out.OtherSkinned);
         candidate.Truncated=out.Truncated||Classification.Truncated;
-        candidate.ActorObject=Value<int32_t>(AuditClass,0xc);const auto name=Value<Name>(AuditClass,0x18);
-        candidate.ActorName=name.Index;candidate.ActorNumber=name.Number;
+        candidate.ActorObject=int32_t(reinterpret_cast<const SDK::UObject*>(AuditClass)->Index);const auto name=reinterpret_cast<const SDK::UObject*>(AuditClass)->Name;
+        candidate.ActorName=name.ComparisonIndex;candidate.ActorNumber=name.Number;
         candidate.Tier=recipe.HighDetail?MiniMapSpriteDiscoveryCore::Tier::High:MiniMapSpriteDiscoveryCore::Tier::Low;
         // An unresolved identity preserves the existing session-only capture path.
         if(candidate.CanonicalBlueprint&&IsBlueprintBlacklisted(*candidate.CanonicalBlueprint))

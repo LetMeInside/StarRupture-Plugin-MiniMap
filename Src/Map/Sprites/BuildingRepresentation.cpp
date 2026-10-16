@@ -63,32 +63,10 @@ namespace MiniMapBuildingRepresentation
         }
         template<class T> T Value(uintptr_t p,size_t offset)
         {T out{};Read(p,offset,out);return out;} // Use only after validating the containing extent.
-        struct Name { int32_t Index{};uint32_t Number{}; };
-        static_assert(sizeof(Name)==8);
-        static_assert(offsetof(SDK::UObject,Class)==0x10);
-        static_assert(offsetof(SDK::UClass,ClassDefaultObject)==0x110);
-        static_assert(offsetof(SDK::UAuActorPlacementData,EntityType)==0x120);
-        static_assert(offsetof(SDK::UAuActorPlacementData,BuildingID)==0x170);
-        static_assert(offsetof(SDK::FAuAPMassSpawnedEntityType,EntityConfigPtr)==0x30);
-        static_assert(offsetof(SDK::UMassEntityConfigAsset,Config)==0x30);
-        static_assert(offsetof(SDK::FMassEntityConfig,Traits)==8);
-        static_assert(offsetof(SDK::UMassVisualizationTrait,StaticMeshInstanceDesc)==0x30);
-        static_assert(offsetof(SDK::UMassVisualizationTrait,HighResTemplateActor)==0xd0);
-        static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait,StaticMeshInstanceDesc)==0x30);
-        static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait,LowResTemplateActor)==0xd8);
-        static_assert(offsetof(SDK::UStaticMeshComponent,StaticMesh)==0x588);
-        static_assert(offsetof(SDK::UMeshComponent,OverrideMaterials)==0x530);
-        static_assert(offsetof(SDK::UStaticMesh,StaticMaterials)==0x160);
-        static_assert(offsetof(SDK::USkeletalMesh,Materials)==0x1a0);
-        static_assert(sizeof(SDK::FStaticMaterial)==0x38&&sizeof(SDK::FSkeletalMaterial)==0x30);
-        static_assert(sizeof(SDK::FMassStaticMeshInstanceVisualizationMeshDesc)==0xa0);
-        static_assert(offsetof(SDK::FMassStaticMeshInstanceVisualizationMeshDesc,Mesh)==0x60);
-        static_assert(offsetof(SDK::FMassStaticMeshInstanceVisualizationMeshDesc,MaterialOverrides)==0x68);
-        static_assert(sizeof(SDK::FTransform)==0x60);
 
         // Targeted indexed identity check, not a global object scan or weak-pointer
         // resolution. A candidate always comes from a retained ownership chain.
-        bool Identity(uintptr_t p,size_t extent=0x28)
+        bool Identity(uintptr_t p,size_t extent=sizeof(SDK::UObject))
         {
             return MiniMapNative::ValidateObjectIdentity(p,objectArray,extent);
         }
@@ -151,7 +129,6 @@ namespace MiniMapBuildingRepresentation
             std::map<uintptr_t,std::pair<uintptr_t,uintptr_t>> Classes;
             std::map<std::pair<uintptr_t,uintptr_t>,bool> Inheritance;
             std::map<uintptr_t,size_t> ValidatedExtents;
-            std::vector<std::pair<uintptr_t,size_t>> Storage;
             bool OwnedRange(uintptr_t p,size_t bytes) const
             {
                 if(!p||p>UINTPTR_MAX-bytes)return false;
@@ -160,43 +137,23 @@ namespace MiniMapBuildingRepresentation
                 --it;
                 return Held.contains(it->first)&&p-it->first<=it->second&&bytes<=it->second-(p-it->first);
             }
-            bool KnownRange(uintptr_t p,size_t bytes) const
-            {
-                if(OwnedRange(p,bytes))return true;
-                if(!p||p>UINTPTR_MAX-bytes)return false;
-                for(auto it=Storage.rbegin();it!=Storage.rend();++it)
-                    if(p>=it->first&&p-it->first<=it->second&&bytes<=it->second-(p-it->first))return true;
-                return false;
-            }
             bool Readable(uintptr_t p,size_t bytes,size_t alignment=1)
             {
                 if(!alignment||(alignment&(alignment-1))||(p&(alignment-1)))return false;
-                return KnownRange(p,bytes)||MiniMapNative::IsMemoryRangeReadable(p,bytes,alignment);
+                return OwnedRange(p,bytes)||MiniMapNative::IsMemoryRangeReadable(p,bytes,alignment);
             }
             template<class T> bool Read(uintptr_t p,size_t offset,T& out)
             {
                 static_assert(std::is_trivially_copyable_v<T>);
                 if(p>UINTPTR_MAX-offset)return false;
                 const auto address=p+offset;
-                if(!KnownRange(address,sizeof(T)))return MiniMapNative::ReadMemory(address,&out,sizeof(T));
+                if(!OwnedRange(address,sizeof(T)))return MiniMapNative::ReadMemory(address,&out,sizeof(T));
                 std::memcpy(&out,reinterpret_cast<const void*>(address),sizeof(T));
                 if(Metrics)++Metrics->FieldHits;
                 return true;
             }
             template<class T> T Value(uintptr_t p,size_t offset)
             {T out{};Read(p,offset,out);return out;}
-            struct StorageScope
-            {
-                Context& Owner;size_t Previous;
-                StorageScope(Context& owner,uintptr_t header,uintptr_t data,size_t bytes):Owner(owner),Previous(owner.Storage.size())
-                {
-                    // Only bounded arrays reached through a retained owner (or
-                    // its enclosing validated array) qualify for scoped reads.
-                    // The caller has independently validated data/bytes first.
-                    if(bytes&&owner.KnownRange(header,sizeof(C::ArrayHeader)))owner.Storage.emplace_back(data,bytes);
-                }
-                ~StorageScope(){Owner.Storage.resize(Previous);}
-            };
             struct StaticObservation {uintptr_t Component{},Owner{};std::string Source;};
             std::vector<StaticObservation> StaticObservations;
             bool StaticObservationOverflow=false;
@@ -268,7 +225,7 @@ namespace MiniMapBuildingRepresentation
                 const auto type=Find(wide.c_str());
                 if(!type)
                 {AuthoredClassStatus=Work.Exhausted?"work_budget_exhausted":"not_resident_or_identity_invalid";return 0;}
-                if(!ClassObject(type)||!Is(type,Blueprint,0x360)||!Derives(type,Actor)||!Hold(type,0x360))
+                if(!ClassObject(type)||!Is(type,Blueprint)||!Derives(type,Actor)||!Hold(type))
                 {AuthoredClassStatus=Work.Exhausted?"work_budget_exhausted":"resident_class_validation_failed";return 0;}
                 if(AuthoredClass&&AuthoredClass!=type)
                 {AuthoredClassStatus="resident_class_changed_during_inspection";return 0;}
@@ -297,7 +254,7 @@ namespace MiniMapBuildingRepresentation
                 Components.Limit=512*1024;Mass.Limit=128*1024;Candidates.Limit=32*1024;
                 Sources.Limit=128*1024;Relationships.Limit=64*1024;
             }
-            bool CheckIdentity(uintptr_t p,size_t extent=0x28)
+            bool CheckIdentity(uintptr_t p,size_t extent=sizeof(SDK::UObject))
             {
                 if(AuditActive&&(!AuditSpend()))return false;
                 if(!Work.Spend(FullTraversal))return false;
@@ -307,14 +264,14 @@ namespace MiniMapBuildingRepresentation
                 if(const auto found=ValidatedExtents.find(p);found!=ValidatedExtents.end()&&
                     found->second>=extent&&Held.contains(p))
                 {
-                    uint32_t flags=0;std::memcpy(&flags,reinterpret_cast<const void*>(p+8),4);
+                    const auto flags=uint32_t(reinterpret_cast<const SDK::UObject*>(p)->Flags);
                     if(flags&0x1b400)return false;
                     if(Metrics)++Metrics->IdentityHits;
                     return true;
                 }
                 if(!Identity(p,extent))return false;
                 if(ValidatedExtents.size()<C::VisitLimit||ValidatedExtents.contains(p))
-                    ValidatedExtents[p]=(std::max)(ValidatedExtents[p],(std::max)(extent,size_t(0x10)));
+                    ValidatedExtents[p]=(std::max)(ValidatedExtents[p],extent);
                 return true;
             }
             bool AuditSpend()
@@ -328,7 +285,7 @@ namespace MiniMapBuildingRepresentation
                     if(Metrics)++Metrics->Released;
                 }
             }
-            bool Hold(uintptr_t p,size_t extent=0x28)
+            bool Hold(uintptr_t p,size_t extent=sizeof(SDK::UObject))
             {
                 AuditElapsed elapsed(Metrics?&Metrics->HoldNs:nullptr);if(Metrics)++Metrics->HoldCalls;
                 if(!CheckIdentity(p,extent))return false;
@@ -351,12 +308,11 @@ namespace MiniMapBuildingRepresentation
             bool ClassObject(uintptr_t p)
             {
                 AuditElapsed elapsed(Metrics?&Metrics->ClassNs:nullptr);if(Metrics)++Metrics->ClassCalls;
-                if(!CheckIdentity(p,0x200))return false;
-                // The containing 0x200 bytes have just been validated. Copy these
-                // two fields without querying those same bytes again.
-                uintptr_t meta=0,parent=0;
-                std::memcpy(&meta,reinterpret_cast<const void*>(p+0x10),8);
-                std::memcpy(&parent,reinterpret_cast<const void*>(p+0x40),8);
+                if(!CheckIdentity(p,sizeof(SDK::UClass)))return false;
+                // The containing SDK class extent was just validated; read the
+                // declared fields without querying those same bytes again.
+                const auto* klass=reinterpret_cast<const SDK::UClass*>(p);
+                uintptr_t meta=reinterpret_cast<uintptr_t>(klass->Class),parent=reinterpret_cast<uintptr_t>(klass->SuperStruct);
                 if(const auto found=Classes.find(p);found!=Classes.end()&&found->second==std::pair{meta,parent})
                 {if(Metrics)++Metrics->ClassHits;return true;}
                 // A changed hierarchy invalidates all derived answers, even in
@@ -365,15 +321,15 @@ namespace MiniMapBuildingRepresentation
                 const auto originalMeta=meta;
                 for(size_t n=0;meta&&n<C::DepthLimit;++n)
                 {
-                    if(!CheckIdentity(meta,0x200))return false;
+                    if(!CheckIdentity(meta,sizeof(SDK::UClass)))return false;
                     if(meta==Class)
                     {
-                        if(!Hold(p,0x200))return false;
+                        if(!Hold(p))return false;
                         if(Classes.size()<C::VisitLimit)Classes.emplace(p,std::pair{originalMeta,parent});
                         return true;
                     }
-                    if(Value<uintptr_t>(meta,0x10)!=Class)return false;
-                    meta=Value<uintptr_t>(meta,0x40);
+                    if(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(meta)->Class)!=Class)return false;
+                    meta=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStruct*>(meta)->SuperStruct);
                 }
                 return false;
             }
@@ -391,30 +347,30 @@ namespace MiniMapBuildingRepresentation
                     if(!ClassObject(type)||!chain.insert(type).second)return false;
                     if(type==expected)
                     {if(Inheritance.size()<C::VisitLimit)Inheritance.emplace(key,true);return true;}
-                    type=Value<uintptr_t>(type,0x40);
+                    type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStruct*>(type)->SuperStruct);
                 }
                 if(type)Truncated=true;
                 else if(Inheritance.size()<C::VisitLimit)Inheritance.emplace(key,false);
                 return false;
             }
-            bool Is(uintptr_t p,uintptr_t type,size_t extent=0x28)
-            {return CheckIdentity(p,extent)&&Derives(Value<uintptr_t>(p,0x10),type);}
+            bool Is(uintptr_t p,uintptr_t type,size_t extent=sizeof(SDK::UObject))
+            {return CheckIdentity(p,extent)&&Derives(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Class),type);}
             bool BoundedNativeClassChain(uintptr_t type)
             {
-                // Fixed getter's IsA uses FStructBaseChain at UStruct +0x30.
-                // PDB: pointer +0, last-index +8; validate before native indexing.
+                // Validate the SDK-declared base chain before the native getter indexes it.
                 if(!ClassObject(type))return false;
-                const auto last=Value<int32_t>(type,0x38);
-                const auto data=Value<uintptr_t>(type,0x30);
-                if(last<0||size_t(last)>=C::DepthLimit||!Readable(data,(size_t(last)+1)*8,8))return false;
+                const auto chain=reinterpret_cast<const SDK::UStruct*>(type)->BaseChain;
+                const auto last=chain.NumStructBasesInChainMinusOne;
+                const auto data=reinterpret_cast<uintptr_t>(chain.StructBaseChainArray);
+                if(last<0||size_t(last)>=C::DepthLimit||!Readable(data,(size_t(last)+1)*sizeof(SDK::FStructBaseChain*),alignof(SDK::FStructBaseChain*)))return false;
                 uintptr_t previous=0;
                 for(int32_t i=0;i<=last;++i)
                 {
                     if(!Graph.Spend())return false;
-                    const auto subobject=Value<uintptr_t>(data,size_t(i)*8);
-                    if(subobject<0x30)return false;
-                    const auto owner=subobject-0x30;
-                    if(!ClassObject(owner)||!Hold(owner,0x200)||Value<uintptr_t>(owner,0x40)!=previous)return false;
+                    const auto subobject=reinterpret_cast<uintptr_t>(chain.StructBaseChainArray[i]);
+                    if(subobject<offsetof(SDK::UStruct,BaseChain))return false;
+                    const auto owner=subobject-offsetof(SDK::UStruct,BaseChain);
+                    if(!ClassObject(owner)||!Hold(owner)||reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStruct*>(owner)->SuperStruct)!=previous)return false;
                     previous=owner;
                 }
                 return previous==type;
@@ -422,7 +378,7 @@ namespace MiniMapBuildingRepresentation
             uintptr_t NativeClass(const wchar_t* path)
             {
                 const auto p=Find(path);
-                return p&&ClassObject(p)&&Value<uintptr_t>(p,0x10)==Class?p:0;
+                return p&&ClassObject(p)&&reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Class)==Class?p:0;
             }
             bool Initialize()
             {
@@ -430,7 +386,7 @@ namespace MiniMapBuildingRepresentation
                 MiniMapBuildingSprites::TimingScope timing(MiniMapBuildingSprites::Timing::NativeClassResolution);
 #endif
                 Class=Find(L"/Script/CoreUObject.Class");
-                if(!Class||!CheckIdentity(Class,0x200)||Value<uintptr_t>(Class,0x10)!=Class)return false;
+                if(!Class||!CheckIdentity(Class,sizeof(SDK::UClass))||reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(Class)->Class)!=Class)return false;
 #define NATIVE(field,path) field=NativeClass(L"/Script/" path);if(!field)Source("native_metadata_class",0,"unavailable_not_resident",#field)
                 NATIVE(Actor,"Engine.Actor");NATIVE(Component,"Engine.ActorComponent");NATIVE(Scene,"Engine.SceneComponent");
                 NATIVE(MeshComponent,"Engine.MeshComponent");NATIVE(StaticComponent,"Engine.StaticMeshComponent");
@@ -459,12 +415,10 @@ namespace MiniMapBuildingRepresentation
                     {return report("invocation_or_engine_allocator_unavailable");}
                     // Independent work budget/roots: identity resolution cannot exhaust the capture audit.
                     Context diagnostic;diagnostic.Metrics=Metrics;diagnostic.Class=Class;diagnostic.Placement=Placement;
-                    if(!diagnostic.Is(definition,Placement,sizeof(SDK::UAuActorPlacementData))||
-                        !diagnostic.Hold(definition,sizeof(SDK::UAuActorPlacementData)))
+                    if(!diagnostic.Is(definition,Placement)||
+                        !diagnostic.Hold(definition))
                     {return report("definition_validation_failed");}
                     using Params=SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString;
-                    static_assert(sizeof(Params)==0x38&&offsetof(Params,SoftClassReference)==0&&offsetof(Params,ReturnValue)==0x28);
-                    static_assert(offsetof(SDK::UAuActorPlacementData,ActorClass)==0x38);
                     Params params{};
                     // Borrowed shallow copy. The retained definition owns its soft-reference storage.
                     params.SoftClassReference=reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->ActorClass;
@@ -483,9 +437,9 @@ namespace MiniMapBuildingRepresentation
                     using FindFunction=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
                     const auto fn=reinterpret_cast<uintptr_t>(reinterpret_cast<FindFunction>(engine->GetStaticFindObjectByNameAddress())(
                         reinterpret_cast<SDK::UClass*>(functionClass),reinterpret_cast<SDK::UObject*>(library),L"Conv_SoftClassReferenceToString",true));
-                    if(!diagnostic.Hold(fn,sizeof(SDK::UFunction))||!diagnostic.Is(fn,functionClass,sizeof(SDK::UFunction))||
-                        Value<uintptr_t>(fn,offsetof(SDK::UObject,Class))!=functionClass||
-                        Value<uintptr_t>(fn,offsetof(SDK::UObject,Outer))!=library)
+                    if(!diagnostic.Hold(fn)||!diagnostic.Is(fn,functionClass)||
+                        reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(fn)->Class)!=functionClass||
+                        reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(fn)->Outer)!=library)
                     {return report("qualified_conversion_function_unavailable");}
                     const auto* function=reinterpret_cast<const SDK::UFunction*>(fn);
                     // Same CL-127004 UFunction contract as the existing capture invocation.
@@ -493,10 +447,10 @@ namespace MiniMapBuildingRepresentation
                     if((flags&0x2400)!=0x2400||!function->ExecFunction||
                         Value<uint8_t>(fn,0xb4)!=2||Value<uint16_t>(fn,0xb6)!=sizeof(Params))
                     {return report("conversion_function_contract_mismatch");}
-                    const auto cdo=Value<uintptr_t>(library,offsetof(SDK::UClass,ClassDefaultObject));
-                    if(!diagnostic.Is(cdo,library,sizeof(SDK::UObject))||!diagnostic.Hold(cdo)||
-                        Value<uintptr_t>(cdo,offsetof(SDK::UObject,Class))!=library||
-                        !(Value<uint32_t>(cdo,offsetof(SDK::UObject,Flags))&0x10))
+                    const auto cdo=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UClass*>(library)->ClassDefaultObject);
+                    if(!diagnostic.Is(cdo,library)||!diagnostic.Hold(cdo)||
+                        reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(cdo)->Class)!=library||
+                        !(uint32_t(reinterpret_cast<const SDK::UObject*>(cdo)->Flags)&0x10))
                     {return report("kismet_default_object_validation_failed");}
                     if(!blueprintIdentities.ContractReported)
                     {LOG_INFO("MiniMap: authored ActorClass conversion contract verified: Engine.KismetSystemLibrary:Conv_SoftClassReferenceToString native/static parameters=2 frame=0x38; game-thread public dispatch; engine allocator available");blueprintIdentities.ContractReported=true;}
@@ -578,14 +532,14 @@ namespace MiniMapBuildingRepresentation
                 if(!p)return C::Object({{"status",C::Quote("absent")}});
                 if((expected&&!Is(p,expected))||!Hold(p))
                 {Invalid|=!Work.Exhausted;return C::Object({{"status",C::Quote(Work.Exhausted?"truncated":"invalid")}});}
-                const auto type=Value<uintptr_t>(p,0x10);
-                if(!ClassObject(type)||!Hold(type,0x200))
+                const auto type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Class);
+                if(!ClassObject(type)||!Hold(type))
                 {Invalid|=!Work.Exhausted;return C::Object({{"status",C::Quote(Work.Exhausted?"truncated":"invalid_class")}});}
-                const auto name=Value<Name>(p,0x18);
+                const auto name=reinterpret_cast<const SDK::UObject*>(p)->Name;
                 return C::Object({{"id",C::Quote(Id(p))},{"class_id",C::Quote(Id(type))},
                     {"status",C::Quote("present")},{"resident_validated","true"},{"readable_name", "null"},
                     {"name_status",C::Quote("not_attempted_native_conversion_not_verified")},
-                    {"fname_comparison_index",std::to_string(name.Index)},{"fname_number",std::to_string(name.Number)}});
+                    {"fname_comparison_index",std::to_string(name.ComparisonIndex)},{"fname_number",std::to_string(name.Number)}});
             }
             void Source(const std::string& category,uintptr_t owner,const char* status,const std::string& reason="",const std::string& details="null")
             {
@@ -596,43 +550,30 @@ namespace MiniMapBuildingRepresentation
                 if(std::strcmp(status,"truncated")==0)Truncated=true;
                 if(std::strcmp(status,"invalid")==0)Invalid=true;
             }
-            template<class Visitor> void Array(uintptr_t header,size_t stride,size_t alignment,size_t limit,
+            template<class T,class Visitor> void Array(const SDK::TArray<T>& values,size_t limit,
                 const std::string& source,uintptr_t owner,Visitor visitor)
             {
-                C::ArrayHeader a{};
-                if(!Readable(header,sizeof(a),8)||!Read(header,0,a)){Source(source,owner,"invalid","unreadable/misaligned array header");return;}
-                const auto b=C::BoundArray(a,stride,alignment,limit);
-                if(!b.Valid||!(!b.Bytes||Readable(a.Data,b.Bytes,alignment)))
+                const C::ArrayHeader a{reinterpret_cast<uintptr_t>(values.GetDataPtr()),values.Num(),values.Max()};
+                const auto b=C::BoundArray(a,sizeof(T),alignof(T),limit);
+                if(!b.Valid||!(!b.Bytes||Readable(a.Data,b.Bytes,alignof(T))))
                 {Source(source,owner,"invalid","array bounds, alignment, arithmetic or readable storage check failed");return;}
                 Source(source,owner,b.Status,"num="+std::to_string(a.Num)+" max="+std::to_string(a.Max)+" bounded_count="+std::to_string(b.Count));
-                StorageScope storage(*this,header,a.Data,b.Bytes);
                 for(size_t i=0;i<b.Count;++i)
                 {
                     if(!Graph.Spend()){Source(source,owner,"truncated","total traversal visit limit");break;}
-                    visitor(a.Data+i*stride,i);
+                    visitor(a.Data+i*sizeof(T),i);
                 }
             }
-            std::string NameValue(uintptr_t p,size_t offset)
+            std::string NameValue(const SDK::FName& n)
             {
-                const auto n=Value<Name>(p,offset);
-                return C::Object({{"comparison_index",std::to_string(n.Index)},{"number",std::to_string(n.Number)},
+                return C::Object({{"comparison_index",std::to_string(n.ComparisonIndex)},{"number",std::to_string(n.Number)},
                     {"readable_name","null"},{"status",C::Quote("opaque_fname")}});
             }
-            std::string Vector(uintptr_t p,size_t offset,size_t count)
+            std::string Transform(const SDK::FTransform& t)
             {
-                C::JsonArray a;
-                for(size_t i=0;i<count;++i)
-                {
-                    const double v=Value<double>(p,offset+i*8);
-                    if(!std::isfinite(v))Invalid=true;
-                    a.Add(C::Number(v));
-                }
-                return a.String();
-            }
-            std::string Transform(uintptr_t p)
-            {
-                return C::Object({{"rotation_xyzw",Vector(p,0,4)},{"translation",Vector(p,0x20,3)},
-                    {"scale",Vector(p,0x40,3)},{"composed","false"}});
+                return C::Object({{"rotation_xyzw",CopiedNumbers(std::array{t.Rotation.X,t.Rotation.Y,t.Rotation.Z,t.Rotation.W})},
+                    {"translation",CopiedNumbers(std::array{t.Translation.X,t.Translation.Y,t.Translation.Z})},
+                    {"scale",CopiedNumbers(std::array{t.Scale3D.X,t.Scale3D.Y,t.Scale3D.Z})},{"composed","false"}});
             }
             template<size_t N> std::string CopiedNumbers(const std::array<double,N>& values)
             {
@@ -640,13 +581,14 @@ namespace MiniMapBuildingRepresentation
                 for(double v:values){if(!std::isfinite(v))Invalid=true;a.Add(C::Number(v));}
                 return a.String();
             }
-            std::string Materials(uintptr_t header,size_t stride,uintptr_t owner,const std::string& source)
+            template<class T> std::string Materials(const SDK::TArray<T>& values,uintptr_t owner,const std::string& source)
             {
                 C::JsonArray slots;slots.Limit=16*1024;
                 if(!Material){Source(source,owner,"not_attempted","native MaterialInterface class unavailable");return slots.String();}
-                Array(header,stride,8,C::MaterialLimit,source,owner,[&](uintptr_t item,size_t slot)
+                Array(values,C::MaterialLimit,source,owner,[&](uintptr_t item,size_t slot)
                 {
-                    const auto material=Value<uintptr_t>(item,0);
+                    const auto& value=*reinterpret_cast<const T*>(item);
+                    const auto material=reinterpret_cast<uintptr_t>([&]{if constexpr(std::is_pointer_v<T>)return value;else return value.MaterialInterface;}());
                     slots.Add(C::Object({{"slot",std::to_string(slot)},{"material",Ref(material,Material)}}));
                 });
                 if(slots.Truncated)DiagnosticTruncated=true;
@@ -666,61 +608,61 @@ namespace MiniMapBuildingRepresentation
             }
             void InspectComponent(uintptr_t p,uintptr_t owner,const std::string& source,size_t childDepth)
             {
-                if(!Is(p,Component,0xb8)||!Hold(p,0xb8)){Source(source,owner,"invalid","component identity/type");return;}
+                if(!Is(p,Component)||!Hold(p)){Source(source,owner,"invalid","component identity/type");return;}
                 Edge(owner,p,source);
                 if(ComponentSet.contains(p))return;
                 if(ComponentSet.size()>=C::ComponentLimit){Source(source,owner,"truncated","component record limit");return;}
                 ComponentSet.insert(p);
-                const auto type=Value<uintptr_t>(p,0x10);
+                const auto type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Class);
                 if(AuthoredFallback)
                 {
-                    if(Is(p,StaticComponent,0x590))
-                    {++TemplateStatic;if(Is(Value<uintptr_t>(p,0x588),StaticMesh,0x170))++TemplateValidStatic;}
-                    if(Is(p,SkeletalComponent,0x598))++TemplateSkeletal;
+                    if(Is(p,StaticComponent))
+                    {++TemplateStatic;if(Is(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(p)->StaticMesh),StaticMesh))++TemplateValidStatic;}
+                    if(Is(p,SkeletalComponent))++TemplateSkeletal;
                     if(InstancedComponent&&Is(p,InstancedComponent))++TemplateInstanced;
                 }
                 std::string scene="null",mesh="null",defaults="[]",overrides="[]",meshKind="none",
                     meshInputs="null",meshStatus="not_applicable";
-                if(Is(p,Scene,0x250))
+                if(Is(p,Scene))
                 {
-                    const auto parent=Value<uintptr_t>(p,0xc8);
+                    const auto parent=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USceneComponent*>(p)->AttachParent);
                     const auto parentRef=Ref(parent,Scene);
                     if(parent&&Is(parent,Scene))Edge(p,parent,"scene_attachment_parent");
-                    const auto flags=Value<uint8_t>(p,0x1a0),flags2=Value<uint8_t>(p,0x1a1);
-                    scene=C::Object({{"location",Vector(p,0x140,3)},{"rotation_pitch_yaw_roll",Vector(p,0x158,3)},
-                        {"scale",Vector(p,0x170,3)},{"parent",parentRef},{"socket",NameValue(p,0xd0)},
-                        {"absolute_location",C::Bool(flags&4)},{"absolute_rotation",C::Bool(flags&8)},
-                        {"absolute_scale",C::Bool(flags&16)},{"visible",C::Bool(flags&32)},
-                        {"hidden_in_game",C::Bool(flags2&8)}});
+                    const auto* sceneComponent=reinterpret_cast<const SDK::USceneComponent*>(p);
+                    scene=C::Object({{"location",CopiedNumbers(std::array{sceneComponent->RelativeLocation.X,sceneComponent->RelativeLocation.Y,sceneComponent->RelativeLocation.Z})},{"rotation_pitch_yaw_roll",CopiedNumbers(std::array{sceneComponent->RelativeRotation.Pitch,sceneComponent->RelativeRotation.Yaw,sceneComponent->RelativeRotation.Roll})},
+                        {"scale",CopiedNumbers(std::array{sceneComponent->RelativeScale3D.X,sceneComponent->RelativeScale3D.Y,sceneComponent->RelativeScale3D.Z})},{"parent",parentRef},{"socket",NameValue(reinterpret_cast<const SDK::USceneComponent*>(p)->AttachSocketName)},
+                        {"absolute_location",C::Bool(sceneComponent->bAbsoluteLocation)},{"absolute_rotation",C::Bool(sceneComponent->bAbsoluteRotation)},
+                        {"absolute_scale",C::Bool(sceneComponent->bAbsoluteScale)},{"visible",C::Bool(sceneComponent->bVisible)},
+                        {"hidden_in_game",C::Bool(sceneComponent->bHiddenInGame)}});
                 }
                 uintptr_t asset=0;
-                if(Is(p,SkinnedComponent,0x598))
+                if(Is(p,SkinnedComponent))
                 {
-                    meshInputs=C::Object({{"legacy_skeletal_mesh",Ref(Value<uintptr_t>(p,0x588),SkeletalMesh)},
-                        {"skinned_asset",Ref(Value<uintptr_t>(p,0x590),SkinnedAsset)},
+                    meshInputs=C::Object({{"legacy_skeletal_mesh",Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkeletalMesh),SkeletalMesh)},
+                        {"skinned_asset",Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkinnedAsset),SkinnedAsset)},
                         {"provenance",C::Quote("verified resident USkinnedMeshComponent assignment fields; not evaluated as additive geometry")}});
                 }
-                if(Is(p,StaticComponent,0x590))
+                if(Is(p,StaticComponent))
                 {
                     if(AuthoredFallback)try{StaticObservations.push_back({p,owner,source});}catch(...){StaticObservationOverflow=true;}
-                    meshKind="static";asset=Value<uintptr_t>(p,0x588);mesh=Ref(asset,StaticMesh);
+                    meshKind="static";asset=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(p)->StaticMesh);mesh=Ref(asset,StaticMesh);
                     meshStatus=!StaticMesh?"not_attempted":!asset?"absent":Is(asset,StaticMesh)?"present":"invalid";
                     Source("static_mesh_assignment",p,meshStatus.c_str());
-                    if(Is(asset,StaticMesh,0x170))defaults=Materials(asset+0x160,0x38,asset,"static_mesh_authored_materials");
+                    if(Is(asset,StaticMesh))defaults=Materials(reinterpret_cast<const SDK::UStaticMesh*>(asset)->StaticMaterials,asset,"static_mesh_authored_materials");
                 }
-                else if(Is(p,SkeletalComponent,0x598))
+                else if(Is(p,SkeletalComponent))
                 {
                     meshKind="skeletal";meshStatus="not_attempted";
                     // Validate BOTH references read by the installed fixed getter
                     // before calling it. Native SkeletalMesh class is already resident.
-                    const auto legacy=Value<uintptr_t>(p,0x588),skinned=Value<uintptr_t>(p,0x590);
+                    const auto legacy=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkeletalMesh),skinned=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkinnedAsset);
                     if(!skeletalGetter||!SkeletalMesh||!SkinnedAsset)
                         Source("skeletal_mesh_assignment",p,"not_attempted","fixed getter/native asset classes unavailable");
                     else if((legacy&&!Is(legacy,SkeletalMesh))||(skinned&&!Is(skinned,SkinnedAsset)))
                         Source("skeletal_mesh_assignment",p,"invalid","getter input reference identity/type");
                     else if(!BoundedNativeClassChain(SkeletalMesh)||
-                        (legacy&&!BoundedNativeClassChain(Value<uintptr_t>(legacy,0x10)))||
-                        (skinned&&!BoundedNativeClassChain(Value<uintptr_t>(skinned,0x10))))
+                        (legacy&&!BoundedNativeClassChain(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(legacy)->Class)))||
+                        (skinned&&!BoundedNativeClassChain(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(skinned)->Class))))
                         Source("skeletal_mesh_assignment",p,Graph.Truncated?"truncated":"invalid","native getter class-chain preflight failed");
                     else
                     {
@@ -731,15 +673,15 @@ namespace MiniMapBuildingRepresentation
                         mesh=Ref(asset,SkeletalMesh);
                         meshStatus=!asset?"absent_as_skeletal_mesh":Is(asset,SkeletalMesh)?"present":"invalid";
                         Source("skeletal_mesh_assignment",p,asset?meshStatus.c_str():"absent","fixed getter result; raw skinned assignment fields recorded separately");
-                        if(Is(asset,SkeletalMesh,0x1b0))defaults=Materials(asset+0x1a0,0x30,asset,"skeletal_mesh_authored_materials");
+                        if(Is(asset,SkeletalMesh))defaults=Materials(reinterpret_cast<const SDK::USkeletalMesh*>(asset)->Materials,asset,"skeletal_mesh_authored_materials");
                     }
                 }
                 else if(Is(p,SkinnedComponent))
                 {meshKind="skinned";meshStatus="not_attempted";Source("effective_skinned_mesh_assignment",p,"not_attempted","raw assignment inputs recorded; non-skeletal effective getter not verified for this stage");}
-                if(Is(p,MeshComponent,0x540))overrides=Materials(p+0x530,8,p,"component_authored_material_overrides");
+                if(Is(p,MeshComponent))overrides=Materials(reinterpret_cast<const SDK::UMeshComponent*>(p)->OverrideMaterials,p,"component_authored_material_overrides");
                 Components.Add(C::Object({{"component",Ref(p,Component)},{"source",C::Quote(source)},
                     {"owner",Ref(owner)},{"component_class",Ref(type,Class)},{"registered",C::Bool(Value<uint8_t>(p,0x94)&1)},
-                    {"object_outer",Ref(Value<uintptr_t>(p,0x20))},
+                    {"object_outer",Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(p)->Outer))},
                     {"scene",scene},{"mesh_kind",C::Quote(meshKind)},{"mesh",mesh},
                     {"mesh_assignment_status",C::Quote(meshStatus)},{"mesh_assignment_inputs",meshInputs},
                     {"authored_mesh_materials",defaults},{"authored_component_overrides",overrides},
@@ -752,21 +694,21 @@ namespace MiniMapBuildingRepresentation
                     if(AuditAssignments.size()<A::NodeLimit)AuditAssignments.emplace(p,asset);
                     else AuditCollectionTruncated=true;
                 }
-                if(Is(p,Child,0x268))
+                if(Is(p,Child))
                 {
                     GenericChild=true;
-                    const auto childClass=Value<uintptr_t>(p,0x250),childTemplate=Value<uintptr_t>(p,0x260);
+                    const auto childClass=reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UChildActorComponent*>(p)->ChildActorClass)),childTemplate=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UChildActorComponent*>(p)->ChildActorTemplate);
                     const bool validClass=childClass&&ClassObject(childClass)&&Derives(childClass,Actor);
                     const bool validTemplate=childTemplate&&Is(childTemplate,Actor);
                     Source("child_actor_class",p,!childClass?"absent":validClass?"present":"invalid","",Ref(childClass,Class));
                     Source("child_actor_template",p,!childTemplate?"absent":validTemplate?"present":"invalid","",Ref(childTemplate,Actor));
                     if(childTemplate&&Is(childTemplate,Actor)&&childClass&&ClassObject(childClass)&&
-                        Derives(Value<uintptr_t>(childTemplate,0x10),childClass))
+                        Derives(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(childTemplate)->Class),childClass))
                     {Hold(childTemplate);Edge(p,childTemplate,"resident_child_actor_template");}
                     else if(childTemplate)Source("child_actor_template_relationship",p,"invalid","class/template mismatch");
                     if(childClass&&ClassObject(childClass)&&Derives(childClass,Actor))
                     {
-                        Hold(childClass,0x200);Edge(p,childClass,"child_actor_representation_class");
+                        Hold(childClass);Edge(p,childClass,"child_actor_representation_class");
                         if(childDepth>=C::ChildDepthLimit)Source("child_actor_class_templates",p,"truncated","child-template recursion depth");
                         else InspectClass(childClass,childDepth+1,"child_actor_class_templates");
                     }
@@ -775,7 +717,7 @@ namespace MiniMapBuildingRepresentation
             }
             void InspectNode(uintptr_t p,uintptr_t owner,size_t depth,size_t childDepth)
             {
-                if(!Is(p,Node,0xd8)||!Hold(p,0xd8)){Source("scs_node",owner,"invalid","node identity/type");return;}
+                if(!Is(p,Node)||!Hold(p)){Source("scs_node",owner,"invalid","node identity/type");return;}
                 const auto state=Graph.Enter(p,depth);
                 if(std::strcmp(state,"present")!=0){Source("scs_node",p,state);return;}
                 if(NodeCount>=C::NodeLimit){Source("scs_node",p,"truncated","total unique SCS node limit");Graph.Leave(p);return;}
@@ -783,30 +725,30 @@ namespace MiniMapBuildingRepresentation
                 if(owner!=AuditClass)GenericInherited=true;
                 if(GenericValidation&&owner==AuditClass&&childDepth==0)
                 {if(AuditNodes.size()<A::NodeLimit)AuditNodes.push_back(p);else AuditCollectionTruncated=true;}
-                const auto declared=Value<uintptr_t>(p,0x28),component=Value<uintptr_t>(p,0x30);
+                const auto declared=reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::USCS_Node*>(p)->ComponentClass)),component=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USCS_Node*>(p)->ComponentTemplate);
                 Source("scs_node",p,"present","",C::Object({{"node",Ref(p,Node)},{"declared_class",Ref(declared,Class)},
-                    {"attach_to",NameValue(p,0x80)},{"parent_variable",NameValue(p,0x88)},
-                    {"parent_owner_class",NameValue(p,0x90)},{"parent_is_native",C::Bool(Value<uint8_t>(p,0x98)!=0)},
-                    {"variable_name",NameValue(p,0xd0)},{"variable_guid_words",Guid(p,0xc0)}}));
+                    {"attach_to",NameValue(reinterpret_cast<const SDK::USCS_Node*>(p)->AttachToName)},{"parent_variable",NameValue(reinterpret_cast<const SDK::USCS_Node*>(p)->ParentComponentOrVariableName)},
+                    {"parent_owner_class",NameValue(reinterpret_cast<const SDK::USCS_Node*>(p)->ParentComponentOwnerClassName)},{"parent_is_native",C::Bool(uint8_t(reinterpret_cast<const SDK::USCS_Node*>(p)->bIsParentComponentNative)!=0)},
+                    {"variable_name",NameValue(reinterpret_cast<const SDK::USCS_Node*>(p)->InternalVariableName)},{"variable_guid_words",Guid(reinterpret_cast<const SDK::USCS_Node*>(p)->VariableGUID)}}));
                 if(!component)Source("scs_component_template",p,"absent");
                 else if(!ClassObject(declared)||!Derives(declared,Component)||!Is(component,declared))
                     Source("scs_component_template",p,"invalid","declared component class mismatch");
                 else {Edge(p,component,"scs_template");InspectComponent(component,owner,"scs_component_template",childDepth);}
-                Array(p+0xa0,8,8,C::NodeLimit,"scs_children",p,[&](uintptr_t item,size_t)
+                Array(reinterpret_cast<const SDK::USCS_Node*>(p)->ChildNodes,C::NodeLimit,"scs_children",p,[&](uintptr_t item,size_t)
                 {
-                    const auto node=Value<uintptr_t>(item,0);
+                    const auto node=reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item));
                     if(Is(node,Node)){Hold(node);Edge(p,node,"scs_child");}
                     InspectNode(node,owner,depth+1,childDepth);
                 });
                 Graph.Leave(p);
             }
-            std::string Guid(uintptr_t p,size_t offset)
+            std::string Guid(const SDK::FGuid& guid)
             {
-                C::JsonArray a;for(size_t i=0;i<4;++i)a.Add(std::to_string(Value<uint32_t>(p,offset+i*4)));return a.String();
+                C::JsonArray a;for(const auto word:{guid.A,guid.B,guid.C,guid.D})a.Add(std::to_string(word));return a.String();
             }
             void InspectClass(uintptr_t initial,size_t childDepth,const std::string& source)
             {
-                if(!ClassObject(initial)||!Derives(initial,Actor)||!Hold(initial,0x200))
+                if(!ClassObject(initial)||!Derives(initial,Actor)||!Hold(initial))
                 {Source(source,initial,"invalid","actor representation class identity/type");return;}
                 const auto entry=Graph.Enter(initial,childDepth,C::ChildDepthLimit);
                 if(std::strcmp(entry,"present")!=0){Source(source,initial,entry);return;}
@@ -815,38 +757,40 @@ namespace MiniMapBuildingRepresentation
                 for(size_t depth=0;type&&depth<C::DepthLimit;++depth)
                 {
                     if(!Graph.Spend()){Source("class_hierarchy",initial,"truncated","total visit limit");break;}
-                    if(!ClassObject(type)||!Hold(type,0x200)){Source("class_hierarchy",initial,"invalid");break;}
+                    if(!ClassObject(type)||!Hold(type)){Source("class_hierarchy",initial,"invalid");break;}
                     if(!supers.insert(type).second){Source("class_hierarchy",type,"cycle");break;}
-                    const auto cdo=Value<uintptr_t>(type,0x110);
-                    const bool validCdo=cdo&&Is(cdo,type)&&(Value<uint32_t>(cdo,8)&0x10);
+                    const auto cdo=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UClass*>(type)->ClassDefaultObject);
+                    const bool validCdo=cdo&&Is(cdo,type)&&(uint32_t(reinterpret_cast<const SDK::UObject*>(cdo)->Flags)&0x10);
                     Source("existing_cdo",type,!cdo?"unavailable_not_resident":validCdo?"present":"invalid","",Ref(cdo,type));
                     Source("native_default_components",type,"not_attempted",NativeExcluded);
-                    if(Is(type,Blueprint,0x360))
+                    if(Is(type,Blueprint))
                     {
-                        Array(type+0x220,8,8,C::ComponentLimit,"blueprint_component_templates",type,[&](uintptr_t item,size_t)
-                            {InspectComponent(Value<uintptr_t>(item,0),type,"blueprint_component_templates",childDepth);});
-                        const auto scs=Value<uintptr_t>(type,0x268);
+                        Array(reinterpret_cast<const SDK::UBlueprintGeneratedClass*>(type)->ComponentTemplates,C::ComponentLimit,"blueprint_component_templates",type,[&](uintptr_t item,size_t)
+                            {InspectComponent(reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item)),type,"blueprint_component_templates",childDepth);});
+                        const auto scs=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UBlueprintGeneratedClass*>(type)->SimpleConstructionScript);
                         if(!scs)Source("blueprint_scs",type,"absent");
-                        else if(!Is(scs,SCS,0xb0)||!Hold(scs,0xb0))Source("blueprint_scs",type,"invalid");
+                        else if(!Is(scs,SCS)||!Hold(scs))Source("blueprint_scs",type,"invalid");
                         else
                         {
                             Source("blueprint_scs",type,"present","",Ref(scs,SCS));
-                            Array(scs+0x28,8,8,C::NodeLimit,"scs_root_nodes",scs,[&](uintptr_t item,size_t)
-                                {InspectNode(Value<uintptr_t>(item,0),type,0,childDepth);});
-                            Array(scs+0x38,8,8,C::NodeLimit,"scs_all_nodes",scs,[&](uintptr_t item,size_t)
-                                {InspectNode(Value<uintptr_t>(item,0),type,0,childDepth);});
+                            Array(reinterpret_cast<const SDK::USimpleConstructionScript*>(scs)->RootNodes,C::NodeLimit,"scs_root_nodes",scs,[&](uintptr_t item,size_t)
+                                {InspectNode(reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item)),type,0,childDepth);});
+                            Array(reinterpret_cast<const SDK::USimpleConstructionScript*>(scs)->AllNodes,C::NodeLimit,"scs_all_nodes",scs,[&](uintptr_t item,size_t)
+                                {InspectNode(reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item)),type,0,childDepth);});
                         }
-                        const auto handler=Value<uintptr_t>(type,0x270);
+                        const auto handler=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UBlueprintGeneratedClass*>(type)->InheritableComponentHandler);
                         if(!handler)Source("inherited_override_records",type,"absent");
-                        else if(!Is(handler,Handler,0x48)||!Hold(handler,0x48))Source("inherited_override_records",type,"invalid");
-                        else Array(handler+0x28,0x78,8,C::ComponentLimit,"inherited_override_records",handler,[&](uintptr_t record,size_t ordinal)
+                        else if(!Is(handler,Handler)||!Hold(handler))Source("inherited_override_records",type,"invalid");
+                        else Array(reinterpret_cast<const SDK::UInheritableComponentHandler*>(handler)->Records,C::ComponentLimit,"inherited_override_records",handler,[&](uintptr_t record,size_t ordinal)
                         {
                             GenericInherited=true;
-                            const auto declared=Value<uintptr_t>(record,0),component=Value<uintptr_t>(record,8),keyOwner=Value<uintptr_t>(record,0x10);
+                            const auto* overrideRecord=reinterpret_cast<const SDK::FComponentOverrideRecord*>(record);
+                            const auto declared=reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(overrideRecord->ComponentClass)),component=reinterpret_cast<uintptr_t>(overrideRecord->ComponentTemplate),
+                                keyOwner=reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(overrideRecord->ComponentKey.OwnerClass));
                             Source("inherited_override_key",handler,"present","",C::Object({{"ordinal",std::to_string(ordinal)},
-                                {"owner_class",Ref(keyOwner,Class)},{"variable_name",NameValue(record,0x18)},
+                                {"owner_class",Ref(keyOwner,Class)},{"variable_name",NameValue(reinterpret_cast<const SDK::FComponentOverrideRecord*>(record)->ComponentKey.SCSVariableName)},
                                 {"declared_component_class",Ref(declared,Class)},{"component_template",Ref(component,Component)},
-                                {"associated_guid_words",Guid(record,0x20)},{"effective_selection",C::Quote("not_evaluated")}}));
+                                {"associated_guid_words",Guid(reinterpret_cast<const SDK::FComponentOverrideRecord*>(record)->ComponentKey.AssociatedGuid)},{"effective_selection",C::Quote("not_evaluated")}}));
                             if(!component)Source("inherited_override_template",handler,"absent");
                             else if(!ClassObject(declared)||!Derives(declared,Component)||!Is(component,declared))
                                 Source("inherited_override_template",handler,"invalid","declared class mismatch");
@@ -854,48 +798,45 @@ namespace MiniMapBuildingRepresentation
                         });
                         Source("native_inherited_template_resolver",type,"not_attempted","internal class/record traversal has no diagnostic limit; raw override records kept distinct");
                     }
-                    type=Value<uintptr_t>(type,0x40);
+                    type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStruct*>(type)->SuperStruct);
                     if(type&&depth+1==C::DepthLimit)Source("class_hierarchy",initial,"truncated","superclass depth limit");
                 }
                 Graph.Leave(initial);
             }
-            bool InspectMass(uintptr_t trait)
+            bool InspectMass(uintptr_t trait,bool visual)
             {
-                const auto descriptor=trait+0x30;
+                const auto& descriptor=visual?reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->StaticMeshInstanceDesc:reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->StaticMeshInstanceDesc;
                 C::JsonArray meshes,offsets;meshes.Limit=96*1024;
                 bool validMesh=false;
-                Array(descriptor+8,0xa0,16,64,"mass_mesh_descriptors",trait,[&](uintptr_t item,size_t ordinal)
+                Array(descriptor.Meshes,64,"mass_mesh_descriptors",trait,[&](uintptr_t item,size_t ordinal)
                 {
-                    const auto mesh=Value<uintptr_t>(item,0x60);const bool valid=Is(mesh,StaticMesh);validMesh|=valid;
-                    const auto ref=Ref(mesh,StaticMesh),local=Transform(item),materials=Materials(item+0x68,8,trait,"mass_mesh_material_overrides"),
-                        min=C::Number(Value<float>(item,0x78)),max=C::Number(Value<float>(item,0x7c));
+                    const auto mesh=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(item)->Mesh);const bool valid=Is(mesh,StaticMesh);validMesh|=valid;
+                    const auto ref=Ref(mesh,StaticMesh),local=Transform(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(item)->LocalTransform),materials=Materials(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(item)->MaterialOverrides,trait,"mass_mesh_material_overrides"),
+                        min=C::Number(float(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(item)->MinLODSignificance)),max=C::Number(float(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(item)->MaxLODSignificance));
                     meshes.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"mesh",ref},{"local_transform",local},
                         {"material_overrides",materials},{"min_lod_significance",min},{"max_lod_significance",max}}));
                 });
-                Array(descriptor+0x80,0x60,16,64,"mass_raw_transform_offsets",trait,[&](uintptr_t item,size_t ordinal)
-                    {const auto transform=Transform(item);offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",transform}}));});
+                Array(descriptor.TransformOffsets,64,"mass_raw_transform_offsets",trait,[&](uintptr_t item,size_t ordinal)
+                    {const auto transform=Transform(*reinterpret_cast<const SDK::FTransform*>(item));offsets.Add(C::Object({{"ordinal",std::to_string(ordinal)},{"transform",transform}}));});
                 Mass.Add(C::Object({{"descriptor_id",C::Quote(Id(trait)+"_ism")},{"owner_trait",Ref(trait)},
                     {"tier",C::Quote("mass_ism_alternative")},{"mesh_references",meshes.String()},
-                    {"use_transform_offset",C::Bool(Value<uint8_t>(descriptor,0x18)!=0)},
-                    {"descriptor_transform_offset",Transform(descriptor+0x20)},{"raw_transform_offsets",offsets.String()},
+                    {"use_transform_offset",C::Bool(uint8_t(descriptor.bUseTransformOffset)!=0)},
+                    {"descriptor_transform_offset",Transform(descriptor.TransformOffset)},{"raw_transform_offsets",offsets.String()},
                     {"renderer_equivalent_transforms","false"},{"provenance",C::Quote("resident visualization trait; raw inputs only")}}));
                 DiagnosticTruncated|=meshes.Truncated||offsets.Truncated;
                 return validMesh;
             }
-            template<class Visitor> bool ProbeArray(uintptr_t header,size_t stride,size_t alignment,size_t limit,Visitor visitor)
+            template<class T,class Visitor> bool ProbeArray(const SDK::TArray<T>& values,size_t limit,Visitor visitor)
             {
-                C::ArrayHeader a{};
-                if(!Readable(header,sizeof(a),8)||!Read(header,0,a))
-                {ProbeResult.Incomplete=true;ProbeResult.Note("invalid_array_header");return false;}
-                const auto b=C::BoundArray(a,stride,alignment,limit);
-                if(!b.Valid||(b.Bytes&&!Readable(a.Data,b.Bytes,alignment)))
+                const C::ArrayHeader a{reinterpret_cast<uintptr_t>(values.GetDataPtr()),values.Num(),values.Max()};
+                const auto b=C::BoundArray(a,sizeof(T),alignof(T),limit);
+                if(!b.Valid||(b.Bytes&&!Readable(a.Data,b.Bytes,alignof(T))))
                 {ProbeResult.Incomplete=true;ProbeResult.Note("invalid_array_storage");return false;}
                 if(b.Truncated){ProbeResult.Truncated=true;ProbeResult.Note("array_visit_limit");}
-                StorageScope storage(*this,header,a.Data,b.Bytes);
                 for(size_t i=0;i<b.Count;++i)
                 {
                     if(!Graph.Spend()||Work.Exhausted){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");return false;}
-                    visitor(a.Data+i*stride);
+                    visitor(a.Data+i*sizeof(T));
                 }
                 return !b.Truncated&&!Work.Exhausted;
             }
@@ -903,12 +844,12 @@ namespace MiniMapBuildingRepresentation
             {
                 ProbeResult.MassIdentity="valid"; // Collector invokes visitor only after entity revalidation.
                 if(!definition){ProbeResult.DefinitionIdentity="null";ProbeResult.Note("placement_null");return false;}
-                if(!Is(definition,Placement,0x174)||!Hold(definition,0x174))
+                if(!Is(definition,Placement)||!Hold(definition))
                 {ProbeResult.DefinitionIdentity=Work.Exhausted?"not_examined_budget_exhausted":"invalid";
                     ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_placement");return false;}
-                const auto name=Value<Name>(definition,0x18);
-                if(Value<int32_t>(definition,0xc)!=Record.DefinitionObjectIndex||name.Index!=Record.DefinitionIndex||
-                    name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)
+                const auto name=reinterpret_cast<const SDK::UObject*>(definition)->Name;
+                if(int32_t(reinterpret_cast<const SDK::UObject*>(definition)->Index)!=Record.DefinitionObjectIndex||name.ComparisonIndex!=Record.DefinitionIndex||
+                    name.Number!=Record.DefinitionNumber||uint32_t(reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->BuildingID)!=Record.BuildingId)
                 {ProbeResult.DefinitionIdentity="mismatch";ProbeResult.Note("definition_identity_mismatch");return false;}
                 ProbeResult.DefinitionIdentity="valid";
                 BlueprintIdentity=ResolveAuthoredIdentity(definition);
@@ -921,7 +862,7 @@ namespace MiniMapBuildingRepresentation
 #endif
                 // Null transient cache never implies authored absence. Only this case
                 // may inspect the independently authored, already-resident actor class.
-                auto config=Value<uintptr_t>(definition,0x150);
+                auto config=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->EntityType.EntityConfigPtr);
                 ProbeResult.CachedConfig=config?"populated":"null";
                 if(!config)
                 {
@@ -934,39 +875,41 @@ namespace MiniMapBuildingRepresentation
                 for(size_t depth=0;config&&depth<16;++depth)
                 {
                     if(!Graph.Spend()||Work.Exhausted){ProbeResult.Truncated=true;ProbeResult.Note("work_budget_exhausted");break;}
-                    if(!Is(config,Config,0x60)||!Hold(config,0x60))
+                    if(!Is(config,Config)||!Hold(config))
                     {ProbeResult.ConfigValidation=Work.Exhausted?"not_examined_budget_exhausted":"invalid";ProbeResult.Incomplete=true;
                         ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_config");break;}
                     ProbeResult.ConfigValidation="valid_in_examined_chain";
                     if(!configs.insert(config).second){ProbeResult.Incomplete=true;ProbeResult.Note("configuration_cycle");break;}
-                    ProbeArray(config+0x38,8,8,256,[&](uintptr_t item)
+                    ProbeArray(reinterpret_cast<const SDK::UMassEntityConfigAsset*>(config)->Config.Traits,256,[&](uintptr_t item)
                     {
-                        ++ProbeResult.Traits;const auto trait=Value<uintptr_t>(item,0);
+                        ++ProbeResult.Traits;const auto trait=reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item));
                         if(!Is(trait,Trait)||!Hold(trait)){ProbeResult.Incomplete=true;
                             ProbeResult.Note(Work.Exhausted?"work_budget_exhausted":"invalid_trait");return;}
                         if(!traits.insert(trait).second)return;
-                        if(!Is(trait,Visual,0xe0)&&!Is(trait,Cosmetic,0xe0))return;
+                        const bool visual=Is(trait,Visual);
+                        if(!visual&&!Is(trait,Cosmetic))return;
                         ++ProbeResult.VisualTraits;
-                        for(const auto offset:{size_t(0xd0),size_t(0xd8)})
+                        const uintptr_t actors[]={(visual?reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->HighResTemplateActor)):reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->HighResTemplateActor))),(visual?reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->LowResTemplateActor)):reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->LowResTemplateActor)))};
+                        for(size_t tier=0;tier<2;++tier)
                         {
-                            const auto type=Value<uintptr_t>(trait,offset);
-                            const bool valid=type&&ClassObject(type)&&Derives(type,Actor)&&Hold(type,0x200);
-                            auto& state=offset==0xd0?ProbeResult.HighStatus:ProbeResult.LowStatus;
-                            auto& first=offset==0xd0?ProbeResult.High:ProbeResult.Low;
+                            const auto type=actors[tier];
+                            const bool valid=type&&ClassObject(type)&&Derives(type,Actor)&&Hold(type);
+                            auto& state=tier==0?ProbeResult.HighStatus:ProbeResult.LowStatus;
+                            auto& first=tier==0?ProbeResult.High:ProbeResult.Low;
                             if(valid){state="resident_validated";if(!first)first=type;}
                             else if(state!="resident_validated")state=Work.Exhausted?"not_examined_budget_exhausted":!type?"null":"invalid_or_unavailable";
                         }
                         // Eligibility reads assignments only: no transforms,
                         // materials, SCS, CDOs or component traversal in a probe.
-                        const bool massComplete=ProbeArray(trait+0x38,0xa0,16,64,[&](uintptr_t meshItem)
+                        const bool massComplete=ProbeArray((visual?reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->StaticMeshInstanceDesc.Meshes:reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->StaticMeshInstanceDesc.Meshes),64,[&](uintptr_t meshItem)
                         {
-                            ++ProbeResult.MeshReferences;const auto mesh=Value<uintptr_t>(meshItem,0x60);
+                            ++ProbeResult.MeshReferences;const auto mesh=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::FMassStaticMeshInstanceVisualizationMeshDesc*>(meshItem)->Mesh);
                             if(Is(mesh,StaticMesh)&&Hold(mesh))ProbeResult.Mesh=true;
                         });
                         if(!massComplete)ProbeResult.MassStatus="unavailable_or_truncated";
                         else if(ProbeResult.MassStatus!="unavailable_or_truncated")ProbeResult.MassStatus="examined";
                     });
-                    config=Value<uintptr_t>(config,0x30);
+                    config=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UMassEntityConfigAsset*>(config)->Config.Parent);
                     if(config&&depth==15){ProbeResult.Truncated=true;ProbeResult.Note("configuration_depth_limit");}
                 }
                 if(!ProbeResult.VisualTraits&&!ProbeResult.Incomplete&&!ProbeResult.Truncated&&!Work.Exhausted)
@@ -982,44 +925,45 @@ namespace MiniMapBuildingRepresentation
             }
             bool Discover(uintptr_t definition)
             {
-                if(!Is(definition,Placement,0x174)||!Hold(definition,0x174))return false;
-                const auto name=Value<Name>(definition,0x18);
-                if(Value<int32_t>(definition,0xc)!=Record.DefinitionObjectIndex||name.Index!=Record.DefinitionIndex||
-                    name.Number!=Record.DefinitionNumber||Value<uint32_t>(definition,0x170)!=Record.BuildingId)return false;
+                if(!Is(definition,Placement)||!Hold(definition))return false;
+                const auto name=reinterpret_cast<const SDK::UObject*>(definition)->Name;
+                if(int32_t(reinterpret_cast<const SDK::UObject*>(definition)->Index)!=Record.DefinitionObjectIndex||name.ComparisonIndex!=Record.DefinitionIndex||
+                    name.Number!=Record.DefinitionNumber||uint32_t(reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->BuildingID)!=Record.BuildingId)return false;
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
                 if(!GenericValidation)ClassificationInputs(definition);
 #endif
                 Source("mass_building_definition",definition,"present","",Ref(definition,Placement));
                 uintptr_t high=0,low=0;bool hasMass=false;
-                auto config=Value<uintptr_t>(definition,0x150);
+                auto config=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->EntityType.EntityConfigPtr);
                 std::unordered_set<uintptr_t> configs;
                 for(size_t depth=0;config&&depth<16;++depth)
                 {
                     if(!Graph.Spend()){Source("entity_configuration",definition,"truncated","total visit limit");break;}
-                    if(!Is(config,Config,0x60)||!Hold(config,0x60)){Source("entity_configuration",definition,"invalid");break;}
+                    if(!Is(config,Config)||!Hold(config)){Source("entity_configuration",definition,"invalid");break;}
                     if(!configs.insert(config).second){Source("entity_configuration",config,"cycle");break;}
                     Source("entity_configuration",config,"present","",Ref(config,Config));
-                    Array(config+0x38,8,8,256,"configuration_traits",config,[&](uintptr_t item,size_t)
+                    Array(reinterpret_cast<const SDK::UMassEntityConfigAsset*>(config)->Config.Traits,256,"configuration_traits",config,[&](uintptr_t item,size_t)
                     {
-                        const auto trait=Value<uintptr_t>(item,0);
+                        const auto trait=reinterpret_cast<uintptr_t>(*reinterpret_cast<SDK::UObject* const*>(item));
                         if(!Is(trait,Trait)||!Hold(trait)){Source("configuration_trait",config,"invalid");return;}
                         Edge(config,trait,"configuration_trait");
-                        if(!Is(trait,Visual,0xe0)&&!Is(trait,Cosmetic,0xe0))return;
-                        for(const auto& entry:{std::pair{size_t(0xd0),"high_detail_actor"},std::pair{size_t(0xd8),"low_detail_actor"}})
+                        const bool visual=Is(trait,Visual);
+                        if(!visual&&!Is(trait,Cosmetic))return;
+                        for(const auto& entry:{std::pair{(visual?reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->HighResTemplateActor)):reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->HighResTemplateActor))),"high_detail_actor"},std::pair{(visual?reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UMassVisualizationTrait*>(trait)->LowResTemplateActor)):reinterpret_cast<uintptr_t>(static_cast<SDK::UClass*>(reinterpret_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait)->LowResTemplateActor))),"low_detail_actor"}})
                         {
-                            const auto candidate=Value<uintptr_t>(trait,entry.first);
-                            const bool valid=candidate&&ClassObject(candidate)&&Derives(candidate,Actor)&&Hold(candidate,0x200);
+                            const auto candidate=entry.first;
+                            const bool valid=candidate&&ClassObject(candidate)&&Derives(candidate,Actor)&&Hold(candidate);
                             Candidates.Add(C::Object({{"tier",C::Quote(entry.second)},{"trait",Ref(trait)},
                                 {"class",Ref(candidate,Class)},{"status",C::Quote(!candidate?"absent":valid?"present":"invalid")},
                                 {"additive_geometry","false"}}));
-                            if(valid){if(entry.first==0xd0&&!high)high=candidate;if(entry.first==0xd8&&!low)low=candidate;}
+                            if(valid){if(std::strcmp(entry.second,"high_detail_actor")==0&&!high)high=candidate;if(std::strcmp(entry.second,"low_detail_actor")==0&&!low)low=candidate;}
                         }
-                        hasMass|=InspectMass(trait);
+                        hasMass|=InspectMass(trait,visual);
                     });
-                    config=Value<uintptr_t>(config,0x30);
+                    config=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UMassEntityConfigAsset*>(config)->Config.Parent);
                     if(config&&depth==15)Source("entity_configuration",definition,"truncated","configuration parent depth");
                 }
-                const bool nullConfig=!Value<uintptr_t>(definition,0x150);
+                const bool nullConfig=!reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UAuActorPlacementData*>(definition)->EntityType.EntityConfigPtr);
                 uintptr_t authored=0;
                 if(nullConfig)
                 {
@@ -1066,22 +1010,22 @@ namespace MiniMapBuildingRepresentation
                 std::string status="native_anchors_unavailable";
                 {
                     Context d;d.Metrics=&inspectionMetrics;d.FullTraversal=true;d.Record=Record;
-                    if(d.Initialize()&&d.ClassObject(AuditClass)&&d.Derives(AuditClass,d.Actor)&&d.Hold(AuditClass,0x360))
+                    if(d.Initialize()&&d.ClassObject(AuditClass)&&d.Derives(AuditClass,d.Actor)&&d.Hold(AuditClass))
                     {
                         status="read_only_not_admitted";
-                        uintptr_t cdo=Value<uintptr_t>(AuditClass,0x110),root=0;
-                        const bool validCdo=d.Is(cdo,AuditClass,0x1c0)&&d.Hold(cdo,0x1c0)&&(Value<uint32_t>(cdo,8)&0x10);
+                        uintptr_t cdo=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UClass*>(AuditClass)->ClassDefaultObject),root=0;
+                        const bool validCdo=d.Is(cdo,AuditClass)&&d.Hold(cdo)&&(uint32_t(reinterpret_cast<const SDK::UObject*>(cdo)->Flags)&0x10);
                         if(validCdo)
-                        {root=Value<uintptr_t>(cdo,0x1b8);if(!d.Is(root,d.Scene,0x250)||!d.Hold(root,0x250))root=0;}
+                        {root=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::AActor*>(cdo)->RootComponent);if(!d.Is(root,d.Scene)||!d.Hold(root))root=0;}
                         auto inventory=StaticObservations; // bounded comparison tokens; original Context still retains sources.
                         const auto base=d.NativeClass(L"/Script/Chimera.CrBuildingActorBase");
-                        if(validCdo&&base&&d.Derives(AuditClass,base)&&d.Is(cdo,AuditClass,0x2e8))
+                        if(validCdo&&base&&d.Derives(AuditClass,base)&&d.Is(cdo,AuditClass))
                         {
-                            const std::pair<size_t,const char*> offsets[]={{0x1b8,"RootComponent"},{0x2d8,"MainComponent"},{0x2e0,"MainMeshComponent"}};
+                            const std::pair<uintptr_t,const char*> offsets[]={{reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::AActor*>(cdo)->RootComponent),"RootComponent"},{reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo)->MainComponent),"MainComponent"},{reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo)->MainMeshComponent),"MainMeshComponent"}};
                             for(const auto& field:offsets)
                             {
-                                const auto component=Value<uintptr_t>(cdo,field.first);
-                                const bool valid=d.Is(component,d.StaticComponent,0x590)&&d.Hold(component,0x590);
+                                const auto component=field.first;
+                                const bool valid=d.Is(component,d.StaticComponent)&&d.Hold(component);
                                 fields.Add(C::Object({{"field",C::Quote(field.second)},{"static_component_valid_retained",C::Bool(valid)},
                                     {"component",component?d.Ref(component):"null"}}));
                                 if(valid)inventory.insert(inventory.begin(),{component,AuditClass,std::string("native_cdo_field:")+field.second});
@@ -1092,13 +1036,13 @@ namespace MiniMapBuildingRepresentation
                         {
                             if(records.Records.size()>=16||d.Work.Exhausted){limited=true;break;}
                             const auto component=observation.Component;
-                            if(!d.Is(component,d.StaticComponent,0x590)||!d.Hold(component,0x590))
+                            if(!d.Is(component,d.StaticComponent)||!d.Hold(component))
                             {records.Add(C::Object({{"source",C::Quote(observation.Source)},{"rejection",C::Quote("component_identity_type_or_retention_failed")}}));continue;}
-                            const auto type=Value<uintptr_t>(component,0x10),mesh=Value<uintptr_t>(component,0x588);
+                            const auto type=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Class),mesh=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UStaticMeshComponent*>(component)->StaticMesh);
                             const bool exact=type==d.StaticComponent;
-                            const bool assetIdentity=d.Is(mesh,d.StaticMesh,0x278);
-                            const bool asset=assetIdentity&&d.Hold(mesh,0x278);
-                            const auto parent=Value<uintptr_t>(component,0xc8);
+                            const bool assetIdentity=d.Is(mesh,d.StaticMesh);
+                            const bool asset=assetIdentity&&d.Hold(mesh);
+                            const auto parent=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USceneComponent*>(component)->AttachParent);
                             A::Transform local;bool absolute=false,socket=false;
                             const bool localValid=d.AuditTransform(component,local,absolute,socket);
                             C::JsonArray matches;A::Result transform;
@@ -1113,14 +1057,14 @@ namespace MiniMapBuildingRepresentation
                             {std::set<uintptr_t> active;C::JsonArray chain;transform=d.AuditNativeChain(component,root,active,0,chain);}
                             else if(!matched){transform.Status="invalid";transform.Reason="validated_cdo_root_unavailable";}
                             bool defaultsValid=false,overridesValid=false;std::string defaultsJson,overridesJson;
-                            const auto defaults=asset?d.AuditMaterials(mesh+0x160,0x38,defaultsValid,defaultsJson):std::vector<A::Slot>{};
-                            const auto overrides=d.AuditMaterials(component+0x530,8,overridesValid,overridesJson);
+                            const auto defaults=asset?d.AuditMaterials(reinterpret_cast<const SDK::UStaticMesh*>(mesh)->StaticMaterials,defaultsValid,defaultsJson):std::vector<A::Slot>{};
+                            const auto overrides=d.AuditMaterials(reinterpret_cast<const SDK::UMeshComponent*>(component)->OverrideMaterials,overridesValid,overridesJson);
                             const auto effective=A::ProposedMaterials(defaults,overrides);
                             bool materials=defaultsValid&&overridesValid&&!effective.empty()&&effective.size()<=MiniMapStaticAssembly::Slots;
                             MiniMapStaticAssembly::Instance instance;instance.Mesh=asset?mesh:0;
-                            instance.ComponentIndex=uint32_t(Value<int32_t>(component,0xc));instance.Transform=transform.Effective;
-                            instance.Visible=(Value<uint8_t>(component,0x1a0)&32)!=0;
-                            instance.Hidden=(Value<uint8_t>(component,0x1a1)&8)!=0;
+                            instance.ComponentIndex=uint32_t(int32_t(reinterpret_cast<const SDK::UObject*>(component)->Index));instance.Transform=transform.Effective;
+                            instance.Visible=reinterpret_cast<const SDK::USceneComponent*>(component)->bVisible;
+                            instance.Hidden=reinterpret_cast<const SDK::USceneComponent*>(component)->bHiddenInGame;
                             instance.MaterialCount=(std::min)(effective.size(),MiniMapStaticAssembly::Slots);
                             for(const auto& slot:effective)
                             {
@@ -1128,7 +1072,9 @@ namespace MiniMapBuildingRepresentation
                                 if(!slot.Valid||slot.Index>=instance.MaterialCount||found==d.AuditMaterialPointers.end())materials=false;
                                 else instance.Materials[slot.Index]=found->second;
                             }
-                            const bool bounds=asset&&Read(mesh,0x240,instance.LocalBounds.Origin)&&Read(mesh,0x258,instance.LocalBounds.Extent)&&
+                            if(asset){const auto& b=reinterpret_cast<const SDK::UStaticMesh*>(mesh)->ExtendedBounds;
+                                instance.LocalBounds.Origin={b.Origin.X,b.Origin.Y,b.Origin.Z};instance.LocalBounds.Extent={b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z};}
+                            const bool bounds=asset&&
                                 A::Finite(instance.LocalBounds.Origin)&&A::Finite(instance.LocalBounds.Extent);
                             instance.Verified=asset&&materials&&bounds&&transform.Status=="verified";
                             MiniMapStaticAssembly::Recipe one;one.General=true;one.Complete=true;one.RootVerified=root!=0;
@@ -1137,27 +1083,26 @@ namespace MiniMapBuildingRepresentation
                             const auto rejection=MiniMapStaticAssembly::Validate(one,footprint);
                             const char* reason=!exact?"derived_static_component_semantics_unverified":!asset?!mesh?"mesh_assignment_null":!assetIdentity?"mesh_identity_or_type_invalid":"mesh_retention_failed":
                                 transform.Status!="verified"?transform.Reason.c_str():rejection?rejection:"individual_static_inputs_pass; overall_admission_unchanged";
-                            const bool ownerValid=d.ClassObject(observation.Owner)&&d.Hold(observation.Owner,0x200);
+                            const bool ownerValid=d.ClassObject(observation.Owner)&&d.Hold(observation.Owner);
                             // Read-only comparison with the fresh isolated component.
                             // Custom primitive inputs may affect material opacity/WPO;
                             // do not copy them or infer shader behavior in this diagnostic stage.
-                            auto customData=[&](size_t offset)
+                            auto customData=[&](const SDK::FCustomPrimitiveData& data)
                             {
-                                C::ArrayHeader header{};
-                                if(!Read(component,offset,header))return std::string("null");
+                                const C::ArrayHeader header{reinterpret_cast<uintptr_t>(data.Data.GetDataPtr()),data.Data.Num(),data.Data.Max()};
                                 const auto bound=C::BoundArray(header,sizeof(float),alignof(float),32);
                                 if(!bound.Valid||bound.Truncated||(bound.Bytes&&!Readable(header.Data,bound.Bytes,alignof(float))))return std::string("null");
                                 C::JsonArray values;
                                 for(size_t i=0;i<bound.Count;++i)
                                 {
-                                    float value=0;
-                                    if(!Read(header.Data,i*sizeof(float),value)||!std::isfinite(value))return std::string("null");
+                                    const auto value=data.Data[int32_t(i)];
+                                    if(!std::isfinite(value))return std::string("null");
                                     values.Add(C::Number(value));
                                 }
                                 return values.String();
                             };
                             std::string captureInputs="null";
-                            if(d.Is(component,d.StaticComponent,sizeof(SDK::UStaticMeshComponent)))
+                            if(d.Is(component,d.StaticComponent))
                             {
                                 const auto* source=reinterpret_cast<const SDK::UStaticMeshComponent*>(component);
                                 captureInputs=C::Object({{"render_in_main_pass",C::Bool(source->bRenderInMainPass)},
@@ -1166,23 +1111,23 @@ namespace MiniMapBuildingRepresentation
                                     {"disallow_nanite",C::Bool(source->bDisallowNanite)},{"force_disable_nanite",C::Bool(source->bForceDisableNanite)},
                                     {"evaluate_world_position_offset",C::Bool(source->bEvaluateWorldPositionOffset)},
                                     {"reverse_culling",C::Bool(source->bReverseCulling)},
-                                    {"custom_primitive_authored",customData(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveData))},
-                                    {"custom_primitive_internal",customData(offsetof(SDK::UPrimitiveComponent,CustomPrimitiveDataInternal))}});
+                                    {"custom_primitive_authored",customData(source->CustomPrimitiveData)},
+                                    {"custom_primitive_internal",customData(source->CustomPrimitiveDataInternal)}});
                             }
                             const auto record=C::Object({{"source",C::Quote(observation.Source)},
                                 {"audit_component_id",C::Quote(originalId)},{"component",d.Ref(component,d.StaticComponent)},
                                 {"component_object_index",std::to_string(instance.ComponentIndex)},{"component_class",d.Ref(type,d.Class)},
                                 {"derives_static_mesh_component","true"},{"exact_native_static_class",C::Bool(exact)},
                                 {"enumeration_owner_class",ownerValid?d.Ref(observation.Owner,d.Class):"null"},
-                                {"component_outer",d.Ref(Value<uintptr_t>(component,0x20))},
+                                {"component_outer",d.Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(component)->Outer))},
                                 {"owner_is_selected_class",C::Bool(observation.Owner==AuditClass)},
                                 {"mesh",asset?d.Ref(mesh,d.StaticMesh):"null"},{"mesh_valid_retained",C::Bool(asset)},
                                 {"mesh_assignment_null",C::Bool(!mesh)},{"mesh_identity_type_valid",C::Bool(assetIdentity)},
-                                {"mesh_object_index",asset?std::to_string(Value<int32_t>(mesh,0xc)):"null"},
-                                {"mesh_class",asset?d.Ref(Value<uintptr_t>(mesh,0x10),d.Class):"null"},
+                                {"mesh_object_index",asset?std::to_string(int32_t(reinterpret_cast<const SDK::UObject*>(mesh)->Index)):"null"},
+                                {"mesh_class",asset?d.Ref(reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(mesh)->Class),d.Class):"null"},
                                 {"mesh_qualified_path","null"},{"mesh_path_status",C::Quote("unavailable_no_verified_object_path_conversion")},
                                 {"visible",C::Bool(instance.Visible)},{"hidden_in_game",C::Bool(instance.Hidden)},
-                                {"parent",parent?d.Ref(parent,d.Scene):"null"},{"socket",d.NameValue(component,0xd0)},
+                                {"parent",parent?d.Ref(parent,d.Scene):"null"},{"socket",d.NameValue(reinterpret_cast<const SDK::USceneComponent*>(component)->AttachSocketName)},
                                 {"socket_readable_name","null"},{"socket_name_status",C::Quote("unavailable_no_verified_name_conversion")},
                                 {"local_transform",localValid?A::Json(local):"null"},{"absolute_transform",C::Bool(absolute)},
                                 {"effective_root_relative_transform",transform.Status=="verified"?A::Json(transform.Effective):"null"},
@@ -1246,15 +1191,18 @@ namespace MiniMapBuildingRepresentation
         {
             MiniMapDefinitionDiagnostic::Identity result;result.Present=p!=0;if(!p||!Identity(p))return result;
             DefinitionSlotReader reader;MiniMapDefinitionAcquisition::Slot slot;
-            result.Index=Value<int32_t>(p,0xc);const auto name=Value<Name>(p,0x18);
+            result.Index=int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index);const auto name=reinterpret_cast<const SDK::UObject*>(p)->Name;
             if(MiniMapDefinitionAcquisition::ReadSlot(reader,objectArray,result.Index,slot)!=MiniMapDefinitionAcquisition::Status::Success||slot.Object!=p)return result;
-            result.Serial=slot.Serial;result.NameIndex=name.Index;result.NameNumber=name.Number;result.Validated=true;return result;
+            result.Serial=slot.Serial;result.NameIndex=name.ComparisonIndex;result.NameNumber=name.Number;result.Validated=true;return result;
         }
         bool DefinitionFields(uintptr_t p,MiniMapDefinitionDiagnostic::Observation& out)
         {
-            uintptr_t config{};
-            if(!Read(p,0x150,config)||!Read(p,0x38,out.AuthoredReference)||!Read(p,0x58,out.SubpathBounds))return false;
-            out.Config=DefinitionObjectIdentity(config);return true;
+            const auto* source=reinterpret_cast<const SDK::UAuActorPlacementData*>(p);
+            const auto& soft=source->ActorClass;const auto& path=soft.ObjectID.AssetPath;
+            out.AuthoredReference={soft.WeakPtr.ObjectIndex,soft.WeakPtr.ObjectSerialNumber,path.PackageName.ComparisonIndex,
+                int32_t(path.PackageName.Number),path.AssetName.ComparisonIndex,int32_t(path.AssetName.Number)};
+            out.SubpathBounds={soft.ObjectID.SubPathString.Num(),soft.ObjectID.SubPathString.Max()};
+            out.Config=DefinitionObjectIdentity(reinterpret_cast<uintptr_t>(source->EntityType.EntityConfigPtr));return true;
         }
         void CompareDefinition(const SDK::UObject* definition,Context& original)noexcept
         {
@@ -1288,9 +1236,9 @@ namespace MiniMapBuildingRepresentation
                 if(original.BlueprintIdentity.Path)observed.CanonicalBlueprint=*original.BlueprintIdentity.Path;
                 const auto selected=session.Select(observed);if(!selected.Record)return;
                 const auto previousStatus=selected.Record->LastStatus;
-                const auto name=Value<Name>(originalPointer,0x18);
-                const bool identityMatch=slot.Object==originalPointer&&Value<int32_t>(originalPointer,0xc)==observed.Token.Index&&
-                    name.Index==observed.Token.NameIndex&&name.Number==observed.Token.NameNumber&&Value<uint32_t>(originalPointer,0x170)==observed.Token.Building;
+                const auto name=reinterpret_cast<const SDK::UObject*>(originalPointer)->Name;
+                const bool identityMatch=slot.Object==originalPointer&&int32_t(reinterpret_cast<const SDK::UObject*>(originalPointer)->Index)==observed.Token.Index&&
+                    name.ComparisonIndex==observed.Token.NameIndex&&name.Number==observed.Token.NameNumber&&uint32_t(reinterpret_cast<const SDK::UAuActorPlacementData*>(originalPointer)->BuildingID)==observed.Token.Building;
                 LOG_INFO("MiniMap: event=definition_token_observed generation=%llu building=%u index=%d serial=%d serial_zero=%d identity_match=%d previously_sampled=%d change=%s config_present=%d config_index=%d config_serial=%d route=%u high=%s low=%s; observed_before_acquisition=1 serial_allocation=0 selection_metadata=authoritative_only",
                     (unsigned long long)session.Generation,observed.Token.Building,observed.Token.Index,observed.Token.Serial,int(slot.Serial==0),int(identityMatch),
                     int(selected.PreviouslySampled),G::Label(selected.Why),int(observed.Config.Present),observed.Config.Index,observed.Config.Serial,
@@ -1309,12 +1257,12 @@ namespace MiniMapBuildingRepresentation
                     {
                         auto& c=*static_cast<Comparison*>(state);const auto p=reinterpret_cast<uintptr_t>(object);
                         DefinitionSlotReader reader;D::Slot acquired;G::Observation fields;
-                        c.AcquiredIndex=Value<int32_t>(p,0xc);
+                        c.AcquiredIndex=int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index);
                         if(D::ReadSlot(reader,objectArray,c.AcquiredIndex,acquired)!=D::Status::Success)return;
                         c.AcquiredSerial=acquired.Serial;
-                        const auto name=Value<Name>(p,0x18);
+                        const auto name=reinterpret_cast<const SDK::UObject*>(p)->Name;
                         c.Lifetime=p==c.Original&&acquired.Object==p&&c.AcquiredIndex==c.Expected.Token.Index&&c.AcquiredSerial==c.Expected.Token.Serial&&
-                            name.Index==c.Expected.Token.NameIndex&&name.Number==c.Expected.Token.NameNumber&&Value<uint32_t>(p,0x170)==c.Expected.Token.Building;
+                            name.ComparisonIndex==c.Expected.Token.NameIndex&&name.Number==c.Expected.Token.NameNumber&&uint32_t(reinterpret_cast<const SDK::UAuActorPlacementData*>(p)->BuildingID)==c.Expected.Token.Building;
                         c.Fields=DefinitionFields(p,fields)&&fields.Config==c.Expected.Config&&fields.AuthoredReference==c.Expected.AuthoredReference&&fields.SubpathBounds==c.Expected.SubpathBounds;
                     },&comparison,&scope);
                 }
@@ -1530,7 +1478,7 @@ namespace MiniMapBuildingRepresentation
         auto& anchor=nativeAnchors[nativeAnchorCursor++];
         using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
         const auto p=reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(engine->GetStaticFindObjectByNameAddress())(nullptr,nullptr,anchor.Path,false));
-        if(Identity(p,0x200))
+        if(Identity(p,sizeof(SDK::UClass)))
         {reinterpret_cast<void(*)(SDK::UObject*)>(b.Retain)(reinterpret_cast<SDK::UObject*>(p));anchor.Object=p;}
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         if(ms>=2.0){LOG_WARN("MiniMap: resident class preparation took %.3f ms; one noninterruptible lookup: %ls",ms,anchor.Path);}
@@ -1596,8 +1544,8 @@ namespace MiniMapBuildingRepresentation
             // Acquire only the class anchors needed for definition compatibility;
             // capture-resource availability is not definition acquisition evidence.
             context.Class=context.Find(L"/Script/CoreUObject.Class");
-            if(!context.Class||!context.CheckIdentity(context.Class,0x200)||
-                Value<uintptr_t>(context.Class,0x10)!=context.Class)return D::Status::FacilitiesUnavailable;
+            if(!context.Class||!context.CheckIdentity(context.Class,sizeof(SDK::UClass))||
+                reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UObject*>(context.Class)->Class)!=context.Class)return D::Status::FacilitiesUnavailable;
             context.Placement=context.NativeClass(L"/Script/AuActorPlacement.AuActorPlacementData");
             if(!context.Placement)return D::Status::FacilitiesUnavailable;
             struct Ops
@@ -1617,8 +1565,7 @@ namespace MiniMapBuildingRepresentation
                 }
                 D::Status Compatible(uintptr_t p)
                 {
-                    if(!MiniMapNative::IsMemoryRangeReadable(p,0x174,8))return D::Status::UnreadableObject;
-                    const bool compatible=C.Is(p,C.Placement,0x174);
+                    const bool compatible=C.Is(p,C.Placement);
                     if(C.Work.Exhausted||C.Graph.Truncated)return D::Status::FacilitiesUnavailable;
                     return compatible?D::Status::Success:D::Status::WrongClass;
                 }
@@ -1645,10 +1592,10 @@ namespace MiniMapBuildingRepresentation
         const auto status=MiniMapBuildingCollector::VisitDiagnosticDefinition(record,[](const SDK::UObject* object,void* state)
         {
             auto& c=*static_cast<Context*>(state);const auto p=reinterpret_cast<uintptr_t>(object);
-            if(!c.Is(p,c.Placement,0x174)||!c.Hold(p,0x174))return false;
-            const auto name=Value<Name>(p,0x18);
-            if(Value<int32_t>(p,0xc)!=c.Record.DefinitionObjectIndex||name.Index!=c.Record.DefinitionIndex||
-                name.Number!=c.Record.DefinitionNumber||Value<uint32_t>(p,0x170)!=c.Record.BuildingId)return false;
+            if(!c.Is(p,c.Placement)||!c.Hold(p))return false;
+            const auto name=reinterpret_cast<const SDK::UObject*>(p)->Name;
+            if(int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index)!=c.Record.DefinitionObjectIndex||name.ComparisonIndex!=c.Record.DefinitionIndex||
+                name.Number!=c.Record.DefinitionNumber||uint32_t(reinterpret_cast<const SDK::UAuActorPlacementData*>(p)->BuildingID)!=c.Record.BuildingId)return false;
             c.ClassificationInputs(p);return true;
         },&context);
         observation=context.Classification;
@@ -1663,15 +1610,15 @@ namespace MiniMapBuildingRepresentation
     bool ValidateCaptureMaterialSlots(uintptr_t component,const uintptr_t* materials,size_t count,size_t& failedSlot)
     {
         failedSlot=0;
-        if(!materials||count>32||!Identity(component,0x540))return false;
-        // Identity just validated the entire containing component extent.
-        C::ArrayHeader h{};std::memcpy(&h,reinterpret_cast<const void*>(component+0x530),sizeof(h));
-        const auto b=C::BoundArray(h,8,8,32);
-        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,8)))return false;
+        if(!materials||count>32||!Identity(component))return false;
+        // The caller retains this component; keep its indexed identity check above.
+        const auto& values=reinterpret_cast<const SDK::UMeshComponent*>(component)->OverrideMaterials;
+        const C::ArrayHeader h{reinterpret_cast<uintptr_t>(values.GetDataPtr()),values.Num(),values.Max()};
+        const auto b=C::BoundArray(h,sizeof(SDK::UMaterialInterface*),alignof(SDK::UMaterialInterface*),32);
+        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*sizeof(SDK::UMaterialInterface*),alignof(SDK::UMaterialInterface*))))return false;
         for(size_t i=0;i<count;++i)
         {
-            failedSlot=i;uintptr_t material=0;
-            std::memcpy(&material,reinterpret_cast<const void*>(h.Data+i*8),sizeof(material));
+            failedSlot=i;const auto material=reinterpret_cast<uintptr_t>(values[int32_t(i)]);
             if(material!=materials[i]||!Identity(material))return false;
         }
         return true;
@@ -1680,31 +1627,32 @@ namespace MiniMapBuildingRepresentation
     {
         // Read the existing weak entries; never resolve a weak pointer. Match
         // index AND serial against the retained, directly validated component.
-        if(!objectArray||!components||count>16||!Identity(capture,0x298))return false;
+        if(!objectArray||!components||count>16||!Identity(capture))return false;
         // Components and actors are separate engine-owned show-only sources.
         // Reject any actor list, rather than allowing it to add world geometry.
-        C::ArrayHeader actors{};std::memcpy(&actors,reinterpret_cast<const void*>(capture+0x288),sizeof(actors));
-        const auto actorBounds=C::BoundArray(actors,8,8,0);
+        const auto* source=reinterpret_cast<const SDK::USceneCaptureComponent*>(capture);
+        const C::ArrayHeader actors{reinterpret_cast<uintptr_t>(source->ShowOnlyActors.GetDataPtr()),source->ShowOnlyActors.Num(),source->ShowOnlyActors.Max()};
+        const auto actorBounds=C::BoundArray(actors,sizeof(SDK::AActor*),alignof(SDK::AActor*),0);
         if(!actorBounds.Valid||actorBounds.Truncated||actors.Num!=0||actors.Max>64||
-            (!actors.Max&&actors.Data)||(actors.Max&&!Readable(actors.Data,size_t(actors.Max)*8,8)))return false;
-        C::ArrayHeader h{};std::memcpy(&h,reinterpret_cast<const void*>(capture+0x278),sizeof(h));
-        const auto b=C::BoundArray(h,8,4,16);
-        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*8,4)))return false;
+            (!actors.Max&&actors.Data)||(actors.Max&&!Readable(actors.Data,size_t(actors.Max)*sizeof(SDK::AActor*),alignof(SDK::AActor*))))return false;
+        const C::ArrayHeader h{reinterpret_cast<uintptr_t>(source->ShowOnlyComponents.GetDataPtr()),source->ShowOnlyComponents.Num(),source->ShowOnlyComponents.Max()};
+        const auto b=C::BoundArray(h,sizeof(SDK::FWeakObjectPtr),alignof(SDK::FWeakObjectPtr),16);
+        if(!b.Valid||b.Truncated||b.Count!=count||h.Max>64||(!h.Max&&h.Data)||(h.Max&&!Readable(h.Data,size_t(h.Max)*sizeof(SDK::FWeakObjectPtr),alignof(SDK::FWeakObjectPtr))))return false;
         // Snapshot the bounded weak array once. No native dispatch/GC/yield
         // occurs here; every component's indexed identity is still checked below.
-        std::array<std::array<int32_t,2>,16> entries{};
+        std::array<SDK::FWeakObjectPtr,16> entries{};
         if(b.Bytes)std::memcpy(entries.data(),reinterpret_cast<const void*>(h.Data),b.Bytes);
         std::set<uintptr_t> unique;
         for(size_t i=0;i<count;++i)
         {
             const auto p=components[i];if(!unique.insert(p).second||!Identity(p))return false;
-            const auto index=Value<int32_t>(p,0xc);const auto table=Value<uintptr_t>(objectArray,0x10);
-            const auto chunk=Value<uintptr_t>(table,size_t(uint32_t(index)>>16)*8);
-            const auto serial=Value<int32_t>(chunk,size_t(uint32_t(index)&65535)*0x18+0x10);
+            const auto index=int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index);const auto table=Value<uintptr_t>(objectArray,0x10);
+            const auto chunk=Value<uintptr_t>(table,size_t(uint32_t(index)/SDK::TUObjectArray::ElementsPerChunk)*sizeof(SDK::FUObjectItem*));
+            const auto serial=Value<int32_t>(chunk,size_t(uint32_t(index)%SDK::TUObjectArray::ElementsPerChunk)*sizeof(SDK::FUObjectItem)+0x10);
             if(serial<=0)return false;
             size_t matches=0;
             for(size_t j=0;j<count;++j)
-                if(entries[j][0]==index&&entries[j][1]==serial)++matches;
+                if(entries[j].ObjectIndex==index&&entries[j].ObjectSerialNumber==serial)++matches;
             if(matches!=1)return false;
         }
         return true;
