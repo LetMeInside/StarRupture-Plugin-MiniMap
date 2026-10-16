@@ -38,19 +38,7 @@ namespace
     constexpr uint8_t kDeadBodyType = 1;
     constexpr uint8_t kDroneType = 2;
 
-    constexpr std::ptrdiff_t kCategoryBlockedOffset = 0x30;
-    constexpr std::ptrdiff_t kCategoryIconOffset = 0x50;
-    constexpr std::ptrdiff_t kCategoryLegendFilterOffset = 0x108;
-
     constexpr std::ptrdiff_t kMassSubsystemManagerOffset = 0x38;
-
-    constexpr std::ptrdiff_t kInventoryItemsDataOffset = 0x228;
-    constexpr std::ptrdiff_t kInventoryItemsCountOffset = 0x230;
-    constexpr std::size_t kStorageItemStride = 0x68;
-    constexpr std::ptrdiff_t kStorageItemCountOffset = 0x38;
-
-    constexpr std::ptrdiff_t kTransformTranslationOffset = 0x20;
-    constexpr std::ptrdiff_t kScriptStructMinAlignmentOffset = 0x5C;
 
     constexpr std::size_t kMassQuerySize = 0x350;
     constexpr std::size_t kMassQueryAlignment = 0x10;
@@ -94,19 +82,6 @@ namespace
     // AlienX currently has no fence-aware texture retirement.
     std::unordered_map<uint8_t, PluginTextureHandle> g_iconCache;
 
-    uint8_t ReadByte(const void* object, std::ptrdiff_t offset)
-    {
-        uint8_t value = 0;
-        if (object != nullptr)
-        {
-            std::memcpy(
-                &value,
-                static_cast<const uint8_t*>(object) + offset,
-                sizeof(value));
-        }
-        return value;
-    }
-
     SDK::UCrPlayerMapMenuDataComponent* GetLocalMapDataComponent()
     {
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
@@ -138,19 +113,6 @@ namespace
         }
 
         return player->PlayerMapMenuDataComponent;
-    }
-
-    const SDK::FSlateBrush* CategoryIconBrush(
-        const SDK::UCrMapMenuCategoryData* category)
-    {
-        if (category == nullptr)
-        {
-            return nullptr;
-        }
-
-        return reinterpret_cast<const SDK::FSlateBrush*>(
-            reinterpret_cast<const uint8_t*>(category) +
-            kCategoryIconOffset);
     }
 
     PluginTextureHandle LoadIconFromBulkData(
@@ -256,14 +218,8 @@ namespace
             return nullptr;
         }
 
-        const SDK::FSlateBrush* brush = CategoryIconBrush(category);
-        if (brush == nullptr)
-        {
-            return nullptr;
-        }
-
         SDK::UTexture2D* texture =
-            native->texture.getBrushTexture(*brush);
+            native->texture.getBrushTexture(category->Icon);
 
         if (texture == nullptr)
         {
@@ -407,21 +363,9 @@ namespace
             return false;
         }
 
-        const uint8_t* bytes =
-            static_cast<const uint8_t*>(inventoryFragment);
-
-        const void* items = nullptr;
-        int32_t count = 0;
-
-        std::memcpy(
-            &items,
-            bytes + kInventoryItemsDataOffset,
-            sizeof(items));
-
-        std::memcpy(
-            &count,
-            bytes + kInventoryItemsCountOffset,
-            sizeof(count));
+        const auto& inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment)->MainInventoryContainer.Items;
+        const SDK::FCrStorageItem* items = inventory.GetDataPtr();
+        const int32_t count = inventory.Num();
 
         if (items == nullptr ||
             count <= 0 ||
@@ -430,20 +374,9 @@ namespace
             return false;
         }
 
-        const uint8_t* itemBytes =
-            static_cast<const uint8_t*>(items);
-
         for (int32_t index = 0; index < count; ++index)
         {
-            int32_t itemCount = 0;
-
-            std::memcpy(
-                &itemCount,
-                itemBytes +
-                    static_cast<std::size_t>(index) *
-                        kStorageItemStride +
-                    kStorageItemCountOffset,
-                sizeof(itemCount));
+            const int32_t itemCount = items[index].Item.Count;
 
             if (itemCount > 0)
             {
@@ -454,7 +387,7 @@ namespace
         return false;
     }
 
-    const uint8_t* ResolveFoundableParametersData(
+    const SDK::FCrMassFoundableParameters* ResolveFoundableParametersData(
         const void* constSharedWrapper,
         const SDK::UScriptStruct* parametersStruct)
     {
@@ -475,12 +408,7 @@ namespace
             return nullptr;
         }
 
-        int16_t alignment = 0;
-        std::memcpy(
-            &alignment,
-            reinterpret_cast<const uint8_t*>(parametersStruct) +
-                kScriptStructMinAlignmentOffset,
-            sizeof(alignment));
+        const int16_t alignment = parametersStruct->MinAlignment;
 
         if (alignment <= 0 ||
             (alignment & (alignment - 1)) != 0)
@@ -496,7 +424,7 @@ namespace
             (base + static_cast<uintptr_t>(alignment - 1)) &
             ~static_cast<uintptr_t>(alignment - 1);
 
-        return reinterpret_cast<const uint8_t*>(aligned);
+        return reinterpret_cast<const SDK::FCrMassFoundableParameters*>(aligned);
     }
 
     bool ReadWorldPosition(
@@ -509,15 +437,9 @@ namespace
             return false;
         }
 
-        const uint8_t* bytes =
-            static_cast<const uint8_t*>(transformFragment) +
-            kTransformTranslationOffset;
-
-        std::memcpy(&worldX, bytes, sizeof(worldX));
-        std::memcpy(
-            &worldY,
-            bytes + sizeof(double),
-            sizeof(worldY));
+        const auto& translation = static_cast<const SDK::FTransformFragment*>(transformFragment)->Transform.Translation;
+        worldX = translation.X;
+        worldY = translation.Y;
 
         return true;
     }
@@ -550,13 +472,13 @@ namespace
             return false;
         }
 
-        if (ReadByte(category, kCategoryBlockedOffset) != 0)
+        if (category->CategoryBlocked)
         {
             return false;
         }
 
         const uint8_t filter =
-            ReadByte(category, kCategoryLegendFilterOffset);
+            static_cast<uint8_t>(category->LegendFilter);
 
         if (!native->pointsOfInterest.getMarkerFilterStatus(
             mapData,
@@ -675,7 +597,7 @@ namespace
                             id,
                             parametersStruct);
 
-                    const uint8_t* parameters =
+                    const SDK::FCrMassFoundableParameters* parameters =
                         ResolveFoundableParametersData(
                             parametersWrapper,
                             parametersStruct);
@@ -685,7 +607,7 @@ namespace
                         continue;
                     }
 
-                    const uint8_t foundableType = parameters[0];
+                    const uint8_t foundableType = static_cast<uint8_t>(parameters->FoundableType);
 
                     const FoundableTypeState* typeState = nullptr;
 
