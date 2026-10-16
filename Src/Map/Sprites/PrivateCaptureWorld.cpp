@@ -11,7 +11,6 @@
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Native/ReadbackNativeBindings.h"
 #include "Map/Sprites/BuildingRepresentation.h"
 #include "Map/Sprites/RepresentationMetadataPatterns.h"
 #include "Map/Map.h"
@@ -432,17 +431,19 @@ struct PrivateCaptureWorld::Implementation
 #include "PrivateCaptureWorldBindings.inl"
     bool RendererAvailable()
     {
-        const auto& renderer = MiniMapReadbackNative::GetBindings();
+        const auto* api = N::Get();
+        if (!api) return Step("renderer_availability", false, "GPU_count_missing_unreadable_or_out_of_range");
+        const auto& renderer = api->texture;
         uint32_t gpuCount{}; uintptr_t dynamicRHI{};
         uint8_t initialized{}, threaded{}, multithreaded{};
-        if (!renderer.GpuCount || !Read(renderer.GpuCount, gpuCount) || gpuCount == 0 || gpuCount > 8)
+        if (!renderer.explicitGpuCount || !Read(reinterpret_cast<uintptr_t>(renderer.explicitGpuCount), gpuCount) || gpuCount == 0 || gpuCount > 8)
             return Step("renderer_availability", false, "GPU_count_missing_unreadable_or_out_of_range");
-        if (!renderer.DynamicRHI || !Read(renderer.DynamicRHI, dynamicRHI) || !dynamicRHI)
+        if (!renderer.dynamicRHI || !Read(reinterpret_cast<uintptr_t>(renderer.dynamicRHI), dynamicRHI) || !dynamicRHI)
             return Step("renderer_availability", false, "DynamicRHI_missing_unreadable_or_null");
-        if (renderer.Multithreaded < 0x10 || !Read(renderer.Multithreaded - 0x10, initialized) || !initialized)
+        if (reinterpret_cast<uintptr_t>(renderer.supportsRHIMultithreading) < 0x10 || !Read(reinterpret_cast<uintptr_t>(renderer.supportsRHIMultithreading) - 0x10, initialized) || !initialized)
             return Step("renderer_availability", false, "RHI_initialization_missing_unreadable_or_inactive");
-        if (!renderer.Threaded || !Read(renderer.Threaded, threaded) || !threaded ||
-            !Read(renderer.Multithreaded, multithreaded) || !multithreaded)
+        if (!renderer.threadedRendering || !Read(reinterpret_cast<uintptr_t>(renderer.threadedRendering), threaded) || !threaded ||
+            !Read(reinterpret_cast<uintptr_t>(renderer.supportsRHIMultithreading), multithreaded) || !multithreaded)
             return Step("renderer_availability", false, "render_or_RHI_threading_missing_unreadable_or_inactive");
         return Step("renderer_availability", true, "checked_RHI_globals_scene_verified_after_init");
     }

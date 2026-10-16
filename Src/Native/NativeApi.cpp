@@ -175,6 +175,24 @@ namespace MiniMapNative
         }
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        if (!addresses.readbackFromValidEName) return false;
+        if (!addresses.readbackSubmit) return false;
+        if (!addresses.readbackImmediate) return false;
+        if (!addresses.readbackCreate) return false;
+        if (!addresses.readbackConstruct) return false;
+        if (!addresses.readbackDestroy) return false;
+        if (!addresses.readbackCopy) return false;
+        if (!addresses.readbackLock) return false;
+        if (!addresses.readbackUnlock) return false;
+        if (!addresses.readbackPoll) return false;
+        if (!addresses.readbackMarkForDelete) return false;
+        if (!addresses.readbackMalloc) return false;
+        if (!addresses.readbackFree) return false;
+        if (!addresses.readbackDynamicRHI) return false;
+        if (!addresses.readbackPipe) return false;
+        if (!addresses.readbackThreaded) return false;
+        if (!addresses.readbackMultithreaded) return false;
+        if (!addresses.readbackGpuCount) return false;
         if (!addresses.spawnObject) return false;
         if (!addresses.getTransientPackage) return false;
         if (!addresses.setObjectFlags) return false;
@@ -382,7 +400,11 @@ namespace MiniMapNative
 
         g_nativeApi.texture.memoryFree =
             reinterpret_cast<TextureApi::MemoryFreeFn>(
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+                addresses.readbackFree);
+#else
                 addresses.memoryFree);
+#endif
 
         // Optional grid/collector addresses: missing resolutions disable the
         // dependent stage without disabling Stage A or the established MiniMap.
@@ -397,6 +419,23 @@ namespace MiniMapNative
         g_nativeApi.gridDiagnostic.viewHasTag = reinterpret_cast<GridDiagnosticApi::ViewHasTagFn>(addresses.massEntityViewHasTag);
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        g_nativeApi.asset.fromValidEName = reinterpret_cast<decltype(g_nativeApi.asset.fromValidEName)>(addresses.readbackFromValidEName);
+        g_nativeApi.texture.submitRenderCommand = reinterpret_cast<decltype(g_nativeApi.texture.submitRenderCommand)>(addresses.readbackSubmit);
+        g_nativeApi.texture.immediateCommandList = reinterpret_cast<decltype(g_nativeApi.texture.immediateCommandList)>(addresses.readbackImmediate);
+        g_nativeApi.texture.createRHITexture = reinterpret_cast<decltype(g_nativeApi.texture.createRHITexture)>(addresses.readbackCreate);
+        g_nativeApi.texture.readbackConstruct = reinterpret_cast<decltype(g_nativeApi.texture.readbackConstruct)>(addresses.readbackConstruct);
+        g_nativeApi.texture.readbackDestroy = reinterpret_cast<decltype(g_nativeApi.texture.readbackDestroy)>(addresses.readbackDestroy);
+        g_nativeApi.texture.readbackCopy = reinterpret_cast<decltype(g_nativeApi.texture.readbackCopy)>(addresses.readbackCopy);
+        g_nativeApi.texture.readbackLock = reinterpret_cast<decltype(g_nativeApi.texture.readbackLock)>(addresses.readbackLock);
+        g_nativeApi.texture.readbackUnlock = reinterpret_cast<decltype(g_nativeApi.texture.readbackUnlock)>(addresses.readbackUnlock);
+        g_nativeApi.texture.pollGPUFence = reinterpret_cast<decltype(g_nativeApi.texture.pollGPUFence)>(addresses.readbackPoll);
+        g_nativeApi.texture.markRHIResourceForDelete = reinterpret_cast<decltype(g_nativeApi.texture.markRHIResourceForDelete)>(addresses.readbackMarkForDelete);
+        g_nativeApi.asset.memoryMalloc = reinterpret_cast<decltype(g_nativeApi.asset.memoryMalloc)>(addresses.readbackMalloc);
+        g_nativeApi.texture.dynamicRHI = reinterpret_cast<decltype(g_nativeApi.texture.dynamicRHI)>(addresses.readbackDynamicRHI);
+        g_nativeApi.texture.renderCommandPipe = reinterpret_cast<decltype(g_nativeApi.texture.renderCommandPipe)>(addresses.readbackPipe);
+        g_nativeApi.texture.threadedRendering = reinterpret_cast<decltype(g_nativeApi.texture.threadedRendering)>(addresses.readbackThreaded);
+        g_nativeApi.texture.supportsRHIMultithreading = reinterpret_cast<decltype(g_nativeApi.texture.supportsRHIMultithreading)>(addresses.readbackMultithreaded);
+        g_nativeApi.texture.explicitGpuCount = reinterpret_cast<decltype(g_nativeApi.texture.explicitGpuCount)>(addresses.readbackGpuCount);
         g_nativeApi.asset.spawnObject = reinterpret_cast<decltype(g_nativeApi.asset.spawnObject)>(addresses.spawnObject);
         g_nativeApi.asset.getTransientPackage = reinterpret_cast<decltype(g_nativeApi.asset.getTransientPackage)>(addresses.getTransientPackage);
         g_nativeApi.asset.setObjectFlags = reinterpret_cast<decltype(g_nativeApi.asset.setObjectFlags)>(addresses.setObjectFlags);

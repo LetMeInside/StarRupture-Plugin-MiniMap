@@ -121,7 +121,6 @@
     <ClInclude Include="Map\Sprites\SpriteClassificationAudit.inl" />
     <ClInclude Include="Map\Sprites\RepresentationMetadataPatterns.h" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
-    <ClInclude Include="Native\ReadbackNativeBindings.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Map\FogOfWar\FogOfWar.h" />

@@ -69,6 +69,25 @@ namespace MiniMapFingerprints
         uintptr_t getBulkDataCopy = 0;
         uintptr_t memoryFree = 0;
 
+        uintptr_t readbackFromValidEName = 0;
+        uintptr_t readbackSubmit = 0;
+        uintptr_t readbackImmediate = 0;
+        uintptr_t readbackCreate = 0;
+        uintptr_t readbackConstruct = 0;
+        uintptr_t readbackDestroy = 0;
+        uintptr_t readbackCopy = 0;
+        uintptr_t readbackLock = 0;
+        uintptr_t readbackUnlock = 0;
+        uintptr_t readbackPoll = 0;
+        uintptr_t readbackMarkForDelete = 0;
+        uintptr_t readbackMalloc = 0;
+        uintptr_t readbackFree = 0;
+        uintptr_t readbackDynamicRHI = 0;
+        uintptr_t readbackPipe = 0;
+        uintptr_t readbackThreaded = 0;
+        uintptr_t readbackMultithreaded = 0;
+        uintptr_t readbackGpuCount = 0;
+
         uintptr_t spawnObject = 0;
         uintptr_t getTransientPackage = 0;
         uintptr_t setObjectFlags = 0;

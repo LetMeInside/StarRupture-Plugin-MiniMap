@@ -10,6 +10,23 @@ struct FRHITransitionInfo;
 template<typename InElementType, typename InSizeType> class TArrayView;
 enum class ERHITransitionCreateFlags;
 
+class FRHICommandList;
+class FRHICommandListBase;
+class FRHICommandListImmediate;
+class FRHIGPUTextureReadback;
+class FRHIGPUFence;
+class FRHIResource;
+class FRHITexture;
+class FDynamicRHI;
+struct FRHITextureCreateDesc;
+class FName;
+struct FNameEntryId;
+namespace UE::Math { template<typename IntType> struct TIntVector3; }
+struct TStatId;
+enum class EName : uint32_t;
+template<typename FuncType> class TUniqueFunction;
+template<typename ReferencedType> class TRefCountPtr;
+
 namespace SDK
 {
     class UActorComponent;
@@ -57,6 +74,11 @@ namespace MiniMapNative
 {
     struct AssetApi
     {
+        using MemoryMallocFn = void* (*)(size_t, uint32_t);
+        MemoryMallocFn memoryMalloc = nullptr;
+        using FromValidENameFn = FNameEntryId* (*)(FNameEntryId*, EName);
+        FromValidENameFn fromValidEName = nullptr;
+
         using SpawnObjectFn = SDK::UObject* (*)(const SDK::TSubclassOf<SDK::UObject>*, SDK::UObject*);
         SpawnObjectFn spawnObject = nullptr;
         using GetTransientPackageFn = SDK::UObject* (*)();
@@ -328,6 +350,33 @@ namespace MiniMapNative
 
     struct TextureApi
     {
+        using SubmitRenderCommandFn = void (*)(void*, const wchar_t*, uint32_t&, TStatId,
+            TUniqueFunction<void(FRHICommandListImmediate&)>&&);
+        SubmitRenderCommandFn submitRenderCommand = nullptr;
+        using ImmediateCommandListFn = FRHICommandListImmediate& (*)();
+        ImmediateCommandListFn immediateCommandList = nullptr;
+        using CreateRHITextureFn = TRefCountPtr<FRHITexture> (*)(FDynamicRHI*, FRHICommandListBase&, const FRHITextureCreateDesc&);
+        CreateRHITextureFn createRHITexture = nullptr; // Compared to native RHI vtable; not called here.
+        using ReadbackConstructFn = FRHIGPUTextureReadback* (*)(FRHIGPUTextureReadback*, FName);
+        ReadbackConstructFn readbackConstruct = nullptr;
+        using ReadbackDestroyFn = void (*)(FRHIGPUTextureReadback*);
+        ReadbackDestroyFn readbackDestroy = nullptr;
+        using ReadbackCopyFn = void (*)(FRHIGPUTextureReadback*, FRHICommandList&, FRHITexture*, const UE::Math::TIntVector3<int32_t>&, uint32_t, const UE::Math::TIntVector3<int32_t>&);
+        ReadbackCopyFn readbackCopy = nullptr;
+        using ReadbackLockFn = void* (*)(FRHIGPUTextureReadback*, int32_t&, int32_t*);
+        ReadbackLockFn readbackLock = nullptr;
+        using ReadbackUnlockFn = void (*)(FRHIGPUTextureReadback*);
+        ReadbackUnlockFn readbackUnlock = nullptr;
+        using PollGPUFenceFn = bool (*)(FRHIGPUFence*);
+        PollGPUFenceFn pollGPUFence = nullptr;
+        using MarkRHIResourceForDeleteFn = void (*)(const FRHIResource*);
+        MarkRHIResourceForDeleteFn markRHIResourceForDelete = nullptr;
+        FDynamicRHI* const* dynamicRHI = nullptr;
+        void* renderCommandPipe = nullptr;
+        const bool* threadedRendering = nullptr;
+        const bool* supportsRHIMultithreading = nullptr;
+        const uint32_t* explicitGpuCount = nullptr;
+
         using InitRenderTargetFn = void (*)(SDK::UTextureRenderTarget2D*, uint32_t, uint32_t, uint8_t, bool);
         InitRenderTargetFn initRenderTarget = nullptr;
         using GetRenderTargetResourceFn = void* (*)(SDK::UTextureRenderTarget2D*);

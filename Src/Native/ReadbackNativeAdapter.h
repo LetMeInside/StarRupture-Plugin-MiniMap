@@ -12,6 +12,7 @@ namespace MiniMapReadbackNative
     bool ResolvePrerequisites();
     bool Preflight();
     const char* Status();
+    void SetStatus(const char* message);
 
     enum class Phase : uint32_t
     {

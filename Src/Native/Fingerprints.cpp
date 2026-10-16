@@ -1,6 +1,9 @@
 #include "Fingerprints.h"
 
 #include "../plugin_helpers.h"
+#include "NativeApi.h"
+#include <array>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // Native pattern resolution.
@@ -2044,6 +2047,244 @@ namespace MiniMapFingerprints
             if (!addresses.showOnlyComponentExec) return false;
         }
 #endif
+#endif
+
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::FromValidEName";
+            request.pattern = "48 89 5C 24 08 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B D9 48 8D 0D ?? ?? ?? ?? 8B FA 75 ?? E8 ?? ?? ?? ?? 48 8B C8 C6 05 ?? ?? ?? ?? 01 8B 8C B9 40 40 01 00 48 8B C3 89 0B 48 8B 5C 24 30 48 83 C4 20 5F C3";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackFromValidEName = scanner->Resolve(self, &request);
+            if (!addresses.readbackFromValidEName) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Submit";
+            request.pattern = "48 89 5C 24 18 48 89 6C 24 20 56 57 41 54 41 56 41 57 48 81 EC 80 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 70 4C 8B B4 24 D0 00 00 00 48 8B D9 48 89 4C 24 38";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackSubmit = scanner->Resolve(self, &request);
+            if (!addresses.readbackSubmit) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Immediate";
+            request.pattern = "48 8D 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 30 33 C0 48 63 DA 44 8B C3 48 8B F9 48 63 49 28 41 F7 D0 41 C1 E8 1F 3B D9 41 0F 4C C0 85 C0";
+            request.kind = PLUGIN_SCAN_CODE;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackImmediate = scanner->Resolve(self, &request);
+            if (!addresses.readbackImmediate) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Create";
+            request.pattern = "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 41 56 48 83 EC 40 49 83 79 48 00 49 8B F9 48 8B 01 49 8B F0 4C 8B F2 48 C7 44 24 20 00 00 00 00 41 0F 95 C1 48 8D 54 24 30";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackCreate = scanner->Resolve(self, &request);
+            if (!addresses.readbackCreate) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Construct";
+            request.pattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 03 33 C0 48 89 43 18 48 89 43 20 48 89 43 28 48 89 43 30 48 89 43 38 48 89 43 40 48 89 43 48 48 89 43 50 48 8B C3 48 83 C4 20 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 7C 24 08";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackConstruct = scanner->Resolve(self, &request);
+            if (!addresses.readbackConstruct) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Destroy";
+            request.pattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B 79 50 48 8B D9 48 85 FF 74 ?? 48 8D 4F 08 BA 03 00 00 00 E8 ?? ?? ?? ?? 85 C0 79 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 53 00 00 00 48 8D 15 ?? ?? ?? ??";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackDestroy = scanner->Resolve(self, &request);
+            if (!addresses.readbackDestroy) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Copy";
+            request.pattern = "40 55 57 41 54 41 56 48 8D AC 24 D8 FD FF FF 48 81 EC 28 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 F0 01 00 00 4C 8B B5 78 02 00 00 48 8B F9 48 89 4C 24 60 4C 8B E2";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackCopy = scanner->Resolve(self, &request);
+            if (!addresses.readbackCopy) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Lock";
+            request.pattern = "4C 8B DC 49 89 5B 10 57 48 83 EC 50 0F BC 41 10 41 B9 20 00 00 00 49 8B D8 48 8B FA 48 8B D1 44 0F 45 C8 33 C0 4A 39 44 C9 18 4E 8D 04 C9 74 ?? 49 89 43 E8 89 44 24 78";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackLock = scanner->Resolve(self, &request);
+            if (!addresses.readbackLock) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Unlock";
+            request.pattern = "40 53 48 83 EC 30 8B 41 14 48 8B D9 48 83 7C C1 18 00 75 ?? 48 8D 05 ?? ?? ?? ?? 41 B9 0C 01 00 00 4C 8D 05 ?? ?? ?? ?? 48 89 44 24 20 33 D2 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ??";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackUnlock = scanner->Resolve(self, &request);
+            if (!addresses.readbackUnlock) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Poll";
+            request.pattern = "48 8B C1 BA 01 00 00 00 8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00";
+            request.kind = PLUGIN_SCAN_CODE;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackPoll = scanner->Resolve(self, &request);
+            if (!addresses.readbackPoll) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::MarkForDelete";
+            request.pattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 0F 0D 49 08 8B 41 08 0F 1F 40 00 0F 1F 84 00 00 00 00 00 8B D0 0F BA EA 1E F0 0F B1 51 08 75 ?? 8B F8 85 C0 79 ?? 4C 8D 0D ?? ?? ?? ??";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackMarkForDelete = scanner->Resolve(self, &request);
+            if (!addresses.readbackMarkForDelete) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Malloc";
+            request.pattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 8B DA 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 44 8B C3 48 8B D7 48 8B 5C 24 30 48 83 C4 20 5F 48 FF 60 28";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackMalloc = scanner->Resolve(self, &request);
+            if (!addresses.readbackMalloc) return false;
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::Readback::Free";
+            request.pattern = "48 85 C9 74 ?? 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3 CC CC CC CC";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.readbackFree = scanner->Resolve(self, &request);
+            if (!addresses.readbackFree) return false;
+        }
+        // The readback pattern extends the existing FMemory::Free fingerprint.
+        // Keep both mandatory contracts, but publish one NativeApi callable.
+        if (addresses.readbackFree != addresses.memoryFree)
+        {
+            scanner->ReportFailure(self, "MiniMap::Readback::Free", "FMemory::Free fingerprints resolved to different entries");
+            return false;
+        }
+
+        const uintptr_t readbackImage = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        IMAGE_DOS_HEADER readbackDos{};
+        IMAGE_NT_HEADERS64 readbackNt{};
+        auto imageFailure = [&]()
+        {
+            scanner->ReportFailure(self, "MiniMap::Readback::Globals", "invalid or unreadable executable headers/section table");
+            return false;
+        };
+        if (!readbackImage || !MiniMapNative::ReadMemory(readbackImage, &readbackDos, sizeof(readbackDos)) ||
+            readbackDos.e_magic != IMAGE_DOS_SIGNATURE || readbackDos.e_lfanew <= 0 ||
+            uintptr_t(readbackDos.e_lfanew) > UINTPTR_MAX - readbackImage) return imageFailure();
+        const uintptr_t readbackNtAddress = readbackImage + uintptr_t(readbackDos.e_lfanew);
+        if (!MiniMapNative::ReadMemory(readbackNtAddress, &readbackNt, sizeof(readbackNt)) ||
+            readbackNt.Signature != IMAGE_NT_SIGNATURE ||
+            readbackNt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            !readbackNt.OptionalHeader.SizeOfImage ||
+            readbackNt.OptionalHeader.SizeOfImage > UINTPTR_MAX - readbackImage) return imageFailure();
+        const uintptr_t readbackImageEnd = readbackImage + readbackNt.OptionalHeader.SizeOfImage;
+        const size_t readbackSectionOffset = size_t(readbackDos.e_lfanew) +
+            offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + readbackNt.FileHeader.SizeOfOptionalHeader;
+        const size_t readbackSectionBytes = size_t(readbackNt.FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
+        if (readbackSectionOffset > readbackNt.OptionalHeader.SizeOfImage ||
+            readbackSectionBytes > readbackNt.OptionalHeader.SizeOfImage - readbackSectionOffset ||
+            !MiniMapNative::IsMemoryRangeReadable(readbackImage + readbackSectionOffset, readbackSectionBytes)) return imageFailure();
+
+        // Resolve the CODE anchor centrally. FOLLOW_REL32 only understands E8/E9,
+        // so preserve the actual MOV/LEA/CMP RIP operand decode here.
+        auto resolveReadbackGlobal = [&](const char* name, const char* pattern, size_t displacementOffset,
+            size_t instructionSize, std::array<uint8_t,3> opcode, uintptr_t& output)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = name;
+            request.pattern = pattern;
+            request.kind = PLUGIN_SCAN_CODE;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            const uintptr_t anchor = scanner->Resolve(self, &request);
+            if (!anchor) return false;
+            auto invalid = [&]()
+            {
+                scanner->ReportFailure(self, name, "invalid RIP instruction or unreadable/non-data global target");
+                return false;
+            };
+            std::array<uint8_t,7> instruction{};
+            if (anchor < readbackImage || anchor > readbackImageEnd || instructionSize > readbackImageEnd-anchor ||
+                !MiniMapNative::ReadMemory(anchor, instruction.data(), instructionSize) ||
+                std::memcmp(instruction.data(), opcode.data(), displacementOffset) != 0 ||
+                (instructionSize == 7 && displacementOffset == 2 && instruction[6] != 0)) return invalid();
+            int32_t displacement{};
+            std::memcpy(&displacement, instruction.data()+displacementOffset, sizeof(displacement));
+            const uintptr_t next = anchor + instructionSize;
+            const uint64_t magnitude = displacement < 0 ? uint64_t(-int64_t(displacement)) : uint64_t(displacement);
+            if ((displacement < 0 && next < magnitude) ||
+                (displacement >= 0 && magnitude > UINTPTR_MAX-next)) return invalid();
+            const uintptr_t target = displacement < 0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
+            if (target < readbackImage || target > readbackImageEnd || 8 > readbackImageEnd-target ||
+                !MiniMapNative::IsMemoryRangeReadable(target,8)) return invalid();
+            bool valid = false;
+            for (unsigned i=0; i<readbackNt.FileHeader.NumberOfSections; ++i)
+            {
+                IMAGE_SECTION_HEADER section{};
+                if (!MiniMapNative::ReadMemory(readbackImage+readbackSectionOffset+size_t(i)*sizeof(section), &section, sizeof(section))) return invalid();
+                if (section.VirtualAddress > readbackNt.OptionalHeader.SizeOfImage ||
+                    section.Misc.VirtualSize > readbackNt.OptionalHeader.SizeOfImage-section.VirtualAddress) continue;
+                const uintptr_t begin = readbackImage+section.VirtualAddress;
+                const uintptr_t end = begin+section.Misc.VirtualSize;
+                if (target >= begin && target <= end && 8 <= end-target &&
+                    (section.Characteristics & IMAGE_SCN_MEM_READ) && !(section.Characteristics & IMAGE_SCN_MEM_EXECUTE)) valid = true;
+            }
+            if (!valid) return invalid();
+            output = target; // Storage address, not its current pointee/value.
+            return true;
+        };
+        if (!resolveReadbackGlobal("MiniMap::Readback::DynamicRHI",
+            "48 8B 0D ?? ?? ?? ?? 4C 8D 44 24 20 C7 44 24 20 01 03 01 07 48 8D 54 24 40 C7 44 24 24 00 00 02 00 C7 44 24 28 07 00 00 00 66 C7 44 24 2C FF F4 48 8B 01 FF 50 58 48 8B 1D ?? ?? ?? ??", 3, 7, {0x48,0x8b,0x0d}, addresses.readbackDynamicRHI)) return false;
+        if (!resolveReadbackGlobal("MiniMap::Readback::Pipe",
+            "48 8D 0D ?? ?? ?? ?? 48 89 45 E7 48 8D 45 E7 48 89 44 24 20 E8 ?? ?? ?? ?? 48 39 7D E7 0F 84 ?? ?? ?? ?? 48 8B 45 0F 48 8D 4D F7 48 85 C0 48 0F 45 C8 48 8B 01 FF 50 10", 3, 7, {0x48,0x8d,0x0d}, addresses.readbackPipe)) return false;
+        if (!resolveReadbackGlobal("MiniMap::Readback::Threaded",
+            "80 3D ?? ?? ?? ?? 00 74 ?? 8B 05 ?? ?? ?? ?? 83 F8 01 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 E5 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D0 48 8D 8B B0 00 00 00 E8 ?? ?? ?? ?? 48 83 BB C0 00 00 00 00", 2, 7, {0x80,0x3d,0}, addresses.readbackThreaded)) return false;
+        if (!resolveReadbackGlobal("MiniMap::Readback::Multithreaded",
+            "80 3D ?? ?? ?? ?? 00 41 8B F9 49 8B E8 48 8B F2 74 ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 4C 8B 88 38 02 00 00 83 FF FF 75 ?? 0F BC 82 BC 01 00 00 BF 20 00 00 00 0F 45 F8 44 8B C7", 2, 7, {0x80,0x3d,0}, addresses.readbackMultithreaded)) return false;
+        if (!resolveReadbackGlobal("MiniMap::Readback::GpuCount",
+            "8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00 48 8B 05 ?? ?? ?? ??", 2, 6, {0x8b,0x0d,0}, addresses.readbackGpuCount)) return false;
 #endif
 
         return true;

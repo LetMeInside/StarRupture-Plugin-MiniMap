@@ -383,7 +383,8 @@ bool InspectBlueprint()
 {
     auto* actor=reinterpret_cast<SDK::AActor*>(blueprint.Actor.Object.Bits);
     auto* componentClass=BlueprintClass(L"/Script/Engine.ActorComponent");
-    auto freeFn=MiniMapReadbackNative::GetBindings().Free;
+    const auto* api=N::Get();
+    auto freeFn=api?api->texture.memoryFree:nullptr;
     if (!componentClass || !freeFn) { blueprint.Failure="component enumeration support is unavailable"; return false; }
     SDK::Params::Actor_K2_GetComponentsByClass params{};
     std::memcpy(&params.ComponentClass,&componentClass,8);
@@ -403,7 +404,7 @@ bool InspectBlueprint()
         if (!Hold(component,reference)) { valid=false; break; }
         blueprint.Components.push_back(reference);
     }
-    if (list.Data) reinterpret_cast<void(*)(void*)>(freeFn)(reinterpret_cast<void*>(list.Data));
+    if (list.Data) freeFn(reinterpret_cast<void*>(list.Data));
     if (!valid) { blueprint.Failure="runtime component identity or ownership could not be established"; return false; }
     blueprint.ComponentCount=blueprint.Components.size();
 

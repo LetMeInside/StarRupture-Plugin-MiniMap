@@ -9,7 +9,6 @@
 #include "SpriteCandidateIdentity.h"
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Native/ReadbackNativeBindings.h"
 #include "CapturePng.h"
 #include "BuildingRepresentation.h"
 #include "Map/Buildings/BuildingCollector.h"
@@ -1200,7 +1199,6 @@ namespace MiniMapBuildingCapture
         void DispatchCapture(SDK::UClass* captureClass,SDK::UFunction* captureFunction,
             void* builder,void* scene,const SDK::FVector& extent,const SDK::FVector& center)
         {
-            const auto& native=Native::GetBindings();
             bool committedJob=false;
             captureSubmittedAt=CaptureClock::now();
             if(publicStaticCapture)
@@ -1246,7 +1244,7 @@ namespace MiniMapBuildingCapture
                 captureCommitted=true;
                 committedJob=Native::MarkExternalCaptureCommitted(job);
                 MiniMapNative::Get()->texture.renderGraphBuilderDestroy(builder);
-                reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+                MiniMapNative::Get()->texture.memoryFree(builder);
             }
             if(!committedJob){finished=true;Native::Cancel(job);FailSpritePublication("committed_job_identity_uncertain; resources_retained");LOG_ERROR("MiniMap: R2 committed-job identity uncertain; resources retained");return;}
             LOG_INFO("MiniMap: R2 capture queued: %dx%d PF_FloatRGBA, %s; bounds XY=%.3fx%.3f center=(%.3f,%.3f) orthoWidth=%.3f",
@@ -1450,21 +1448,20 @@ namespace MiniMapBuildingCapture
             auto* resource=MiniMapNative::Get()->texture.getRenderTargetResource(target);
             job=Native::CreateExternalJob(resource,Dimension,Dimension);
             if(!job){FailBeforeCapture("target resource or CPU readback allocation unavailable");return;}
-            const auto& native=Native::GetBindings();
             if(assemblyActive)
             {
                 const auto decision=candidateRequest?CheckCandidate(*candidateRequest,assemblyRecipe,world,assemblyRootCount!=0):
                     MiniMapSpriteCapture::Decision{MiniMapSpriteCapture::State::Rejected,"candidate_request_missing"};
                 if(!decision.Allowed()){FailBeforeCapture(decision.Reason);return;}
             }
-            void* builder=publicStaticCapture?nullptr:reinterpret_cast<void*(*)(size_t,uint32_t)>(native.Malloc)(0x20,8);
+            void* builder=publicStaticCapture?nullptr:MiniMapNative::Get()->asset.memoryMalloc(0x20,8);
             if(!publicStaticCapture&&!builder){FailBeforeCapture("builder storage allocation failed");return;}
             const auto snapshot=assemblyActive?MiniMapBuildingCollector::GetSnapshot():nullptr;
             if(!MiniMapMap::GameplayReady() || !GameThread() || world!=MiniMapMap::GetWorld() || world==endingWorld ||
                 (assemblyActive&&(!snapshot||!snapshot->Complete||snapshot->Generation!=assemblyRecipe.Generation||!assemblyComponents.Complete(skeletalOnly?1:assemblyRecipe.Count)))||
                 !Native::CaptureRetirementRendererAvailable())
             {
-                if(builder)reinterpret_cast<void(*)(void*)>(native.Free)(builder);
+                if(builder)MiniMapNative::Get()->texture.memoryFree(builder);
                 FailBeforeCapture("final pre-commit world/RHI prerequisite changed");return;
             }
             if(assemblyActive&&!skeletalOnly&&candidateRequest)

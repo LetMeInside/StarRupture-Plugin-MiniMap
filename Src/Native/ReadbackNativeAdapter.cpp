@@ -8,7 +8,6 @@
 #include "RHIResources.h"
 #include "Containers/ResourceArray.h"
 #include "ReadbackNativeAdapter.h"
-#include "ReadbackNativeBindings.h"
 #include "NativeApi.h"
 #include <cstddef>
 #include <cstring>
@@ -69,57 +68,50 @@ namespace MiniMapReadbackNative
     static_assert(offsetof(ReadbackLayout, Staging) == 0x18);
     static_assert(offsetof(ReadbackLayout, Staging) + 7 * sizeof(void*) == 0x50);
 
-    using SubmitFn = void(*)(void*, const TCHAR*, uint32&, TStatId, RenderCallable&&);
-    using ImmediateFn = FRHICommandListImmediate&(*)();
-    using ConstructFn = FRHIGPUTextureReadback*(*)(FRHIGPUTextureReadback*, FName);
-    using DestroyFn = void(*)(FRHIGPUTextureReadback*);
-    using CopyFn = void(*)(FRHIGPUTextureReadback*, FRHICommandList&, FRHITexture*, const FIntVector&, uint32, const FIntVector&);
-    using LockFn = void*(*)(FRHIGPUTextureReadback*, int32&, int32*);
-    using UnlockFn = void(*)(FRHIGPUTextureReadback*);
-    using PollFn = bool(*)(FRHIGPUFence*);
-
     // Only the render-command state machine below may touch native resources.
     namespace Operations
     {
         bool Prerequisites()
         {
-            const auto& b = GetBindings();
-            if (!b.Create || !b.GpuCount || !b.DynamicRHI || !b.Threaded || !b.Multithreaded) return false;
+            const auto* api = MiniMapNative::Get();
+            if (!api) return false;
+            const auto& b = api->texture;
+            if (!b.createRHITexture || !b.explicitGpuCount || !b.dynamicRHI || !b.threadedRendering || !b.supportsRHIMultithreading) return false;
             // PDB FRHIGlobals: IsRHIInitialized +0, SupportsMultithreading +0x10.
-            if (!*reinterpret_cast<const bool*>(b.Multithreaded - 0x10)) return false;
-            if (!*reinterpret_cast<const bool*>(b.Threaded) || !*reinterpret_cast<const bool*>(b.Multithreaded)) return false;
-            const auto count = *reinterpret_cast<const uint32*>(b.GpuCount);
+            if (!*reinterpret_cast<const bool*>(reinterpret_cast<uintptr_t>(b.supportsRHIMultithreading) - 0x10)) return false;
+            if (!*b.threadedRendering || !*b.supportsRHIMultithreading) return false;
+            const auto count = *b.explicitGpuCount;
             if (count == 0 || count > 8 || count != GNumExplicitGPUsForRendering) return false;
-            auto* rhi = *reinterpret_cast<void**>(b.DynamicRHI);
+            auto* rhi = *b.dynamicRHI;
             if (!rhi) return false;
             // Verified native virtual slot used by EnqueueCopy. Reject another RHI.
-            return (*reinterpret_cast<uintptr_t**>(rhi))[0x1A0 / 8] == b.Create;
+            return (*reinterpret_cast<uintptr_t**>(rhi))[0x1A0 / 8] == reinterpret_cast<uintptr_t>(b.createRHITexture);
         }
 
         bool Submit(const TCHAR* persistentName, uint32& persistentSpec, RenderCallable&& callable,
             std::atomic<MiniMapCaptureRetirement::EnqueueState>* enqueue = nullptr,
             std::atomic<bool>* everInvoked = nullptr)
         {
-            const auto& b = GetBindings();
+            const auto* api = MiniMapNative::Get();
             return MiniMapCaptureRetirement::SubmitWithEvidence(Prerequisites(),enqueue,everInvoked,[&]
             {
-                reinterpret_cast<SubmitFn>(b.Submit)(reinterpret_cast<void*>(b.Pipe), persistentName,
+                api->texture.submitRenderCommand(api->texture.renderCommandPipe, persistentName,
                     persistentSpec, TStatId{}, MoveTemp(callable));
             });
         }
 
         FRHICommandListImmediate& Immediate()
         {
-            return reinterpret_cast<ImmediateFn>(GetBindings().Immediate)();
+            return MiniMapNative::Get()->texture.immediateCommandList();
         }
 
         FRHIGPUTextureReadback* Construct()
         {
             if (!Prerequisites()) return nullptr;
-            const auto& b = GetBindings();
+            const auto& b = MiniMapNative::Get()->texture;
             auto* storage = static_cast<FRHIGPUTextureReadback*>(
-                reinterpret_cast<void*(*)(SIZE_T, uint32)>(b.Malloc)(sizeof(ReadbackLayout), 8));
-            return storage ? reinterpret_cast<ConstructFn>(b.Construct)(storage, FName{}) : nullptr;
+                MiniMapNative::Get()->asset.memoryMalloc(sizeof(ReadbackLayout), 8));
+            return storage ? b.readbackConstruct(storage, FName{}) : nullptr;
         }
 
         enum class Readiness { Pending, Complete, Invalid, Unavailable };
@@ -128,7 +120,7 @@ namespace MiniMapReadbackNative
             if (!readback) return false;
             FRHIGPUFence* fence = nullptr;
             std::memcpy(&fence, reinterpret_cast<const unsigned char*>(readback) + offsetof(ReadbackLayout, Fence), sizeof(fence));
-            return fence && (*reinterpret_cast<uintptr_t**>(fence))[3] == GetBindings().Poll;
+            return fence && (*reinterpret_cast<uintptr_t**>(fence))[3] == reinterpret_cast<uintptr_t>(MiniMapNative::Get()->texture.pollGPUFence);
         }
         Readiness Check(FRHIGPUTextureReadback* readback)
         {
@@ -140,36 +132,38 @@ namespace MiniMapReadbackNative
             for (uint32 i = 0; i < 8; ++i)
                 if ((view.CopyMask & (1u << i)) && !view.Staging[i]) return Readiness::Invalid;
             if (view.Fence->NumPendingWriteCommands.GetValue() != 0) return Readiness::Pending;
-            return reinterpret_cast<PollFn>(GetBindings().Poll)(view.Fence)
+            return MiniMapNative::Get()->texture.pollGPUFence(view.Fence)
                 ? Readiness::Complete : Readiness::Pending;
         }
 
         void* Map(FRHIGPUTextureReadback* readback, int32& pitch, int32& height)
         {
             if (Check(readback) != Readiness::Complete) return nullptr;
-            return reinterpret_cast<LockFn>(GetBindings().Lock)(readback, pitch, &height);
+            return MiniMapNative::Get()->texture.readbackLock(readback, pitch, &height);
         }
         void Unmap(FRHIGPUTextureReadback* readback)
         {
-            reinterpret_cast<UnlockFn>(GetBindings().Unlock)(readback);
+            MiniMapNative::Get()->texture.readbackUnlock(readback);
         }
         // Caller must prove no queued command/copy/map still references it.
         // Cancellation or a timeout is NOT such proof.
         void DestroyCompleted(FRHIGPUTextureReadback* readback)
         {
             if (!readback) return;
-            const auto& b = GetBindings();
-            reinterpret_cast<DestroyFn>(b.Destroy)(readback);
-            reinterpret_cast<void(*)(void*)>(b.Free)(readback);
+            const auto& b = MiniMapNative::Get()->texture;
+            b.readbackDestroy(readback);
+            b.memoryFree(readback);
         }
         void ReleaseCompleted(FTextureRHIRef& texture) { texture.SafeRelease(); }
     }
 
     bool Preflight()
     {
-        const auto& b = GetBindings();
-        if (!b.GpuCount) return false;
-        const auto count = *reinterpret_cast<const uint32*>(b.GpuCount);
+        const auto* api = MiniMapNative::Get();
+        if (!api) return false;
+        const auto& b = api->texture;
+        if (!b.explicitGpuCount) return false;
+        const auto count = *b.explicitGpuCount;
         // The existing game-thread preflight precedes the first job. Afterwards
         // header-inline RHI code may read this snapshot on either render job;
         // never rewrite it while another renderer can have callbacks in flight.
@@ -287,7 +281,7 @@ namespace MiniMapReadbackNative
                 const auto transition=reinterpret_cast<TransitionFn>(MiniMapNative::Get()->texture.transitionResources);
                 const FRHITransitionInfo before(job->Texture.GetReference(),ERHIAccess::SRVMask,ERHIAccess::CopySrc);
                 transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&before,1),ERHITransitionCreateFlags::None);
-                reinterpret_cast<CopyFn>(GetBindings().Copy)(job->Readback,list,job->Texture.GetReference(),FIntVector(0,0,0),0,FIntVector(job->Width,job->ImageHeight,1));
+                MiniMapNative::Get()->texture.readbackCopy(job->Readback,list,job->Texture.GetReference(),FIntVector(0,0,0),0,FIntVector(job->Width,job->ImageHeight,1));
                 const FRHITransitionInfo after(job->Texture.GetReference(),ERHIAccess::CopySrc,ERHIAccess::SRVMask);
                 transition(reinterpret_cast<FRHIComputeCommandList*>(&immediate),MakeArrayView(&after,1),ERHITransitionCreateFlags::None);
                 Enter(job, Phase::CopySubmitted);
@@ -515,29 +509,33 @@ namespace MiniMapReadbackNative
 // are no global owning UE objects and no engine calls in static constructors.
 void* FMemory::Malloc(SIZE_T size, uint32 alignment)
 {
-    const auto fn = MiniMapReadbackNative::GetBindings().Malloc;
+    const auto* api = MiniMapNative::Get();
+    const auto fn = api ? api->asset.memoryMalloc : nullptr;
     if (!fn) std::abort();
-    return reinterpret_cast<void*(*)(SIZE_T, uint32)>(fn)(size, alignment);
+    return fn(size, alignment);
 }
 void FMemory::Free(void* ptr)
 {
-    const auto fn = MiniMapReadbackNative::GetBindings().Free;
+    const auto* api = MiniMapNative::Get();
+    const auto fn = api ? api->texture.memoryFree : nullptr;
     if (!fn) std::abort();
-    reinterpret_cast<void(*)(void*)>(fn)(ptr);
+    fn(ptr);
 }
 void FRHIResource::MarkForDelete() const
 {
-    const auto fn = MiniMapReadbackNative::GetBindings().MarkForDelete;
+    const auto* api = MiniMapNative::Get();
+    const auto fn = api ? api->texture.markRHIResourceForDelete : nullptr;
     if (!fn) std::abort();
-    reinterpret_cast<void(*)(const FRHIResource*)>(fn)(this);
+    fn(this);
 }
 FNameEntryId FNameEntryId::FromValidEName(EName name)
 {
-    const auto fn = MiniMapReadbackNative::GetBindings().FromValidEName;
+    const auto* api = MiniMapNative::Get();
+    const auto fn = api ? api->asset.fromValidEName : nullptr;
     if (!fn) std::abort();
     FNameEntryId result;
     // CL-127004 0x014B68C0: RCX=result storage, EDX=EName, RAX=result.
-    reinterpret_cast<FNameEntryId*(*)(FNameEntryId*, EName)>(fn)(&result, name);
+    fn(&result, name);
     return result;
 }
 #endif
