@@ -66,7 +66,7 @@ void ClassificationInputs(uintptr_t definition)
     const auto bounds=C::BoundArray(tags,sizeof(SDK::FName),alignof(SDK::FName),K::TagLimit);
     if(!bounds.Valid||(bounds.Bytes&&!Readable(tags.Data,bounds.Bytes,4))){o.TagsStatus="invalid";return;}
     o.TagsStatus=bounds.Status;o.Truncated|=bounds.Truncated;
-    o.InteriorComparison=nameEqualsWide?"exact_FName_Equals_Interior":"unavailable_binding";
+    o.InteriorComparison="exact_FName_Equals_Interior";
     for(size_t i=0;i<bounds.Count;++i)
     {
         if(!Work.Spend(false)){o.TagsStatus="truncated_budget";o.Truncated=true;break;}
@@ -76,12 +76,11 @@ void ClassificationInputs(uintptr_t definition)
         // Read only names from the validated, retained definition's bounded array.
         // Same comparison used by installed FCrBuildingBaseView::IsInterior.
         // No pool enumeration, string allocation, name insertion or package load.
-        using Equals=bool(*)(SDK::FName,const wchar_t*);
-        if(nameEqualsWide&&name.Number==0&&reinterpret_cast<Equals>(nameEqualsWide)(name,L"Interior"))
+        if(name.Number==0&&MiniMapNative::Get()->asset.nameEqualsWide(name,L"Interior"))
             o.InteriorTag="present";
     }
     if(o.InteriorTag=="present")
     {K::Evidence evidence;evidence.InteriorTag=true;o.CachedPolicy=K::Decide(evidence);}
-    else if(nameEqualsWide&&!bounds.Truncated&&o.TagCount==bounds.Count&&o.TagsStatus!="invalid_element"&&!Work.Exhausted)
+    else if(!bounds.Truncated&&o.TagCount==bounds.Count&&o.TagsStatus!="invalid_element"&&!Work.Exhausted)
         o.InteriorTag="absent";
 }

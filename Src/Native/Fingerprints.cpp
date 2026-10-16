@@ -2228,18 +2228,10 @@ namespace MiniMapFingerprints
 
         // Resolve the CODE anchor centrally. FOLLOW_REL32 only understands E8/E9,
         // so preserve the actual MOV/LEA/CMP RIP operand decode here.
-        auto resolveReadbackGlobal = [&](const char* name, const char* pattern, size_t displacementOffset,
-            size_t instructionSize, std::array<uint8_t,3> opcode, uintptr_t& output)
+        auto decodeGlobal = [&](const char* name, uintptr_t anchor, size_t displacementOffset,
+            size_t instructionSize, std::array<uint8_t,3> opcode, size_t storageSize,
+            size_t alignment, uintptr_t& output)
         {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = name;
-            request.pattern = pattern;
-            request.kind = PLUGIN_SCAN_CODE;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            const uintptr_t anchor = scanner->Resolve(self, &request);
-            if (!anchor) return false;
             auto invalid = [&]()
             {
                 scanner->ReportFailure(self, name, "invalid RIP instruction or unreadable/non-data global target");
@@ -2257,8 +2249,8 @@ namespace MiniMapFingerprints
             if ((displacement < 0 && next < magnitude) ||
                 (displacement >= 0 && magnitude > UINTPTR_MAX-next)) return invalid();
             const uintptr_t target = displacement < 0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
-            if (target < readbackImage || target > readbackImageEnd || 8 > readbackImageEnd-target ||
-                !MiniMapNative::IsMemoryRangeReadable(target,8)) return invalid();
+            if (target < readbackImage || target > readbackImageEnd || storageSize > readbackImageEnd-target ||
+                !MiniMapNative::IsMemoryRangeReadable(target,storageSize,alignment)) return invalid();
             bool valid = false;
             for (unsigned i=0; i<readbackNt.FileHeader.NumberOfSections; ++i)
             {
@@ -2268,12 +2260,25 @@ namespace MiniMapFingerprints
                     section.Misc.VirtualSize > readbackNt.OptionalHeader.SizeOfImage-section.VirtualAddress) continue;
                 const uintptr_t begin = readbackImage+section.VirtualAddress;
                 const uintptr_t end = begin+section.Misc.VirtualSize;
-                if (target >= begin && target <= end && 8 <= end-target &&
+                if (target >= begin && target <= end && storageSize <= end-target &&
                     (section.Characteristics & IMAGE_SCN_MEM_READ) && !(section.Characteristics & IMAGE_SCN_MEM_EXECUTE)) valid = true;
             }
             if (!valid) return invalid();
             output = target; // Storage address, not its current pointee/value.
             return true;
+        };
+        auto resolveReadbackGlobal = [&](const char* name, const char* pattern, size_t displacementOffset,
+            size_t instructionSize, std::array<uint8_t,3> opcode, uintptr_t& output)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = name;
+            request.pattern = pattern;
+            request.kind = PLUGIN_SCAN_CODE;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            const uintptr_t anchor = scanner->Resolve(self, &request);
+            return anchor && decodeGlobal(name, anchor, displacementOffset, instructionSize, opcode, 8, 1, output);
         };
         if (!resolveReadbackGlobal("MiniMap::Readback::DynamicRHI",
             "48 8B 0D ?? ?? ?? ?? 4C 8D 44 24 20 C7 44 24 20 01 03 01 07 48 8D 54 24 40 C7 44 24 24 00 00 02 00 C7 44 24 28 07 00 00 00 66 C7 44 24 2C FF F4 48 8B 01 FF 50 58 48 8B 1D ?? ?? ?? ??", 3, 7, {0x48,0x8b,0x0d}, addresses.readbackDynamicRHI)) return false;
@@ -2285,6 +2290,157 @@ namespace MiniMapFingerprints
             "80 3D ?? ?? ?? ?? 00 41 8B F9 49 8B E8 48 8B F2 74 ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 4C 8B 88 38 02 00 00 83 FF FF 75 ?? 0F BC 82 BC 01 00 00 BF 20 00 00 00 0F 45 F8 44 8B C7", 2, 7, {0x80,0x3d,0}, addresses.readbackMultithreaded)) return false;
         if (!resolveReadbackGlobal("MiniMap::Readback::GpuCount",
             "8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00 48 8B 05 ?? ?? ?? ??", 2, 6, {0x8b,0x0d,0}, addresses.readbackGpuCount)) return false;
+#endif
+
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::GUObjectArray";
+            request.pattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 1B 48 8B D3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 08 B0 01 48 83 C4 20 5B C3 32 C0";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            const uintptr_t anchor = scanner->Resolve(self, &request);
+            if (!anchor) return false;
+            auto invalid = [&]()
+            {
+                scanner->ReportFailure(self, request.hookName, "invalid UObject-array LEA or unreadable array storage");
+                return false;
+            };
+            std::array<uint8_t,7> instruction{};
+            if (anchor > UINTPTR_MAX-0x1c ||
+                !MiniMapNative::ReadMemory(anchor+0x15, instruction.data(), instruction.size()) ||
+                instruction[0]!=0x48 || instruction[1]!=0x8d || instruction[2]!=0x0d) return invalid();
+            int32_t displacement{};
+            std::memcpy(&displacement, instruction.data()+3, sizeof(displacement));
+            const uintptr_t next = anchor+0x1c;
+            const uint64_t magnitude = displacement<0 ? uint64_t(-int64_t(displacement)) : uint64_t(displacement);
+            if ((displacement<0 && next<magnitude) || (displacement>=0 && magnitude>UINTPTR_MAX-next)) return invalid();
+            const uintptr_t target = displacement<0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
+            if (!MiniMapNative::IsMemoryRangeReadable(target,0x30,8)) return invalid();
+            addresses.objectArray = target; // Enclosing UObject array; no extra indirection.
+        }
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::USkeletalMeshComponent::GetSkeletalMeshAsset";
+            request.pattern = "40 53 48 83 EC 20 48 8B 99 88 05 00 00 48 85 DB 75 2A 80 3D ?? ?? ?? ?? 00 48 8B 99 90 05 00 00 74 0D 48 85 DB 74 0D 48 8B CB E8 ?? ?? ?? ?? 48 85 DB";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.getSkeletalMeshAsset = scanner->Resolve(self, &request);
+            if (!addresses.getSkeletalMeshAsset) return false;
+        }
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::FName::EqualsWide";
+            request.pattern = "45 33 C0 48 8B C2 48 85 D2 74 13 66 44 39 02 74 0D 48 8D 40 02 41 FF C0 66 83 38 00 75 F3 E9 0D 65 FF FF CC CC CC CC CC CC CC CC CC CC CC CC CC 44 8B 42 08 48 8B 12 E9 F4 64 FF FF CC CC CC CC";
+            request.kind = PLUGIN_SCAN_CODE;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.nameEqualsWide = scanner->Resolve(self, &request);
+            if (!addresses.nameEqualsWide) return false;
+        }
+#endif
+#if defined(MODLOADER_CLIENT_BUILD)
+        // Private-world native entry points. Leaf functions use CODE; unwind-covered
+        // callable entries use FUNCTION_START. All requests are mandatory.
+        auto resolvePrivateWorld = [&](const char* name, const char* pattern,
+            PluginScanKind kind, uintptr_t& output)
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = name;
+            request.pattern = pattern;
+            request.kind = kind;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            output = scanner->Resolve(self, &request);
+            return output != 0;
+        };
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::createWorld",
+            "48 89 5C 24 10 4C 89 44 24 18 55 56 57 41 54 41 55 41 56 41 57 48 81 EC A0 00 00 00 44 8B A4 24 08 01 00 00 33 FF 41 83 FC 05 49 8B E9 44 0F B6 EA 44 8B F9",
+            PLUGIN_SCAN_FUNCTION_START, addresses.createWorld)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::initWorld",
+            "40 55 57 41 54 48 8D AC 24 40 FE FF FF 48 81 EC C0 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 80 01 00 00 0F B6 81 8B 01 00 00 4C 8B E2 48 8B F9 A8 40",
+            PLUGIN_SCAN_FUNCTION_START, addresses.initWorld)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::updateWorldComponents",
+            "4C 8B DC 55 56 57 41 55 41 57 48 81 EC 80 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 60 01 00 00 4D 89 63 D0 45 0F B6 E0 4D 89 73 C8 4D 8B F9 44 0F B6 EA 48 8B E9",
+            PLUGIN_SCAN_FUNCTION_START, addresses.updateWorldComponents)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::cleanupWorld",
+            "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 FF 05 ?? ?? ?? ?? 48 8D 3D ?? ?? ?? ?? F6 81 8B 01 00 00 40 49 8B F1 41 0F B6 E8 44 0F B6 F2 48 8B D9",
+            PLUGIN_SCAN_FUNCTION_START, addresses.cleanupWorld)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getWorldContextFromWorld",
+            "48 8B 81 C8 11 00 00 48 63 89 D0 11 00 00 48 8D 0C C8 48 3B C1 74 ?? 66 0F 1F 84 00 00 00 00 00 4C 8B 00 49 39 90 C0 02 00 00 74 ?? 48 83 C0 08 48 3B C1 75 ?? 33 C0 C3 49 8B C0 C3",
+            PLUGIN_SCAN_CODE, addresses.getWorldContextFromWorld)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getSubsystemInternal",
+            "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 30 48 8B FA 48 8B F1 48 85 D2 75 ?? 48 8D 05 ?? ?? ?? ?? 44 8D 4A 35 48 89 44 24 20 4C 8D 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 33 C0",
+            PLUGIN_SCAN_FUNCTION_START, addresses.getSubsystemInternal)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isGarbageCollectingAndLocking",
+            "0F B6 05 ?? ?? ?? ?? 90 C3 CC CC CC CC CC CC CC 40 53 48 83 EC 20 48 8B 1D ?? ?? ?? ?? 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 B2 00 00 00",
+            PLUGIN_SCAN_CODE, addresses.isGarbageCollectingAndLocking)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isIncrementalPurgePending",
+            "0F B6 05 ?? ?? ?? ?? 90 84 C0 75 ?? 0F B6 05 ?? ?? ?? ?? 90 84 C0 75 ?? C3 B0 01 C3 CC CC CC CC 0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC",
+            PLUGIN_SCAN_CODE, addresses.isIncrementalPurgePending)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isIncrementalReachabilityPending",
+            "0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 8B 05 ?? ?? ?? ?? 39 05 ?? ?? ?? ?? 7C ?? 80 3D ?? ?? ?? ?? 00 75 ?? 32 C0 C3 B0 01 C3",
+            PLUGIN_SCAN_CODE, addresses.isIncrementalReachabilityPending)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getTickableTickType",
+            "40 53 48 83 EC 20 48 8B D9 BA 30 00 00 00 48 83 C1 D0 E8 ?? ?? ?? ?? 84 C0 75 ?? 38 43 08 74 ?? 48 83 C4 20 5B C3 B0 02 48 83 C4 20 5B C3",
+            PLUGIN_SCAN_FUNCTION_START, addresses.getTickableTickType)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isVisibilityRequestPending",
+            "40 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 ?? 48 89 5C 24 30 48 8D 9F 18 01 00 00 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 44 8D 43 1C",
+            PLUGIN_SCAN_FUNCTION_START, addresses.isVisibilityRequestPending)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::destroyActor",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 F6 41 5D 02 41 0F B6 F0 0F B6 EA 48 8B F9 75 ?? 8B 41 08 C1 E8 1E F6 D0 A8 01 74 ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? 44 0F B6 CE 44 0F B6 C5 48 8B D7 48 8B C8 E8 ?? ?? ?? ??",
+            PLUGIN_SCAN_FUNCTION_START, addresses.destroyActor)) return false;
+
+        uintptr_t activeGCAnchor = 0, engineAnchor = 0;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::ActiveGarbageCollection",
+            "0F B6 35 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 FF 15 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 0F 57 C0 39 05 ?? ?? ?? ?? F2 48 0F 2A 44 24 50",
+            PLUGIN_SCAN_CODE, activeGCAnchor) ||
+            !decodeGlobal("MiniMap::PrivateWorld::ActiveGarbageCollection", activeGCAnchor,
+                3, 7, {0x0f,0xb6,0x35}, 1, 1, addresses.activeGarbageCollection)) return false;
+        if (!resolvePrivateWorld("MiniMap::PrivateWorld::EngineStorage",
+            "48 8B 3D ?? ?? ?? ?? 49 8B F1 49 8B E8 4C 8B F2 48 8B D9 48 85 FF 74 ?? 48 83 BF ?? ?? ?? ?? 00 75 ??",
+            PLUGIN_SCAN_CODE, engineAnchor) ||
+            !decodeGlobal("MiniMap::PrivateWorld::EngineStorage", engineAnchor,
+                3, 7, {0x48,0x8b,0x3d}, 8, 8, addresses.engineStorage)) return false;
+        // Reuse the already resolved guarded Release wrapper, without another scan.
+        if (!decodeGlobal("MiniMap::Release", addresses.releaseObject,
+                2, 7, {0x80,0x3d,0}, 1, 1, addresses.exitPurge)) return false;
+
+        // Preserve the legacy direct ReleaseRef verification, deriving its address
+        // from the wrapper's JE rather than a historical RVA. It is not a call binding.
+        auto invalidRelease = [&]()
+        {
+            scanner->ReportFailure(self, "MiniMap::Release", "invalid guarded Release branch or direct ReleaseRef entry");
+            return false;
+        };
+        std::array<uint8_t,13> releaseInstruction{};
+        if (addresses.releaseObject < readbackImage || addresses.releaseObject > readbackImageEnd ||
+            releaseInstruction.size() > readbackImageEnd-addresses.releaseObject ||
+            !MiniMapNative::ReadMemory(addresses.releaseObject, releaseInstruction.data(), releaseInstruction.size()) ||
+            releaseInstruction[7]!=0x0f || releaseInstruction[8]!=0x84) return invalidRelease();
+        int32_t releaseDisplacement{};
+        std::memcpy(&releaseDisplacement, releaseInstruction.data()+9, sizeof(releaseDisplacement));
+        const uintptr_t releaseNext = addresses.releaseObject+releaseInstruction.size();
+        const uint64_t releaseMagnitude = releaseDisplacement<0 ? uint64_t(-int64_t(releaseDisplacement)) : uint64_t(releaseDisplacement);
+        if ((releaseDisplacement<0 && releaseNext<releaseMagnitude) ||
+            (releaseDisplacement>=0 && releaseMagnitude>UINTPTR_MAX-releaseNext)) return invalidRelease();
+        const uintptr_t releaseRef = releaseDisplacement<0 ? releaseNext-uintptr_t(releaseMagnitude) : releaseNext+uintptr_t(releaseMagnitude);
+        constexpr std::array<uint8_t,16> releasePrefix = {0x40,0x53,0x48,0x83,0xec,0x30,0x8b,0x59,0x0c,0x85,0xdb,0x79,0x26,0x4c,0x8d,0x0d};
+        std::array<uint8_t,16> releaseBytes{};
+        MEMORY_BASIC_INFORMATION releasePage{};
+        if (releaseRef<readbackImage || releaseRef>readbackImageEnd || releaseBytes.size()>readbackImageEnd-releaseRef ||
+            !MiniMapNative::ReadMemory(releaseRef, releaseBytes.data(), releaseBytes.size()) || releaseBytes!=releasePrefix ||
+            !VirtualQuery(reinterpret_cast<void*>(releaseRef), &releasePage, sizeof(releasePage)) || releasePage.State!=MEM_COMMIT ||
+            (releasePage.Protect & (PAGE_GUARD|PAGE_NOACCESS)) ||
+            !(releasePage.Protect & (PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return invalidRelease();
+#endif
 #endif
 
         return true;

@@ -1991,8 +1991,6 @@ namespace MiniMapBuildingCapture
     }
     bool ResolvePrerequisites()
     {
-        if(!Native::MatchesCaptureRetirementBuild())
-        {LOG_WARN("MiniMap: R2 capture-retirement executable identity mismatch; R2 disabled");return false;}
         resolved = MiniMapNative::IsInitialized();
         return resolved;
     }

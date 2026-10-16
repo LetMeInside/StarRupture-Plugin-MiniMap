@@ -12,7 +12,6 @@
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Map/Sprites/BuildingRepresentation.h"
-#include "Map/Sprites/RepresentationMetadataPatterns.h"
 #include "Map/Map.h"
 #include "plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
@@ -29,14 +28,7 @@ namespace DefinitionSlots = MiniMapDefinitionAcquisition;
 namespace N = MiniMapNative;
 struct PrivateCaptureWorld::Implementation
 {
-    // Matching CL-127004 PDB type 0x131001. Win64 passes this 16-byte
-    // BY-VALUE aggregate indirectly using caller-owned temporary storage.
-    struct alignas(8) InitializationValues
-    {
-        uint32_t Flags = 1; // Only bInitializeScenes; all other bits disabled.
-        uint32_t Padding = 0;
-        uintptr_t DefaultGameMode = 0;
-    };
+    using InitializationValues = N::WorldInitializationValues;
     static_assert(sizeof(InitializationValues) == 16);
     static_assert(offsetof(InitializationValues, DefaultGameMode) == 8);
     static_assert(sizeof(SDK::FName) == 8);
@@ -54,20 +46,6 @@ struct PrivateCaptureWorld::Implementation
     static_assert(sizeof(SDK::UTickableWorldSubsystem) == 0x40);
     static_assert(sizeof(SDK::USubsystem) == 0x30);
     static_assert(0x9f0 + 0xc0 == sizeof(SDK::UWorld));
-
-    using Create = uintptr_t(*)(int32_t, bool, SDK::FName, uintptr_t, bool,
-                                int32_t, const InitializationValues*, bool);
-    using Init = void(*)(uintptr_t, InitializationValues);
-    using Update = void(*)(uintptr_t, bool, bool, void*);
-    using Cleanup = void(*)(uintptr_t, bool, bool, uintptr_t);
-    using Root = void(*)(uintptr_t);
-    using Predicate = bool(*)();
-    using Context = uintptr_t(*)(uintptr_t, uintptr_t);
-    using VisibilityPending = bool(*)(uintptr_t);
-    // The verified native collection method uses plain UClass*, avoiding the
-    // nontrivial TSubclassOf by-value ABI of the reflected World wrapper.
-    using Subsystem = uintptr_t(*)(uintptr_t, uintptr_t);
-    using TickType = uint8_t(*)(uintptr_t); // FTickableGameObject subobject this.
 
     enum class Phase { Inactive, Pending, Creating, Ready, Retiring, Cleaned, Unavailable, Failed, Quarantined };
     enum class Operation { CreateShell, Retain, Initialize, UpdateComponents, CleanupWorld, Release };
@@ -111,8 +89,6 @@ struct PrivateCaptureWorld::Implementation
         Phase Current = Phase::Inactive;
         void* SessionWorld{};
         uint64_t Generation{};
-        uintptr_t Base{}, Array{}, CreateFn{}, InitFn{}, UpdateFn{}, CleanupFn{};
-        uintptr_t ContextFn{}, SubsystemFn{}, LockingFn{}, PurgeFn{}, ReachabilityFn{}, TickFn{}, VisibilityPendingFn{};
         bool NativePrerequisitesVerified = false;
         Reference Private, Subsystems[3], Package, PersistentLevel, WorldSettings;
         uintptr_t Scene{};
@@ -128,11 +104,13 @@ struct PrivateCaptureWorld::Implementation
 
     bool Identify(uintptr_t object, Identity& out, size_t extent = 0x28)
     {
-        if (!N::ValidateObjectIdentity(object, state.Array, extent)) return false;
+        const auto* api = N::Get();
+        const auto array = api ? reinterpret_cast<uintptr_t>(api->asset.objectArray) : 0;
+        if (!N::ValidateObjectIdentity(object, array, extent)) return false;
         int32_t index{}; uint32_t flags{};
         if (!Read(object + 0xc, index) || !Read(object + 8, flags) || (flags & 0x1b400)) return false;
         DefinitionSlots::Slot slot; SlotReader reader;
-        if (DefinitionSlots::ReadSlot(reader, state.Array, index, slot) != DefinitionSlots::Status::Success ||
+        if (DefinitionSlots::ReadSlot(reader, array, index, slot) != DefinitionSlots::Status::Success ||
             slot.Object != object || (slot.Flags & 0x10200000)) return false;
         out = {object, index, slot.Serial}; // Zero is observed, never allocated.
         return true;
@@ -140,6 +118,7 @@ struct PrivateCaptureWorld::Implementation
     bool CheckOwned(Reference& ref)
     {
         if (!ref.Owned || ref.Uncertain || !state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread()) return false;
+        const auto array = reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray);
         Identity now;
         if (!Identify(ref.Object.Bits, now) || now.Bits != ref.Object.Bits || now.Index != ref.Object.Index) return false;
         if (now.Serial == ref.Object.Serial) return true;
@@ -150,7 +129,7 @@ struct PrivateCaptureWorld::Implementation
         // previously nonzero serial. This does not allocate a serial.
         DefinitionSlots::Slot slot; SlotReader reader;
         if (ref.Object.Serial != 0 || now.Serial <= 0 ||
-            DefinitionSlots::ReadSlot(reader, state.Array, now.Index, slot) != DefinitionSlots::Status::Success ||
+            DefinitionSlots::ReadSlot(reader, array, now.Index, slot) != DefinitionSlots::Status::Success ||
             slot.Object != now.Bits || slot.Serial != now.Serial || !(slot.Flags & 0x20000000)) return false;
         ref.Object.Serial = now.Serial;
         LOG_INFO("MiniMap: private_capture_world retained_serial_adopted=1 index=%d serial=%d", now.Index, now.Serial);
@@ -172,10 +151,11 @@ struct PrivateCaptureWorld::Implementation
     bool NoForeignRoot(Reference& ref)
     {
         if (!CheckOwned(ref)) return false;
+        const auto array = reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray);
         const auto& id = ref.Object;
         uint32_t flags{}; DefinitionSlots::Slot slot; SlotReader reader;
         return Read(id.Bits + 8, flags) && !(flags & 2) && // RF_Standalone
-            DefinitionSlots::ReadSlot(reader, state.Array, id.Index, slot) == DefinitionSlots::Status::Success &&
+            DefinitionSlots::ReadSlot(reader, array, id.Index, slot) == DefinitionSlots::Status::Success &&
             !(slot.Flags & 0x40000000); // RootSet, distinct from our RefCounted bit.
     }
     // Leaf SEH boundary, no C++ objects with destructors. A native interruption
@@ -203,13 +183,13 @@ struct PrivateCaptureWorld::Implementation
             case Operation::CreateShell:
                 {
                     InitializationValues values;
-                    *created = reinterpret_cast<Create>(state.CreateFn)(7, false, SDK::FName{}, 0, false, 5, &values, true);
+                    *created = N::Get()->world.createWorld(7, false, SDK::FName{}, 0, false, 5, &values, true);
                 } break;
-            case Operation::Retain: reinterpret_cast<Root>(MiniMapNative::Get()->asset.retainObject)(object); break;
-            case Operation::Initialize: reinterpret_cast<Init>(state.InitFn)(object, InitializationValues{}); break;
-            case Operation::UpdateComponents: reinterpret_cast<Update>(state.UpdateFn)(object, false, false, nullptr); break;
-            case Operation::CleanupWorld: reinterpret_cast<Cleanup>(state.CleanupFn)(object, true, true, 0); break;
-            case Operation::Release: reinterpret_cast<Root>(MiniMapNative::Get()->asset.releaseObject)(object); break;
+            case Operation::Retain: N::Get()->asset.retainObject(reinterpret_cast<SDK::UObject*>(object)); break;
+            case Operation::Initialize: N::Get()->world.initWorld(object, InitializationValues{}); break;
+            case Operation::UpdateComponents: N::Get()->world.updateWorldComponents(object, false, false, nullptr); break;
+            case Operation::CleanupWorld: N::Get()->world.cleanupWorld(object, true, true, 0); break;
+            case Operation::Release: N::Get()->asset.releaseObject(reinterpret_cast<SDK::UObject*>(object)); break;
             }
             LOG_INFO("MiniMap: private_capture_world step=%s outcome=success evidence=normal_return_only", name);
             return true;
@@ -254,8 +234,10 @@ struct PrivateCaptureWorld::Implementation
     };
     bool QuietGC(QuietGCDetail* detail = nullptr)
     {
+        const auto* api = N::Get();
+        if (!api) return false;
         uint8_t exitPurge{};
-        if (!Read(state.Base + 0xe268c10, exitPurge))
+        if (!Read(reinterpret_cast<uintptr_t>(api->asset.exitPurge), exitPurge))
         {
             if (detail) { detail->ExitPurgeReadable = 0; detail->Step = "exit purge state is unreadable"; }
             return false;
@@ -265,7 +247,7 @@ struct PrivateCaptureWorld::Implementation
         { if (detail) detail->Step = "exit purge is active"; return false; }
         bool gc{};
         if (detail) detail->Step = "garbage collection state is unreadable";
-        if (!Read(state.Base + 0xe344998, gc))
+        if (!Read(reinterpret_cast<uintptr_t>(api->asset.activeGarbageCollection), gc))
         {
             if (detail) detail->FlagReadable = 0;
             return false;
@@ -273,15 +255,15 @@ struct PrivateCaptureWorld::Implementation
         if (detail) { detail->FlagReadable = 1; detail->FlagActive = gc; detail->Step = "garbage collection is active"; }
         if (gc) return false;
         if (detail) detail->Step = "garbage collection is locking UObject hash tables";
-        const bool locking = reinterpret_cast<Predicate>(state.LockingFn)();
+        const bool locking = api->world.isGarbageCollectingAndLocking();
         if (detail) detail->Locking = locking;
         if (locking) return false;
         if (detail) detail->Step = "incremental purge is pending";
-        const bool purge = reinterpret_cast<Predicate>(state.PurgeFn)();
+        const bool purge = api->world.isIncrementalPurgePending();
         if (detail) detail->Purge = purge;
         if (purge) return false;
         if (detail) detail->Step = "incremental reachability analysis is pending";
-        const bool reachability = reinterpret_cast<Predicate>(state.ReachabilityFn)();
+        const bool reachability = api->world.isIncrementalReachabilityPending();
         if (detail) detail->Reachability = reachability;
         if (reachability) return false;
         if (detail) detail->Step = "no GC or purge condition detected";
@@ -307,7 +289,7 @@ struct PrivateCaptureWorld::Implementation
     LookupResult FindSubsystem(uintptr_t world, ClassId cls)
     {
         if (!CheckOwned(metadata[cls].Ref) || !Is(world, World) || !Collection(world, true) || !QuietGC()) return {};
-        const auto object = reinterpret_cast<Subsystem>(state.SubsystemFn)(world + 0x9f0, metadata[cls].Ref.Object.Bits);
+        const auto object = N::Get()->world.getSubsystemInternal(world + 0x9f0, metadata[cls].Ref.Object.Bits);
         // Revalidate even for an absent result; indeterminate inspection must
         // never masquerade as successful proof of dependency absence.
         if (!CheckOwned(metadata[cls].Ref) || !Is(world, World) || !Collection(world, true) || !QuietGC()) return {};
@@ -324,14 +306,14 @@ struct PrivateCaptureWorld::Implementation
         uintptr_t engine{}, gi{}, storage{}, current{};
         uint8_t tearing{}, initialized{}; int32_t maximum{};
         if (game != reinterpret_cast<uintptr_t>(state.SessionWorld) || !state.Generation ||
-            !Read(state.Base + 0xe4f88e8, engine) || !Is(engine, Engine) || !Is(game, World) ||
+            !Read(reinterpret_cast<uintptr_t>(N::Get()->player.engineStorage), engine) || !Is(engine, Engine) || !Is(game, World) ||
             !Read(game + 0x18d, tearing) || (tearing & 0x20) ||
             !Read(game + 0x18b, initialized) || !(initialized & 0x40) ||
             !Identify(game, b.Gameplay) || !Identify(engine, b.EngineObject) ||
             !Read(game + 0x230, gi) || !Is(gi, GameInstance) || !Identify(gi, b.GameInstance))
             return Step("gameplay_baseline", false, "session_world_engine_or_instance_invalid");
         b.Generation = state.Generation;
-        b.ContextBits = reinterpret_cast<Context>(state.ContextFn)(engine, game);
+        b.ContextBits = N::Get()->world.getWorldContextFromWorld(engine, game);
         if (!b.ContextBits || !Read(b.ContextBits + 0x2c0, current) || current != game ||
             !Read(engine + 0x11c8, storage) || !Read(engine + 0x11d0, b.ContextCount) ||
             !Read(engine + 0x11d4, maximum) || b.ContextCount < 1 ||
@@ -364,7 +346,7 @@ struct PrivateCaptureWorld::Implementation
             bool(a & 0x40) != initialized || (b & 0x80) || (c & 0x21) ||
             bool(ever & 2) != initialized || !Read(w + 0x258, scene) || bool(scene) != initialized ||
             !Read(w + 0x230, gi) || gi || !Read(w + 0x38, net) || net ||
-            reinterpret_cast<Context>(state.ContextFn)(state.Before.EngineObject.Bits, w) ||
+            N::Get()->world.getWorldContextFromWorld(state.Before.EngineObject.Bits, w) ||
             !CheckOwned(state.PersistentLevel) || !CheckOwned(state.WorldSettings) ||
             !Read(w + 0x30, level) || level != state.PersistentLevel.Object.Bits ||
             !Read(state.PersistentLevel.Object.Bits + 0xc0, owner) || owner != w ||
@@ -385,7 +367,7 @@ struct PrivateCaptureWorld::Implementation
             !Read(world + 0xa8, consideredLevels) || consideredLevels != 0 ||
             !Read(world + 0xb8, levelsToProcess) || levelsToProcess != 0 ||
             !Read(world + 0xc0, beingConsidered) || beingConsidered != 0 ||
-            !state.VisibilityPendingFn || reinterpret_cast<VisibilityPending>(state.VisibilityPendingFn)(world))
+            !N::Get()->world.isVisibilityRequestPending || N::Get()->world.isVisibilityRequestPending(world))
         {
             state.Failure = "cleanup_preconditions_streaming_visibility_context_or_ownership";
             return false;
@@ -425,10 +407,6 @@ struct PrivateCaptureWorld::Implementation
                  success ? "success" : "failure", reason);
         return success;
     }
-    // CL-127004 code bytes generated from the matching shipping PE, included
-    // separately for review. RSDS identity AND every entry fingerprint required.
-    struct Entry { uintptr_t Rva; std::array<uint8_t, 16> Bytes; };
-#include "PrivateCaptureWorldBindings.inl"
     bool RendererAvailable()
     {
         const auto* api = N::Get();
@@ -449,56 +427,17 @@ struct PrivateCaptureWorld::Implementation
     }
     bool Preflight()
     {
-        state.Failure = "matching_build_or_native_facilities";
-        state.Base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        if (!MiniMapReadbackNative::MatchesCaptureRetirementBuild() || !N::IsInitialized()) return false;
-        state.Failure = "native_entry_fingerprint_or_execution_page";
-        for (const auto& entry : entries)
-        {
-            const auto p = state.Base + entry.Rva; std::array<uint8_t, 16> bytes{};
-            MEMORY_BASIC_INFORMATION page{};
-            if (!N::ReadMemory(p, bytes.data(), bytes.size()) || bytes != entry.Bytes ||
-                !VirtualQuery(reinterpret_cast<void*>(p), &page, sizeof(page)) || page.State != MEM_COMMIT ||
-                !(page.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
-                (page.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
-            {
-                LOG_ERROR("MiniMap: private_capture_world step=native_bindings outcome=failure reason=fingerprint_or_execution_page_mismatch rva=%llx", static_cast<unsigned long long>(entry.Rva));
-                return false;
-            }
-        }
-        Step("native_bindings", true, "matching_build_and_15_entry_fingerprints");
-        state.CreateFn = state.Base + entries[0].Rva; state.InitFn = state.Base + entries[1].Rva;
-        state.UpdateFn = state.Base + entries[2].Rva; state.CleanupFn = state.Base + entries[3].Rva;
-        state.ContextFn = state.Base + entries[4].Rva; state.SubsystemFn = state.Base + entries[5].Rva;
-        state.LockingFn = state.Base + entries[6].Rva; state.PurgeFn = state.Base + entries[7].Rva;
-        state.ReachabilityFn = state.Base + entries[8].Rva; state.TickFn = state.Base + entries[9].Rva;
-        state.VisibilityPendingFn = state.Base + entries[10].Rva;
-        const auto& native=*MiniMapNative::Get();
-        // The existing resolver deliberately binds the GExitPurge-guarded
-        // Release wrapper, not the direct ReleaseRef entry (entries[12]).
-        // Both the wrapper and its branch target are fingerprinted above.
-        const bool retainVerified = reinterpret_cast<uintptr_t>(native.asset.retainObject) == state.Base + entries[11].Rva;
-        const bool releaseVerified = reinterpret_cast<uintptr_t>(native.asset.releaseObject) == state.Base + entries[13].Rva;
-        const bool threadVerified = reinterpret_cast<uintptr_t>(native.player.isGameThread) == state.Base + entries[14].Rva;
-        LOG_INFO("MiniMap: private_capture_world prerequisites AddRef=%s Release=%s GameThread=%s",
-                 retainVerified ? "verified" : (native.asset.retainObject ? "mismatch" : "missing"),
-                 releaseVerified ? "verified_guarded_wrapper" : (native.asset.releaseObject ? "mismatch" : "missing"),
-                 threadVerified ? "verified" : (native.player.isGameThread ? "mismatch" : "missing"));
-        state.Failure = "existing_AddRef_binding_missing_or_mismatch";
-        if (!retainVerified) return false;
-        state.Failure = "existing_Release_wrapper_binding_missing_or_mismatch";
-        if (!releaseVerified) return false;
-        state.Failure = "existing_GameThread_binding_missing_or_mismatch";
-        if (!threadVerified) return false;
+        state.Failure = "native_facilities_unavailable";
+        if (!N::IsInitialized() || !N::Get()) return false;
         state.NativePrerequisitesVerified = true;
         state.Failure = "wrong_game_thread";
         const bool gameThread = MiniMapNative::Get()->player.isGameThread();
         if (!Step("game_thread", gameThread, gameThread ? "verified" : "wrong_thread")) return false;
-        // The verified wrapper reads GExitPurge at RVA 0xe268c10 and skips
+        // The guarded Release wrapper reads the centrally resolved GExitPurge and skips
         // ReleaseRef when set. Reject teardown before acquiring any references.
         state.Failure = "exit_purge_active_or_unreadable";
         uint8_t exitPurge{};
-        if (!Read(state.Base + 0xe268c10, exitPurge) || exitPurge) return false;
+        if (!Read(reinterpret_cast<uintptr_t>(N::Get()->asset.exitPurge), exitPurge) || exitPurge) return false;
         state.Failure = "GC_not_quiet";
         if (!QuietGC()) return false;
         // Empty world initialization needs renderer facilities, not readback
@@ -507,12 +446,8 @@ struct PrivateCaptureWorld::Implementation
         state.Failure = "renderer_globals_missing_unreadable_or_inactive";
         if (!RendererAvailable()) return false;
         state.Failure = "checked_object_table_anchor_unavailable";
-        const auto anchor = MiniMapReadbackNative::ResolveOptionalFunction(MiniMapBuildingRepresentation::Patterns::ObjectArrayAnchor, false);
-        uint8_t op[3]{}; int32_t displacement{};
-        if (!anchor || !N::ReadMemory(anchor + 0x15, op, 3) || op[0] != 0x48 || op[1] != 0x8d || op[2] != 0x0d ||
-            !Read(anchor + 0x18, displacement)) return false;
-        state.Array = uintptr_t(int64_t(anchor) + 0x1c + displacement);
-        if (!N::IsMemoryRangeReadable(state.Array, 0x30, 8)) return false;
+        const auto array = reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray);
+        if (!N::IsMemoryRangeReadable(array, 0x30, 8)) return false;
         for (auto& cls : metadata)
         {
             state.Failure = "GC_changed_during_class_acquisition";
@@ -631,11 +566,11 @@ struct PrivateCaptureWorld::Implementation
         if (!QuietGC() || !Unchanged() || !CheckOwned(state.Private) || !Read(world + 0x18b, flags) || (flags & 0x40) ||
             !Collection(world, false) || !CheckOwned(state.Subsystems[0]) ||
             !Read(state.Subsystems[0].Object.Bits + 0x38, ticking) || ticking ||
-            reinterpret_cast<TickType>(state.TickFn)(state.Subsystems[0].Object.Bits + 0x30) != 2 ||
+            N::Get()->world.getTickableTickType(state.Subsystems[0].Object.Bits + 0x30) != 2 ||
             !Read(world + 0x230, gi) || gi || !Read(world + 0x38, net) || net ||
             !Read(world + 0x258, scene) || scene != state.Scene || !NoForeignRoot(state.Private) ||
             !NoForeignRoot(state.Package) || !Unchanged() ||
-            reinterpret_cast<Context>(state.ContextFn)(state.Before.EngineObject.Bits, world) || !QuietGC())
+            N::Get()->world.getWorldContextFromWorld(state.Before.EngineObject.Bits, world) || !QuietGC())
         { Quarantine("cleanup_postconditions_disagree"); return; }
         for (auto& ref : state.Subsystems)
         {
@@ -658,9 +593,11 @@ struct PrivateCaptureWorld::Implementation
     {
         // Boundary-only copied slot observation; never dereference released objects.
         if (!state.ReferencesReleased) return;
+        const auto* api = N::Get();
+        const auto array = api ? reinterpret_cast<uintptr_t>(api->asset.objectArray) : 0;
         DefinitionSlots::Slot slot; SlotReader reader;
         const bool observed = state.NativePrerequisitesVerified && MiniMapNative::Get() && MiniMapNative::Get()->player.isGameThread && MiniMapNative::Get()->player.isGameThread() && QuietGC() &&
-            DefinitionSlots::ReadSlot(reader, state.Array, state.Private.Object.Index, slot) == DefinitionSlots::Status::Success &&
+            DefinitionSlots::ReadSlot(reader, array, state.Private.Object.Index, slot) == DefinitionSlots::Status::Success &&
             (!slot.Object || slot.Object != state.Private.Object.Bits ||
              (state.Private.Object.Serial > 0 && slot.Serial != state.Private.Object.Serial));
         LOG_INFO("MiniMap: private_capture_world step=uobject_retirement outcome=%s reason=copied_slot_at_session_boundary", observed ? "success" : "unobserved");

@@ -175,6 +175,25 @@ namespace MiniMapNative
         }
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        if (!addresses.objectArray || !addresses.getSkeletalMeshAsset) return false;
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        if (!addresses.nameEqualsWide) return false;
+#endif
+        if (!addresses.activeGarbageCollection) return false;
+        if (!addresses.engineStorage) return false;
+        if (!addresses.exitPurge) return false;
+        if (!addresses.createWorld) return false;
+        if (!addresses.initWorld) return false;
+        if (!addresses.updateWorldComponents) return false;
+        if (!addresses.cleanupWorld) return false;
+        if (!addresses.getWorldContextFromWorld) return false;
+        if (!addresses.getSubsystemInternal) return false;
+        if (!addresses.isGarbageCollectingAndLocking) return false;
+        if (!addresses.isIncrementalPurgePending) return false;
+        if (!addresses.isIncrementalReachabilityPending) return false;
+        if (!addresses.getTickableTickType) return false;
+        if (!addresses.isVisibilityRequestPending) return false;
+        if (!addresses.destroyActor) return false;
         if (!addresses.readbackFromValidEName) return false;
         if (!addresses.readbackSubmit) return false;
         if (!addresses.readbackImmediate) return false;
@@ -419,6 +438,11 @@ namespace MiniMapNative
         g_nativeApi.gridDiagnostic.viewHasTag = reinterpret_cast<GridDiagnosticApi::ViewHasTagFn>(addresses.massEntityViewHasTag);
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        g_nativeApi.asset.objectArray = reinterpret_cast<const void*>(addresses.objectArray);
+        g_nativeApi.player.getSkeletalMeshAsset = reinterpret_cast<decltype(g_nativeApi.player.getSkeletalMeshAsset)>(addresses.getSkeletalMeshAsset);
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        g_nativeApi.asset.nameEqualsWide = reinterpret_cast<decltype(g_nativeApi.asset.nameEqualsWide)>(addresses.nameEqualsWide);
+#endif
         g_nativeApi.asset.fromValidEName = reinterpret_cast<decltype(g_nativeApi.asset.fromValidEName)>(addresses.readbackFromValidEName);
         g_nativeApi.texture.submitRenderCommand = reinterpret_cast<decltype(g_nativeApi.texture.submitRenderCommand)>(addresses.readbackSubmit);
         g_nativeApi.texture.immediateCommandList = reinterpret_cast<decltype(g_nativeApi.texture.immediateCommandList)>(addresses.readbackImmediate);
@@ -436,6 +460,21 @@ namespace MiniMapNative
         g_nativeApi.texture.threadedRendering = reinterpret_cast<decltype(g_nativeApi.texture.threadedRendering)>(addresses.readbackThreaded);
         g_nativeApi.texture.supportsRHIMultithreading = reinterpret_cast<decltype(g_nativeApi.texture.supportsRHIMultithreading)>(addresses.readbackMultithreaded);
         g_nativeApi.texture.explicitGpuCount = reinterpret_cast<decltype(g_nativeApi.texture.explicitGpuCount)>(addresses.readbackGpuCount);
+        g_nativeApi.asset.activeGarbageCollection = reinterpret_cast<decltype(g_nativeApi.asset.activeGarbageCollection)>(addresses.activeGarbageCollection);
+        g_nativeApi.player.engineStorage = reinterpret_cast<decltype(g_nativeApi.player.engineStorage)>(addresses.engineStorage);
+        g_nativeApi.asset.exitPurge = reinterpret_cast<decltype(g_nativeApi.asset.exitPurge)>(addresses.exitPurge);
+        g_nativeApi.world.createWorld = reinterpret_cast<decltype(g_nativeApi.world.createWorld)>(addresses.createWorld);
+        g_nativeApi.world.initWorld = reinterpret_cast<decltype(g_nativeApi.world.initWorld)>(addresses.initWorld);
+        g_nativeApi.world.updateWorldComponents = reinterpret_cast<decltype(g_nativeApi.world.updateWorldComponents)>(addresses.updateWorldComponents);
+        g_nativeApi.world.cleanupWorld = reinterpret_cast<decltype(g_nativeApi.world.cleanupWorld)>(addresses.cleanupWorld);
+        g_nativeApi.world.getWorldContextFromWorld = reinterpret_cast<decltype(g_nativeApi.world.getWorldContextFromWorld)>(addresses.getWorldContextFromWorld);
+        g_nativeApi.world.getSubsystemInternal = reinterpret_cast<decltype(g_nativeApi.world.getSubsystemInternal)>(addresses.getSubsystemInternal);
+        g_nativeApi.world.isGarbageCollectingAndLocking = reinterpret_cast<decltype(g_nativeApi.world.isGarbageCollectingAndLocking)>(addresses.isGarbageCollectingAndLocking);
+        g_nativeApi.world.isIncrementalPurgePending = reinterpret_cast<decltype(g_nativeApi.world.isIncrementalPurgePending)>(addresses.isIncrementalPurgePending);
+        g_nativeApi.world.isIncrementalReachabilityPending = reinterpret_cast<decltype(g_nativeApi.world.isIncrementalReachabilityPending)>(addresses.isIncrementalReachabilityPending);
+        g_nativeApi.world.getTickableTickType = reinterpret_cast<decltype(g_nativeApi.world.getTickableTickType)>(addresses.getTickableTickType);
+        g_nativeApi.world.isVisibilityRequestPending = reinterpret_cast<decltype(g_nativeApi.world.isVisibilityRequestPending)>(addresses.isVisibilityRequestPending);
+        g_nativeApi.world.destroyActor = reinterpret_cast<decltype(g_nativeApi.world.destroyActor)>(addresses.destroyActor);
         g_nativeApi.asset.spawnObject = reinterpret_cast<decltype(g_nativeApi.asset.spawnObject)>(addresses.spawnObject);
         g_nativeApi.asset.getTransientPackage = reinterpret_cast<decltype(g_nativeApi.asset.getTransientPackage)>(addresses.getTransientPackage);
         g_nativeApi.asset.setObjectFlags = reinterpret_cast<decltype(g_nativeApi.asset.setObjectFlags)>(addresses.setObjectFlags);

@@ -29,6 +29,9 @@ template<typename ReferencedType> class TRefCountPtr;
 
 namespace SDK
 {
+    class FName;
+    class USkeletalMesh;
+    class USkeletalMeshComponent;
     class UActorComponent;
     class UTextureRenderTarget2D;
     class UStaticMeshComponent;
@@ -46,6 +49,7 @@ namespace SDK
     class UStreamableRenderAsset;
 
     class UWorld;
+    class UEngine;
     class APlayerController;
     class AController;
     class ACrCharacterPlayerBase;
@@ -74,6 +78,12 @@ namespace MiniMapNative
 {
     struct AssetApi
     {
+        const bool* activeGarbageCollection = nullptr;
+        const uint8_t* exitPurge = nullptr;
+        const void* objectArray = nullptr; // Opaque enclosing FUObjectArray; private slot interpretation stays with consumers.
+        using NameEqualsWideFn = bool (*)(SDK::FName, const wchar_t*);
+        NameEqualsWideFn nameEqualsWide = nullptr;
+
         using MemoryMallocFn = void* (*)(size_t, uint32_t);
         MemoryMallocFn memoryMalloc = nullptr;
         using FromValidENameFn = FNameEntryId* (*)(FNameEntryId*, EName);
@@ -100,6 +110,10 @@ namespace MiniMapNative
 
     struct PlayerApi
     {
+        SDK::UEngine* const* engineStorage = nullptr;
+        using GetSkeletalMeshAssetFn = SDK::USkeletalMesh* (*)(const SDK::USkeletalMeshComponent*);
+        GetSkeletalMeshAssetFn getSkeletalMeshAsset = nullptr;
+
         using RegisterComponentFn = void (*)(SDK::UActorComponent*, SDK::UWorld*, void*);
         RegisterComponentFn registerComponent = nullptr;
         using UnregisterComponentFn = void (*)(SDK::UActorComponent*);
@@ -505,9 +519,50 @@ namespace MiniMapNative
     };
 
 
+    // Existing private-world native argument layout, moved here solely to type its binding.
+    // Win64 passes the 16-byte InitWorld value indirectly; CreateWorld takes a pointer.
+    struct alignas(8) WorldInitializationValues
+    {
+        uint32_t Flags = 1;
+        uint32_t Padding = 0;
+        uintptr_t DefaultGameMode = 0;
+    };
+    static_assert(sizeof(WorldInitializationValues) == 16);
+    static_assert(offsetof(WorldInitializationValues, DefaultGameMode) == 8);
+
+    struct WorldApi
+    {
+        using CreateWorldFn = uintptr_t (*)(int32_t, bool, SDK::FName, uintptr_t, bool,
+                                            int32_t, const WorldInitializationValues*, bool);
+        using InitWorldFn = void (*)(uintptr_t, WorldInitializationValues);
+        using UpdateWorldComponentsFn = void (*)(uintptr_t, bool, bool, void*);
+        using CleanupWorldFn = void (*)(uintptr_t, bool, bool, uintptr_t);
+        using GetWorldContextFromWorldFn = uintptr_t (*)(uintptr_t, uintptr_t);
+        // Collection this + plain UClass*; not the reflected TSubclassOf wrapper.
+        using GetSubsystemInternalFn = uintptr_t (*)(uintptr_t, uintptr_t);
+        using PredicateFn = bool (*)();
+        // Adjusted FTickableGameObject subobject this, not UWorldSubsystem this.
+        using GetTickableTickTypeFn = uint8_t (*)(uintptr_t);
+        using IsVisibilityRequestPendingFn = bool (*)(uintptr_t);
+        using DestroyActorFn = bool (*)(uintptr_t, bool, bool);
+        CreateWorldFn createWorld = nullptr;
+        InitWorldFn initWorld = nullptr;
+        UpdateWorldComponentsFn updateWorldComponents = nullptr;
+        CleanupWorldFn cleanupWorld = nullptr;
+        GetWorldContextFromWorldFn getWorldContextFromWorld = nullptr;
+        GetSubsystemInternalFn getSubsystemInternal = nullptr;
+        PredicateFn isGarbageCollectingAndLocking = nullptr;
+        PredicateFn isIncrementalPurgePending = nullptr;
+        PredicateFn isIncrementalReachabilityPending = nullptr;
+        GetTickableTickTypeFn getTickableTickType = nullptr;
+        IsVisibilityRequestPendingFn isVisibilityRequestPending = nullptr;
+        DestroyActorFn destroyActor = nullptr;
+    };
+
     struct NativeApi
     {
         AssetApi asset;
+        WorldApi world;
         PlayerApi player;
         PointsOfInterestApi pointsOfInterest;
         MassApi mass;

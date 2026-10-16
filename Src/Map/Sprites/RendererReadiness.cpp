@@ -2,7 +2,6 @@
 #include "RendererReadiness.h"
 #include "StaticAssemblyCaptureCore.h"
 #include "BuildingRepresentation.h"
-#include "Native/ReadbackNativeAdapter.h"
 #include "Native/NativeApi.h"
 #include <Engine_classes.hpp>
 #include <cstring>
@@ -12,8 +11,7 @@ namespace MiniMapRendererReadiness
 {
     namespace
     {
-        // Installed CL-127004 only. See A49dAbiValidation.txt and
-        // StageA49c-NativeReadinessContracts.md B. No private structure overlay.
+        // SDK-declared layouts; no private structure overlay.
         static_assert(sizeof(SDK::UStreamableRenderAsset)==0xd0);
         static_assert(sizeof(SDK::UStaticMesh)==0x290);
         static_assert(offsetof(SDK::UStaticMesh,MinLOD)==0x158);
@@ -195,8 +193,6 @@ namespace MiniMapRendererReadiness
         AssemblyObservation out;out.Readiness.Generation.World=recipe.Generation;out.VisualIncomplete=recipe.VisualIncomplete;
         out.Readiness.Unknown=(uint32_t(1)<<unsigned(Condition::Count))-1;
         if(!OnGameThread())return out;
-        static const bool version=MiniMapReadbackNative::MatchesCaptureRetirementBuild();
-        if(!version){out.Reason="renderer_readiness_unknown_build";return out;}
         if(!FindProvider(1))RegisterProvider({1,Bit(Condition::Initialization)|Bit(Condition::Residency),250,
             ObservationMethod::BoundedPolling,&StreamingRelevant,&StreamingProvider});
         MiniMapStaticAssembly::Footprint bounds;

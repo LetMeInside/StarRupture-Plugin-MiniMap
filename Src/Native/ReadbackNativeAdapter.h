@@ -8,7 +8,6 @@
 #endif
 namespace MiniMapReadbackNative
 {
-    uintptr_t ResolveOptionalFunction(const char* pattern, bool leaf);
     bool ResolvePrerequisites();
     bool Preflight();
     const char* Status();
@@ -45,7 +44,6 @@ namespace MiniMapReadbackNative
     bool ExternalRejectedWithoutReadback(const Job*); // zero callbacks, no native users
     bool CompleteExternalCaptureRetirement(Job*); // ONLY after ordered RHI fence
     bool CaptureRetirementRendererAvailable();
-    bool MatchesCaptureRetirementBuild();
     const MiniMapFloatPixels::Stats* FloatStats(const Job*);
     // Immutable packed CPU pixels; valid only until DestroyIfRetired. No GPU access.
     const std::vector<uint8_t>* FloatPixels(const Job*);

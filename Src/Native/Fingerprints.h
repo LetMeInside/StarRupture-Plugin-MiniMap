@@ -69,6 +69,26 @@ namespace MiniMapFingerprints
         uintptr_t getBulkDataCopy = 0;
         uintptr_t memoryFree = 0;
 
+        uintptr_t activeGarbageCollection = 0;
+        uintptr_t engineStorage = 0;
+        uintptr_t exitPurge = 0;
+        uintptr_t createWorld = 0;
+        uintptr_t initWorld = 0;
+        uintptr_t updateWorldComponents = 0;
+        uintptr_t cleanupWorld = 0;
+        uintptr_t getWorldContextFromWorld = 0;
+        uintptr_t getSubsystemInternal = 0;
+        uintptr_t isGarbageCollectingAndLocking = 0;
+        uintptr_t isIncrementalPurgePending = 0;
+        uintptr_t isIncrementalReachabilityPending = 0;
+        uintptr_t getTickableTickType = 0;
+        uintptr_t isVisibilityRequestPending = 0;
+        uintptr_t destroyActor = 0;
+
+        uintptr_t objectArray = 0;
+        uintptr_t getSkeletalMeshAsset = 0;
+        uintptr_t nameEqualsWide = 0;
+
         uintptr_t readbackFromValidEName = 0;
         uintptr_t readbackSubmit = 0;
         uintptr_t readbackImmediate = 0;

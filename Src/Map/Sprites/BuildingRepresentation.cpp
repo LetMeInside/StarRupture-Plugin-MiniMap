@@ -15,8 +15,6 @@
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
 #include "SpriteValidationCore.h"
 #endif
-#include "RepresentationMetadataPatterns.h"
-#include "Native/ReadbackNativeAdapter.h"
 #include "BuildingSpriteCapture.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Map.h"
@@ -41,7 +39,6 @@ namespace MiniMapBuildingRepresentation
     {
         // Only native interfaces/addresses and lifecycle comparison tokens persist.
         // All UObject identities, strong roots and traversal containers are local.
-        uintptr_t objectArray=0,skeletalGetter=0,nameEqualsWide=0;
         IPluginEngineEvents* engine=nullptr;
         IPluginWorldEvents* worlds=nullptr;
         SDK::UWorld* endingWorld=nullptr; // comparison only; never dereferenced
@@ -67,6 +64,8 @@ namespace MiniMapBuildingRepresentation
         // resolution. A candidate always comes from a retained ownership chain.
         bool Identity(uintptr_t p,size_t extent=sizeof(SDK::UObject))
         {
+            const auto* nativeApi=MiniMapNative::Get();
+            const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
             return MiniMapNative::ValidateObjectIdentity(p,objectArray,extent);
         }
         // Strongly retained native CLASS anchors only. No candidate/asset cursor survives.
@@ -655,7 +654,7 @@ namespace MiniMapBuildingRepresentation
                     // Validate BOTH references read by the installed fixed getter
                     // before calling it. Native SkeletalMesh class is already resident.
                     const auto legacy=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkeletalMesh),skinned=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::USkinnedMeshComponent*>(p)->SkinnedAsset);
-                    if(!skeletalGetter||!SkeletalMesh||!SkinnedAsset)
+                    if(!SkeletalMesh||!SkinnedAsset)
                         Source("skeletal_mesh_assignment",p,"not_attempted","fixed getter/native asset classes unavailable");
                     else if((legacy&&!Is(legacy,SkeletalMesh))||(skinned&&!Is(skinned,SkinnedAsset)))
                         Source("skeletal_mesh_assignment",p,"invalid","getter input reference identity/type");
@@ -667,8 +666,7 @@ namespace MiniMapBuildingRepresentation
                     {
                         if((legacy&&!Hold(legacy))||(skinned&&!Hold(skinned)))
                         {Source("skeletal_mesh_assignment",p,"invalid","getter inputs could not be retained");return;}
-                        using Getter=SDK::USkeletalMesh*(*)(const SDK::USkeletalMeshComponent*);
-                        asset=reinterpret_cast<uintptr_t>(reinterpret_cast<Getter>(skeletalGetter)(reinterpret_cast<const SDK::USkeletalMeshComponent*>(p)));
+                        asset=reinterpret_cast<uintptr_t>(MiniMapNative::Get()->player.getSkeletalMeshAsset(reinterpret_cast<const SDK::USkeletalMeshComponent*>(p)));
                         mesh=Ref(asset,SkeletalMesh);
                         meshStatus=!asset?"absent_as_skeletal_mesh":Is(asset,SkeletalMesh)?"present":"invalid";
                         Source("skeletal_mesh_assignment",p,asset?meshStatus.c_str():"absent","fixed getter result; raw skinned assignment fields recorded separately");
@@ -1188,6 +1186,8 @@ namespace MiniMapBuildingRepresentation
         };
         MiniMapDefinitionDiagnostic::Identity DefinitionObjectIdentity(uintptr_t p)
         {
+            const auto* nativeApi=MiniMapNative::Get();
+            const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
             MiniMapDefinitionDiagnostic::Identity result;result.Present=p!=0;if(!p||!Identity(p))return result;
             DefinitionSlotReader reader;MiniMapDefinitionAcquisition::Slot slot;
             result.Index=int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index);const auto name=reinterpret_cast<const SDK::UObject*>(p)->Name;
@@ -1205,8 +1205,10 @@ namespace MiniMapBuildingRepresentation
         }
         void CompareDefinition(const SDK::UObject* definition,Context& original)noexcept
         {
+            const auto* nativeApi=MiniMapNative::Get();
+            const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
             namespace D=MiniMapDefinitionAcquisition;namespace G=MiniMapDefinitionDiagnostic;
-            const auto thread=MiniMapNative::Get()?MiniMapNative::Get()->player.isGameThread:nullptr;
+            const auto thread=nativeApi?nativeApi->player.isGameThread:nullptr;
             if(!thread||!reinterpret_cast<bool(*)()>(thread)()||original.ProbeResult.DefinitionIdentity!="valid")return;
             auto& session=DefinitionDiagnosticSession();
             try
@@ -1255,6 +1257,8 @@ namespace MiniMapBuildingRepresentation
                     status=VisitResidentDefinition(observed.Token,[](const SDK::UObject* object,void* state)
                     {
                         auto& c=*static_cast<Comparison*>(state);const auto p=reinterpret_cast<uintptr_t>(object);
+                        const auto* nativeApi=MiniMapNative::Get();
+                        const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
                         DefinitionSlotReader reader;D::Slot acquired;G::Observation fields;
                         c.AcquiredIndex=int32_t(reinterpret_cast<const SDK::UObject*>(p)->Index);
                         if(D::ReadSlot(reader,objectArray,c.AcquiredIndex,acquired)!=D::Status::Success)return;
@@ -1321,6 +1325,7 @@ namespace MiniMapBuildingRepresentation
         namespace V=MiniMapSpriteValidation;
         V::Result out;
         const auto* bindings=MiniMapNative::Get();
+        const uintptr_t objectArray=bindings?reinterpret_cast<uintptr_t>(bindings->asset.objectArray):0;
         const auto snapshot=MiniMapBuildingCollector::GetSnapshot();auto* world=MiniMapMap::GetWorld();
         if(!objectArray||!engine||!bindings||!bindings->player.isGameThread||!bindings->asset.retainObject||!bindings->asset.releaseObject||stopped.load()||
             !bindings||!bindings->player.isGameThread()||!world||world==endingWorld||!snapshot||
@@ -1466,6 +1471,7 @@ namespace MiniMapBuildingRepresentation
     {
         if(nativeAnchorCursor==std::size(nativeAnchors))return true;
         const auto* b=MiniMapNative::Get();
+        const uintptr_t objectArray=b?reinterpret_cast<uintptr_t>(b->asset.objectArray):0;
         if(!MiniMapMap::GameplayReady()||!engine||!objectArray||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||
             !b->player.isGameThread())return false;
 #if defined(MINIMAP_BUILDING_SPRITES)
@@ -1487,6 +1493,7 @@ namespace MiniMapBuildingRepresentation
     {
         MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::ResidentMetadata);
         const auto* b=MiniMapNative::Get();
+        const uintptr_t objectArray=b?reinterpret_cast<uintptr_t>(b->asset.objectArray):0;
         if(!path||std::wcsncmp(path,L"/Script/",8)!=0||!instanceSize||instanceSize>INT32_MAX||
             !engine||!objectArray||stopped.load()||!MiniMapMap::GameplayReady()||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||
             !b->player.isGameThread())return 0;
@@ -1522,7 +1529,12 @@ namespace MiniMapBuildingRepresentation
         {LOG_ERROR("MiniMap: resident metadata release off game thread/unavailable; root retained, unload safety unverified");return;}
         b->asset.releaseObject(reinterpret_cast<SDK::UObject*>(object));
     }
-    bool ValidateCaptureObject(uintptr_t p) {return objectArray&&Identity(p);}
+    bool ValidateCaptureObject(uintptr_t p)
+    {
+        const auto* nativeApi=MiniMapNative::Get();
+        const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
+        return objectArray&&Identity(p);
+    }
     MiniMapDefinitionAcquisition::Status VisitResidentDefinition(
         const MiniMapDefinitionAcquisition::Token& token,void(*visitor)(const SDK::UObject*,void*),void* state,
         MiniMapDefinitionAcquisition::ScopeObservation* observation)
@@ -1530,6 +1542,7 @@ namespace MiniMapBuildingRepresentation
         namespace D=MiniMapDefinitionAcquisition;
         if(observation)*observation={};
         const auto* b=MiniMapNative::Get();
+        const uintptr_t objectArray=b?reinterpret_cast<uintptr_t>(b->asset.objectArray):0;
         if(!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject||!objectArray||!visitor)return D::Status::FacilitiesUnavailable;
         if(!b||!b->player.isGameThread())return D::Status::WrongThread;
         if(stopped.load()||!MiniMapMap::GameplayReady())return D::Status::FacilitiesUnavailable;
@@ -1581,6 +1594,7 @@ namespace MiniMapBuildingRepresentation
         observation={};
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
         const auto* b=MiniMapNative::Get();
+        const uintptr_t objectArray=b?reinterpret_cast<uintptr_t>(b->asset.objectArray):0;
         const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
         if(!objectArray||stopped.load()||!b||!b->player.isGameThread||!b||!b->player.isGameThread()||
             !b->asset.retainObject||!b->asset.releaseObject||!MiniMapMap::GetWorld()||MiniMapMap::GetWorld()==endingWorld||
@@ -1623,6 +1637,8 @@ namespace MiniMapBuildingRepresentation
     }
     bool ValidateCaptureMembership(uintptr_t capture,const uintptr_t* components,size_t count)
     {
+        const auto* nativeApi=MiniMapNative::Get();
+        const uintptr_t objectArray=nativeApi?reinterpret_cast<uintptr_t>(nativeApi->asset.objectArray):0;
         // Read the existing weak entries; never resolve a weak pointer. Match
         // index AND serial against the retained, directly validated component.
         if(!objectArray||!components||count>16||!Identity(capture))return false;
@@ -1657,25 +1673,12 @@ namespace MiniMapBuildingRepresentation
     }
     bool ResolvePrerequisites()
     {
-        if(!MiniMapReadbackNative::MatchesCaptureRetirementBuild()){LOG_WARN("MiniMap: R2.4 matching CL-127004 executable identity unavailable; disabled");return false;}
-        const auto anchor=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::ObjectArrayAnchor,false);
-        if(!anchor||Value<uint8_t>(anchor,0x15)!=0x48||Value<uint8_t>(anchor,0x16)!=0x8d||Value<uint8_t>(anchor,0x17)!=0x0d)return false;
-        const auto displacement=Value<int32_t>(anchor,0x18);
-        const auto target=int64_t(anchor)+0x1c+int64_t(displacement);
-        if(target<=0||!Readable(uintptr_t(target),0x30,8))return false;
-        objectArray=uintptr_t(target);
-        skeletalGetter=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::SkeletalAsset,false);
-#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-        nameEqualsWide=MiniMapReadbackNative::ResolveOptionalFunction(Patterns::NameEqualsWide,true);
-        LOG_INFO("MiniMap: Interior definition-tag comparison=%s; unavailable comparison preserves Unknown",nameEqualsWide?"available":"unavailable");
-#endif
-        LOG_INFO("MiniMap: R2.4 installed-binary identity and targeted object-array anchor verified; skeletal getter=%s",skeletalGetter?"available":"not_attempted");
-        return true;
+        return MiniMapNative::IsInitialized();
     }
     void Initialize()
     {
-        if(registered||!objectArray)return;
         const auto* b=MiniMapNative::Get();
+        if(registered||!b||!b->asset.objectArray)return;
         auto* hooks=GetHooks();
         if(!hooks||!hooks->Engine||!hooks->World||!b||!b->player.isGameThread||!b->asset.retainObject||!b->asset.releaseObject)return;
         engine=hooks->Engine;worlds=hooks->World;

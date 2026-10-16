@@ -370,13 +370,8 @@ bool AdmitBlueprint(Class* type)
 }
 bool BlueprintBindings()
 {
-    if (!MiniMapReadbackNative::MatchesCaptureRetirementBuild()) return false;
-    const auto& entry=actorEntries[0];
-    std::array<uint8_t,16> bytes{}; MEMORY_BASIC_INFORMATION p{};
-    return N::ReadMemory(state.Base+entry.Rva,bytes.data(),bytes.size()) && bytes==entry.Bytes &&
-        VirtualQuery(reinterpret_cast<void*>(state.Base+entry.Rva),&p,sizeof(p)) && p.State==MEM_COMMIT &&
-        !(p.Protect&(PAGE_GUARD|PAGE_NOACCESS)) &&
-        (p.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY));
+    const auto* api = N::Get();
+    return N::IsInitialized() && api && api->world.destroyActor;
 }
 
 bool InspectBlueprint()
@@ -505,7 +500,7 @@ bool BlueprintNative(unsigned operation, uintptr_t object, uintptr_t argument = 
         case 1: reinterpret_cast<void(*)(uintptr_t,uint32_t)>(b.asset.setObjectFlags)(object,0x40); break;
         case 2: reinterpret_cast<void(*)(uintptr_t,uintptr_t,void*)>(b.player.registerComponent)(object,argument,nullptr); break;
         case 3: reinterpret_cast<void(*)(uintptr_t)>(b.player.unregisterComponent)(object); break;
-        case 4: *result = reinterpret_cast<bool(*)(uintptr_t,bool,bool)>(state.Base + actorEntries[0].Rva)(object,false,false); break;
+        case 4: *result = N::Get()->world.destroyActor(object,false,false); break;
         case 5: reinterpret_cast<void(*)(uintptr_t,bool)>(b.player.destroyComponent)(object,false); break;
         case 6: reinterpret_cast<void(*)(uintptr_t,uint32_t,uint32_t,uint8_t,bool)>(b.texture.initRenderTarget)(object,256,256,10,true); break;
         case 7: *result = reinterpret_cast<uintptr_t(*)(uintptr_t)>(b.texture.getRenderTargetResource)(object); break;
@@ -600,7 +595,7 @@ bool ReleaseRetiringOwned(Reference& ref)
     if (!ref.Owned || ref.Uncertain || !QuietGC()) return false;
     DefinitionSlots::Slot slot; SlotReader reader; int32_t index{}, count{}; uint32_t flags{};
     const auto bits=ref.Object.Bits;
-    if (DefinitionSlots::ReadSlot(reader,state.Array,ref.Object.Index,slot)!=DefinitionSlots::Status::Success || slot.Object!=bits ||
+    if (DefinitionSlots::ReadSlot(reader,reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray),ref.Object.Index,slot)!=DefinitionSlots::Status::Success || slot.Object!=bits ||
         (slot.Flags&0x10000000) || !(slot.Flags&0x20000000) || !(slot.Flags&0x00200000) ||
         !N::IsMemoryRangeReadable(bits,0x28,8) || !Read(bits+0xc,index) || index!=ref.Object.Index ||
         !Read(bits+8,flags) || (flags&0x1b400) || !Read(slot.Item+0x14,count) || count<1) return false;
@@ -841,7 +836,7 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
         BlueprintLog("visual customization","observed","candidate has spline or tint customization that this diagnostic capture does not reproduce");
     }
     if (!MiniMapReadbackNative::Preflight()) { BlueprintFail("native ABI","shared GPU readback backend is unavailable",true); return; }
-    if (!BlueprintBindings()) { BlueprintFail("native ABI", "native Actor destruction entry or matching module is unavailable",true); return; }
+    if (!BlueprintBindings()) { BlueprintFail("native ABI", "native Actor destruction entry is unavailable",true); return; }
     if (!candidate.CanonicalBlueprint || candidate.CanonicalBlueprint->empty() || candidate.CanonicalBlueprint->size()>1024 ||
         !candidate.CanonicalBlueprint->starts_with("/Game/") || !candidate.CanonicalBlueprint->ends_with("_C"))
     { BlueprintFail("class resolution","exact authored generated Blueprint class path is unavailable",true); return; }
