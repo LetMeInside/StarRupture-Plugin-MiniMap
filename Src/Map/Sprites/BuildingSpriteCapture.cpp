@@ -1915,13 +1915,6 @@ namespace MiniMapSmelterCapture
         (void)token;return {};
 #endif
     }
-    MiniMapCaptureDispatch::AttemptReconciliation ReconcileNativeAttempt(const MiniMapCaptureDispatch::OwnerObservation& before,
-        const MiniMapSpriteDiscoveryCore::Key& key,uint64_t sourceRevision) noexcept
-    {
-        auto result=MiniMapCaptureDispatch::Correlate(before,ObserveNativeOwner(),key,sourceRevision);
-        if(result.Identity)result.Owner=ReconcileNativeOwner(*result.Identity);
-        return result;
-    }
     const char* CandidateServiceStatus()
     {
         if(!resolved||!registered)return "native_capture_unavailable";

@@ -193,8 +193,6 @@ namespace MiniMapBuildingSprites
     }
     void Record(const MiniMapSpriteDiscoveryCore::Key& key,P::State state,const std::string& reason)
     {AccessLock lock;RecordLocked(key,state,reason);}
-    bool AdoptCurrentCandidate(const MiniMapSpriteDiscoveryCore::Key& key)
-    {AccessLock lock;return owner&&owner->Jobs.AdoptCurrentCandidate(key);}
     bool ServiceInitialization(double budgetMs)
     {AccessLock lock;return owner&&owner->Jobs.ServiceInitialization(budgetMs);}
     void RecordForLease(const MiniMapCaptureLeases::Token& token,P::State state,const std::string& reason)
@@ -402,7 +400,6 @@ namespace MiniMapBuildingSprites
         {AccessLock lock;if(owner)accepted=owner->Jobs.ObserveRegistry(registry,displaced);}
         return accepted;
     }
-    void ServiceRegistry() {} // Absence is admission currentness, never image/history eviction.
     void Complete(const MiniMapCaptureLeases::Token& token,const MiniMapStaticAssembly::Footprint& bounds,const std::vector<uint8_t>& rgba,const MiniMapRendererReadiness::Result& quality)
     {
         const auto& key=token.Candidate;

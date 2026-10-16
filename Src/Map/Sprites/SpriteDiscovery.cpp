@@ -134,7 +134,7 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
             owner->Validation.Clear();owner->NextValidationExport=0;
 #if defined(MINIMAP_BUILDING_SPRITES)
-            if constexpr(MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled)owner->Fifo.CancelGeneration(0);
+            owner->Fifo.CancelGeneration(0);
 #endif
 #endif
         }
@@ -193,7 +193,7 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_BUILDING_SPRITES)
         MiniMapBuildingSprites::ServiceMaintenance();
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-        if(owner&&MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled){
+        if(owner){
             FifoHooks hooks;owner->Fifo.Reconcile(hooks);
             owner->Fifo.Work.MaintainRetired(0.25,4);
         }
@@ -255,7 +255,7 @@ namespace MiniMapSpriteDiscovery
             auto& v=owner->Validation;
             if(result==C::Publication::Invalidated){v.Clear();owner->NextValidationExport=0;
 #if defined(MINIMAP_BUILDING_SPRITES)
-                if constexpr(MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled)owner->Fifo.CancelGeneration(0);
+                owner->Fifo.CancelGeneration(0);
 #endif
             }
             // Request incremental adoption of every complete publication.
@@ -276,46 +276,30 @@ namespace MiniMapSpriteDiscovery
             // O(1), allocation-free membership adoption; repeat calls are no-ops.
             // Invalidated/null publication explicitly closes previous membership.
             const bool rendererCurrent=MiniMapBuildingSprites::ObserveRegistry(publication);
-            try{MiniMapBuildingSprites::ServiceRegistry();}
-            catch(...){/* A failed view allocation preserves the prior view; retry CPU reconciliation. */}
             // Initialization is resumable; no complete-publication metadata loop.
             if(rendererCurrent&&publication&&!owner->ConsumersReady)
             {
                 owner->ConsumersReady=MiniMapBuildingSprites::ServiceInitialization(
                     (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
             }
-            const bool anchorsReady=!MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled&&compatible&&validationCurrent&&rendererCurrent&&owner->ConsumersReady&&[] {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::DiscoveryClasses);return MiniMapBuildingRepresentation::PrepareNativeClasses();}();
-            constexpr bool fifoEnabled=MiniMapCaptureFifoRuntime::DynamicCaptureFIFOEnabled;
-            if(!fifoEnabled&&anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapSmelterCapture::CanAcceptCandidate())
-            {
-                C::Key key;
-                if(MiniMapBuildingSprites::TakeReadinessReevaluation(key,&MiniMapSmelterCapture::HasResourceWatchCapacity)&&v.Complete())
-                    MiniMapBuildingSprites::AcknowledgeReevaluation(key,v.RequestReevaluation(key));
-            }
             bool changed=false;
-            if constexpr(fifoEnabled)
+            if(compatible&&MiniMapMap::HasWorld()&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0)
             {
-                if(compatible&&MiniMapMap::HasWorld()&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0)
-                {
-                    FifoHooks hooks;
-                    try{
-                        C::Key wake;
-                        if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapSmelterCapture::HasResourceWatchCapacity)){
-                            const auto work=owner->Fifo.Work.Inspect(wake);
-                            const bool idle=work&&work->Status!=MiniMapCaptureWork::State::Considering&&
-                                work->Status!=MiniMapCaptureWork::State::NativeAdmitted&&work->Status!=MiniMapCaptureWork::State::Uncertain;
-                            const bool accepted=idle&&v.RequestExactReevaluation(wake,publication);
-                            if(accepted){owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Advancement);owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Source);}
-                            MiniMapBuildingSprites::AcknowledgeReevaluation(wake,accepted);
-                        }
-                        if(MiniMapBuildingRepresentation::PrepareNativeClasses())changed=owner->Fifo.Service(v,source,hooks,
-                            (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
-                    }catch(...){if(owner->Fifo.Failures++==0)LOG_WARN("MiniMap: FIFO CPU service interrupted; existing native observation retained; admission deferred");}
-                }
+                FifoHooks hooks;
+                try{
+                    C::Key wake;
+                    if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapSmelterCapture::HasResourceWatchCapacity)){
+                        const auto work=owner->Fifo.Work.Inspect(wake);
+                        const bool idle=work&&work->Status!=MiniMapCaptureWork::State::Considering&&
+                            work->Status!=MiniMapCaptureWork::State::NativeAdmitted&&work->Status!=MiniMapCaptureWork::State::Uncertain;
+                        const bool accepted=idle&&v.RequestExactReevaluation(wake,publication);
+                        if(accepted){owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Advancement);owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Source);}
+                        MiniMapBuildingSprites::AcknowledgeReevaluation(wake,accepted);
+                    }
+                    if(MiniMapBuildingRepresentation::PrepareNativeClasses())changed=owner->Fifo.Service(v,source,hooks,
+                        (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
+                }catch(...){if(owner->Fifo.Failures++==0)LOG_WARN("MiniMap: FIFO CPU service interrupted; existing native observation retained; admission deferred");}
             }
-            else changed=anchorsReady&&std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()<2.0&&MiniMapMap::HasWorld()&&MiniMapSmelterCapture::CanAcceptCandidate()&&
-                v.Service(registry,source,&CopiedRecord,&ProcessCandidate,(std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
-            if(changed&&!fifoEnabled)MiniMapBuildingSprites::FinishReevaluation(v.LastCompletedKey,v.SourcePublication);
             if(now>=owner->NextPipelineExport)
             {owner->Dirty|=8;owner->NextPipelineExport=now+5;}
 #else

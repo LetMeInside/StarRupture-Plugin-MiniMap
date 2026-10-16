@@ -3,8 +3,6 @@
 
 namespace MiniMapCaptureFifoRuntime
 {
-    // Internal development gate. Set false to compare the preserved legacy dispatcher.
-    inline constexpr bool DynamicCaptureFIFOEnabled = true;
     namespace W=MiniMapCaptureWork;namespace V=MiniMapSpriteValidation;namespace Q=MiniMapCaptureDispatch;namespace L=MiniMapCaptureLeases;
     // One scheduling-thread coordinator. Native ownership stays exclusively in the
     // existing lease ledger. Monitor holds CPU identities, never resources/leases.

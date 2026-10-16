@@ -16,8 +16,6 @@ namespace MiniMapSmelterCapture
     MiniMapCaptureDispatch::AttemptReconciliation ReconcileRetirementObservation(const MiniMapCaptureLeases::ObservationTicket&) noexcept;
     MiniMapCaptureDispatch::OwnerObservation ObserveNativeOwner() noexcept; // GT, CPU observations only
     MiniMapCaptureDispatch::Reconciliation ReconcileNativeOwner(const MiniMapCaptureLeases::Token&) noexcept;
-    MiniMapCaptureDispatch::AttemptReconciliation ReconcileNativeAttempt(const MiniMapCaptureDispatch::OwnerObservation& before,
-        const MiniMapSpriteDiscoveryCore::Key&,uint64_t sourceRevision) noexcept;
     // Same candidate audit opportunity, independent of static recipe eligibility.
     // Never reserves/publishes production sprites or changes the audit result.
     void OfferParallelBlueprint(const MiniMapSpriteCapture::Candidate&, uintptr_t visualClass,
