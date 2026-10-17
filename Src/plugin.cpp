@@ -8,6 +8,7 @@
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Map/Sprites/BuildingSpriteCapture.h"
+#include "Map/Buildings/BuildingCache.h"
 #include "Map/Sprites/BuildingRepresentation.h"
 #include "Map/Sprites/SpriteDiscovery.h"
 #endif
@@ -37,6 +38,15 @@ static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 #include "CacheIdentity.h"
 #include "Map/Map.h"
 #include <cstdint>
+#endif
+
+#ifdef MODLOADER_CLIENT_BUILD
+static bool ClearPersistentCaches()
+{
+    const bool terrainCleared = MiniMapTerrainCache::Clear();
+    const bool buildingsCleared = MiniMapBuildingCache::Clear();
+    return terrainCleared && buildingsCleared;
+}
 #endif
 
 #ifdef MODLOADER_SERVER_BUILD
@@ -264,7 +274,7 @@ extern "C"
         const char* cacheFailure = nullptr;
         if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
             !MiniMapCacheIdentity::Initialize(terrainRoot.parent_path(),
-                &MiniMapTerrainCache::Clear, cacheFailure))
+                &ClearPersistentCaches, cacheFailure))
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
                 cacheFailure ? cacheFailure : "cache root unavailable");

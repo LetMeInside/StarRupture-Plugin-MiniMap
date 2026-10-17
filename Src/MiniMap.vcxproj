@@ -97,6 +97,7 @@
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
     <ClInclude Include="Map\Sprites\CapturePng.h" />
+    <ClInclude Include="Map\Buildings\BuildingCache.h" />
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
@@ -161,6 +162,7 @@
     <ClCompile Include="Map\Sprites\BuildingSpriteCapture.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
+    <ClCompile Include="Map\Buildings\BuildingCache.cpp" />
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
