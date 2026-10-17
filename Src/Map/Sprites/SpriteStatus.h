@@ -29,7 +29,12 @@ namespace MiniMapSpriteStatus
 
     struct Status
     {
-        Location Where = Location::Queued;
+        explicit Status(Location location)
+            : Where(location)
+        {
+        }
+
+        Location Where;
         AtlasEntry Atlas{};
     };
 
