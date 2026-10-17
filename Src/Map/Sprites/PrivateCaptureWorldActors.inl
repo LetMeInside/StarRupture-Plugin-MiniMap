@@ -3,10 +3,7 @@
 // All render callbacks belong to ReadbackNativeAdapter and carry Job*, never Actor*.
 using BN = SDK::UObject;
 using Class = SDK::UClass;
-using Function = SDK::UFunction;
-// Runtime inventories are dynamically sized and bounded only to keep hostile or
-// corrupted TArrays from causing unbounded reads/allocations.
-static constexpr size_t ComponentLimit = 4096;
+static constexpr size_t PrivateLevelActorLimit = 4096;
 struct BlueprintCounters
 {
     uint64_t Encountered{}, Eligible{}, Constructed{}, ConstructionFailed{}, Unsupported{},
@@ -22,22 +19,42 @@ struct BlueprintWork
     std::string Key, ClassPath;
     const char* Failure = "none";
     Reference Actor, Capture, Target;
-    std::vector<Reference> Components;
-    size_t ComponentCount{}, DrawableCount{};
-    std::vector<uintptr_t> Drawables;
     std::array<Reference, 96> Metadata{};
     size_t MetadataCount{};
-    Function *Begin{}, *Finish{}, *Enumerate{}, *Bounds{},
-        *ShowOnly{}, *ShowFlags{}, *Camera{}, *CaptureScene{};
-    uintptr_t Statics{}, Kismet{}, SelectedClass{};
+    uintptr_t SelectedClass{};
     uint64_t LevelHash{};
     int32_t LevelCount{};
     SDK::FVector Center{}, Extent{};
     MiniMapReadbackNative::Job* Job{};
-    std::vector<uint8_t> Production, PrivateImage;
+    std::vector<uint8_t> PrivateImage;
 } blueprint;
 uint64_t nextBlueprintId{}, blueprintTick{};
-std::unordered_set<std::string> attemptedBlueprints; // session-owned, bounded; no retry queue
+MiniMapCaptureLeases::Token ownerLease; // Existing production lease, held through native retirement.
+std::unordered_set<std::string> attemptedBlueprints; // Exact candidate identities retained until session reset.
+// One waiting candidate, containing only copied CPU identity/policy/path data.
+// No selected-class pointer or borrowed engine object survives the offer.
+struct DeferredBlueprint
+{
+    bool Pending=false, ClassificationObserved=false;
+    MiniMapSpriteDiscoveryCore::Key Identity;
+    int32_t ActorObject=-1, ActorName=-1;
+    uint32_t ActorNumber{}, Building{};
+    MiniMapSpriteDiscoveryCore::Tier Tier=MiniMapSpriteDiscoveryCore::Tier::Unknown;
+    MiniMapSpriteClassification::Exclusion Exclusion=MiniMapSpriteClassification::Exclusion::Unknown;
+    uint64_t Generation{}, Id{};
+    size_t SourceCursor{};
+    double SourcePublication=-1;
+    uintptr_t SessionToken{}; // equality-only address token; never dereferenced
+    std::string Key, ClassPath;
+} deferredBlueprint;
+void DiscardDeferredBlueprint(const char* reason)
+{
+    if (!deferredBlueprint.Pending) return;
+    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=deferred candidate outcome=discarded reason=%s",
+        (unsigned long long)deferredBlueprint.Id,reason);
+    deferredBlueprint={};
+    if (ownerLease) { blueprint.Active=true; BlueprintFail("deferred candidate",reason); }
+}
 MiniMapCaptureRetirement::FenceOwner blueprintFence;
 
 std::string BlueprintText(const char* value)
@@ -71,12 +88,18 @@ void BlueprintQuarantine(const char* reason)
         BlueprintLog("quarantine", false, reason);
         BlueprintTotals();
     }
+    if (ownerLease)
+    {
+        MiniMapBuildingSprites::RecordForLease(ownerLease,MiniMapBuildingSpriteCore::State::Failed,reason);
+        MiniMapBuildingSprites::AbandonCapture(ownerLease);
+    }
     blueprint.Current = BlueprintPhase::Quarantined;
     if (blueprint.Job) MiniMapReadbackNative::Cancel(blueprint.Job);
     Quarantine(reason); // prevents world cleanup and future access to dependent pointers
 }
 void ResetBlueprintSession()
 {
+    DiscardDeferredBlueprint("session reset");
     // Arm has excluded active/quarantined world ownership before reaching here.
     if (blueprint.Active || blueprint.Current == BlueprintPhase::Quarantined) return;
     blueprint = {};
@@ -115,103 +138,86 @@ Class* BlueprintClass(const wchar_t* path)
         reinterpret_cast<uintptr_t>(object->Class)!=nativeClassType) return nullptr;
     return static_cast<Class*>(KeepBlueprintMetadata(object));
 }
-struct ParameterPart
+// Typed SDK calls retain the existing leaf SEH boundary without reflecting,
+// marshalling, or second-guessing generated function metadata. Keep these
+// helpers free of destructible locals so MSVC permits __try/__except.
+bool GuardedBeginDeferredActorSpawn(SDK::UObject* worldContext,
+    SDK::TSubclassOf<SDK::AActor> actorClass, const SDK::FTransform* transform,
+    SDK::ESpawnActorCollisionHandlingMethod collision, SDK::AActor* owner,
+    SDK::ESpawnActorScaleMethod scale, SDK::AActor** result) noexcept
 {
-    int Offset, Size;
-    SDK::EClassCastFlags Kind;
-    const wchar_t* Type = nullptr;
-    bool Return = false;
-};
-Function* BlueprintFunction(const wchar_t* ownerPath, const wchar_t* name, size_t capacity,
-    bool isStatic, std::initializer_list<ParameterPart> parts)
-{
-    auto* owner = BlueprintClass(ownerPath);
-    auto* functionClass = BlueprintClass(L"/Script/CoreUObject.Function");
-    if (!owner || !functionClass) return nullptr;
-    auto* object = FindBlueprintObject(name, functionClass, owner, true);
-    Identity id;
-    if (!object || !Identify(reinterpret_cast<uintptr_t>(object), id, sizeof(Function))) return nullptr;
-    auto* fn = static_cast<Function*>(object);
-    uint8_t count{}; uint16_t frame{};
-    if (fn->Class != functionClass || fn->Outer != owner || !fn->ExecFunction ||
-        !(uint32_t(fn->FunctionFlags) & 0x400) || bool(uint32_t(fn->FunctionFlags) & 0x2000) != isStatic ||
-        !Read(reinterpret_cast<uintptr_t>(fn) + 0xb4, count) || count != parts.size() ||
-        !Read(reinterpret_cast<uintptr_t>(fn) + 0xb6, frame) || frame > capacity) return nullptr;
-    MEMORY_BASIC_INFORMATION page{};
-    if (!VirtualQuery(reinterpret_cast<void*>(fn->ExecFunction), &page, sizeof(page)) ||
-        page.State != MEM_COMMIT || (page.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
-        !(page.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return nullptr;
-    unsigned seen{}; size_t visited{};
-    for (auto* field = fn->ChildProperties; field; field = field->Next)
-    {
-        if (++visited > parts.size() || !N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(field), sizeof(SDK::FProperty), 8)) return nullptr;
-        auto* prop = reinterpret_cast<SDK::FProperty*>(field);
-        if (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(prop->ClassPrivate), 0x18, 8) ||
-            prop->ArrayDim != 1 || !(prop->PropertyFlags & 0x80)) return nullptr;
-        uintptr_t owning{}; std::memcpy(&owning, &prop->Owner, 8);
-        if ((owning & ~uintptr_t(1)) != reinterpret_cast<uintptr_t>(fn) || !(owning & 1)) return nullptr;
-        bool matched = false; size_t index{};
-        for (const auto& part : parts)
-        {
-            if (prop->Offset != part.Offset) { ++index; continue; }
-            const auto kind = prop->ClassPrivate->CastFlags;
-            const bool enumeration = part.Kind == SDK::EClassCastFlags::EnumProperty;
-            if ((seen & (1u << index)) || prop->ElementSize != part.Size || part.Offset < 0 ||
-                size_t(part.Offset + part.Size) > frame || bool(prop->PropertyFlags & 0x400) != part.Return ||
-                (!(kind & uint64_t(part.Kind)) && !(enumeration && (kind & uint64_t(SDK::EClassCastFlags::ByteProperty))))) return nullptr;
-            if (part.Type)
-            {
-                auto* expected = FindBlueprintObject(part.Type);
-                uintptr_t actual{};
-                if (!expected || !Read(reinterpret_cast<uintptr_t>(prop) + 0x70, actual)) return nullptr;
-                if (part.Kind == SDK::EClassCastFlags::ArrayProperty)
-                {
-                    auto* inner=reinterpret_cast<SDK::FProperty*>(actual);
-                    if (!N::IsMemoryRangeReadable(actual,sizeof(SDK::FProperty),8) ||
-                        !N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(inner->ClassPrivate),0x18,8) || inner->ArrayDim!=1) return nullptr;
-                    const bool componentArray=std::wcscmp(part.Type,L"/Script/Engine.ActorComponent")==0;
-                    const auto innerKind=componentArray?SDK::EClassCastFlags::ObjectProperty:SDK::EClassCastFlags::StructProperty;
-                    if (!(inner->ClassPrivate->CastFlags & uint64_t(innerKind)) || inner->ElementSize!=(componentArray?8:0x18) ||
-                        !Read(actual+0x70,actual)) return nullptr;
-                }
-                // FClassProperty has PropertyClass at+70 and MetaClass at+78.
-                if (part.Kind == SDK::EClassCastFlags::ClassProperty && !Read(reinterpret_cast<uintptr_t>(prop) + 0x78, actual)) return nullptr;
-                if (enumeration && (kind & uint64_t(SDK::EClassCastFlags::EnumProperty)))
-                {
-                    if (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(prop), sizeof(SDK::FEnumProperty), 8)) return nullptr;
-                    actual = reinterpret_cast<uintptr_t>(reinterpret_cast<SDK::FEnumProperty*>(prop)->Enum);
-                }
-                if (actual != reinterpret_cast<uintptr_t>(expected)) return nullptr;
-            }
-            if (part.Kind == SDK::EClassCastFlags::BoolProperty)
-            {
-                auto* b = reinterpret_cast<SDK::FBoolProperty*>(prop);
-                if (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(b), sizeof(*b), 8) ||
-                    b->FieldSize != 1 || b->ByteOffset || b->FieldMask != 0xff || !b->ByteMask) return nullptr;
-            }
-            seen |= 1u << index; matched = true; break;
-        }
-        if (!matched) return nullptr;
-    }
-    if (seen != ((1u << parts.size()) - 1)) return nullptr;
-    return static_cast<Function*>(KeepBlueprintMetadata(fn));
-}
-// SEH boundary has no destructible automatic C++ objects. Access violations are
-// reported separately because they do not prove that an invocation was harmless.
-bool BlueprintCall(BN* receiver, Function* fn, void* params, bool* accessViolation = nullptr) noexcept
-{
-    if (accessViolation) *accessViolation=false;
     __try
     {
-        auto* walker = GetHooks() ? GetHooks()->ObjectWalker : nullptr;
-        return walker && walker->InvokeResolvedUFunction(receiver, fn, params);
+        *result=SDK::UGameplayStatics::BeginDeferredActorSpawnFromClass(
+            worldContext,actorClass,*transform,collision,owner,scale);
+        return true;
     }
-    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
         ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
-    { blueprint.NativeAccessViolation=true; if (accessViolation) *accessViolation=true; return false; }
+    { blueprint.NativeAccessViolation=true; return false; }
+}
+bool GuardedFinishSpawningActor(SDK::AActor* actor, const SDK::FTransform* transform,
+    SDK::ESpawnActorScaleMethod scale, SDK::AActor** result) noexcept
+{
+    __try
+    {
+        *result=SDK::UGameplayStatics::FinishSpawningActor(actor,*transform,scale);
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { blueprint.NativeAccessViolation=true; return false; }
+}
+bool GuardedKismetGetActorBounds(const SDK::AActor* actor,
+    SDK::FVector* origin, SDK::FVector* extent) noexcept
+{
+    __try
+    {
+        SDK::UKismetSystemLibrary::GetActorBounds(actor,origin,extent);
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { return false; }
+}
+bool GuardedSetShowFlagSettings(SDK::USceneCaptureComponent* capture,
+    const SDK::TArray<SDK::FEngineShowFlagsSetting>* settings) noexcept
+{
+    __try
+    {
+        capture->SetShowFlagSettings(*settings);
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { blueprint.NativeAccessViolation=true; return false; }
+}
+bool GuardedSetWorldLocationAndRotation(SDK::USceneComponent* component,
+    const SDK::FVector* location, const SDK::FRotator* rotation,
+    bool sweep, bool teleport) noexcept
+{
+    __try
+    {
+        component->K2_SetWorldLocationAndRotation(*location,*rotation,sweep,nullptr,teleport);
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { blueprint.NativeAccessViolation=true; return false; }
+}
+bool GuardedCaptureScene(SDK::USceneCaptureComponent2D* capture) noexcept
+{
+    __try
+    {
+        capture->CaptureScene();
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { blueprint.NativeAccessViolation=true; return false; }
 }
 struct PointerArray { uintptr_t Data{}; int32_t Count{}, Capacity{}; };
-bool BlueprintArray(uintptr_t address, PointerArray& out, size_t limit = ComponentLimit)
+bool BlueprintArray(uintptr_t address, PointerArray& out, size_t limit = PrivateLevelActorLimit)
 {
     return Read(address, out) && out.Count >= 0 && out.Capacity >= out.Count && size_t(out.Capacity) <= limit &&
         (!out.Count || (out.Data && N::IsMemoryRangeReadable(out.Data, size_t(out.Count) * 8, 8)));
@@ -219,7 +225,7 @@ bool BlueprintArray(uintptr_t address, PointerArray& out, size_t limit = Compone
 bool BlueprintLevel(uint64_t& hash, int32_t& count)
 {
     PointerArray a;
-    if (!CheckOwned(state.PersistentLevel) || !BlueprintArray(state.PersistentLevel.Object.Bits + 0xa0, a, 4096)) return false;
+    if (!CheckOwned(state.PersistentLevel) || !BlueprintArray(state.PersistentLevel.Object.Bits + 0xa0, a, PrivateLevelActorLimit)) return false;
     hash = 0; count = 0;
     for (int32_t i = 0; i < a.Count; ++i)
     {
@@ -235,7 +241,7 @@ bool BlueprintLevelContains(uintptr_t target, bool expected)
 {
     PointerArray actors;
     if (!target || !CheckOwned(state.PersistentLevel) ||
-        !BlueprintArray(state.PersistentLevel.Object.Bits+0xa0,actors,4096)) return false;
+        !BlueprintArray(state.PersistentLevel.Object.Bits+0xa0,actors,PrivateLevelActorLimit)) return false;
     bool found=false;
     for (int32_t i=0;i<actors.Count;++i)
     {
@@ -267,72 +273,47 @@ static SDK::FTransform BlueprintIdentityTransform()
     t.Scale3D = SDK::FVector(1, 1, 1);
     return t;
 }
-bool ResolveBlueprintFunctions()
+// World-space AABB criteria for Kismet framing.
+// This helper only inspects copied numbers; it cannot change capture state.
+static const char* BlueprintBoundsRejection(const SDK::FVector& origin, const SDK::FVector& extent)
 {
-    using K = SDK::EClassCastFlags;
-    static_assert(sizeof(SDK::Params::GameplayStatics_BeginDeferredActorSpawnFromClass) == 0x90);
-    static_assert(sizeof(SDK::Params::GameplayStatics_FinishSpawningActor) == 0x80);
-    static_assert(offsetof(SDK::Params::GameplayStatics_BeginDeferredActorSpawnFromClass, ReturnValue) == 0x88);
-    static_assert(offsetof(SDK::Params::GameplayStatics_FinishSpawningActor, ReturnValue) == 0x78);
-    static_assert(offsetof(SDK::ULevel, OwningWorld) == 0xc0);
-    auto* statics = BlueprintClass(L"/Script/Engine.GameplayStatics");
-    auto* kismet = BlueprintClass(L"/Script/Engine.KismetSystemLibrary");
-    if (!statics || !kismet || !KeepBlueprintMetadata(statics->ClassDefaultObject) ||
-        !KeepBlueprintMetadata(kismet->ClassDefaultObject) || statics->ClassDefaultObject->Class!=statics ||
-        kismet->ClassDefaultObject->Class!=kismet) return false;
-    blueprint.Statics = reinterpret_cast<uintptr_t>(statics->ClassDefaultObject);
-    blueprint.Kismet = reinterpret_cast<uintptr_t>(kismet->ClassDefaultObject);
-    blueprint.Begin = BlueprintFunction(L"/Script/Engine.GameplayStatics", L"BeginDeferredActorSpawnFromClass", 0x90, true, {
-        {0,8,K::ObjectProperty,L"/Script/CoreUObject.Object"}, {8,8,K::ClassProperty,L"/Script/Engine.Actor"},
-        {0x10,0x60,K::StructProperty,L"/Script/CoreUObject.Transform"},
-        {0x70,1,K::EnumProperty,L"/Script/Engine.ESpawnActorCollisionHandlingMethod"},
-        {0x78,8,K::ObjectProperty,L"/Script/Engine.Actor"}, {0x80,1,K::EnumProperty,L"/Script/Engine.ESpawnActorScaleMethod"},
-        {0x88,8,K::ObjectProperty,L"/Script/Engine.Actor",true}});
-    blueprint.Finish = BlueprintFunction(L"/Script/Engine.GameplayStatics", L"FinishSpawningActor", 0x80, true, {
-        {0,8,K::ObjectProperty,L"/Script/Engine.Actor"}, {0x10,0x60,K::StructProperty,L"/Script/CoreUObject.Transform"},
-        {0x70,1,K::EnumProperty,L"/Script/Engine.ESpawnActorScaleMethod"}, {0x78,8,K::ObjectProperty,L"/Script/Engine.Actor",true}});
-    blueprint.Enumerate = BlueprintFunction(L"/Script/Engine.Actor", L"K2_GetComponentsByClass", 0x18, false, {
-        {0,8,K::ClassProperty,L"/Script/Engine.ActorComponent"}, {8,0x10,K::ArrayProperty,L"/Script/Engine.ActorComponent",true}});
-    blueprint.Bounds = BlueprintFunction(L"/Script/Engine.KismetSystemLibrary", L"GetComponentBounds", 0x40, true, {
-        {0,8,K::ObjectProperty,L"/Script/Engine.SceneComponent"}, {8,0x18,K::StructProperty,L"/Script/CoreUObject.Vector"},
-        {0x20,0x18,K::StructProperty,L"/Script/CoreUObject.Vector"}, {0x38,4,K::FloatProperty}});
-    blueprint.ShowOnly = BlueprintFunction(L"/Script/Engine.SceneCaptureComponent", L"ShowOnlyComponent", 8, false, {
-        {0,8,K::ObjectProperty,L"/Script/Engine.PrimitiveComponent"}});
-    blueprint.ShowFlags = BlueprintFunction(L"/Script/Engine.SceneCaptureComponent", L"SetShowFlagSettings", 0x10, false, {
-        {0,0x10,K::ArrayProperty,L"/Script/Engine.EngineShowFlagsSetting"}});
-    blueprint.Camera = BlueprintFunction(L"/Script/Engine.SceneComponent", L"K2_SetWorldLocationAndRotation", 0x140, false, {
-        {0,0x18,K::StructProperty,L"/Script/CoreUObject.Vector"}, {0x18,0x18,K::StructProperty,L"/Script/CoreUObject.Rotator"},
-        {0x30,1,K::BoolProperty}, {0x38,0x100,K::StructProperty,L"/Script/Engine.HitResult"}, {0x138,1,K::BoolProperty}});
-    blueprint.CaptureScene = BlueprintFunction(L"/Script/Engine.SceneCaptureComponent2D", L"CaptureScene", 0, false, {});
-    return blueprint.Begin && blueprint.Finish && blueprint.Enumerate && blueprint.Bounds &&
-        blueprint.ShowOnly && blueprint.ShowFlags && blueprint.Camera && blueprint.CaptureScene;
+    const bool finiteBounds=std::isfinite(origin.X) && std::isfinite(origin.Y) && std::isfinite(origin.Z) &&
+        std::isfinite(extent.X) && std::isfinite(extent.Y) && std::isfinite(extent.Z);
+    if (!finiteBounds) return "nonfinite_center_or_extent";
+    if (!(extent.X>0 && extent.Y>0 && extent.Z>=0)) return "nonpositive_XY_or_negative_Z_extent";
+    const double cameraZ=origin.Z+extent.Z+1000.0;
+    const float orthoWidth=float(2.0*(std::max)(extent.X,extent.Y)*1.1);
+    if (!std::isfinite(cameraZ)) return "nonfinite_camera_height";
+    if (!std::isfinite(orthoWidth) || !(orthoWidth>0)) return "nonfinite_or_nonpositive_ortho_width";
+    return nullptr;
 }
-// Classify runtime components through Unreal's native superclass chain.
-int BlueprintComponentKind(uintptr_t component)
+
+bool GetBlueprintActorBounds()
 {
-    Identity id; uintptr_t type{};
-    if (!Identify(component, id, sizeof(SDK::UActorComponent)) || !Read(component + 0x10, type)) return -1;
-    const auto componentType=type;
-    auto* sceneClass=BlueprintClass(L"/Script/Engine.SceneComponent");
-    auto* primitiveClass=BlueprintClass(L"/Script/Engine.PrimitiveComponent");
-    if (!sceneClass || !primitiveClass) return -1;
-    bool scene=false, primitive=false;
-    for (size_t depth=0; type && depth<128; ++depth)
+    SDK::FVector origin{},extent{};
+    auto* actor=reinterpret_cast<SDK::AActor*>(blueprint.Actor.Object.Bits);
+    if (!GuardedKismetGetActorBounds(actor,&origin,&extent))
+    { blueprint.NativeAccessViolation=true; blueprint.Failure="Kismet actor-bounds call was interrupted"; return false; }
+    const bool usable=BlueprintBoundsRejection(origin,extent)==nullptr;
+    const float orthoWidth=usable ? float(2.0*(std::max)(extent.X,extent.Y)*1.1) : 0.0f;
+    if (!usable)
     {
-        if (!Identify(type,id,sizeof(Class))) return -1;
-        scene |= type==reinterpret_cast<uintptr_t>(sceneClass);
-        primitive |= type==reinterpret_cast<uintptr_t>(primitiveClass);
-        if (scene && primitive) break;
-        uintptr_t parent{};
-        if (!Read(type+0x40,parent)) return -1;
-        if (parent==type) break;
-        if (!parent) break;
-        type=parent;
+        origin=SDK::FVector(0.0,0.0,0.0);
+        // Identity spawn is at the origin. Use a practical 10 m footprint
+        // (11 m orthographic width including the existing 10% padding).
+        extent=SDK::FVector(500.0,500.0,500.0);
+        blueprint.Center=origin;
+        blueprint.Extent=extent;
+        LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=framing outcome=selected framing=fixed_fallback reason=actor_bounds_numerically_unusable center=(%.3f,%.3f,%.3f) extent=(%.3f,%.3f,%.3f) ortho_width=%.3f",
+            (unsigned long long)blueprint.Id,origin.X,origin.Y,origin.Z,extent.X,extent.Y,extent.Z,
+            2.0*(std::max)(extent.X,extent.Y)*1.1);
+        return true;
     }
-    auto* actual=reinterpret_cast<Class*>(componentType);
-    if (!actual || actual->Size<int32_t(sizeof(SDK::UActorComponent)) || actual->Size>0x100000 ||
-        !Identify(component,id,size_t(actual->Size))) return -1;
-    return primitive && scene ? 2 : scene ? 1 : primitive ? -1 : 0;
+    blueprint.Center=origin;
+    blueprint.Extent=extent;
+    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=framing outcome=selected framing=kismet_bounds center=(%.3f,%.3f,%.3f) extent=(%.3f,%.3f,%.3f) ortho_width=%.3f",
+        (unsigned long long)blueprint.Id,origin.X,origin.Y,origin.Z,extent.X,extent.Y,extent.Z,orthoWidth);
+    return true;
 }
 bool AdmitBlueprint(Class* type)
 {
@@ -374,115 +355,7 @@ bool BlueprintBindings()
     return N::IsInitialized() && api && api->world.destroyActor;
 }
 
-bool InspectBlueprint()
-{
-    auto* actor=reinterpret_cast<SDK::AActor*>(blueprint.Actor.Object.Bits);
-    auto* componentClass=BlueprintClass(L"/Script/Engine.ActorComponent");
-    const auto* api=N::Get();
-    auto freeFn=api?api->texture.memoryFree:nullptr;
-    if (!componentClass || !freeFn) { blueprint.Failure="component enumeration support is unavailable"; return false; }
-    SDK::Params::Actor_K2_GetComponentsByClass params{};
-    std::memcpy(&params.ComponentClass,&componentClass,8);
-    if (!BlueprintCall(actor,blueprint.Enumerate,&params)) { blueprint.Failure="Unreal component enumeration failed"; return false; }
-    PointerArray list;
-    if (!BlueprintArray(reinterpret_cast<uintptr_t>(&params.ReturnValue),list))
-    { blueprint.Failure="runtime component list is unreadable"; return false; }
-    bool valid=true;
-    for (int32_t i=0;i<list.Count;++i)
-    {
-        uintptr_t component{};
-        if (!Read(list.Data+size_t(i)*8,component) || !component || blueprint.Components.size()>=ComponentLimit)
-        { valid=false; break; }
-        for (const auto& existing:blueprint.Components) if (existing.Object.Bits==component) valid=false;
-        if (!valid) break;
-        Reference reference;
-        if (!Hold(component,reference)) { valid=false; break; }
-        blueprint.Components.push_back(reference);
-    }
-    if (list.Data) freeFn(reinterpret_cast<void*>(list.Data));
-    if (!valid) { blueprint.Failure="runtime component identity or ownership could not be established"; return false; }
-    blueprint.ComponentCount=blueprint.Components.size();
-
-    bool haveBounds=false;
-    SDK::FVector minimum{},maximum{};
-    size_t renderable{}, skipped{};
-    for (size_t i=0;i<blueprint.Components.size();++i)
-    {
-        auto& reference=blueprint.Components[i];
-        const auto bits=reference.Object.Bits;
-        uintptr_t outer{},world{}; uint8_t registered{};
-        const int kind=BlueprintComponentKind(bits);
-        if (!CheckOwned(reference) || kind<0 || !Read(bits+0x20,outer) || outer!=blueprint.Actor.Object.Bits ||
-            !Read(bits+0xa8,world) || (world && world!=state.Private.Object.Bits) || !Read(bits+0x94,registered))
-        { blueprint.Failure="runtime component identity, owner, or world could not be verified"; return false; }
-        if (kind==0)
-        {
-            ++skipped;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component inspection outcome=skipped component=%d reason=component is not a scene component",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        auto* scene=reinterpret_cast<SDK::USceneComponent*>(bits);
-        if (kind==1)
-        {
-            ++skipped;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component inspection outcome=skipped component=%d reason=scene component is not renderable",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        if (!scene->bVisible || scene->bHiddenInGame || (registered&3)!=3 || world!=state.Private.Object.Bits)
-        {
-            ++skipped; blueprint.VisualIncomplete=true;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component inspection outcome=skipped component=%d reason=primitive component is hidden, unregistered, or outside the private world",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        SDK::Params::KismetSystemLibrary_GetComponentBounds bounds{};
-        bounds.Component=reinterpret_cast<SDK::USceneComponent*>(bits);
-        bool accessViolation=false;
-        if (!BlueprintCall(reinterpret_cast<BN*>(blueprint.Kismet),blueprint.Bounds,&bounds,&accessViolation))
-        {
-            if (accessViolation) { blueprint.Failure="access violation while querying primitive bounds"; return false; }
-            ++skipped; blueprint.VisualIncomplete=true;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component bounds outcome=skipped component=%d reason=Unreal could not provide primitive bounds",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        const auto& origin=bounds.Origin; const auto& extent=bounds.BoxExtent;
-        if (!std::isfinite(origin.X) || !std::isfinite(origin.Y) || !std::isfinite(origin.Z) ||
-            !std::isfinite(extent.X) || !std::isfinite(extent.Y) || !std::isfinite(extent.Z) ||
-            extent.X<0 || extent.Y<0 || extent.Z<0)
-        {
-            ++skipped; blueprint.VisualIncomplete=true;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component bounds outcome=skipped component=%d reason=primitive returned unusable bounds",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        if (extent.X<=0 || extent.Y<=0)
-        {
-            ++skipped; blueprint.VisualIncomplete=true;
-            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component bounds outcome=skipped component=%d reason=primitive has no two-dimensional renderable bounds",
-                (unsigned long long)blueprint.Id,reference.Object.Index);
-            continue;
-        }
-        const SDK::FVector lo(origin.X-extent.X,origin.Y-extent.Y,origin.Z-extent.Z);
-        const SDK::FVector hi(origin.X+extent.X,origin.Y+extent.Y,origin.Z+extent.Z);
-        if (!haveBounds) { minimum=lo; maximum=hi; haveBounds=true; }
-        else
-        {
-            minimum.X=(std::min)(minimum.X,lo.X); minimum.Y=(std::min)(minimum.Y,lo.Y); minimum.Z=(std::min)(minimum.Z,lo.Z);
-            maximum.X=(std::max)(maximum.X,hi.X); maximum.Y=(std::max)(maximum.Y,hi.Y); maximum.Z=(std::max)(maximum.Z,hi.Z);
-        }
-        blueprint.Drawables.push_back(bits); ++blueprint.DrawableCount; ++renderable;
-    }
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=component inventory outcome=observed total=%zu renderable=%zu skipped=%zu bounds=actual primitive bounds",
-        (unsigned long long)blueprint.Id,blueprint.Components.size(),renderable,skipped);
-    if (!haveBounds || !blueprint.DrawableCount)
-    { blueprint.Failure="no visible primitive component provided renderable bounds"; return true; }
-    blueprint.Center=SDK::FVector((minimum.X+maximum.X)*0.5,(minimum.Y+maximum.Y)*0.5,(minimum.Z+maximum.Z)*0.5);
-    blueprint.Extent=SDK::FVector((maximum.X-minimum.X)*0.5,(maximum.Y-minimum.Y)*0.5,(maximum.Z-minimum.Z)*0.5);
-    return BlueprintActorState(true);
-}// All opaque native factory/registration calls are isolated here. The bindings
+// All opaque native factory/registration calls are isolated here. The bindings
 // are already verified by the production worker; no new executable patch/scan.
 bool BlueprintNative(unsigned operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr) noexcept
 {
@@ -541,9 +414,8 @@ bool PrepareBlueprintCapture()
     SDK::FEngineShowFlagsSetting flags[11]{};
     const wchar_t* names[] = {L"Fog",L"Atmosphere",L"VolumetricFog",L"Cloud",L"MotionBlur",L"TemporalAA",L"AntiAliasing",L"PostProcessing",L"Bloom",L"EyeAdaptation",L"Lighting"};
     for (int i=0;i<11;++i) { flags[i].ShowFlagName=SDK::FString(names[i]); flags[i].Enabled=false; }
-    SDK::Params::SceneCaptureComponent_SetShowFlagSettings show{};
-    show.InShowFlagSettings=SDK::TArray<SDK::FEngineShowFlagsSetting>(flags,11,11);
-    if (!BlueprintCall(capture,blueprint.ShowFlags,&show)) return false;
+    SDK::TArray<SDK::FEngineShowFlagsSetting> showFlags(flags,11,11);
+    if (!GuardedSetShowFlagSettings(capture,&showFlags)) return false;
     target->bAutoGenerateMips=false; target->bSupportsUAV=false;
     uint32_t targetFlags{};
     if (!Read(blueprint.Target.Object.Bits+0x144,targetFlags)) return false;
@@ -552,25 +424,19 @@ bool PrepareBlueprintCapture()
     target->ClearColor=SDK::FLinearColor(0,0,0,1);
     if (!BlueprintNative(6,blueprint.Target.Object.Bits)) return false;
     capture->TextureTarget=target;
-    SDK::Params::SceneComponent_K2_SetWorldLocationAndRotation camera{};
-    camera.NewLocation=SDK::FVector(blueprint.Center.X,blueprint.Center.Y,blueprint.Center.Z+blueprint.Extent.Z+1000.0);
-    camera.NewRotation=SDK::FRotator(-90,-90,0); camera.bTeleport=true;
-    if (!BlueprintCall(capture,blueprint.Camera,&camera) || !BlueprintNative(2,blueprint.Capture.Object.Bits,state.Private.Object.Bits)) return false;
+    const SDK::FVector cameraLocation(blueprint.Center.X,blueprint.Center.Y,blueprint.Center.Z+blueprint.Extent.Z+1000.0);
+    const SDK::FRotator cameraRotation(-90,-90,0);
+    if (!GuardedSetWorldLocationAndRotation(capture,&cameraLocation,&cameraRotation,false,true) ||
+        !BlueprintNative(2,blueprint.Capture.Object.Bits,state.Private.Object.Bits)) return false;
     uint8_t registered{}; uintptr_t world{};
     if (!Read(blueprint.Capture.Object.Bits+0x94,registered) || !(registered&1) ||
         !Read(blueprint.Capture.Object.Bits+0xa8,world) || world!=state.Private.Object.Bits) return false;
-    for (size_t i=0;i<blueprint.DrawableCount;++i)
-    {
-        SDK::Params::SceneCaptureComponent_ShowOnlyComponent member{};
-        member.InComponent=reinterpret_cast<SDK::UPrimitiveComponent*>(blueprint.Drawables[i]);
-        if (!BlueprintCall(capture,blueprint.ShowOnly,&member)) return false;
-    }
-    if (!MiniMapBuildingRepresentation::ValidateCaptureMembership(blueprint.Capture.Object.Bits,blueprint.Drawables.data(),blueprint.DrawableCount)) return false;
     uintptr_t resource{};
     if (!BlueprintNative(7,blueprint.Target.Object.Bits,0,&resource) || !resource) return false;
     blueprint.Job=MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource),256,256);
     if (!blueprint.Job) return false;
-    BlueprintLog("renderer_scene",true,"private_scene_registered_components_show_only_256_RGBA16F_unlit");
+    LOG_INFO("MiniMap: private_blueprint_actor rendering_mode=RenderScenePrimitives show_only=disabled");
+    BlueprintLog("actor-level capture preparation",true,"private_scene_registered_unfiltered_256_RGBA16F_unlit");
     return true;
 }
 
@@ -611,8 +477,6 @@ bool ReleaseRetiringOwned(Reference& ref)
 bool RetireBlueprintObjects()
 {
     if (!QuietGC() || !Unchanged() || !PrivateState(true) || blueprint.Job) return false;
-    for (size_t i=0;i<blueprint.ComponentCount;++i)
-        if (!CheckOwned(blueprint.Components[i])) return false;
     if (blueprint.Actor.Owned)
     {
         // Finished can be false for a deferred Actor if construction wasn't entered.
@@ -625,16 +489,7 @@ bool RetireBlueprintObjects()
         if (!Read(blueprint.Actor.Object.Bits+0x5c,a) || (a&2) ||
             !Read(blueprint.Actor.Object.Bits+0x5d,b) || !(b&2) || (b&0x18) ||
             !BlueprintLevelContains(blueprint.Actor.Object.Bits,false)) return false;
-        for (size_t i=0;i<blueprint.ComponentCount;++i)
-        {
-            uint8_t flags{}, init{};
-            if (!Read(blueprint.Components[i].Object.Bits+0x94,flags) || (flags&3) ||
-                !Read(blueprint.Components[i].Object.Bits+0x97,init) || (init&0x28)) return false;
-        }
-        BlueprintLog("actor_destruction",true,"normal_return_and_level_removal_component_unregistration_verified_GC_unobserved");
-        // No return/yield/callback servicing between destruction and acquired-reference release.
-        for (size_t i=blueprint.ComponentCount;i>0;--i)
-            if (!ReleaseRetiringOwned(blueprint.Components[i-1])) return false;
+        BlueprintLog("actor_destruction",true,"normal_return_and_private_level_removal_observed");
         if (!ReleaseRetiringOwned(blueprint.Actor)) return false;
     }
     if (blueprint.Capture.Owned)
@@ -647,7 +502,7 @@ bool RetireBlueprintObjects()
     }
     if (!Drop(blueprint.Target)) return false;
     for (size_t i=blueprint.MetadataCount;i>0;--i) if (!Drop(blueprint.Metadata[i-1])) return false;
-    BlueprintLog("reference_release",true,"exact_acquired_actor_component_capture_target_metadata_references_released");
+    BlueprintLog("reference_release",true,"actor_capture_target_and_class_metadata_references_released");
     return Unchanged() && PrivateState(true) && QuietGC();
 }
 void CompleteBlueprintRetirement()
@@ -655,16 +510,29 @@ void CompleteBlueprintRetirement()
     if (!RetireBlueprintObjects()) { BlueprintQuarantine("actor_or_resource_retirement_postcondition_or_release_uncertain"); return; }
     ++totals.Retired;
     // Remove callable/borrowed native pointers after the exact reference ledger
-    // has been consumed. Only copied CPU images/identity remain for comparison.
+    // has been consumed. Only copied CPU images/identity remain.
     blueprint.Actor={}; blueprint.Capture={}; blueprint.Target={};
-    blueprint.Components={}; blueprint.Metadata={}; blueprint.Drawables={};
-    blueprint.ComponentCount=blueprint.MetadataCount=blueprint.DrawableCount=0;
-    blueprint.Begin=blueprint.Finish=blueprint.Enumerate=blueprint.Bounds=nullptr;
-    blueprint.ShowOnly=blueprint.ShowFlags=blueprint.Camera=blueprint.CaptureScene=nullptr;
-    blueprint.Statics=blueprint.Kismet=blueprint.SelectedClass=0;
+    blueprint.Metadata={};
+    blueprint.MetadataCount=0;
+    blueprint.SelectedClass=0;
     blueprint.ResourceCreationUncertain=blueprint.NativeAccessViolation=blueprint.ActorSpawnAttempted=false;
+    if (blueprint.Failed)
+        MiniMapBuildingSprites::RecordForLease(ownerLease,MiniMapBuildingSpriteCore::State::Failed,blueprint.Failure);
+    MiniMapBuildingSprites::AbandonCapture(ownerLease);
+    const auto fence=blueprintFence.GetState();
+    MiniMapCaptureLeases::RetirementReceipt receipt{
+        blueprint.Job==nullptr,
+        fence==MiniMapCaptureRetirement::FenceState::Empty||fence==MiniMapCaptureRetirement::FenceState::Destroyed,
+        !blueprint.Actor.Owned&&!blueprint.Capture.Owned&&!blueprint.Target.Owned,
+        blueprint.MetadataCount==0,
+        !deferredBlueprint.Pending,
+        blueprint.SelectedClass==0,
+        !blueprint.ResourceCreationUncertain&&!blueprint.NativeAccessViolation&&!blueprint.ActorSpawnAttempted};
+    if (ownerLease&&!MiniMapBuildingSprites::ReturnLease(ownerLease,receipt))
+    { BlueprintQuarantine("production_lease_retirement_not_certified"); return; }
+    ownerLease={};
     blueprint.Active=false; blueprint.Current=BlueprintPhase::Idle;
-    BlueprintLog("final",!blueprint.Failed,blueprint.Failed?blueprint.Failure:blueprint.VisualIncomplete?"rendered_partial_visual_dependencies_and_logically_retired":"rendered_and_logically_retired_UObject_GC_and_renderer_retirement_unobserved");
+    BlueprintLog("final",!blueprint.Failed,blueprint.Failed?blueprint.Failure:blueprint.VisualIncomplete?"rendered_with_unreproduced_visual_customization_and_logically_retired":"rendered_and_logically_retired_UObject_GC_and_renderer_retirement_unobserved");
     BlueprintTotals();
 }
 void BeginBlueprintRetirement()
@@ -700,6 +568,7 @@ void BlueprintFail(const char* stage, const char* reason, bool unsupported = fal
     if (!blueprint.Failed)
     {
         blueprint.Failed=true; blueprint.Failure=reason;
+        MiniMapBuildingSprites::RecordForLease(ownerLease,MiniMapBuildingSpriteCore::State::Failed,reason);
         BlueprintLog(stage,false,reason);
         if (unsupported) ++totals.Unsupported;
         else if (!blueprint.Actor.Owned) ++totals.ConstructionFailed;
@@ -711,8 +580,8 @@ void BlueprintSkipBeforeConstruction(const char* reason)
 {
     ++totals.Unsupported;
     BlueprintLog("candidate admission",false,reason);
-    blueprint.Active=false;
-    blueprint.Current=BlueprintPhase::Idle;
+    blueprint.Active=true;
+    BlueprintFail("candidate admission",reason);
     BlueprintTotals();
 }
 void BlueprintCandidateException() noexcept
@@ -733,50 +602,22 @@ std::filesystem::path BlueprintOutputPath(const wchar_t* suffix)
     HMODULE module{}; wchar_t path[32768]{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&moduleAnchor),&module) || !GetModuleFileNameW(module,path,32768)) return {};
-    const auto directory=std::filesystem::path(path).parent_path()/L"MiniMap"/L"Development"/L"PrivateWorld";
+    const auto directory=std::filesystem::path(path).parent_path()/L"MiniMap"/L"Cache"/L"Buildings";
     std::error_code error; std::filesystem::create_directories(directory,error);
     if (error) return {};
-    const auto name=L"run_"+std::to_wstring(outputRun)+L"_pid_"+std::to_wstring(GetCurrentProcessId())+
+    const auto name=L"private_building_"+std::to_wstring(blueprint.Building)+
         L"_g_"+std::to_wstring(state.Generation)+L"_candidate_"+std::to_wstring(blueprint.Id)+suffix;
     return directory/name;
 }
-uint64_t outputRun=GetTickCount64();
 bool WriteBlueprintImage(const std::vector<uint8_t>& rgba, const wchar_t* suffix)
 {
     const auto path=BlueprintOutputPath(suffix);
     if (path.empty()) { BlueprintLog("image_output",false,"module_path_or_directory_unavailable"); return false; }
     const auto result=MiniMapCapturePng::Write(path,256,256,rgba,false);
     const auto readableStage=BlueprintText(result.Stage);
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=image output outcome=%s path=%ls reason=%s HRESULT=%08lx production publication=0",
+    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=image output outcome=%s path=%ls reason=%s HRESULT=%08lx production publication=independent",
         (unsigned long long)blueprint.Id,result.Ok?"success":"failure",path.c_str(),readableStage.c_str(),(unsigned long)result.Error);
     return result.Ok;
-}
-void CompareBlueprintImages()
-{
-    if (blueprint.Production.size()!=256*256*4 || blueprint.PrivateImage.size()!=256*256*4) return;
-    uint64_t differing{}, alphaDifference{}, colorDifference{};
-    for (size_t i=0;i<blueprint.Production.size();i+=4)
-    {
-        bool different=false;
-        for (size_t c=0;c<4;++c)
-        {
-            const auto d=std::abs(int(blueprint.Production[i+c])-int(blueprint.PrivateImage[i+c]));
-            different |= d!=0;
-            if (c==3) alphaDifference+=d; else colorDifference+=d;
-        }
-        differing+=different;
-    }
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=comparison outcome=observed differing pixels=%llu mean absolute alpha=%.5f mean absolute RGB=%.5f framing=independent actual bounds lighting=private unlit versus gameplay equivalence=not established",
-        (unsigned long long)blueprint.Id,(unsigned long long)differing,double(alphaDifference)/65536.0,double(colorDifference)/(65536.0*3));
-    WriteBlueprintImage(blueprint.Production,L"_component_copy.png");
-    blueprint.Production.clear();
-}
-void CompareProduction(const Candidate& candidate, const unsigned char* rgba, size_t bytes)
-{
-    // CPU-only, bounded single candidate pair. No cache/atlas/publication calls.
-    if (!rgba || bytes!=256*256*4 || blueprint.Key!=SessionVisualKey(candidate)) return;
-    blueprint.Production.assign(rgba,rgba+bytes);
-    CompareBlueprintImages();
 }
 void ExportBlueprintReadback()
 {
@@ -790,29 +631,33 @@ void ExportBlueprintReadback()
         ++totals.CaptureFailed; BlueprintLog("image_validation",false,blueprint.Failure); return;
     }
     ++totals.ValidReadbacks;
-    BlueprintLog("image_validation",true,blueprint.VisualIncomplete?"valid_pixels_with_incomplete_visual_dependencies":"256x256_finite_foreground_and_background_not_visual_equivalence");
+    BlueprintLog("image_validation",true,blueprint.VisualIncomplete?"valid_pixels_candidate_has_unreproduced_visual_customization":"256x256_finite_foreground_and_background_not_visual_equivalence");
     blueprint.PrivateImage=std::move(image.Rgba);
-    if (!WriteBlueprintImage(blueprint.PrivateImage,L"_blueprint.png"))
-    { blueprint.Failed=true; blueprint.Failure="development_PNG_write_failed"; }
-    CompareBlueprintImages();
+    MiniMapStaticAssembly::Footprint bounds;
+    bounds.Min={blueprint.Center.X-blueprint.Extent.X,blueprint.Center.Y-blueprint.Extent.Y,blueprint.Center.Z-blueprint.Extent.Z};
+    bounds.Max={blueprint.Center.X+blueprint.Extent.X,blueprint.Center.Y+blueprint.Extent.Y,blueprint.Center.Z+blueprint.Extent.Z};
+    bounds.Initialized=true;
+    MiniMapBuildingSprites::Complete(ownerLease,bounds,blueprint.PrivateImage);
+#if MINIMAP_DEBUG_UI
+    // Optional export is independent of production texture publication.
+    try { WriteBlueprintImage(blueprint.PrivateImage,L"_blueprint.png"); }
+    catch (...) { BlueprintLog("image output",false,"optional PNG output failed"); }
+#endif
 }
 
-void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_t building, void* gameplay)
+void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_t building, void* gameplay, bool resumed=false, uint64_t resumedId=0)
 {
-    ++totals.Encountered;
     const auto key=SessionVisualKey(candidate);
-    if (attemptedBlueprints.contains(key)) return;
-    const auto id=++nextBlueprintId;
+    if (!resumed && deferredBlueprint.Pending && deferredBlueprint.Key==key) return;
+    if (!resumed) ++totals.Encountered;
+    const auto id=resumed?resumedId:++nextBlueprintId;
     if (blueprint.Active || blueprint.Current==BlueprintPhase::Quarantined || state.Current!=Phase::Ready)
     {
-        LOG_INFO("MiniMap: private_blueprint_actor id=%llu generation=%llu building=%u candidate=%s step=owner readiness outcome=skipped reason=%s production unchanged=1",
+        LOG_INFO("MiniMap: private_blueprint_actor id=%llu generation=%llu building=%u candidate=%s step=owner readiness outcome=skipped reason=%s",
             (unsigned long long)id,(unsigned long long)candidate.Identity.Generation,building,key.c_str(),
             blueprint.Active?"private capture owner is busy":state.Current==Phase::Quarantined?"private capture session is quarantined":"private capture world is not ready");
         return;
     }
-    if (attemptedBlueprints.size()>=4096)
-    { LOG_WARN("MiniMap: private_blueprint_actor id=%llu step=admission outcome=skipped reason=session candidate inventory reached its 4096 entry memory bound",(unsigned long long)id); return; }
-    attemptedBlueprints.insert(key); // terminal for this visual identity in this session
     blueprint={}; blueprint.Active=true; blueprint.Id=id; blueprint.Building=building; blueprint.Key=key;
     blueprint.Failure="Blueprint class identity is incomplete";
     if (!state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread())
@@ -821,19 +666,35 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     { BlueprintQuarantine("candidate gameplay world does not match the private capture session"); return; }
     QuietGCDetail gcDetail;
     if (!QuietGC(&gcDetail))
-    { BlueprintSkipBeforeConstruction(gcDetail.Step); return; }
+    {
+        if (!deferredBlueprint.Pending && candidate.CanonicalBlueprint && candidate.CanonicalBlueprint->size()<=1024)
+        {
+            DeferredBlueprint pending;
+            pending.Identity=candidate.Identity; pending.ActorObject=candidate.ActorObject;
+            pending.ActorName=candidate.ActorName; pending.ActorNumber=candidate.ActorNumber;
+            pending.Tier=candidate.Tier; pending.ClassificationObserved=candidate.ClassificationObserved;
+            pending.Exclusion=candidate.Classification.ExcludeFromMiniMap;
+            pending.Building=building; pending.Generation=state.Generation; pending.Id=id;
+            pending.SessionToken=reinterpret_cast<uintptr_t>(gameplay);
+            pending.Key=key; pending.ClassPath=*candidate.CanonicalBlueprint; pending.Pending=true;
+            deferredBlueprint=std::move(pending);
+            LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=candidate admission outcome=deferred reason=%s capacity=1",
+                (unsigned long long)id,gcDetail.Step);
+        }
+        else LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=candidate admission outcome=skipped reason=deferred slot full or copied path unavailable no terminal attempt=1",(unsigned long long)id);
+        blueprint.Active=false; blueprint.Current=BlueprintPhase::Idle;
+        return;
+    }
+    attemptedBlueprints.insert(key);
     if (!Unchanged())
     { BlueprintQuarantine("gameplay world identity or baseline changed"); return; }
     if (!PrivateState(true))
     { BlueprintQuarantine("private capture world lifecycle validation failed"); return; }
     BlueprintLog("owner readiness",true,"candidate uses the existing game thread and current session");
-    if (candidate.ClassificationObserved && candidate.Classification.ExcludeFromMiniMap!=MiniMapSpriteClassification::Exclusion::Include)
-        LOG_INFO("MiniMap: private_blueprint_actor id=%llu generation=%llu building=%u step=candidate policy outcome=info reason=production classification excludes this building; development construction remains eligible",
-            (unsigned long long)id,(unsigned long long)candidate.Identity.Generation,building);
     if (candidate.Identity.Spline || candidate.Identity.TintBits!=MiniMapSpriteDiscoveryCore::Key{}.TintBits)
     {
         blueprint.VisualIncomplete=true;
-        BlueprintLog("visual customization","observed","candidate has spline or tint customization that this diagnostic capture does not reproduce");
+        BlueprintLog("visual customization","observed","candidate has spline or tint customization not reproduced by the reference capture");
     }
     if (!MiniMapReadbackNative::Preflight()) { BlueprintFail("native ABI","shared GPU readback backend is unavailable",true); return; }
     if (!BlueprintBindings()) { BlueprintFail("native ABI", "native Actor destruction entry is unavailable",true); return; }
@@ -849,18 +710,21 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     auto* generated=BlueprintClass(L"/Script/Engine.BlueprintGeneratedClass");
     auto* found=FindBlueprintObject(wide.c_str(),generated,nullptr,true);
     Identity identity;
+    if (resumed) selectedClass=reinterpret_cast<uintptr_t>(found);
     if (!found || reinterpret_cast<uintptr_t>(found)!=selectedClass ||
-        !Identify(selectedClass,identity,sizeof(SDK::UBlueprintGeneratedClass)) || found->Class!=generated)
-    { BlueprintFail("class resolution","resident class is absent or differs from the selected visual class",true); return; }
+        !Identify(selectedClass,identity,sizeof(SDK::UBlueprintGeneratedClass)) ||
+        (resumed && identity.Index!=candidate.Identity.VisualClass) || found->Class!=generated)
+    {
+        if (resumed) LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=deferred admission outcome=permanent failure reason=resident class absent or copied visual class identity differs",(unsigned long long)id);
+        BlueprintFail("class resolution","resident class is absent or differs from the selected visual class",true); return;
+    }
     auto* type=static_cast<Class*>(found);
     if (type->Size<int32_t(sizeof(SDK::ACrBuildingActorBase)) || type->Size>65536 || !KeepBlueprintMetadata(type))
     { BlueprintFail("class resolution","Blueprint class extent or retained identity is invalid",true); return; }
     blueprint.SelectedClass=selectedClass;
     LOG_INFO("MiniMap: private_blueprint_actor id=%llu candidate=%s blueprint=%s class index=%d step=class resolution outcome=success source=authored definition and selected visual class",
         (unsigned long long)id,key.c_str(),blueprint.ClassPath.c_str(),identity.Index);
-    if (!ResolveBlueprintFunctions()) { BlueprintFail("native ABI","required Unreal reflected functions do not match the native call contract",true); return; }
     if (!AdmitBlueprint(type)) { BlueprintFail("construction admission",blueprint.Failure,true); return; }
-    BlueprintLog("native ABI",true,"shipping Actor destruction entry and reflected parameter contracts match");
     if (!BlueprintLevel(blueprint.LevelHash,blueprint.LevelCount))
     { BlueprintQuarantine("private persistent level could not be inspected before spawn"); return; }
     if (!QuietGC()) { BlueprintQuarantine("garbage collection became active before spawn"); return; }
@@ -868,26 +732,19 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     if (!Unchanged()) { BlueprintQuarantine("gameplay world baseline changed before spawn"); return; }
     ++totals.Eligible;
     BlueprintLog("construction admission",true,"native building ancestry and bounded object identity verified; Unreal chooses the Blueprint construction path");
-    SDK::Params::GameplayStatics_BeginDeferredActorSpawnFromClass begin{};
-    begin.WorldContextObject=reinterpret_cast<BN*>(state.Private.Object.Bits);
-    std::memcpy(&begin.ActorClass,&type,8);
-    begin.SpawnTransform=BlueprintIdentityTransform();
-    begin.CollisionHandlingOverride=SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    begin.TransformScaleMethod=SDK::ESpawnActorScaleMethod::MultiplyWithRoot;
+    SDK::TSubclassOf<SDK::AActor> actorClass(type);
+    const auto spawnTransform=BlueprintIdentityTransform();
+    constexpr auto collision=SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    constexpr auto scale=SDK::ESpawnActorScaleMethod::MultiplyWithRoot;
+    SDK::AActor* spawnedActor{};
     blueprint.ActorSpawnAttempted=true;
-    bool spawnAccessViolation=false;
-    if (!BlueprintCall(reinterpret_cast<BN*>(blueprint.Statics),blueprint.Begin,&begin,&spawnAccessViolation))
+    if (!GuardedBeginDeferredActorSpawn(reinterpret_cast<SDK::UObject*>(state.Private.Object.Bits),
+        actorClass,&spawnTransform,collision,nullptr,scale,&spawnedActor))
     {
-        uint64_t hash{}; int32_t count{};
-        if (!spawnAccessViolation && Unchanged() && PrivateState(true) && BlueprintLevel(hash,count) && hash==blueprint.LevelHash && count==blueprint.LevelCount)
-        {
-            blueprint.ActorSpawnAttempted=false;
-            BlueprintFail("deferred spawn","Unreal rejected deferred spawn before creating an Actor");
-        }
-        else BlueprintQuarantine("deferred spawn raised an access violation or private world ownership cannot be confirmed");
+        BlueprintQuarantine("deferred spawn raised an access violation or private world ownership cannot be confirmed");
         return;
     }
-    if (!begin.ReturnValue)
+    if (!spawnedActor)
     {
         uint64_t hash{}; int32_t count{};
         if (!Unchanged() || !PrivateState(true) || !BlueprintLevel(hash,count) || hash!=blueprint.LevelHash || count!=blueprint.LevelCount)
@@ -895,24 +752,18 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
         blueprint.ActorSpawnAttempted=false;
         BlueprintFail("deferred spawn","Unreal returned no Actor"); return;
     }
-    if (!Hold(reinterpret_cast<uintptr_t>(begin.ReturnValue),blueprint.Actor) || !BlueprintActorState(false))
+    if (!Hold(reinterpret_cast<uintptr_t>(spawnedActor),blueprint.Actor) || !BlueprintActorState(false))
     { ++totals.ConstructionFailed; BlueprintQuarantine("deferred_actor_retention_level_or_initialization_invalid"); return; }
     BlueprintLog("deferred spawn",true,"retained Actor belongs to the private persistent level and has no owner or instigator");
-    SDK::Params::GameplayStatics_FinishSpawningActor finish{};
-    finish.Actor=begin.ReturnValue; finish.SpawnTransform=begin.SpawnTransform; finish.TransformScaleMethod=begin.TransformScaleMethod;
-    if (!BlueprintCall(reinterpret_cast<BN*>(blueprint.Statics),blueprint.Finish,&finish) ||
-        finish.ReturnValue!=begin.ReturnValue || !BlueprintActorState(true))
+    SDK::AActor* finishedActor{};
+    if (!GuardedFinishSpawningActor(spawnedActor,&spawnTransform,scale,&finishedActor) ||
+        finishedActor!=spawnedActor || !BlueprintActorState(true))
     { ++totals.ConstructionFailed; BlueprintQuarantine("FinishSpawning_return_or_ownership_isolation_uncertain"); return; }
     ++totals.Constructed;
     BlueprintLog("finish spawning",true,"Unreal finished the same Actor in the private world");
-    if (!InspectBlueprint())
-    {
-        BlueprintQuarantine("runtime component ownership could not be established after Actor construction");
-        return;
-    }
-    if (!blueprint.DrawableCount)
-    { BlueprintFail("component inspection",blueprint.Failure,true); return; }
-    BlueprintLog("isolation",true,"contexts_GameInstance_world_flags_private_level_and_component_ownership_unchanged_identified_gameplay_paths_excluded_not_save_byte_audit");
+    if (!GetBlueprintActorBounds())
+    { BlueprintFail("actor bounds",blueprint.Failure); return; }
+    BlueprintLog("isolation",true,"private_world_and_gameplay_baseline_unchanged");
     if (!PrepareBlueprintCapture())
     {
         if (!blueprint.ResourceCreationUncertain && !blueprint.NativeAccessViolation && QuietGC() && Unchanged() && PrivateState(true) && BlueprintActorState(true))
@@ -923,12 +774,56 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     BlueprintRetirementOperations operations{this};
     if (!blueprintFence.Rearm() || !blueprintFence.Prepare(operations)) { BlueprintQuarantine("capture_retirement_fence_preparation_uncertain"); return; }
     blueprint.Current=BlueprintPhase::Prepared; blueprint.PreparedTick=blueprintTick;
-    BlueprintLog("capture_prepared",true,"next_engine_tick_C0_then_C10_no_production_publication");
+    BlueprintLog("capture_prepared",true,"next_engine_tick_C0_then_C10");
+}
+void ServiceDeferredBlueprint()
+{
+    if (!deferredBlueprint.Pending || blueprint.Active || blueprint.Current==BlueprintPhase::Quarantined) return;
+    auto& pending=deferredBlueprint;
+    if (!MiniMapMap::GameplayReady() || reinterpret_cast<uintptr_t>(state.SessionWorld)!=pending.SessionToken ||
+        MiniMapMap::GetWorld()!=state.SessionWorld || state.Generation!=pending.Generation)
+    { DiscardDeferredBlueprint("session or gameplay world generation stale"); return; }
+    const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+    if (!snapshot || !snapshot->Complete) return; // incomplete publication does not prove removal
+    if (snapshot->Generation!=pending.Identity.Generation)
+    { DiscardDeferredBlueprint("source generation stale"); return; }
+    if (!QuietGC()) return; // silent while pending; no object access
+    if (pending.SourcePublication!=snapshot->PublishedAtSeconds)
+    { pending.SourcePublication=snapshot->PublishedAtSeconds; pending.SourceCursor=0; }
+    bool current=false;
+    size_t visits=0;
+    // CPU source reconciliation is sliced too: at most 128 copied records per tick.
+    while (pending.SourceCursor<snapshot->Records.size() && visits++<128)
+    {
+        const auto& source=snapshot->Records[pending.SourceCursor++];
+        if (source.BuildingId!=pending.Building) continue;
+        auto copied=MiniMapSpriteCandidates::Copy(source);
+        copied.Identity.Representation=pending.Identity.Representation;
+        if (copied.DefinitionValid && copied.VisualInputsValid && copied.Identity==pending.Identity &&
+            source.CanonicalBlueprint && *source.CanonicalBlueprint==pending.ClassPath) { current=true; break; }
+    }
+    if (!current)
+    {
+        if (pending.SourceCursor>=snapshot->Records.size()) DiscardDeferredBlueprint("source identity or Blueprint path stale");
+        return;
+    }
+    Candidate candidate;
+    candidate.Identity=pending.Identity; candidate.ActorObject=pending.ActorObject;
+    candidate.ActorName=pending.ActorName; candidate.ActorNumber=pending.ActorNumber; candidate.Tier=pending.Tier;
+    candidate.ClassificationObserved=pending.ClassificationObserved;
+    candidate.Classification.ExcludeFromMiniMap=pending.Exclusion;
+    candidate.CanonicalBlueprint=std::make_shared<const std::string>(pending.ClassPath);
+    const auto id=pending.Id; const auto building=pending.Building;
+    deferredBlueprint={};
+    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=deferred candidate outcome=resumed reason=current session source and generation GC quiet",(unsigned long long)id);
+    // Offer repeats the admission GC gate, then resolves the path afresh. No cached class.
+    OfferBlueprint(candidate,0,building,state.SessionWorld,true,id);
 }
 void ServiceBlueprint()
 {
     if (!state.NativePrerequisitesVerified || !MiniMapNative::Get() || !MiniMapNative::Get()->player.isGameThread || !MiniMapNative::Get()->player.isGameThread()) { BlueprintQuarantine("service_off_game_thread"); return; }
     ++blueprintTick;
+    ServiceDeferredBlueprint();
     if (!blueprint.Active || blueprint.Current==BlueprintPhase::Quarantined) return;
     if (!QuietGC() || !Unchanged() || !PrivateState(true)) { BlueprintQuarantine("service_native_lifetime_or_world_baseline_changed"); return; }
     if (blueprint.Current==BlueprintPhase::Retiring)
@@ -958,18 +853,16 @@ void ServiceBlueprint()
     {
         if (blueprintTick<=blueprint.PreparedTick ||
             (blueprint.Current==BlueprintPhase::C0 && blueprintTick-blueprint.C0Tick<10)) return;
-        if (!BlueprintActorState(true) || !CheckOwned(blueprint.Capture) || !CheckOwned(blueprint.Target) ||
-            !MiniMapBuildingRepresentation::ValidateCaptureMembership(blueprint.Capture.Object.Bits,blueprint.Drawables.data(),blueprint.DrawableCount))
-        { BlueprintQuarantine("capture_submission_actor_resource_or_membership_invalid"); return; }
-        for (size_t i=0;i<blueprint.ComponentCount;++i)
-            if (!CheckOwned(blueprint.Components[i])) { BlueprintQuarantine("capture_component_identity_invalid"); return; }
+        if (!BlueprintActorState(true) || !CheckOwned(blueprint.Capture) || !CheckOwned(blueprint.Target))
+        { BlueprintQuarantine("capture_submission_actor_or_resource_ownership_invalid"); return; }
         for (size_t i=0;i<blueprint.MetadataCount;++i)
-            if (!CheckOwned(blueprint.Metadata[i])) { BlueprintQuarantine("capture_reflected_metadata_identity_invalid"); return; }
-        uint8_t empty{};
+            if (!CheckOwned(blueprint.Metadata[i])) { BlueprintQuarantine("capture_class_metadata_identity_invalid"); return; }
         if (blueprint.Current==BlueprintPhase::Prepared)
         {
+            if (!MiniMapBuildingSprites::StartCapture(ownerLease))
+            { BlueprintFail("capture admission","session capture reservation is no longer current"); return; }
             blueprint.CaptureUsed=true; // before irreversible void dispatch; no premature destruction
-            if (!BlueprintCall(reinterpret_cast<BN*>(blueprint.Capture.Object.Bits),blueprint.CaptureScene,&empty))
+            if (!GuardedCaptureScene(reinterpret_cast<SDK::USceneCaptureComponent2D*>(blueprint.Capture.Object.Bits)))
             { BlueprintQuarantine("C0_CaptureScene_invocation_uncertain"); return; }
             blueprint.C0Tick=blueprintTick; blueprint.Current=BlueprintPhase::C0;
             BlueprintLog("capture_C0",true,"CaptureScene_normal_return_no_readback_or_render_proof"); return;
@@ -977,7 +870,7 @@ void ServiceBlueprint()
         if (!MiniMapReadbackNative::MarkExternalCaptureCommitted(blueprint.Job))
         { BlueprintQuarantine("C10_readback_job_commit_uncertain"); return; }
         blueprint.Committed=true;
-        if (!BlueprintCall(reinterpret_cast<BN*>(blueprint.Capture.Object.Bits),blueprint.CaptureScene,&empty))
+        if (!GuardedCaptureScene(reinterpret_cast<SDK::USceneCaptureComponent2D*>(blueprint.Capture.Object.Bits)))
         { BlueprintQuarantine("C10_CaptureScene_invocation_uncertain"); return; }
         ++totals.Captured;
         blueprint.Current=BlueprintPhase::Readback;

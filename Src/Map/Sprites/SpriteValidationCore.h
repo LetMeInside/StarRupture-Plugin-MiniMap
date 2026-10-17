@@ -17,7 +17,7 @@ namespace MiniMapSpriteValidation
     inline const char* DispositionLabel(AuditDisposition d,bool done)
     {return d==AuditDisposition::Interrupted?"interrupted":d==AuditDisposition::Deferred?"deferred":done?"completed":"pending";}
     inline const char* Label(Outcome o)
-    {switch(o){case Outcome::Eligible:return "generic_static_template_eligible";case Outcome::Conditional:return "conditional";
+    {switch(o){case Outcome::Eligible:return "private_blueprint_eligible";case Outcome::Conditional:return "conditional";
     case Outcome::Unsupported:return "unsupported_current_method";case Outcome::NoResident:return "no_validated_resident_representation";default:return "invalid_or_stale";}}
     struct Result
     {
@@ -47,49 +47,8 @@ namespace MiniMapSpriteValidation
         {Handoff=decision;if(decision.Why==MiniMapSpriteCapture::Cause::RecipeInvalid)RecipeCheck=decision.RecipeCheck;
             if(decision.Why==MiniMapSpriteCapture::Cause::OperationalException)MarkInterrupted();}
     };
-    inline void ValidateStaticRecipe(Result& result,const MiniMapStaticAssembly::Recipe& recipe)
-    {
-        MiniMapStaticAssembly::Footprint bounds;result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
-        if(const auto* reason=MiniMapStaticAssembly::Label(result.RecipeCheck.Failure))
-        {result.Status=Outcome::Conditional;result.Reason=reason;}
-    }
     inline void BoundDiagnosticDetails(Result& r)
     {if(r.Details.size()>DetailLimit){r.Details="{\"truncated\":true}";r.DiagnosticTruncated=true;}}
-    inline bool ValidateSupportedSubset(Result& result,MiniMapStaticAssembly::Recipe& recipe,bool sourceVerified,
-        MiniMapStaticAssembly::SubsetSelection& selection)
-    {
-        // Unknown inherited selection, traversal bounds and source identity still
-        // block. A socket failure on an omitted sibling is not a fabricated transform.
-        if(!sourceVerified||result.Disposition!=AuditDisposition::Completed||!result.Resident||!result.Root||result.Truncated||result.Inherited||result.Child||
-            result.Skeletal||result.OtherSkinned)return false;
-        selection=MiniMapStaticAssembly::SelectSupportedSubset(recipe);
-        if(selection.Conflict)return false;
-        MiniMapStaticAssembly::Footprint bounds;
-        result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
-        if(result.RecipeCheck.Failure!=MiniMapStaticAssembly::RecipeFailure::None)return false;
-        recipe.VisualIncomplete=true;result.Status=Outcome::Eligible;
-        return true;
-    }
-    inline Outcome Classify(const Result& r,bool spline)
-    {
-        if(spline)return Outcome::Unsupported;
-        if(!r.Resident)return Outcome::NoResident;
-        if(r.Route=="mass_ism"||(!r.Static&&!r.Truncated))return Outcome::Unsupported;
-        if(r.Truncated||!r.Root||!r.Transforms||!r.Materials||r.Inherited||r.Child||r.OtherSkinned||r.DerivedStatic)return Outcome::Conditional;
-        return Outcome::Eligible;
-    }
-    inline bool ValidateIndependentNativeSubset(Result& result,const MiniMapStaticAssembly::Recipe& recipe,bool sourceVerified)
-    {
-        // The caller supplies an independently rooted, fully validated native
-        // recipe. Full SCS traversal/inheritance flags describe omitted visuals.
-        if(!sourceVerified||result.Disposition!=AuditDisposition::Completed||!result.Resident||
-            recipe.Count!=1||!recipe.General||!recipe.VisualIncomplete)return false;
-        MiniMapStaticAssembly::Footprint bounds;
-        result.RecipeCheck=MiniMapStaticAssembly::ValidateTyped(recipe,bounds);
-        if(result.RecipeCheck.Failure!=MiniMapStaticAssembly::RecipeFailure::None)return false;
-        result.Root=result.Transforms=result.Materials=true;result.Truncated=false;result.Status=Outcome::Eligible;
-        return true;
-    }
     struct AuditProvenance
     {uint64_t Generation{},Serial{},Membership{};double SourcePublication{};std::optional<uint64_t> RendererRevision;};
     struct Attempt
@@ -104,8 +63,7 @@ namespace MiniMapSpriteValidation
         bool Done=false,MissingRepresentative=false,RecoveryRequired=false;
     };
     // Reusable FIFO preflight evidence, not current membership or native admission.
-    // The native handoff still rebuilds and validates the recipe. Explicit provider
-    // reevaluation clears Done/provenance; transport epochs do not rewrite this receipt.
+    // The native handoff revalidates candidate identity and session ownership.
     inline bool ReusableEligibleEvidence(const Attempt& e,uint64_t generation)noexcept
     {
         const auto& p=e.Provenance;

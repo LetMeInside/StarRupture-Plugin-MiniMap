@@ -111,8 +111,6 @@
     <ClInclude Include="Map\Sprites\SpriteClassificationCore.h" />
     <ClInclude Include="Map\Sprites\SpriteValidationCore.h" />
     <ClInclude Include="Map\Sprites\SpriteCandidateIdentity.h" />
-    <ClInclude Include="Map\Sprites\RendererReadinessCore.h" />
-    <ClInclude Include="Map\Sprites\RendererReadiness.h" />
     <ClInclude Include="Map\Sprites\SpriteCaptureCore.h" />
     <ClInclude Include="Map\Sprites\BuildingSpritePipelineCore.h" />
     <ClInclude Include="Map\Sprites\BuildingSprites.h" />
@@ -156,11 +154,7 @@
     </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)Engine_functions.cpp">
     </ClCompile>
-    <ClInclude Include="Map\Sprites\SourceMetadataAudit.inl" />
     <ClCompile Include="dllmain.cpp" />
-    <ClCompile Include="Map\Sprites\RendererReadiness.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
     <ClCompile Include="Native\ReadbackNativeResolution.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>

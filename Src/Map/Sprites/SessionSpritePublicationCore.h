@@ -46,7 +46,7 @@ namespace MiniMapSessionPublication
             typename Versions::node_type Invisible;
             std::unique_ptr<Upload> Unselected;
             Slot* NextDirty{};
-            bool Dirty=false,Waiting=false;
+            bool Dirty=false;
             MiniMapBuildingSpriteCore::State CountedState=MiniMapBuildingSpriteCore::State::Awaiting;
         };
         struct Pin
@@ -75,7 +75,7 @@ namespace MiniMapSessionPublication
         std::shared_ptr<Store> NextRetired;
         const uint64_t World;
         uint64_t Revision{},LastSlot{},PinEpoch{};
-        size_t ImageSlots{},Pins{},SelectedCount{},SelectedBytes{},UnselectedCount{},UnselectedBytes{},WaitingCount{},VersionCount{};
+        size_t ImageSlots{},Pins{},SelectedCount{},SelectedBytes{},UnselectedCount{},UnselectedBytes{},VersionCount{};
         size_t AllocationFailures{},PublicationFailures{},CounterFailures{};
         bool Active=true,CurrentValid=false;
         using RegistryPublication=std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>;
@@ -150,7 +150,7 @@ namespace MiniMapSessionPublication
         }
         MiniMapBuildingSpriteCore::Admission QueueCapture(const Key& key,MiniMapCaptureLeases::Ledger& ledger,MiniMapCaptureLeases::Token& token)
         {auto* s=Observe(key);return s?Admit(*s,ledger,token):MiniMapBuildingSpriteCore::Admission::Capacity;}
-        void FlushDemand(){if(Touched){auto* s=Touched;Touched=nullptr;SyncDemand(*s);
+        void FlushDemand(){if(Touched){auto* s=Touched;Touched=nullptr;
             if(s->CountedState!=s->Status){auto& old=StateCounts[size_t(s->CountedState)];
                 if(!old){++CounterFailures;throw std::logic_error("sprite state counter underflow");}
                 --old;++StateCounts[size_t(s->Status)];s->CountedState=s->Status;}}}
@@ -169,12 +169,12 @@ namespace MiniMapSessionPublication
             const auto& slot=found->second;
             out.MetadataReady=InitializationRegistry==Current&&InitializationCursor==Current->Count;
             out.KeyAdopted=MembershipRevision&&slot.AdoptedMembership==MembershipRevision;
-            out.SourceKnown=slot.Dependencies.Tracked&&!slot.Dependencies.Source.empty();
-            out.SourceRevision=slot.Dependencies.SourceRevision;out.ImageRevision=slot.ImageRevision;
+            out.SourceKnown=true;
+            out.SourceRevision=0;out.ImageRevision=slot.ImageRevision;
             out.InitialAdmission=slot.InitialAdmission;out.InFlight=slot.InFlight;
             out.PolicyState=slot.Status;out.HasCachedImage=bool(slot.Cached);
-            out.Terminal=slot.Status==MiniMapBuildingSpriteCore::State::Excluded||slot.Status==MiniMapBuildingSpriteCore::State::Unsupported;
-            out.Advancement=EligibleAdvancement(slot);return out;
+            out.Terminal=slot.InitialAdmission||slot.Status==MiniMapBuildingSpriteCore::State::Excluded||slot.Status==MiniMapBuildingSpriteCore::State::Unsupported;
+            out.Advancement=0;return out;
         }
         struct ScaleObservation
         {
@@ -227,20 +227,6 @@ namespace MiniMapSessionPublication
             if(MembershipCursor>=Current->Count)MembershipCursor=0;
             key=Current->Entries[MembershipCursor].Identity;++MembershipCursor;return true;
         }
-        static bool Demand(const Slot& s)noexcept
-        {const auto& d=s.Dependencies;return d.Tracked&&d.Demand&&d.ObservationWatch==MiniMapRendererReadiness::Dependencies::Watch::Waiting;}
-        void SyncDemand(Slot& s)
-        {
-            const bool now=Demand(s);if(now==s.Waiting)return;
-            if((now&&WaitingCount==(std::numeric_limits<size_t>::max)())||(!now&&!WaitingCount))
-            {++CounterFailures;throw std::logic_error("sprite waiting demand counter inconsistent");}
-            if(now)++WaitingCount;else --WaitingCount;s.Waiting=now;
-        }
-        struct DemandGuard
-        {
-            Store& Owner;Slot* Entry;
-            ~DemandGuard()noexcept{if(Entry)try{Owner.SyncDemand(*Entry);}catch(...){std::terminate();}}
-        };
         typename Versions::node_type InvisibleNode()
         {Check(Allocation::Reserve);Versions temp;temp.emplace(0,Image{});return temp.extract(temp.begin());}
         Prepared Prepare(Image image)
@@ -277,7 +263,7 @@ namespace MiniMapSessionPublication
         bool Commit(Slot& s,Prepared& p,uint64_t sourceRevision,uint64_t imageRevision)
         {
             std::scoped_lock lock(Mutex);
-            if(!Active||!Owns(s)||s.Key.Generation!=World||s.Dependencies.SourceRevision!=sourceRevision||s.ImageRevision!=imageRevision||imageRevision==(std::numeric_limits<uint64_t>::max)()||Revision==(std::numeric_limits<uint64_t>::max)())
+            if(!Active||!Owns(s)||s.Key.Generation!=World||sourceRevision!=0||s.ImageRevision!=imageRevision||imageRevision==(std::numeric_limits<uint64_t>::max)()||Revision==(std::numeric_limits<uint64_t>::max)())
             {++PublicationFailures;return false;}
             if(s.Invisible.empty())s.Invisible=std::move(p.Invisible);
             if(s.Invisible.empty()||p.Visible.empty()||!p.Visible.mapped()||p.DisplacedCache){++PublicationFailures;return false;}
@@ -345,7 +331,6 @@ namespace MiniMapSessionPublication
                             --UnselectedCount;UnselectedBytes-=upload->Pixels->RawBytes;}
                         else {slot=Slots.extract(Slots.begin());if(Touched==&slot.mapped())Touched=nullptr;
                             --Count;--StateCounts[size_t(slot.mapped().CountedState)];
-                            if(slot.mapped().Waiting){if(!WaitingCount)std::terminate();--WaitingCount;}
                             if(slot.mapped().Cached){--SelectedCount;SelectedBytes-=slot.mapped().Cached->RawBytes;}}
                         }
                     }

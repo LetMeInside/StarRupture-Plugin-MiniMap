@@ -4,7 +4,6 @@
 #include "SpriteCandidateIdentity.h"
 #include "BuildingSpriteCapture.h"
 #include "CapturePng.h"
-#include "RendererReadiness.h"
 #include "plugin_helpers.h"
 #include <mutex>
 #include <limits>
@@ -45,7 +44,6 @@ namespace MiniMapBuildingSprites
             std::array<TimingStats,size_t(Timing::Count)> Timings{};
             size_t Hits{},Fallbacks{},Completed{},Failed{},SuccessfulTypes{},UploadFailures{};
             uint64_t UploadSequence{};
-            std::chrono::steady_clock::time_point NextDependencyService{};
             std::array<size_t,size_t(DrawCounter::Count)> DrawCounts{};
             size_t DiagnosticFrames{},DiagnosticReports{},SampledHandleChecks{},SampledInvalidHandles{};
             size_t SpatialReports{},SpatialCompleted{};
@@ -71,52 +69,6 @@ namespace MiniMapBuildingSprites
         bool SourceCurrent(const MiniMapSpriteDiscoveryCore::Key& key) // access held
         {
             return owner&&owner->Jobs.SourceCurrent(key);
-        }
-        MiniMapRendererReadiness::NotificationAck NotifyLocked(P::Entry& e,
-            const MiniMapRendererReadiness::ProviderObservation& observation,const std::vector<uint64_t>& source)
-        {
-            namespace R=MiniMapRendererReadiness;using Ack=R::NotificationAck;
-            auto& d=e.Dependencies;const auto* provider=R::FindProvider(observation.Provider);
-            if(observation.World!=e.Key.Generation)return Ack::Invalidated;
-            if(source.empty())return Ack::Rejected;
-            if(source!=d.Source)return Ack::Invalidated; // committed, validated recipe generation changed
-            if(!provider||observation.Conditions!=provider->Conditions)return Ack::Rejected;
-            for(size_t i=0;i<d.ResourceCount;++i)
-            {
-                auto& dependency=d.Resources[i];const auto& r=dependency.Evidence;
-                if(!R::SameResource(r,observation)||dependency.ObjectIndex!=observation.ObjectIndex||
-                    dependency.NameIndex!=observation.NameIndex||dependency.NameNumber!=observation.NameNumber)continue;
-                if(r.ResourceVersion!=observation.ResourceVersion)
-                    return r.ResourceVersion>observation.ResourceVersion?Ack::Invalidated:Ack::Rejected;
-                const auto& recorded=dependency.Advancement;
-                if(dependency.AdvancementRevision&&dependency.AdvancementSource==d.SourceRevision&&
-                    R::SameResource(recorded,observation)&&recorded.ResourceVersion==observation.ResourceVersion&&
-                    recorded.ObservationRevision==observation.ObservationRevision)return Ack::AlreadyRecorded;
-                if(!d.Tracked||!observation.ObservationRevision||observation.ObservationRevision!=r.ObservationRevision)return Ack::Rejected;
-                if(observation.RecaptureEligible)
-                {
-                    // Record provider-owned progress even when its current capture
-                    // relevance is temporarily false; eligibility is independent.
-                    const bool relevant=provider->Relevant(observation,r);
-                    // Commit proof before acknowledging the notification. No
-                    // allocation or engine dispatch occurs in these scalar writes.
-                    dependency.Advancement=observation;dependency.AdvancementSource=d.SourceRevision;
-                    dependency.AdvancementRevision=++d.AdvancementRevision;dependency.Relevant=relevant;
-                }
-                else if(observation.ObservationRevision<=dependency.LastNotificationRevision)return Ack::Observed;
-                dependency.LastNotificationRevision=observation.ObservationRevision;
-                ++d.ObservationRevision;d.Reevaluate|=observation.RequiresEvaluation;
-                if(observation.RequiresEvaluation||observation.RecaptureEligible)++d.ChangeRevision;
-                return observation.RecaptureEligible?Ack::Recorded:Ack::Observed;
-            }
-            return Ack::Rejected; // missing/mismatched provider is not proof of invalidation
-        }
-        bool CertifiedForEntry(const P::Entry& e,const MiniMapRendererReadiness::Result& quality)
-        {
-            const auto& current=e.Resources;
-            return MiniMapRendererReadiness::Certifiable(quality,e.Key.Generation)&&
-                current.State==MiniMapRendererReadiness::RenderReadiness::Ready&&!current.Unknown&&!current.Pending&&!current.Unsupported&&
-                current.Generation==quality.Generation;
         }
         const char* DrawLabel(DrawCounter reason)
         {
@@ -241,9 +193,6 @@ namespace MiniMapBuildingSprites
         const auto result=owner->Jobs.QueueCapture(key,leases,token);
         if(auto* e=owner->Jobs.Find(key))e->LastAdmission=result;return result;
     }
-    bool WatchCurrent(const MiniMapSpriteDiscoveryCore::Key& key,const std::vector<uint64_t>& source)
-    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
-        return e&&e->Dependencies.Tracked&&e->Dependencies.Source==source;}
     bool ReservationCurrent(const MiniMapCaptureLeases::Token& token)
     {AccessLock lock;auto* e=SourceCurrent(token.Candidate)?owner->Jobs.Find(token.Candidate):nullptr;return e&&P::Queue::MatchesLease(*e,token,leases)&&owner->Jobs.ReservationCurrent(*e);}
     bool StartCapture(const MiniMapCaptureLeases::Token& token)
@@ -252,144 +201,7 @@ namespace MiniMapBuildingSprites
     {
         try{AccessLock lock;if(owner)if(auto* e=owner->Jobs.Find(token.Candidate);e&&P::Queue::MatchesLease(*e,token,leases)){
             owner->Jobs.ReleaseCapture(*e,transient);
-            if(transient){auto& d=e->Dependencies;const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-                d.BlockedPublication=snapshot?snapshot->PublishedAtSeconds:-1;d.BlockedObservation=d.ChangeRevision;d.Reevaluate=false;}}}catch(...){}
-    }
-    bool DependencySnapshot(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapRendererReadiness::Dependencies& out)
-    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return false;out=e->Dependencies;return true;}
-    void WatchState(const MiniMapSpriteDiscoveryCore::Key& key,MiniMapRendererReadiness::Dependencies::Watch state)
-    {
-        namespace R=MiniMapRendererReadiness;
-        // A rooted watch retires independently, including while its key is
-        // spatially absent. Keep the retained dependency ticket state accurate.
-        AccessLock lock;auto* e=owner?owner->Jobs.Find(key):nullptr;if(!e)return;
-        auto& d=e->Dependencies;d.ObservationWatch=state;
-        if(state==R::Dependencies::Watch::None&&d.Demand)d.ObservationWatch=R::Dependencies::Watch::Waiting;
-    }
-    bool WaitingDemand()
-    {
-        AccessLock lock;return owner&&owner->Jobs.WaitingCount!=0;
-    }
-    void AcknowledgeReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,bool accepted)
-    {
-        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e||!accepted)return;
-        auto& d=e->Dependencies;d.EvaluationQueued=true;d.EvaluationRevision=d.ObservationRevision;d.Reevaluate=false;
-    }
-    void FinishReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,double sourcePublication)
-    {
-        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;if(!e)return;
-        auto& d=e->Dependencies;d.EvaluationQueued=false;
-        // A successful observation that is merely waiting for capacity may
-        // retry as soon as a slot opens. Missing representatives/exceptions wait
-        // for source/provider evidence to change.
-        d.BlockedPublication=d.ObservationRevision==d.EvaluationRevision?sourcePublication:-1;
-        d.BlockedObservation=d.ChangeRevision;
-    }
-    void ObserveResources(const MiniMapSpriteDiscoveryCore::Key& key,const MiniMapRendererReadiness::Result& resources)
-    {
-        AccessLock lock;if(!SourceCurrent(key)||resources.Generation.World!=key.Generation)return;
-        if(auto* entry=owner->Jobs.Find(key))
-        {
-            entry->Resources=resources;auto& d=entry->Dependencies;
-            d.Missing=resources.Unknown|resources.Pending;
-            if(resources.State==MiniMapRendererReadiness::RenderReadiness::Unknown&&!d.Missing)d.Missing=d.Required;
-            d.Tracked=resources.State!=MiniMapRendererReadiness::RenderReadiness::Unsupported&&
-                !MiniMapRendererReadiness::Certifiable(entry->Quality,key.Generation);
-            d.ProviderEpoch=MiniMapRendererReadiness::ProviderEpoch();++d.ObservationRevision;
-        }
-    }
-    void ObserveAssembly(const MiniMapSpriteDiscoveryCore::Key& key,const MiniMapRendererReadiness::AssemblyObservation& observation)
-    {
-        namespace R=MiniMapRendererReadiness;
-        if(observation.TaskCount>observation.Tasks.size())return;
-        ObserveResources(key,observation.Readiness);
-        AccessLock lock;if(!SourceCurrent(key))return;
-        if(auto* e=owner->Jobs.Find(key))
-        {
-            auto& d=e->Dependencies;
-            if(observation.Source.empty())return; // Unknown preparation cannot invalidate an established source
-            const bool sameSource=d.Source==observation.Source;
-            // Copy before mutation: allocation failure preserves earlier evidence.
-            if(!sameSource){auto source=observation.Source;d.Source.swap(source);++d.SourceRevision;++d.ChangeRevision;}
-            const auto previous=d.Resources;const auto previousCount=d.ResourceCount;
-            d.ResourceCount=observation.TaskCount;d.Demand=false;
-            for(size_t i=0;i<d.ResourceCount;++i)
-            {
-                const auto& t=observation.Tasks[i];auto& r=d.Resources[i];r={};
-                if(sameSource)for(size_t n=0;n<previousCount;++n)
-                    if(R::SameResource(previous[n].Evidence,t.Evidence)&&
-                        previous[n].Evidence.ResourceVersion==t.Evidence.ResourceVersion&&previous[n].ObjectIndex==t.Resource.Index&&
-                        previous[n].NameIndex==t.Resource.Name&&previous[n].NameNumber==t.Resource.Number){r=previous[n];break;}
-                r.Evidence=t.Evidence;r.ObjectIndex=t.Resource.Index;r.NameIndex=t.Resource.Name;
-                r.NameNumber=t.Resource.Number;r.Contributors=t.Contributors;
-                const auto* provider=R::FindProvider(t.Evidence.Provider);
-                r.Relevant=provider&&provider->Relevant&&provider->Relevant(r.Advancement,r.Evidence);
-                d.Demand|=provider&&t.Evidence.Pending&&t.Evidence.CanChange&&t.Evidence.Method!=R::ObservationMethod::Unavailable;
-                // Observed state and fresh advancement are committed together.
-                // The separate notification is now an exact acknowledgment/replay.
-                if(t.Evidence.RecaptureEligible){auto proof=t.Evidence;proof.RequiresEvaluation=false;
-                    NotifyLocked(*e,proof,observation.Source);}
-            }
-            if(d.ObservationWatch!=R::Dependencies::Watch::Active&&d.ObservationWatch!=R::Dependencies::Watch::Retiring)
-                d.ObservationWatch=d.Demand?R::Dependencies::Watch::Waiting:R::Dependencies::Watch::None;
-        }
-    }
-    bool TracksDependencies(const MiniMapSpriteDiscoveryCore::Key& key)
-    {AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;return e&&e->Dependencies.Tracked;}
-    MiniMapRendererReadiness::NotificationAck NotifyProviderChange(const MiniMapSpriteDiscoveryCore::Key& key,
-        const MiniMapRendererReadiness::ProviderObservation& observation,const std::vector<uint64_t>& source)
-    {
-        namespace R=MiniMapRendererReadiness;using Ack=R::NotificationAck;
-        AccessLock lock;
-        if(!SourceCurrent(key))return Ack::Invalidated; // complete registry membership/world guard
-        auto* e=owner->Jobs.Find(key);if(!e)return Ack::Rejected;
-        if(e->Status==P::State::Excluded||e->Status==P::State::Unsupported||
-            e->Resources.State==R::RenderReadiness::Unsupported)return Ack::Invalidated;
-        return NotifyLocked(*e,observation,source);
-    }
-    std::array<uint64_t,5> PublicationWake(const MiniMapSpriteDiscoveryCore::Key& key)
-    {
-        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
-        if(!e)return {};
-        const auto& d=e->Dependencies;
-        return {key.Generation,d.SourceRevision,d.ChangeRevision,owner->Jobs.MembershipRevision,MiniMapRendererReadiness::ProviderEpoch()};
-    }
-
-    bool RequestProviderReevaluation(const MiniMapSpriteDiscoveryCore::Key& key,uint32_t id)
-    {
-        // For a future verified provider event whose dependency was previously
-        // Unknown. This requests evaluation only; it never authorizes a recapture.
-        const auto* p=MiniMapRendererReadiness::FindProvider(id);if(!p)return false;
-        AccessLock lock;auto* e=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
-        if(!e||!e->Dependencies.Tracked||!(e->Dependencies.Missing&p->Conditions))return false;
-        e->Dependencies.Reevaluate=true;++e->Dependencies.ChangeRevision;return true;
-    }
-    bool TakeReadinessReevaluation(MiniMapSpriteDiscoveryCore::Key& key,bool (*watchCapacity)())
-    {
-        namespace R=MiniMapRendererReadiness;
-        AccessLock lock;if(!owner)return false;
-        const auto now=std::chrono::steady_clock::now();if(now<owner->NextDependencyService)return false;
-        owner->NextDependencyService=now+std::chrono::milliseconds(50);
-        // One CPU record per eligible invocation; Unknown-only has no native ticket.
-        MiniMapSpriteDiscoveryCore::Key currentKey;
-        if(!owner->Jobs.NextCurrentKey(currentKey))return false;
-        auto* selected=owner->Jobs.Find(currentKey);
-        if(!selected)return false;auto& e=*selected;auto& d=e.Dependencies;
-        if(!d.Tracked||e.InFlight||d.EvaluationQueued||!SourceCurrent(e.Key))return false;
-        const auto epoch=R::ProviderEpoch();
-        if(d.ProviderEpoch!=epoch){d.Reevaluate|=(d.Missing&R::ProviderConditions())!=0;d.ProviderEpoch=epoch;}
-        const bool waiting=d.Demand&&d.ObservationWatch==R::Dependencies::Watch::Waiting&&watchCapacity&&watchCapacity();
-        // Preserve proof while the separate new-image budget cannot admit
-        // an initial capture; capacity alone must not cause repeated source audits.
-        const bool captureCapacity=leases.ActiveCount()==0;
-        const bool advance=captureCapacity&&owner->Jobs.EligibleAdvancement(e)!=0;
-        if(!d.Reevaluate&&!waiting&&!advance)return false;
-        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-        if(!snapshot||!snapshot->Complete||snapshot->Generation!=e.Key.Generation)return false;
-        // Failed reacquisition is retried on a new source publication/provider
-        // observation, rather than auditing the unchanged source every 50 ms.
-        if(!d.Reevaluate&&d.BlockedPublication==snapshot->PublishedAtSeconds&&d.BlockedObservation==d.ChangeRevision)return false;
-        key=e.Key;return true;
+        }}catch(...){}
     }
     bool ObserveRegistry(std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry> registry)
     {
@@ -400,7 +212,7 @@ namespace MiniMapBuildingSprites
         {AccessLock lock;if(owner)accepted=owner->Jobs.ObserveRegistry(registry,displaced);}
         return accepted;
     }
-    void Complete(const MiniMapCaptureLeases::Token& token,const MiniMapStaticAssembly::Footprint& bounds,const std::vector<uint8_t>& rgba,const MiniMapRendererReadiness::Result& quality)
+    void Complete(const MiniMapCaptureLeases::Token& token,const MiniMapStaticAssembly::Footprint& bounds,const std::vector<uint8_t>& rgba)
     {
         const auto& key=token.Candidate;
         TimingScope timing(Timing::TextureUpload);
@@ -412,7 +224,6 @@ namespace MiniMapBuildingSprites
             AccessLock lock;
             const auto* entry=SourceCurrent(key)?owner->Jobs.Find(key):nullptr;
             if(!entry||!entry->InFlight||!P::Queue::PublicationCurrent(*entry,token,leases))return;
-            if(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality))return;
             if(owner->UploadSequence==(std::numeric_limits<uint64_t>::max)())
             {++owner->Jobs.PublicationFailures;LOG_WARN("MiniMap: upload serial exhausted; capture image not uploaded");return;}
             uploadSequence=++owner->UploadSequence;target=owner->Generation;imageRevision=entry->ImageRevision;
@@ -459,8 +270,7 @@ namespace MiniMapBuildingSprites
                 "_Image_"+std::to_string(uploadSequence);
             auto texture=std::make_shared<Texture>();texture->Free=api->FreeTexture;texture->Bounds=bounds;texture->Region=region;
             preparing=true;auto prepared=target->Prepare(texture);preparing=false;
-            std::string reason="provisional_session_sprite; renderer_quality_uncertified; static_reference_only";
-            std::string certifiedReason="quality_certified_session_sprite";
+            std::string reason="private_blueprint_session_sprite; visual_quality_uncertified";
             try {texture->Handle=api->LoadFromRGBA(pixels->data(),int(width),int(height),name.c_str());}catch(...){texture->Handle=nullptr;}
             if(!texture->Handle){AccessLock lock;if(owner&&owner->Generation==target)++owner->UploadFailures;}
             if(!texture->Handle&&useProcessed&&!processed.Passthrough)
@@ -477,8 +287,7 @@ namespace MiniMapBuildingSprites
                 AccessLock lock;
                 auto* entry=owner&&owner->Generation==target?target->Find(key):nullptr;
                 const bool current=owner&&owner->Generation==target&&SourceCurrent(key)&&entry&&entry->InFlight&&
-                    P::Queue::PublicationCurrent(*entry,token,leases)&&target->ScaleCurrent(key,scaleSample)&&
-                    !(entry->Status==P::State::Ready&&!CertifiedForEntry(*entry,quality));
+                    P::Queue::PublicationCurrent(*entry,token,leases)&&target->ScaleCurrent(key,scaleSample);
                 if(!texture->Handle)
                 {
                     if(current){++owner->Failed;entry->InFlight=false;
@@ -491,12 +300,10 @@ namespace MiniMapBuildingSprites
                 }
                 else if(target->Commit(*entry,prepared,token.SourceRevision,imageRevision))
                 {
-                    const bool certified=CertifiedForEntry(*entry,quality);
-                    entry->Reason.swap(certified?certifiedReason:reason);
+                    entry->Reason.swap(reason);
                     if(!entry->ImageRevision)++owner->SuccessfulTypes;
-                    entry->Quality=quality;entry->InFlight=false;++entry->ImageRevision;
-                    entry->Status=certified?P::State::Ready:P::State::Provisional;
-                    if(certified)entry->Dependencies.Tracked=false;
+                    entry->InFlight=false;++entry->ImageRevision;
+                    entry->Status=P::State::Provisional;
                     ++owner->Completed;accepted=true;
                     cached=target->SelectedCount;bytes=target->SelectedBytes;active=leases.ActiveCount();
                 }
@@ -708,7 +515,7 @@ namespace MiniMapBuildingSprites
         const char* metricNames[]={"active_frame_pins","active_pinned_revisions","prior_version_nodes_awaiting_reclamation","uploaded_unselected_textures",
             "uploaded_unselected_raw_rgba_bytes","renderer_allocation_failures","renderer_publication_failures","renderer_counter_failures","historical_renderer_slots"};
         for(size_t i=0;i<metrics.size();++i)json+=","+J::Quote(metricNames[i])+":"+std::to_string(metrics[i]);
-        json+=",\"waiting_dependency_demand\":"+std::to_string(owner->Jobs.WaitingCount)+",\"renderer_lifecycle\":"+lifecycle+"}";return json;
+        json+=",\"renderer_lifecycle\":"+lifecycle+"}";return json;
     }
 }
 #endif

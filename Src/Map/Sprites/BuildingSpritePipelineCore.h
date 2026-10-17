@@ -1,6 +1,5 @@
 #pragma once
 #include "SpriteCaptureCore.h"
-#include "RendererReadinessCore.h"
 #include "StaticAssemblyCaptureCore.h"
 #include "CaptureLeaseCore.h"
 #include "SessionTextureAccountingCore.h"
@@ -30,119 +29,45 @@ namespace MiniMapBuildingSpriteCore
     case State::Provisional:return "provisional_session_sprite";case State::Ready:return "quality_certified_session_sprite";case State::Failed:return "failed";default:return "awaiting_validation";}}
     enum class Admission { Accepted,AlreadyInFlight,SourceUnavailable,InvalidGeneration,Terminal,NoAdvancement,AdvancementConsumed,StaleAdvancement,SetupRejected,Capacity };
     struct Entry { MiniMapSpriteDiscoveryCore::Key Key;State Status=State::Awaiting;std::string Reason;
-        MiniMapRendererReadiness::Result Quality,Resources;
-        MiniMapRendererReadiness::Dependencies Dependencies;
         Admission LastAdmission=Admission::NoAdvancement;
         MiniMapCaptureLeases::Token Lease;
-        uint64_t ImageRevision{};bool InFlight=false,InitialAdmission=false; };
+        uint64_t ImageRevision{};bool InFlight=false,InitialAdmission=false,AttemptStarted=false; };
     struct Policy
     {
         size_t Captures{},InitialAdmissions{};uint64_t Generation{};
         void Reset(uint64_t generation){Captures=InitialAdmissions=0;Generation=generation;}
         Entry* SetEntry(Entry& entry,State state,const std::string& reason)
-        {auto* e=&entry;
-        if(state==State::Awaiting&&e->Status!=State::Awaiting)return nullptr;
-        if(state==State::Queued&&!e->InFlight)return nullptr; // source evaluation is not capture reservation
-        if((e->Status==State::Ready||e->Status==State::Provisional)&&state!=State::Excluded)
-        {if(state==State::Failed){ReleaseCapture(*e);e->Reason=reason+"; previous_sprite_retained";}
-         if(state==State::Unsupported){e->InFlight=false;e->Dependencies={};e->Resources.State=MiniMapRendererReadiness::RenderReadiness::Unsupported;}
-         return nullptr;}
-        if(e->Status==State::Failed&&state==State::Failed){ReleaseCapture(*e);return nullptr;}
-        if(state==State::Failed||state==State::Excluded)ReleaseCapture(*e);
-        e->Reason=reason;e->Status=state;
-        if(state==State::Excluded||state==State::Unsupported)e->Dependencies={};return e;}
-        // One authority: provider proof, exact recipe generation, unconsumed
-        // revision. Source reevaluation alone never grants rendering permission.
-        bool EligibleProof(const MiniMapRendererReadiness::Dependencies& d,
-            const MiniMapRendererReadiness::Dependencies::Resource& r)const
         {
-            return r.AdvancementRevision&&r.AdvancementRevision!=r.Consumed&&r.AdvancementRevision!=r.Rejected&&
-                r.AdvancementSource==d.SourceRevision&&r.Advancement.World==Generation&&r.Evidence.World==Generation&&
-                r.Relevant&&MiniMapRendererReadiness::SameResource(r.Advancement,r.Evidence)&&
-                r.ObjectIndex==r.Advancement.ObjectIndex&&r.NameIndex==r.Advancement.NameIndex&&r.NameNumber==r.Advancement.NameNumber&&
-                r.Advancement.ResourceVersion==r.Evidence.ResourceVersion;
+            auto* e=&entry;
+            if(state==State::Awaiting&&e->Status!=State::Awaiting)return nullptr;
+            if(state==State::Queued&&!e->InFlight)return nullptr;
+            if((e->Status==State::Ready||e->Status==State::Provisional)&&state!=State::Excluded)return nullptr;
+            if(state==State::Failed||state==State::Excluded||state==State::Unsupported)ReleaseCapture(*e);
+            e->Reason=reason;e->Status=state;return e;
         }
-        uint64_t EligibleAdvancement(const Entry& e)const
-        {
-            const auto& d=e.Dependencies;uint64_t revision=0;
-            for(size_t i=0;i<d.ResourceCount;++i)if(EligibleProof(d,d.Resources[i]))
-                revision=(std::max)(revision,d.Resources[i].AdvancementRevision);
-            return revision;
-        }
-        void CoverCurrentProofs(Entry& e)
-        {
-            auto& d=e.Dependencies;d.ReservedAdvancement=0;
-            for(size_t i=0;i<d.ResourceCount;++i){auto& r=d.Resources[i];
-                r.Reserved=EligibleProof(d,r)?r.AdvancementRevision:0;
-                d.ReservedAdvancement=(std::max)(d.ReservedAdvancement,r.Reserved);}
-        }
-        // Storage-independent authority; renderer owns stable candidate records.
         Admission Admit(Entry& entry,MiniMapCaptureLeases::Ledger& leases,MiniMapCaptureLeases::Token& token)
         {
             auto* e=&entry;
             if(!e->Key.Generation||e->Key.Generation!=Generation)return Admission::InvalidGeneration;
             if(e->InFlight)return Admission::AlreadyInFlight;
-            if(e->Status==State::Excluded||e->Status==State::Unsupported)return Admission::Terminal;
-            const auto advance=EligibleAdvancement(*e);
-            if(e->InitialAdmission)
-            {
-                if(!advance){const auto& d=e->Dependencies;
-                    bool rejected=false,consumed=false;
-                    for(size_t i=0;i<d.ResourceCount;++i){const auto& r=d.Resources[i];
-                        rejected|=r.AdvancementRevision&&r.Rejected==r.AdvancementRevision;
-                        consumed|=r.AdvancementRevision&&r.Consumed==r.AdvancementRevision;}
-                    if(rejected)return Admission::SetupRejected;if(consumed)return Admission::AdvancementConsumed;
-                    return d.AdvancementRevision?Admission::StaleAdvancement:Admission::NoAdvancement;}
-            }
+            if(e->InitialAdmission||e->Status==State::Excluded||e->Status==State::Unsupported)return Admission::Terminal;
             MiniMapCaptureLeases::Token acquired;
-            if(!leases.Acquire(e->Key,e->Dependencies.SourceRevision,acquired))return Admission::Capacity;
-            // No allocation or native dispatch after acquisition. All following
-            // scalar writes commit the exact handoff atomically under the caller's guard.
-            e->Dependencies.UpgradeReservation=e->InitialAdmission;
-            if(!e->InitialAdmission){e->InitialAdmission=true;++InitialAdmissions;}
-            e->Lease=acquired;token=acquired;
-            CoverCurrentProofs(*e);
-            e->Dependencies.ReservedSource=e->Dependencies.SourceRevision;
-            e->Dependencies.AttemptStarted=false;e->InFlight=true;
-            if(!e->ImageRevision)e->Status=State::Queued;
+            // Candidate identity is the complete session source. No resource revision gate.
+            if(!leases.Acquire(e->Key,0,acquired))return Admission::Capacity;
+            e->InitialAdmission=true;++InitialAdmissions;e->Lease=acquired;token=acquired;
+            e->AttemptStarted=false;e->InFlight=true;e->Status=State::Queued;
             return Admission::Accepted;
         }
         bool ReservationCurrent(const Entry& e)const
-        {
-            const auto& d=e.Dependencies;
-            if(!e.InFlight||d.AttemptStarted||d.ReservedSource!=d.SourceRevision)return false;
-            // A later valid advancement in the same source generation can
-            // supersede the reserved proof before dispatch. A stale proof alone cannot.
-            if(d.UpgradeReservation&&!EligibleAdvancement(e))return false;
-            return true;
-        }
+        {return e.InFlight&&!e.AttemptStarted&&e.Key.Generation==Generation;}
         static bool MatchesLease(const Entry& e,const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::Ledger& leases) noexcept
         {return e.Lease==token&&leases.Holds(token);}
         static bool PublicationCurrent(const Entry& e,const MiniMapCaptureLeases::Token& token,const MiniMapCaptureLeases::Ledger& leases) noexcept
-        {return MatchesLease(e,token,leases)&&e.Dependencies.SourceRevision==token.SourceRevision;}
+        {return MatchesLease(e,token,leases);}
         bool StartCapture(Entry& e)
-        {
-            if(!ReservationCurrent(e))return false;
-            auto& d=e.Dependencies;
-            // Reconcile the exact current proof set immediately before dispatch.
-            // Temporarily irrelevant proofs are uncovered and remain outstanding.
-            CoverCurrentProofs(e);
-            for(size_t i=0;i<d.ResourceCount;++i){auto& r=d.Resources[i];if(r.Reserved)r.Consumed=r.Reserved;}
-            d.AttemptStarted=true;d.ConsumedAdvancement=(std::max)(d.ConsumedAdvancement,d.ReservedAdvancement); // diagnostic maximum
-            ++Captures;return true;
-        }
-        void ReleaseCapture(Entry& e,bool transient=false)
-        {
-            auto& d=e.Dependencies;
-            // Definitive setup failure suppresses this revision without claiming
-            // a GPU attempt. Temporary owner/source contention does neither.
-            for(size_t i=0;i<d.ResourceCount;++i){auto& r=d.Resources[i];
-                if(e.InFlight&&!d.AttemptStarted&&!transient&&d.ReservedSource==d.SourceRevision&&r.Reserved)
-                {r.Rejected=r.Reserved;d.RejectedAdvancement=(std::max)(d.RejectedAdvancement,r.Reserved);} // diagnostic maximum
-                r.Reserved=0;}
-            e.InFlight=false;d.ReservedAdvancement=d.ReservedSource=0;d.AttemptStarted=d.UpgradeReservation=false;
-            if(e.Status==State::Queued)e.Status=State::Failed;
-        }
+        {if(!ReservationCurrent(e))return false;e.AttemptStarted=true;++Captures;return true;}
+        void ReleaseCapture(Entry& e,bool=false)
+        {e.InFlight=false;if(e.Status==State::Queued)e.Status=State::Failed;}
     };
     // Compatibility storage for portable policy clients. Production renderer uses
     // co-located image/policy slots instead. No distinct-identity capacity ceiling.
@@ -168,30 +93,10 @@ namespace MiniMapBuildingSpriteCore
         for(const auto& [key,e]:q.Entries){if(rows.Truncated)break;
             rows.Add(J::Object({{"session_candidate",J::Quote(MiniMapSpriteDiscoveryCore::KeyText(e.Key))},
                 {"image_revision",std::to_string(e.ImageRevision)},
-                {"image_quality_readiness",J::Quote(MiniMapRendererReadiness::Label(e.Quality.State))},
-                {"current_resource_readiness",J::Quote(MiniMapRendererReadiness::Label(e.Resources.State))},{"quality_unknown_mask",std::to_string(e.Quality.Unknown)},
-                {"quality_pending_mask",std::to_string(e.Quality.Pending)},{"quality_unsupported_mask",std::to_string(e.Quality.Unsupported)},
-                {"current_pending_mask",std::to_string(e.Resources.Pending)},{"current_unknown_mask",std::to_string(e.Resources.Unknown)},
-                {"completion_wake_mask",std::to_string(e.Resources.Wakes)},
-                {"dependency_tracking",J::Bool(e.Dependencies.Tracked)},{"missing_prerequisites",std::to_string(e.Dependencies.Missing)},
-                {"dependency_revision",std::to_string(e.Dependencies.ObservationRevision)},
-                {"resource_advancement_revision",std::to_string(e.Dependencies.AdvancementRevision)},
-                {"consumed_advancement_max_diagnostic",std::to_string(e.Dependencies.ConsumedAdvancement)},
-                {"reserved_advancement_revision",std::to_string(e.Dependencies.ReservedAdvancement)},
-                {"setup_rejected_advancement_max_diagnostic",std::to_string(e.Dependencies.RejectedAdvancement)},
-                {"source_revision",std::to_string(e.Dependencies.SourceRevision)},
-                {"observable_demand",J::Bool(e.Dependencies.Demand)},
-                {"watch_state",std::to_string(unsigned(e.Dependencies.ObservationWatch))},
-                {"source_evaluation_queued",J::Bool(e.Dependencies.EvaluationQueued)},
+                {"visual_quality",J::Quote("uncertified")},
                 {"last_capture_admission",std::to_string(unsigned(e.LastAdmission))},
-                {"reevaluation_requested",J::Bool(e.Dependencies.Reevaluate)},
                 {"capture_in_flight",J::Bool(e.InFlight)},{"building_id",std::to_string(e.Key.Building)},{"state",J::Quote(Label(e.Status))},{"reason",J::Quote(e.Reason)}}));}
-        J::JsonArray conditions;
-        for(size_t n=0;n<size_t(MiniMapRendererReadiness::Condition::Count);++n)
-            conditions.Add(J::Object({{"bit",std::to_string(n)},
-                {"condition",J::Quote(MiniMapRendererReadiness::Label(MiniMapRendererReadiness::Condition(n)))}}));
-        return J::Object({{"schema_version","2"},{"stage",J::Quote("A.4.9d")},{"generation",std::to_string(q.Generation)},
-            {"readiness_conditions",conditions.String()},
+        return J::Object({{"schema_version","3"},{"stage",J::Quote("6.8")},{"generation",std::to_string(q.Generation)},
             {"capture_service",J::Quote(service)},
             {"discovered_candidate_keys",std::to_string(q.Count)},{"excluded",std::to_string(counts[1])},
             {"awaiting",std::to_string(counts[0])},{"queued",std::to_string(counts[4])},
@@ -200,8 +105,8 @@ namespace MiniMapBuildingSpriteCore
             {"session_hits",std::to_string(hits)},{"footprint_fallbacks",std::to_string(fallbacks)},
             {"counter_scope",J::Quote("cumulative within generation; hits and fallbacks count actual draw submissions, not distinct entities")},
             {"timings_ms",timings},
-            {"persistent_cache_hits","0"},{"persistent_cache",J::Quote("unsupported; no verified durable recipe identity")},
-            {"visual_equivalence",J::Quote("shared authored static reference only; runtime/customization variants unsupported")},
+            {"persistent_cache_hits","0"},{"persistent_cache",J::Quote("session cache only")},
+            {"visual_equivalence",J::Quote("private Blueprint capture; gameplay visual equivalence not certified")},
             {"live_building_complete","false"},{"capture_limit",std::to_string(Capacity)},
             {"capture_attempts",std::to_string(q.Captures)},
             {"historical_initial_admissions",std::to_string(q.InitialAdmissions)},

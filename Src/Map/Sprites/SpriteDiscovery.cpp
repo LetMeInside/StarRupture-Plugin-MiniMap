@@ -154,20 +154,14 @@ namespace MiniMapSpriteDiscovery
             // policy. Already-admitted native work retains its exact ownership.
             if(out.Disposition!=V::AuditDisposition::Completed)return out;
             const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
-            LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous audit duration, not a two-ms bounded unit",
+            LOG_INFO("MiniMap: sprite candidate audit building=%u took %.3f ms; route=%s reason=%s static=%zu; synchronous candidate validation",
                 record.BuildingId,elapsed,out.Route.c_str(),out.Reason.c_str(),out.Static);
-            if(out.Reason=="blueprint_blacklisted")
-                MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Reason);
-            else if(out.Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
+            if(out.Classification.CachedPolicy.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
                 MiniMapBuildingSprites::Record(key,P::State::Excluded,out.Classification.CachedPolicy.Reason);
             else if(out.Status!=V::Outcome::Eligible)
-                // Deferred admission/unknown validation is not an unsupported
-                // renderer capability. In particular a provider reevaluation
-                // without advancement must retain the provisional quality record.
                 MiniMapBuildingSprites::Record(key,out.Status==V::Outcome::Unsupported?
                     P::State::Unsupported:P::State::Unavailable,out.Reason);
-            else MiniMapBuildingSprites::Record(key,P::State::Queued,out.Route+"; static_instances="+std::to_string(out.Static)+
-                "; skeletal_omitted="+std::to_string(out.Skeletal)+"; "+out.Reason);
+            else MiniMapBuildingSprites::Record(key,P::State::Queued,out.Route+"; "+out.Reason);
             return out;
         }
         MiniMapSpriteValidation::Result ProcessCandidate(const B::Record& record,const B::Record* alternate)
@@ -184,7 +178,7 @@ namespace MiniMapSpriteDiscovery
             auto Observe(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::ObserveRetirement(ticket);}
             bool Acknowledge(const MiniMapCaptureLeases::ObservationTicket& ticket,const MiniMapCaptureLeases::Token& lease)noexcept{return MiniMapBuildingSprites::AcknowledgeRetirement(ticket,lease);}
             bool CancelObservation(const MiniMapCaptureLeases::ObservationTicket& ticket)noexcept{return MiniMapBuildingSprites::CancelUnadmittedObservation(ticket);}
-            void AuditFinished(const C::Key& key,double source){MiniMapBuildingSprites::FinishReevaluation(key,source);}
+            void AuditFinished(const C::Key&,double){}
         };
 #endif
         void Tick(float)
@@ -287,15 +281,6 @@ namespace MiniMapSpriteDiscovery
             {
                 FifoHooks hooks;
                 try{
-                    C::Key wake;
-                    if(MiniMapBuildingSprites::TakeReadinessReevaluation(wake,&MiniMapBuildingCapture::HasResourceWatchCapacity)){
-                        const auto work=owner->Fifo.Work.Inspect(wake);
-                        const bool idle=work&&work->Status!=MiniMapCaptureWork::State::Considering&&
-                            work->Status!=MiniMapCaptureWork::State::NativeAdmitted&&work->Status!=MiniMapCaptureWork::State::Uncertain;
-                        const bool accepted=idle&&v.RequestExactReevaluation(wake,publication);
-                        if(accepted){owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Advancement);owner->Fifo.Work.WakeCandidate(wake,MiniMapCaptureWork::Wake::Source);}
-                        MiniMapBuildingSprites::AcknowledgeReevaluation(wake,accepted);
-                    }
                     if(MiniMapBuildingRepresentation::PrepareNativeClasses())changed=owner->Fifo.Service(v,source,hooks,
                         (std::max)(0.0,2.0-std::chrono::duration<double,std::milli>(Clock::now()-tickStart).count()));
                 }catch(...){if(owner->Fifo.Failures++==0)LOG_WARN("MiniMap: FIFO CPU service interrupted; existing native observation retained; admission deferred");}

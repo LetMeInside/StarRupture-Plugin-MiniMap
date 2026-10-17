@@ -54,14 +54,9 @@ namespace MiniMapCaptureDispatch
         if(!provenance||provenance->Generation!=currentGeneration||provenance->Serial!=attempt->AuditSerial||
             provenance->Membership!=attempt->AuditedMembershipEpoch||provenance->SourcePublication!=attempt->AuditedSourcePublication)
             return {State::Deferred,Reason::ValidationStale,true};
-        if(!provenance->RendererRevision)return {State::Deferred,Reason::SourceUnknown,true};
-        if(expected.Source!=renderer.SourceRevision||*provenance->RendererRevision!=renderer.SourceRevision)
-            return {State::Stale,Reason::SourceChanged,true};
         if(expected.Selection!=renderer.ImageRevision)return {State::Stale,Reason::SelectionChanged};
         if(renderer.Terminal)return {State::Terminal,Reason::PolicyTerminal};
         if(renderer.InFlight||renderer.LeaseHeld||!nativeAvailable)return {State::Deferred,Reason::NativeOwned};
-        if(renderer.InitialAdmission&&!renderer.Advancement)return {State::Deferred,Reason::ProofUnavailable};
-        // Preflight only. Existing source revalidation, Policy::Admit and StartCapture remain mandatory.
         return {State::Ready,Reason::None};
     }
     enum class OwnerState { Unresolved,NotAdmitted,Held,CapturePending,CleanupPending,CertifiedRetired };

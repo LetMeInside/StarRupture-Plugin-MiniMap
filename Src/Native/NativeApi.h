@@ -120,16 +120,8 @@ namespace MiniMapNative
         UnregisterComponentFn unregisterComponent = nullptr;
         using DestroyComponentFn = void (*)(SDK::UActorComponent*, bool);
         DestroyComponentFn destroyComponent = nullptr;
-        using SetStaticMeshFn = bool (*)(SDK::UStaticMeshComponent*, SDK::UStaticMesh*);
-        SetStaticMeshFn setStaticMesh = nullptr;
-        using SetVisibleInSceneCaptureOnlyFn = void (*)(SDK::UPrimitiveComponent*, bool);
-        SetVisibleInSceneCaptureOnlyFn setVisibleInSceneCaptureOnly = nullptr;
         using IsGameThreadFn = bool (*)();
         IsGameThreadFn isGameThread = nullptr;
-        using SetMaterialFn = void (*)(SDK::UMeshComponent*, int32_t, SDK::UMaterialInterface*);
-        SetMaterialFn setMaterial = nullptr;
-        using SetWorldTransformFn = void (*)(SDK::USceneComponent*, const SDK::FTransform&, bool, void*, uint8_t);
-        SetWorldTransformFn setWorldTransform = nullptr;
 
         using GetFirstPlayerControllerFn =
             SDK::APlayerController* (*)(
@@ -395,14 +387,6 @@ namespace MiniMapNative
         InitRenderTargetFn initRenderTarget = nullptr;
         using GetRenderTargetResourceFn = void* (*)(SDK::UTextureRenderTarget2D*);
         GetRenderTargetResourceFn getRenderTargetResource = nullptr;
-        using RenderGraphBuilderConstructFn = void (*)(void*, void*);
-        RenderGraphBuilderConstructFn renderGraphBuilderConstruct = nullptr;
-        using RenderGraphBuilderExecuteFn = void (*)(void*);
-        RenderGraphBuilderExecuteFn renderGraphBuilderExecute = nullptr;
-        using RenderGraphBuilderDestroyFn = void (*)(void*);
-        RenderGraphBuilderDestroyFn renderGraphBuilderDestroy = nullptr;
-        using UpdateSceneCaptureFn = void (*)(SDK::USceneCaptureComponent2D*, void*, void*);
-        UpdateSceneCaptureFn updateSceneCapture = nullptr;
         using TransitionResourcesFn = void (*)(FRHIComputeCommandList*, TArrayView<const FRHITransitionInfo, int32_t>, ERHITransitionCreateFlags);
         TransitionResourcesFn transitionResources = nullptr;
         using RenderFenceConstructFn = void (*)(void*);
@@ -413,8 +397,6 @@ namespace MiniMapNative
         RenderFenceBeginFn renderFenceBegin = nullptr;
         using RenderFencePollFn = bool (*)(const void*);
         RenderFencePollFn renderFencePoll = nullptr;
-        using ShowOnlyComponentExecFn = void (*)(void*, void*, void*);
-        ShowOnlyComponentExecFn showOnlyComponentExec = nullptr;
 
         using GetBrushTextureFn =
             SDK::UTexture2D* (*)(

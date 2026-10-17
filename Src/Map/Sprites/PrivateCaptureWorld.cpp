@@ -1,8 +1,10 @@
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "PrivateCaptureWorld.h"
 #include "SpriteCaptureCore.h"
+#include "SpriteCandidateIdentity.h"
 #include "SceneCaptureConfiguration.h"
 #include "CapturePng.h"
+#include "BuildingSprites.h"
 #include <Engine_parameters.hpp>
 #include <unordered_set>
 #include <string>
@@ -28,6 +30,8 @@ namespace DefinitionSlots = MiniMapDefinitionAcquisition;
 namespace N = MiniMapNative;
 struct PrivateCaptureWorld::Implementation
 {
+    // UE 5.6.1 EngineTypes.h: EWorldType::GamePreview = 5; native ABI takes int32_t.
+    static constexpr int32_t PrivateWorldTypeGamePreview = 5;
     using InitializationValues = N::WorldInitializationValues;
     static_assert(sizeof(InitializationValues) == 16);
     static_assert(offsetof(InitializationValues, DefaultGameMode) == 8);
@@ -182,8 +186,9 @@ struct PrivateCaptureWorld::Implementation
             {
             case Operation::CreateShell:
                 {
+                    LOG_INFO("MiniMap: private_capture_world rendering_policy=GamePreview");
                     InitializationValues values;
-                    *created = N::Get()->world.createWorld(7, false, SDK::FName{}, 0, false, 5, &values, true);
+                    *created = N::Get()->world.createWorld(PrivateWorldTypeGamePreview, false, SDK::FName{}, 0, false, 5, &values, true);
                 } break;
             case Operation::Retain: N::Get()->asset.retainObject(reinterpret_cast<SDK::UObject*>(object)); break;
             case Operation::Initialize: N::Get()->world.initWorld(object, InitializationValues{}); break;
@@ -341,7 +346,7 @@ struct PrivateCaptureWorld::Implementation
             !CheckOwned(state.Package) || !NoForeignRoot(state.Package) ||
             !Read(w + 0x20, privatePackage) || privatePackage != state.Package.Object.Bits ||
             !Read(state.Before.Gameplay.Bits + 0x20, gameplayPackage) || privatePackage == gameplayPackage ||
-            !Read(w + 0x18a, type) || type != 7 || !Read(w + 0x18b, a) ||
+            !Read(w + 0x18a, type) || type != PrivateWorldTypeGamePreview || !Read(w + 0x18b, a) ||
             !Read(w + 0x18c, b) || !Read(w + 0x18d, c) || !Read(w + 0x18f, ever) ||
             bool(a & 0x40) != initialized || (b & 0x80) || (c & 0x21) ||
             bool(ever & 2) != initialized || !Read(w + 0x258, scene) || bool(scene) != initialized ||
@@ -478,7 +483,7 @@ struct PrivateCaptureWorld::Implementation
                       int(configuredReadable), int(configuredNull), int(configuredMatches));
             return false;
         }
-        Step("world_configuration", true, "Inactive_scenes_only_CrWorldSettings_skip_init_no_context_no_root");
+        Step("world_configuration", true, "GamePreview_scenes_only_CrWorldSettings_skip_init_no_context_no_root");
         state.Failure = "GC_not_quiet";
         QuietGCDetail gcDetail;
         const bool gcQuiet = QuietGC(&gcDetail);
@@ -645,17 +650,63 @@ void PrivateCaptureWorld::Service() noexcept
         impl->Run();
     } catch (...) { impl->Quarantine("lifecycle_exception"); }
 }
-void PrivateCaptureWorld::OfferCandidate(const Candidate& candidate, uintptr_t type, uint32_t building, void* gameplay) noexcept
+Decision PrivateCaptureWorld::OfferCandidate(const Candidate& candidate, uintptr_t type, uint32_t building, void* gameplay) noexcept
 {
-    if (!impl) return;
-    try { impl->OfferBlueprint(candidate, type, building, gameplay); }
-    catch (...) { impl->BlueprintCandidateException(); }
+    if (!CanAcceptCandidate())return Decision{State::Rejected,"private_capture_owner_unavailable",Cause::NativeOwnerBusy}.RejectedOffer();
+    if (!impl->QuietGC())return Decision{State::Rejected,"garbage_collection_active",Cause::LifecycleUnavailable}.RejectedOffer();
+
+    if (gameplay != impl->state.SessionWorld)
+        return Decision{ State::Rejected,"candidate_session_changed",Cause::SourceNotCurrent }.RejectedOffer();
+
+    if (candidate.Classification.ExcludeFromMiniMap==MiniMapSpriteClassification::Exclusion::Exclude)
+        return Decision{State::Rejected,"classification_excluded",Cause::Policy}.RejectedOffer();
+    MiniMapCaptureLeases::Token lease;
+    try
+    {
+        if (impl->attemptedBlueprints.contains(SessionVisualKey(candidate)))
+            return Decision{State::Rejected,"session_candidate_already_attempted",Cause::Policy}.RejectedOffer();
+        const auto admission=MiniMapBuildingSprites::Queue(candidate.Identity,lease);
+        if (admission!=MiniMapBuildingSpriteCore::Admission::Accepted)
+        {
+            auto rejected=Decision{State::Rejected,"session_candidate_not_admitted",Cause::Policy}.RejectedOffer();
+            rejected.Admission=admission;return rejected;
+        }
+        impl->ownerLease=lease;
+        impl->OfferBlueprint(candidate,type,building,gameplay);
+    }
+    catch (...) { if (lease)impl->BlueprintCandidateException();
+        else return Decision{State::Rejected,"candidate_admission_exception",Cause::OperationalException}.RejectedOffer(); }
+    auto accepted=Decision{State::Eligible,"private_blueprint_attempt_admitted"}.WithHandoff(HandoffOutcome::Admitted);
+    accepted.Admission=MiniMapBuildingSpriteCore::Admission::Accepted;accepted.SourceRevision=0;accepted.NativeLease=lease;
+    return accepted;
 }
-void PrivateCaptureWorld::ObserveProduction(const Candidate& candidate, const unsigned char* rgba, size_t bytes) noexcept
+bool PrivateCaptureWorld::CanAcceptCandidate() const noexcept
 {
-    if (!impl) return;
-    try { impl->CompareProduction(candidate, rgba, bytes); }
-    catch (...) { LOG_WARN("MiniMap: private_blueprint_actor step=comparison outcome=failure reason=CPU_comparison_exception"); }
+    return impl&&impl->state.Current==Implementation::Phase::Ready&&!impl->blueprint.Active&&
+        !impl->deferredBlueprint.Pending&&!impl->ownerLease&&impl->blueprint.Current!=Implementation::BlueprintPhase::Quarantined;
+}
+MiniMapCaptureLeases::Token PrivateCaptureWorld::OwnerLease() const noexcept
+{return impl?impl->ownerLease:MiniMapCaptureLeases::Token{};}
+MiniMapCaptureDispatch::Reconciliation PrivateCaptureWorld::Reconcile(const MiniMapCaptureLeases::Token& token) const noexcept
+{
+    MiniMapCaptureDispatch::OwnerEvidence evidence;
+    evidence.GameThread=true;
+    if (impl)
+    {
+        evidence.OwnerMatches=bool(token)&&impl->ownerLease==token;
+        evidence.RequestMatches=evidence.OwnerMatches&&(impl->blueprint.Active||impl->deferredBlueprint.Pending);
+        evidence.CapturePending=impl->blueprint.Active||impl->deferredBlueprint.Pending;
+        evidence.CleanupPending=impl->blueprint.Current==Implementation::BlueprintPhase::Retiring;
+        evidence.Uncertain=impl->state.Current==Implementation::Phase::Quarantined||impl->blueprint.Current==Implementation::BlueprintPhase::Quarantined;
+    }
+    return MiniMapCaptureDispatch::Reconcile(MiniMapBuildingSprites::InspectLease(token),evidence);
+}
+const char* PrivateCaptureWorld::Status() const noexcept
+{
+    if (!impl)return "private_world_pending";
+    if (impl->state.Current==Implementation::Phase::Quarantined||impl->blueprint.Current==Implementation::BlueprintPhase::Quarantined)return "quarantined_resources_retained";
+    if (impl->state.Current!=Implementation::Phase::Ready)return "private_world_unavailable";
+    return CanAcceptCandidate()?"idle":"capture_or_retirement_pending";
 }
 bool PrivateCaptureWorld::ValidateReady(void* world, uint64_t generation) noexcept
 {
@@ -672,6 +723,7 @@ void PrivateCaptureWorld::EndSession(void* world) noexcept
 {
     if (!impl || world != impl->state.SessionWorld) return;
     try {
+        impl->DiscardDeferredBlueprint("session ended");
         if (impl->state.Current == Implementation::Phase::Ready) impl->Retire();
         else if (impl->state.Current == Implementation::Phase::Pending) {
             impl->state.Current = Implementation::Phase::Unavailable;

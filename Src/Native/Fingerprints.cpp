@@ -1878,72 +1878,6 @@ namespace MiniMapFingerprints
         }
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::SetMesh";
-            request.pattern = "40 55 53 56 57 48 8D 6C 24 A8 48 81 EC 58 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 48 80 3D ?? ?? ?? ?? 00 48 8B DA 48 8B B9 88 05 00 00 48 8B F1 74 ?? 48 85 FF 74 ?? 48 8B CF E8 ?? ?? ?? ?? 48 3B FB 0F 94 C0 84 C0 74 ?? 32 C0 E9 ?? ?? ?? ?? 48 85 FF 75 ?? 48 85 DB EB ?? 48 8B 86 A8 00 00 00 48 8B BE A0 00 00 00 4C 89 B4 24 98 01 00 00 48 85 C0 75 ?? 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 48 8B CE E8 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? F6 86 94 00 00 00 01 0F 84 ?? ?? ?? ?? 38 86 A3 01 00 00 0F 85 ?? ?? ?? ?? 48 85 FF 0F 84 ?? ?? ?? ?? 41 B8 01 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 68 E8 ?? ?? ?? ?? 48 8D 54 24 68 48 8D 4D F8 E8 ?? ?? ?? ?? 45 33 C0 48 8D 55 B8 48 8B CE 4C 8B F0 E8 ?? ?? ?? ?? 48 8B D0 48 8D 4D D8 E8 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8B F0 48 8D 4C 24 60 E8 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 64 E8 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 4C 8D 44 24 60 48 8D 54 24 64 48 8D 4D A8 E8 ?? ?? ?? ?? 48 8B D0 48 8D 4D E8 41 B0 01 E8 ?? ?? ?? ?? 48 8B D6 C7 45 28 04 00 00 00 48 8D 4D 38 48 8B F8 E8 ?? ?? ?? ?? 48 83 7D 38 00 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 69 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 33 DB C7 44 24 58 01 00 00 00 48 8D 44 24 5C 48 89 5C 24 50 48 89 44 24 30 45 33 C9 48 8D 44 24 50 C7 44 24 28 01 00 00 00 8D 53 08 48 89 44 24 20 8D 4B 20 44 8D 43 01 E8 ?? ?? ?? ?? 48 8B 4C 24 50 44 8D 43 01 48 8D 55 28 E8 ?? ?? ?? ?? 48 8B 07 48 89 44 24 78 48 8B 47 08 48 89 45 80 48 85 C0";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.setStaticMesh = scanner->Resolve(self, &request);
-            if (!addresses.setStaticMesh) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::CaptureOnly";
-            request.pattern = "44 0F B6 81 81 02 00 00 41 0F B6 C0 C0 E8 07 3A C2 74 ?? 41 80 E0 7F C0 E2 07 44 0A C2 44 88 81 81 02 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC 38 91 F4 02 00 00 74 ?? 88 91 F4 02 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC CC CC CC 39 91 FC 02 00 00 74 ?? 89 91 FC 02 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC CC CC CC 0F 2E 89 14 03 00 00 74 ?? F3 0F 11 89 14 03 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC F3 0F 10 02 0F 2E 81 00 03 00 00 75 ?? F3 0F 10 42 04 0F 2E 81 04 03 00 00 75 ?? F3 0F 10 42 08 0F 2E 81 08 03 00 00 75 ?? F3 0F 10 42 0C 0F 2E 81 0C 03 00 00 74 ?? 0F 10 02 0F 11 81 00 03 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC 0F 2E 89 10 03 00 00 74 ?? F3 0F 11 89 10 03 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC 0F 2E 89 1C 03 00 00 74 ?? F3 0F 11 89 1C 03 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC 0F 2E 89 F8 02 00 00 74 ?? F3 0F 11 89 F8 02 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC 0F 2E 89 18 03 00 00 74 ?? F3 0F 11 89 18 03 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC 40 53 48 83 EC 30 0F 29 74 24 20 48 8B D9 0F 28 F1 E8 ?? ?? ?? ?? 84 C0 75 ?? F6 83 94 00 00 00 01 74 ?? 38 83 A3 01 00 00 74 ?? 0F 2E B3 90 02 00 00 74 ?? 48 8B 83 A8 00 00 00 F3 0F 11 B3 90 02 00 00 48 85 C0 75 ?? 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 88 58 02 00 00 48 85 C9 74 ?? 48 8B 01 48 8B D3 FF 90 60 02 00 00 48 8B D3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 28 74 24 20 48 83 C4 30 5B C3 CC CC CC CC CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 0F B6 81 7C 02 00 00";
-            request.kind = PLUGIN_SCAN_CODE;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.setVisibleInSceneCaptureOnly = scanner->Resolve(self, &request);
-            if (!addresses.setVisibleInSceneCaptureOnly) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::BuilderConstruct";
-            request.pattern = "48 89 5C 24 08 57 48 83 EC 20 48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 48 8B CA 48 8B 02 FF 90 18 04 00 00 33 FF 48 89 43 08 48 89 7B 10 8D 4F 10 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 89 38 48 89 78 08 48 89 43 18 48 8B C3 48 8B 5C 24 30 48 83 C4 20 5F C3 48 89 7B 18 48 8B C3 48 8B 5C 24 30 48 83 C4 20 5F C3 CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 DF FF FF B8 B0 21 00 00 E8 ?? ?? ?? ?? 48 2B E0 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 50 20 00 00 4C 89 45 90 4C 8B EA 48 89 4D E0 48 8B F1 48 85 D2 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 FD 09 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 49 8B 5D 40 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 FD 09 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 03 48 8B CB FF 90 18 04 00 00 48 8B D8 48 85 C0 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 FD 09 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 89 5E 08 48 8D 7E 10 45 33 E4 48 8D 05 ?? ?? ?? ?? 48 89 06 4C 8D 7F 0C 48 8D 4E 20 4C 89 7C 24 70 45 89 27 4C 89 27 44 89 67 08 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 44 88 66 60 4C 8D B6 B0 00 00 00 48 89 06 49 8B CE 44 89 66 64 49 8B D5 4C 89 66 68 4C 89 66 70 4C 89 66 78 4C 89 A6 90 00 00 00 44 89 A6 98 00 00 00 C7 86 9C 00 00 00 80 00 00 00 C7 86 A0 00 00 00 FF FF FF FF 44 89 A6 A4 00 00 00 4C 89 A6 A8 00 00 00 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 49 8D 8E 98 01 00 00 49 89 06 E8 ?? ?? ?? ?? B9 98 02 00 00 45 88 A6 F8 02 00 00 41 C6 86 B8 00 00 00 01";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.renderGraphBuilderConstruct = scanner->Resolve(self, &request);
-            if (!addresses.renderGraphBuilderConstruct) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::BuilderExecute";
-            request.pattern = "40 53 48 83 EC 20 48 8B D9 48 8B 49 10 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 C7 43 10 00 00 00 00 48 83 C4 20 5B C3 CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 98 00 00 00 45 33 FF 48 89 4C 24 58 F6 81 B0 00 00 00 01 48 8B D9 74 ?? 48 8D 41 58 48 39 00 74 ?? 48 8B 48 08 EB ?? 49 8B CF 44 39 79 28 74 ?? 48 8B 41 20 EB ?? 48 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 20 41 B8 14 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8D 4D 70 E8 ?? ?? ?? ?? 48 8D 4C 24 31 E8 ?? ?? ?? ?? 48 63 43 70 4C 8B 63 68 0F B6 74 24 30 0F B6 7C 24 30 44 0F B6 74 24 30 48 C1 E0 04 49 03 C4 44 88 7D A0 48 89 44 24 70 4C 89 64 24 40 4C 3B E0 0F 84 ?? ?? ?? ?? 41 0F 10 04 24 66 0F 7E C1 85 C9 0F 84 ?? ?? ?? ?? 83 E9 01 0F 84 ?? ?? ?? ?? 83 E9 01 0F 84 ?? ?? ?? ?? 83 F9 01 0F 85 ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 38 05 ?? ?? ?? ?? 75 ?? E8 ?? ?? ?? ?? 84 C0 74 ?? E8 ?? ?? ?? ?? 48 8D 8B 98 00 00 00 4C 89 BB 88 00 00 00 33 D2 E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 74 ?? 48 8D 05 ?? ?? ?? ?? 4C 89 7D 38 48 89 45 20 4C 8D 05 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 5D 28 48 89 45 10 48 8D 15 ?? ?? ?? ?? 48 8D 45 10 44 0F B6 CF 48 8D 0D ?? ?? ?? ?? 48 89 44 24 20 E8 ?? ?? ?? ?? 48 83 7D 10 00 0F 84 ?? ?? ?? ?? 48 8B 45 38 48 8D 4D 20 48 85 C0 48 0F 45 C8 48 8B 01 FF 50 10 E9 ?? ?? ?? ?? 44 8B 3D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 44 8B 35 ?? ?? ?? ??";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.renderGraphBuilderExecute = scanner->Resolve(self, &request);
-            if (!addresses.renderGraphBuilderExecute) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::BuilderDestroy";
-            request.pattern = "48 89 5C 24 10 57 48 83 EC 30 48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 48 8B 41 18 48 85 C0 0F 84 ?? ?? ?? ?? 8B 48 08 48 89 74 24 40 85 C9 74 ?? 89 4C 24 20 4C 8D 0D ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 41 B8 FF 03 00 00 48 8D 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 73 18 48 85 F6 74 ?? 48 8B 3E 48 85 FF 74 ?? 8B 47 F8 48 83 C7 F8 48 2B F8 B8 FF FF FF FF F0 0F C1 07 83 F8 01 75 ?? 48 8B 47 40 48 2B C7 48 3D 00 00 01 00 75 ?? E8 ?? ?? ?? ?? 48 8B D7 48 8B C8 E8 ?? ?? ?? ?? EB ?? 48 8B CF E8 ?? ?? ?? ?? BA 10 00 00 00 48 8B CE E8 ?? ?? ?? ?? 48 8B 74 24 40 48 C7 43 18 00 00 00 00 48 83 7B 10 00 74 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 08 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 7B 10 48 85 FF 74 ?? 48 8B CF E8 ?? ?? ?? ?? BA B8 00 00 00 48 8B CF E8 ?? ?? ?? ?? 48 C7 43 10 00 00 00 00 48 8B 5C 24 48 48 83 C4 30 5F C3 CC CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B D9 48 8B 89 98 00 00 00 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 8D 4B 78 E8 ?? ?? ?? ?? 48 8B 7B 68 BE FF FF FF FF 48 85 FF 74 ?? 8B 47 F8 48 83 C7 F8 48 2B F8 8B C6 F0 0F C1 07 83 F8 01 75 ?? 48 8B 47 40 48 2B C7 48 3D 00 00 01 00 75 ?? E8 ?? ?? ?? ?? 48 8B D7 48 8B C8 E8 ?? ?? ?? ?? EB ?? 48 8B CF E8 ?? ?? ?? ?? 48 8B 7B 38 48 85 FF 74 ?? 8B 47 F8 48 83 C7 F8 48 2B F8 8B C6 F0 0F C1 07 83 F8 01 75 ?? 48 8B 47 40 48 2B C7 48 3D 00 00 01 00 75 ?? E8 ?? ?? ?? ?? 48 8B D7 48 8B C8 E8 ?? ?? ?? ?? EB ?? 48 8B CF E8 ?? ?? ?? ?? 48 8B 7B 28 48 85 FF 74 ?? 8B 47 F8 48 83 C7 F8 48 2B F8";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.renderGraphBuilderDestroy = scanner->Resolve(self, &request);
-            if (!addresses.renderGraphBuilderDestroy) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::UpdateCapture";
-            request.pattern = "48 8B 02 4C 8B CA 48 8B D1 49 8B C9 48 FF A0 D8 01 00 00 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8B 02 4C 8B CA 48 8B D1 49 8B C9 48 FF A0 D0 01 00 00 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B F9 E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 74 ?? 48 8D B7 D8 02 00 00 48 8B CE 48 8D 93 D8 02 00 00 E8 ?? ?? ?? ?? EB ?? 48 8D B7 D8 02 00 00 48 63 87 D0 02 00 00 48 8B 9F C8 02 00 00 48 8D 0C 40 48 8D 3C CB 48 3B DF 74 ?? 66 66 66 0F 1F 84 00 00 00 00 00 48 8B D3 48 8D 4C 24 20 E8 ?? ?? ?? ?? 83 7C 24 28 00 48 8D 0D ?? ?? ?? ?? 0F B6 43 10 48 0F 45 4C 24 20 33 D2 88 44 24 30 E8 ?? ?? ?? ?? 83 F8 FF 74 ?? 44 0F B6 44 24 30 8B D0 48 8B CE E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 83 C3 18 48 3B DF 75 ?? 48 8B 5C 24 50 48 8B 74 24 58 48 83 C4 40 5F C3 CC CC CC CC CC 40 53 48 83 EC 20 80 89 D2 07 00 00 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B 8B D8 07 00 00 48 85 C9 74 ?? 48 8B D3 48 83 C4 20 5B E9 ?? ?? ?? ?? 48 83 C4 20 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC F6 81 18 01 00 00 02 74 ?? F6 81 29 01 00 00 20 75 ?? 48 8B 01 B2 01 48 FF A0 10 04 00 00 E9 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC CC CC CC 48 83 EC 68 48 89 5C 24 70 33 DB 48 89 6C 24 78 48 8B E9 48 89 7C 24 60 48 8B FA 4C 89 7C 24 50 44 8B FB E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B CD 4C 89 74 24 58 E8 ?? ?? ?? ?? 48 8B C8 4C 8B 00 41 FF 90 98 03 00 00 4C 8B F0 48 85 C0 74 ?? 48 89 B4 24 80 00 00 00 48 63 B5 84 07 00 00 85 F6 78 ?? 3B 70 08 7D ?? 48 63 50 08 8B CE";
-            request.kind = PLUGIN_SCAN_CODE;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.updateSceneCapture = scanner->Resolve(self, &request);
-            if (!addresses.updateSceneCapture) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
             request.hookName = "MiniMap::Transition";
             request.pattern = "40 53 56 57 41 54 41 56 41 57 48 83 EC 78 0F 10 02 48 8B DA 48 8B F9 48 8D 54 24 40 0F 29 44 24 40 E8 ?? ?? ?? ?? 48 8B 43 08 0F 10 03 44 0F B6 67 6A 4C 63 F8 49 8B DF 0F 29 44 24 50 48 C1 E3 04 80 7F 25 00 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 37 48 83 C6 07 48 83 E6 F8 48 8D 04 1E 48 3B 47 08 76 ?? 8D 53 08 48 8B CF E8 ?? ?? ?? ?? 48 8B 37 48 83 C6 07 48 83 E6 F8 48 8D 04 1E 48 8B 5C 24 50 4F 8D 3C 7F 49 C1 E7 04 45 33 F6 4C 03 FB 48 89 07 49 3B DF 0F 84 ?? ?? ?? ?? 48 89 AC 24 C0 00 00 00 48 8B EE 4C 89 6C 24 70 41 BD FF FF 00 00 66 44 39 2B 75 ?? 66 44 39 6B 02 75 ?? 66 44 39 6B 04 74 ?? 48 8D 8C 24 B0 00 00 00 C6 84 24 B0 00 00 00 00 E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 ?? 8B 4B 18 48 8B D5 41 FF C6 48 83 C5 10 89 0A 44 88 62 04 48 89 42 08 48 83 C3 30 49 3B DF 75 ?? 4C 8B 6C 24 70 45 85 F6 0F 8E ?? ?? ?? ?? 80 7F 25 00 48 89 74 24 20 44 89 74 24 28 0F 29 74 24 60 0F 28 74 24 20 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 1F 48 83 C3 07 48 83 E3 F8 48 8D 43 20 48 3B 47 08 76 ?? BA 28 00 00 00 48 8B CF E8 ?? ?? ?? ?? 48 8B 1F 48 83 C3 07 48 83 E3 F8 48 8D 43 20 48 89 07 66 0F 6F C6 48 8B 47 30 FF 47 60 66 0F 73 D8 08 48 89 18 48 8D 43 08 48 89 47 30 66 48 0F 7E C0 85 C0 75 ?? 33 ED 33 F6 E9 ?? ?? ?? ?? 4C 63 F0 49 C1 E6 04 80 7F 25 00 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00";
             request.kind = PLUGIN_SCAN_FUNCTION_START;
@@ -2008,45 +1942,6 @@ namespace MiniMapFingerprints
             addresses.renderFencePoll = scanner->Resolve(self, &request);
             if (!addresses.renderFencePoll) return false;
         }
-#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::AssemblySetMaterial";
-            request.pattern = "85 D2 0F 88 EF 02 00 00 55 56 57 48 83 EC 30 49 8B F0 48 63 EA 4C 8D 81 38 05 00 00 4C 89 74 24 58 48 8B F9 41 3B 28 7D 23 48 8B 81 30 05 00 00 48 8B 0C E8 48 85 C9 75 05 48 85 F6 EB 03 48 3B";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.setMaterial = scanner->Resolve(self, &request);
-            if (!addresses.setMaterial) return false;
-        }
-#endif
-#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::AssemblySetWorldTransform";
-            request.pattern = "40 55 53 56 57 41 56 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 E6 E1 8A 09 48 33 C4 48 89 45 30 48 8B F9 4D 8B F1 48 8B 89 C8 00 00 00 41 0F B6 F0 48 8B DA 48 85 C9 0F 84 DE 00 00 00 48 8B";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.setWorldTransform = scanner->Resolve(self, &request);
-            if (!addresses.setWorldTransform) return false;
-        }
-#endif
-#if defined(MINIMAP_STAGE_R25B_STATIC_ASSEMBLY)
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::AssemblyShowOnlyExec";
-            request.pattern = "48 89 5C 24 08 57 48 83 EC 30 48 8B DA 48 C7 44 24 48 00 00 00 00 48 8B F9 E8 92 C9 E1 FC 48 83 7B 20 00 48 8B CB 74 10 48 8B 53 18 4C 8D 44 24 48 E8 EA 23 E6 FC EB 1C 4C 8B 83 88 00 00 00 48";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.showOnlyComponentExec = scanner->Resolve(self, &request);
-            if (!addresses.showOnlyComponentExec) return false;
-        }
-#endif
 #endif
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)

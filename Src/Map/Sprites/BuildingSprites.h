@@ -4,7 +4,6 @@
 #include "CaptureDispatchCore.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include <chrono>
-namespace MiniMapRendererReadiness {struct AssemblyObservation;}
 namespace MiniMapBuildingSprites
 {
     void Reset(uint64_t generation);
@@ -14,13 +13,7 @@ namespace MiniMapBuildingSprites
     bool ServiceInitialization(double budgetMs=2.0); // bounded pinned-plan progress; true only for latest membership
     MiniMapBuildingSpriteCore::Admission Queue(const MiniMapSpriteDiscoveryCore::Key&,MiniMapCaptureLeases::Token&);
     bool ReservationCurrent(const MiniMapCaptureLeases::Token&);
-    bool WatchCurrent(const MiniMapSpriteDiscoveryCore::Key&,const std::vector<uint64_t>&);
     bool StartCapture(const MiniMapCaptureLeases::Token&);
-    bool DependencySnapshot(const MiniMapSpriteDiscoveryCore::Key&,MiniMapRendererReadiness::Dependencies&);
-    void WatchState(const MiniMapSpriteDiscoveryCore::Key&,MiniMapRendererReadiness::Dependencies::Watch);
-    bool WaitingDemand();
-    void FinishReevaluation(const MiniMapSpriteDiscoveryCore::Key&,double sourcePublication);
-    void AcknowledgeReevaluation(const MiniMapSpriteDiscoveryCore::Key&,bool);
     void AbandonCapture(const MiniMapCaptureLeases::Token&,bool transient=false) noexcept;
     void RecordForLease(const MiniMapCaptureLeases::Token&,MiniMapBuildingSpriteCore::State,const std::string&);
     bool ReturnLease(const MiniMapCaptureLeases::Token&,const MiniMapCaptureLeases::RetirementReceipt&) noexcept;
@@ -35,17 +28,8 @@ namespace MiniMapBuildingSprites
     bool CancelUnadmittedObservation(const MiniMapCaptureLeases::ObservationTicket&) noexcept;
     size_t ActiveLeaseCount(); // Independent of renderer generation reset; combine with native CanAcceptCandidate.
     bool AcquireObservationLease(const MiniMapSpriteDiscoveryCore::Key&,uint64_t sourceRevision,MiniMapCaptureLeases::Token&);
-    void ObserveResources(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapRendererReadiness::Result&);
-    void ObserveAssembly(const MiniMapSpriteDiscoveryCore::Key&,const MiniMapRendererReadiness::AssemblyObservation&);
-    // GT notifications carry CPU-owned provider evidence, never render pointers.
-    MiniMapRendererReadiness::NotificationAck NotifyProviderChange(const MiniMapSpriteDiscoveryCore::Key&,
-        const MiniMapRendererReadiness::ProviderObservation&,const std::vector<uint64_t>& source);
-    std::array<uint64_t,5> PublicationWake(const MiniMapSpriteDiscoveryCore::Key&); // CPU-only meaningful change/registry epoch
-    bool RequestProviderReevaluation(const MiniMapSpriteDiscoveryCore::Key&,uint32_t provider);
-    bool TakeReadinessReevaluation(MiniMapSpriteDiscoveryCore::Key&,bool (*watchCapacity)());
-    bool TracksDependencies(const MiniMapSpriteDiscoveryCore::Key&);
     bool ObserveRegistry(std::shared_ptr<const MiniMapSpriteDiscoveryCore::Registry>);
-    void Complete(const MiniMapCaptureLeases::Token&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&,const MiniMapRendererReadiness::Result&);
+    void Complete(const MiniMapCaptureLeases::Token&,const MiniMapStaticAssembly::Footprint&,const std::vector<uint8_t>&);
     struct DrawState;
     struct SpatialSubmission
     {

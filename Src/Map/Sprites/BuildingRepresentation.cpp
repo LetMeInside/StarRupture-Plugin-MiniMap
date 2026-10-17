@@ -975,7 +975,7 @@ namespace MiniMapBuildingRepresentation
                     Selected=Ref(selected,Class);SelectedTier=nullConfig?"authored_actor_class":high?"high_detail_actor":"low_detail_actor";
                     Reason=nullConfig?"resident authored ActorClass templates; initialized actor equivalence and horizontal surface unverified":
                         "first validated resident actor class in bounded configuration traversal; high-detail preferred; alternatives remain separate";
-                    AuditClass=selected;InspectClass(selected,0,"selected_actor_class_templates");Status="partial";
+                    AuditClass=selected;if(!GenericValidation)InspectClass(selected,0,"selected_actor_class_templates");Status="partial";
                 }
                 else if(hasMass)
                 {Selected=Ref(definition,Placement);SelectedTier="mass_ism";Status="partial";Reason="no validated resident actor class; resident Mass metadata recorded separately";}
@@ -983,7 +983,6 @@ namespace MiniMapBuildingRepresentation
             }
             #include "AssemblyRecipeAudit.inl"
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
-            #include "SourceMetadataAudit.inl"
             #include "GenericRepresentationAudit.inl"
             // Independent bounded observer: no mutation of the production audit's
             // graph, budget, recipe, eligibility flags or retained asset inventory.

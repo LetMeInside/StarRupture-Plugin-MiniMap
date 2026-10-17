@@ -118,21 +118,12 @@ namespace MiniMapFingerprints
         uintptr_t destroyComponent = 0;
         uintptr_t initRenderTarget = 0;
         uintptr_t getRenderTargetResource = 0;
-        uintptr_t setStaticMesh = 0;
-        uintptr_t setVisibleInSceneCaptureOnly = 0;
-        uintptr_t renderGraphBuilderConstruct = 0;
-        uintptr_t renderGraphBuilderExecute = 0;
-        uintptr_t renderGraphBuilderDestroy = 0;
-        uintptr_t updateSceneCapture = 0;
         uintptr_t transitionResources = 0;
         uintptr_t isGameThread = 0;
         uintptr_t renderFenceConstruct = 0;
         uintptr_t renderFenceDestroy = 0;
         uintptr_t renderFenceBegin = 0;
         uintptr_t renderFencePoll = 0;
-        uintptr_t setMaterial = 0;
-        uintptr_t setWorldTransform = 0;
-        uintptr_t showOnlyComponentExec = 0;
     };
 
     bool Resolve(

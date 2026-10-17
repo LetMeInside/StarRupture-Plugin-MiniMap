@@ -1,5 +1,4 @@
-// Included inside the synchronous representation Context. The optional R2.5b
-// handoff independently retains assets; Context's own roots remain local.
+// Representation metadata inspection only; never prepares rendering components.
 bool AuditTransform(uintptr_t p,A::Transform& t,bool& absolute,bool& socket)
 {
     const auto* scene=reinterpret_cast<const SDK::USceneComponent*>(p);
@@ -71,60 +70,4 @@ A::Result AuditNativeChain(uintptr_t p,uintptr_t root,std::set<uintptr_t>& activ
     if(result.Status=="verified"&&!A::Compose(local,result.Effective,result.Effective))
     {result.Status="invalid";result.Reason="native_composition_failed";}
     return result;
-}
-// Called in a separately bounded/rooted Context. Incomplete SCS traversal is
-// visual uncertainty, never permission to skip a check on this native input.
-bool AuditIndependentNativeMain(uintptr_t selectedClass,uint64_t generation,bool highDetail,
-    MiniMapStaticAssembly::Recipe& output,const char*& failure)
-{
-    namespace SA=MiniMapStaticAssembly;
-    failure="native_main_class_or_cdo_unverified";
-    const auto buildingBase=NativeClass(L"/Script/Chimera.CrBuildingActorBase");
-    if(!generation||!ClassObject(selectedClass)||!Derives(selectedClass,buildingBase)||!Hold(selectedClass))return false;
-    const auto cdo=reinterpret_cast<uintptr_t>(reinterpret_cast<const SDK::UClass*>(selectedClass)->ClassDefaultObject);
-    if(!Is(cdo,selectedClass)||!Hold(cdo)||reinterpret_cast<const SDK::UObject*>(cdo)->Class!=reinterpret_cast<const SDK::UClass*>(selectedClass)||
-        !(uint32_t(reinterpret_cast<const SDK::UObject*>(cdo)->Flags)&0x10))return false;
-    failure="native_main_component_or_ownership_unverified";
-    const auto* actor=reinterpret_cast<const SDK::ACrBuildingActorBase*>(cdo);
-    const auto root=reinterpret_cast<uintptr_t>(actor->RootComponent),main=reinterpret_cast<uintptr_t>(actor->MainMeshComponent);
-    if(!Is(root,Scene)||!Hold(root)||!Is(main,StaticComponent)||!Hold(main))return false;
-    const auto* component=reinterpret_cast<const SDK::UStaticMeshComponent*>(main);
-    if(component->Class!=reinterpret_cast<const SDK::UClass*>(StaticComponent)||component->Outer!=reinterpret_cast<const SDK::UObject*>(cdo)||
-        reinterpret_cast<const SDK::UObject*>(root)->Outer!=reinterpret_cast<const SDK::UObject*>(cdo))return false;
-    SA::Recipe recipe;recipe.General=true;recipe.Generation=generation;recipe.ActorClass=selectedClass;
-    recipe.RootVerified=true;recipe.HighDetail=highDetail;recipe.VisualIncomplete=true;recipe.Count=1;
-    auto& input=recipe.Instances[0];const auto index=component->Index;
-    failure="native_main_visibility_or_mesh_unverified";
-    if(!component->bVisible||component->bHiddenInGame||index<0)return false;
-    input.Mesh=reinterpret_cast<uintptr_t>(component->StaticMesh);
-    if(!Is(input.Mesh,StaticMesh)||!Hold(input.Mesh))return false;
-    input.ComponentIndex=uint32_t(index);input.Visible=true;input.Hidden=false;
-    std::set<uintptr_t> active;C::JsonArray chain;
-    const auto transform=AuditNativeChain(main,root,active,0,chain);
-    failure="native_main_root_relative_transform_unverified";
-    if(transform.Status!="verified")return false;
-    input.Transform=transform.Effective;
-    bool defaultsValid=false,overridesValid=false;std::string defaultsJson,overridesJson;
-    const auto defaults=AuditMaterials(reinterpret_cast<const SDK::UStaticMesh*>(input.Mesh)->StaticMaterials,defaultsValid,defaultsJson);
-    const auto overrides=AuditMaterials(reinterpret_cast<const SDK::UMeshComponent*>(main)->OverrideMaterials,overridesValid,overridesJson);
-    const auto effective=A::ProposedMaterials(defaults,overrides);
-    failure="native_main_effective_materials_unverified";
-    if(!defaultsValid||!overridesValid||effective.empty()||effective.size()>SA::Slots)return false;
-    input.MaterialCount=effective.size();
-    for(const auto& slot:effective)
-    {
-        const auto material=AuditMaterialPointers.find(slot.Material);
-        if(slot.Index>=input.MaterialCount||!slot.Valid||material==AuditMaterialPointers.end())return false;
-        input.Materials[slot.Index]=material->second;
-        for(const auto& over:overrides)if(over.Index==slot.Index&&over.Valid&&!over.Material.empty())input.Overrides[slot.Index]=true;
-    }
-    failure="native_main_bounds_or_independent_evidence_incomplete";
-    const auto& sourceBounds=reinterpret_cast<const SDK::UStaticMesh*>(input.Mesh)->ExtendedBounds;
-    input.LocalBounds.Origin={sourceBounds.Origin.X,sourceBounds.Origin.Y,sourceBounds.Origin.Z};
-    input.LocalBounds.Extent={sourceBounds.BoxExtent.X,sourceBounds.BoxExtent.Y,sourceBounds.BoxExtent.Z};
-    if(AuditTruncated||AuditCollectionTruncated||Truncated||Invalid||Work.Exhausted||Graph.Truncated)return false;
-    input.Verified=true;recipe.Complete=true;SA::Footprint bounds;
-    const auto check=SA::ValidateTyped(recipe,bounds);
-    if(check.Failure!=SA::RecipeFailure::None){failure=SA::Label(check.Failure);return false;}
-    output=recipe;failure=nullptr;return true;
 }
