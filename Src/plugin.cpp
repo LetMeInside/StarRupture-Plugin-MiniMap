@@ -9,6 +9,7 @@
 #include "Native/ReadbackNativeAdapter.h"
 #include "Map/Sprites/BuildingSpriteCapture.h"
 #include "Map/Buildings/BuildingCache.h"
+#include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Sprites/BuildingRepresentation.h"
 #include "Map/Sprites/SpriteDiscovery.h"
 #endif
@@ -18,6 +19,8 @@ IPluginSelf* GetSelf() { return g_self; }
 
 #ifdef MODLOADER_CLIENT_BUILD
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
+static MiniMapSpriteStatus::Dictionary g_buildingSpriteStatuses;
+static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
 #endif
 
 #ifndef MODLOADER_BUILD_TAG
@@ -137,6 +140,11 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     g_preparedGeneration=0;
     g_worldEnding=false;
     SetServicesAdmitted(false);
+    {
+        // A replacement world can begin before the owned world's EndPlay.
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        MiniMapBuildingScheduler::EndSession();
+    }
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
@@ -176,6 +184,10 @@ static void OnExperienceLoadComplete()
     MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        MiniMapBuildingScheduler::InitializeSession();
+    }
     SetServicesAdmitted(true);
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     MiniMapBuildingCapture::OnGameplaySessionReady(MiniMapMap::GetWorld(), g_worldGeneration);
@@ -190,6 +202,10 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        MiniMapBuildingScheduler::EndSession();
+    }
     MiniMapUI::Hide();
     MiniMapTerrain::CancelPendingDiagnostic();
 }
@@ -292,6 +308,11 @@ extern "C"
 
             g_self = nullptr;
             return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
         }
 
         // Close admission before module-specific native EndPlay cancellation.
@@ -486,6 +507,10 @@ extern "C"
         MiniMapCacheIdentity::Reset();
         g_worldEnding=true;
         SetServicesAdmitted(false);
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingScheduler::Shutdown();
+        }
         MiniMapUI::Hide();
 #if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
         MiniMapSpriteDiscovery::Shutdown();

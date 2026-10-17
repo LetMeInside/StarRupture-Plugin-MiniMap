@@ -8,6 +8,11 @@
 #include <string>
 #include <string_view>
 
+namespace MiniMapBuildingSchedulerInternal
+{
+    std::mutex LifecycleMutex;
+}
+
 namespace
 {
     constexpr std::array<std::string_view, 0> BlacklistedBlueprints{};
@@ -51,7 +56,7 @@ namespace MiniMapBuildingScheduler
         g_sessionActive = true;
     }
 
-    void StartTick()
+    void StartDraw()
     {
         if (!g_sessionActive || !g_statuses || !g_fifo) return;
 

@@ -2,6 +2,7 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
+#include "BuildingScheduler.h"
 #include "Map/Sprites/BuildingSprites.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
@@ -301,6 +302,18 @@ namespace MiniMapBuildingVisuals
 #if defined(MINIMAP_BUILDING_SPRITES)
         auto spriteFrame=MiniMapBuildingSprites::BeginDraw();
 #endif
+        {
+#if defined(MINIMAP_BUILDING_SPRITES)
+        // Snapshot locks are already released; keep lifecycle reset out of this pass.
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        const auto currentSession = C::GetSnapshot();
+        const bool schedulerValid =
+            MiniMapMap::GameplayReady() &&
+            currentSession &&
+            currentSession->Generation == snapshot->Generation;
+        if (schedulerValid)
+            MiniMapBuildingScheduler::StartDraw();
+#endif
         auto first=snapshot->DrawOrder.begin();
         if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)
             // DrawKey sorts splines first. Skip the entire spline layer,
@@ -314,6 +327,7 @@ namespace MiniMapBuildingVisuals
 #if defined(MINIMAP_BUILDING_SPRITES)
             // Draw before proxy culling: an authored assembly can extend beyond
             // its targeting proxy. The texture path performs its own clip/FOW checks.
+            if(!spline && schedulerValid)MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
             if(!spline&&MiniMapBuildingSprites::Draw(spriteFrame,ui,dl,transform,instance.SpriteSource))
             {++stats.Ordinary;continue;} // exactly one representation per instance
 #endif
@@ -364,6 +378,7 @@ namespace MiniMapBuildingVisuals
 #endif
             ++stats.Ordinary;
             stats.OrdinaryProxy+=instance.Proxy; stats.OrdinaryPlaceholder+=!instance.Proxy;
+        }
         }
         ui->DL_PopClipRect(dl); stats.Ms=Ms(start);
 #if defined(MINIMAP_BUILDING_SPRITES)

@@ -5,6 +5,13 @@
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Sprites/SpriteStatus.h"
 #include "Map/Sprites/SpriteQueues.h"
+#include <mutex>
+
+// Integration callers serialize drawing and lifecycle transitions with this lock.
+namespace MiniMapBuildingSchedulerInternal
+{
+    extern std::mutex LifecycleMutex;
+}
 
 namespace MiniMapBuildingScheduler
 {
@@ -14,7 +21,7 @@ namespace MiniMapBuildingScheduler
 
     void InitializeSession();
 
-    void StartTick();
+    void StartDraw();
 
     void DrawBuilding(
         const MiniMapBuildingCollector::Record& building);
