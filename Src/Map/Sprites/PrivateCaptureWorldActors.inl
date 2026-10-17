@@ -102,6 +102,10 @@ void ResetBlueprintSession()
     DiscardDeferredBlueprint("session reset");
     // Arm has excluded active/quarantined world ownership before reaching here.
     if (blueprint.Active || blueprint.Current == BlueprintPhase::Quarantined) return;
+    if (totals.Encountered || totals.Eligible || totals.Constructed || totals.ConstructionFailed || totals.Unsupported ||
+        totals.Captured || totals.CaptureFailed || totals.ValidReadbacks || totals.Retired || totals.Quarantines)
+        BlueprintTotals();
+    totals = {};
     blueprint = {};
     attemptedBlueprints.clear();
 }
@@ -307,7 +311,6 @@ bool GetBlueprintActorBounds()
     if (!GuardedKismetGetActorBounds(actor,&origin,&extent))
     { blueprint.NativeAccessViolation=true; blueprint.Failure="Kismet actor-bounds call was interrupted"; return false; }
     const bool usable=BlueprintBoundsRejection(origin,extent)==nullptr;
-    const float orthoWidth=usable ? float(2.0*(std::max)(extent.X,extent.Y)*1.1) : 0.0f;
     if (!usable)
     {
         origin=SDK::FVector(0.0,0.0,0.0);
@@ -316,15 +319,10 @@ bool GetBlueprintActorBounds()
         extent=SDK::FVector(500.0,500.0,500.0);
         blueprint.Center=origin;
         blueprint.Extent=extent;
-        LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=framing outcome=selected framing=fixed_fallback reason=actor_bounds_numerically_unusable center=(%.3f,%.3f,%.3f) extent=(%.3f,%.3f,%.3f) ortho_width=%.3f",
-            (unsigned long long)blueprint.Id,origin.X,origin.Y,origin.Z,extent.X,extent.Y,extent.Z,
-            2.0*(std::max)(extent.X,extent.Y)*1.1);
         return true;
     }
     blueprint.Center=origin;
     blueprint.Extent=extent;
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=framing outcome=selected framing=kismet_bounds center=(%.3f,%.3f,%.3f) extent=(%.3f,%.3f,%.3f) ortho_width=%.3f",
-        (unsigned long long)blueprint.Id,origin.X,origin.Y,origin.Z,extent.X,extent.Y,extent.Z,orthoWidth);
     return true;
 }
 bool AdmitBlueprint(Class* type)
@@ -430,8 +428,6 @@ bool PrepareBlueprintCapture()
     if (!BlueprintNative(7,blueprint.Target.Object.Bits,0,&resource) || !resource) return false;
     blueprint.Job=MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource),256,256);
     if (!blueprint.Job) return false;
-    LOG_INFO("MiniMap: private_blueprint_actor rendering_mode=RenderScenePrimitives show_only=disabled");
-    BlueprintLog("actor-level capture preparation",true,"private_scene_registered_unfiltered_256_RGBA16F_unlit");
     return true;
 }
 
@@ -478,13 +474,11 @@ bool RetireBlueprintObjects()
         uint8_t finished{};
         if (!Read(blueprint.Actor.Object.Bits+0x5c,finished) || !BlueprintActorState(bool(finished&1))) return false;
         uintptr_t destroyed{};
-        BlueprintLog("actor_destruction_admission",true,"live_private_uninitialized_actor_no_active_capture");
         if (!BlueprintNative(4,blueprint.Actor.Object.Bits,0,&destroyed) || !destroyed) return false;
         uint8_t a{}, b{};
         if (!Read(blueprint.Actor.Object.Bits+0x5c,a) || (a&2) ||
             !Read(blueprint.Actor.Object.Bits+0x5d,b) || !(b&2) || (b&0x18) ||
             !BlueprintLevelContains(blueprint.Actor.Object.Bits,false)) return false;
-        BlueprintLog("actor_destruction",true,"normal_return_and_private_level_removal_observed");
         if (!ReleaseRetiringOwned(blueprint.Actor)) return false;
     }
     if (blueprint.Capture.Owned)
@@ -497,7 +491,6 @@ bool RetireBlueprintObjects()
     }
     if (!Drop(blueprint.Target)) return false;
     for (size_t i=blueprint.MetadataCount;i>0;--i) if (!Drop(blueprint.Metadata[i-1])) return false;
-    BlueprintLog("reference_release",true,"actor_capture_target_and_class_metadata_references_released");
     return Unchanged() && PrivateState(true) && QuietGC();
 }
 void CompleteBlueprintRetirement()
@@ -527,8 +520,9 @@ void CompleteBlueprintRetirement()
     { BlueprintQuarantine("production_lease_retirement_not_certified"); return; }
     ownerLease={};
     blueprint.Active=false; blueprint.Current=BlueprintPhase::Idle;
-    BlueprintLog("final",!blueprint.Failed,blueprint.Failed?blueprint.Failure:blueprint.VisualIncomplete?"rendered_with_unreproduced_visual_customization_and_logically_retired":"rendered_and_logically_retired_UObject_GC_and_renderer_retirement_unobserved");
-    BlueprintTotals();
+    if (blueprint.Failed) BlueprintLog("final",false,blueprint.Failure);
+    else LOG_INFO("MiniMap: sprite capture building=%u result=success blueprint=%s resolution=256x256",
+        blueprint.Building,blueprint.ClassPath.c_str());
 }
 void BeginBlueprintRetirement()
 {
@@ -556,7 +550,6 @@ void BeginBlueprintRetirement()
     // An ordered existing RHI-depth fence, never a flush/GC, drains that use first.
     if (!blueprintFence.Insert(operations,true)) { BlueprintQuarantine("capture_drain_fence_insertion_uncertain"); return; }
     blueprint.Current=BlueprintPhase::Retiring;
-    BlueprintLog("capture_drain",true,"ordered_RHI_fence_inserted_nonblocking");
 }
 void BlueprintFail(const char* stage, const char* reason, bool unsupported = false)
 {
@@ -577,7 +570,6 @@ void BlueprintSkipBeforeConstruction(const char* reason)
     BlueprintLog("candidate admission",false,reason);
     blueprint.Active=true;
     BlueprintFail("candidate admission",reason);
-    BlueprintTotals();
 }
 void BlueprintCandidateException() noexcept
 {
@@ -609,9 +601,12 @@ bool WriteBlueprintImage(const std::vector<uint8_t>& rgba, const wchar_t* suffix
     const auto path=BlueprintOutputPath(suffix);
     if (path.empty()) { BlueprintLog("image_output",false,"module_path_or_directory_unavailable"); return false; }
     const auto result=MiniMapCapturePng::Write(path,256,256,rgba,false);
-    const auto readableStage=BlueprintText(result.Stage);
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=image output outcome=%s path=%ls reason=%s HRESULT=%08lx production publication=independent",
-        (unsigned long long)blueprint.Id,result.Ok?"success":"failure",path.c_str(),readableStage.c_str(),(unsigned long)result.Error);
+    if (!result.Ok)
+    {
+        const auto readableStage=BlueprintText(result.Stage);
+        LOG_ERROR("MiniMap: private_blueprint_actor id=%llu step=image output outcome=failure path=%ls reason=%s HRESULT=%08lx production publication=independent",
+            (unsigned long long)blueprint.Id,path.c_str(),readableStage.c_str(),(unsigned long)result.Error);
+    }
     return result.Ok;
 }
 void ExportBlueprintReadback()
@@ -626,7 +621,6 @@ void ExportBlueprintReadback()
         ++totals.CaptureFailed; BlueprintLog("image_validation",false,blueprint.Failure); return;
     }
     ++totals.ValidReadbacks;
-    BlueprintLog("image_validation",true,blueprint.VisualIncomplete?"valid_pixels_candidate_has_unreproduced_visual_customization":"256x256_finite_foreground_and_background_not_visual_equivalence");
     blueprint.PrivateImage=std::move(image.Rgba);
     MiniMapStaticAssembly::Footprint bounds;
     bounds.Min={blueprint.Center.X-blueprint.Extent.X,blueprint.Center.Y-blueprint.Extent.Y,blueprint.Center.Z-blueprint.Extent.Z};
@@ -685,7 +679,6 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     { BlueprintQuarantine("gameplay world identity or baseline changed"); return; }
     if (!PrivateState(true))
     { BlueprintQuarantine("private capture world lifecycle validation failed"); return; }
-    BlueprintLog("owner readiness",true,"candidate uses the existing game thread and current session");
     if (candidate.Identity.Spline || candidate.Identity.TintBits!=MiniMapSpriteDiscoveryCore::Key{}.TintBits)
     {
         blueprint.VisualIncomplete=true;
@@ -717,8 +710,6 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     if (!KeepBlueprintMetadata(type))
     { BlueprintFail("class resolution","Blueprint class identity could not be retained",true); return; }
     blueprint.SelectedClass=selectedClass;
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu candidate=%s blueprint=%s class index=%d step=class resolution outcome=success source=authored definition and selected visual class",
-        (unsigned long long)id,key.c_str(),blueprint.ClassPath.c_str(),identity.Index);
     if (!AdmitBlueprint(type)) { BlueprintFail("construction admission",blueprint.Failure,true); return; }
     if (!BlueprintLevel(blueprint.LevelHash,blueprint.LevelCount))
     { BlueprintQuarantine("private persistent level could not be inspected before spawn"); return; }
@@ -726,7 +717,6 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     if (!PrivateState(true)) { BlueprintQuarantine("private capture world failed validation before spawn"); return; }
     if (!Unchanged()) { BlueprintQuarantine("gameplay world baseline changed before spawn"); return; }
     ++totals.Eligible;
-    BlueprintLog("construction admission",true,"valid Actor class and retained object identity; Unreal chooses the Blueprint construction path");
     SDK::TSubclassOf<SDK::AActor> actorClass(type);
     const auto spawnTransform=BlueprintIdentityTransform();
     constexpr auto collision=SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -749,16 +739,13 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     }
     if (!Hold(reinterpret_cast<uintptr_t>(spawnedActor),blueprint.Actor) || !BlueprintActorState(false))
     { ++totals.ConstructionFailed; BlueprintQuarantine("deferred_actor_retention_level_or_initialization_invalid"); return; }
-    BlueprintLog("deferred spawn",true,"retained Actor belongs to the private persistent level and has no owner or instigator");
     SDK::AActor* finishedActor{};
     if (!GuardedFinishSpawningActor(spawnedActor,&spawnTransform,scale,&finishedActor) ||
         finishedActor!=spawnedActor || !BlueprintActorState(true))
     { ++totals.ConstructionFailed; BlueprintQuarantine("FinishSpawning_return_or_ownership_isolation_uncertain"); return; }
     ++totals.Constructed;
-    BlueprintLog("finish spawning",true,"Unreal finished the same Actor in the private world");
     if (!GetBlueprintActorBounds())
     { BlueprintFail("actor bounds",blueprint.Failure); return; }
-    BlueprintLog("isolation",true,"private_world_and_gameplay_baseline_unchanged");
     if (!PrepareBlueprintCapture())
     {
         if (!blueprint.ResourceCreationUncertain && !blueprint.NativeAccessViolation && QuietGC() && Unchanged() && PrivateState(true) && BlueprintActorState(true))
@@ -769,7 +756,6 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     BlueprintRetirementOperations operations{this};
     if (!blueprintFence.Rearm() || !blueprintFence.Prepare(operations)) { BlueprintQuarantine("capture_retirement_fence_preparation_uncertain"); return; }
     blueprint.Current=BlueprintPhase::Prepared; blueprint.PreparedTick=blueprintTick;
-    BlueprintLog("capture_prepared",true,"next_engine_tick_C0_then_C10");
 }
 void ServiceDeferredBlueprint()
 {
@@ -810,7 +796,6 @@ void ServiceDeferredBlueprint()
     candidate.CanonicalBlueprint=std::make_shared<const std::string>(pending.ClassPath);
     const auto id=pending.Id; const auto building=pending.Building;
     deferredBlueprint={};
-    LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=deferred candidate outcome=resumed reason=current session source and generation GC quiet",(unsigned long long)id);
     // Offer repeats the admission GC gate, then resolves the path afresh. No cached class.
     OfferBlueprint(candidate,0,building,state.SessionWorld,true,id);
 }
@@ -841,7 +826,6 @@ void ServiceBlueprint()
             }
         }
         if (!blueprintFence.Release(operations)) { BlueprintQuarantine("capture_drain_fence_release_uncertain"); return; }
-        BlueprintLog("capture_drain",true,"ordered_RHI_fence_completed_not_independent_renderer_resource_retirement");
         CompleteBlueprintRetirement(); return;
     }
     if (blueprint.Current==BlueprintPhase::Prepared || blueprint.Current==BlueprintPhase::C0)
@@ -860,7 +844,7 @@ void ServiceBlueprint()
             if (!GuardedCaptureScene(reinterpret_cast<SDK::USceneCaptureComponent2D*>(blueprint.Capture.Object.Bits)))
             { BlueprintQuarantine("C0_CaptureScene_invocation_uncertain"); return; }
             blueprint.C0Tick=blueprintTick; blueprint.Current=BlueprintPhase::C0;
-            BlueprintLog("capture_C0",true,"CaptureScene_normal_return_no_readback_or_render_proof"); return;
+            return;
         }
         if (!MiniMapReadbackNative::MarkExternalCaptureCommitted(blueprint.Job))
         { BlueprintQuarantine("C10_readback_job_commit_uncertain"); return; }
@@ -869,9 +853,6 @@ void ServiceBlueprint()
         { BlueprintQuarantine("C10_CaptureScene_invocation_uncertain"); return; }
         ++totals.Captured;
         blueprint.Current=BlueprintPhase::Readback;
-        LOG_INFO("MiniMap: private_blueprint_actor id=%llu step=capture submission outcome=success C0=%llu C10=%llu interval=%llu evidence=normal native return only publication=0",
-            (unsigned long long)blueprint.Id,(unsigned long long)blueprint.C0Tick,(unsigned long long)blueprintTick,
-            (unsigned long long)(blueprintTick-blueprint.C0Tick));
         MiniMapReadbackNative::Service(blueprint.Job,blueprintTick); return;
     }
     if (blueprint.Current==BlueprintPhase::Readback)
@@ -886,8 +867,8 @@ void ServiceBlueprint()
             return;
         }
         if (report.Current!=MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding) return;
-        BlueprintLog("GPU_readback",report.Result==MiniMapReadbackNative::Outcome::Verified,
-            report.Failure?report.Failure:"callbacks_native_readback_and_texture_ownership_retired");
+        if (report.Result!=MiniMapReadbackNative::Outcome::Verified)
+            BlueprintLog("GPU_readback",false,report.Failure?report.Failure:"readback_failed");
         if (report.Result==MiniMapReadbackNative::Outcome::Verified)
         {
             try { ExportBlueprintReadback(); }

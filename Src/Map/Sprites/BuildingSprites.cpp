@@ -374,10 +374,6 @@ namespace MiniMapBuildingSprites
                 }
                 int width=0,height=0;auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
                 if(api&&api->GetSize)api->GetSize(spatial.Handle,&width,&height);
-                LOG_INFO("MiniMap: sprite layering submission: sequence=%zu entity=(%d,%d) building=%u worldCm=(%.6f,%.6f,%.6f) yawDegrees=%.6f worldSpriteCm=%.6fx%.6f screenAABB=[%.6f,%.6f]-[%.6f,%.6f] overlapsLowerEqualHigherZ=%zu,%zu,%zu texture=%dx%d; viewport intersection and FOW passed; capture foreground validated at publication, per-pixel overlap not measured",
-                    i,spatial.Index,spatial.Serial,spatial.Building,
-                    spatial.Position[0],spatial.Position[1],spatial.Position[2],spatial.Yaw,spatial.WorldWidth,spatial.WorldHeight,
-                    spatial.ScreenBounds[0],spatial.ScreenBounds[1],spatial.ScreenBounds[2],spatial.ScreenBounds[3],lowerOverlaps,equalOverlaps,higherOverlaps,width,height);
             }
         }
         if(frame.SampleReason!=DrawCounter::Count&&!(owner->ReportedDrawReasons&(1u<<size_t(frame.SampleReason))))

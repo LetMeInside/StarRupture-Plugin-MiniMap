@@ -136,7 +136,6 @@ struct PrivateCaptureWorld::Implementation
             DefinitionSlots::ReadSlot(reader, array, now.Index, slot) != DefinitionSlots::Status::Success ||
             slot.Object != now.Bits || slot.Serial != now.Serial || !(slot.Flags & 0x20000000)) return false;
         ref.Object.Serial = now.Serial;
-        LOG_INFO("MiniMap: private_capture_world retained_serial_adopted=1 index=%d serial=%d", now.Index, now.Serial);
         return true;
     }
     bool Is(uintptr_t object, ClassId expected)
@@ -179,7 +178,8 @@ struct PrivateCaptureWorld::Implementation
     bool Invoke(Operation op, uintptr_t object, uintptr_t* created = nullptr) noexcept
     {
         const char* name = OperationName(op);
-        LOG_INFO("MiniMap: private_capture_world step=%s outcome=entered", name);
+        const bool referenceOperation=op==Operation::Retain || op==Operation::Release;
+        if (!referenceOperation) LOG_INFO("MiniMap: private_capture_world step=%s outcome=entered", name);
         __try
         {
             switch (op)
@@ -196,30 +196,34 @@ struct PrivateCaptureWorld::Implementation
             case Operation::CleanupWorld: N::Get()->world.cleanupWorld(object, true, true, 0); break;
             case Operation::Release: N::Get()->asset.releaseObject(reinterpret_cast<SDK::UObject*>(object)); break;
             }
-            LOG_INFO("MiniMap: private_capture_world step=%s outcome=success evidence=normal_return_only", name);
+            if (!referenceOperation) LOG_INFO("MiniMap: private_capture_world step=%s outcome=success evidence=normal_return_only", name);
             return true;
         }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
         {
-            LOG_ERROR("MiniMap: private_capture_world step=%s outcome=failure reason=native_memory_interruption code=%lu", name, GetExceptionCode());
+            LOG_ERROR("MiniMap: private_capture_world step=%s outcome=failure object=%p reason=native_memory_interruption code=%lu",
+                name,reinterpret_cast<void*>(object),GetExceptionCode());
             return false;
         }
     }
     bool Hold(uintptr_t object, Reference& ref)
     {
-        if (!QuietGC() || !Identify(object, ref.Object)) return Step("retain_reference", false, "GC_or_object_identity_invalid");
+        if (!QuietGC() || !Identify(object, ref.Object))
+        { LOG_ERROR("MiniMap: private_capture_world step=retain_reference outcome=failure object=%p reason=GC_or_object_identity_invalid",reinterpret_cast<void*>(object)); return false; }
         ref.Attempted = true;
         if (!Invoke(Operation::Retain, object)) { ref.Uncertain = true; return false; }
         ref.Owned = true;
-        if (!CheckOwned(ref)) { ref.Uncertain = true; return Step("reference_ownership", false, "retained_identity_unverified"); }
-        return Step("reference_ownership", true, "retained_identity_verified");
+        if (!CheckOwned(ref))
+        { ref.Uncertain = true; LOG_ERROR("MiniMap: private_capture_world step=reference_ownership outcome=failure object=%p reason=retained_identity_unverified",reinterpret_cast<void*>(object)); return false; }
+        return true;
     }
     bool Drop(Reference& ref)
     {
         if (!ref.Owned) return !ref.Attempted;
-        if (!QuietGC() || !CheckOwned(ref) || !Invoke(Operation::Release, ref.Object.Bits))
-        { ref.Uncertain = true; return false; }
+        if (!QuietGC() || !CheckOwned(ref))
+        { ref.Uncertain = true; LOG_ERROR("MiniMap: private_capture_world step=release_reference outcome=failure object=%p reason=GC_or_object_identity_invalid",reinterpret_cast<void*>(ref.Object.Bits)); return false; }
+        if (!Invoke(Operation::Release, ref.Object.Bits)) { ref.Uncertain = true; return false; }
         ref.Owned = false; ref.Attempted = false;
         return true;
     }
@@ -408,8 +412,7 @@ struct PrivateCaptureWorld::Implementation
 
     static bool Step(const char* name, bool success, const char* reason = "verified")
     {
-        LOG_INFO("MiniMap: private_capture_world step=%s outcome=%s reason=%s", name,
-                 success ? "success" : "failure", reason);
+        if (!success) LOG_INFO("MiniMap: private_capture_world step=%s outcome=failure reason=%s", name,reason);
         return success;
     }
     bool RendererAvailable()
