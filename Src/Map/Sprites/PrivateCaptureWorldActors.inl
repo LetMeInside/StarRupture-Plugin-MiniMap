@@ -168,6 +168,18 @@ bool GuardedFinishSpawningActor(SDK::AActor* actor, const SDK::FTransform* trans
         ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
     { blueprint.NativeAccessViolation=true; return false; }
 }
+bool GuardedActorClassContract(Class* type, Class* actorClass, bool* isActorClass) noexcept
+{
+    __try
+    {
+        *isActorClass=SDK::UKismetMathLibrary::ClassIsChildOf(
+            SDK::TSubclassOf<SDK::UObject>(type),SDK::TSubclassOf<SDK::UObject>(actorClass));
+        return true;
+    }
+    __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    { blueprint.NativeAccessViolation=true; return false; }
+}
 bool GuardedKismetGetActorBounds(const SDK::AActor* actor,
     SDK::FVector* origin, SDK::FVector* extent) noexcept
 {
@@ -317,34 +329,17 @@ bool GetBlueprintActorBounds()
 }
 bool AdmitBlueprint(Class* type)
 {
-    auto* generated=BlueprintClass(L"/Script/Engine.BlueprintGeneratedClass");
-    auto* base=BlueprintClass(L"/Script/Chimera.CrBuildingActorBase");
-    auto* drone=BlueprintClass(L"/Script/Chimera.CrDroneSupplySystemBuildingBase");
-    auto* crafter=BlueprintClass(L"/Script/Chimera.CrCrafter");
-    if (!generated || !base || !drone || !crafter ||
-        base->Size!=sizeof(SDK::ACrBuildingActorBase) || drone->Size!=sizeof(SDK::ACrDroneSupplySystemBuildingBase) ||
-        crafter->Size!=sizeof(SDK::ACrCrafter))
-    { blueprint.Failure="native building class metadata is unavailable"; return false; }
-    auto* current=type; bool nativeFound=false;
-    for (size_t depth=0; current && depth<128; ++depth)
-    {
-        Identity id;
-        if (!Identify(reinterpret_cast<uintptr_t>(current),id,sizeof(Class)) || !KeepBlueprintMetadata(current))
-        { blueprint.Failure="Blueprint class identity could not be verified"; return false; }
-        if (current->Class!=generated)
-        {
-            nativeFound=current==base || current==drone || current==crafter;
-            break;
-        }
-        if (!Identify(reinterpret_cast<uintptr_t>(current),id,sizeof(SDK::UBlueprintGeneratedClass)))
-        { blueprint.Failure="Blueprint class extent could not be verified"; return false; }
-        current=static_cast<Class*>(current->SuperStruct);
-    }
-    if (!nativeFound || !current || !type || type->Size<current->Size || type->Size>65536)
-    { blueprint.Failure="Blueprint does not derive from a supported native building class"; return false; }
+    auto* actorClass=BlueprintClass(L"/Script/Engine.Actor");
+    if (!type || !actorClass)
+    { blueprint.Failure="Actor class metadata is unavailable"; return false; }
+    bool isActorClass=false;
+    if (!GuardedActorClassContract(type,actorClass,&isActorClass))
+    { blueprint.Failure="Actor class contract call was interrupted"; return false; }
+    if (!isActorClass)
+    { blueprint.Failure="resolved Blueprint class is not an Actor subclass"; return false; }
     Identity cdoId;
     if (!type->ClassDefaultObject || type->ClassDefaultObject->Class!=type ||
-        !Identify(reinterpret_cast<uintptr_t>(type->ClassDefaultObject),cdoId,size_t(type->Size)) ||
+        !Identify(reinterpret_cast<uintptr_t>(type->ClassDefaultObject),cdoId) ||
         !KeepBlueprintMetadata(type->ClassDefaultObject))
     { blueprint.Failure="Blueprint class default object identity could not be verified"; return false; }
     return true;
@@ -719,8 +714,8 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
         BlueprintFail("class resolution","resident class is absent or differs from the selected visual class",true); return;
     }
     auto* type=static_cast<Class*>(found);
-    if (type->Size<int32_t(sizeof(SDK::ACrBuildingActorBase)) || type->Size>65536 || !KeepBlueprintMetadata(type))
-    { BlueprintFail("class resolution","Blueprint class extent or retained identity is invalid",true); return; }
+    if (!KeepBlueprintMetadata(type))
+    { BlueprintFail("class resolution","Blueprint class identity could not be retained",true); return; }
     blueprint.SelectedClass=selectedClass;
     LOG_INFO("MiniMap: private_blueprint_actor id=%llu candidate=%s blueprint=%s class index=%d step=class resolution outcome=success source=authored definition and selected visual class",
         (unsigned long long)id,key.c_str(),blueprint.ClassPath.c_str(),identity.Index);
@@ -731,7 +726,7 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     if (!PrivateState(true)) { BlueprintQuarantine("private capture world failed validation before spawn"); return; }
     if (!Unchanged()) { BlueprintQuarantine("gameplay world baseline changed before spawn"); return; }
     ++totals.Eligible;
-    BlueprintLog("construction admission",true,"native building ancestry and bounded object identity verified; Unreal chooses the Blueprint construction path");
+    BlueprintLog("construction admission",true,"valid Actor class and retained object identity; Unreal chooses the Blueprint construction path");
     SDK::TSubclassOf<SDK::AActor> actorClass(type);
     const auto spawnTransform=BlueprintIdentityTransform();
     constexpr auto collision=SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
