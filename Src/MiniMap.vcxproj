@@ -129,6 +129,7 @@
     <ClInclude Include="Map\Buildings\BuildingInventory.h" />
     <ClInclude Include="Map\Buildings\BuildingCollector.h" />
     <ClInclude Include="Map\Buildings\BuildingScheduler.h" />
+    <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
     <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
@@ -179,6 +180,7 @@
     <ClCompile Include="Map\Buildings\BuildingInventory.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingSpriteRenderer.cpp" />
     <ClCompile Include="Map\Sprites\BuildingRepresentation.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
