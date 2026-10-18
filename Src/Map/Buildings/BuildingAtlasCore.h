@@ -43,6 +43,10 @@ namespace MiniMapBuildingAtlasCore
         std::uint64_t Revision{};
         std::vector<PackedSource> Images; // Deterministic packing order.
         std::vector<std::uint8_t> Rgba;
+        // Retained but not admitted by the last successful RepackSubset, in
+        // unsigned identifier-byte order. Images identifies all admitted sources.
+        // Add does not update this layout snapshot; complete-set Repack clears it.
+        std::vector<std::string> DeferredIdentifiers;
     };
     enum class Result
     {
@@ -58,11 +62,18 @@ namespace MiniMapBuildingAtlasCore
         // Failure leaves sources and current layout unchanged; identifiers are opaque bytes.
         Result Add(const std::string& identifier, std::uint32_t width, std::uint32_t height,
             std::span<const std::uint8_t> rgba) noexcept;
-        // Complete-set attempts at 512 then 1024. Failure preserves the last layout.
+        // Complete-set attempts at 512 then 1024, without shrinking the current
+        // canvas. Failure preserves the last layout.
         Result Repack() noexcept;
+        // Current().Images is mandatory. Consider remaining retained identifiers
+        // in ascending unsigned-byte order, accepting each only if the entire
+        // selection fits at 512 or 1024 without shrinking. Commit once; Ok can
+        // include capacity-deferred sources in Current().DeferredIdentifiers.
+        // Errors preserve all current metadata, pixels, revision and sources.
+        Result RepackSubset() noexcept;
         // Read-only views: Sources references invalidate on a successful Add;
-        // Current references into buffers invalidate on a successful Repack.
-        // Add never changes Current, and Repack never changes Sources.
+        // Current references into buffers invalidate on a successful Repack or
+        // RepackSubset. Add never changes Current; neither repack changes Sources.
         const std::vector<CroppedSource>& Sources() const noexcept { return Retained; }
         const Layout& Current() const noexcept { return Packed; }
 

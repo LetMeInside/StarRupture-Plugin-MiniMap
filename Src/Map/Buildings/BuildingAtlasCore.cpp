@@ -50,21 +50,23 @@ namespace MiniMapBuildingAtlasCore
             return a.X < std::uint32_t(b.X) + b.Width && b.X < std::uint32_t(a.X) + a.Width &&
                 a.Y < std::uint32_t(b.Y) + b.Height && b.Y < std::uint32_t(a.Y) + a.Height;
         }
-        Result Pack(const std::vector<CroppedSource>& sources, std::uint16_t side, Layout& candidate)
+        Result Pack(const std::vector<const CroppedSource*>& sources, std::uint16_t side,
+            Layout& candidate, bool buildPixels = true)
         {
             std::vector<const CroppedSource*> order;
             order.reserve(sources.size());
-            for (const auto& source : sources)
+            for (const auto* source : sources)
             {
-                const auto& crop = source.Crop;
+                if (!source) return Result::InternalError;
+                const auto& crop = source->Crop;
                 std::size_t bytes{}, width{}, height{};
                 if (!crop.Width || !crop.Height || std::uint32_t(crop.X) + crop.Width > SourceSize ||
                     std::uint32_t(crop.Y) + crop.Height > SourceSize) return Result::InternalError;
                 if (!ImageBytes(crop.Width, crop.Height, bytes) ||
                     !AddSize(crop.Width, 2 * Gutter, width) || !AddSize(crop.Height, 2 * Gutter, height)) return Result::Overflow;
-                if (bytes != source.Rgba.size()) return Result::InternalError;
+                if (bytes != source->Rgba.size()) return Result::InternalError;
                 if (width > side || height > side) return Result::Capacity;
-                order.push_back(&source);
+                order.push_back(source);
             }
             std::sort(order.begin(), order.end(), [](const CroppedSource* a, const CroppedSource* b)
             {
@@ -115,6 +117,9 @@ namespace MiniMapBuildingAtlasCore
                 candidate.Images.push_back({source->Identifier, source->Crop, allocation, content,
                     {{{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}}});
             }
+            // Subset fit probes use the same placement algorithm, but only the
+            // final selection needs a complete RGBA canvas.
+            if (!buildPixels) return Result::Ok;
             std::size_t bytes{};
             if (!ImageBytes(side, side, bytes)) return Result::Overflow;
             candidate.Rgba.assign(bytes, 0);
@@ -135,6 +140,18 @@ namespace MiniMapBuildingAtlasCore
                     }
             }
             return Result::Ok;
+        }
+
+        void Commit(Layout& published, Layout& candidate) noexcept
+        {
+            // Single-owner publication: no allocation or throwing operation can
+            // occur after the first swap. The displaced layout dies in the caller.
+            std::swap(published.Width, candidate.Width);
+            std::swap(published.Height, candidate.Height);
+            std::swap(published.Revision, candidate.Revision);
+            published.Images.swap(candidate.Images);
+            published.Rgba.swap(candidate.Rgba);
+            published.DeferredIdentifiers.swap(candidate.DeferredIdentifiers);
         }
     }
 
@@ -198,23 +215,99 @@ namespace MiniMapBuildingAtlasCore
         {
             if (Retained.empty()) return Result::EmptySources;
             if (Packed.Revision == (std::numeric_limits<std::uint64_t>::max)()) return Result::Overflow;
+            std::vector<const CroppedSource*> sources;
+            sources.reserve(Retained.size());
+            for (const auto& source : Retained) sources.push_back(&source);
             for (std::uint16_t side : {std::uint16_t(512), std::uint16_t(1024)})
             {
+                if (side < Packed.Width || side < Packed.Height) continue;
                 Layout candidate;
-                const auto result = Pack(Retained, side, candidate);
+                const auto result = Pack(sources, side, candidate);
                 if (result == Result::Capacity) continue;
                 if (result != Result::Ok) return result;
                 candidate.Revision = Packed.Revision + 1;
-                // Only no-throw swaps publish the complete candidate. Failed attempts
-                // never touch the previous canvas, metadata or revision.
-                std::swap(Packed.Width, candidate.Width);
-                std::swap(Packed.Height, candidate.Height);
-                std::swap(Packed.Revision, candidate.Revision);
-                Packed.Images.swap(candidate.Images);
-                Packed.Rgba.swap(candidate.Rgba);
+                Commit(Packed, candidate);
                 return Result::Ok;
             }
             return Result::Capacity;
+        }
+        catch (const std::bad_alloc&) { return Result::AllocationFailure; }
+        catch (const std::length_error&) { return Result::Overflow; }
+        catch (...) { return Result::InternalError; }
+    }
+
+    Result Atlas::RepackSubset() noexcept
+    {
+        try
+        {
+            if (Retained.empty()) return Result::EmptySources;
+            if (Packed.Revision == (std::numeric_limits<std::uint64_t>::max)()) return Result::Overflow;
+            std::vector<bool> admitted(Retained.size(), false);
+            std::vector<const CroppedSource*> selection;
+            selection.reserve(Retained.size());
+
+            // Protect the current CPU layout, not a caller-supplied identity set.
+            // Validate that every mandatory image still has one retained source.
+            for (const auto& image : Packed.Images)
+            {
+                const auto source = std::lower_bound(Retained.begin(), Retained.end(), image.Identifier,
+                    [](const CroppedSource& retained, const std::string& key)
+                    { return BytesLess(retained.Identifier, key); });
+                if (source == Retained.end() || source->Identifier != image.Identifier)
+                    return Result::InternalError;
+                const auto index = std::size_t(source - Retained.begin());
+                if (admitted[index]) return Result::InternalError;
+                admitted[index] = true;
+            }
+            for (std::size_t i = 0; i < Retained.size(); ++i)
+                if (admitted[i]) selection.push_back(&Retained[i]);
+
+            std::uint16_t minimumSide = (std::max)(Packed.Width, Packed.Height);
+            auto fit = [&]() -> Result
+            {
+                for (std::uint16_t side : {std::uint16_t(512), std::uint16_t(1024)})
+                {
+                    if (side < minimumSide) continue;
+                    Layout probe;
+                    const auto result = Pack(selection, side, probe, false);
+                    if (result == Result::Capacity) continue;
+                    if (result != Result::Ok) return result;
+                    minimumSide = side;
+                    return Result::Ok;
+                }
+                return Result::Capacity;
+            };
+            if (!selection.empty())
+            {
+                const auto result = fit();
+                if (result != Result::Ok) return result; // Never defer a mandatory image.
+            }
+
+            // Add preserves unsigned-byte identifier ordering in Retained. Each
+            // probe includes every mandatory and previously accepted source.
+            for (std::size_t i = 0; i < Retained.size(); ++i)
+            {
+                if (admitted[i]) continue;
+                selection.push_back(&Retained[i]);
+                const auto result = fit();
+                if (result == Result::Ok) admitted[i] = true;
+                else
+                {
+                    selection.pop_back();
+                    if (result != Result::Capacity) return result;
+                }
+            }
+            if (selection.empty()) return Result::Capacity;
+
+            Layout candidate;
+            const auto result = Pack(selection, minimumSide, candidate);
+            if (result != Result::Ok) return result;
+            candidate.DeferredIdentifiers.reserve(Retained.size() - selection.size());
+            for (std::size_t i = 0; i < Retained.size(); ++i)
+                if (!admitted[i]) candidate.DeferredIdentifiers.push_back(Retained[i].Identifier);
+            candidate.Revision = Packed.Revision + 1;
+            Commit(Packed, candidate);
+            return Result::Ok;
         }
         catch (const std::bad_alloc&) { return Result::AllocationFailure; }
         catch (const std::length_error&) { return Result::Overflow; }
