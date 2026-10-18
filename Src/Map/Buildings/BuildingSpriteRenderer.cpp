@@ -5,6 +5,8 @@
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
+#include "Native/CaptureRetirementCore.h"
+#include "Map/Sprites/CapturePng.h"
 #include "Map/Sprites/SceneCaptureConfiguration.h"
 #include "plugin_helpers.h"
 
@@ -17,9 +19,12 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -482,8 +487,9 @@ namespace
     static_assert(std::is_trivially_destructible_v<NativeWorldOwner>);
     NativeWorldOwner g_nativeWorld;
 
-    enum class RequestPhase { Waiting, Preparing, Prepared, Failed, Retired, Quarantined };
-    enum class ResourceOperation { New, Flags, Register, Unregister, DestroyActor, DestroyComponent, InitializeTarget, Resource, ConstructFence, DestroyFence };
+    enum class RequestPhase { Waiting, Preparing, Prepared, C0, Readback, Retiring, Failed, Retired, Quarantined };
+    enum class ResourceOperation { New, Flags, Register, Unregister, DestroyActor, DestroyComponent, InitializeTarget, Resource, ConstructFence, BeginFence, PollFence, DestroyFence, CaptureScene };
+    uint64_t g_captureServiceTick = 0; // Private service iterations, never reset at session boundaries.
 
     bool ReadbackAvailable(bool initialize, bool& available) noexcept
     {
@@ -502,8 +508,8 @@ namespace
 #endif
     }
 
-    // Leaf boundaries mirror the supported native calls. No capture or readback
-    // submission is implemented here. An interrupted call is never retried.
+    // Leaf boundaries mirror the supported native calls. An interrupted
+    // irreversible operation is never retried.
     bool ResourceCall(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr) noexcept
     {
         const auto* api = N::Get();
@@ -525,13 +531,28 @@ namespace
             case ResourceOperation::InitializeTarget: api->texture.initRenderTarget(reinterpret_cast<SDK::UTextureRenderTarget2D*>(object), 256, 256, 10, true); break;
             case ResourceOperation::Resource: *result = reinterpret_cast<uintptr_t>(api->texture.getRenderTargetResource(reinterpret_cast<SDK::UTextureRenderTarget2D*>(object))); break;
             case ResourceOperation::ConstructFence: api->texture.renderFenceConstruct(reinterpret_cast<void*>(object)); break;
+            case ResourceOperation::BeginFence: api->texture.renderFenceBegin(reinterpret_cast<void*>(object), 1); break;
+            case ResourceOperation::PollFence: *result = api->texture.renderFencePoll(reinterpret_cast<const void*>(object)); break;
             case ResourceOperation::DestroyFence: api->texture.renderFenceDestroy(reinterpret_cast<void*>(object)); break;
+            case ResourceOperation::CaptureScene: reinterpret_cast<SDK::USceneCaptureComponent2D*>(object)->CaptureScene(); break;
             }
             return true;
         }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
+
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+    bool ServiceReadback(MiniMapReadbackNative::Job* job, uint64_t tick)
+    {
+        // The adapter catches enqueue C++ exceptions and preserves its evidence.
+        // Catch native access faults here; other C++ exceptions reach Service's
+        // conservative quarantine boundary without unwinding any native owner.
+        __try { MiniMapReadbackNative::Service(job, tick); return true; }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+#endif
 
     bool SpawnActor(uintptr_t world, uintptr_t type, const SDK::FTransform* transform, uintptr_t* result) noexcept
     {
@@ -626,28 +647,61 @@ namespace
         std::array<NativeReference, MetadataCount> Metadata{};
         NativeReference Actor, Capture, Target;
         SDK::FVector Center{}, Extent{};
+        uint64_t PreparedTick{}, C0Tick{};
+        bool CaptureSubmitted = false, Committed = false; // Native lifetime history, including while Retiring.
+        std::vector<uint8_t> Rgba; // Full canvas; retained with Center/Extent for later cache persistence.
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        MiniMapReadbackNative::Job* Job{}; // Unsubmitted; never serviced in this stage.
+        MiniMapReadbackNative::Job* Job{};
 #endif
-        // Only the constructed, uninserted fence is needed before capture. Keep
-        // storage after any interrupted constructor/destructor, just like a ref.
-        alignas(8) unsigned char FenceStorage[8]{};
-        Ownership Fence = Ownership::Empty;
+        MiniMapCaptureRetirement::FenceOwner Fence; // Sole fence; no automatic native destruction.
+
+        struct FenceReleaseInterrupted {};
+        struct FenceOperations
+        {
+            ActiveRequest& Owner;
+            bool Available()
+            {
+                if (Owner.FenceAvailable()) return true;
+                Owner.Quarantine("capture retirement renderer or fence prerequisites unavailable"); return false;
+            }
+            bool Construct(void* storage) { return Owner.Call(ResourceOperation::ConstructFence, reinterpret_cast<uintptr_t>(storage)); }
+            bool Begin(void* storage) { return Owner.Call(ResourceOperation::BeginFence, reinterpret_cast<uintptr_t>(storage)); }
+            bool Poll(void* storage)
+            {
+                uintptr_t complete{};
+                return Owner.Call(ResourceOperation::PollFence, reinterpret_cast<uintptr_t>(storage), 0, &complete) && complete;
+            }
+            void Destroy(void* storage)
+            {
+                // FenceOwner's destructor operation has a void contract. Unwind
+                // Release before it can replace Uncertain with Destroyed on fault.
+                if (!Owner.Call(ResourceOperation::DestroyFence, reinterpret_cast<uintptr_t>(storage)))
+                    throw FenceReleaseInterrupted{};
+            }
+        };
 
         void Quarantine(const char* reason)
         { Phase = RequestPhase::Quarantined; g_nativeWorld.Quarantine(reason); }
         bool Ready()
         { return g_nativeWorld.Phase == WorldPhase::Ready && QuietGC() && g_nativeWorld.GameplayUnchanged() && g_nativeWorld.PrivateState(true); }
+        bool FenceAvailable()
+        {
+            bool available{};
+            if (!Ready() || !ReadbackAvailable(false, available) || !available) return false;
+            const auto& api = N::Get()->texture;
+            return api.renderFenceConstruct && api.renderFenceBegin && api.renderFencePoll && api.renderFenceDestroy;
+        }
         bool Call(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr)
         {
-            if (operation == ResourceOperation::ConstructFence || operation == ResourceOperation::DestroyFence)
-            {
-                bool available{};
-                if (!Ready() || !ReadbackAvailable(false, available) || !available)
-                { Quarantine("prepared fence renderer prerequisites unavailable"); return false; }
-            }
             if (Ready() && ResourceCall(operation, object, argument, result)) return true;
             Quarantine("request native operation interrupted or world ownership changed"); return false;
+        }
+        bool ReleaseFence()
+        {
+            FenceOperations operations{*this};
+            try { if (Fence.Release(operations)) return true; }
+            catch (const FenceReleaseInterrupted&) {} // Storage stays Uncertain.
+            Quarantine("capture retirement fence release uncertain"); return false;
         }
         bool DropMetadata()
         {
@@ -745,38 +799,38 @@ namespace
             if (!Invoke(Operation::Release, bits)) return false;
             ref = {}; return true;
         }
-        bool Retire()
+        bool HasNativeOwnership() const
         {
-            if (Phase == RequestPhase::Quarantined) return false;
-            bool owned = Fence != Ownership::Empty || Actor.State != Ownership::Empty || Capture.State != Ownership::Empty || Target.State != Ownership::Empty;
-            for (const auto& ref : Metadata) owned |= ref.State != Ownership::Empty;
+            const auto held = [](const NativeReference& ref) { return ref.State != Ownership::Empty || ref.Object.Bits != 0; };
+            const auto fence = Fence.GetState();
+            bool owned = (fence != MiniMapCaptureRetirement::FenceState::Empty && fence != MiniMapCaptureRetirement::FenceState::Destroyed) ||
+                held(Actor) || held(Capture) || held(Target);
+            for (const auto& ref : Metadata) owned |= held(ref);
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             owned |= Job != nullptr;
 #endif
-            if (!owned) { if (Phase != RequestPhase::Failed) Phase = RequestPhase::Retired; return true; }
-            if (!Ready()) { Quarantine("pre-capture retirement world admission failed"); return false; }
+            return owned;
+        }
+        bool DetachCapture()
+        {
             if (Capture.State != Ownership::Empty)
             {
                 uint8_t flags{};
                 if (!g_nativeWorld.CheckOwned(Capture) || !Read(Capture.Object.Bits + 0x94, flags) ||
                     ((flags & 1) && !Call(ResourceOperation::Unregister, Capture.Object.Bits)) ||
                     !Read(Capture.Object.Bits + 0x94, flags) || (flags & 3))
-                { Quarantine("pre-capture component detachment uncertain"); return false; }
+                { Quarantine("capture component detachment uncertain"); return false; }
             }
-            // The supported never-captured path has no capture/readback users.
-            // Unregister/destroy use UE's native component retirement; no manual
-            // renderer resource freeing, flush, or claim of GPU-idle is made.
+            return true;
+        }
+        bool RetireObjects()
+        {
+            const auto fence = Fence.GetState();
+            if (!Ready() || (fence != MiniMapCaptureRetirement::FenceState::Empty && fence != MiniMapCaptureRetirement::FenceState::Destroyed))
+            { Quarantine("object retirement attempted before fence release or with invalid world"); return false; }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-            if (!MiniMapReadbackNative::DiscardExternalBeforeCapture(Job))
-            { Quarantine("unsubmitted readback Job could not be discarded"); return false; }
+            if (Job) { Quarantine("object retirement attempted with a live readback Job"); return false; }
 #endif
-            if (Fence != Ownership::Empty)
-            {
-                if (Fence != Ownership::Held) { Quarantine("prepared fence ownership uncertain"); return false; }
-                Fence = Ownership::Uncertain;
-                if (!Call(ResourceOperation::DestroyFence, reinterpret_cast<uintptr_t>(FenceStorage))) return false;
-                Fence = Ownership::Empty;
-            }
             if (Actor.State != Ownership::Empty)
             {
                 uint8_t a{}, b{}; uintptr_t destroyed{};
@@ -795,12 +849,180 @@ namespace
                 { Quarantine("component destruction or reference release uncertain"); return false; }
             }
             if (!g_nativeWorld.Drop(Target) || !DropMetadata() || !Ready())
-            { Quarantine("pre-capture dependency release uncertain"); return false; }
-            if (Phase != RequestPhase::Failed) Phase = RequestPhase::Retired;
+            { Quarantine("capture dependency release uncertain"); return false; }
+            if (Phase != RequestPhase::Failed)
+                Phase = CaptureSubmitted && Rgba.empty() ? RequestPhase::Failed : RequestPhase::Retired;
             return true;
+        }
+
+        bool FinishRetirement()
+        {
+            using MiniMapCaptureRetirement::FenceState;
+            if (Phase != RequestPhase::Retiring || !Ready() ||
+                (Fence.GetState() != FenceState::Inserted && Fence.GetState() != FenceState::Complete))
+            { Quarantine("post-capture retirement state invalid"); return false; }
+            FenceOperations operations{*this};
+            if (!Fence.Poll(operations)) return false; // Nonblocking; faults quarantine through operations.
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            if (Job)
+            {
+                if (!Committed)
+                {
+                    // C0 still requires the scene fence, although its Job never ran.
+                    if (!MiniMapReadbackNative::DiscardExternalBeforeCapture(Job))
+                    { Quarantine("C0-only readback Job disposal failed"); return false; }
+                }
+                else
+                {
+                    if (MiniMapReadbackNative::ExternalRejectedWithoutReadback(Job) &&
+                        !MiniMapReadbackNative::CompleteExternalCaptureRetirement(Job))
+                    { Quarantine("rejected readback Job retirement failed"); return false; }
+                    const auto report = MiniMapReadbackNative::Inspect(Job);
+                    if (report.Quarantined || report.Enqueue == MiniMapCaptureRetirement::EnqueueState::Uncertain)
+                    { Quarantine("readback ownership uncertain during retirement"); return false; }
+                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding) return false;
+                    if (report.Result == MiniMapReadbackNative::Outcome::Pending)
+                    { Quarantine("readback retirement lacks a terminal outcome"); return false; }
+                    // The adapter additionally verifies that no readback or RHI
+                    // texture is owned; a scene fence alone is insufficient.
+                    if (!MiniMapReadbackNative::DestroyIfRetired(Job))
+                    { Quarantine("readback native owners not retired"); return false; }
+                }
+            }
+#endif
+            return ReleaseFence() && RetireObjects();
+        }
+        bool Retire()
+        {
+            if (Phase == RequestPhase::Quarantined) return false;
+            if (!HasNativeOwnership())
+            {
+                if (Phase != RequestPhase::Failed)
+                    Phase = CaptureSubmitted && Rgba.empty() ? RequestPhase::Failed : RequestPhase::Retired;
+                return true;
+            }
+            if (!Ready()) { Quarantine("capture retirement world admission failed"); return false; }
+            if (Phase == RequestPhase::Retiring) return FinishRetirement();
+            if (!DetachCapture()) return false;
+            if (CaptureSubmitted)
+            {
+                // CaptureScene may enqueue scene work independently of the Job.
+                // Detach first, then order an RHI-depth fence behind that work.
+                FenceOperations operations{*this};
+                if (!Fence.Insert(operations, true))
+                { Quarantine("capture retirement fence insertion uncertain"); return false; }
+                Phase = RequestPhase::Retiring;
+                return FinishRetirement();
+            }
+            // Never-captured preparation retains the established disposal path.
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            if (!MiniMapReadbackNative::DiscardExternalBeforeCapture(Job))
+            { Quarantine("unsubmitted readback Job could not be discarded"); return false; }
+#endif
+            return ReleaseFence() && RetireObjects();
         }
         void Fail()
         { Phase = RequestPhase::Failed; Retire(); }
+
+        bool CaptureState()
+        {
+            if (!Ready() || !ActorState(true) || !g_nativeWorld.CheckOwned(Capture) || !g_nativeWorld.CheckOwned(Target) ||
+                Fence.GetState() != MiniMapCaptureRetirement::FenceState::Constructed || !FenceAvailable()) return false;
+            for (auto& ref : Metadata) if (!g_nativeWorld.CheckOwned(ref)) return false;
+            uint8_t registered{}; uintptr_t world{}, target{};
+            if (!Read(Capture.Object.Bits + 0x94, registered) || !(registered & 1) ||
+                !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits ||
+                !Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, TextureTarget), target) || target != Target.Object.Bits) return false;
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            if (!Job) return false;
+            const auto report = MiniMapReadbackNative::Inspect(Job);
+            return report.Current == MiniMapReadbackNative::Phase::ReadyToSubmit && !report.Quarantined &&
+                !report.Callables && !report.Outstanding && !report.NativeEnqueueEverInvoked &&
+                report.Result == MiniMapReadbackNative::Outcome::Pending;
+#else
+            return false;
+#endif
+        }
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        void ConvertReadback(const MiniMapReadbackNative::Report& report)
+        {
+            using ReadbackPhase = MiniMapReadbackNative::Phase;
+            constexpr auto required = (1u << uint32_t(ReadbackPhase::ReadbackReady)) | (1u << uint32_t(ReadbackPhase::PixelsCopied)) | (1u << uint32_t(ReadbackPhase::Verified));
+            const auto* pixels = MiniMapReadbackNative::FloatPixels(Job);
+            const auto* stats = MiniMapReadbackNative::FloatStats(Job);
+            MiniMapCapturePng::Image image;
+            // FloatPixels is packed by the adapter, independent of staging pitch.
+            if (!report.HasPixels || !report.NativeEnqueueEverInvoked ||
+                report.Enqueue != MiniMapCaptureRetirement::EnqueueState::ReadbackCompleted || (report.Visited & required) != required ||
+                !pixels || !stats || pixels->size() != 256 * 256 * 8 ||
+                !MiniMapCapturePng::Convert(pixels->data(), pixels->size(), 256, 256, 256, 256, image) ||
+                image.Rgba.size() != 256 * 256 * 4 || image.Sanitized || stats->Nonfinite || !stats->Foreground || !stats->Background) return;
+            Rgba = std::move(image.Rgba); // CPU result only; persistence is a later stage.
+        }
+#endif
+        // Deliberately uncalled by public Tick. One iteration services only this
+        // request; world creation, FIFO admission and callbacks remain disabled.
+        [[maybe_unused]] void Service()
+        {
+            if (Phase == RequestPhase::Quarantined || Phase == RequestPhase::Failed || Phase == RequestPhase::Retired) return;
+            if (!GameThread() || g_captureServiceTick == (std::numeric_limits<uint64_t>::max)())
+            { Quarantine("capture service thread or tick counter invalid"); return; }
+            ++g_captureServiceTick;
+            try
+            {
+                if (Phase == RequestPhase::Waiting) { Prepare(); return; }
+                if (!Ready()) { Quarantine("capture service native world changed"); return; }
+                if (Phase == RequestPhase::Retiring) { Retire(); return; }
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+                if (Phase == RequestPhase::Prepared || Phase == RequestPhase::C0)
+                {
+                    if (g_captureServiceTick <= PreparedTick || (Phase == RequestPhase::C0 && g_captureServiceTick - C0Tick < 10)) return;
+                    if (!CaptureState()) { Quarantine("capture submission native ownership or prerequisites invalid"); return; }
+                    if (Phase == RequestPhase::Prepared)
+                    {
+                        CaptureSubmitted = true; // BEFORE CaptureScene can enqueue anything.
+                        if (!Call(ResourceOperation::CaptureScene, Capture.Object.Bits)) return;
+                        C0Tick = g_captureServiceTick;
+                        Phase = RequestPhase::C0;
+                        return;
+                    }
+                    if (!MiniMapReadbackNative::MarkExternalCaptureCommitted(Job))
+                    { Quarantine("C10 readback commitment uncertain"); return; }
+                    Committed = true;
+                    if (!Call(ResourceOperation::CaptureScene, Capture.Object.Bits)) return;
+                    Phase = RequestPhase::Readback;
+                    if (!ServiceReadback(Job, g_captureServiceTick)) Quarantine("C10 readback submission interrupted");
+                    return;
+                }
+                if (Phase == RequestPhase::Readback)
+                {
+                    if (!Committed || !Job) { Quarantine("readback request commitment invalid"); return; }
+                    if (!ServiceReadback(Job, g_captureServiceTick)) { Quarantine("readback service interrupted"); return; }
+                    const auto report = MiniMapReadbackNative::Inspect(Job);
+                    if (report.Quarantined || report.Enqueue == MiniMapCaptureRetirement::EnqueueState::Uncertain)
+                    {
+                        if (MiniMapReadbackNative::ExternalRejectedWithoutReadback(Job)) Retire();
+                        else Quarantine("readback submission or native ownership uncertain");
+                        return;
+                    }
+                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding) return;
+                    if (report.Result == MiniMapReadbackNative::Outcome::Pending)
+                    { Quarantine("readback cleanup completed without a terminal outcome"); return; }
+                    if (report.Result == MiniMapReadbackNative::Outcome::Verified)
+                    {
+                        // Allocation/conversion failure is a CPU result failure,
+                        // not uncertain GPU ownership: still retire native work.
+                        try { ConvertReadback(report); }
+                        catch (...) { Rgba.clear(); }
+                    }
+                    Retire(); // Rgba stays owned until every native dependency retires.
+                    return;
+                }
+#endif
+                Quarantine("capture service request phase invalid");
+            }
+            catch (...) { Quarantine("capture service exception with retained native ownership"); }
+        }
 
         static bool Path(const std::string& path, std::array<wchar_t, 1025>& wide)
         {
@@ -816,8 +1038,8 @@ namespace
             }
             return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, wide.data(), int(wide.size())) > 1;
         }
-        // Deliberately uncalled. Future activation supplies exactly one copied
-        // FIFO path and calls this only from the game-thread service.
+        // Reached only by the dormant private service. Future activation supplies
+        // exactly one copied FIFO path on the game thread.
         [[maybe_unused]] void Prepare()
         {
             if (Phase != RequestPhase::Waiting) return;
@@ -828,7 +1050,8 @@ namespace
             if (!api.asset.spawnObject || !api.asset.setObjectFlags || !api.player.registerComponent ||
                 !api.player.unregisterComponent || !api.player.destroyComponent || !api.world.destroyActor ||
                 !api.texture.initRenderTarget || !api.texture.getRenderTargetResource ||
-                !api.texture.renderFenceConstruct || !api.texture.renderFenceDestroy) return;
+                !api.texture.renderFenceConstruct || !api.texture.renderFenceBegin ||
+                !api.texture.renderFencePoll || !api.texture.renderFenceDestroy) return;
             bool available{};
             if (!ReadbackAvailable(true, available)) { Quarantine("readback prerequisite inspection interrupted"); return; }
             if (!available) return;
@@ -857,11 +1080,8 @@ namespace
             { Fail(); return; }
             if (!Keep(cdo, Metadata[DefaultObject])) return;
             Phase = RequestPhase::Preparing;
-            // Construct a fence without insertion/submission. Interrupted ownership
-            // stays in this request; it is never destroyed by a C++ destructor.
-            Fence = Ownership::Uncertain;
-            if (!Call(ResourceOperation::ConstructFence, reinterpret_cast<uintptr_t>(FenceStorage))) return;
-            Fence = Ownership::Held;
+            FenceOperations operations{*this};
+            if (!Fence.Prepare(operations)) { Quarantine("capture retirement fence preparation uncertain"); return; }
             uint64_t before{}, after{}; int32_t countBefore{}, countAfter{};
             if (!Level(0, false, &before, &countBefore) || !Ready()) { Quarantine("private level invalid before spawn"); return; }
             SDK::FTransform transform{};
@@ -907,6 +1127,7 @@ namespace
             if (!Job) { Fail(); return; }
 #endif
             if (!Ready() || !ActorState(true)) { Quarantine("prepared request ownership invalid"); return; }
+            PreparedTick = g_captureServiceTick;
             Phase = RequestPhase::Prepared;
         }
     };
@@ -934,14 +1155,21 @@ namespace MiniMapBuildingSpriteRenderer
     {
         (void)deltaTime;
         if (!g_fifo || !g_sessionActive) return;
-        // Stage 7.5C.2B: deliberately no world creation, request preparation,
+        // Stage 7.5C.2C: deliberately no world creation, request preparation,
         // FIFO consumption, scene capture or native service.
     }
 
     void EndSession()
     {
         g_sessionActive = false;
-        if (g_activeRequest && !g_activeRequest->Retire()) return;
+        if (g_activeRequest && !g_activeRequest->Retire())
+        {
+            // No background session-end service. A pending fence/Job preserves
+            // the request and dependent world; cancellation is not retirement.
+            if (g_activeRequest->Phase != RequestPhase::Quarantined)
+                g_activeRequest->Quarantine("session ended before native capture retirement completed");
+            return;
+        }
         if (g_nativeWorld.Retire(false))
             g_activeRequest.reset();
     }
