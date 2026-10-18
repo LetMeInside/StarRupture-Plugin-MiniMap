@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlasCore.h"
+#include "BuildingAtlasAlienX.h"
 #include "BuildingCache.h"
 #include "Map/Sprites/SpriteStatus.h"
 #include "plugin_interface.h"
@@ -30,8 +31,14 @@ namespace MiniMapBuildingAtlas
     void EndSession();
     void Shutdown();
 
+    // UI callback only; caller holds LifecycleMutex from lookup through submit.
+    // Borrowed metadata/texture: never release or retain the binding separately.
+    const MiniMapSpriteStatus::AtlasEntry* Find(const std::string& canonicalBlueprint) noexcept;
+    bool SubmitQuad(IModLoaderImGui*, PluginDrawList, const MiniMapSpriteStatus::AtlasEntry&,
+        const std::array<MiniMapBuildingAtlasAlienX::Point, 4>& positions, uint32_t color) noexcept;
+
     // Immutable pixels of the actual GPU-published revision, kept independently
-    // of a newer CPU candidate. Stage 2D can export this without another cache read.
+    // of a newer CPU candidate; available without another cache read.
     std::shared_ptr<const MiniMapBuildingAtlasCore::Layout> PublishedImage();
 }
 

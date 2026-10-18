@@ -4,8 +4,10 @@
 
 #include "../Sprites/CapturePng.h"
 #include "CacheIdentity.h"
+#include "plugin_helpers.h"
 
 #include <windows.h>
+#include <objbase.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -15,6 +17,7 @@
 #include <limits>
 #include <new>
 #include <string_view>
+#include <utility>
 
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -303,6 +306,123 @@ namespace MiniMapBuildingCache
         if (ec) return false;
         std::vector<uint8_t> pixels(rgba, rgba + size_t(width) * height * 4);
         return MiniMapCapturePng::Write(png, width, height, pixels, false).Ok;
+    }
+
+    bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
+        uint32_t width, uint32_t height, uint64_t revision) noexcept
+    {
+        std::string name;
+        const char* stage = "diagnostic namespace";
+        uint32_t code = 0;
+        struct Temporary
+        {
+            std::filesystem::path Path;
+            ~Temporary() { if (!Path.empty()) DeleteFileW(Path.c_str()); }
+        } temporary;
+        try
+        {
+            const auto attempt = [&]() -> bool
+            {
+                std::filesystem::path directory;
+                if (!GetCacheRoot(directory)) return false;
+                directory /= L"Diagnostics";
+                std::error_code error;
+                std::filesystem::create_directories(directory, error);
+                if (error) { code = uint32_t(error.value()); return false; }
+
+                stage = "diagnostic numbering";
+                uint64_t highest = 0;
+                const std::filesystem::directory_iterator end;
+                for (auto it = std::filesystem::directory_iterator(directory, error); !error && it != end; it.increment(error))
+                {
+                    const auto file = it->path().filename().wstring();
+                    if (file.size() < 11 || file.compare(0, 6, L"Atlas_") ||
+                        file.compare(file.size() - 4, 4, L".png")) continue;
+                    bool decimal = true;
+                    for (size_t i = 6; i < file.size() - 4; ++i)
+                        if (file[i] < L'0' || file[i] > L'9') { decimal = false; break; }
+                    if (!decimal) continue;
+                    uint64_t number = 0;
+                    for (size_t i = 6; i < file.size() - 4; ++i)
+                    {
+                        const auto digit = uint64_t(file[i] - L'0');
+                        if (number > ((std::numeric_limits<uint64_t>::max)() - digit) / 10)
+                        { code = ERROR_ARITHMETIC_OVERFLOW; return false; }
+                        number = number * 10 + digit;
+                    }
+                    highest = (std::max)(highest, number);
+                }
+                if (error) { code = uint32_t(error.value()); return false; }
+                const auto numbered = [](uint64_t number)
+                {
+                    const auto digits = std::to_string(number);
+                    return "Atlas_" + std::string(digits.size() < 6 ? 6 - digits.size() : 0, '0') + digits + ".png";
+                };
+                if (highest == (std::numeric_limits<uint64_t>::max)())
+                { code = ERROR_ARITHMETIC_OVERFLOW; return false; }
+                name = numbered(highest + 1); // Include the intended filename in encoding failures too.
+
+                stage = "reserve PNG temporary";
+                bool reserved = false;
+                for (unsigned collision = 0; collision < 16; ++collision)
+                {
+                    GUID token{};
+                    const auto hr = CoCreateGuid(&token);
+                    if (FAILED(hr)) { code = uint32_t(hr); return false; }
+                    std::wstring file = L".Atlas_";
+                    constexpr wchar_t hex[] = L"0123456789ABCDEF";
+                    const auto* bytes = reinterpret_cast<const uint8_t*>(&token);
+                    for (size_t i = 0; i < sizeof(token); ++i)
+                    { file.push_back(hex[bytes[i] >> 4]); file.push_back(hex[bytes[i] & 15]); }
+                    file += L".tmp";
+                    auto path = directory / file;
+                    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (handle != INVALID_HANDLE_VALUE)
+                    {
+                        // The encoder may overwrite ONLY this operation's own
+                        // reserved temporary, never a final Atlas_*.png file.
+                        CloseHandle(handle);
+                        temporary.Path = std::move(path); // Nonallocating ownership transfer.
+                        reserved = true; break;
+                    }
+                    code = GetLastError();
+                    if (code != ERROR_FILE_EXISTS && code != ERROR_ALREADY_EXISTS) return false;
+                }
+                if (!reserved) return false;
+                stage = "PNG encoding";
+                const auto encoded = MiniMapCapturePng::Write(temporary.Path, width, height, rgba, false);
+                if (!encoded.Ok || !encoded.Bytes)
+                { stage = encoded.Stage; code = uint32_t(encoded.Error); return false; }
+
+                stage = "exclusive PNG publication";
+                for (unsigned collision = 0; collision < 1024; ++collision)
+                {
+                    if (highest == (std::numeric_limits<uint64_t>::max)())
+                    { code = ERROR_ARITHMETIC_OVERFLOW; return false; }
+                    name = numbered(++highest);
+                    const auto destination = directory / std::filesystem::path(std::wstring(name.begin(), name.end()));
+                    // No REPLACE_EXISTING: a concurrent writer winning this name
+                    // keeps its file. Retry the SAME encoded image at the next number.
+                    if (MoveFileExW(temporary.Path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+                    { temporary.Path.clear(); return true; }
+                    code = GetLastError();
+                    if (code != ERROR_FILE_EXISTS && code != ERROR_ALREADY_EXISTS) return false;
+                }
+                return false;
+            };
+            if (attempt())
+            {
+                LOG_INFO("MiniMap: atlas PNG revision %llu %ux%u Diagnostics/%s saved",
+                    static_cast<unsigned long long>(revision), width, height, name.c_str());
+                return true;
+            }
+        }
+        catch (...) { stage = "diagnostic exception"; }
+        LOG_WARN("MiniMap: atlas PNG revision %llu %ux%u Diagnostics/%s failed at %s (0x%08X); GPU publication preserved",
+            static_cast<unsigned long long>(revision), width, height,
+            name.empty()?"<unallocated>":name.c_str(), stage, unsigned(code));
+        return false;
     }
 }
 

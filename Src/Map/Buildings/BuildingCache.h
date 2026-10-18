@@ -42,6 +42,10 @@ namespace MiniMapBuildingCache
         uint32_t width, uint32_t height, const SpatialBounds& bounds);
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height);
+    // Full published atlas only. Sequential, exclusive final-name publication;
+    // logs its result and never changes GPU publication. Call outside lifecycle lock.
+    bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
+        uint32_t width, uint32_t height, uint64_t revision) noexcept;
 }
 
 #endif

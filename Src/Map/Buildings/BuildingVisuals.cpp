@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
 #include "BuildingScheduler.h"
+#include "BuildingAtlas.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
 #include "DebugText.h"
@@ -69,7 +70,7 @@ namespace
     struct RenderStats
     {
         size_t Ordinary=0,Splines=0,Culled=0,Unresolved=0,Points=0,Limited=0;
-        size_t OrdinaryProxy=0,OrdinaryPlaceholder=0,WidthSource=0,WidthFallback=0;
+        size_t OrdinaryProxy=0,OrdinaryPlaceholder=0,OrdinaryAtlas=0,WidthSource=0,WidthFallback=0;
         double Ms=0;
     };
     IPluginSelf* g_visualsSelf=nullptr;
@@ -103,6 +104,72 @@ namespace
         auto channel=[](float v)->uint32_t { return uint32_t(std::lround(std::clamp(std::isfinite(v)?v:1.0f,0.0f,1.0f)*255)); };
         return channel(tint[0])|(channel(tint[1])<<8)|(channel(tint[2])<<16)|
             (uint32_t(std::lround(double(alpha)*std::clamp(std::isfinite(tint[3])?tint[3]:1.0f,0.0f,1.0f)))<<24);
+    }
+    bool AtlasQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
+        const MiniMapMap::Transform& transform,
+        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds)
+    {
+        if (!record.TransformValid || !transform.Valid) return false;
+        for (double value:entry.Region) if (!std::isfinite(value) || value<0 || value>1) return false;
+        if (!(entry.Region[2]>entry.Region[0] && entry.Region[3]>entry.Region[1])) return false;
+        double norm=0;
+        for (double q:record.Rotation) { if (!std::isfinite(q)) return false; norm+=q*q; }
+        if (!std::isfinite(norm) || std::abs(norm-1)>0.001) return false;
+        const double inverse=1/std::sqrt(norm);
+        const double x=record.Rotation[0]*inverse,y=record.Rotation[1]*inverse,
+            z=record.Rotation[2]*inverse,w=record.Rotation[3]*inverse;
+        // The source is a top view, so tilt/upside-down changes visibility in a
+        // way a flat sprite cannot reproduce. q and -q have identical eligibility.
+        if (std::abs(x)>1e-6 || std::abs(y)>1e-6 || !(record.Scale[2]>0) ||
+            record.Scale[0]==0 || record.Scale[1]==0) return false;
+        std::array<double,3> center{},extent{};
+        for (size_t axis=0;axis<3;++axis)
+        {
+            if (!std::isfinite(record.Position[axis]) || !std::isfinite(record.Scale[axis]) ||
+                !std::isfinite(entry.Min[axis]) || !std::isfinite(entry.Max[axis]) ||
+                entry.Max[axis]<entry.Min[axis]) return false;
+            center[axis]=entry.Min[axis]*0.5+entry.Max[axis]*0.5;
+            extent[axis]=entry.Max[axis]*0.5-entry.Min[axis]*0.5;
+        }
+        if (!(extent[0]>0 && extent[1]>0)) return false;
+        // Match the float OrthoWidth actually assigned by ConfigureSceneCapture.
+        const double halfWidth=double(float(2*(std::max)(extent[0],extent[1])*1.1))*0.5;
+        if (!std::isfinite(halfWidth) || !(halfWidth>0)) return false;
+        const auto& crop=entry.Crop;
+        if (!crop[2] || !crop[3] || uint32_t(crop[0])+crop[2]>256 || uint32_t(crop[1])+crop[3]>256) return false;
+        const double left=crop[0],top=crop[1],right=left+crop[2],bottom=top+crop[3];
+        const std::array<std::array<double,2>,4> source{{{left,top},{right,top},{right,bottom},{left,bottom}}};
+        bounds={};
+        for (size_t i=0;i<source.size();++i)
+        {
+            // Capture rotation (-90,-90,0): image right=+X, image down=+Y.
+            // Source pixel BOUNDARIES, not atlas UVs; keep asymmetric crop and
+            // Actor-origin offset. FTransform applies signed scale before rotation.
+            const std::array<double,3> v{{(center[0]+halfWidth*(2*source[i][0]/256-1))*record.Scale[0],
+                (center[1]+halfWidth*(2*source[i][1]/256-1))*record.Scale[1],center[2]*record.Scale[2]}};
+            for (double value:v) if (!std::isfinite(value)) return false;
+            const double tx=2*(y*v[2]-z*v[1]),ty=2*(z*v[0]-x*v[2]),tz=2*(x*v[1]-y*v[0]);
+            const std::array<double,3> world{{record.Position[0]+v[0]+w*tx+y*tz-z*ty,
+                record.Position[1]+v[1]+w*ty+z*tx-x*tz,record.Position[2]+v[2]+w*tz+x*ty-y*tx}};
+            for (double value:world) if (!std::isfinite(value)) return false;
+            MiniMapMap::ScreenPoint p;
+            if (!transform.WorldToScreen(world[0],world[1],p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
+            points[i]={p.X,p.Y};
+            if (!bounds.Valid) bounds={p.X,p.Y,p.X,p.Y,true};
+            else { bounds.MinX=(std::min)(bounds.MinX,double(p.X)); bounds.MinY=(std::min)(bounds.MinY,double(p.Y));
+                bounds.MaxX=(std::max)(bounds.MaxX,double(p.X)); bounds.MaxY=(std::max)(bounds.MaxY,double(p.Y)); }
+        }
+        // Reject float-collapsed/degenerate projections, but keep mirrored winding
+        // attached to the same TL/TR/BR/BL UVs (the backend does not cull faces).
+        double winding=0;
+        for (size_t i=0;i<points.size();++i)
+        {
+            const auto& a=points[i]; const auto& b=points[(i+1)%4]; const auto& c=points[(i+2)%4];
+            const double cross=(double(b.X)-a.X)*(double(c.Y)-b.Y)-(double(b.Y)-a.Y)*(double(c.X)-b.X);
+            if (!std::isfinite(cross) || cross==0 || (i && (cross>0)!=(winding>0))) return false;
+            winding=cross;
+        }
+        return true;
     }
     void OnTick(float)
     {
@@ -200,12 +267,13 @@ namespace
             { std::scoped_lock lock(g_mutex); render=g_render; renderMax=g_renderMax; renderCount=g_renderCount;
                 g_renderMax=0; g_renderCount=0; }
             std::ostringstream text; text<<std::fixed<<std::setprecision(2)
-                <<"\n\nBuildingVisuals (geometry only)"
+                <<"\n\nBuildingVisuals (atlas + geometry fallback)"
                 <<"\nOrdinary definitions: "<<g_definitions.size()<<" ready: "<<proxy+fallback<<" queued: "<<queued
                 <<"\nDefinition proxy/placeholder: "<<proxy<<'/'<<fallback
                 <<" (fallback retries: 1s)"
                 <<"\nDrawn ordinary/spline: "<<render.Ordinary<<'/'<<render.Splines
                 <<"\nDrawn ordinary proxy/placeholder: "<<render.OrdinaryProxy<<'/'<<render.OrdinaryPlaceholder
+                <<"\nDrawn ordinary atlas: "<<render.OrdinaryAtlas
                 <<"\nDrawn spline width source/fallback: "<<render.WidthSource<<'/'<<render.WidthFallback
                 <<"\nCulled/unresolved: "<<render.Culled<<'/'<<render.Unresolved
                 <<"\nCurve points/depth-limited: "<<render.Points<<'/'<<render.Limited
@@ -321,6 +389,22 @@ namespace MiniMapBuildingVisuals
             // Discover before proxy culling: the authored assembly may extend
             // beyond its proxy. Native capture is serviced on the game thread.
             if(!spline && schedulerValid)MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
+            if(!spline && schedulerValid && ui->DL_AddImageQuad && instance.SpriteSource.CanonicalBlueprint)
+            {
+                if (const auto* entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint))
+                {
+                    std::array<MiniMapBuildingAtlasAlienX::Point,4> points;
+                    C::Bounds spriteBounds;
+                    if (AtlasQuad(instance.SpriteSource,*entry,transform,points,spriteBounds))
+                    {
+                        // A captured assembly may extend beyond the targeting
+                        // proxy, including instances whose proxy is unresolved.
+                        if (!G::Intersects(spriteBounds,viewport)) { ++stats.Culled; continue; }
+                        if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,Color(instance.Tint,255)))
+                        { ++stats.Ordinary; ++stats.OrdinaryAtlas; continue; }
+                    }
+                }
+            }
             if(instance.Unresolved)
             {
                 ++stats.Unresolved; MiniMapMap::ScreenPoint p;

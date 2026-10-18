@@ -141,14 +141,15 @@ namespace MiniMapBuildingAtlasAlienX
     bool Backend::SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
         const std::array<Point, 4>& p, const std::array<UV, 4>& uv, std::uint32_t color) const noexcept
     {
-        if (!ui || !list || !ui->DL_AddImageQuad || !texture.IsValid() || !texture.Handle || !texture.Size) return false;
+        if (!ui || !list || !ui->DL_AddImageQuad || !texture.IsValid() || !texture.Handle ||
+            !texture.ImageWidth || !texture.ImageHeight) return false;
         for (std::size_t i = 0; i < 4; ++i)
             if (!std::isfinite(p[i].X) || !std::isfinite(p[i].Y) || !std::isfinite(uv[i].U) || !std::isfinite(uv[i].V)) return false;
         try
         {
-            int width = 0, height = 0;
-            texture.Size(texture.Handle, &width, &height); // Retired handles leave zero outputs.
-            if (width != int(texture.ImageWidth) || height != int(texture.ImageHeight)) return false;
+            // Create already validated dimensions. The caller protects this
+            // owned Texture from Release throughout submission; do not query
+            // the texture-management API inside the lifecycle-locked draw pass.
             ui->DL_AddImageQuad(list, texture.Handle,
                 p[0].X, p[0].Y, p[1].X, p[1].Y, p[2].X, p[2].Y, p[3].X, p[3].Y,
                 uv[0].U, uv[0].V, uv[1].U, uv[1].V, uv[2].U, uv[2].V, uv[3].U, uv[3].V, color);

@@ -49,7 +49,7 @@ namespace
     IPluginImGuiTextures* g_textures = nullptr;
     bool g_interfacesAlive = false;
     // Uses the existing LifecycleMutex. Teardown waits with that mutex released;
-    // Busy covers the entire batch, including every backend call and release.
+    // Busy covers the entire batch, including backend calls, releases and PNG export.
     std::condition_variable g_serviceFinished;
     bool g_stopping = false;
     std::shared_ptr<A::Session> g_session, g_uncertain;
@@ -233,6 +233,7 @@ namespace MiniMapBuildingAtlas
         if (!batch) return;
         std::shared_ptr<Revision> candidate, old;
         std::shared_ptr<const C::Layout> previousPixels;
+        std::shared_ptr<const C::Layout> diagnosticPixels;
         try
         {
             {
@@ -316,6 +317,9 @@ namespace MiniMapBuildingAtlas
                     }
                     batch->PublishedRevision = layout.Revision;
                     batch->UploadPending = false;
+                    // Freeze the actually published pixels, not Core.Current().
+                    // Exactly one diagnostic attempt for this successful swap.
+                    diagnosticPixels = batch->Published->Pixels;
                     candidate.reset(); // Current publication now owns the acquired reference.
                 }
             }();
@@ -324,6 +328,11 @@ namespace MiniMapBuildingAtlas
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         Release(batch, old);
+        if (diagnosticPixels)
+            MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,
+                diagnosticPixels->Width, diagnosticPixels->Height, diagnosticPixels->Revision);
+        // Stop() cannot finish or admit a replacement session until the export
+        // above completes, including when cancellation followed publication.
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             batch->Busy = false;
@@ -337,6 +346,26 @@ namespace MiniMapBuildingAtlas
     void Shutdown()
     {
         Stop(true);
+    }
+    const S::AtlasEntry* Find(const std::string& name) noexcept
+    {
+        if (!Current(g_session) || !g_statuses || !g_session->Published) return nullptr;
+        const auto it = g_statuses->find(name);
+        if (it == g_statuses->end() || it->second.Where != S::Location::Atlas ||
+            !it->second.Atlas.Texture || it->second.Atlas.Texture != g_session->Published->Texture.Binding()) return nullptr;
+        return &it->second.Atlas;
+    }
+    bool SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const S::AtlasEntry& entry,
+        const std::array<X::Point, 4>& positions, uint32_t color) noexcept
+    {
+        if (!Current(g_session) || !g_session->Published || !entry.Texture ||
+            entry.Texture != g_session->Published->Texture.Binding()) return false;
+        const auto& r = entry.Region;
+        for (double value : r) if (!std::isfinite(value) || value < 0 || value > 1) return false;
+        if (!(r[2] > r[0] && r[3] > r[1])) return false;
+        const std::array<X::UV, 4> uv{{{float(r[0]), float(r[1])}, {float(r[2]), float(r[1])},
+            {float(r[2]), float(r[3])}, {float(r[0]), float(r[3])}}};
+        return g_session->Backend.SubmitQuad(ui, list, g_session->Published->Texture, positions, uv, color);
     }
     std::shared_ptr<const C::Layout> PublishedImage()
     {
