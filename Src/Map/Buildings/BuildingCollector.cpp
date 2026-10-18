@@ -78,6 +78,7 @@ namespace
         Clock::time_point IdentityRetryAt = {};
         int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
         uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
+        bool InteriorTagChecked=false, InteriorOnly=false;
     };
     struct Metrics
     {
@@ -149,6 +150,39 @@ namespace
         for(unsigned depth=0;type && depth<64;++depth,type=type->SuperStruct)
             if(type==base) return true;
         return false;
+    }
+    enum class InteriorTagResult : uint8_t { Unknown, Absent, Present };
+    InteriorTagResult ReadInteriorTag(const SDK::UCrBuildingData* building)
+    {
+#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
+        const auto* native=MiniMapNative::Get();
+        if(!native || !native->asset.nameEqualsWide) return InteriorTagResult::Unknown;
+        const auto* tags=&building->Tags;
+        const auto address=reinterpret_cast<uintptr_t>(tags);
+        if(!MiniMapNative::IsMemoryRangeReadable(address,sizeof(*tags),alignof(void*)))
+            return InteriorTagResult::Unknown;
+        const int32_t count=tags->Num(),capacity=tags->Max();
+        const auto* data=tags->GetDataPtr();
+        constexpr int32_t maximumTags=4096;
+        if(count<0 || capacity<count || capacity>maximumTags || (capacity&&!data) || (!capacity&&data) ||
+            (data&&(reinterpret_cast<uintptr_t>(data)&(alignof(SDK::FName)-1))))
+            return InteriorTagResult::Unknown;
+        const size_t bytes=size_t(count)*sizeof(SDK::FName);
+        if(bytes&&!MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(data),bytes,alignof(SDK::FName)))
+            return InteriorTagResult::Unknown;
+        bool invalidElement=false;
+        for(int32_t i=0;i<count;++i)
+        {
+            const auto name=data[i];
+            if(name.ComparisonIndex<0) { invalidElement=true; continue; }
+            if(name.Number==0 && native->asset.nameEqualsWide(name,L"Interior"))
+                return InteriorTagResult::Present;
+        }
+        return invalidElement?InteriorTagResult::Unknown:InteriorTagResult::Absent;
+#else
+        (void)building;
+        return InteriorTagResult::Unknown;
+#endif
     }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     std::array<uintptr_t,18> g_metadataRoots{};
@@ -419,6 +453,7 @@ namespace
         if(!Live(n,id)) { ++g_metrics.Stale; return false; }
         const auto start=Clock::now();
         r.TransformValid=false; r.DefinitionValid=false; r.Extent={}; r.BoundsKind=Coverage::Unresolved;
+        r.InteriorOnly=false;
         r.DefinitionShape.reset();
         r.CanonicalBlueprint.reset();
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
@@ -465,9 +500,21 @@ namespace
                 }
                 it->second.CanonicalBlueprint.reset();
             }
+            if(serialValid && !it->second.InteriorTagChecked)
+            {
+                const auto tagResult=IsClass(placement,g_types.BuildingData)
+                    ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement))
+                    :InteriorTagResult::Absent;
+                if(tagResult!=InteriorTagResult::Unknown)
+                {
+                    it->second.InteriorTagChecked=true;
+                    it->second.InteriorOnly=tagResult==InteriorTagResult::Present;
+                }
+            }
+            r.InteriorOnly=serialValid && it->second.InteriorTagChecked && it->second.InteriorOnly;
             r.BuildingId=it->second.Id; r.Category=it->second.Category; r.DefinitionValid=true;
             r.DefinitionShape=DefinitionShape(it->second,placement);
-            if(!r.HasSpline && serialValid)
+            if(!r.HasSpline && serialValid && !it->second.InteriorOnly)
             {
                 DefinitionBlueprint(it->second,placement,r);
                 r.CanonicalBlueprint=it->second.CanonicalBlueprint;
@@ -781,6 +828,7 @@ namespace
         g_near.clear(); g_duplicates=0;
         auto add=[&](const Record& r)
         {
+            if(r.InteriorOnly) return;
             if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
@@ -963,6 +1011,7 @@ namespace
     std::shared_ptr<const Snapshot> g_comparison;
     std::unordered_set<uint64_t> g_remaining, g_previousMissing, g_missing;
     size_t g_expected=0,g_missingCount=0,g_persistent=0,g_unresolved=0;
+    size_t g_interiorExcluded=0,g_eligibilityUnknown=0;
     size_t g_missingOff=0,g_missingGrid=0,g_stale=0,g_unresolvedCached=0,g_snapshotDuplicates=0;
     std::unordered_map<uint64_t,Definition> g_oracleDefinitions; // Copied metadata, independent of production cache.
     Clock::time_point g_compareStart;
@@ -971,6 +1020,7 @@ namespace
         g_comparison.reset(); g_remaining.clear(); g_previousMissing.clear(); g_missing.clear();
         g_oracleDefinitions.clear();
         g_expected=g_missingCount=g_persistent=g_unresolved=0;
+        g_interiorExcluded=g_eligibilityUnknown=0;
         g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
     }
 }
@@ -1027,6 +1077,7 @@ namespace MiniMapBuildingCollector
         g_compareStart=Clock::now();
         g_remaining.clear(); g_missing.clear();
         g_expected=g_missingCount=g_persistent=g_unresolved=0;
+        g_interiorExcluded=g_eligibilityUnknown=0;
         g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
         for(const auto& r:g_comparison->Records)
         {
@@ -1056,20 +1107,36 @@ namespace MiniMapBuildingCollector
         geometry.TransformValid=true; geometry.HasSpline=r.HasSpline;
         const auto* parameters=Parameters(*n,id);
         const auto* placement=parameters?parameters->PlacementData:nullptr;
-        bool unresolvedSource=false;
-        if((reinterpret_cast<uintptr_t>(placement)&7)==0 && IsClass(placement,g_types.Placement))
+        const auto object=reinterpret_cast<uintptr_t>(placement);
+        int32_t serial=0;
+        // Independent native definition/tag observation: never consult production
+        // InteriorOnly, g_definitions or g_cache to decide baseline eligibility.
+        if(!g_types.Placement || !g_types.BuildingData || (object&7)!=0 || !MiniMapResidentMetadata::Serial(object,serial) ||
+            !MiniMapResidentMetadata::Validate(object,sizeof(SDK::UAuActorPlacementData)) ||
+            !IsClass(placement,g_types.Placement))
+        { ++g_unresolved; ++g_eligibilityUnknown; return; }
+        auto tagResult=InteriorTagResult::Absent;
+        if(IsClass(placement,g_types.BuildingData))
+            tagResult=MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
+                ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement))
+                :InteriorTagResult::Unknown;
+        if(tagResult==InteriorTagResult::Unknown)
+        { ++g_unresolved; ++g_eligibilityUnknown; return; }
+        if(tagResult==InteriorTagResult::Present)
+        { ++g_interiorExcluded; return; }
         {
             const auto key=Key(placement->Index,int32_t(placement->BuildingID));
             auto [entry,inserted]=g_oracleDefinitions.try_emplace(key,Definition{uint32_t(placement->BuildingID),0xFF,
                 placement->Name.ComparisonIndex,placement->Name.Number});
-            if(!inserted && (entry->second.NameIndex!=placement->Name.ComparisonIndex || entry->second.NameNumber!=placement->Name.Number))
+            if(!inserted && (entry->second.NameIndex!=placement->Name.ComparisonIndex || entry->second.NameNumber!=placement->Name.Number ||
+                entry->second.ObjectSerial!=serial))
                 entry->second=Definition{uint32_t(placement->BuildingID),0xFF,placement->Name.ComparisonIndex,placement->Name.Number};
+            entry->second.ObjectSerial=serial;
             geometry.DefinitionShape=DefinitionShape(entry->second,placement,false);
         }
-        else unresolvedSource=true; // Still compare fallback coverage; never report an unqualified pass.
         const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(*n,id,g_types.TargetBox));
         Geometry(geometry,spline,targeting?&targeting->BuildingBoundingBox:nullptr,false);
-        g_unresolved+=unresolvedSource || geometry.UnboundedGeometry;
+        g_unresolved+=geometry.UnboundedGeometry;
         if(!geometry.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(geometry.Extent,g_comparison->Region)) return;
 
         ++g_expected;
@@ -1088,10 +1155,12 @@ namespace MiniMapBuildingCollector
         g_debugOracle={true,g_missingCount,g_persistent,g_stale,g_snapshotDuplicates,
             g_expected,g_expected-g_missingCount,g_unresolvedCached,g_unresolved};
 #endif
-        LOG_INFO("MiniMap: BuildingCollector: oracle cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms",
+        // Unknown eligibility contributes to unresolvedWorldwide, never to expected
+        // or missing. cacheComplete remains the unchanged production snapshot bit.
+        LOG_INFO("MiniMap: BuildingCollector: oracle cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms interiorExcluded=%zu eligibilityUnknown=%zu",
             matching,g_expected,g_expected-g_missingCount,g_missingCount,g_persistent,g_missingOff,g_missingGrid,
             g_unresolvedCached,g_snapshotDuplicates,g_stale,g_unresolved,int(g_comparison->Complete),
-            queryMs,referenceMs,queryMs+Ms(g_compareStart));
+            queryMs,referenceMs,queryMs+Ms(g_compareStart),g_interiorExcluded,g_eligibilityUnknown);
         g_previousMissing.swap(g_missing); g_comparison.reset();
     }
 }

@@ -70,7 +70,7 @@ namespace MiniMapBuildingCollector
         uint32_t DefinitionNumber = 0;
         int32_t DefinitionObjectIndex = 0; // World-scoped metadata identity; no UObject pointer.
         uint8_t Category = 0xFF, Sources = 0;
-        bool TransformValid = false, DefinitionValid = false, HasSpline = false;
+        bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorOnly = false;
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
         std::array<float, 4> Tint = { 1, 1, 1, 1 };
