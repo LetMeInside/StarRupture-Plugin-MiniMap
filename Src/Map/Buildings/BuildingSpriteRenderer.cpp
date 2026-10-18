@@ -401,9 +401,8 @@ namespace
                 Read(Before.EngineObject.Bits + 0x190, configured) && configured == MetadataClasses[Settings].Ref.Object.Bits && QuietGC();
         }
 
-        // Intentionally has NO call site in this stage. Activation requires the
-        // legacy native owner to be removed first; Tick must remain inert.
-        [[maybe_unused]] void Create()
+        // Called only by the serialized game-thread production service.
+        void Create()
         {
             if (!CanStartSession()) return;
             Before = {};
@@ -997,9 +996,9 @@ namespace
             Rgba = std::move(image.Rgba); // Completion may persist only after native retirement.
         }
 #endif
-        // Deliberately uncalled by public Tick. One iteration services only this
-        // request; world creation, FIFO admission and callbacks remain disabled.
-        [[maybe_unused]] void Service()
+        // One iteration advances only this request; preparation always returns
+        // before C0, and C10 retains the ten-service-tick minimum interval.
+        void Service()
         {
             if (Phase == RequestPhase::Quarantined || Phase == RequestPhase::Failed || Phase == RequestPhase::Retired) return;
             if (!GameThread() || g_captureServiceTick == (std::numeric_limits<uint64_t>::max)())
@@ -1075,9 +1074,8 @@ namespace
             }
             return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, wide.data(), int(wide.size())) > 1;
         }
-        // Reached only by the dormant private service. Future activation supplies
-        // exactly one copied FIFO path on the game thread.
-        [[maybe_unused]] void Prepare()
+        // Exactly one privately owned FIFO path, prepared on the game thread.
+        void Prepare()
         {
             if (Phase != RequestPhase::Waiting) return;
             std::array<wchar_t, 1025> wide{};
@@ -1173,10 +1171,13 @@ namespace
     MiniMapSpriteQueues::SpriteFeedbackQueue* g_feedback = nullptr; // Borrowed scheduler queue, not another queue.
     bool g_sessionActive = false;
     std::optional<ActiveRequest> g_activeRequest;
+    constexpr unsigned kWorldCreationAttempts = 3;
+    constexpr unsigned kWorldRetryTicks = 120;
+    unsigned g_worldCreationAttempts = 0, g_worldRetryTicks = 0;
 
-    // Future game-thread service entry, deliberately uncalled by public Tick.
-    // Session end closes publication before attempting any native retirement.
-    [[maybe_unused]] void ServiceActiveRequest()
+    // Caller holds LifecycleMutex; only this game-thread path can write cache
+    // files or submit feedback. Session end closes publication under that lock.
+    void ServiceActiveRequest()
     {
         if (!g_sessionActive || !g_feedback || !g_activeRequest || !GameThread() ||
             g_nativeWorld.Phase == WorldPhase::Quarantined) return;
@@ -1200,18 +1201,80 @@ namespace MiniMapBuildingSpriteRenderer
         g_sessionActive = false;
     }
 
-    void InitializeSession()
+    bool InitializeSession()
     {
-        if (!g_fifo || !g_feedback || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return;
+        if (!g_fifo || !g_feedback || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return false;
+        g_worldCreationAttempts = g_worldRetryTicks = 0;
         g_sessionActive = true;
+        return true;
     }
 
     void Tick(float deltaTime)
     {
         (void)deltaTime;
-        if (!g_fifo || !g_sessionActive) return;
-        // Stage 7.5C.2C: deliberately no world creation, request preparation,
-        // FIFO consumption, scene capture or native service.
+        if (!g_fifo || !g_feedback || !g_sessionActive || !MiniMapMap::GameplayReady() ||
+            g_nativeWorld.Phase == WorldPhase::Quarantined) return;
+        if (!g_activeRequest && g_nativeWorld.Phase != WorldPhase::Ready && !g_fifo->HasPending()) return;
+        if (!GameThread())
+        {
+            if (g_activeRequest || !g_nativeWorld.CanStartSession())
+            {
+                if (g_activeRequest) g_activeRequest->Quarantine("capture service lost its game-thread prerequisite");
+                else g_nativeWorld.Quarantine("capture service lost its game-thread prerequisite");
+            }
+            else if (g_worldCreationAttempts < kWorldCreationAttempts)
+            {
+                g_worldCreationAttempts = kWorldCreationAttempts;
+                g_nativeWorld.Phase = WorldPhase::Unavailable;
+                LOG_WARN("MiniMap: building capture game-thread binding unavailable; FIFO preserved and capture paused for this session");
+            }
+            return;
+        }
+        // Retirement and undelivered feedback take priority. Even if this clears
+        // the request, admission waits until the next service iteration.
+        if (g_activeRequest) { ServiceActiveRequest(); return; }
+        if (g_nativeWorld.Phase != WorldPhase::Ready)
+        {
+            if (!g_nativeWorld.CanStartSession())
+            { g_nativeWorld.Quarantine("capture service encountered an incomplete world transition"); return; }
+            if (g_worldCreationAttempts >= kWorldCreationAttempts) return;
+            if (g_worldRetryTicks) { --g_worldRetryTicks; return; }
+            ++g_worldCreationAttempts;
+            if (Facilities() && QuietGC())
+            {
+                try { g_nativeWorld.Create(); }
+                catch (...) { g_nativeWorld.Quarantine("private-world creation exception"); return; }
+            }
+            else g_nativeWorld.Phase = WorldPhase::Unavailable; // No ownership was acquired.
+            if (g_nativeWorld.Phase != WorldPhase::Ready)
+            {
+                g_worldRetryTicks = kWorldRetryTicks;
+                if (g_nativeWorld.Phase != WorldPhase::Quarantined && g_worldCreationAttempts == kWorldCreationAttempts)
+                    LOG_WARN("MiniMap: building capture preflight unavailable after three attempts; FIFO preserved until next session");
+                return;
+            }
+        }
+        // An idle, retained world can wait for GC to become quiet. Never dequeue
+        // until its current gameplay identity and private ownership are verified.
+        if (!QuietGC()) return;
+        if (!g_nativeWorld.GameplayUnchanged() || !g_nativeWorld.PrivateState(true))
+        { g_nativeWorld.Quarantine("idle capture world identity or isolation changed"); return; }
+        try
+        {
+            static_assert(std::is_nothrow_move_assignable_v<std::string>);
+            g_activeRequest.emplace(); // Allocate the private slot BEFORE removing a FIFO entry.
+            if (!g_fifo->Remove(g_activeRequest->BlueprintPath))
+            { g_activeRequest.reset(); return; }
+        }
+        catch (...)
+        {
+            // SpriteFifo moves a std::string then pops it without allocation;
+            // allocation/lock failure precedes removal. No native request began.
+            g_activeRequest.reset();
+            LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");
+            return;
+        }
+        ServiceActiveRequest();
     }
 
     void EndSession()

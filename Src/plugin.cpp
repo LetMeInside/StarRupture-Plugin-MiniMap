@@ -7,11 +7,9 @@
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
-#include "Map/Sprites/BuildingSpriteCapture.h"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingScheduler.h"
-#include "Map/Sprites/BuildingRepresentation.h"
-#include "Map/Sprites/SpriteDiscovery.h"
+#include "Map/Buildings/BuildingSpriteRenderer.h"
 #endif
 
 IPluginSelf* g_self = nullptr;
@@ -107,10 +105,6 @@ void OnPluginLoadHooks(
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
 #endif
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-    MiniMapBuildingCapture::ResolvePrerequisites();
-    MiniMapBuildingRepresentation::ResolvePrerequisites();
-#endif
 
 #else
 
@@ -131,6 +125,21 @@ static void SetServicesAdmitted(bool ready)
     MiniMapMap::SetGameplayReady(ready);
     if(changed)MiniMapUI::RefreshVisibility();
 }
+static void EndBuildingSession()
+{
+    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+    // Close CPU publication and retire/quarantine native ownership before queues reset.
+    MiniMapBuildingSpriteRenderer::EndSession();
+    MiniMapBuildingScheduler::EndSession();
+}
+static void OnBuildingSpriteRendererTick(float deltaTime)
+{
+    if(!MiniMapMap::GameplayReady())return;
+    // Integration lock is outermost; FIFO/feedback locks are acquired only inside
+    // it. Renderer functions never reacquire it or invoke scheduler transitions.
+    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+    if(MiniMapMap::GameplayReady())MiniMapBuildingSpriteRenderer::Tick(deltaTime);
+}
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBegin,false);
@@ -140,11 +149,9 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     g_preparedGeneration=0;
     g_worldEnding=false;
     SetServicesAdmitted(false);
-    {
-        // A replacement world can begin before the owned world's EndPlay.
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        MiniMapBuildingScheduler::EndSession();
-    }
+    // A replacement world can begin before the owned world's EndPlay. Keep the
+    // previous gameplay identity available until its native owner has ended.
+    EndBuildingSession();
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
@@ -175,6 +182,8 @@ static void OnExperienceLoadComplete()
     if(!MiniMapTerrain::Initialize(g_self))
     {
         LOG_ERROR("MiniMap: terrain service preparation failed; generation remains unadmitted");
+        SetServicesAdmitted(false);
+        EndBuildingSession();
         return;
     }
 
@@ -184,14 +193,20 @@ static void OnExperienceLoadComplete()
     MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
+    bool rendererReady=false;
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingScheduler::InitializeSession();
+        rendererReady=MiniMapBuildingSpriteRenderer::InitializeSession();
+        if(!rendererReady)
+        {
+            MiniMapBuildingSpriteRenderer::EndSession();
+            MiniMapBuildingScheduler::EndSession();
+        }
     }
+    if(!rendererReady)
+    {LOG_ERROR("MiniMap: building renderer session blocked by retained native ownership or missing dependencies; gameplay remains unadmitted");return;}
     SetServicesAdmitted(true);
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-    MiniMapBuildingCapture::OnGameplaySessionReady(MiniMapMap::GetWorld(), g_worldGeneration);
-#endif
     MiniMapUI::Show();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
 }
@@ -202,10 +217,7 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        MiniMapBuildingScheduler::EndSession();
-    }
+    EndBuildingSession();
     MiniMapUI::Hide();
     MiniMapTerrain::CancelPendingDiagnostic();
 }
@@ -222,6 +234,7 @@ static void OnAfterWorldEndPlay(
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    EndBuildingSession(); // Idempotent fallback if BeforeEndPlay was not delivered.
     g_preparedGeneration=0;
     MiniMapUI::Hide();
 
@@ -286,6 +299,13 @@ extern "C"
             return false;
         }
 
+        if(!MiniMapNative::IsInitialized())
+        {
+            LOG_ERROR("MiniMap: native API must be initialized before building capture services");
+            g_self=nullptr;
+            return false;
+        }
+
         std::filesystem::path terrainRoot;
         const char* cacheFailure = nullptr;
         if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
@@ -313,7 +333,9 @@ extern "C"
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
+            MiniMapBuildingSpriteRenderer::Initialize(g_buildingSpriteFifo, MiniMapBuildingScheduler::FeedbackQueue());
         }
+        g_self->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
 
         // Close admission before module-specific native EndPlay cancellation.
         g_self->hooks->World->RegisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
@@ -466,14 +488,6 @@ extern "C"
             static_cast<unsigned long long>(
                 g_resolvedAddresses.memoryFree));
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        MiniMapBuildingCapture::Initialize();
-        MiniMapBuildingRepresentation::Initialize();
-#endif
-#if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
-        MiniMapSpriteDiscovery::Initialize();
-#endif
-
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
         {
             LOG_ERROR(
@@ -504,21 +518,17 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-        MiniMapCacheIdentity::Reset();
         g_worldEnding=true;
         SetServicesAdmitted(false);
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingSpriteRenderer::Shutdown();
             MiniMapBuildingScheduler::Shutdown();
         }
+        if(g_self && g_self->hooks && g_self->hooks->Engine)
+            g_self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
+        MiniMapCacheIdentity::Reset();
         MiniMapUI::Hide();
-#if defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
-        MiniMapSpriteDiscovery::Shutdown();
-#endif
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        MiniMapBuildingCapture::Shutdown();
-        MiniMapBuildingRepresentation::Shutdown();
-#endif
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&

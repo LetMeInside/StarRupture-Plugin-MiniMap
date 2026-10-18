@@ -22,6 +22,12 @@ namespace MiniMapSpriteQueues
             Items.push_back(std::move(blueprintPath));
         }
 
+        bool HasPending()
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            return !Items.empty();
+        }
+
         bool Remove(std::string& blueprintPath)
         {
             std::lock_guard<std::mutex> lock(Mutex);

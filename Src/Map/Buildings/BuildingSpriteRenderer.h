@@ -6,13 +6,14 @@
 
 namespace MiniMapBuildingSpriteRenderer
 {
-    // Borrowed queues must outlive the renderer. Future native service and
-    // lifecycle calls must be serialized on the existing game-thread owner.
+    // Borrowed queues must outlive the renderer. Integration callers hold
+    // LifecycleMutex for every service/lifecycle call; native work is game-thread only.
     void Initialize(
         MiniMapSpriteQueues::SpriteFifo& fifo,
         MiniMapSpriteQueues::SpriteFeedbackQueue& feedback);
 
-    void InitializeSession();
+    // False leaves admission closed when prior native ownership remains blocked.
+    bool InitializeSession();
 
     void Tick(float deltaTime);
 
