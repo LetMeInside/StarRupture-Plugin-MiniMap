@@ -4,6 +4,8 @@
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
+#include "Native/ReadbackNativeAdapter.h"
+#include "Map/Sprites/SceneCaptureConfiguration.h"
 #include "plugin_helpers.h"
 
 #include <Engine_classes.hpp>
@@ -13,17 +15,14 @@
 #include <Windows.h>
 
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <type_traits>
 
 namespace
 {
-    struct ActiveRequest
-    {
-        std::string BlueprintPath;
-    };
-
     namespace N = MiniMapNative;
     namespace Slots = MiniMapDefinitionAcquisition;
 
@@ -462,8 +461,7 @@ namespace
         {
             if (CanStartSession()) return true; // No native ownership remains in these states.
             if (Phase == WorldPhase::Quarantined) return false;
-            // No request resources exist yet. Future capture stages must retire
-            // them before entering this world-only teardown.
+            // Request resources must be retired before world-only teardown.
             if (requestActive || Phase != WorldPhase::Ready || !Facilities() || !CleanupPreconditions())
             { Quarantine("world cleanup admission or active-resource exclusion failed"); return false; }
             Phase = WorldPhase::Retiring;
@@ -484,6 +482,435 @@ namespace
     static_assert(std::is_trivially_destructible_v<NativeWorldOwner>);
     NativeWorldOwner g_nativeWorld;
 
+    enum class RequestPhase { Waiting, Preparing, Prepared, Failed, Retired, Quarantined };
+    enum class ResourceOperation { New, Flags, Register, Unregister, DestroyActor, DestroyComponent, InitializeTarget, Resource, ConstructFence, DestroyFence };
+
+    bool ReadbackAvailable(bool initialize, bool& available) noexcept
+    {
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        __try
+        {
+            available = initialize ? MiniMapReadbackNative::Preflight() : MiniMapReadbackNative::CaptureRetirementRendererAvailable();
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+#else
+        (void)initialize;
+        available = false; // The independent adapter is compiled out.
+        return true;
+#endif
+    }
+
+    // Leaf boundaries mirror the supported native calls. No capture or readback
+    // submission is implemented here. An interrupted call is never retried.
+    bool ResourceCall(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr) noexcept
+    {
+        const auto* api = N::Get();
+        if (!api) return false;
+        __try
+        {
+            switch (operation)
+            {
+            case ResourceOperation::New:
+                {
+                    SDK::TSubclassOf<SDK::UObject> type(reinterpret_cast<SDK::UClass*>(argument));
+                    *result = reinterpret_cast<uintptr_t>(api->asset.spawnObject(&type, reinterpret_cast<SDK::UObject*>(object)));
+                } break;
+            case ResourceOperation::Flags: api->asset.setObjectFlags(reinterpret_cast<SDK::UObject*>(object), 0x40); break;
+            case ResourceOperation::Register: api->player.registerComponent(reinterpret_cast<SDK::UActorComponent*>(object), reinterpret_cast<SDK::UWorld*>(argument), nullptr); break;
+            case ResourceOperation::Unregister: api->player.unregisterComponent(reinterpret_cast<SDK::UActorComponent*>(object)); break;
+            case ResourceOperation::DestroyActor: *result = api->world.destroyActor(object, false, false); break;
+            case ResourceOperation::DestroyComponent: api->player.destroyComponent(reinterpret_cast<SDK::UActorComponent*>(object), false); break;
+            case ResourceOperation::InitializeTarget: api->texture.initRenderTarget(reinterpret_cast<SDK::UTextureRenderTarget2D*>(object), 256, 256, 10, true); break;
+            case ResourceOperation::Resource: *result = reinterpret_cast<uintptr_t>(api->texture.getRenderTargetResource(reinterpret_cast<SDK::UTextureRenderTarget2D*>(object))); break;
+            case ResourceOperation::ConstructFence: api->texture.renderFenceConstruct(reinterpret_cast<void*>(object)); break;
+            case ResourceOperation::DestroyFence: api->texture.renderFenceDestroy(reinterpret_cast<void*>(object)); break;
+            }
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+
+    bool SpawnActor(uintptr_t world, uintptr_t type, const SDK::FTransform* transform, uintptr_t* result) noexcept
+    {
+        __try
+        {
+            *result = reinterpret_cast<uintptr_t>(SDK::UGameplayStatics::BeginDeferredActorSpawnFromClass(
+                reinterpret_cast<SDK::UObject*>(world), SDK::TSubclassOf<SDK::AActor>(reinterpret_cast<SDK::UClass*>(type)),
+                *transform, SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn, nullptr, SDK::ESpawnActorScaleMethod::MultiplyWithRoot));
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool FinishActor(uintptr_t actor, const SDK::FTransform* transform, uintptr_t* result) noexcept
+    {
+        __try
+        {
+            *result = reinterpret_cast<uintptr_t>(SDK::UGameplayStatics::FinishSpawningActor(
+                reinterpret_cast<SDK::AActor*>(actor), *transform, SDK::ESpawnActorScaleMethod::MultiplyWithRoot));
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool ActorSubclass(uintptr_t type, uintptr_t actor, bool* result) noexcept
+    {
+        __try
+        {
+            *result = SDK::UKismetMathLibrary::ClassIsChildOf(SDK::TSubclassOf<SDK::UObject>(reinterpret_cast<SDK::UClass*>(type)),
+                SDK::TSubclassOf<SDK::UObject>(reinterpret_cast<SDK::UClass*>(actor)));
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool ActorBounds(uintptr_t actor, SDK::FVector* center, SDK::FVector* extent) noexcept
+    {
+        __try { SDK::UKismetSystemLibrary::GetActorBounds(reinterpret_cast<SDK::AActor*>(actor), center, extent); return true; }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool ConfigureResources(SDK::USceneCaptureComponent2D* capture, SDK::UTextureRenderTarget2D* target,
+        const SDK::FVector* extent) noexcept
+    {
+        // SDK strings/arrays here borrow stack data; they do not own allocations.
+        static_assert(std::is_trivially_destructible_v<SDK::FEngineShowFlagsSetting>);
+        __try
+        {
+            MiniMapSpriteCapture::ConfigureSceneCapture(capture, *extent);
+            SDK::FEngineShowFlagsSetting flags[11]{};
+            const wchar_t* names[] = {L"Fog", L"Atmosphere", L"VolumetricFog", L"Cloud", L"MotionBlur", L"TemporalAA",
+                L"AntiAliasing", L"PostProcessing", L"Bloom", L"EyeAdaptation", L"Lighting"};
+            for (int i = 0; i < 11; ++i) { flags[i].ShowFlagName = SDK::FString(names[i]); flags[i].Enabled = false; }
+            SDK::TArray<SDK::FEngineShowFlagsSetting> settings(flags, 11, 11);
+            capture->SetShowFlagSettings(settings);
+            target->bAutoGenerateMips = false;
+            target->bSupportsUAV = false;
+            uint32_t targetFlags{};
+            if (!Read(reinterpret_cast<uintptr_t>(target) + 0x144, targetFlags)) return false;
+            targetFlags &= ~uint32_t(1);
+            std::memcpy(reinterpret_cast<uint8_t*>(target) + 0x144, &targetFlags, sizeof(targetFlags));
+            target->ClearColor = SDK::FLinearColor(0, 0, 0, 1);
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool PositionCapture(SDK::USceneCaptureComponent2D* capture, SDK::UTextureRenderTarget2D* target,
+        const SDK::FVector* center, const SDK::FVector* extent) noexcept
+    {
+        __try
+        {
+            capture->TextureTarget = target;
+            const SDK::FVector location(center->X, center->Y, center->Z + extent->Z + 1000.0);
+            const SDK::FRotator rotation(-90, -90, 0);
+            capture->K2_SetWorldLocationAndRotation(location, rotation, false, nullptr, true);
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+
+    struct ActiveRequest
+    {
+        ActiveRequest() = default;
+        ActiveRequest(const ActiveRequest&) = delete;
+        ActiveRequest& operator=(const ActiveRequest&) = delete;
+        std::string BlueprintPath;
+        RequestPhase Phase = RequestPhase::Waiting;
+        // Each UObject has exactly one owning record. Class aliases are indexes.
+        enum MetadataId { Generated, ActorType, Blueprint, DefaultObject, CaptureType, TargetType, MetadataCount };
+        std::array<NativeReference, MetadataCount> Metadata{};
+        NativeReference Actor, Capture, Target;
+        SDK::FVector Center{}, Extent{};
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        MiniMapReadbackNative::Job* Job{}; // Unsubmitted; never serviced in this stage.
+#endif
+        // Only the constructed, uninserted fence is needed before capture. Keep
+        // storage after any interrupted constructor/destructor, just like a ref.
+        alignas(8) unsigned char FenceStorage[8]{};
+        Ownership Fence = Ownership::Empty;
+
+        void Quarantine(const char* reason)
+        { Phase = RequestPhase::Quarantined; g_nativeWorld.Quarantine(reason); }
+        bool Ready()
+        { return g_nativeWorld.Phase == WorldPhase::Ready && QuietGC() && g_nativeWorld.GameplayUnchanged() && g_nativeWorld.PrivateState(true); }
+        bool Call(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr)
+        {
+            if (operation == ResourceOperation::ConstructFence || operation == ResourceOperation::DestroyFence)
+            {
+                bool available{};
+                if (!Ready() || !ReadbackAvailable(false, available) || !available)
+                { Quarantine("prepared fence renderer prerequisites unavailable"); return false; }
+            }
+            if (Ready() && ResourceCall(operation, object, argument, result)) return true;
+            Quarantine("request native operation interrupted or world ownership changed"); return false;
+        }
+        bool DropMetadata()
+        {
+            for (size_t i = Metadata.size(); i > 0; --i)
+                if (!g_nativeWorld.Drop(Metadata[i - 1])) return false;
+            return true;
+        }
+        uintptr_t Lookup(const wchar_t* path, uintptr_t filter, bool exact)
+        {
+            auto* hooks = GetHooks();
+            auto* engine = hooks ? hooks->Engine : nullptr;
+            const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
+            uintptr_t object{};
+            if (!find) return 0;
+            if (!Ready() || !FindResident(find, filter, path, exact, object))
+                Quarantine("request resident lookup interrupted or world changed");
+            return object;
+        }
+        bool Keep(uintptr_t object, NativeReference& ref)
+        {
+            if (Ready() && g_nativeWorld.Hold(object, ref)) return true;
+            Quarantine("request native reference acquisition uncertain"); return false;
+        }
+        bool ClassMetadata(const wchar_t* path, MetadataId id, size_t expectedSize)
+        {
+            const auto object = Lookup(path, g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits, true);
+            if (Phase == RequestPhase::Quarantined || !object) return false;
+            ObjectIdentity identity; uintptr_t type{}; int32_t size{};
+            if (!g_nativeWorld.Identify(object, identity, sizeof(SDK::UClass)) || !Read(object + 0x10, type) ||
+                type != g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits ||
+                !Read(object + offsetof(SDK::UStruct, Size), size) || size != int32_t(expectedSize))
+            { Quarantine("request class metadata layout or identity invalid"); return false; }
+            return Keep(object, Metadata[id]);
+        }
+        bool Level(uintptr_t target, bool expected, uint64_t* hash = nullptr, int32_t* count = nullptr)
+        {
+            struct PointerArray { uintptr_t Data{}; int32_t Count{}, Capacity{}; } actors;
+            if (!g_nativeWorld.CheckOwned(g_nativeWorld.PersistentLevel) ||
+                !Read(g_nativeWorld.PersistentLevel.Object.Bits + 0xa0, actors) || actors.Count < 0 ||
+                actors.Capacity < actors.Count || actors.Capacity > 4096 ||
+                (actors.Count && !N::IsMemoryRangeReadable(actors.Data, size_t(actors.Count) * 8, 8))) return false;
+            bool found = false; uint64_t value{}; int32_t total{};
+            for (int32_t i = 0; i < actors.Count; ++i)
+            {
+                uintptr_t actor{}; ObjectIdentity identity;
+                if (!Read(actors.Data + size_t(i) * 8, actor)) return false;
+                if (!actor) continue;
+                if (!g_nativeWorld.Identify(actor, identity, sizeof(SDK::AActor))) return false;
+                found |= actor == target; value ^= actor * 1099511628211ULL; ++total;
+            }
+            if (hash) *hash = value;
+            if (count) *count = total;
+            return found == expected;
+        }
+        bool ActorState(bool finished)
+        {
+            const auto actor = Actor.Object.Bits;
+            uint8_t a{}, b{}; uintptr_t type{}, outer{}, owner{}, instigator{};
+            return g_nativeWorld.CheckOwned(Actor) && g_nativeWorld.CheckOwned(Metadata[Blueprint]) &&
+                Read(actor + 0x10, type) && type == Metadata[Blueprint].Object.Bits &&
+                Read(actor + 0x20, outer) && outer == g_nativeWorld.PersistentLevel.Object.Bits &&
+                Read(actor + offsetof(SDK::AActor, Owner), owner) && !owner &&
+                Read(actor + offsetof(SDK::AActor, Instigator), instigator) && !instigator &&
+                Read(actor + 0x5c, a) && bool(a & 1) == finished && !(a & 2) &&
+                Read(actor + 0x5d, b) && !(b & 0x1a) && Ready() && Level(actor, true);
+        }
+        bool NewResource(MetadataId id, NativeReference& ref, size_t size)
+        {
+            if (!g_nativeWorld.CheckOwned(Metadata[id])) { Quarantine("resource class ownership invalid"); return false; }
+            if (!Call(ResourceOperation::New, g_nativeWorld.Private.Object.Bits, Metadata[id].Object.Bits, &ref.Object.Bits)) return false;
+            ObjectIdentity identity; uintptr_t type{}, outer{};
+            if (!ref.Object.Bits || !Keep(ref.Object.Bits, ref) || !g_nativeWorld.Identify(ref.Object.Bits, identity, size) ||
+                !Read(ref.Object.Bits + 0x10, type) || type != Metadata[id].Object.Bits ||
+                !Read(ref.Object.Bits + 0x20, outer) || outer != g_nativeWorld.Private.Object.Bits)
+            { Quarantine("native resource factory returned uncertain ownership"); return false; }
+            return Call(ResourceOperation::Flags, ref.Object.Bits);
+        }
+        // Used only immediately after this owner successfully destroys an object.
+        // Live-object Identify deliberately rejects the pending-kill state here.
+        bool ReleaseDestroyed(NativeReference& ref)
+        {
+            Slots::Slot slot; SlotReader reader; int32_t index{}, count{}; uint32_t flags{};
+            const auto bits = ref.Object.Bits;
+            if (ref.State != Ownership::Held || !QuietGC() ||
+                Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), ref.Object.Index, slot) != Slots::Status::Success ||
+                slot.Object != bits || (slot.Flags & 0x10000000) || !(slot.Flags & 0x20000000) || !(slot.Flags & 0x00200000) ||
+                !N::IsMemoryRangeReadable(bits, 0x28, 8) || !Read(bits + 0xc, index) || index != ref.Object.Index ||
+                !Read(bits + 8, flags) || (flags & 0x1b400) || !Read(slot.Item + 0x14, count) || count < 1) return false;
+            if (slot.Serial != ref.Object.Serial)
+            {
+                if (ref.Object.Serial != 0 || slot.Serial <= 0) return false;
+                ref.Object.Serial = slot.Serial;
+            }
+            ref.State = Ownership::Uncertain;
+            if (!Invoke(Operation::Release, bits)) return false;
+            ref = {}; return true;
+        }
+        bool Retire()
+        {
+            if (Phase == RequestPhase::Quarantined) return false;
+            bool owned = Fence != Ownership::Empty || Actor.State != Ownership::Empty || Capture.State != Ownership::Empty || Target.State != Ownership::Empty;
+            for (const auto& ref : Metadata) owned |= ref.State != Ownership::Empty;
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            owned |= Job != nullptr;
+#endif
+            if (!owned) { if (Phase != RequestPhase::Failed) Phase = RequestPhase::Retired; return true; }
+            if (!Ready()) { Quarantine("pre-capture retirement world admission failed"); return false; }
+            if (Capture.State != Ownership::Empty)
+            {
+                uint8_t flags{};
+                if (!g_nativeWorld.CheckOwned(Capture) || !Read(Capture.Object.Bits + 0x94, flags) ||
+                    ((flags & 1) && !Call(ResourceOperation::Unregister, Capture.Object.Bits)) ||
+                    !Read(Capture.Object.Bits + 0x94, flags) || (flags & 3))
+                { Quarantine("pre-capture component detachment uncertain"); return false; }
+            }
+            // The supported never-captured path has no capture/readback users.
+            // Unregister/destroy use UE's native component retirement; no manual
+            // renderer resource freeing, flush, or claim of GPU-idle is made.
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            if (!MiniMapReadbackNative::DiscardExternalBeforeCapture(Job))
+            { Quarantine("unsubmitted readback Job could not be discarded"); return false; }
+#endif
+            if (Fence != Ownership::Empty)
+            {
+                if (Fence != Ownership::Held) { Quarantine("prepared fence ownership uncertain"); return false; }
+                Fence = Ownership::Uncertain;
+                if (!Call(ResourceOperation::DestroyFence, reinterpret_cast<uintptr_t>(FenceStorage))) return false;
+                Fence = Ownership::Empty;
+            }
+            if (Actor.State != Ownership::Empty)
+            {
+                uint8_t a{}, b{}; uintptr_t destroyed{};
+                if (!Read(Actor.Object.Bits + 0x5c, a) || !ActorState(bool(a & 1)) ||
+                    !Call(ResourceOperation::DestroyActor, Actor.Object.Bits, 0, &destroyed) || !destroyed ||
+                    !Read(Actor.Object.Bits + 0x5c, a) || (a & 2) || !Read(Actor.Object.Bits + 0x5d, b) ||
+                    !(b & 2) || (b & 0x18) || !Level(Actor.Object.Bits, false) || !ReleaseDestroyed(Actor))
+                { Quarantine("Actor destruction or reference release uncertain"); return false; }
+            }
+            if (Capture.State != Ownership::Empty)
+            {
+                uint8_t init{}, flags{};
+                if (!g_nativeWorld.CheckOwned(Capture) || !Read(Capture.Object.Bits + 0x97, init) || (init & 0x28) ||
+                    !Call(ResourceOperation::DestroyComponent, Capture.Object.Bits) ||
+                    !Read(Capture.Object.Bits + 0x94, flags) || (flags & 3) || !ReleaseDestroyed(Capture))
+                { Quarantine("component destruction or reference release uncertain"); return false; }
+            }
+            if (!g_nativeWorld.Drop(Target) || !DropMetadata() || !Ready())
+            { Quarantine("pre-capture dependency release uncertain"); return false; }
+            if (Phase != RequestPhase::Failed) Phase = RequestPhase::Retired;
+            return true;
+        }
+        void Fail()
+        { Phase = RequestPhase::Failed; Retire(); }
+
+        static bool Path(const std::string& path, std::array<wchar_t, 1025>& wide)
+        {
+            if (path.size() > 1024 || !path.starts_with("/Game/") || !path.ends_with("_C") || path.find('\0') != std::string::npos) return false;
+            const auto dot = path.find('.'), slash = path.rfind('/');
+            if (dot == std::string::npos || dot <= slash + 1 || path.find('.', dot + 1) != std::string::npos ||
+                path.substr(slash + 1, dot - slash - 1) != path.substr(dot + 1, path.size() - dot - 3)) return false;
+            for (size_t i = 1; i < path.size(); ++i)
+            {
+                const auto c = static_cast<unsigned char>(path[i]);
+                if (c < 128 && !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '_' && c != '/' && c != '.') return false;
+                if (c == '/' && (i > dot || path[i - 1] == '/')) return false;
+            }
+            return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, wide.data(), int(wide.size())) > 1;
+        }
+        // Deliberately uncalled. Future activation supplies exactly one copied
+        // FIFO path and calls this only from the game-thread service.
+        [[maybe_unused]] void Prepare()
+        {
+            if (Phase != RequestPhase::Waiting) return;
+            std::array<wchar_t, 1025> wide{};
+            if (!Path(BlueprintPath, wide)) { Fail(); return; }
+            if (!Ready()) return;
+            const auto& api = *N::Get();
+            if (!api.asset.spawnObject || !api.asset.setObjectFlags || !api.player.registerComponent ||
+                !api.player.unregisterComponent || !api.player.destroyComponent || !api.world.destroyActor ||
+                !api.texture.initRenderTarget || !api.texture.getRenderTargetResource ||
+                !api.texture.renderFenceConstruct || !api.texture.renderFenceDestroy) return;
+            bool available{};
+            if (!ReadbackAvailable(true, available)) { Quarantine("readback prerequisite inspection interrupted"); return; }
+            if (!available) return;
+            if (!ClassMetadata(L"/Script/Engine.BlueprintGeneratedClass", Generated, sizeof(SDK::UBlueprintGeneratedClass)) ||
+                !ClassMetadata(L"/Script/Engine.Actor", ActorType, sizeof(SDK::AActor)) ||
+                !ClassMetadata(L"/Script/Engine.SceneCaptureComponent2D", CaptureType, sizeof(SDK::USceneCaptureComponent2D)) ||
+                !ClassMetadata(L"/Script/Engine.TextureRenderTarget2D", TargetType, sizeof(SDK::UTextureRenderTarget2D)))
+            {
+                if (Phase != RequestPhase::Quarantined && !DropMetadata()) Quarantine("waiting metadata release uncertain");
+                return;
+            }
+            const auto object = Lookup(wide.data(), Metadata[Generated].Object.Bits, true);
+            if (Phase == RequestPhase::Quarantined) return;
+            if (!object) // Valid generated-class path, not resident: retain the request, not pointers.
+            { if (!DropMetadata()) Quarantine("waiting class metadata release uncertain"); return; }
+            ObjectIdentity identity; uintptr_t type{}, cdo{};
+            if (!g_nativeWorld.Identify(object, identity, sizeof(SDK::UBlueprintGeneratedClass)) || !Read(object + 0x10, type))
+            { Quarantine("resident generated-class identity invalid"); return; }
+            if (type != Metadata[Generated].Object.Bits) { Fail(); return; }
+            if (!Keep(object, Metadata[Blueprint])) return;
+            bool isActor{};
+            if (!ActorSubclass(object, Metadata[ActorType].Object.Bits, &isActor)) { Quarantine("Actor inheritance call interrupted"); return; }
+            if (!isActor) { Fail(); return; }
+            if (!Read(object + offsetof(SDK::UClass, ClassDefaultObject), cdo) || !cdo ||
+                !g_nativeWorld.Identify(cdo, identity) || !Read(cdo + 0x10, type) || type != object)
+            { Fail(); return; }
+            if (!Keep(cdo, Metadata[DefaultObject])) return;
+            Phase = RequestPhase::Preparing;
+            // Construct a fence without insertion/submission. Interrupted ownership
+            // stays in this request; it is never destroyed by a C++ destructor.
+            Fence = Ownership::Uncertain;
+            if (!Call(ResourceOperation::ConstructFence, reinterpret_cast<uintptr_t>(FenceStorage))) return;
+            Fence = Ownership::Held;
+            uint64_t before{}, after{}; int32_t countBefore{}, countAfter{};
+            if (!Level(0, false, &before, &countBefore) || !Ready()) { Quarantine("private level invalid before spawn"); return; }
+            SDK::FTransform transform{};
+            transform.Rotation.W = 1; transform.Scale3D = SDK::FVector(1, 1, 1);
+            if (!SpawnActor(g_nativeWorld.Private.Object.Bits, object, &transform, &Actor.Object.Bits))
+            { Quarantine("deferred Actor spawn interrupted"); return; }
+            if (!Actor.Object.Bits)
+            {
+                if (!Ready() || !Level(0, false, &after, &countAfter) || before != after || countBefore != countAfter)
+                { Quarantine("null spawn changed native world ownership"); return; }
+                Fail(); return;
+            }
+            if (!Keep(Actor.Object.Bits, Actor) || !ActorState(false)) { Quarantine("deferred Actor ownership invalid"); return; }
+            uintptr_t finished{};
+            if (!FinishActor(Actor.Object.Bits, &transform, &finished) || finished != Actor.Object.Bits || !ActorState(true))
+            { Quarantine("Blueprint construction interrupted or ownership invalid"); return; }
+            if (!ActorBounds(Actor.Object.Bits, &Center, &Extent)) { Quarantine("Actor bounds call interrupted"); return; }
+            const float width = float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1);
+            if (!std::isfinite(Center.X) || !std::isfinite(Center.Y) || !std::isfinite(Center.Z) ||
+                !std::isfinite(Extent.X) || !std::isfinite(Extent.Y) || !std::isfinite(Extent.Z) ||
+                !(Extent.X > 0 && Extent.Y > 0 && Extent.Z >= 0) || !std::isfinite(Center.Z + Extent.Z + 1000.0) ||
+                !std::isfinite(width) || !(width > 0))
+            { Center = SDK::FVector(0, 0, 0); Extent = SDK::FVector(500, 500, 500); }
+            if (!Ready() || !ActorState(true)) { Quarantine("world changed after construction"); return; }
+            if (!NewResource(CaptureType, Capture, sizeof(SDK::USceneCaptureComponent2D)) ||
+                !NewResource(TargetType, Target, sizeof(SDK::UTextureRenderTarget2D))) return;
+            if (!ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent))
+            { Quarantine("capture configuration interrupted"); return; }
+            if (!Call(ResourceOperation::InitializeTarget, Target.Object.Bits)) return;
+            if (!Ready() || !PositionCapture(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Center, &Extent))
+            { Quarantine("capture camera preparation interrupted"); return; }
+            if (!Call(ResourceOperation::Register, Capture.Object.Bits, g_nativeWorld.Private.Object.Bits)) return;
+            uint8_t registered{}; uintptr_t world{}, resource{};
+            if (!Read(Capture.Object.Bits + 0x94, registered) || !(registered & 1) ||
+                !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits)
+            { Quarantine("capture registration postconditions invalid"); return; }
+            if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
+            if (!resource) { Fail(); return; }
+#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            Job = MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource), 256, 256);
+            if (!Job) { Fail(); return; }
+#endif
+            if (!Ready() || !ActorState(true)) { Quarantine("prepared request ownership invalid"); return; }
+            Phase = RequestPhase::Prepared;
+        }
+    };
+
     MiniMapSpriteQueues::SpriteFifo* g_fifo = nullptr;
     bool g_sessionActive = false;
     std::optional<ActiveRequest> g_activeRequest;
@@ -499,8 +926,7 @@ namespace MiniMapBuildingSpriteRenderer
 
     void InitializeSession()
     {
-        if (!g_fifo || g_sessionActive || !g_nativeWorld.CanStartSession()) return;
-        g_activeRequest.reset();
+        if (!g_fifo || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return;
         g_sessionActive = true;
     }
 
@@ -508,13 +934,15 @@ namespace MiniMapBuildingSpriteRenderer
     {
         (void)deltaTime;
         if (!g_fifo || !g_sessionActive) return;
-        // Stage 7.5C.2A: deliberately no world creation, FIFO consumption or native service.
+        // Stage 7.5C.2B: deliberately no world creation, request preparation,
+        // FIFO consumption, scene capture or native service.
     }
 
     void EndSession()
     {
         g_sessionActive = false;
-        if (g_nativeWorld.Retire(g_activeRequest.has_value()))
+        if (g_activeRequest && !g_activeRequest->Retire()) return;
+        if (g_nativeWorld.Retire(false))
             g_activeRequest.reset();
     }
 
