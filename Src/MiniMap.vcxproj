@@ -136,6 +136,8 @@
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
+    <ClInclude Include="Native\ResidentMetadata.h" />
+    <ClInclude Include="Map\Buildings\BuildingBlueprintIdentity.h" />
     <ClInclude Include="Map\Sprites\PrivateCaptureWorld.h" />
     <ClInclude Include="Map\Sprites\PrivateCaptureWorldActors.inl" />
     <ClInclude Include="Map\Sprites\SceneCaptureConfiguration.h" />
@@ -179,6 +181,8 @@
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingInventory.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
+    <ClCompile Include="Native\ResidentMetadata.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />
     <ClCompile Include="Map\Buildings\BuildingSpriteRenderer.cpp" />
     <ClCompile Include="Map\Sprites\BuildingRepresentation.cpp">

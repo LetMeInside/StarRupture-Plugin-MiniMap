@@ -5,9 +5,8 @@
 #include "BuildingGeometry.h"
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-#include "Map/Sprites/BuildingRepresentation.h"
-#endif
+#include "BuildingBlueprintIdentity.h"
+#include "Native/ResidentMetadata.h"
 #include "DebugText.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
@@ -71,6 +70,8 @@ namespace
         std::shared_ptr<const DefinitionGeometry> Geometry;
         std::shared_ptr<const std::string> CanonicalBlueprint;
         Clock::time_point RetryAt = {};
+        Clock::time_point IdentityRetryAt = {};
+        int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
     };
     struct Metrics
     {
@@ -115,6 +116,7 @@ namespace
     std::vector<Id> g_indexedHandles; // Retains plugin-owned capacity; no grid shared-pointer members.
     size_t g_gridVisited=0;
     bool g_xyQuery=false;
+    bool g_identityConversionAvailable=false;
 
     uint64_t Key(int32_t index,int32_t serial)
     { return (uint64_t(uint32_t(serial))<<32)|uint32_t(index); }
@@ -149,30 +151,31 @@ namespace
     {
         MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::CollectorMetadata);
         if(g_typesReady)return true;
+        if(!MiniMapResidentMetadata::Available())return false;
         if(Clock::now()<g_metadataRetry)return false;
         // One metadata item per callback, including optional geometry metadata.
         // No worldwide ObjectWalker scan and no partial query construction.
         uintptr_t acquired=0;
         switch(g_metadataStep++)
         {
-        case 0: if(!g_types.Building){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 1: if(!g_types.Grid){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 2: if(!g_types.Transform){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 3: if(!g_types.Parameters){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 4: if(!g_types.Spline){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 5: if(!g_types.Tint){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 6: if(!g_types.Placement){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 7: if(!g_types.BuildingData){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 8: if(!g_types.GridClass){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 9: if(!g_types.TargetBox){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 10: if(!g_types.Config){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 11: if(!g_types.TargetTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 12: if(!g_types.VisualTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 13: if(!g_types.CosmeticTrait){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 14: if(!g_types.DroneRail){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 15: if(!g_types.Walkway){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 16: if(!g_types.StaticMesh){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 17: if(!g_types.DronesSettings){acquired=MiniMapBuildingRepresentation::AcquireResidentMetadata(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 0: if(!g_types.Building){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 1: if(!g_types.Grid){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 2: if(!g_types.Transform){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 3: if(!g_types.Parameters){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 4: if(!g_types.Spline){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 5: if(!g_types.Tint){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 6: if(!g_types.Placement){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 7: if(!g_types.BuildingData){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 8: if(!g_types.GridClass){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 9: if(!g_types.TargetBox){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+        case 10: if(!g_types.Config){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 11: if(!g_types.TargetTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 12: if(!g_types.VisualTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 13: if(!g_types.CosmeticTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 14: if(!g_types.DroneRail){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 15: if(!g_types.Walkway){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 16: if(!g_types.StaticMesh){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
+        case 17: if(!g_types.DronesSettings){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
         }
         if(acquired)g_metadataRoots[g_metadataCount++]=acquired;
         if(g_metadataStep<g_metadataRoots.size())return false;
@@ -328,6 +331,19 @@ namespace
         }
         return definition.Geometry;
     }
+    void DefinitionBlueprint(Definition& definition,const SDK::UAuActorPlacementData* placement,const Record& record)
+    {
+        if(definition.CanonicalBlueprint || !g_identityConversionAvailable) return;
+        const auto now=Clock::now();
+        if(now<definition.IdentityRetryAt) return;
+        g_identityConversionAvailable=false; // At most one conversion, including indexed reads, per collector callback.
+        definition.IdentityRetryAt=now+kLogCadence;
+        const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
+            {record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,record.BuildingId,definition.ObjectSerial});
+        // An invalid/unavailable authored identity does not invalidate the building.
+        // Resident metadata or authored data may settle; retry only this definition.
+        definition.CanonicalBlueprint=result.Path;
+    }
     void Geometry(Record& r,const SDK::FAuSplineConnectionFragment* spline,const SDK::FBox* targetingBox,bool retain=true)
     {
         r.SourceFootprint={}; r.LocalFootprint={}; r.UnboundedGeometry=false;
@@ -384,6 +400,7 @@ namespace
         const auto start=Clock::now();
         r.TransformValid=false; r.DefinitionValid=false; r.Extent={}; r.BoundsKind=Coverage::Unresolved;
         r.DefinitionShape.reset();
+        r.CanonicalBlueprint.reset();
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
         {
             r.Position={t->Translation.X,t->Translation.Y,t->Translation.Z};
@@ -395,6 +412,8 @@ namespace
                 std::all_of(r.Rotation.begin(),r.Rotation.end(),finite) &&
                 std::all_of(r.Scale.begin(),r.Scale.end(),finite) && std::isfinite(norm) && norm>0;
         }
+        const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
+        r.HasSpline=spline!=nullptr;
         const auto* parameters=Parameters(n,id);
         const auto* placement=parameters?parameters->PlacementData:nullptr;
         if((reinterpret_cast<uintptr_t>(placement)&7)==0 && IsClass(placement,g_types.Placement))
@@ -403,22 +422,30 @@ namespace
             r.DefinitionObjectIndex=placement->Index;
             // Short FNames alone can alias assets in different packages.
             const auto key=Key(placement->Index,int32_t(placement->BuildingID));
+            int32_t serial=0;
+            const bool serialValid=MiniMapResidentMetadata::Serial(reinterpret_cast<uintptr_t>(placement),serial);
             auto it=g_definitions.find(key);
-            if(it==g_definitions.end() || it->second.NameIndex!=r.DefinitionIndex || it->second.NameNumber!=r.DefinitionNumber)
+            if(it==g_definitions.end() || it->second.NameIndex!=r.DefinitionIndex || it->second.NameNumber!=r.DefinitionNumber ||
+                (serialValid && it->second.ObjectSerial!=serial))
             {
                 uint8_t category=0xFF;
                 if(IsClass(placement,g_types.BuildingData)) category=uint8_t(static_cast<const SDK::UCrBuildingData*>(placement)->Type);
                 it=g_definitions.insert_or_assign(key,Definition{uint32_t(placement->BuildingID),category,r.DefinitionIndex,r.DefinitionNumber}).first;
+                it->second.ObjectSerial=serial;
                 ++g_metrics.DefinitionMiss;
             }
+            if(!serialValid) it->second.CanonicalBlueprint.reset();
             r.BuildingId=it->second.Id; r.Category=it->second.Category; r.DefinitionValid=true;
             r.DefinitionShape=DefinitionShape(it->second,placement);
+            if(!r.HasSpline && serialValid)
+            {
+                DefinitionBlueprint(it->second,placement,r);
+                r.CanonicalBlueprint=it->second.CanonicalBlueprint;
+            }
         }
         r.Tint={1,1,1,1};
         if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
             r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A};
-        const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
-        r.HasSpline=spline!=nullptr;
         const double dynamic=Ms(start);
         g_metrics.Dynamic+=dynamic;
         if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
@@ -438,6 +465,19 @@ namespace
         ++g_metrics.Refreshed;
         return true;
     }
+    bool DefinitionProvenanceCurrent(const Native& n,const Record& r,const Definition& definition)
+    {
+        if(definition.Id!=r.BuildingId || definition.NameIndex!=r.DefinitionIndex || definition.NameNumber!=r.DefinitionNumber ||
+            !Live(n,{r.Index,r.Serial})) return false;
+        const auto* parameters=Parameters(n,{r.Index,r.Serial});
+        const auto* placement=parameters?parameters->PlacementData:nullptr;
+        if(!placement || (reinterpret_cast<uintptr_t>(placement)&7)!=0) return false;
+        int32_t serial=0;
+        if(!MiniMapResidentMetadata::Serial(reinterpret_cast<uintptr_t>(placement),serial)) return false;
+        return IsClass(placement,g_types.Placement) && placement->Index==r.DefinitionObjectIndex &&
+            placement->Name.ComparisonIndex==r.DefinitionIndex && placement->Name.Number==r.DefinitionNumber &&
+            uint32_t(placement->BuildingID)==r.BuildingId && serial==definition.ObjectSerial;
+    }
     void Destroy()
     {
         if(const auto* n=MiniMapNative::Get())
@@ -455,12 +495,16 @@ namespace
         g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
         g_curveScratch={};
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
-        g_metadataRoots={};g_metadataCount=g_metadataStep=0;g_metadataRetry={};
+        size_t retained=0;
+        for(size_t i=0;i<g_metadataCount;++i)
+            if(!MiniMapResidentMetadata::Release(g_metadataRoots[i]))g_metadataRoots[retained++]=g_metadataRoots[i];
+        // Failed checked releases remain owned; the native helper disables new acquisition.
+        g_metadataCount=retained;g_metadataStep=0;g_metadataRetry={};
 #endif
         g_cursor=g_nearCursor=0; g_epoch=0; g_types={}; g_typesReady=false;
         g_region={}; g_queryRegion={}; g_lastRadius=0;
         g_ordinaryQueryPadding=kOriginPadding;
+        g_identityConversionAvailable=false;
         g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={};
         g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
         g_indexedHandles.clear(); g_xyQuery=false;
@@ -694,15 +738,15 @@ namespace
             if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+            result->Records.back().CanonicalBlueprint.reset();
             const auto definition=g_definitions.find(Key(r.DefinitionObjectIndex,r.BuildingId));
-            if(definition!=g_definitions.end()&&definition->second.NameIndex==r.DefinitionIndex&&definition->second.NameNumber==r.DefinitionNumber)
+            if(!r.HasSpline&&definition!=g_definitions.end())
             {
-                auto& path=definition->second.CanonicalBlueprint;
-                if(!path)path=MiniMapBuildingRepresentation::GetBlueprintIdentity(r).Path;
-                result->Records.back().CanonicalBlueprint=path;
+                if(DefinitionProvenanceCurrent(n,r,definition->second))
+                    result->Records.back().CanonicalBlueprint=definition->second.CanonicalBlueprint;
+                else
+                    definition->second.CanonicalBlueprint.reset();
             }
-#endif
         };
         for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
         for(const auto& [key,e]:g_cache)
@@ -740,6 +784,7 @@ namespace
         if(!MiniMapMap::GameplayReady())return;
         if(!g_ready || !MiniMapMap::HasWorld()) return;
         const auto start=Clock::now(); const auto* n=MiniMapNative::Get();
+        g_identityConversionAvailable=true;
         if(!n || !n->gridDiagnostic.IsAvailable() || !n->texture.memoryFree || !n->mass.getConstSharedFragmentPtr ||
             !n->mass.isEntityValid || !n->mass.isEntityBuilt || !n->mass.addSplineRequirement)
         {

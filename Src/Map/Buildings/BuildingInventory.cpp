@@ -3,9 +3,7 @@
 
 #include "BuildingInventory.h"
 #include "BuildingCollector.h"
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-#include "Map/Sprites/BuildingRepresentation.h"
-#endif
+#include "Native/ResidentMetadata.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
@@ -55,8 +53,10 @@ namespace
             if (const auto* native = MiniMapNative::Get()) native->mass.queryDestruct(g_query.data());
         g_constructed = false; g_query = {};
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        for(size_t i=0;i<g_metadataCount;++i)MiniMapBuildingRepresentation::ReleaseResidentMetadata(g_metadataRoots[i]);
-        g_metadataRoots={};g_metadataCount=0;g_metadataRetry={};
+        size_t retained=0;
+        for(size_t i=0;i<g_metadataCount;++i)
+            if(!MiniMapResidentMetadata::Release(g_metadataRoots[i]))g_metadataRoots[retained++]=g_metadataRoots[i];
+        g_metadataCount=retained;g_metadataRetry={};
 #endif
         g_world = nullptr; g_subsystem = nullptr; g_manager = nullptr;
         g_building = g_transform = g_spline = nullptr;
@@ -69,7 +69,7 @@ namespace
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     SDK::UScriptStruct* FindStruct(const wchar_t* path,size_t size)
     {
-        const auto p=MiniMapBuildingRepresentation::AcquireResidentMetadata(path,true,size);
+        const auto p=MiniMapResidentMetadata::Acquire(path,true,size);
         if(p)g_metadataRoots[g_metadataCount++]=p;
         else g_metadataRetry=Clock::now()+std::chrono::seconds(1);
         return reinterpret_cast<SDK::UScriptStruct*>(p);
@@ -99,6 +99,7 @@ namespace
         if (g_constructed) Clear("world/manager changed");
         if (!manager || !g_inventorySelf->hooks->ObjectWalker->IsReady()) return false;
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        if(!MiniMapResidentMetadata::Available())return false;
         if(Clock::now()<g_metadataRetry)return false;
         if(!g_building){g_building=FindStruct(L"/Script/Chimera.CrMassBuildingTag",sizeof(SDK::FCrMassBuildingTag));return false;}
         if(!g_transform){g_transform=FindStruct(L"/Script/MassCommon.TransformFragment",sizeof(SDK::FTransform));return false;}
