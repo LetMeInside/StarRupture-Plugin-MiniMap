@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -11,7 +12,8 @@ namespace MiniMapSpriteStatus
         Queued,
         Failed,
         FileCache,
-        Atlas
+        Atlas,
+        PendingCache
     };
 
     struct AtlasEntry
@@ -25,6 +27,8 @@ namespace MiniMapSpriteStatus
         // Original capture-space bounds.
         std::array<double, 3> Min{};
         std::array<double, 3> Max{};
+        // Half-open source-canvas crop: X, Y, Width, Height (original 256x256).
+        std::array<uint16_t, 4> Crop{0, 0, 256, 256};
     };
 
     struct Status

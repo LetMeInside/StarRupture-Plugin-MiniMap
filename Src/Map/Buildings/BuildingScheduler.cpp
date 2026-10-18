@@ -1,137 +1,287 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "Map/Buildings/BuildingScheduler.h"
-
-#include "Map/Buildings/BuildingCache.h"
-
+#include "BuildingScheduler.h"
+#include "BuildingAtlas.h"
+#include "BuildingCache.h"
+#include "Map/Map.h"
+#include "plugin_helpers.h"
 #include <array>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 
-namespace MiniMapBuildingSchedulerInternal
-{
-    std::mutex LifecycleMutex;
-}
+namespace MiniMapBuildingSchedulerInternal { std::mutex LifecycleMutex; }
 
 namespace
 {
+    namespace S = MiniMapSpriteStatus;
+    namespace A = MiniMapBuildingAtlas;
+    namespace C = MiniMapBuildingCache;
     constexpr std::array<std::string_view, 0> BlacklistedBlueprints{};
-
-    MiniMapSpriteStatus::Dictionary* g_statuses = nullptr;
+    // One closed handoff may coalesce several completed passes. Backpressure
+    // leaves excess identities undiscovered until a later pass, never orphaned
+    // as PendingCache without a work item. These are NOT native capture queues.
+    constexpr size_t MaximumBatchNames = 256;
+    struct Names { std::array<std::string, MaximumBatchNames> Paths; size_t Count = 0; };
+    Names g_pass, g_completed;
+    struct RetentionRetry
+    {
+        std::string Path;
+        C::Sprite Sprite;
+        uint64_t Serial, NextTick;
+        unsigned Attempts;
+    };
+    // Bounded decoded work payloads, NOT another per-class status dictionary.
+    // Moving into an empty slot needs no allocation, including under memory
+    // pressure that caused Add to fail. Session transitions clear these slots.
+    using RetentionRetries = std::array<std::optional<RetentionRetry>, MaximumBatchNames>;
+    RetentionRetries g_retentionRetries;
+    S::Dictionary* g_statuses = nullptr;
     MiniMapSpriteQueues::SpriteFifo* g_fifo = nullptr;
     MiniMapSpriteQueues::SpriteFeedbackQueue g_feedback;
-    bool g_sessionActive = false;
+    bool g_sessionActive = false, g_passOpen = false, g_serviceBusy = false, g_backpressureReported = false;
+    uint64_t g_serial = 0, g_serviceTick = 0;
+    std::thread::id g_drawThread;
+
+    void Clear(Names& names) noexcept
+    {
+        for (size_t i = 0; i < names.Count; ++i) names.Paths[i].clear();
+        names.Count = 0;
+    }
+    bool Room() noexcept { return g_pass.Count + g_completed.Count < MaximumBatchNames; }
+    bool Admitted(uint64_t serial) noexcept
+    { return g_sessionActive && g_serial == serial && g_statuses && g_fifo && MiniMapMap::GameplayReady(); }
+    struct ServiceGuard
+    {
+        ~ServiceGuard()
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            g_serviceBusy = false;
+        }
+    };
+    void RetainDecoded(const A::Batch& batch, std::string& path, C::Sprite& sprite,
+        uint64_t serial, uint64_t tick, unsigned attempts)
+    {
+        const auto added = A::Add(batch, path, sprite); // No lifecycle lock.
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        if (!Admitted(serial)) return;
+        const auto it = g_statuses->find(path);
+        if (it == g_statuses->end() || it->second.Where != S::Location::FileCache) return;
+        if (added == A::AddResult::Invalid)
+        {
+            it->second.Where = S::Location::Failed;
+            LOG_WARN("MiniMap: cached sprite '%s' has unsupported atlas image/bounds; failed for session", path.c_str());
+        }
+        else if (added == A::AddResult::Unavailable)
+        {
+            // Three Add attempts total, separated by 60 admitted service ticks.
+            // Keep the decoded bytes: retrying retention must not reread/decode.
+            if (attempts >= 3)
+            {
+                LOG_WARN("MiniMap: atlas retention retry limit reached for '%s'; FileCache/fallback preserved for session", path.c_str());
+                return;
+            }
+            for (auto& slot : g_retentionRetries)
+                if (!slot)
+                {
+                    constexpr auto maximum = (std::numeric_limits<uint64_t>::max)();
+                    const auto next = tick > maximum - 60 ? maximum : tick + 60;
+                    LOG_WARN("MiniMap: atlas retention unavailable for '%s'; decoded retry scheduled (attempt %u/3)",
+                        path.c_str(), attempts);
+                    slot.emplace(RetentionRetry{std::move(path), std::move(sprite), serial, next, attempts});
+                    return;
+                }
+            // Storage pressure is explicit and non-spinning. This valid cache
+            // stays FileCache/fallback, never Failed or a capture request.
+            LOG_WARN("MiniMap: decoded retention retry storage full (256) for '%s'; FileCache/fallback preserved for session", path.c_str());
+        }
+        // Retained: Core owns the crop. CapacityDeferred: legitimate fallback.
+        // Neither outcome leaves a decoded retry or schedules another read.
+    }
+}
+
+namespace MiniMapBuildingSchedulerInternal
+{
+    uint64_t ActiveSession() noexcept { return g_sessionActive ? g_serial : 0; }
+    void StopSession() noexcept
+    {
+        g_sessionActive = false;
+        g_passOpen = false;
+        Clear(g_pass); Clear(g_completed);
+        for (auto& retry : g_retentionRetries) retry.reset();
+    }
 }
 
 namespace MiniMapBuildingScheduler
 {
-    void Initialize(
-        MiniMapSpriteStatus::Dictionary& statuses,
-        MiniMapSpriteQueues::SpriteFifo& fifo)
+    void Initialize(S::Dictionary& statuses, MiniMapSpriteQueues::SpriteFifo& fifo)
     {
-        g_sessionActive = false;
-        g_statuses = &statuses;
-        g_fifo = &fifo;
+        MiniMapBuildingSchedulerInternal::StopSession();
+        g_statuses = &statuses; g_fifo = &fifo;
     }
-
-    MiniMapSpriteQueues::SpriteFeedbackQueue& FeedbackQueue() noexcept
-    {
-        return g_feedback;
-    }
-
+    MiniMapSpriteQueues::SpriteFeedbackQueue& FeedbackQueue() noexcept { return g_feedback; }
     void InitializeSession()
     {
         if (!g_statuses || !g_fifo || g_sessionActive) return;
-
-        std::string queuedBlueprint;
-        while (g_fifo->Remove(queuedBlueprint))
-        {
-        }
-
+        if (g_serial == (std::numeric_limits<uint64_t>::max)())
+        { LOG_ERROR("MiniMap: building scheduler session serial exhausted; admission closed"); return; }
+        std::string path;
+        while (g_fifo->Remove(path)) {}
         MiniMapSpriteQueues::Feedback feedback;
-        while (g_feedback.Remove(feedback))
-        {
-        }
-
+        while (g_feedback.Remove(feedback)) {}
         g_statuses->clear();
-        for (const std::string_view blueprint : BlacklistedBlueprints)
-        {
-            g_statuses->try_emplace(std::string(blueprint), MiniMapSpriteStatus::Location::Failed);
-        }
+        Clear(g_pass); Clear(g_completed); g_passOpen = false;
+        for (const auto blueprint : BlacklistedBlueprints)
+            g_statuses->try_emplace(std::string(blueprint), S::Location::Failed);
+        ++g_serial; g_serviceTick = 0; g_backpressureReported = false;
+        // Do not reset serviceBusy: a canceled unlocked service may still own
+        // CPU work from the prior session. Its guard will release the reservation.
         g_sessionActive = true;
     }
-
     void StartDraw()
     {
-        if (!g_sessionActive || !g_statuses || !g_fifo) return;
-
+        if (!g_sessionActive || !g_statuses || !g_fifo || g_passOpen) return;
+        g_passOpen = true; g_drawThread = std::this_thread::get_id();
         MiniMapSpriteQueues::Feedback feedback;
-        while (g_feedback.Remove(feedback))
+        // Leave feedback in its original queue if this handoff is full. A success
+        // can always move its already-owned string into the reserved pass slot.
+        while (Room() && g_feedback.Remove(feedback))
         {
             const auto it = g_statuses->find(feedback.BlueprintPath);
-            if (it == g_statuses->end() || it->second.Where != MiniMapSpriteStatus::Location::Queued)
+            if (it == g_statuses->end() || it->second.Where != S::Location::Queued) continue;
+            if (feedback.Success)
             {
-                continue;
+                g_pass.Paths[g_pass.Count++] = std::move(feedback.BlueprintPath);
+                it->second.Where = S::Location::PendingCache;
             }
-
-            it->second.Where = feedback.Success
-                ? MiniMapSpriteStatus::Location::FileCache
-                : MiniMapSpriteStatus::Location::Failed;
+            else it->second.Where = S::Location::Failed;
         }
     }
-
     void DrawBuilding(const MiniMapBuildingCollector::Record& building)
     {
-        if (!g_sessionActive || !g_statuses || !g_fifo || !building.CanonicalBlueprint || building.CanonicalBlueprint->empty())
+        if (!g_sessionActive || !g_passOpen || g_drawThread != std::this_thread::get_id() ||
+            !building.CanonicalBlueprint || building.CanonicalBlueprint->empty()) return;
+        const auto& path = *building.CanonicalBlueprint;
+        if (g_statuses->find(path) != g_statuses->end()) return;
+        if (!Room())
         {
+            if (!g_backpressureReported) LOG_WARN("MiniMap: building cache handoff full (256); remaining discoveries wait for a later draw pass");
+            g_backpressureReported = true;
             return;
         }
-
-        const std::string& blueprintPath = *building.CanonicalBlueprint;
-        const auto it = g_statuses->find(blueprintPath);
-        if (it != g_statuses->end())
+        try
         {
-            return;
+            // Both allocations precede the nonthrowing transfer into the pass.
+            // Failed allocation leaves this class Unknown and eligible next pass.
+            std::string copy(path);
+            const auto [it, added] = g_statuses->try_emplace(path, S::Location::PendingCache);
+            if (added) g_pass.Paths[g_pass.Count++] = std::move(copy);
         }
-
-        if (MiniMapBuildingCache::Exists(blueprintPath))
-        {
-            g_statuses->try_emplace(blueprintPath, MiniMapSpriteStatus::Location::FileCache);
-            return;
-        }
-
-        g_fifo->Add(blueprintPath);
-        g_statuses->try_emplace(blueprintPath, MiniMapSpriteStatus::Location::Queued);
+        catch (...) { LOG_WARN("MiniMap: building discovery allocation unavailable; class remains eligible for a later pass"); }
     }
-
+    void EndDraw() noexcept
+    {
+        if (!g_passOpen) return;
+        if (g_drawThread != std::this_thread::get_id())
+        { LOG_ERROR("MiniMap: building draw pass must end on its starting UI thread"); return; }
+        // Caller still holds LifecycleMutex. Slots are bounded before discovery;
+        // moving strings cannot allocate. Service cannot observe a partial close.
+        for (size_t i = 0; i < g_pass.Count; ++i)
+            g_completed.Paths[g_completed.Count++] = std::move(g_pass.Paths[i]);
+        g_pass.Count = 0; g_passOpen = false;
+    }
+    void Service()
+    {
+        Names names;
+        RetentionRetries retries;
+        uint64_t serial, tick;
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            if (!Admitted(g_serial) || g_serviceBusy) return;
+            g_serviceBusy = true; serial = g_serial;
+            if (g_serviceTick != (std::numeric_limits<uint64_t>::max)()) ++g_serviceTick;
+            tick = g_serviceTick;
+            names.Count = g_completed.Count;
+            for (size_t i = 0; i < names.Count; ++i) names.Paths[i] = std::move(g_completed.Paths[i]);
+            g_completed.Count = 0;
+            for (size_t i = 0; i < g_retentionRetries.size(); ++i)
+                if (g_retentionRetries[i] && g_retentionRetries[i]->NextTick <= tick)
+                {
+                    retries[i] = std::move(g_retentionRetries[i]);
+                    g_retentionRetries[i].reset();
+                }
+        }
+        ServiceGuard busy;
+        const auto batch = A::BeginBatch(serial);
+        struct Finish
+        {
+            const A::Batch& Batch;
+            uint64_t Tick;
+            ~Finish() { A::EndBatch(Batch, Tick); }
+        } finish{batch, tick};
+        for (auto& retry : retries)
+        {
+            if (!retry) continue;
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                if (!Admitted(serial)) break;
+                if (retry->Serial != serial) continue;
+                const auto it = g_statuses->find(retry->Path);
+                if (it == g_statuses->end() || it->second.Where != S::Location::FileCache) continue;
+            }
+            RetainDecoded(batch, retry->Path, retry->Sprite, serial, tick, retry->Attempts + 1);
+        }
+        for (size_t i = 0; i < names.Count; ++i)
+        {
+            auto& path = names.Paths[i];
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                if (!Admitted(serial)) break;
+                const auto it = g_statuses->find(path);
+                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache) continue;
+            }
+            C::Sprite sprite;
+            const auto result = C::TryLoad(path, sprite); // One read/decode; NO lifecycle lock.
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                if (!Admitted(serial)) break;
+                const auto it = g_statuses->find(path);
+                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache) continue;
+                if (result.Status == C::LoadStatus::Missing)
+                {
+                    try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
+                    catch (...) { it->second.Where = S::Location::Failed; LOG_WARN("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
+                    continue;
+                }
+                if (result.Status != C::LoadStatus::Loaded)
+                {
+                    // Explicit non-spinning policy; I/O errors never enqueue capture.
+                    it->second.Where = S::Location::Failed;
+                    LOG_WARN("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
+                        path.c_str(), unsigned(result.Status), result.Detail, unsigned(result.Error));
+                    continue;
+                }
+                it->second.Where = S::Location::FileCache;
+            }
+            RetainDecoded(batch, path, sprite, serial, tick, 1);
+        }
+        // Finish performs one RepackSubset/transfer at most for ALL loaded names,
+        // or services a bounded pending candidate retry without any cache reread.
+    }
     void EndSession()
     {
-        g_sessionActive = false;
-
-        if (g_fifo)
-        {
-            std::string queuedBlueprint;
-            while (g_fifo->Remove(queuedBlueprint))
-            {
-            }
-        }
-
+        MiniMapBuildingSchedulerInternal::StopSession();
+        if (g_fifo) { std::string path; while (g_fifo->Remove(path)) {} }
         MiniMapSpriteQueues::Feedback feedback;
-        while (g_feedback.Remove(feedback))
-        {
-        }
-
-        if (g_statuses)
-        {
-            g_statuses->clear();
-        }
+        while (g_feedback.Remove(feedback)) {}
+        if (g_statuses) g_statuses->clear();
     }
-
     void Shutdown()
     {
-        EndSession();
-        g_statuses = nullptr;
-        g_fifo = nullptr;
+        EndSession(); g_statuses = nullptr; g_fifo = nullptr;
     }
 }
 

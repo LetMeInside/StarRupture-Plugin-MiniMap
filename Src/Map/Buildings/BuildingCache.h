@@ -29,10 +29,17 @@ namespace MiniMapBuildingCache
     bool BlueprintFileName(const std::string& canonicalBlueprintPath, std::string& fileName);
     bool GetCacheRoot(std::filesystem::path& directory);
     bool Clear();
-    bool Read(const std::string& canonicalBlueprintPath, Sprite& out);
+    enum class LoadStatus { Loaded, Missing, Invalid, IOError, Unavailable };
+    struct LoadResult
+    {
+        LoadStatus Status;
+        const char* Detail; // Static diagnostic text; Error is Win32/HRESULT as appropriate.
+        uint32_t Error = 0;
+    };
+    // One open/read/decode; failures leave out unchanged. No existence precheck.
+    LoadResult TryLoad(const std::string& canonicalBlueprintPath, Sprite& out) noexcept;
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
         uint32_t width, uint32_t height, const SpatialBounds& bounds);
-    bool Exists(const std::string& canonicalBlueprintPath);
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height);
 }

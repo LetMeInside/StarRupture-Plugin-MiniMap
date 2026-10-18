@@ -9,6 +9,7 @@
 #include "Native/ReadbackNativeAdapter.h"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingScheduler.h"
+#include "Map/Buildings/BuildingAtlas.h"
 #include "Map/Buildings/BuildingSpriteRenderer.h"
 #endif
 
@@ -127,18 +128,37 @@ static void SetServicesAdmitted(bool ready)
 }
 static void EndBuildingSession()
 {
-    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-    // Close CPU publication and retire/quarantine native ownership before queues reset.
-    MiniMapBuildingSpriteRenderer::EndSession();
-    MiniMapBuildingScheduler::EndSession();
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        MiniMapBuildingSchedulerInternal::StopSession();
+        MiniMapBuildingSpriteRenderer::EndSession();
+    }
+    // Withdraw under a short internal lock; FreeTexture runs after that lock ends.
+    MiniMapBuildingAtlas::EndSession();
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        MiniMapBuildingScheduler::EndSession();
+    }
+}
+static bool BuildingServiceGameThread() noexcept
+{
+    const auto* api = MiniMapNative::Get();
+    __try { return api && api->player.isGameThread && api->player.isGameThread(); }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
 }
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
     if(!MiniMapMap::GameplayReady())return;
     // Integration lock is outermost; FIFO/feedback locks are acquired only inside
     // it. Renderer functions never reacquire it or invoke scheduler transitions.
-    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-    if(MiniMapMap::GameplayReady())MiniMapBuildingSpriteRenderer::Tick(deltaTime);
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        if(MiniMapMap::GameplayReady())MiniMapBuildingSpriteRenderer::Tick(deltaTime);
+    }
+    // Native progress has priority. Process the entire last completed drawing
+    // batch on this existing GT callback, never while holding LifecycleMutex.
+    if (MiniMapMap::GameplayReady() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
@@ -194,18 +214,24 @@ static void OnExperienceLoadComplete()
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
     bool rendererReady=false;
+    uint64_t buildingSession=0;
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingScheduler::InitializeSession();
-        rendererReady=MiniMapBuildingSpriteRenderer::InitializeSession();
-        if(!rendererReady)
-        {
-            MiniMapBuildingSpriteRenderer::EndSession();
-            MiniMapBuildingScheduler::EndSession();
-        }
+        buildingSession=MiniMapBuildingSchedulerInternal::ActiveSession();
+    }
+    const bool atlasReady=MiniMapBuildingAtlas::InitializeSession(buildingSession);
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        rendererReady=atlasReady && MiniMapBuildingSchedulerInternal::ActiveSession()==buildingSession &&
+            MiniMapBuildingSpriteRenderer::InitializeSession();
     }
     if(!rendererReady)
-    {LOG_ERROR("MiniMap: building renderer session blocked by retained native ownership or missing dependencies; gameplay remains unadmitted");return;}
+    {
+        EndBuildingSession();
+        LOG_ERROR("MiniMap: building renderer/atlas session blocked by retained ownership or missing dependencies; gameplay remains unadmitted");
+        return;
+    }
     SetServicesAdmitted(true);
     MiniMapUI::Show();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
@@ -334,6 +360,11 @@ extern "C"
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
             MiniMapBuildingSpriteRenderer::Initialize(g_buildingSpriteFifo, MiniMapBuildingScheduler::FeedbackQueue());
+        }
+        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, g_self->hooks->ImGuiTextures))
+        {
+            LOG_ERROR("MiniMap: atlas texture interface initialization failed");
+            return false;
         }
         g_self->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
 
@@ -522,7 +553,12 @@ extern "C"
         SetServicesAdmitted(false);
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingSchedulerInternal::StopSession();
             MiniMapBuildingSpriteRenderer::Shutdown();
+        }
+        MiniMapBuildingAtlas::Shutdown();
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             MiniMapBuildingScheduler::Shutdown();
         }
         if(g_self && g_self->hooks && g_self->hooks->Engine)

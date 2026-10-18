@@ -301,6 +301,11 @@ namespace MiniMapBuildingVisuals
             MiniMapMap::GameplayReady() &&
             currentSession &&
             currentSession->Generation == snapshot->Generation;
+        struct FinishDraw
+        {
+            bool Admitted;
+            ~FinishDraw() { if (Admitted) MiniMapBuildingScheduler::EndDraw(); }
+        } finishDraw{schedulerValid}; // Ends before the outer lifecycle lock, including unwinding.
         if (schedulerValid)
             MiniMapBuildingScheduler::StartDraw();
         auto first=snapshot->DrawOrder.begin();

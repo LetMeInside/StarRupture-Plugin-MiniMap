@@ -11,6 +11,9 @@
 namespace MiniMapBuildingSchedulerInternal
 {
     extern std::mutex LifecycleMutex;
+    // Caller holds LifecycleMutex. Zero means admission is closed.
+    uint64_t ActiveSession() noexcept;
+    void StopSession() noexcept;
 }
 
 namespace MiniMapBuildingScheduler
@@ -28,6 +31,12 @@ namespace MiniMapBuildingScheduler
 
     void DrawBuilding(
         const MiniMapBuildingCollector::Record& building);
+
+    void EndDraw() noexcept;
+
+    // Existing admitted game-thread tick only; acquires its own short lock
+    // scopes and performs whole completed batches outside LifecycleMutex.
+    void Service();
 
     void EndSession();
 

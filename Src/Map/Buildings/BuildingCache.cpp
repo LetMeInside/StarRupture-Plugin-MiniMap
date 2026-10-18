@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <string_view>
 
 #pragma comment(lib, "windowscodecs.lib")
@@ -115,12 +116,14 @@ namespace
         return true;
     }
 
-    bool Decode(const std::vector<uint8_t>& png, uint32_t expectedWidth, uint32_t expectedHeight,
+    MiniMapBuildingCache::LoadResult Decode(const std::vector<uint8_t>& png, uint32_t expectedWidth, uint32_t expectedHeight,
         std::vector<uint8_t>& rgba)
     {
-        if (png.empty() || png.size() > kMaxPngBytes || png.size() > (std::numeric_limits<UINT>::max)()) return false;
+        using S = MiniMapBuildingCache::LoadStatus;
+        if (png.empty() || png.size() > kMaxPngBytes || png.size() > (std::numeric_limits<UINT>::max)())
+            return {S::Invalid, "PNG length"};
         const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (FAILED(init) && init != RPC_E_CHANGED_MODE) return false;
+        if (FAILED(init) && init != RPC_E_CHANGED_MODE) return {S::Unavailable, "COM initialization", uint32_t(init)};
         struct ComScope { bool Own; ~ComScope() { if (Own) CoUninitialize(); } } scope{SUCCEEDED(init)};
         using Microsoft::WRL::ComPtr;
         ComPtr<IWICImagingFactory> factory;
@@ -128,43 +131,64 @@ namespace
         ComPtr<IWICBitmapDecoder> decoder;
         ComPtr<IWICBitmapFrameDecode> frame;
         ComPtr<IWICFormatConverter> converter;
-        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
-            FAILED(factory->CreateStream(&stream)) ||
-            FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(png.data()), static_cast<DWORD>(png.size()))) ||
-            FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)) ||
-            FAILED(decoder->GetFrame(0, &frame))) return false;
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+        if (FAILED(hr)) return {S::Unavailable, "WIC factory", uint32_t(hr)};
+        if (FAILED(hr = factory->CreateStream(&stream)) ||
+            FAILED(hr = stream->InitializeFromMemory(const_cast<BYTE*>(png.data()), static_cast<DWORD>(png.size()))))
+            return {S::Unavailable, "WIC memory stream", uint32_t(hr)};
+        if (FAILED(hr = factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)) ||
+            FAILED(hr = decoder->GetFrame(0, &frame))) return {S::Invalid, "PNG decoder/frame", uint32_t(hr)};
         UINT width = 0, height = 0;
-        if (FAILED(frame->GetSize(&width, &height)) || width != expectedWidth || height != expectedHeight) return false;
-        if (FAILED(factory->CreateFormatConverter(&converter)) ||
-            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone,
-                nullptr, 0, WICBitmapPaletteTypeCustom))) return false;
+        if (FAILED(hr = frame->GetSize(&width, &height)) || width != expectedWidth || height != expectedHeight)
+            return {S::Invalid, "PNG dimensions", uint32_t(hr)};
+        if (FAILED(hr = factory->CreateFormatConverter(&converter))) return {S::Unavailable, "WIC converter", uint32_t(hr)};
+        if (FAILED(hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone,
+                nullptr, 0, WICBitmapPaletteTypeCustom))) return {S::Invalid, "PNG pixel format", uint32_t(hr)};
         const size_t bytes = size_t(width) * height * 4;
-        if (bytes > kMaxRgbaBytes) return false;
+        if (bytes > kMaxRgbaBytes) return {S::Invalid, "RGBA length"};
         rgba.resize(bytes);
-        return SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(bytes), rgba.data()));
+        hr = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(bytes), rgba.data());
+        return SUCCEEDED(hr) ? MiniMapBuildingCache::LoadResult{S::Loaded, "decoded"}
+            : MiniMapBuildingCache::LoadResult{S::Invalid, "PNG pixels", uint32_t(hr)};
     }
 
-    bool Load(const std::filesystem::path& path, MiniMapBuildingCache::Sprite& out)
+    MiniMapBuildingCache::LoadResult Load(const std::filesystem::path& path, MiniMapBuildingCache::Sprite& out)
     {
-        out = {};
-        std::error_code ec;
-        const uintmax_t size = std::filesystem::file_size(path, ec);
-        if (ec || size < sizeof(SpriteHeader) || size > sizeof(SpriteHeader) + kMaxPngBytes) return false;
-        std::ifstream stream(path, std::ios::binary);
+        using S = MiniMapBuildingCache::LoadStatus;
+        // Classify the actual open result, including races with deletion/replacement.
+        const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+        {
+            const DWORD error = GetLastError();
+            return {(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) ? S::Missing : S::IOError,
+                "open sprite", error};
+        }
+        struct FileScope { HANDLE Handle; ~FileScope() { CloseHandle(Handle); } } file{handle};
+        LARGE_INTEGER length{};
+        if (!GetFileSizeEx(handle, &length)) return {S::IOError, "sprite size", GetLastError()};
+        if (length.QuadPart < LONGLONG(sizeof(SpriteHeader)) ||
+            uint64_t(length.QuadPart) > sizeof(SpriteHeader) + uint64_t(kMaxPngBytes))
+            return {S::Invalid, "sprite length"};
         SpriteHeader header{};
-        stream.read(reinterpret_cast<char*>(&header), sizeof(header));
-        if (!stream || std::memcmp(header.Magic, kMagic, sizeof(kMagic)) || header.Version != kVersion ||
+        DWORD read = 0;
+        if (!ReadFile(handle, &header, DWORD(sizeof(header)), &read, nullptr)) return {S::IOError, "sprite header read", GetLastError()};
+        if (read != sizeof(header) || std::memcmp(header.Magic, kMagic, sizeof(kMagic)) || header.Version != kVersion ||
             !header.Width || !header.Height || header.Width > kMaxDimension || header.Height > kMaxDimension ||
             uint64_t(header.Width) * header.Height * 4 > kMaxRgbaBytes || !header.PngBytes ||
-            header.PngBytes > kMaxPngBytes || size != sizeof(SpriteHeader) + uint64_t(header.PngBytes)) return false;
-        MiniMapBuildingCache::SpatialBounds bounds;
-        std::copy_n(header.Min, 3, bounds.Min.begin());
-        std::copy_n(header.Max, 3, bounds.Max.begin());
+            header.PngBytes > kMaxPngBytes || uint64_t(length.QuadPart) != sizeof(SpriteHeader) + uint64_t(header.PngBytes))
+            return {S::Invalid, "sprite header/format"};
         std::vector<uint8_t> png(header.PngBytes);
-        stream.read(reinterpret_cast<char*>(png.data()), static_cast<std::streamsize>(png.size()));
-        if (!stream || !Decode(png, header.Width, header.Height, out.Rgba)) { out = {}; return false; }
-        out.Width = header.Width; out.Height = header.Height; out.Bounds = bounds;
-        return true;
+        if (!ReadFile(handle, png.data(), header.PngBytes, &read, nullptr)) return {S::IOError, "sprite payload read", GetLastError()};
+        if (read != header.PngBytes) return {S::Invalid, "truncated sprite payload"};
+        MiniMapBuildingCache::Sprite candidate;
+        const auto result = Decode(png, header.Width, header.Height, candidate.Rgba);
+        if (result.Status != S::Loaded) return result;
+        candidate.Width = header.Width; candidate.Height = header.Height;
+        std::copy_n(header.Min, 3, candidate.Bounds.Min.begin());
+        std::copy_n(header.Max, 3, candidate.Bounds.Max.begin());
+        out = std::move(candidate);
+        return {S::Loaded, "loaded"};
     }
 }
 
@@ -206,11 +230,20 @@ namespace MiniMapBuildingCache
         return !error;
     }
 
-    bool Read(const std::string& canonicalBlueprintPath, Sprite& out)
+    LoadResult TryLoad(const std::string& canonicalBlueprintPath, Sprite& out) noexcept
     {
-        std::filesystem::path path;
-        if (!Paths(canonicalBlueprintPath, path, nullptr)) { out = {}; return false; }
-        return Load(path, out);
+        try
+        {
+            std::string name;
+            if (!BlueprintFileName(canonicalBlueprintPath, name)) return {LoadStatus::Invalid, "canonical cache filename"};
+            std::filesystem::path root;
+            if (!GetCacheRoot(root)) return {LoadStatus::Unavailable, "cache namespace unavailable"};
+            return Load(root / std::filesystem::path(std::wstring(name.begin(), name.end())), out);
+        }
+        catch (const std::bad_alloc&) { return {LoadStatus::Unavailable, "cache allocation failure"}; }
+        catch (const std::filesystem::filesystem_error& error)
+        { return {LoadStatus::IOError, "cache filesystem exception", uint32_t(error.code().value())}; }
+        catch (...) { return {LoadStatus::Unavailable, "cache read exception"}; }
     }
 
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
@@ -256,14 +289,6 @@ namespace MiniMapBuildingCache
         if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         { std::filesystem::remove(temporary, ec); return false; }
         return true;
-    }
-
-    bool Exists(const std::string& canonicalBlueprintPath)
-    {
-        std::filesystem::path path;
-        if (!Paths(canonicalBlueprintPath, path, nullptr)) return false;
-        Sprite sprite;
-        return Load(path, sprite);
     }
 
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
