@@ -19,6 +19,9 @@ namespace MiniMapBuildingScheduler
         MiniMapSpriteStatus::Dictionary& statuses,
         MiniMapSpriteQueues::SpriteFifo& fifo);
 
+    // Scheduler-owned queue; renderer borrows it for terminal request feedback.
+    MiniMapSpriteQueues::SpriteFeedbackQueue& FeedbackQueue() noexcept;
+
     void InitializeSession();
 
     void StartDraw();

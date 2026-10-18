@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map/Buildings/BuildingSpriteRenderer.h"
+#include "Map/Buildings/BuildingCache.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
@@ -649,7 +650,9 @@ namespace
         SDK::FVector Center{}, Extent{};
         uint64_t PreparedTick{}, C0Tick{};
         bool CaptureSubmitted = false, Committed = false; // Native lifetime history, including while Retiring.
-        std::vector<uint8_t> Rgba; // Full canvas; retained with Center/Extent for later cache persistence.
+        std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
+        std::optional<bool> FinalResult; // Set once, including write failure; never retry persistence.
+        bool FeedbackSubmitted = false;
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         MiniMapReadbackNative::Job* Job{};
 #endif
@@ -811,6 +814,40 @@ namespace
 #endif
             return owned;
         }
+        // CPU-only completion. Retired/Failed alone never proves native retirement.
+        bool Complete(MiniMapSpriteQueues::SpriteFeedbackQueue& feedback)
+        {
+            if ((Phase != RequestPhase::Retired && Phase != RequestPhase::Failed) || HasNativeOwnership() ||
+                g_nativeWorld.Phase == WorldPhase::Quarantined) return false;
+            if (FeedbackSubmitted) return true;
+            if (!FinalResult.has_value())
+            {
+                FinalResult = false; // Commit the one-time attempt before allocating or writing.
+                try
+                {
+                    std::array<wchar_t, 1025> wide{};
+                    MiniMapBuildingCache::SpatialBounds bounds{
+                        {Center.X - Extent.X, Center.Y - Extent.Y, Center.Z - Extent.Z},
+                        {Center.X + Extent.X, Center.Y + Extent.Y, Center.Z + Extent.Z}};
+                    bool validBounds = true;
+                    for (size_t axis = 0; axis < 3; ++axis)
+                        validBounds &= std::isfinite(bounds.Min[axis]) && std::isfinite(bounds.Max[axis]) &&
+                            bounds.Min[axis] <= bounds.Max[axis];
+                    if (Phase == RequestPhase::Retired && CaptureSubmitted && Committed &&
+                        Path(BlueprintPath, wide) && Rgba.size() == 256 * 256 * 4 && validBounds)
+                        FinalResult = MiniMapBuildingCache::Write(BlueprintPath, Rgba.data(), 256, 256, bounds);
+                }
+                catch (...) {} // CPU/cache failure is terminal, with no remaining native ownership.
+            }
+            try
+            {
+                feedback.Add({BlueprintPath, *FinalResult});
+                FeedbackSubmitted = true;
+            }
+            catch (...) { return false; } // Keep CPU identity/result; retry delivery only, never the write.
+            return true;
+        }
+
         bool DetachCapture()
         {
             if (Capture.State != Ownership::Empty)
@@ -957,7 +994,7 @@ namespace
                 !pixels || !stats || pixels->size() != 256 * 256 * 8 ||
                 !MiniMapCapturePng::Convert(pixels->data(), pixels->size(), 256, 256, 256, 256, image) ||
                 image.Rgba.size() != 256 * 256 * 4 || image.Sanitized || stats->Nonfinite || !stats->Foreground || !stats->Background) return;
-            Rgba = std::move(image.Rgba); // CPU result only; persistence is a later stage.
+            Rgba = std::move(image.Rgba); // Completion may persist only after native retirement.
         }
 #endif
         // Deliberately uncalled by public Tick. One iteration services only this
@@ -1133,21 +1170,39 @@ namespace
     };
 
     MiniMapSpriteQueues::SpriteFifo* g_fifo = nullptr;
+    MiniMapSpriteQueues::SpriteFeedbackQueue* g_feedback = nullptr; // Borrowed scheduler queue, not another queue.
     bool g_sessionActive = false;
     std::optional<ActiveRequest> g_activeRequest;
+
+    // Future game-thread service entry, deliberately uncalled by public Tick.
+    // Session end closes publication before attempting any native retirement.
+    [[maybe_unused]] void ServiceActiveRequest()
+    {
+        if (!g_sessionActive || !g_feedback || !g_activeRequest || !GameThread() ||
+            g_nativeWorld.Phase == WorldPhase::Quarantined) return;
+        auto& request = *g_activeRequest;
+        if (request.Phase == RequestPhase::Failed && request.HasNativeOwnership())
+            request.Retire();
+        else
+            request.Service();
+        if (g_sessionActive && request.Complete(*g_feedback))
+            g_activeRequest.reset(); // World remains owned and ready for the next request.
+    }
 }
 
 namespace MiniMapBuildingSpriteRenderer
 {
-    void Initialize(MiniMapSpriteQueues::SpriteFifo& fifo)
+    void Initialize(MiniMapSpriteQueues::SpriteFifo& fifo, MiniMapSpriteQueues::SpriteFeedbackQueue& feedback)
     {
+        if (g_sessionActive || g_activeRequest) return; // Do not redirect a retained request's feedback.
         g_fifo = &fifo;
+        g_feedback = &feedback;
         g_sessionActive = false;
     }
 
     void InitializeSession()
     {
-        if (!g_fifo || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return;
+        if (!g_fifo || !g_feedback || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return;
         g_sessionActive = true;
     }
 
@@ -1161,7 +1216,7 @@ namespace MiniMapBuildingSpriteRenderer
 
     void EndSession()
     {
-        g_sessionActive = false;
+        g_sessionActive = false; // Cancel CPU publication too: no late cache write or feedback.
         if (g_activeRequest && !g_activeRequest->Retire())
         {
             // No background session-end service. A pending fence/Job preserves
@@ -1178,6 +1233,7 @@ namespace MiniMapBuildingSpriteRenderer
     {
         EndSession();
         g_fifo = nullptr;
+        g_feedback = nullptr;
     }
 }
 

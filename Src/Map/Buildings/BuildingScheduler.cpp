@@ -34,6 +34,11 @@ namespace MiniMapBuildingScheduler
         g_fifo = &fifo;
     }
 
+    MiniMapSpriteQueues::SpriteFeedbackQueue& FeedbackQueue() noexcept
+    {
+        return g_feedback;
+    }
+
     void InitializeSession()
     {
         if (!g_statuses || !g_fifo || g_sessionActive) return;
