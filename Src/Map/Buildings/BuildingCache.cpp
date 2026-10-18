@@ -10,7 +10,6 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -116,13 +115,6 @@ namespace
         return true;
     }
 
-    bool ValidBounds(const MiniMapBuildingCache::SpatialBounds& bounds)
-    {
-        for (size_t i = 0; i != 3; ++i)
-            if (!std::isfinite(bounds.Min[i]) || !std::isfinite(bounds.Max[i]) || bounds.Max[i] <= bounds.Min[i]) return false;
-        return true;
-    }
-
     bool Decode(const std::vector<uint8_t>& png, uint32_t expectedWidth, uint32_t expectedHeight,
         std::vector<uint8_t>& rgba)
     {
@@ -168,7 +160,6 @@ namespace
         MiniMapBuildingCache::SpatialBounds bounds;
         std::copy_n(header.Min, 3, bounds.Min.begin());
         std::copy_n(header.Max, 3, bounds.Max.begin());
-        if (!ValidBounds(bounds)) return false;
         std::vector<uint8_t> png(header.PngBytes);
         stream.read(reinterpret_cast<char*>(png.data()), static_cast<std::streamsize>(png.size()));
         if (!stream || !Decode(png, header.Width, header.Height, out.Rgba)) { out = {}; return false; }
@@ -226,7 +217,7 @@ namespace MiniMapBuildingCache
         uint32_t width, uint32_t height, const SpatialBounds& bounds)
     {
         if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
-            uint64_t(width) * height * 4 > kMaxRgbaBytes || !ValidBounds(bounds)) return false;
+            uint64_t(width) * height * 4 > kMaxRgbaBytes) return false;
         std::filesystem::path path, diagnostic;
         if (!Paths(canonicalBlueprintPath, path, &diagnostic)) return false;
         std::error_code ec;
