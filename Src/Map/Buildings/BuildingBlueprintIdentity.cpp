@@ -20,6 +20,10 @@ namespace
     static_assert(std::is_trivially_copyable_v<decltype(Params::SoftClassReference)>);
     bool g_interrupted = false;
 
+    MiniMapBuildingBlueprintIdentity::Result Rejected(MiniMapBuildingBlueprintIdentity::Issue issue,
+        const char* detail, MiniMapBuildingBlueprintIdentity::Status state = MiniMapBuildingBlueprintIdentity::Status::Unavailable)
+    { return {{}, state, issue, detail}; }
+
     template<class T> bool Read(uintptr_t address, T& value) { return N::ReadMemory(address, &value, sizeof(value)); }
     bool Invoke(IPluginObjectWalker* walker, uintptr_t cdo, uintptr_t function, Params* params) noexcept
     {
@@ -94,15 +98,17 @@ namespace MiniMapBuildingBlueprintIdentity
 {
     Result Resolve(const SDK::UAuActorPlacementData* definition, const SDK::UClass* placementClass, DefinitionIdentity identity)
     {
-        if (g_interrupted || !R::Available()) return {};
+        if (g_interrupted) return Rejected(Issue::ConversionDisabled, "conversion disabled after uncertain native ownership");
+        if (!R::Available()) return {};
         auto* hooks = GetHooks();
         auto* memory = hooks ? hooks->Memory : nullptr;
         auto* walker = hooks ? hooks->ObjectWalker : nullptr;
         auto* engine = hooks ? hooks->Engine : nullptr;
         const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
-        if (!Allocator(memory) || !walker || !walker->InvokeResolvedUFunction || !find) return {};
+        if (!Allocator(memory) || !walker || !walker->InvokeResolvedUFunction || !find)
+            return Rejected(Issue::InvocationPrerequisites, "allocator/invocation/find prerequisites unavailable");
         const auto object = reinterpret_cast<uintptr_t>(definition), placement = reinterpret_cast<uintptr_t>(placementClass);
-        if (!Matches(object, placement, identity)) return {};
+        if (!Matches(object, placement, identity)) return Rejected(Issue::DefinitionIdentity, "definition identity observation/validation failed");
         // Only synchronous temporary roots; no native destructor, cached pointer,
         // audit context or identity registry. Unknown native ownership is leaked
         // conservatively and disables conversion until restart, with a diagnostic.
@@ -116,9 +122,11 @@ namespace MiniMapBuildingBlueprintIdentity
         { const auto value = R::Acquire(path, false, size); if (value) roots[count++] = value; return value; };
         const auto convert = [&]() -> Result
         {
-            if (!keep(placement, sizeof(SDK::UClass)) || !keep(object, sizeof(SDK::UAuActorPlacementData)) || !Matches(object, placement, identity)) return {};
+            if (!keep(placement, sizeof(SDK::UClass)) || !keep(object, sizeof(SDK::UAuActorPlacementData)) || !Matches(object, placement, identity))
+                return Rejected(Issue::RetainDefinition, "definition retention/identity validation failed");
             // Borrowed shallow copy; the retained definition owns subpath storage.
-            if (!Read(object + offsetof(SDK::UAuActorPlacementData, ActorClass), params.SoftClassReference)) return {};
+            if (!Read(object + offsetof(SDK::UAuActorPlacementData, ActorClass), params.SoftClassReference))
+                return Rejected(Issue::SoftClassRead, "ActorClass memory read failed");
             const auto& path = params.SoftClassReference.ObjectID;
             const auto* subpath = path.SubPathString.CStr();
             const auto length = path.SubPathString.Num(), capacity = path.SubPathString.Max();
@@ -126,20 +134,24 @@ namespace MiniMapBuildingBlueprintIdentity
                 length < 0 || capacity < length || capacity > 1024 ||
                 (capacity && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(subpath), size_t(length ? length : 1) * sizeof(*subpath), alignof(decltype(*subpath))) ||
                     (length && subpath[length - 1] != 0))) || length > 1)
-                return {{}, Status::Invalid};
+                return Rejected(Issue::SoftPath, "soft class path structure/subpath rejected", Status::Invalid);
             const auto functionClass = metadata(L"/Script/CoreUObject.Function", sizeof(SDK::UFunction));
             const auto library = metadata(L"/Script/Engine.KismetSystemLibrary", sizeof(SDK::UKismetSystemLibrary));
-            if (!functionClass || !library) return {};
+            if (!functionClass || !library) return Rejected(Issue::ConversionMetadata, "conversion function/library metadata not resident");
             uintptr_t function{}, type{}, outer{}, exec{}, cdo{}; uint32_t flags{}; uint8_t parameters{}; uint16_t bytes{};
-            if (!FindFunction(find, functionClass, library, function)) { interrupted = true; return {{}, Status::Interrupted}; }
+            if (!FindFunction(find, functionClass, library, function))
+            { interrupted = true; return Rejected(Issue::FunctionLookup, "conversion function lookup interrupted", Status::Interrupted); }
             if (!function || !keep(function, sizeof(SDK::UFunction)) || !Read(function + 0x10, type) || type != functionClass ||
                 !Read(function + 0x20, outer) || outer != library ||
                 !Read(function + offsetof(SDK::UFunction, FunctionFlags), flags) || (flags & 0x2400) != 0x2400 ||
                 !Read(function + offsetof(SDK::UFunction, ExecFunction), exec) || !exec ||
-                !Read(function + 0xb4, parameters) || parameters != 2 || !Read(function + 0xb6, bytes) || bytes != sizeof(Params)) return {};
+                !Read(function + 0xb4, parameters) || parameters != 2 || !Read(function + 0xb6, bytes) || bytes != sizeof(Params))
+                return Rejected(Issue::FunctionMetadata, "conversion function identity/signature observation rejected");
             if (!Read(library + offsetof(SDK::UClass, ClassDefaultObject), cdo) || !keep(cdo, sizeof(SDK::UKismetSystemLibrary)) ||
-                !Read(cdo + 0x10, type) || type != library || !Read(cdo + 8, flags) || !(flags & 0x10) || !R::Available()) return {};
-            if (!Invoke(walker, cdo, function, &params)) { interrupted = true; return {{}, Status::Interrupted}; }
+                !Read(cdo + 0x10, type) || type != library || !Read(cdo + 8, flags) || !(flags & 0x10) || !R::Available())
+                return Rejected(Issue::LibraryDefaultObject, "conversion library CDO/admission observation rejected");
+            if (!Invoke(walker, cdo, function, &params))
+            { interrupted = true; return Rejected(Issue::Invocation, "soft class string conversion interrupted", Status::Interrupted); }
             const auto& value = params.ReturnValue;
             const auto* text = value.CStr();
             const auto num = value.Num(), max = value.Max();
@@ -147,25 +159,27 @@ namespace MiniMapBuildingBlueprintIdentity
             // identity, not uncertain ownership of the returned allocation.
             if (num < 0 || max < num || max > 65536 || (max && !text) || (!max && text) ||
                 (num && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(text), size_t(num) * sizeof(wchar_t), alignof(wchar_t)) || text[num - 1] != 0)))
-            { interrupted = true; return {{}, Status::Interrupted}; } // Cannot safely free a malformed returned allocation.
-            if (num <= 1 || num > 1025) return {{}, Status::Invalid};
-            for (int32_t i = 0; i < num - 1; ++i) if (text[i] < 32 || text[i] == 127) return {{}, Status::Invalid};
+            { interrupted = true; return Rejected(Issue::ReturnedAllocation, "returned string allocation malformed/unreadable", Status::Interrupted); } // Cannot safely free a malformed returned allocation.
+            if (num <= 1 || num > 1025) return Rejected(Issue::ReturnedLength, "returned identity empty/overlong", Status::Invalid);
+            for (int32_t i = 0; i < num - 1; ++i) if (text[i] < 32 || text[i] == 127)
+                return Rejected(Issue::ReturnedCharacter, "returned identity contains control characters", Status::Invalid);
             std::array<char, 1025> utf8{};
             const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, num - 1, utf8.data(), 1024, nullptr, nullptr);
-            if (size <= 0 || !Canonical(std::string_view(utf8.data(), size))) return {{}, Status::Invalid};
-            if (!Matches(object, placement, identity)) return {};
+            if (size <= 0 || !Canonical(std::string_view(utf8.data(), size)))
+                return Rejected(Issue::CanonicalPath, "UTF-8 conversion/canonical Blueprint syntax rejected", Status::Invalid);
+            if (!Matches(object, placement, identity)) return Rejected(Issue::DefinitionChanged, "definition identity revalidation failed after conversion");
             try { return {std::make_shared<const std::string>(utf8.data(), size_t(size)), Status::Resolved}; }
-            catch (const std::bad_alloc&) { return {}; } // CPU allocation failure still follows checked native cleanup.
+            catch (const std::bad_alloc&) { return Rejected(Issue::Allocation, "canonical identity CPU allocation failed"); } // CPU allocation failure still follows checked native cleanup.
         };
         auto result = convert();
         if (interrupted || (params.ReturnValue.CStr() && !Free(memory, params.ReturnValue.CStr())))
         {
             g_interrupted = true;
             LOG_ERROR("MiniMap: authored Blueprint identity native invocation/result ownership uncertain; no speculative string release or retry, remaining native roots retained, conversion disabled until restart");
-            return {{}, Status::Interrupted};
+            return result.State == Status::Interrupted ? result : Rejected(Issue::NativeCleanup, "returned string release interrupted", Status::Interrupted);
         }
         for (size_t i = count; i > 0; --i)
-            if (!R::Release(roots[i - 1])) return {{}, Status::Interrupted};
+            if (!R::Release(roots[i - 1])) return Rejected(Issue::NativeCleanup, "temporary native root release failed", Status::Interrupted);
         return result;
     }
 }

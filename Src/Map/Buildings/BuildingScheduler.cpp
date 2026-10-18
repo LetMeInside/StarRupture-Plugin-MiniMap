@@ -17,6 +17,11 @@ namespace MiniMapBuildingSchedulerInternal { std::mutex LifecycleMutex; }
 
 namespace
 {
+    template<class... Args> void SpriteDiagnostic(const char* format, Args... args) noexcept
+    {
+        try { if (auto* self = GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self, format, args...); }
+        catch (...) {} // Diagnostic failures must not change dictionary/FIFO transitions.
+    }
     namespace S = MiniMapSpriteStatus;
     namespace A = MiniMapBuildingAtlas;
     namespace C = MiniMapBuildingCache;
@@ -43,6 +48,7 @@ namespace
     MiniMapSpriteQueues::SpriteFifo* g_fifo = nullptr;
     MiniMapSpriteQueues::SpriteFeedbackQueue g_feedback;
     bool g_sessionActive = false, g_passOpen = false, g_serviceBusy = false, g_backpressureReported = false;
+    bool g_discoveryAllocationReported = false, g_invalidFeedbackReported = false, g_invalidHandoffReported = false;
     uint64_t g_serial = 0, g_serviceTick = 0;
     std::thread::id g_drawThread;
 
@@ -69,11 +75,15 @@ namespace
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         if (!Admitted(serial)) return;
         const auto it = g_statuses->find(path);
-        if (it == g_statuses->end() || it->second.Where != S::Location::FileCache) return;
+        if (it == g_statuses->end() || it->second.Where != S::Location::FileCache)
+        {
+            SpriteDiagnostic("MiniMap: sprite atlas feedback ignored: canonical=%s reason=expected FileCache status missing/changed; retention attempt=%u", path.c_str(), attempts);
+            return;
+        }
         if (added == A::AddResult::Invalid)
         {
             it->second.Where = S::Location::Failed;
-            LOG_WARN("MiniMap: cached sprite '%s' has unsupported atlas image/bounds; failed for session", path.c_str());
+            SpriteDiagnostic("MiniMap: cached sprite '%s' has unsupported atlas image/bounds; failed for session", path.c_str());
         }
         else if (added == A::AddResult::Unavailable)
         {
@@ -81,7 +91,7 @@ namespace
             // Keep the decoded bytes: retrying retention must not reread/decode.
             if (attempts >= 3)
             {
-                LOG_WARN("MiniMap: atlas retention retry limit reached for '%s'; FileCache/fallback preserved for session", path.c_str());
+                SpriteDiagnostic("MiniMap: atlas retention retry limit reached for '%s'; FileCache/fallback preserved for session", path.c_str());
                 return;
             }
             for (auto& slot : g_retentionRetries)
@@ -89,15 +99,17 @@ namespace
                 {
                     constexpr auto maximum = (std::numeric_limits<uint64_t>::max)();
                     const auto next = tick > maximum - 60 ? maximum : tick + 60;
-                    LOG_WARN("MiniMap: atlas retention unavailable for '%s'; decoded retry scheduled (attempt %u/3)",
+                    SpriteDiagnostic("MiniMap: atlas retention unavailable for '%s'; decoded retry scheduled (attempt %u/3)",
                         path.c_str(), attempts);
                     slot.emplace(RetentionRetry{std::move(path), std::move(sprite), serial, next, attempts});
                     return;
                 }
             // Storage pressure is explicit and non-spinning. This valid cache
             // stays FileCache/fallback, never Failed or a capture request.
-            LOG_WARN("MiniMap: decoded retention retry storage full (256) for '%s'; FileCache/fallback preserved for session", path.c_str());
+            SpriteDiagnostic("MiniMap: decoded retention retry storage full (256) for '%s'; FileCache/fallback preserved for session", path.c_str());
         }
+        else if (added == A::AddResult::CapacityDeferred)
+            SpriteDiagnostic("MiniMap: sprite atlas admission deferred: canonical=%s reason=source capacity; FileCache/fallback preserved, no recapture", path.c_str());
         // Retained: Core owns the crop. CapacityDeferred: legitimate fallback.
         // Neither outcome leaves a decoded retry or schedules another read.
     }
@@ -110,6 +122,7 @@ namespace MiniMapBuildingSchedulerInternal
     {
         g_sessionActive = false;
         g_passOpen = false;
+        g_discoveryAllocationReported = g_invalidFeedbackReported = g_invalidHandoffReported = false;
         Clear(g_pass); Clear(g_completed);
         for (auto& retry : g_retentionRetries) retry.reset();
     }
@@ -137,6 +150,7 @@ namespace MiniMapBuildingScheduler
         for (const auto blueprint : BlacklistedBlueprints)
             g_statuses->try_emplace(std::string(blueprint), S::Location::Failed);
         ++g_serial; g_serviceTick = 0; g_backpressureReported = false;
+        g_discoveryAllocationReported = g_invalidFeedbackReported = g_invalidHandoffReported = false;
         // Do not reset serviceBusy: a canceled unlocked service may still own
         // CPU work from the prior session. Its guard will release the reservation.
         g_sessionActive = true;
@@ -151,13 +165,25 @@ namespace MiniMapBuildingScheduler
         while (Room() && g_feedback.Remove(feedback))
         {
             const auto it = g_statuses->find(feedback.BlueprintPath);
-            if (it == g_statuses->end() || it->second.Where != S::Location::Queued) continue;
+            if (it == g_statuses->end() || it->second.Where != S::Location::Queued)
+            {
+                if (!g_invalidFeedbackReported)
+                {
+                    g_invalidFeedbackReported = true;
+                    SpriteDiagnostic("MiniMap: sprite capture feedback ignored: canonical=%s reason=expected Queued status missing/changed; further invalid feedback diagnostics suppressed for session", feedback.BlueprintPath.c_str());
+                }
+                continue;
+            }
             if (feedback.Success)
             {
                 g_pass.Paths[g_pass.Count++] = std::move(feedback.BlueprintPath);
                 it->second.Where = S::Location::PendingCache;
             }
-            else it->second.Where = S::Location::Failed;
+            else
+            {
+                it->second.Where = S::Location::Failed;
+                SpriteDiagnostic("MiniMap: sprite marked Failed: canonical=%s reason=unsuccessful capture/cache feedback; no rediscovery retry this session; see request rejection/persistence diagnostic", feedback.BlueprintPath.c_str());
+            }
         }
     }
     void DrawBuilding(const MiniMapBuildingCollector::Record& building)
@@ -168,7 +194,7 @@ namespace MiniMapBuildingScheduler
         if (g_statuses->find(path) != g_statuses->end()) return;
         if (!Room())
         {
-            if (!g_backpressureReported) LOG_WARN("MiniMap: building cache handoff full (256); remaining discoveries wait for a later draw pass");
+            if (!g_backpressureReported) SpriteDiagnostic("MiniMap: building cache handoff full (256); remaining discoveries wait for a later draw pass");
             g_backpressureReported = true;
             return;
         }
@@ -180,7 +206,14 @@ namespace MiniMapBuildingScheduler
             const auto [it, added] = g_statuses->try_emplace(path, S::Location::PendingCache);
             if (added) g_pass.Paths[g_pass.Count++] = std::move(copy);
         }
-        catch (...) { LOG_WARN("MiniMap: building discovery allocation unavailable; class remains eligible for a later pass"); }
+        catch (...)
+        {
+            if (!g_discoveryAllocationReported)
+            {
+                g_discoveryAllocationReported = true;
+                SpriteDiagnostic("MiniMap: building discovery allocation unavailable: canonical=%s; class remains eligible for a later pass; further allocation diagnostics suppressed for session", path.c_str());
+            }
+        }
     }
     void EndDraw() noexcept
     {
@@ -241,7 +274,15 @@ namespace MiniMapBuildingScheduler
                 std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
                 if (!Admitted(serial)) break;
                 const auto it = g_statuses->find(path);
-                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache) continue;
+                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
+                {
+                    if (!g_invalidHandoffReported)
+                    {
+                        g_invalidHandoffReported = true;
+                        SpriteDiagnostic("MiniMap: sprite completed-pass item ignored: canonical=%s reason=expected PendingCache status missing/changed; further invalid handoff diagnostics suppressed for session", path.c_str());
+                    }
+                    continue;
+                }
             }
             C::Sprite sprite;
             const auto result = C::TryLoad(path, sprite); // One read/decode; NO lifecycle lock.
@@ -249,18 +290,26 @@ namespace MiniMapBuildingScheduler
                 std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
                 if (!Admitted(serial)) break;
                 const auto it = g_statuses->find(path);
-                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache) continue;
+                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
+                {
+                    if (!g_invalidHandoffReported)
+                    {
+                        g_invalidHandoffReported = true;
+                        SpriteDiagnostic("MiniMap: sprite cache result ignored: canonical=%s reason=expected PendingCache status missing/changed after read; further invalid handoff diagnostics suppressed for session", path.c_str());
+                    }
+                    continue;
+                }
                 if (result.Status == C::LoadStatus::Missing)
                 {
                     try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
-                    catch (...) { it->second.Where = S::Location::Failed; LOG_WARN("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
+                    catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
                     continue;
                 }
                 if (result.Status != C::LoadStatus::Loaded)
                 {
                     // Explicit non-spinning policy; I/O errors never enqueue capture.
                     it->second.Where = S::Location::Failed;
-                    LOG_WARN("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
+                    SpriteDiagnostic("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
                         path.c_str(), unsigned(result.Status), result.Detail, unsigned(result.Error));
                     continue;
                 }

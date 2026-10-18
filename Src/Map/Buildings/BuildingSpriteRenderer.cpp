@@ -951,6 +951,34 @@ namespace
         std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
         std::optional<bool> FinalResult; // Set once, including write failure; never retry persistence.
         bool FeedbackSubmitted = false;
+        enum class WaitReason { AdmissionGC, PreparationAdmission, ReadbackPrerequisite,
+            GeneratedMetadata, ActorMetadata, CaptureMetadata, TargetMetadata, FindPrerequisite,
+            GeneratedClass, Fence, ReadbackCompletion, RetirementReadback, Feedback,
+            ApiSpawn, ApiFlags, ApiRegister, ApiUnregister, ApiDestroyComponent, ApiDestroyActor,
+            ApiInitializeTarget, ApiTargetResource, ApiFenceConstruct, ApiFenceBegin, ApiFencePoll, ApiFenceDestroy };
+        static_assert(unsigned(WaitReason::ApiFenceDestroy) < 32);
+        uint32_t ReportedWaits = 0; // At most one message per reason for this request.
+        bool FailureReported = false; // No diagnostic pointers survive their observation.
+        void Wait(WaitReason reason, const char* detail) noexcept
+        {
+            const auto bit = uint32_t(1) << unsigned(reason);
+            if (ReportedWaits & bit) return;
+            ReportedWaits |= bit;
+            Diagnostic("MiniMap: sprite request waiting: canonical=%s requestPhase=%u reason=%s; active FIFO slot retained, no skip/requeue",
+                BlueprintPath.c_str(), unsigned(Phase), detail);
+        }
+        template<class... Args> static void Diagnostic(const char* format, Args... args) noexcept
+        {
+            try { if (auto* self = GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self, format, args...); }
+            catch (...) {} // Reporting cannot affect native request progression.
+        }
+        void Rejected(const char* reason) noexcept
+        {
+            if (FailureReported) return;
+            FailureReported = true;
+            Diagnostic("MiniMap: sprite request rejected: canonical=%s requestPhase=%u reason=%s; terminal publication failure, native retirement still required",
+                BlueprintPath.c_str(), unsigned(Phase), reason);
+        }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         MiniMapReadbackNative::Job* Job{};
 #endif
@@ -982,7 +1010,12 @@ namespace
         };
 
         void Quarantine(const char* reason)
-        { Phase = RequestPhase::Quarantined; g_nativeWorld.Quarantine(reason); }
+        {
+            if (Phase != RequestPhase::Quarantined)
+                Diagnostic("MiniMap: sprite request quarantine: canonical=%s requestPhase=%u reason=%s; native ownership retained",
+                    BlueprintPath.c_str(), unsigned(Phase), reason);
+            Phase = RequestPhase::Quarantined; g_nativeWorld.Quarantine(reason);
+        }
         bool Ready(ReadinessDiagnostic* diagnostic = nullptr)
         {
             if (g_nativeWorld.Phase != WorldPhase::Ready)
@@ -1010,6 +1043,7 @@ namespace
             if (Ready(&diagnostic)) return true;
             if (diagnostic.TransientGC)
             {
+                Wait(WaitReason::AdmissionGC, diagnostic.Detail);
                 if (gcDeferred) *gcDeferred = true;
                 return false;
             }
@@ -1030,7 +1064,11 @@ namespace
         }
         bool Call(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr)
         {
-            if (Ready() && ResourceCall(operation, object, argument, result)) return true;
+            const bool admitted = Ready();
+            if (admitted && ResourceCall(operation, object, argument, result)) return true;
+            Diagnostic("MiniMap: sprite native operation failed: canonical=%s requestPhase=%u operation=%u C0Submitted=%u C10Committed=%u reason=%s",
+                BlueprintPath.c_str(), unsigned(Phase), unsigned(operation), unsigned(CaptureSubmitted), unsigned(Committed),
+                admitted ? "native operation returned failure/interrupted" : "Ready admission failed; operation not invoked");
             Quarantine("request native operation interrupted or world ownership changed"); return false;
         }
         bool ReleaseFence()
@@ -1052,7 +1090,7 @@ namespace
             auto* engine = hooks ? hooks->Engine : nullptr;
             const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
             uintptr_t object{};
-            if (!find) return 0;
+            if (!find) { Wait(WaitReason::FindPrerequisite, "resident object lookup address unavailable"); return 0; }
             if (!Ready() || !FindResident(find, filter, path, exact, object))
                 Quarantine("request resident lookup interrupted or world changed");
             return object;
@@ -1065,7 +1103,18 @@ namespace
         bool ClassMetadata(const wchar_t* path, MetadataId id, size_t expectedSize)
         {
             const auto object = Lookup(path, g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits, true);
-            if (Phase == RequestPhase::Quarantined || !object) return false;
+            if (Phase == RequestPhase::Quarantined || !object)
+            {
+                if (Phase != RequestPhase::Quarantined)
+                {
+                    const auto reason = id == Generated ? WaitReason::GeneratedMetadata : id == ActorType ? WaitReason::ActorMetadata :
+                        id == CaptureType ? WaitReason::CaptureMetadata : WaitReason::TargetMetadata;
+                    Wait(reason, id == Generated ? "BlueprintGeneratedClass metadata lookup returned no object" : id == ActorType ?
+                        "Actor metadata lookup returned no object" : id == CaptureType ? "SceneCaptureComponent2D metadata lookup returned no object" :
+                        "TextureRenderTarget2D metadata lookup returned no object");
+                }
+                return false;
+            }
             ObjectIdentity identity; uintptr_t type{}; int32_t size{};
             if (!g_nativeWorld.Identify(object, identity, sizeof(SDK::UClass)) || !Read(object + 0x10, type) ||
                 type != g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits ||
@@ -1170,15 +1219,18 @@ namespace
                     if (Phase == RequestPhase::Retired && CaptureSubmitted && Committed &&
                         Path(BlueprintPath, wide) && Rgba.size() == 256 * 256 * 4 && validBounds)
                         FinalResult = MiniMapBuildingCache::Write(BlueprintPath, Rgba.data(), 256, 256, bounds);
+                    else if (!FailureReported)
+                        Rejected(Rgba.size() != 256 * 256 * 4 ? "capture produced no acceptable 256x256 RGBA result" :
+                            !validBounds ? "cache publication bounds nonfinite/reversed" : "cache publication phase/submission/path prerequisites not satisfied");
                 }
-                catch (...) {} // CPU/cache failure is terminal, with no remaining native ownership.
+                catch (...) { Rejected("CPU/cache exception during final publication"); } // No remaining native ownership.
             }
             try
             {
                 feedback.Add({BlueprintPath, *FinalResult});
                 FeedbackSubmitted = true;
             }
-            catch (...) { return false; } // Keep CPU identity/result; retry delivery only, never the write.
+            catch (...) { Wait(WaitReason::Feedback, "feedback delivery allocation/queue exception; result retained without another write"); return false; }
             return true;
         }
 
@@ -1233,7 +1285,11 @@ namespace
                 (Fence.GetState() != FenceState::Inserted && Fence.GetState() != FenceState::Complete))
             { Quarantine("post-capture retirement state invalid"); return false; }
             FenceOperations operations{*this};
-            if (!Fence.Poll(operations)) return false; // Nonblocking; faults quarantine through operations.
+            if (!Fence.Poll(operations))
+            {
+                if (Phase != RequestPhase::Quarantined) Wait(WaitReason::Fence, "retirement fence not complete");
+                return false; // Nonblocking; faults quarantine through operations.
+            }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (Job)
             {
@@ -1251,7 +1307,8 @@ namespace
                     const auto report = MiniMapReadbackNative::Inspect(Job);
                     if (report.Quarantined || report.Enqueue == MiniMapCaptureRetirement::EnqueueState::Uncertain)
                     { Quarantine("readback ownership uncertain during retirement"); return false; }
-                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding) return false;
+                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding)
+                    { Wait(WaitReason::RetirementReadback, "readback cleanup/callables/native work still outstanding during retirement"); return false; }
                     if (report.Result == MiniMapReadbackNative::Outcome::Pending)
                     { Quarantine("readback retirement lacks a terminal outcome"); return false; }
                     // The adapter additionally verifies that no readback or RHI
@@ -1293,8 +1350,8 @@ namespace
 #endif
             return ReleaseFence() && RetireObjects();
         }
-        void Fail()
-        { Phase = RequestPhase::Failed; Retire(); }
+        void Fail(const char* reason)
+        { Rejected(reason); Phase = RequestPhase::Failed; Retire(); }
 
         bool CaptureState()
         {
@@ -1324,11 +1381,21 @@ namespace
             const auto* stats = MiniMapReadbackNative::FloatStats(Job);
             MiniMapCapturePng::Image image;
             // FloatPixels is packed by the adapter, independent of staging pitch.
-            if (!report.HasPixels || !report.NativeEnqueueEverInvoked ||
-                report.Enqueue != MiniMapCaptureRetirement::EnqueueState::ReadbackCompleted || (report.Visited & required) != required ||
-                !pixels || !stats || pixels->size() != 256 * 256 * 8 ||
-                !MiniMapCapturePng::Convert(pixels->data(), pixels->size(), 256, 256, 256, 256, image) ||
-                image.Rgba.size() != 256 * 256 * 4 || image.Sanitized || stats->Nonfinite || !stats->Foreground || !stats->Background) return;
+            // Same predicates and short-circuit order; no extra pixel pass or native observation.
+            const char* rejected = nullptr;
+            if (!report.HasPixels) rejected = "readback report has no pixels";
+            else if (!report.NativeEnqueueEverInvoked) rejected = "readback native enqueue was never invoked";
+            else if (report.Enqueue != MiniMapCaptureRetirement::EnqueueState::ReadbackCompleted) rejected = "readback enqueue state is not completed";
+            else if ((report.Visited & required) != required) rejected = "required readback verification phases not visited";
+            else if (!pixels || !stats) rejected = "readback pixel buffer/statistics unavailable";
+            else if (pixels->size() != 256 * 256 * 8) rejected = "unexpected packed 256x256 float RGBA byte length";
+            else if (!MiniMapCapturePng::Convert(pixels->data(), pixels->size(), 256, 256, 256, 256, image)) rejected = "RGBA pixel conversion failed";
+            else if (image.Rgba.size() != 256 * 256 * 4) rejected = "unexpected converted 256x256 RGBA byte length";
+            else if (image.Sanitized) rejected = "converted pixels required sanitization";
+            else if (stats->Nonfinite) rejected = "readback contains nonfinite pixel data";
+            else if (!stats->Foreground) rejected = "readback has no foreground pixels";
+            else if (!stats->Background) rejected = "readback has no background pixels";
+            if (rejected) { Rejected(rejected); return; }
             Rgba = std::move(image.Rgba); // Completion may persist only after native retirement.
         }
 #endif
@@ -1375,11 +1442,13 @@ namespace
                     const auto report = MiniMapReadbackNative::Inspect(Job);
                     if (report.Quarantined || report.Enqueue == MiniMapCaptureRetirement::EnqueueState::Uncertain)
                     {
-                        if (MiniMapReadbackNative::ExternalRejectedWithoutReadback(Job)) Retire();
+                        if (MiniMapReadbackNative::ExternalRejectedWithoutReadback(Job))
+                        { Rejected(report.Failure ? report.Failure : "external readback rejected without submission"); Retire(); }
                         else Quarantine("readback submission or native ownership uncertain");
                         return;
                     }
-                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding) return;
+                    if (report.Current != MiniMapReadbackNative::Phase::CleanupComplete || report.Callables || report.Outstanding)
+                    { Wait(WaitReason::ReadbackCompletion, "readback cleanup/callables/native work still outstanding"); return; }
                     if (report.Result == MiniMapReadbackNative::Outcome::Pending)
                     { Quarantine("readback cleanup completed without a terminal outcome"); return; }
                     if (report.Result == MiniMapReadbackNative::Outcome::Verified)
@@ -1387,8 +1456,9 @@ namespace
                         // Allocation/conversion failure is a CPU result failure,
                         // not uncertain GPU ownership: still retire native work.
                         try { ConvertReadback(report); }
-                        catch (...) { Rgba.clear(); }
+                        catch (...) { Rejected("CPU exception converting verified readback pixels"); Rgba.clear(); }
                     }
+                    else Rejected(report.Failure ? report.Failure : "readback terminal outcome was not Verified");
                     Retire(); // Rgba stays owned until every native dependency retires.
                     return;
                 }
@@ -1417,17 +1487,26 @@ namespace
         {
             if (Phase != RequestPhase::Waiting) return;
             std::array<wchar_t, 1025> wide{};
-            if (!Path(BlueprintPath, wide)) { Fail(); return; }
-            if (!Ready()) return;
+            if (!Path(BlueprintPath, wide)) { Fail("canonical Blueprint path rejected by capture validator"); return; }
+            ReadinessDiagnostic preparationDiagnostic;
+            if (!Ready(&preparationDiagnostic)) { Wait(WaitReason::PreparationAdmission, preparationDiagnostic.Detail); return; }
             const auto& api = *N::Get();
-            if (!api.asset.spawnObject || !api.asset.setObjectFlags || !api.player.registerComponent ||
-                !api.player.unregisterComponent || !api.player.destroyComponent || !api.world.destroyActor ||
-                !api.texture.initRenderTarget || !api.texture.getRenderTargetResource ||
-                !api.texture.renderFenceConstruct || !api.texture.renderFenceBegin ||
-                !api.texture.renderFencePoll || !api.texture.renderFenceDestroy) return;
+            // Preserve the original prerequisite order and short-circuiting.
+            if (!api.asset.spawnObject) { Wait(WaitReason::ApiSpawn, "spawnObject API unavailable"); return; }
+            if (!api.asset.setObjectFlags) { Wait(WaitReason::ApiFlags, "setObjectFlags API unavailable"); return; }
+            if (!api.player.registerComponent) { Wait(WaitReason::ApiRegister, "registerComponent API unavailable"); return; }
+            if (!api.player.unregisterComponent) { Wait(WaitReason::ApiUnregister, "unregisterComponent API unavailable"); return; }
+            if (!api.player.destroyComponent) { Wait(WaitReason::ApiDestroyComponent, "destroyComponent API unavailable"); return; }
+            if (!api.world.destroyActor) { Wait(WaitReason::ApiDestroyActor, "destroyActor API unavailable"); return; }
+            if (!api.texture.initRenderTarget) { Wait(WaitReason::ApiInitializeTarget, "initRenderTarget API unavailable"); return; }
+            if (!api.texture.getRenderTargetResource) { Wait(WaitReason::ApiTargetResource, "getRenderTargetResource API unavailable"); return; }
+            if (!api.texture.renderFenceConstruct) { Wait(WaitReason::ApiFenceConstruct, "renderFenceConstruct API unavailable"); return; }
+            if (!api.texture.renderFenceBegin) { Wait(WaitReason::ApiFenceBegin, "renderFenceBegin API unavailable"); return; }
+            if (!api.texture.renderFencePoll) { Wait(WaitReason::ApiFencePoll, "renderFencePoll API unavailable"); return; }
+            if (!api.texture.renderFenceDestroy) { Wait(WaitReason::ApiFenceDestroy, "renderFenceDestroy API unavailable"); return; }
             bool available{};
             if (!ReadbackAvailable(true, available)) { Quarantine("readback prerequisite inspection interrupted"); return; }
-            if (!available) return;
+            if (!available) { Wait(WaitReason::ReadbackPrerequisite, "readback prerequisite inspection succeeded but service unavailable"); return; }
             if (!ClassMetadata(L"/Script/Engine.BlueprintGeneratedClass", Generated, sizeof(SDK::UBlueprintGeneratedClass)) ||
                 !ClassMetadata(L"/Script/Engine.Actor", ActorType, sizeof(SDK::AActor)) ||
                 !ClassMetadata(L"/Script/Engine.SceneCaptureComponent2D", CaptureType, sizeof(SDK::USceneCaptureComponent2D)) ||
@@ -1439,20 +1518,25 @@ namespace
             const auto object = Lookup(wide.data(), Metadata[Generated].Object.Bits, true);
             if (Phase == RequestPhase::Quarantined) return;
             if (!object) // Valid generated-class path, not resident: retain the request, not pointers.
-            { if (!DropMetadata()) Quarantine("waiting class metadata release uncertain"); return; }
+            {
+                Wait(WaitReason::GeneratedClass, "generated-class lookup returned no object; resident-only lookup does not load the asset");
+                if (!DropMetadata()) Quarantine("waiting class metadata release uncertain"); return;
+            }
             ObjectIdentity identity; uintptr_t type{}, cdo{};
             if (!g_nativeWorld.Identify(object, identity, sizeof(SDK::UBlueprintGeneratedClass)) || !Read(object + 0x10, type))
             { Quarantine("resident generated-class identity invalid"); return; }
-            if (type != Metadata[Generated].Object.Bits) { Fail(); return; }
+            if (type != Metadata[Generated].Object.Bits) { Fail("resident object type is not the expected BlueprintGeneratedClass"); return; }
             if (!Keep(object, Metadata[Blueprint])) return;
             bool isActor{};
             if (!ActorSubclass(object, Metadata[ActorType].Object.Bits, &isActor)) { Quarantine("Actor inheritance call interrupted"); return; }
-            if (!isActor) { Fail(); return; }
+            if (!isActor) { Fail("Blueprint-generated class is not an Actor subclass"); return; }
             if (!Read(object + offsetof(SDK::UClass, ClassDefaultObject), cdo) || !cdo ||
                 !g_nativeWorld.Identify(cdo, identity) || !Read(cdo + 0x10, type) || type != object)
-            { Fail(); return; }
+            { Fail("Blueprint CDO read/identity/type validation failed"); return; }
             if (!Keep(cdo, Metadata[DefaultObject])) return;
             Phase = RequestPhase::Preparing;
+            if (ReportedWaits & (uint32_t(1) << unsigned(WaitReason::GeneratedClass)))
+                Diagnostic("MiniMap: sprite residency wait cleared: canonical=%s; generated class and CDO validated, preparation resumed", BlueprintPath.c_str());
             FenceOperations operations{*this};
             if (!Fence.Prepare(operations)) { Quarantine("capture retirement fence preparation uncertain"); return; }
             uint64_t before{}, after{}; int32_t countBefore{}, countAfter{};
@@ -1465,7 +1549,7 @@ namespace
             {
                 if (!Ready() || !Level(0, false, &after, &countAfter) || before != after || countBefore != countAfter)
                 { Quarantine("null spawn changed native world ownership"); return; }
-                Fail(); return;
+                Fail("deferred Actor spawn returned null with unchanged level ownership"); return;
             }
             if (!Keep(Actor.Object.Bits, Actor) || !ActorState(false)) { Quarantine("deferred Actor ownership invalid"); return; }
             uintptr_t finished{};
@@ -1494,10 +1578,10 @@ namespace
                 !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits)
             { Quarantine("capture registration postconditions invalid"); return; }
             if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
-            if (!resource) { Fail(); return; }
+            if (!resource) { Fail("render-target resource getter returned null"); return; }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             Job = MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource), 256, 256);
-            if (!Job) { Fail(); return; }
+            if (!Job) { Fail("external readback Job creation returned null"); return; }
 #endif
             if (!Ready() || !ActorState(true)) { Quarantine("prepared request ownership invalid"); return; }
             PreparedTick = g_captureServiceTick;

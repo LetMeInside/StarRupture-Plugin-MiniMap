@@ -2,6 +2,8 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">true</MiniMapDebugUI>
+    <!-- Development source PNGs stay enabled in Client Release testing; independent of native capture. -->
+    <MiniMapBuildingCapturePngs Condition="'$(MiniMapBuildingCapturePngs)' == ''">true</MiniMapBuildingCapturePngs>
     <!-- Independent development gate for unfinished Stage C visuals; safe default is OFF. -->
     <MiniMapStageCVisuals Condition="'$(MiniMapStageCVisuals)' == ''">false</MiniMapStageCVisuals>
     <!-- R2 diagnostic capture/export is enabled in normal Client Release builds. -->
@@ -34,6 +36,9 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_DEBUG_UI=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapBuildingCapturePngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_CAPTURE_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true' And '$(MiniMapStageCVisuals)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_C_VISUALS_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>

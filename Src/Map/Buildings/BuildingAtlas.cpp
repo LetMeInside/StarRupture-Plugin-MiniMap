@@ -30,6 +30,8 @@ namespace MiniMapBuildingAtlas
         bool Active = true, Busy = false, Retained = false;
         bool Dirty = false, UploadPending = false, CapacityReported = false;
         unsigned PackAttempts = 0, UploadAttempts = 0;
+        bool CapacityWaitReported = false, BatchExceptionReported = false;
+        uint32_t DrawDiagnostics = 0; // Once per invalid published-entry category per session.
         uint64_t NextAttempt = 0, CandidateRevision = 0, PublishedRevision = 0;
         C::Atlas Core;
         X::Backend Backend;
@@ -41,6 +43,11 @@ namespace MiniMapBuildingAtlas
 
 namespace
 {
+    template<class... Args> void SpriteDiagnostic(const char* format, Args... args) noexcept
+    {
+        try { if (auto* self = GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self, format, args...); }
+        catch (...) {} // Reporting must not change atlas publication/ownership.
+    }
     namespace A = MiniMapBuildingAtlas;
     namespace C = MiniMapBuildingAtlasCore;
     namespace X = MiniMapBuildingAtlasAlienX;
@@ -192,7 +199,12 @@ namespace MiniMapBuildingAtlas
     }
     AddResult Add(const Batch& batch, const std::string& name, const MiniMapBuildingCache::Sprite& sprite) noexcept
     {
-        if (!batch) return AddResult::Unavailable;
+        if (!batch)
+        {
+            // Scheduler calls Add at most three times for each decoded payload.
+            SpriteDiagnostic("MiniMap: atlas admission unavailable: canonical=%s reason=no admitted atlas batch", name.c_str());
+            return AddResult::Unavailable;
+        }
         try
         {
             if (!Admitted(batch)) return AddResult::Unavailable;
@@ -200,12 +212,19 @@ namespace MiniMapBuildingAtlas
                 if (bounds.Identifier == name) return AddResult::Retained;
             for (size_t i = 0; i < 3; ++i)
                 if (!std::isfinite(sprite.Bounds.Min[i]) || !std::isfinite(sprite.Bounds.Max[i]) ||
-                    sprite.Bounds.Max[i] < sprite.Bounds.Min[i]) return AddResult::Invalid;
+                    sprite.Bounds.Max[i] < sprite.Bounds.Min[i])
+                {
+                    SpriteDiagnostic("MiniMap: atlas bounds rejected: canonical=%s axis=%zu reason=nonfinite/reversed bounds", name.c_str(), i);
+                    return AddResult::Invalid;
+                }
             if (!(sprite.Bounds.Max[0] > sprite.Bounds.Min[0]) || !(sprite.Bounds.Max[1] > sprite.Bounds.Min[1]))
+            {
+                SpriteDiagnostic("MiniMap: atlas bounds rejected: canonical=%s reason=nonpositive XY extent", name.c_str());
                 return AddResult::Invalid;
+            }
             if (batch->Bounds.size() >= C::MaximumSources)
             {
-                if (!batch->CapacityReported) LOG_WARN("MiniMap: atlas source limit (64); additional valid sprites remain FileCache/fallback");
+                if (!batch->CapacityReported) SpriteDiagnostic("MiniMap: atlas source limit (64); additional valid sprites remain FileCache/fallback");
                 batch->CapacityReported = true;
                 return AddResult::CapacityDeferred;
             }
@@ -215,7 +234,12 @@ namespace MiniMapBuildingAtlas
             if (result != C::Result::Ok)
             {
                 batch->Bounds.pop_back();
-                LOG_WARN("MiniMap: atlas Add rejected '%s' (core result %u)", name.c_str(), unsigned(result));
+                const auto reason = result == C::Result::UnsupportedDimensions ? "unsupported fixed source dimensions" :
+                    result == C::Result::InvalidBuffer ? "RGBA byte length rejected" : result == C::Result::EmptyAlpha ? "no alpha occupancy" :
+                    result == C::Result::SourceLimit ? "source capacity" : result == C::Result::AllocationFailure ? "CPU allocation failed" :
+                    result == C::Result::Overflow ? "size arithmetic overflow" : result == C::Result::DuplicateIdentifier ? "duplicate source identifier" :
+                    result == C::Result::EmptyIdentifier ? "empty source identifier" : "core rejected source (see result)";
+                SpriteDiagnostic("MiniMap: atlas Add rejected '%s' (core result %u, reason=%s)", name.c_str(), unsigned(result), reason);
                 if (result == C::Result::SourceLimit) return AddResult::CapacityDeferred;
                 if (result == C::Result::AllocationFailure || result == C::Result::Overflow || result == C::Result::InternalError)
                     return AddResult::Unavailable;
@@ -226,7 +250,7 @@ namespace MiniMapBuildingAtlas
             batch->NextAttempt = 0;
             return AddResult::Retained;
         }
-        catch (...) { LOG_WARN("MiniMap: atlas source retention unavailable; valid cache remains FileCache"); return AddResult::Unavailable; }
+        catch (...) { SpriteDiagnostic("MiniMap: atlas source retention exception: canonical=%s; valid cache remains FileCache", name.c_str()); return AddResult::Unavailable; }
     }
     void EndBatch(const Batch& batch, uint64_t tick) noexcept
     {
@@ -252,20 +276,36 @@ namespace MiniMapBuildingAtlas
                     if (result != C::Result::Ok)
                     {
                         batch->NextAttempt = Later(tick);
-                        LOG_WARN("MiniMap: atlas subset repack unavailable (%u, attempt %u/3)", unsigned(result), batch->PackAttempts);
+                        SpriteDiagnostic("MiniMap: atlas subset repack unavailable (%u, attempt %u/3)", unsigned(result), batch->PackAttempts);
+                        for (const auto& source : batch->Core.Sources())
+                            SpriteDiagnostic("MiniMap: atlas repack candidate includes canonical=%s result=%u attempt=%u/3; previous representation preserved",
+                                source.Identifier.c_str(), unsigned(result), batch->PackAttempts);
                         return;
                     }
                     batch->Dirty = false;
                     batch->CandidateRevision = batch->Core.Current().Revision;
                     batch->UploadAttempts = 0;
+                    batch->CapacityWaitReported = false;
                     batch->UploadPending = !previousPixels || !SameImage(batch->Core.Current(), *previousPixels);
-                    if (!batch->Core.Current().DeferredIdentifiers.empty())
-                        LOG_WARN("MiniMap: atlas capacity deferred %zu retained sprites; FileCache/fallback preserved",
-                            batch->Core.Current().DeferredIdentifiers.size());
+                    // At most MaximumSources identifiers per successful repack revision.
+                    for (const auto& identifier : batch->Core.Current().DeferredIdentifiers)
+                        SpriteDiagnostic("MiniMap: atlas packing deferred: canonical=%s candidateRevision=%llu reason=canvas capacity; FileCache/fallback preserved",
+                            identifier.c_str(), static_cast<unsigned long long>(batch->CandidateRevision));
                 }
                 if (!batch->UploadPending || batch->UploadAttempts >= 3 || !Admitted(batch)) return;
                 batch->NextAttempt = Later(tick);
-                if (!batch->Backend.HasCapacity()) return; // Keep the candidate; do not reread or repack.
+                if (!batch->Backend.HasCapacity())
+                {
+                    if (!batch->CapacityWaitReported)
+                    {
+                        batch->CapacityWaitReported = true;
+                        SpriteDiagnostic("MiniMap: atlas publication waiting: candidateRevision=%llu reason=backend HasCapacity returned false (slot capacity, prerequisites or observation unavailable); candidate retained, no upload attempt consumed",
+                            static_cast<unsigned long long>(batch->CandidateRevision));
+                        for (const auto& image : batch->Core.Current().Images)
+                            SpriteDiagnostic("MiniMap: atlas waiting candidate includes canonical=%s", image.Identifier.c_str());
+                    }
+                    return; // Keep the candidate; do not reread or repack.
+                }
                 ++batch->UploadAttempts; // Also bound failed CPU snapshot/publication preparation.
 
                 const auto& layout = batch->Core.Current();
@@ -278,21 +318,36 @@ namespace MiniMapBuildingAtlas
                 {
                     const auto bounds = std::find_if(batch->Bounds.begin(), batch->Bounds.end(),
                         [&](const SourceBounds& b) { return b.Identifier == image.Identifier; });
-                    if (bounds == batch->Bounds.end()) { LOG_ERROR("MiniMap: atlas source bounds missing; publication withheld"); return; }
+                    if (bounds == batch->Bounds.end())
+                    { SpriteDiagnostic("MiniMap: atlas publication rejected: canonical=%s reason=source bounds missing; attempt=%u/3", image.Identifier.c_str(), batch->UploadAttempts); return; }
                     S::AtlasEntry entry;
                     entry.Region = {image.Corners[0].U, image.Corners[0].V, image.Corners[2].U, image.Corners[2].V};
                     entry.Crop = {image.Crop.X, image.Crop.Y, image.Crop.Width, image.Crop.Height};
                     entry.Min = bounds->Bounds.Min; entry.Max = bounds->Bounds.Max;
+                    // Observe copied metadata only. Do not introduce a new
+                    // publication rejection or change the existing drawing guard.
+                    if (!image.Crop.Width || !image.Crop.Height ||
+                        uint32_t(image.Crop.X) + image.Crop.Width > C::SourceSize ||
+                        uint32_t(image.Crop.Y) + image.Crop.Height > C::SourceSize)
+                        SpriteDiagnostic("MiniMap: atlas candidate metadata invalid: canonical=%s reason=crop outside original capture canvas; crop=%u,%u,%u,%u attempt=%u/3; existing publication/drawing policy unchanged",
+                            image.Identifier.c_str(), unsigned(image.Crop.X), unsigned(image.Crop.Y), unsigned(image.Crop.Width), unsigned(image.Crop.Height), batch->UploadAttempts);
                     entries.emplace_back(image.Identifier, entry);
                 }
                 if (!Admitted(batch)) return; // Session may have ended during CPU preparation.
                 const auto result = batch->Backend.Create(layout.Rgba, layout.Width, layout.Height, candidate->Texture);
                 if (result == X::TransferResult::OwnershipUncertain)
-                { Retain(batch, candidate); return; }
+                {
+                    for (const auto& image : layout.Images)
+                        SpriteDiagnostic("MiniMap: atlas publication ownership uncertain: candidate includes canonical=%s; existing ownership retention applies", image.Identifier.c_str());
+                    Retain(batch, candidate); return;
+                }
                 if (result != X::TransferResult::Complete)
                 {
-                    LOG_WARN("MiniMap: atlas transfer unavailable (%u, attempt %u/3); previous GPU revision preserved",
+                    SpriteDiagnostic("MiniMap: atlas transfer unavailable (%u, attempt %u/3); previous GPU revision preserved",
                         unsigned(result), batch->UploadAttempts);
+                    for (const auto& image : layout.Images)
+                        SpriteDiagnostic("MiniMap: atlas transfer candidate not published: canonical=%s result=%u attempt=%u/3; previous representation preserved",
+                            image.Identifier.c_str(), unsigned(result), batch->UploadAttempts);
                     return;
                 }
                 {
@@ -304,7 +359,11 @@ namespace MiniMapBuildingAtlas
                     {
                         const auto it = g_statuses->find(entry.first);
                         if (it == g_statuses->end() ||
-                            (it->second.Where != S::Location::FileCache && it->second.Where != S::Location::Atlas)) return;
+                            (it->second.Where != S::Location::FileCache && it->second.Where != S::Location::Atlas))
+                        {
+                            SpriteDiagnostic("MiniMap: atlas publication rejected: canonical=%s reason=expected FileCache/Atlas dictionary state missing/changed; attempt=%u/3", entry.first.c_str(), batch->UploadAttempts);
+                            return;
+                        }
                     }
                     old = std::move(batch->Published);
                     batch->Published = candidate;
@@ -324,7 +383,17 @@ namespace MiniMapBuildingAtlas
                 }
             }();
         }
-        catch (...) { LOG_WARN("MiniMap: atlas batch allocation/service failure; previous GPU publication preserved"); }
+        catch (...)
+        {
+            if (!batch->BatchExceptionReported)
+            {
+                batch->BatchExceptionReported = true;
+                SpriteDiagnostic("MiniMap: atlas batch allocation/service exception: candidateRevision=%llu packAttempt=%u uploadAttempt=%u; previous GPU publication preserved; further exception diagnostics suppressed for session",
+                    static_cast<unsigned long long>(batch->CandidateRevision), batch->PackAttempts, batch->UploadAttempts);
+                for (const auto& bounds : batch->Bounds)
+                    SpriteDiagnostic("MiniMap: atlas exception affected batch includes canonical=%s", bounds.Identifier.c_str());
+            }
+        }
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         Release(batch, old);
@@ -351,8 +420,16 @@ namespace MiniMapBuildingAtlas
     {
         if (!Current(g_session) || !g_statuses || !g_session->Published) return nullptr;
         const auto it = g_statuses->find(name);
-        if (it == g_statuses->end() || it->second.Where != S::Location::Atlas ||
-            !it->second.Atlas.Texture || it->second.Atlas.Texture != g_session->Published->Texture.Binding()) return nullptr;
+        if (it == g_statuses->end() || it->second.Where != S::Location::Atlas) return nullptr;
+        if (!it->second.Atlas.Texture || it->second.Atlas.Texture != g_session->Published->Texture.Binding())
+        {
+            if (!(g_session->DrawDiagnostics & 1))
+            {
+                g_session->DrawDiagnostics |= 1;
+                SpriteDiagnostic("MiniMap: atlas entry unavailable: canonical=%s reason=Atlas status has missing/stale texture binding; further binding diagnostics suppressed for session", name.c_str());
+            }
+            return nullptr;
+        }
         return &it->second.Atlas;
     }
     bool SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const S::AtlasEntry& entry,
@@ -361,8 +438,24 @@ namespace MiniMapBuildingAtlas
         if (!Current(g_session) || !g_session->Published || !entry.Texture ||
             entry.Texture != g_session->Published->Texture.Binding()) return false;
         const auto& r = entry.Region;
-        for (double value : r) if (!std::isfinite(value) || value < 0 || value > 1) return false;
-        if (!(r[2] > r[0] && r[3] > r[1])) return false;
+        for (double value : r) if (!std::isfinite(value) || value < 0 || value > 1)
+        {
+            if (!(g_session->DrawDiagnostics & 2))
+            {
+                g_session->DrawDiagnostics |= 2;
+                SpriteDiagnostic("MiniMap: atlas quad rejected: reason=UV nonfinite/outside unit interval; further UV diagnostics suppressed for session");
+            }
+            return false;
+        }
+        if (!(r[2] > r[0] && r[3] > r[1]))
+        {
+            if (!(g_session->DrawDiagnostics & 4))
+            {
+                g_session->DrawDiagnostics |= 4;
+                SpriteDiagnostic("MiniMap: atlas quad rejected: reason=empty/reversed UV rectangle; further rectangle diagnostics suppressed for session");
+            }
+            return false;
+        }
         const std::array<X::UV, 4> uv{{{float(r[0]), float(r[1])}, {float(r[2]), float(r[1])},
             {float(r[2]), float(r[3])}, {float(r[0]), float(r[3])}}};
         return g_session->Backend.SubmitQuad(ui, list, g_session->Published->Texture, positions, uv, color);

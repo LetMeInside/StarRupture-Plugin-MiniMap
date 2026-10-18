@@ -585,11 +585,9 @@ void BlueprintCandidateException() noexcept
 }
 std::filesystem::path BlueprintOutputPath(const wchar_t* suffix)
 {
-    static const char moduleAnchor{};
-    HMODULE module{}; wchar_t path[32768]{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCWSTR>(&moduleAnchor),&module) || !GetModuleFileNameW(module,path,32768)) return {};
-    const auto directory=std::filesystem::path(path).parent_path()/L"MiniMap"/L"Cache"/L"Buildings";
+    std::filesystem::path pluginDirectory;
+    if (!MiniMapPluginPaths::GetPluginDirectory(pluginDirectory)) return {};
+    const auto directory=pluginDirectory/L"MiniMap"/L"Cache"/L"Buildings";
     std::error_code error; std::filesystem::create_directories(directory,error);
     if (error) return {};
     const auto name=L"private_building_"+std::to_wstring(blueprint.Building)+

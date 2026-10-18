@@ -4,6 +4,7 @@
 
 #include "../Sprites/CapturePng.h"
 #include "CacheIdentity.h"
+#include "PluginPaths.h"
 #include "plugin_helpers.h"
 
 #include <windows.h>
@@ -23,13 +24,35 @@
 
 namespace
 {
+    // Write has one attempt per retired request. No diagnostic allocations or retries.
+    bool WriteRejected(const std::string& blueprint, const char* reason, uint32_t code = 0, bool codeAvailable = false) noexcept
+    {
+        try
+        {
+            if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
+                self->logger->Warn(self, "MiniMap: sprite persistence rejected: canonical=%s reason=%s codeAvailable=%u code=0x%08X; one-time write failed",
+                    blueprint.c_str(), reason, unsigned(codeAvailable), code);
+        }
+        catch (...) {}
+        return false;
+    }
+    bool DiagnosticPngRejected(const std::string& blueprint, const char* reason, uint32_t code = 0, bool codeAvailable = false) noexcept
+    {
+        try
+        {
+            if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
+                self->logger->Warn(self, "MiniMap: sprite PNG export failed: canonical=%s reason=%s codeAvailable=%u code=0x%08X; successful .sprite persistence unchanged",
+                    blueprint.c_str(), reason, unsigned(codeAvailable), code);
+        }
+        catch (...) {}
+        return false;
+    }
     constexpr char kMagic[8] = {'M','M','B','S','P','R','T','1'};
     constexpr uint32_t kVersion = 1;
     constexpr uint32_t kMaxDimension = 4096;
     constexpr size_t kMaxRgbaBytes = 64u * 1024u * 1024u;
     constexpr size_t kMaxPngBytes = 128u * 1024u * 1024u;
     constexpr size_t kMaxFileNameBytes = 240;
-    int g_moduleAnchor = 0;
 #pragma pack(push, 1)
     // 24-byte format core followed by the 48-byte spatial extension.
     struct SpriteHeader
@@ -93,22 +116,18 @@ namespace
 
     bool GetPluginDirectory(std::filesystem::path& out)
     {
-        HMODULE module = nullptr;
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&g_moduleAnchor), &module)) return false;
-        std::wstring modulePath(32768, L'\0');
-        const DWORD length = GetModuleFileNameW(module, modulePath.data(), static_cast<DWORD>(modulePath.size()));
-        if (!length || length >= modulePath.size()) return false;
-        modulePath.resize(length);
-        out = std::filesystem::path(modulePath).parent_path();
-        return true;
+        return MiniMapPluginPaths::GetPluginDirectory(out);
     }
 
-    bool Paths(const std::string& blueprint, std::filesystem::path& sprite, std::filesystem::path* png)
+    bool Paths(const std::string& blueprint, std::filesystem::path& sprite, std::filesystem::path* png, const char** failure = nullptr)
     {
         std::string name;
-        if (!MiniMapBuildingCache::BlueprintFileName(blueprint, name) || !MiniMapCacheIdentity::IsReady()) return false;
+        if (failure) *failure = "canonical cache filename resolution rejected";
+        if (!MiniMapBuildingCache::BlueprintFileName(blueprint, name)) return false;
+        if (failure) *failure = "cache namespace identity not ready";
+        if (!MiniMapCacheIdentity::IsReady()) return false;
         std::filesystem::path root;
+        if (failure) *failure = "cache root/module path resolution failed";
         if (!MiniMapBuildingCache::GetCacheRoot(root)) return false;
         sprite = root / std::filesystem::path(std::wstring(name.begin(), name.end()));
         if (png)
@@ -253,17 +272,21 @@ namespace MiniMapBuildingCache
         uint32_t width, uint32_t height, const SpatialBounds& bounds)
     {
         if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
-            uint64_t(width) * height * 4 > kMaxRgbaBytes) return false;
+            uint64_t(width) * height * 4 > kMaxRgbaBytes)
+            return WriteRejected(canonicalBlueprintPath, "serialization input pointer/dimensions/byte bound rejected");
         std::filesystem::path path, diagnostic;
-        if (!Paths(canonicalBlueprintPath, path, &diagnostic)) return false;
+        const char* failure = nullptr;
+        if (!Paths(canonicalBlueprintPath, path, &diagnostic, &failure)) return WriteRejected(canonicalBlueprintPath, failure);
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        if (ec) return false;
+        if (ec) return WriteRejected(canonicalBlueprintPath, "create cache directory failed", uint32_t(ec.value()), true);
         const auto pngTemporary = path.wstring() + L".png.tmp";
         std::vector<uint8_t> pixels(rgba, rgba + size_t(width) * height * 4);
         const auto pngResult = MiniMapCapturePng::Write(pngTemporary, width, height, pixels, false);
         if (!pngResult.Ok || pngResult.Bytes == 0 || pngResult.Bytes > kMaxPngBytes)
         {
+            // Encoder stage/error are already observed; log before temporary cleanup.
+            WriteRejected(canonicalBlueprintPath, !pngResult.Ok ? pngResult.Stage : "serialized PNG byte length rejected", uint32_t(pngResult.Error), true);
             std::filesystem::remove(pngTemporary, ec); return false;
         }
         std::vector<uint8_t> png(static_cast<size_t>(pngResult.Bytes));
@@ -271,10 +294,10 @@ namespace MiniMapBuildingCache
             std::ifstream input(pngTemporary, std::ios::binary);
             input.read(reinterpret_cast<char*>(png.data()), static_cast<std::streamsize>(png.size()));
             if (!input || input.peek() != std::char_traits<char>::eof())
-            { input.close(); std::filesystem::remove(pngTemporary, ec); return false; }
+            { input.close(); std::filesystem::remove(pngTemporary, ec); return WriteRejected(canonicalBlueprintPath, "serialized PNG temporary read/length failed"); }
         }
         std::filesystem::remove(pngTemporary, ec);
-        if (ec) return false;
+        if (ec) return WriteRejected(canonicalBlueprintPath, "remove serialized PNG temporary failed", uint32_t(ec.value()), true);
         const auto temporary = path.wstring() + L".tmp";
         SpriteHeader header{};
         std::memcpy(header.Magic, kMagic, sizeof(kMagic)); header.Version = kVersion;
@@ -283,29 +306,48 @@ namespace MiniMapBuildingCache
         std::copy(bounds.Max.begin(), bounds.Max.end(), header.Max);
         {
             std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-            if (!output) return false;
+            if (!output) return WriteRejected(canonicalBlueprintPath, "open sprite output temporary failed");
             output.write(reinterpret_cast<const char*>(&header), sizeof(header));
             output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
             output.close();
-            if (!output) { std::filesystem::remove(temporary, ec); return false; }
+            if (!output) { std::filesystem::remove(temporary, ec); return WriteRejected(canonicalBlueprintPath, "write/close sprite temporary failed"); }
         }
         if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        { std::filesystem::remove(temporary, ec); return false; }
+        {
+            const auto error = GetLastError();
+            std::filesystem::remove(temporary, ec);
+            return WriteRejected(canonicalBlueprintPath, "atomic sprite publication failed", error, true);
+        }
+#if defined(MINIMAP_BUILDING_CAPTURE_PNGS)
+        // Write is called only after native retirement. The full source canvas
+        // is still owned here; optional diagnostics never change its cache result.
+        (void)WriteDiagnosticPng(canonicalBlueprintPath, rgba, width, height);
+#endif
         return true;
     }
 
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
-        const uint8_t* rgba, uint32_t width, uint32_t height)
+        const uint8_t* rgba, uint32_t width, uint32_t height) noexcept
     {
-        if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
-            uint64_t(width) * height * 4 > kMaxRgbaBytes) return false;
-        std::filesystem::path sprite, png;
-        if (!Paths(canonicalBlueprintPath, sprite, &png)) return false;
-        std::error_code ec;
-        std::filesystem::create_directories(png.parent_path(), ec);
-        if (ec) return false;
-        std::vector<uint8_t> pixels(rgba, rgba + size_t(width) * height * 4);
-        return MiniMapCapturePng::Write(png, width, height, pixels, false).Ok;
+        try
+        {
+            if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
+                uint64_t(width) * height * 4 > kMaxRgbaBytes)
+                return DiagnosticPngRejected(canonicalBlueprintPath, "source dimensions/byte bound rejected");
+            std::filesystem::path sprite, png;
+            const char* failure = nullptr;
+            if (!Paths(canonicalBlueprintPath, sprite, &png, &failure)) return DiagnosticPngRejected(canonicalBlueprintPath, failure);
+            std::error_code ec;
+            std::filesystem::create_directories(png.parent_path(), ec);
+            if (ec) return DiagnosticPngRejected(canonicalBlueprintPath, "create PNG parent directory failed", uint32_t(ec.value()), true);
+            std::vector<uint8_t> pixels(rgba, rgba + size_t(width) * height * 4);
+            const auto result = MiniMapCapturePng::Write(png, width, height, pixels, false);
+            if (!result.Ok) return DiagnosticPngRejected(canonicalBlueprintPath, result.Stage, uint32_t(result.Error), true);
+            return true;
+        }
+        catch (const std::filesystem::filesystem_error& error)
+        { return DiagnosticPngRejected(canonicalBlueprintPath, "PNG filesystem exception", uint32_t(error.code().value()), true); }
+        catch (...) { return DiagnosticPngRejected(canonicalBlueprintPath, "PNG CPU/encoding exception"); }
     }
 
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,

@@ -40,8 +40,10 @@ namespace MiniMapBuildingCache
     LoadResult TryLoad(const std::string& canonicalBlueprintPath, Sprite& out) noexcept;
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
         uint32_t width, uint32_t height, const SpatialBounds& bounds);
+    // Full source canvas beside its .sprite; optional export cannot throw into
+    // production publication. Enabled separately from native capture by MSBuild.
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
-        const uint8_t* rgba, uint32_t width, uint32_t height);
+        const uint8_t* rgba, uint32_t width, uint32_t height) noexcept;
     // Full published atlas only. Sequential, exclusive final-name publication;
     // logs its result and never changes GPU publication. Call outside lifecycle lock.
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,

@@ -96,6 +96,7 @@
   <ItemGroup>
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
+    <ClInclude Include="PluginPaths.h" />
     <ClInclude Include="Map\Sprites\CapturePng.h" />
     <ClInclude Include="Map\Sprites\SpriteQueues.h" />
     <ClInclude Include="Map\Sprites\SpriteStatus.h" />

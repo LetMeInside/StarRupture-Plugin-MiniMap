@@ -3,6 +3,7 @@
 #include "TerrainCache.h"
 #include "TerrainChunks.h"
 #include "CacheIdentity.h"
+#include "PluginPaths.h"
 
 #include "plugin_helpers.h"
 
@@ -70,56 +71,18 @@ namespace
     static_assert(
         sizeof(CacheHeader) == 60);
 
-    int g_moduleAnchor = 0;
-
-
     bool GetPluginDirectory(
         std::filesystem::path& outDirectory)
     {
-        HMODULE module = nullptr;
-
-        if (!GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(
-                &g_moduleAnchor),
-            &module))
+        const char* failure = nullptr;
+        if (!MiniMapPluginPaths::GetPluginDirectory(outDirectory, &failure))
         {
             LOG_ERROR(
                 "MiniMap: TerrainCache: "
-                "GetModuleHandleExW failed");
+                "plugin module directory resolution failed: %s", failure);
 
             return false;
         }
-
-        std::wstring modulePath;
-        modulePath.resize(32768);
-
-        const DWORD length =
-            GetModuleFileNameW(
-                module,
-                modulePath.data(),
-                static_cast<DWORD>(
-                    modulePath.size()));
-
-        if (length == 0 ||
-            length >= modulePath.size())
-        {
-            LOG_ERROR(
-                "MiniMap: TerrainCache: "
-                "GetModuleFileNameW failed");
-
-            return false;
-        }
-
-        modulePath.resize(
-            static_cast<size_t>(
-                length));
-
-        outDirectory =
-            std::filesystem::path(
-                modulePath).parent_path();
-
         return true;
     }
 
@@ -428,7 +391,7 @@ namespace MiniMapTerrainCache
         }
 
         const uint64_t fileSize =
-            std::filesystem::file_size(
+            MiniMapPluginPaths::FileSize(
                 filePath,
                 error);
 

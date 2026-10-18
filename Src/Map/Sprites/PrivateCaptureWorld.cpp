@@ -4,6 +4,7 @@
 #include "SpriteCandidateIdentity.h"
 #include "SceneCaptureConfiguration.h"
 #include "CapturePng.h"
+#include "PluginPaths.h"
 #include "BuildingSprites.h"
 #include <Engine_parameters.hpp>
 #include <unordered_set>

@@ -1,6 +1,8 @@
 #pragma once
 #include "Native/FloatReadbackPixels.h"
+#include "PluginPaths.h"
 #include <windows.h>
+#include <objbase.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <filesystem>
@@ -129,12 +131,18 @@ namespace MiniMapCapturePng
         if(FAILED(init)&&init!=RPC_E_CHANGED_MODE)return {false,0,init,"COM initialization"};
         struct ComScope {bool Own;~ComScope(){if(Own)CoUninitialize();}} scope{SUCCEEDED(init)};
         using Microsoft::WRL::ComPtr;
-        ComPtr<IWICImagingFactory> factory;ComPtr<IWICStream> stream;
+        ComPtr<IWICImagingFactory> factory;ComPtr<IStream> stream;
         ComPtr<IWICBitmapEncoder> encoder;ComPtr<IWICBitmapFrameEncode> frame;
         auto step=[&](HRESULT hr,const char* stage){r.Error=hr;r.Stage=stage;return SUCCEEDED(hr);};
         if(!step(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)),"WIC factory"))return r;
-        if(!step(factory->CreateStream(&stream),"WIC stream")||
-            !step(stream->InitializeFromFilename(path.c_str(),GENERIC_WRITE),"open output")||
+        // WIC receives an IStream, never a filesystem name. Only the explicit
+        // Unicode file API interprets the absolute extended-length output path.
+        std::filesystem::path outputPath;
+        if(!MiniMapPluginPaths::Extended(path,outputPath))return {false,0,E_INVALIDARG,"absolute output path"};
+        const HANDLE handle=CreateFileW(outputPath.c_str(),GENERIC_WRITE|FILE_READ_ATTRIBUTES,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(handle==INVALID_HANDLE_VALUE)return {false,0,HRESULT_FROM_WIN32(GetLastError()),"open output"};
+        struct FileScope {HANDLE Value;~FileScope(){CloseHandle(Value);}} file{handle};
+        if(!step(CreateStreamOnHGlobal(nullptr,TRUE,&stream),"PNG memory stream")||
             !step(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder),"PNG encoder")||
             !step(encoder->Initialize(stream.Get(),WICBitmapEncoderNoCache),"encoder initialization")||
             !step(encoder->CreateNewFrame(&frame,nullptr),"PNG frame")||
@@ -151,9 +159,31 @@ namespace MiniMapCapturePng
         if(!IsEqualGUID(format,requested))return {false,0,E_FAIL,"unexpected WIC format conversion"};
         if(!step(frame->WritePixels(h,w*UINT(channels),UINT(encoded.size()),const_cast<BYTE*>(encoded.data())),"pixels")||
             !step(frame->Commit(),"frame commit")||!step(encoder->Commit(),"PNG commit"))return r;
-        frame.Reset();encoder.Reset();stream.Reset();
-        std::error_code ec;r.Bytes=std::filesystem::file_size(path,ec);
-        if(ec)return {false,0,HRESULT_FROM_WIN32(ec.value()),"file size"};
+        frame.Reset();encoder.Reset();
+        STATSTG encodedInfo{};
+        if(!step(stream->Stat(&encodedInfo,STATFLAG_NONAME),"encoded PNG size"))return r;
+        LARGE_INTEGER beginning{};
+        if(!step(stream->Seek(beginning,STREAM_SEEK_SET,nullptr),"encoded PNG rewind"))return r;
+        std::array<BYTE,16384> buffer;
+        auto remaining=encodedInfo.cbSize.QuadPart;
+        while(remaining)
+        {
+            const auto count=ULONG((std::min)(remaining,static_cast<ULONGLONG>(buffer.size())));
+            ULONG read=0;
+            if(!step(stream->Read(buffer.data(),count,&read),"read encoded PNG"))return r;
+            if(read!=count)return {false,0,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF),"read encoded PNG length"};
+            DWORD written=0;
+            if(!WriteFile(handle,buffer.data(),read,&written,nullptr))
+                return {false,0,HRESULT_FROM_WIN32(GetLastError()),"write output"};
+            if(written!=read)return {false,0,HRESULT_FROM_WIN32(ERROR_WRITE_FAULT),"write output length"};
+            remaining-=read;
+        }
+        if(!FlushFileBuffers(handle))return {false,0,HRESULT_FROM_WIN32(GetLastError()),"flush output"};
+        LARGE_INTEGER length{};
+        if(!GetFileSizeEx(handle,&length))return {false,0,HRESULT_FROM_WIN32(GetLastError()),"file size"};
+        if(length.QuadPart<0 || ULONGLONG(length.QuadPart)!=encodedInfo.cbSize.QuadPart)
+            return {false,0,HRESULT_FROM_WIN32(ERROR_INVALID_DATA),"file size mismatch"};
+        r.Bytes=uintmax_t(length.QuadPart);
         r.Ok=true;return r;
     }
 }

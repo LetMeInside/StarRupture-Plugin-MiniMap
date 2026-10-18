@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include <windows.h>
+#include "PluginPaths.h"
 #include <bcrypt.h>
 #include <winver.h>
 #include <algorithm>
@@ -284,7 +285,8 @@ namespace MiniMapCacheIdentity
                 static_cast<DWORD>(path.size()));
             if (!length || length >= path.size()) return false;
             path.resize(length);
-            if (!HashVersionInfo(path, cached)) return false;
+            std::filesystem::path executable;
+            if (!MiniMapPluginPaths::Extended(path, executable) || !HashVersionInfo(executable, cached)) return false;
             acquired = true;
         }
         out = cached;
@@ -304,7 +306,7 @@ namespace MiniMapCacheIdentity
     {
         out = {};
         std::error_code error;
-        if (std::filesystem::file_size(path, error) != sizeof(CacheInfo) || error)
+        if (MiniMapPluginPaths::FileSize(path, error) != sizeof(CacheInfo) || error)
             return false;
         std::ifstream stream(path, std::ios::binary);
         stream.read(reinterpret_cast<char*>(&out), sizeof(out));

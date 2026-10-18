@@ -26,6 +26,11 @@
 
 namespace
 {
+    template<class... Args> void SpriteDiagnostic(const char* format, Args... args) noexcept
+    {
+        try { if (auto* self=GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self,format,args...); }
+        catch (...) {} // Diagnostics never participate in collector admission.
+    }
     using namespace MiniMapBuildingCollector;
     using Clock = std::chrono::steady_clock;
     using Id = MiniMapNative::MassEntityHandle;
@@ -72,6 +77,7 @@ namespace
         Clock::time_point RetryAt = {};
         Clock::time_point IdentityRetryAt = {};
         int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
+        uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
     };
     struct Metrics
     {
@@ -83,6 +89,7 @@ namespace
     };
     IPluginSelf* g_collectorSelf=nullptr;
     bool g_initialized=false, g_ready=false, g_typesReady=false, g_unavailableLogged=false;
+    uint32_t g_definitionDiagnostics=0; // Four pre-definition categories per collector lifetime/generation.
     bool g_gridSucceeded=false, g_identitySucceeded=false;
     SDK::UWorld* g_world=nullptr;
     const void* g_manager=nullptr; // Game-thread query owner identity only; never published.
@@ -343,6 +350,19 @@ namespace
         // An invalid/unavailable authored identity does not invalidate the building.
         // Resident metadata or authored data may settle; retry only this definition.
         definition.CanonicalBlueprint=result.Path;
+        if(!result.Path)
+        {
+            const auto bit=uint64_t(1)<<unsigned(result.Failure);
+            if(!(definition.IdentityDiagnostics&bit))
+            {
+                definition.IdentityDiagnostics|=bit;
+                const auto state=result.State==MiniMapBuildingBlueprintIdentity::Status::Invalid?"invalid":
+                    result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted?"interrupted":"unavailable";
+                SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d name=%d:%u serial=%d stage=canonical resolution state=%s reason=%s policy=existing definition retry; interrupted conversion may require restart; path=unavailable",
+                    record.BuildingId,record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,
+                    definition.ObjectSerial,state,result.Detail);
+            }
+        }
     }
     void Geometry(Record& r,const SDK::FAuSplineConnectionFragment* spline,const SDK::FBox* targetingBox,bool retain=true)
     {
@@ -434,13 +454,38 @@ namespace
                 it->second.ObjectSerial=serial;
                 ++g_metrics.DefinitionMiss;
             }
-            if(!serialValid) it->second.CanonicalBlueprint.reset();
+            if(!serialValid)
+            {
+                constexpr auto bit=uint64_t(1)<<62;
+                if(!r.HasSpline && !(it->second.IdentityDiagnostics&bit))
+                {
+                    it->second.IdentityDiagnostics|=bit;
+                    SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d stage=definition lifetime reason=object serial observation failed; canonical withheld; policy=retry existing observation",
+                        it->second.Id,r.DefinitionObjectIndex);
+                }
+                it->second.CanonicalBlueprint.reset();
+            }
             r.BuildingId=it->second.Id; r.Category=it->second.Category; r.DefinitionValid=true;
             r.DefinitionShape=DefinitionShape(it->second,placement);
             if(!r.HasSpline && serialValid)
             {
                 DefinitionBlueprint(it->second,placement,r);
                 r.CanonicalBlueprint=it->second.CanonicalBlueprint;
+            }
+        }
+        else if(!r.HasSpline)
+        {
+            // No valid definition owner exists here. Use a fixed generation-scoped
+            // aggregate, not a per-instance/path registry or repeated frame logs.
+            const unsigned issue=!parameters?0:!placement?1:(reinterpret_cast<uintptr_t>(placement)&7)?2:3;
+            const auto bit=uint32_t(1)<<issue;
+            if(!(g_definitionDiagnostics&bit))
+            {
+                g_definitionDiagnostics|=bit;
+                const auto reason=issue==0?"building parameters unavailable":issue==1?"placement definition is null":
+                    issue==2?"placement definition pointer unaligned":"placement definition class validation failed";
+                SpriteDiagnostic("MiniMap: sprite discovery unavailable: entity=%d:%d stage=placement definition reason=%s; building/canonical=unavailable; policy=existing collector refresh; further diagnostics for this reason suppressed until reset",
+                    r.Index,r.Serial,reason);
             }
         }
         r.Tint={1,1,1,1};
@@ -493,6 +538,7 @@ namespace
         g_debugOracle={}; g_debugLastGridMs=0;
 #endif
         g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
+        g_definitionDiagnostics=0;
         g_curveScratch={};
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         size_t retained=0;
@@ -745,7 +791,16 @@ namespace
                 if(DefinitionProvenanceCurrent(n,r,definition->second))
                     result->Records.back().CanonicalBlueprint=definition->second.CanonicalBlueprint;
                 else
+                {
+                    constexpr auto bit=uint64_t(1)<<63;
+                    if(!(definition->second.IdentityDiagnostics&bit))
+                    {
+                        definition->second.IdentityDiagnostics|=bit;
+                        SpriteDiagnostic("MiniMap: sprite identity withheld: building=%u definition=%d stage=snapshot provenance reason=definition/entity identity observation or validation failed; canonical=%s; policy=clear identity and retry",
+                            r.BuildingId,r.DefinitionObjectIndex,definition->second.CanonicalBlueprint?definition->second.CanonicalBlueprint->c_str():"unavailable");
+                    }
                     definition->second.CanonicalBlueprint.reset();
+                }
             }
         };
         for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
