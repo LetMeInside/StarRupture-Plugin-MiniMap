@@ -62,49 +62,170 @@ namespace
     enum class WorldPhase { Inactive, Preparing, Ready, Retiring, Released, Unavailable, Quarantined };
     enum class Operation { Create, Retain, Initialize, Update, Cleanup, Release, Context, Subsystem, TickType, Visibility };
 
-    template<class T> bool Read(uintptr_t address, T& value)
-    { return N::ReadMemory(address, &value, sizeof(value)); }
-    struct SlotReader
+    // Optional stack-only evidence from the original observation, never a reread.
+    struct ReadinessDiagnostic
     {
-        template<class T> bool Read(uintptr_t address, T& value)
-        { return N::ReadMemory(address, &value, sizeof(value)); }
+        const char* Predicate = "native world phase";
+        const char* Detail = "validation/observation failed";
+        uint64_t Expected{}, Current{};
+        bool ValuesAvailable = false;
+        bool TransientGC = false; // Set only by a successful observation of active GC; never by observation failure.
+        const char* Outcome = "observation_or_validation_failed";
+        uint64_t Address{};
+        void Stage(const char* predicate)
+        {
+            Predicate = predicate; Detail = "observation/validation failed";
+            Outcome = "observation_or_validation_failed"; Address = 0; ValuesAvailable = false; Expected = Current = 0;
+        }
+        bool Observe(bool succeeded, const char* detail, const char* outcome = "native_observation_failed", uint64_t address = 0)
+        {
+            if (!succeeded) { Detail = detail; Outcome = outcome; Address = address; ValuesAvailable = false; }
+            return succeeded;
+        }
+        bool Check(bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
+        {
+            if (!passed) { Detail = detail; Expected = expected; Current = current; ValuesAvailable = true; Outcome = "unsafe_value"; Address = 0; }
+            return passed;
+        }
     };
 
-    bool GameThread() noexcept
+    template<class T> bool Read(uintptr_t address, T& value)
+    { return N::ReadMemory(address, &value, sizeof(value)); }
+    template<class T> bool Read(uintptr_t address, T& value, ReadinessDiagnostic* diagnostic)
     {
-        const auto* api = N::Get();
-        __try { return api && api->player.isGameThread && api->player.isGameThread(); }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+        const bool succeeded = Read(address, value);
+        return !diagnostic ? succeeded : diagnostic->Observe(succeeded, "memory read", "read_failed", address);
+    }
+    struct SlotReader
+    {
+        ReadinessDiagnostic* Diagnostic = nullptr;
+        template<class T> bool Read(uintptr_t address, T& value)
+        { return ::Read(address, value, Diagnostic); }
+    };
+    bool SlotObserved(Slots::Status status, ReadinessDiagnostic* diagnostic)
+    {
+        if (status == Slots::Status::Success) return true;
+        // A failed underlying read has already recorded its exact address.
+        if (diagnostic && std::strcmp(diagnostic->Outcome, "read_failed") != 0)
+        {
+            diagnostic->Check(false, Slots::Label(status), uint64_t(Slots::Status::Success), uint64_t(status));
+            diagnostic->Outcome = "slot_validation_failed";
+        }
+        return false;
     }
 
-    bool Facilities()
+    bool GameThread(ReadinessDiagnostic* diagnostic = nullptr) noexcept
     {
         const auto* api = N::Get();
-        return N::IsInitialized() && api && GameThread() && api->asset.objectArray &&
-            api->asset.retainObject && api->asset.releaseObject && api->asset.exitPurge &&
-            api->asset.activeGarbageCollection && api->player.engineStorage &&
-            api->world.createWorld && api->world.initWorld && api->world.updateWorldComponents &&
-            api->world.cleanupWorld && api->world.getWorldContextFromWorld && api->world.getSubsystemInternal &&
-            api->world.isGarbageCollectingAndLocking && api->world.isIncrementalPurgePending &&
-            api->world.isIncrementalReachabilityPending && api->world.getTickableTickType &&
-            api->world.isVisibilityRequestPending;
-    }
-
-    bool QuietGC() noexcept
-    {
-        if (!Facilities()) return false;
-        const auto* api = N::Get();
-        uint8_t exitPurge{}; bool collecting{};
         __try
         {
-            return Read(reinterpret_cast<uintptr_t>(api->asset.exitPurge), exitPurge) && !exitPurge &&
-                Read(reinterpret_cast<uintptr_t>(api->asset.activeGarbageCollection), collecting) && !collecting &&
-                !api->world.isGarbageCollectingAndLocking() && !api->world.isIncrementalPurgePending() &&
-                !api->world.isIncrementalReachabilityPending();
+            if (!api || !api->player.isGameThread)
+            {
+                if (diagnostic) diagnostic->Observe(false, "game-thread facility unavailable", "facility_unavailable");
+                return false;
+            }
+            const bool gameThread = api->player.isGameThread();
+            return !diagnostic ? gameThread : diagnostic->Check(gameThread, "game-thread admission", 1, gameThread);
         }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+        {
+            if (diagnostic) diagnostic->Observe(false, "game-thread observation interrupted");
+            return false;
+        }
+    }
+
+    bool Facilities(ReadinessDiagnostic* diagnostic = nullptr)
+    {
+        const auto* api = N::Get();
+        const auto facility = [&](bool available, const char* name)
+        { return !diagnostic ? available : diagnostic->Check(available, name, 1, available ? 1 : 0); };
+        return facility(N::IsInitialized(), "facility unavailable: native API initialization") &&
+            facility(api != nullptr, "facility unavailable: native API table") &&
+            GameThread(diagnostic) &&
+            facility(api->asset.objectArray != nullptr, "facility unavailable: object array") &&
+            facility(api->asset.retainObject != nullptr, "facility unavailable: retain object") &&
+            facility(api->asset.releaseObject != nullptr, "facility unavailable: release object") &&
+            facility(api->asset.exitPurge != nullptr, "facility unavailable: exit-purge flag") &&
+            facility(api->asset.activeGarbageCollection != nullptr, "facility unavailable: active-GC flag") &&
+            facility(api->player.engineStorage != nullptr, "facility unavailable: engine storage") &&
+            facility(api->world.createWorld != nullptr, "facility unavailable: create world") &&
+            facility(api->world.initWorld != nullptr, "facility unavailable: initialize world") &&
+            facility(api->world.updateWorldComponents != nullptr, "facility unavailable: update world components") &&
+            facility(api->world.cleanupWorld != nullptr, "facility unavailable: cleanup world") &&
+            facility(api->world.getWorldContextFromWorld != nullptr, "facility unavailable: world-context lookup") &&
+            facility(api->world.getSubsystemInternal != nullptr, "facility unavailable: subsystem lookup") &&
+            facility(api->world.isGarbageCollectingAndLocking != nullptr, "facility unavailable: GC/hash-table predicate") &&
+            facility(api->world.isIncrementalPurgePending != nullptr, "facility unavailable: incremental-purge predicate") &&
+            facility(api->world.isIncrementalReachabilityPending != nullptr, "facility unavailable: incremental-reachability predicate") &&
+            facility(api->world.getTickableTickType != nullptr, "facility unavailable: tickable type predicate") &&
+            facility(api->world.isVisibilityRequestPending != nullptr, "facility unavailable: visibility predicate");
+    }
+
+    bool QuietGC(ReadinessDiagnostic* diagnostic = nullptr) noexcept
+    {
+        if (diagnostic) diagnostic->TransientGC = false;
+        if (!Facilities(diagnostic)) return false;
+        const auto* api = N::Get();
+        uint8_t exitPurge{}; bool collecting{};
+        const char* nativeStep = "memory observation interrupted: exit-purge flag";
+        __try
+        {
+            if (!Read(reinterpret_cast<uintptr_t>(api->asset.exitPurge), exitPurge))
+            {
+                if (diagnostic) diagnostic->Observe(false, "memory read failed: exit-purge flag", "read_failed", reinterpret_cast<uintptr_t>(api->asset.exitPurge));
+                return false;
+            }
+            if (exitPurge)
+            {
+                if (diagnostic) diagnostic->Check(false, "active GC flag: exit purge", 0, exitPurge);
+                return false;
+            }
+            nativeStep = "memory observation interrupted: active-GC flag";
+            if (!Read(reinterpret_cast<uintptr_t>(api->asset.activeGarbageCollection), collecting))
+            {
+                if (diagnostic) diagnostic->Observe(false, "memory read failed: active-GC flag", "read_failed", reinterpret_cast<uintptr_t>(api->asset.activeGarbageCollection));
+                return false;
+            }
+            if (collecting)
+            {
+                if (diagnostic) diagnostic->TransientGC = true;
+                if (diagnostic) diagnostic->Check(false, "active GC flag: garbage collection", 0, collecting);
+                return false;
+            }
+
+            nativeStep = "native GC state observation interrupted: garbage-collecting/hash-table predicate";
+            const bool locking = api->world.isGarbageCollectingAndLocking();
+            if (locking)
+            {
+                if (diagnostic) diagnostic->TransientGC = true;
+                if (diagnostic) diagnostic->Check(false, "native GC state: garbage collection/hash-table locking active", 0, locking);
+                return false;
+            }
+            nativeStep = "native GC state observation interrupted: incremental-purge predicate";
+            const bool purgePending = api->world.isIncrementalPurgePending();
+            if (purgePending)
+            {
+                if (diagnostic) diagnostic->TransientGC = true;
+                if (diagnostic) diagnostic->Check(false, "native GC state: incremental purge pending", 0, purgePending);
+                return false;
+            }
+            nativeStep = "native GC state observation interrupted: incremental-reachability predicate";
+            const bool reachabilityPending = api->world.isIncrementalReachabilityPending();
+            if (reachabilityPending)
+            {
+                if (diagnostic) diagnostic->TransientGC = true;
+                if (diagnostic) diagnostic->Check(false, "native GC state: incremental reachability pending", 0, reachabilityPending);
+                return false;
+            }
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+        {
+            if (diagnostic) diagnostic->Observe(false, nativeStep);
+            return false;
+        }
     }
 
     // Leaf SEH boundaries: only trivial locals; never unwind native ownership here.
@@ -180,6 +301,9 @@ namespace
         NativeReference Private, Package, PersistentLevel, WorldSettings;
         std::array<NativeReference, 3> Subsystems{};
         uintptr_t Scene{}; // Observed through the owned world; never manually freed.
+        // Numeric separation evidence from successful active PrivateState checks.
+        // These are not owners and must never be dereferenced during teardown.
+        uintptr_t IsolatedGameplayPackage{}, IsolatedGameplayScene{};
 
         void Quarantine(const char* reason)
         {
@@ -190,29 +314,52 @@ namespace
         bool CanStartSession() const
         { return Phase == WorldPhase::Inactive || Phase == WorldPhase::Released || Phase == WorldPhase::Unavailable; }
 
-        bool Identify(uintptr_t object, ObjectIdentity& identity, size_t extent = 0x28)
+        bool Identify(uintptr_t object, ObjectIdentity& identity, size_t extent = 0x28, ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto* api = N::Get();
-            if (!api || !N::ValidateObjectIdentity(object, reinterpret_cast<uintptr_t>(api->asset.objectArray), extent)) return false;
-            int32_t index{}; Slots::Slot slot; SlotReader reader;
-            if (!Read(object + 0xc, index) ||
-                Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(api->asset.objectArray), index, slot) != Slots::Status::Success ||
-                slot.Object != object || (slot.Flags & 0x10200000)) return false;
+            if (!api) { if (diagnostic) diagnostic->Observe(false, "identity API unavailable", "facility_unavailable"); return false; }
+            const bool valid = N::ValidateObjectIdentity(object, reinterpret_cast<uintptr_t>(api->asset.objectArray), extent);
+            if (!valid)
+            {
+                // This existing boolean helper does not expose read failure versus invalid identity.
+                if (diagnostic) diagnostic->Observe(false, "native identity validation", "identity_invalid_or_unobservable", object);
+                return false;
+            }
+            int32_t index{}; Slots::Slot slot; SlotReader reader{diagnostic};
+            if (!Read(object + 0xc, index, diagnostic) ||
+                !SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(api->asset.objectArray), index, slot), diagnostic) ||
+                (!diagnostic ? slot.Object != object : !diagnostic->Check(slot.Object == object, "identity slot object", object, slot.Object)) ||
+                (!diagnostic ? bool(slot.Flags & 0x10200000) : !diagnostic->Check(!(slot.Flags & 0x10200000), "identity slot flags", 0, slot.Flags & 0x10200000))) return false;
             identity = {object, index, slot.Serial};
             return true;
         }
-        bool CheckOwned(NativeReference& ref)
+        bool CheckOwned(NativeReference& ref, ReadinessDiagnostic* diagnostic = nullptr)
         {
-            if (ref.State != Ownership::Held || !GameThread()) return false;
+            if (ref.State != Ownership::Held)
+            {
+                if (diagnostic) diagnostic->Check(false, "reference ownership", uint64_t(Ownership::Held), uint64_t(ref.State));
+                return false;
+            }
+            if (!GameThread(diagnostic)) return false;
             ObjectIdentity now;
-            if (!Identify(ref.Object.Bits, now) || now.Index != ref.Object.Index) return false;
+            if (!Identify(ref.Object.Bits, now, 0x28, diagnostic)) return false;
+            if (now.Index != ref.Object.Index)
+            {
+                if (diagnostic) diagnostic->Check(false, "reference identity index", uint64_t(ref.Object.Index), uint64_t(now.Index));
+                return false;
+            }
             if (now.Serial == ref.Object.Serial) return true;
             // UE may assign a serial to a continuously retained zero-serial item.
             // Never allocate one or adopt a changed nonzero serial.
-            Slots::Slot slot; SlotReader reader;
-            if (ref.Object.Serial != 0 || now.Serial <= 0 ||
-                Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), now.Index, slot) != Slots::Status::Success ||
-                slot.Object != now.Bits || slot.Serial != now.Serial || !(slot.Flags & 0x20000000)) return false;
+            Slots::Slot slot; SlotReader reader{diagnostic};
+            const auto check = [&](bool passed, const char* detail, uint64_t expected, uint64_t current)
+            { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
+            if (!check(ref.Object.Serial == 0, "retained reference serial changed", uint64_t(ref.Object.Serial), uint64_t(now.Serial)) ||
+                !check(now.Serial > 0, "zero-serial adoption requires positive serial", 1, uint64_t(now.Serial)) ||
+                !SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), now.Index, slot), diagnostic) ||
+                !check(slot.Object == now.Bits, "adoption slot object", now.Bits, slot.Object) ||
+                !check(slot.Serial == now.Serial, "adoption slot serial", uint64_t(now.Serial), uint64_t(slot.Serial)) ||
+                !check(bool(slot.Flags & 0x20000000), "adoption retained slot flag", 0x20000000, slot.Flags & 0x20000000)) return false;
             ref.Object = now;
             return true;
         }
@@ -237,27 +384,30 @@ namespace
             ref = {};
             return true;
         }
-        bool Is(uintptr_t object, ClassId expected)
+        bool Is(uintptr_t object, ClassId expected, ReadinessDiagnostic* diagnostic = nullptr)
         {
             uintptr_t type{}; ObjectIdentity identity;
             auto& anchor = MetadataClasses[expected].Ref;
-            if (!CheckOwned(anchor) || !Identify(object, identity) || !Read(object + 0x10, type)) return false;
+            if (!CheckOwned(anchor, diagnostic) || !Identify(object, identity, 0x28, diagnostic) || !Read(object + 0x10, type, diagnostic)) return false;
             for (unsigned depth = 0; type && depth < 64; ++depth)
             {
-                if (!Identify(type, identity, sizeof(SDK::UClass))) return false;
+                if (!Identify(type, identity, sizeof(SDK::UClass), diagnostic)) return false;
                 if (type == anchor.Object.Bits) return true;
                 uintptr_t parent{};
-                if (!Read(type + 0x40, parent) || parent == type) return false;
+                if (!Read(type + 0x40, parent, diagnostic) ||
+                    (!diagnostic ? parent == type : !diagnostic->Check(parent != type, "class parent must differ", type, parent))) return false;
                 type = parent;
             }
+            if (diagnostic) diagnostic->Check(false, "class ancestry absent/exhausted", anchor.Object.Bits, type);
             return false;
         }
-        bool NoForeignRoot(NativeReference& ref)
+        bool NoForeignRoot(NativeReference& ref, ReadinessDiagnostic* diagnostic = nullptr)
         {
-            uint32_t flags{}; Slots::Slot slot; SlotReader reader;
-            return CheckOwned(ref) && Read(ref.Object.Bits + 8, flags) && !(flags & 2) &&
-                Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), ref.Object.Index, slot) == Slots::Status::Success &&
-                !(slot.Flags & 0x40000000);
+            uint32_t flags{}; Slots::Slot slot; SlotReader reader{diagnostic};
+            return CheckOwned(ref, diagnostic) && Read(ref.Object.Bits + 8, flags, diagnostic) &&
+                (!diagnostic ? !(flags & 2) : diagnostic->Check(!(flags & 2), "foreign object root flag", 0, flags & 2)) &&
+                SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), ref.Object.Index, slot), diagnostic) &&
+                (!diagnostic ? !(slot.Flags & 0x40000000) : diagnostic->Check(!(slot.Flags & 0x40000000), "foreign slot root flag", 0, slot.Flags & 0x40000000));
         }
         bool ReleaseMetadata()
         {
@@ -297,67 +447,178 @@ namespace
                 Read(reinterpret_cast<uintptr_t>(renderer.threadedRendering), threaded) && threaded &&
                 Read(threading, multithreaded) && multithreaded;
         }
-        bool ObserveGameplay(Baseline& baseline)
+        bool ObserveGameplay(Baseline& baseline, ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto game = reinterpret_cast<uintptr_t>(MiniMapMap::GetWorld());
             uintptr_t engine{}, instance{}, contexts{}, current{}; int32_t capacity{}; uint8_t flags{};
-            if (!Read(reinterpret_cast<uintptr_t>(N::Get()->player.engineStorage), engine) ||
-                !Is(engine, Engine) || !Is(game, World) || !Read(game + 0x18d, flags) || (flags & 0x20) ||
-                !Read(game + 0x18b, flags) || !(flags & 0x40) ||
-                !Identify(game, baseline.Gameplay) || !Identify(engine, baseline.EngineObject) ||
-                !Read(game + 0x230, instance) || !Is(instance, GameInstance) || !Identify(instance, baseline.GameInstanceObject) ||
-                !Invoke(Operation::Context, engine, game, &baseline.Context) || !baseline.Context ||
-                !Read(baseline.Context + 0x2c0, current) || current != game ||
-                !Read(engine + 0x11c8, contexts) || !Read(engine + 0x11d0, baseline.ContextCount) ||
-                !Read(engine + 0x11d4, capacity) || baseline.ContextCount < 1 || capacity < baseline.ContextCount || capacity > 4096 ||
-                !N::IsMemoryRangeReadable(contexts, size_t(baseline.ContextCount) * 8, 8)) return false;
+            const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
+            { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
+            const auto observe = [&](bool succeeded, const char* detail)
+            { return !diagnostic ? succeeded : diagnostic->Observe(succeeded, detail); };
+            if (!Read(reinterpret_cast<uintptr_t>(N::Get()->player.engineStorage), engine, diagnostic) ||
+                !Is(engine, Engine, diagnostic) || !Is(game, World, diagnostic) || !Read(game + 0x18d, flags, diagnostic) || !check(!(flags & 0x20), "gameplay flags 0x18d mask", 0, flags & 0x20) ||
+                !Read(game + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40), "gameplay initialized flag", 0x40, flags & 0x40) ||
+                !Identify(game, baseline.Gameplay, 0x28, diagnostic) || !Identify(engine, baseline.EngineObject, 0x28, diagnostic) ||
+                !Read(game + 0x230, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
+                !observe(Invoke(Operation::Context, engine, game, &baseline.Context), "gameplay context lookup interrupted/unavailable") || !check(bool(baseline.Context), "gameplay context presence") ||
+                !Read(baseline.Context + 0x2c0, current, diagnostic) || !check(current == game, "context gameplay world", game, current) ||
+                !Read(engine + 0x11c8, contexts, diagnostic) || !Read(engine + 0x11d0, baseline.ContextCount, diagnostic) ||
+                !Read(engine + 0x11d4, capacity, diagnostic) || !check(baseline.ContextCount >= 1, "context count >= 1", 1, uint64_t(baseline.ContextCount)) ||
+                !check(capacity >= baseline.ContextCount, "context capacity >= count", uint64_t(baseline.ContextCount), uint64_t(capacity)) ||
+                !check(capacity <= 4096, "context capacity <= 4096", 4096, uint64_t(capacity)) ||
+                !observe(N::IsMemoryRangeReadable(contexts, size_t(baseline.ContextCount) * 8, 8), "context array unreadable")) return false;
             baseline.ContextHash = 1469598103934665603ULL;
             for (int32_t i = 0; i < baseline.ContextCount; ++i)
             {
                 uintptr_t context{};
-                if (!Read(contexts + size_t(i) * 8, context) || !N::IsMemoryRangeReadable(context, 0x2c8, 8) ||
-                    !Read(context + 0x2c0, current)) return false;
+                if (!Read(contexts + size_t(i) * 8, context, diagnostic) || !observe(N::IsMemoryRangeReadable(context, 0x2c8, 8), "context unreadable") ||
+                    !Read(context + 0x2c0, current, diagnostic)) return false;
                 baseline.ContextHash = ((baseline.ContextHash ^ context) * 1099511628211ULL ^ current) * 1099511628211ULL;
             }
             return true;
         }
-        bool GameplayUnchanged()
-        { Baseline after; return ObserveGameplay(after) && after == Before; }
-        bool Collection(uintptr_t world, bool initialized)
+        bool GameplayUnchanged(ReadinessDiagnostic* diagnostic = nullptr)
+        {
+            Baseline after;
+            if (diagnostic) diagnostic->Detail = "gameplay baseline observation";
+            if (!ObserveGameplay(after, diagnostic))
+            {
+                return false;
+            }
+            const bool unchanged = after == Before;
+            if (!unchanged && diagnostic)
+            {
+                // Compare already observed CPU values only, in Baseline member order.
+                const auto identity = [&](const char* bits, const char* index, const char* serial,
+                    const ObjectIdentity& expected, const ObjectIdentity& current)
+                {
+                    return diagnostic->Check(expected.Bits == current.Bits, bits, expected.Bits, current.Bits) &&
+                        diagnostic->Check(expected.Index == current.Index, index, uint64_t(expected.Index), uint64_t(current.Index)) &&
+                        diagnostic->Check(expected.Serial == current.Serial, serial, uint64_t(expected.Serial), uint64_t(current.Serial));
+                };
+                identity("gameplay pointer", "gameplay index", "gameplay serial", Before.Gameplay, after.Gameplay) &&
+                    identity("engine pointer", "engine index", "engine serial", Before.EngineObject, after.EngineObject) &&
+                    identity("game instance pointer", "game instance index", "game instance serial", Before.GameInstanceObject, after.GameInstanceObject) &&
+                    diagnostic->Check(Before.Context == after.Context, "gameplay context", Before.Context, after.Context) &&
+                    diagnostic->Check(Before.ContextHash == after.ContextHash, "context list hash", Before.ContextHash, after.ContextHash) &&
+                    diagnostic->Check(Before.ContextCount == after.ContextCount, "context count", uint64_t(Before.ContextCount), uint64_t(after.ContextCount));
+            }
+            return unchanged;
+        }
+        bool Collection(uintptr_t world, bool initialized, ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto collection = world + 0x9f0;
             uintptr_t outer{}; bool populating{}, iterating{}; int32_t entries{}, free{}, arrays{}, arraysFree{};
-            return Read(collection + 0xb0, outer) && Read(collection + 0xb8, populating) && Read(collection + 0xb9, iterating) &&
-                Read(collection + 0x10, entries) && Read(collection + 0x3c, free) &&
-                Read(collection + 0x60, arrays) && Read(collection + 0x8c, arraysFree) &&
-                entries >= 0 && free >= 0 && free <= entries && arrays >= 0 && arraysFree >= 0 && arraysFree <= arrays &&
-                (initialized || (entries == free && arrays == arraysFree)) &&
-                outer == (initialized ? world : 0) && !populating && !iterating;
+            const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
+            { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
+            return Read(collection + 0xb0, outer, diagnostic) && Read(collection + 0xb8, populating, diagnostic) && Read(collection + 0xb9, iterating, diagnostic) &&
+                Read(collection + 0x10, entries, diagnostic) && Read(collection + 0x3c, free, diagnostic) &&
+                Read(collection + 0x60, arrays, diagnostic) && Read(collection + 0x8c, arraysFree, diagnostic) &&
+                check(entries >= 0, "collection entries nonnegative", 0, uint64_t(entries)) &&
+                check(free >= 0, "collection free nonnegative", 0, uint64_t(free)) &&
+                check(free <= entries, "collection free <= entries", uint64_t(entries), uint64_t(free)) &&
+                check(arrays >= 0, "collection arrays nonnegative", 0, uint64_t(arrays)) &&
+                check(arraysFree >= 0, "collection arrays free nonnegative", 0, uint64_t(arraysFree)) &&
+                check(arraysFree <= arrays, "collection arrays free <= arrays", uint64_t(arrays), uint64_t(arraysFree)) &&
+                (initialized || (check(entries == free, "uninitialized collection entries/free", uint64_t(entries), uint64_t(free)) &&
+                    check(arrays == arraysFree, "uninitialized collection arrays/free", uint64_t(arrays), uint64_t(arraysFree)))) &&
+                check(outer == (initialized ? world : 0), "collection outer", initialized ? world : 0, outer) &&
+                check(!populating, "collection populating", 0, populating) && check(!iterating, "collection iterating", 0, iterating);
         }
-        bool PrivateState(bool initialized)
+        bool PrivateState(bool initialized, ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto world = Private.Object.Bits;
             uintptr_t package{}, gameplayPackage{}, level{}, owner{}, settings{}, type{}, scene{}, gameplayScene{}, instance{}, net{}, context{};
             uint8_t worldType{}, a{}, b{}, c{}, ever{};
-            if (!CheckOwned(Private) || world == Before.Gameplay.Bits || !Is(world, World) ||
-                !NoForeignRoot(Private) || !CheckOwned(Package) || !NoForeignRoot(Package) ||
-                !Read(world + 0x20, package) || package != Package.Object.Bits ||
-                !Read(Before.Gameplay.Bits + 0x20, gameplayPackage) || package == gameplayPackage ||
-                !Read(world + 0x18a, worldType) || worldType != 5 || !Read(world + 0x18b, a) ||
-                !Read(world + 0x18c, b) || !Read(world + 0x18d, c) || !Read(world + 0x18f, ever) ||
-                bool(a & 0x40) != initialized || (b & 0x80) || (c & 0x21) || bool(ever & 2) != initialized ||
-                !Read(world + 0x258, scene) || bool(scene) != initialized ||
-                !Read(world + 0x230, instance) || instance || !Read(world + 0x38, net) || net ||
-                !Invoke(Operation::Context, Before.EngineObject.Bits, world, &context) || context ||
-                !CheckOwned(PersistentLevel) || !CheckOwned(WorldSettings) ||
-                !Read(world + 0x30, level) || level != PersistentLevel.Object.Bits ||
-                !Read(level + 0xc0, owner) || owner != world || !Read(level + 0x2c8, settings) || settings != WorldSettings.Object.Bits ||
-                !Read(settings + 0x10, type) || type != MetadataClasses[Settings].Ref.Object.Bits || !Collection(world, initialized)) return false;
+            const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
+            { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
+            const auto observe = [&](bool succeeded, const char* detail)
+            { return !diagnostic ? succeeded : diagnostic->Observe(succeeded, detail); };
+            if (!CheckOwned(Private, diagnostic) || !check(world != Before.Gameplay.Bits, "private/gameplay worlds must differ", Before.Gameplay.Bits, world) || !Is(world, World, diagnostic) ||
+                !NoForeignRoot(Private, diagnostic) || !CheckOwned(Package, diagnostic) || !NoForeignRoot(Package, diagnostic) ||
+                !Read(world + 0x20, package, diagnostic) || !check(package == Package.Object.Bits, "private package", Package.Object.Bits, package) ||
+                !Read(Before.Gameplay.Bits + 0x20, gameplayPackage, diagnostic) || !check(package != gameplayPackage, "private/gameplay packages must differ", gameplayPackage, package) ||
+                !Read(world + 0x18a, worldType, diagnostic) || !check(worldType == 5, "private world type", 5, worldType) || !Read(world + 0x18b, a, diagnostic) ||
+                !Read(world + 0x18c, b, diagnostic) || !Read(world + 0x18d, c, diagnostic) || !Read(world + 0x18f, ever, diagnostic) ||
+                !check(bool(a & 0x40) == initialized, "private initialized flag", initialized, bool(a & 0x40)) ||
+                !check(!(b & 0x80), "private flags 0x18c mask", 0, b & 0x80) ||
+                !check(!(c & 0x21), "private flags 0x18d mask", 0, c & 0x21) ||
+                !check(bool(ever & 2) == initialized, "private ever-initialized flag", initialized, bool(ever & 2)) ||
+                !Read(world + 0x258, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
+                !Read(world + 0x230, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
+                !observe(Invoke(Operation::Context, Before.EngineObject.Bits, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
+                !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) ||
+                !Read(world + 0x30, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
+                !Read(level + 0xc0, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
+                !Read(level + 0x2c8, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
+                !Read(settings + 0x10, type, diagnostic) || !check(type == MetadataClasses[Settings].Ref.Object.Bits, "world settings class", MetadataClasses[Settings].Ref.Object.Bits, type) || !Collection(world, initialized, diagnostic)) return false;
             if (initialized)
             {
-                if ((Scene && Scene != scene) || !N::IsMemoryRangeReadable(scene, 8, 8) ||
-                    !Read(Before.Gameplay.Bits + 0x258, gameplayScene) || !gameplayScene || scene == gameplayScene) return false;
+                if (!check(!(Scene && Scene != scene), "private scene identity", Scene, scene) || !observe(N::IsMemoryRangeReadable(scene, 8, 8), "private scene unreadable") ||
+                    !Read(Before.Gameplay.Bits + 0x258, gameplayScene, diagnostic) || !check(bool(gameplayScene), "gameplay scene presence") ||
+                    !check(scene != gameplayScene, "private/gameplay scenes must differ", gameplayScene, scene)) return false;
                 Scene = scene;
+                IsolatedGameplayPackage = gameplayPackage;
+                IsolatedGameplayScene = gameplayScene;
+            }
+            return true;
+        }
+        bool TeardownPrivateState(bool initialized, ReadinessDiagnostic* diagnostic)
+        {
+            const auto world = Private.Object.Bits;
+            const auto currentGameplay = reinterpret_cast<uintptr_t>(MiniMapMap::GetWorld());
+            const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
+            { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
+            const auto observe = [&](bool succeeded, const char* detail)
+            { return !diagnostic ? succeeded : diagnostic->Observe(succeeded, detail); };
+            // The gameplay world/context may already be ending or gone. Validate
+            // the current engine against its baseline before using its native accessor;
+            // never dereference Before.Gameplay, its package, scene, or context.
+            uintptr_t engine{}; ObjectIdentity engineIdentity;
+            if (!Read(reinterpret_cast<uintptr_t>(N::Get()->player.engineStorage), engine, diagnostic) ||
+                !Identify(engine, engineIdentity, sizeof(SDK::UEngine), diagnostic) ||
+                !check(engineIdentity.Bits == Before.EngineObject.Bits, "teardown engine pointer", Before.EngineObject.Bits, engineIdentity.Bits) ||
+                !check(engineIdentity.Index == Before.EngineObject.Index, "teardown engine index", uint64_t(Before.EngineObject.Index), uint64_t(engineIdentity.Index)) ||
+                !check(engineIdentity.Serial == Before.EngineObject.Serial, "teardown engine serial", uint64_t(Before.EngineObject.Serial), uint64_t(engineIdentity.Serial)) ||
+                !Is(engine, Engine, diagnostic)) return false;
+            uintptr_t package{}, level{}, owner{}, settings{}, type{}, scene{}, instance{}, net{}, context{};
+            uint8_t worldType{}, flags{};
+            if (!CheckOwned(Private, diagnostic) || !Is(world, World, diagnostic) ||
+                !check(world != Before.Gameplay.Bits, "private/baseline gameplay worlds must differ", Before.Gameplay.Bits, world) ||
+                !check(world != currentGameplay, "private/current gameplay worlds must differ", currentGameplay, world) ||
+                !NoForeignRoot(Private, diagnostic) || !CheckOwned(Package, diagnostic) || !NoForeignRoot(Package, diagnostic) ||
+                !check(bool(IsolatedGameplayPackage) && bool(IsolatedGameplayScene) && bool(Scene), "verified active isolation evidence present") ||
+                !Read(world + 0x20, package, diagnostic) || !check(package == Package.Object.Bits, "private package", Package.Object.Bits, package) ||
+                !check(package != IsolatedGameplayPackage, "private/baseline gameplay packages must differ", IsolatedGameplayPackage, package) ||
+                !Read(world + 0x18a, worldType, diagnostic) || !check(worldType == 5, "private world type", 5, worldType) ||
+                !Read(world + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40) == initialized, "private initialized flag", initialized, bool(flags & 0x40)) ||
+                !Read(world + 0x258, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
+                !check(scene != IsolatedGameplayScene, "private/baseline gameplay scenes must differ", IsolatedGameplayScene, scene) ||
+                !Read(world + 0x230, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
+                !observe(Invoke(Operation::Context, engine, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
+                !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) || !CheckOwned(MetadataClasses[Settings].Ref, diagnostic) ||
+                !Read(world + 0x30, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
+                !Read(level + 0xc0, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
+                !Read(level + 0x2c8, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
+                !Read(settings + 0x10, type, diagnostic) || !check(type == MetadataClasses[Settings].Ref.Object.Bits, "world settings class", MetadataClasses[Settings].Ref.Object.Bits, type) ||
+                !Collection(world, initialized, diagnostic)) return false;
+            if (initialized)
+            {
+                if (!Read(world + 0x18c, flags, diagnostic) || !check(!(flags & 0x80), "private flags 0x18c mask", 0, flags & 0x80) ||
+                    !Read(world + 0x18d, flags, diagnostic) || !check(!(flags & 0x21), "private flags 0x18d mask", 0, flags & 0x21) ||
+                    !Read(world + 0x18f, flags, diagnostic) || !check(bool(flags & 2), "private ever-initialized flag", 2, flags & 2) ||
+                    !observe(N::IsMemoryRangeReadable(scene, 8, 8), "private scene unreadable")) return false;
+            }
+            constexpr std::array<ClassId, 3> required{Electricity, Grid, Names};
+            for (size_t i = 0; i < Subsystems.size(); ++i)
+            {
+                auto& ref = Subsystems[i]; uintptr_t outer{}, collection{};
+                if (!CheckOwned(ref, diagnostic) || !Is(ref.Object.Bits, required[i], diagnostic) ||
+                    !Read(ref.Object.Bits + 0x20, outer, diagnostic) || !check(outer == world, "subsystem owning world", world, outer) ||
+                    !Read(ref.Object.Bits + 0x28, collection, diagnostic) ||
+                    !check(collection == (initialized ? world + 0x9f0 : 0), "subsystem collection", initialized ? world + 0x9f0 : 0, collection)) return false;
             }
             return true;
         }
@@ -407,6 +668,7 @@ namespace
             if (!CanStartSession()) return;
             Before = {};
             Scene = 0;
+            IsolatedGameplayPackage = IsolatedGameplayScene = 0;
             Phase = WorldPhase::Preparing;
             if (!Preflight())
             {
@@ -435,43 +697,80 @@ namespace
             Phase = WorldPhase::Ready;
         }
 
-        bool CleanupPreconditions()
+        bool CleanupPreconditions(ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto world = Private.Object.Bits;
             int32_t count{}; uintptr_t visibility{};
-            return QuietGC() && GameplayUnchanged() && PrivateState(true) &&
-                Read(world + 0x98, count) && !count && Read(world + 0xa8, count) && !count &&
-                Read(world + 0xb8, count) && !count && Read(world + 0xc0, count) && !count &&
-                Invoke(Operation::Visibility, world, 0, &visibility) && !visibility;
-        }
-        bool CleanupPostconditions()
-        {
-            const auto world = Private.Object.Bits;
-            uint8_t flags{}; bool ticking{}; uintptr_t tickType{}, instance{}, net{}, scene{}, context{};
-            if (!QuietGC() || !GameplayUnchanged() || !CheckOwned(Private) ||
-                !Read(world + 0x18b, flags) || (flags & 0x40) || !Collection(world, false) ||
-                !CheckOwned(Subsystems[0]) || !Read(Subsystems[0].Object.Bits + 0x38, ticking) || ticking ||
-                !Invoke(Operation::TickType, Subsystems[0].Object.Bits + 0x30, 0, &tickType) || tickType != 2 ||
-                !Read(world + 0x230, instance) || instance || !Read(world + 0x38, net) || net ||
-                !Read(world + 0x258, scene) || scene != Scene || !NoForeignRoot(Private) || !NoForeignRoot(Package) ||
-                !Invoke(Operation::Context, Before.EngineObject.Bits, world, &context) || context) return false;
-            for (auto& ref : Subsystems)
+            const auto stage = [&](const char* name) { if (diagnostic) diagnostic->Stage(name); return true; };
+            const auto counter = [&](uintptr_t offset, const char* name)
             {
-                uintptr_t collection{};
-                if (!CheckOwned(ref) || !Read(ref.Object.Bits + 0x28, collection) || collection) return false;
-            }
-            return GameplayUnchanged() && QuietGC();
+                if (!Read(world + offset, count, diagnostic)) return false;
+                return !diagnostic ? !count : diagnostic->Check(!count, name, 0, uint64_t(count));
+            };
+            return stage("GC admission") && QuietGC(diagnostic) &&
+                stage("teardown private ownership/isolation") && TeardownPrivateState(true, diagnostic) &&
+                stage("streaming counter +0x98") && counter(0x98, "world counter +0x98") &&
+                stage("streaming counter +0xA8") && counter(0xa8, "world counter +0xA8") &&
+                stage("streaming counter +0xB8") && counter(0xb8, "world counter +0xB8") &&
+                stage("streaming counter +0xC0") && counter(0xc0, "world counter +0xC0") &&
+                stage("pending visibility") &&
+                (!diagnostic ? Invoke(Operation::Visibility, world, 0, &visibility) :
+                    diagnostic->Observe(Invoke(Operation::Visibility, world, 0, &visibility), "visibility lookup interrupted/unavailable")) &&
+                (!diagnostic ? !visibility : diagnostic->Check(!visibility, "visibility pending", 0, visibility));
+        }
+        bool CleanupPostconditions(ReadinessDiagnostic* diagnostic = nullptr)
+        {
+            bool ticking{}; uintptr_t tickType{};
+            const auto stage = [&](const char* name) { if (diagnostic) diagnostic->Stage(name); return true; };
+            return stage("post-cleanup GC admission") && QuietGC(diagnostic) &&
+                stage("post-cleanup private ownership/isolation") && TeardownPrivateState(false, diagnostic) &&
+                stage("post-cleanup electricity initialized flag") &&
+                Read(Subsystems[0].Object.Bits + 0x38, ticking, diagnostic) &&
+                (!diagnostic ? !ticking : diagnostic->Check(!ticking, "electricity initialized flag", 0, ticking)) &&
+                stage("post-cleanup electricity tick type") &&
+                (!diagnostic ? Invoke(Operation::TickType, Subsystems[0].Object.Bits + 0x30, 0, &tickType) :
+                    diagnostic->Observe(Invoke(Operation::TickType, Subsystems[0].Object.Bits + 0x30, 0, &tickType), "tick type lookup interrupted/unavailable")) &&
+                (!diagnostic ? tickType == 2 : diagnostic->Check(tickType == 2, "electricity tick type Never", 2, tickType)) &&
+                stage("post-cleanup final GC admission") && QuietGC(diagnostic);
         }
         bool Retire(bool requestActive)
         {
             if (CanStartSession()) return true; // No native ownership remains in these states.
             if (Phase == WorldPhase::Quarantined) return false;
+            // Cleanup has not begun: an observed GC pause leaves every owner intact.
+            ReadinessDiagnostic diagnostic;
+            if (!requestActive && Phase == WorldPhase::Ready && !QuietGC(&diagnostic))
+            {
+                if (diagnostic.TransientGC) return false;
+                LOG_ERROR("MiniMap: world cleanup GC admission failed: detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                    diagnostic.Detail, diagnostic.Outcome, unsigned(diagnostic.ValuesAvailable),
+                    static_cast<unsigned long long>(diagnostic.Expected), static_cast<unsigned long long>(diagnostic.Current),
+                    static_cast<unsigned long long>(diagnostic.Address));
+                Quarantine("world cleanup GC observation or prerequisites invalid"); return false;
+            }
             // Request resources must be retired before world-only teardown.
-            if (requestActive || Phase != WorldPhase::Ready || !Facilities() || !CleanupPreconditions())
-            { Quarantine("world cleanup admission or active-resource exclusion failed"); return false; }
+            diagnostic.Stage("active-resource exclusion");
+            if (!diagnostic.Check(!requestActive, "request active", 0, requestActive) ||
+                (diagnostic.Stage("native world phase"), !diagnostic.Check(Phase == WorldPhase::Ready, "native world phase", uint64_t(WorldPhase::Ready), uint64_t(Phase))) ||
+                (diagnostic.Stage("facilities"), !Facilities(&diagnostic)) || !CleanupPreconditions(&diagnostic))
+            {
+                if (diagnostic.TransientGC) return false; // No cleanup operation has begun.
+                LOG_ERROR("MiniMap: world cleanup admission rejected: worldPhase=%u requestActive=%u predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                    unsigned(Phase), unsigned(requestActive), diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
+                    unsigned(diagnostic.ValuesAvailable), static_cast<unsigned long long>(diagnostic.Expected),
+                    static_cast<unsigned long long>(diagnostic.Current), static_cast<unsigned long long>(diagnostic.Address));
+                Quarantine("world cleanup admission or active-resource exclusion failed"); return false;
+            }
             Phase = WorldPhase::Retiring;
-            if (!Invoke(Operation::Cleanup, Private.Object.Bits) || !CleanupPostconditions())
-            { Quarantine("world cleanup interrupted or subsystem detachment invalid"); return false; }
+            diagnostic.Stage("native cleanup invocation");
+            if (!diagnostic.Observe(Invoke(Operation::Cleanup, Private.Object.Bits), "cleanup invocation interrupted/unavailable") || !CleanupPostconditions(&diagnostic))
+            {
+                LOG_ERROR("MiniMap: world cleanup execution/postconditions rejected: worldPhase=%u requestActive=%u predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                    unsigned(Phase), unsigned(requestActive), diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
+                    unsigned(diagnostic.ValuesAvailable), static_cast<unsigned long long>(diagnostic.Expected),
+                    static_cast<unsigned long long>(diagnostic.Current), static_cast<unsigned long long>(diagnostic.Address));
+                Quarantine("world cleanup interrupted or subsystem detachment invalid"); return false;
+            }
             for (auto& ref : Subsystems)
                 if (!Drop(ref)) { Quarantine("subsystem release uncertain"); return false; }
             if (!Drop(WorldSettings) || !Drop(PersistentLevel) || !Drop(Package) || !Drop(Private) || !ReleaseMetadata())
@@ -684,8 +983,44 @@ namespace
 
         void Quarantine(const char* reason)
         { Phase = RequestPhase::Quarantined; g_nativeWorld.Quarantine(reason); }
-        bool Ready()
-        { return g_nativeWorld.Phase == WorldPhase::Ready && QuietGC() && g_nativeWorld.GameplayUnchanged() && g_nativeWorld.PrivateState(true); }
+        bool Ready(ReadinessDiagnostic* diagnostic = nullptr)
+        {
+            if (g_nativeWorld.Phase != WorldPhase::Ready)
+            {
+                if (diagnostic) diagnostic->Check(false, "native world phase", uint64_t(WorldPhase::Ready), uint64_t(g_nativeWorld.Phase));
+                return false;
+            }
+            if (diagnostic) diagnostic->Predicate = "GC admission";
+            if (!QuietGC(diagnostic)) return false;
+            if (diagnostic) diagnostic->Predicate = "gameplay baseline observation/comparison";
+            if (!g_nativeWorld.GameplayUnchanged(diagnostic)) return false;
+            if (diagnostic)
+            {
+                diagnostic->Predicate = "private-world ownership/isolation validation";
+                diagnostic->Detail = "private-world validation/observation failed";
+            }
+            return g_nativeWorld.PrivateState(true, diagnostic);
+        }
+        // Only resumable entry boundaries defer. Inner native-operation guards
+        // still fail closed: a partially executed operation must never be replayed.
+        bool Admit(const char* reason, bool* gcDeferred = nullptr)
+        {
+            if (gcDeferred) *gcDeferred = false;
+            ReadinessDiagnostic diagnostic;
+            if (Ready(&diagnostic)) return true;
+            if (diagnostic.TransientGC)
+            {
+                if (gcDeferred) *gcDeferred = true;
+                return false;
+            }
+            if (g_nativeWorld.Phase != WorldPhase::Quarantined)
+                LOG_ERROR("MiniMap: capture readiness failed: requestPhase=%u worldPhase=%u predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX reason=%s",
+                    unsigned(Phase), unsigned(g_nativeWorld.Phase), diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
+                    unsigned(diagnostic.ValuesAvailable),
+                    static_cast<unsigned long long>(diagnostic.Expected), static_cast<unsigned long long>(diagnostic.Current),
+                    static_cast<unsigned long long>(diagnostic.Address), reason);
+            Quarantine(reason); return false;
+        }
         bool FenceAvailable()
         {
             bool available{};
@@ -928,8 +1263,9 @@ namespace
 #endif
             return ReleaseFence() && RetireObjects();
         }
-        bool Retire()
+        bool Retire(bool* gcDeferred = nullptr)
         {
+            if (gcDeferred) *gcDeferred = false;
             if (Phase == RequestPhase::Quarantined) return false;
             if (!HasNativeOwnership())
             {
@@ -937,7 +1273,7 @@ namespace
                     Phase = CaptureSubmitted && Rgba.empty() ? RequestPhase::Failed : RequestPhase::Retired;
                 return true;
             }
-            if (!Ready()) { Quarantine("capture retirement world admission failed"); return false; }
+            if (!Admit("capture retirement world admission failed", gcDeferred)) return false;
             if (Phase == RequestPhase::Retiring) return FinishRetirement();
             if (!DetachCapture()) return false;
             if (CaptureSubmitted)
@@ -1003,11 +1339,13 @@ namespace
             if (Phase == RequestPhase::Quarantined || Phase == RequestPhase::Failed || Phase == RequestPhase::Retired) return;
             if (!GameThread() || g_captureServiceTick == (std::numeric_limits<uint64_t>::max)())
             { Quarantine("capture service thread or tick counter invalid"); return; }
-            ++g_captureServiceTick;
             try
             {
+                if (!Admit("capture service native world changed")) return;
+                // A GC-blocked iteration neither advances this clock nor replays
+                // preparation, C0, C10 commitment, readback service, or retirement.
+                ++g_captureServiceTick;
                 if (Phase == RequestPhase::Waiting) { Prepare(); return; }
-                if (!Ready()) { Quarantine("capture service native world changed"); return; }
                 if (Phase == RequestPhase::Retiring) { Retire(); return; }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
                 if (Phase == RequestPhase::Prepared || Phase == RequestPhase::C0)
@@ -1239,8 +1577,11 @@ namespace MiniMapBuildingSpriteRenderer
             { g_nativeWorld.Quarantine("capture service encountered an incomplete world transition"); return; }
             if (g_worldCreationAttempts >= kWorldCreationAttempts) return;
             if (g_worldRetryTicks) { --g_worldRetryTicks; return; }
+            ReadinessDiagnostic diagnostic;
+            const bool quiet = QuietGC(&diagnostic);
+            if (!quiet && diagnostic.TransientGC) return; // GC does not consume a creation attempt.
             ++g_worldCreationAttempts;
-            if (Facilities() && QuietGC())
+            if (quiet)
             {
                 try { g_nativeWorld.Create(); }
                 catch (...) { g_nativeWorld.Quarantine("private-world creation exception"); return; }
@@ -1256,7 +1597,16 @@ namespace MiniMapBuildingSpriteRenderer
         }
         // An idle, retained world can wait for GC to become quiet. Never dequeue
         // until its current gameplay identity and private ownership are verified.
-        if (!QuietGC()) return;
+        ReadinessDiagnostic diagnostic;
+        if (!QuietGC(&diagnostic))
+        {
+            if (diagnostic.TransientGC) return;
+            LOG_ERROR("MiniMap: idle capture GC admission failed: detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                diagnostic.Detail, diagnostic.Outcome, unsigned(diagnostic.ValuesAvailable),
+                static_cast<unsigned long long>(diagnostic.Expected), static_cast<unsigned long long>(diagnostic.Current),
+                static_cast<unsigned long long>(diagnostic.Address));
+            g_nativeWorld.Quarantine("idle capture GC observation or prerequisites invalid"); return;
+        }
         if (!g_nativeWorld.GameplayUnchanged() || !g_nativeWorld.PrivateState(true))
         { g_nativeWorld.Quarantine("idle capture world identity or isolation changed"); return; }
         try
@@ -1280,15 +1630,19 @@ namespace MiniMapBuildingSpriteRenderer
     void EndSession()
     {
         g_sessionActive = false; // Cancel CPU publication too: no late cache write or feedback.
-        if (g_activeRequest && !g_activeRequest->Retire())
+        bool gcDeferred = false;
+        if (g_activeRequest && !g_activeRequest->Retire(&gcDeferred))
         {
+            // No native cleanup began. Keep the canceled request/world intact;
+            // a later lifecycle call may retry, but no background work is added.
+            if (gcDeferred) return;
             // No background session-end service. A pending fence/Job preserves
             // the request and dependent world; cancellation is not retirement.
             if (g_activeRequest->Phase != RequestPhase::Quarantined)
                 g_activeRequest->Quarantine("session ended before native capture retirement completed");
             return;
         }
-        if (g_nativeWorld.Retire(false))
+        if (g_nativeWorld.Retire(g_activeRequest && g_activeRequest->HasNativeOwnership()))
             g_activeRequest.reset();
     }
 
