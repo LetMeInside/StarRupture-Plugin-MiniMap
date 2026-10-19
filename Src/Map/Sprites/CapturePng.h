@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 #include <filesystem>
 #include <string>
+#include <utility>
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -43,7 +44,56 @@ namespace MiniMapCapturePng
         }
         return true;
     }
-    // Final display RGBA8 only; native HDR conversion above is deliberately unchanged.
+    // FinalColorLDR in a non-sRGB PF_FloatRGBA target with TargetGamma=2.2:
+    // Unreal has already applied its tone curve and output transfer function.
+    // These are RGBA half-floats in channel order, not BGRA8 or scene-linear RGB.
+    inline bool FinalColorRgb(const std::vector<uint8_t>& pixels,size_t w,size_t h,std::vector<uint8_t>& out)
+    {
+        size_t row,total,source;
+        if(w>4096 || h>4096 || !MiniMapFloatPixels::Size(w,h,w,h,row,total,source) || pixels.size()!=total) return false;
+        std::vector<uint8_t> rgb(w*h*3);
+        for(size_t i=0;i<w*h;++i) for(size_t k=0;k<3;++k)
+        {
+            const size_t p=i*8+k*2;
+            const float c=MiniMapFloatPixels::Half(uint16_t(pixels[p])|(uint16_t(pixels[p+1])<<8));
+            if(!std::isfinite(c)) return false;
+            rgb[i*3+k]=Byte(c); // Clamp/quantize only: no Reinhard, gamma or unassociation.
+        }
+        out=std::move(rgb);
+        return true;
+    }
+    inline bool HdrCoverage(const std::vector<uint8_t>& hdr,size_t w,size_t h,std::vector<uint8_t>& out)
+    {
+        size_t row,total,source;
+        if(w>4096 || h>4096 || !MiniMapFloatPixels::Size(w,h,w,h,row,total,source) || hdr.size()!=total) return false;
+        std::vector<uint8_t> coverage(w*h);
+        for(size_t i=0;i<w*h;++i)
+        {
+            const size_t p=i*8+6;
+            const float inverseOpacity=MiniMapFloatPixels::Half(uint16_t(hdr[p])|(uint16_t(hdr[p+1])<<8));
+            if(!std::isfinite(inverseOpacity)) return false;
+            coverage[i]=Byte(1.f-std::clamp(inverseOpacity,0.f,1.f));
+        }
+        out=std::move(coverage); // Independent of the native Job's pixel lifetime.
+        return true;
+    }
+    inline bool CombineFinalColorCoverage(const std::vector<uint8_t>& rgb,const std::vector<uint8_t>& coverage,
+        size_t w,size_t h,std::vector<uint8_t>& out)
+    {
+        if(!w || !h || w>4096 || h>4096 || coverage.size()!=w*h || rgb.size()!=w*h*3) return false;
+        std::vector<uint8_t> rgba(w*h*4);
+        for(size_t i=0;i<w*h;++i)
+        {
+            const auto alpha=coverage[i];
+            rgba[i*4+3]=alpha;
+            // Accepted experiment: fractional-alpha RGB retains the final capture's
+            // background contribution. No inverse tone map or divide by coverage.
+            if(alpha) for(size_t k=0;k<3;++k) rgba[i*4+k]=rgb[i*3+k];
+        }
+        out=std::move(rgba);
+        return true;
+    }
+    // Sprite processing below consumes final display RGBA8.
     struct ProcessedImage
     {
         std::vector<uint8_t> Rgba;

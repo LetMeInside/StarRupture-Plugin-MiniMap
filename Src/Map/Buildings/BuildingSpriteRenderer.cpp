@@ -271,9 +271,76 @@ namespace
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
 
+    enum class LightOperation { New, Flags, Register, Unregister, Destroy, ConstructFence, BeginFence, PollFence, DestroyFence };
+    bool LightCall(LightOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr) noexcept
+    {
+        const auto* api = N::Get();
+        if (!api) return false;
+        __try
+        {
+            switch (operation)
+            {
+            case LightOperation::New:
+                {
+                    SDK::TSubclassOf<SDK::UObject> type(reinterpret_cast<SDK::UClass*>(argument));
+                    *result = reinterpret_cast<uintptr_t>(api->asset.spawnObject(&type, reinterpret_cast<SDK::UObject*>(object)));
+                } break;
+            case LightOperation::Flags: api->asset.setObjectFlags(reinterpret_cast<SDK::UObject*>(object), 0x40); break;
+            case LightOperation::Register: api->player.registerComponent(reinterpret_cast<SDK::UActorComponent*>(object), reinterpret_cast<SDK::UWorld*>(argument), nullptr); break;
+            case LightOperation::Unregister: api->player.unregisterComponent(reinterpret_cast<SDK::UActorComponent*>(object)); break;
+            case LightOperation::Destroy: api->player.destroyComponent(reinterpret_cast<SDK::UActorComponent*>(object), false); break;
+            case LightOperation::ConstructFence: api->texture.renderFenceConstruct(reinterpret_cast<void*>(object)); break;
+            case LightOperation::BeginFence: api->texture.renderFenceBegin(reinterpret_cast<void*>(object), 1); break;
+            case LightOperation::PollFence: *result = api->texture.renderFencePoll(reinterpret_cast<const void*>(object)); break;
+            case LightOperation::DestroyFence: api->texture.renderFenceDestroy(reinterpret_cast<void*>(object)); break;
+            }
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+    bool ConfigureLight(uintptr_t object, size_t index) noexcept
+    {
+        // Studio parameters, in the same local coordinates as every captured actor.
+        // Angles describe the light rays (UE component +X), not the position of a lamp.
+        struct Settings { double Pitch, Yaw; float Intensity; uint8_t R, G, B; bool Shadows; };
+        static constexpr Settings rig[] = {
+            {-55, -45, 6.f, 255, 248, 240, true}, // Key: 35 degrees off vertical.
+            {-35, 135, 2.f, 238, 245, 255, false} // Fill: opposite azimuth, no hard fill shadows.
+        };
+        static_assert(sizeof(SDK::UDirectionalLightComponent) == 0x480);
+        static_assert(offsetof(SDK::ULightComponentBase, Intensity) == 0x274);
+        static_assert(offsetof(SDK::ULightComponentBase, LightColor) == 0x278);
+        __try
+        {
+            const auto& settings = rig[index];
+            auto* light = reinterpret_cast<SDK::UDirectionalLightComponent*>(object);
+            // All properties are set before registration; no deferred property updates.
+            light->PrimaryComponentTick.bCanEverTick = false;
+            light->bReplicates = false; light->bAutoActivate = false; light->bCanEverAffectNavigation = false;
+            light->Mobility = SDK::EComponentMobility::Movable;
+            light->Intensity = settings.Intensity;
+            light->LightColor.R = settings.R; light->LightColor.G = settings.G;
+            light->LightColor.B = settings.B; light->LightColor.A = 255;
+            light->bUseTemperature = false;
+            light->bAffectsWorld = true; light->CastShadows = settings.Shadows;
+            light->CastStaticShadows = false; light->CastDynamicShadows = settings.Shadows;
+            light->bAffectTranslucentLighting = true;
+            light->bAtmosphereSunLight = false; light->bPerPixelAtmosphereTransmittance = false;
+            light->bCastCloudShadows = false; light->bCastShadowsOnClouds = false; light->bCastShadowsOnAtmosphere = false;
+            light->LightSourceAngle = settings.Shadows ? 3.f : 6.f;
+            light->ForwardShadingPriority = settings.Shadows ? 1 : 0;
+            light->K2_SetWorldLocationAndRotation(SDK::FVector(0, 0, 0),
+                SDK::FRotator(settings.Pitch, settings.Yaw, 0), false, nullptr, true);
+            return true;
+        }
+        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+    }
+
     struct NativeWorldOwner
     {
-        enum ClassId { Class, World, Engine, Level, Settings, GameInstance, Electricity, Grid, Names, Mass, Replication, Wave, ClassCount };
+        enum ClassId { Class, World, Engine, Level, Settings, GameInstance, Electricity, Grid, Names, Mass, Replication, Wave, DirectionalLight, ClassCount };
         struct Metadata { const wchar_t* Path; size_t Size; NativeReference Ref; };
         std::array<Metadata, ClassCount> MetadataClasses{{
             {L"/Script/CoreUObject.Class", sizeof(SDK::UClass)},
@@ -287,7 +354,8 @@ namespace
             {L"/Script/Chimera.CrBuildingCustomNameSubsystem", sizeof(SDK::UCrBuildingCustomNameSubsystem)},
             {L"/Script/MassEntity.MassEntitySubsystem", sizeof(SDK::UMassEntitySubsystem)},
             {L"/Script/MassReplication.MassReplicationSubsystem", sizeof(SDK::UMassReplicationSubsystem)},
-            {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", sizeof(SDK::UCrEnviroWaveVisualsWorldSubsystem)}
+            {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", sizeof(SDK::UCrEnviroWaveVisualsWorldSubsystem)},
+            {L"/Script/Engine.DirectionalLightComponent", sizeof(SDK::UDirectionalLightComponent)}
         }};
         struct Baseline
         {
@@ -300,6 +368,12 @@ namespace
         WorldPhase Phase = WorldPhase::Inactive;
         NativeReference Private, Package, PersistentLevel, WorldSettings;
         std::array<NativeReference, 3> Subsystems{};
+        enum class RigPhase { Empty, Preparing, Pending, Ready, Detaching, Released };
+        RigPhase Rig = RigPhase::Empty;
+        std::array<NativeReference, 2> Lights{};
+        MiniMapCaptureRetirement::FenceOwner LightFence;
+        bool LightFailureReported = false;
+        uint8_t LightCleanupWaits = 0; // One GC wait and one pending-fence wait per world lifetime.
         uintptr_t Scene{}; // Observed through the owned world; never manually freed.
         // Numeric separation evidence from successful active PrivateState checks.
         // These are not owners and must never be dereferenced during teardown.
@@ -662,11 +736,312 @@ namespace
                 Read(Before.EngineObject.Bits + 0x190, configured) && configured == MetadataClasses[Settings].Ref.Object.Bits && QuietGC();
         }
 
+        static const char* RigName(RigPhase phase)
+        {
+            switch (phase)
+            {
+            case RigPhase::Empty: return "Empty";
+            case RigPhase::Preparing: return "Preparing";
+            case RigPhase::Pending: return "Pending";
+            case RigPhase::Ready: return "Ready";
+            case RigPhase::Detaching: return "Detaching";
+            case RigPhase::Released: return "Released";
+            }
+            return "invalid";
+        }
+        void LightDiagnostic(const char* operation, const ReadinessDiagnostic& diagnostic, int index = -1) noexcept
+        {
+            if (LightFailureReported) return;
+            LightFailureReported = true;
+            const auto object = index >= 0 && size_t(index) < Lights.size() ? Lights[size_t(index)].Object.Bits : 0;
+            try
+            {
+                if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
+                    self->logger->Warn(self,
+                        "MiniMap: shared lighting failure: rig=%s(%u) worldPhase=%u fence=%u light=%d object=0x%llX operation=%s predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                        RigName(Rig), unsigned(Rig), unsigned(Phase), unsigned(LightFence.GetState()), index,
+                        static_cast<unsigned long long>(object), operation, diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
+                        unsigned(diagnostic.ValuesAvailable), static_cast<unsigned long long>(diagnostic.Expected),
+                        static_cast<unsigned long long>(diagnostic.Current), static_cast<unsigned long long>(diagnostic.Address));
+            }
+            catch (...) {} // Evidence must never affect an ownership decision.
+        }
+        void LightCleanupWait(uint8_t bit, const char* reason) noexcept
+        {
+            if (Rig == RigPhase::Empty || Rig == RigPhase::Released || (LightCleanupWaits & bit)) return;
+            LightCleanupWaits |= bit;
+            try
+            {
+                if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
+                    self->logger->Warn(self,
+                        "MiniMap: shared lighting cleanup deferred: rig=%s(%u) worldPhase=%u fence=%u reason=%s; world/light ownership retained, CleanupWorld not invoked; no independent cleanup service",
+                        RigName(Rig), unsigned(Rig), unsigned(Phase), unsigned(LightFence.GetState()), reason);
+            }
+            catch (...) {}
+        }
+        bool LightFailure(const char* reason)
+        {
+            ReadinessDiagnostic diagnostic;
+            diagnostic.Stage(reason); diagnostic.Observe(false, reason);
+            LightDiagnostic("lifecycle", diagnostic);
+            // Quarantine remains mandatory even if its existing logger throws.
+            try { Quarantine(reason); }
+            catch (...) { Phase = WorldPhase::Quarantined; }
+            return false;
+        }
+        bool LightNative(LightOperation operation, uintptr_t object, uintptr_t argument = 0,
+            uintptr_t* result = nullptr, int index = -1)
+        {
+            const bool succeeded = LightCall(operation, object, argument, result);
+            if (!succeeded)
+            {
+                const char* name = "invalid";
+                switch (operation)
+                {
+                case LightOperation::New: name = "allocate"; break;
+                case LightOperation::Flags: name = "set transient flags"; break;
+                case LightOperation::Register: name = "register"; break;
+                case LightOperation::Unregister: name = "unregister"; break;
+                case LightOperation::Destroy: name = "destroy component"; break;
+                case LightOperation::ConstructFence: name = "construct fence"; break;
+                case LightOperation::BeginFence: name = "begin fence"; break;
+                case LightOperation::PollFence: name = "poll fence"; break;
+                case LightOperation::DestroyFence: name = "destroy fence"; break;
+                }
+                ReadinessDiagnostic diagnostic;
+                diagnostic.Stage("native operation");
+                diagnostic.Observe(false, "operation unavailable/interrupted; completion unknown", "native_operation_failed");
+                LightDiagnostic(name, diagnostic, index);
+            }
+            return succeeded;
+        }
+        bool LightGuard(bool teardown)
+        {
+            ReadinessDiagnostic diagnostic;
+            const auto stage = [&](const char* name) { diagnostic.Stage(name); return true; };
+            const bool admitted = diagnostic.Check(Phase == WorldPhase::Ready, "world phase", uint64_t(WorldPhase::Ready), uint64_t(Phase)) &&
+                stage("GC admission") && QuietGC(&diagnostic) &&
+                (teardown ? (stage("teardown ownership/isolation") && TeardownPrivateState(true, &diagnostic)) :
+                    (stage("gameplay baseline") && GameplayUnchanged(&diagnostic) &&
+                     stage("private ownership/isolation") && PrivateState(true, &diagnostic)));
+            if (!admitted) LightDiagnostic(teardown ? "teardown guard" : "active guard", diagnostic);
+            return admitted;
+        }
+        bool LightState(NativeReference& ref, bool registered, ReadinessDiagnostic* evidence = nullptr)
+        {
+            uintptr_t type{}, outer{}, owner{}, world{}, proxy{}; uint8_t flags{}; uint32_t visible{};
+            ReadinessDiagnostic local;
+            auto* diagnostic = evidence ? evidence : &local;
+            diagnostic->Stage(registered ? "registered light state" : "detached light state");
+            // CL-127004: AddLight (14344c170) stores SceneProxy at +0x340;
+            // Create/DestroyRenderState (14488ab80/14488c5c0) set/clear +0x3a0 bit 0.
+            // These are observations only; no offset-based native invocation.
+            const bool valid = CheckOwned(ref, diagnostic) && NoForeignRoot(ref, diagnostic) &&
+                Read(ref.Object.Bits + 0x10, type, diagnostic) && diagnostic->Check(type == MetadataClasses[DirectionalLight].Ref.Object.Bits, "light class", MetadataClasses[DirectionalLight].Ref.Object.Bits, type) &&
+                Read(ref.Object.Bits + 0x20, outer, diagnostic) && diagnostic->Check(outer == Private.Object.Bits, "light outer", Private.Object.Bits, outer) &&
+                Read(ref.Object.Bits + 0xa0, owner, diagnostic) && diagnostic->Check(!owner, "actorless light owner", 0, owner) &&
+                Read(ref.Object.Bits + 0xa8, world, diagnostic) && diagnostic->Check(world == (registered ? Private.Object.Bits : 0), "cached world", registered ? Private.Object.Bits : 0, world) &&
+                Read(ref.Object.Bits + 0x94, flags, diagnostic) && diagnostic->Check((flags & 3) == (registered ? 3 : 0), "registered/render-state mask", registered ? 3 : 0, flags & 3) &&
+                Read(ref.Object.Bits + 0x340, proxy, diagnostic) && diagnostic->Check(bool(proxy) == registered, "scene proxy presence", registered, bool(proxy)) &&
+                Read(ref.Object.Bits + 0x3a0, visible, diagnostic) && diagnostic->Check(bool(visible & 1) == registered, "added-visible mask", registered, visible & 1);
+            if (!valid) LightDiagnostic("validate component", *diagnostic, &ref == &Lights[0] ? 0 : 1);
+            return valid;
+        }
+        bool LightingReady(ReadinessDiagnostic* evidence = nullptr)
+        {
+            ReadinessDiagnostic local;
+            auto* diagnostic = evidence ? evidence : &local;
+            diagnostic->Stage("shared lighting readiness");
+            const bool ready = diagnostic->Check(Rig == RigPhase::Ready, "rig phase", uint64_t(RigPhase::Ready), uint64_t(Rig)) &&
+                CheckOwned(MetadataClasses[DirectionalLight].Ref, diagnostic) &&
+                LightState(Lights[0], true, diagnostic) && LightState(Lights[1], true, diagnostic);
+            if (!ready) LightDiagnostic("capture readiness", *diagnostic);
+            return ready;
+        }
+        struct LightFenceInterrupted {};
+        struct LightFenceOperations
+        {
+            NativeWorldOwner& Owner;
+            bool Available()
+            {
+                const auto* api = N::Get();
+                ReadinessDiagnostic diagnostic;
+                diagnostic.Stage("fence prerequisites");
+                if (diagnostic.Observe(api != nullptr, "native API unavailable") && QuietGC(&diagnostic) &&
+                    diagnostic.Observe(Owner.RendererAvailable(), "renderer prerequisites invalid/unobservable") &&
+                    diagnostic.Check(api->texture.renderFenceConstruct != nullptr, "construct fence binding present", 1, api->texture.renderFenceConstruct != nullptr) &&
+                    diagnostic.Check(api->texture.renderFenceBegin != nullptr, "begin fence binding present", 1, api->texture.renderFenceBegin != nullptr) &&
+                    diagnostic.Check(api->texture.renderFencePoll != nullptr, "poll fence binding present", 1, api->texture.renderFencePoll != nullptr) &&
+                    diagnostic.Check(api->texture.renderFenceDestroy != nullptr, "destroy fence binding present", 1, api->texture.renderFenceDestroy != nullptr)) return true;
+                Owner.LightDiagnostic("fence prerequisites", diagnostic);
+                return Owner.LightFailure("shared lighting fence prerequisites unavailable");
+            }
+            bool Call(LightOperation operation, void* storage, uintptr_t* result = nullptr)
+            {
+                if (Owner.LightNative(operation, reinterpret_cast<uintptr_t>(storage), 0, result)) return true;
+                return Owner.LightFailure("shared lighting fence operation interrupted");
+            }
+            bool Construct(void* storage) { return Call(LightOperation::ConstructFence, storage); }
+            bool Begin(void* storage) { return Call(LightOperation::BeginFence, storage); }
+            bool Poll(void* storage)
+            { uintptr_t complete{}; return Call(LightOperation::PollFence, storage, &complete) && complete; }
+            void Destroy(void* storage)
+            { if (!Call(LightOperation::DestroyFence, storage)) throw LightFenceInterrupted{}; }
+        };
+        bool ReleaseLightFence()
+        {
+            LightFenceOperations operations{*this};
+            try { if (LightFence.Release(operations)) return true; }
+            catch (const LightFenceInterrupted&) {} // Keep uncertain fence storage intact.
+            return LightFailure("shared lighting fence release uncertain");
+        }
+        bool ServiceLighting()
+        {
+            // Called before FIFO removal; no building or request resource exists yet.
+            ReadinessDiagnostic diagnostic;
+            diagnostic.Stage("GC admission");
+            if (!QuietGC(&diagnostic))
+            {
+                if (diagnostic.TransientGC) return false;
+                LightDiagnostic("service GC admission", diagnostic);
+                return LightFailure("shared lighting GC observation failed");
+            }
+            if (!LightGuard(false)) return LightFailure("shared lighting active-world admission failed");
+            LightFenceOperations operations{*this};
+            if (Rig == RigPhase::Empty)
+            {
+                Rig = RigPhase::Preparing; // A partial native operation is never replayed.
+                const auto& api = *N::Get();
+                diagnostic.Stage("creation prerequisites");
+                if (!diagnostic.Check(api.asset.spawnObject != nullptr, "allocation binding present", 1, api.asset.spawnObject != nullptr) ||
+                    !diagnostic.Check(api.asset.setObjectFlags != nullptr, "object flags binding present", 1, api.asset.setObjectFlags != nullptr) ||
+                    !diagnostic.Check(api.player.registerComponent != nullptr, "registration binding present", 1, api.player.registerComponent != nullptr) ||
+                    !diagnostic.Check(api.player.unregisterComponent != nullptr, "unregistration binding present", 1, api.player.unregisterComponent != nullptr) ||
+                    !diagnostic.Check(api.player.destroyComponent != nullptr, "component destruction binding present", 1, api.player.destroyComponent != nullptr) ||
+                    !diagnostic.Observe(LightFence.Rearm(), "registration fence storage cannot be rearmed", "fence_state_invalid") ||
+                    !diagnostic.Observe(LightFence.Prepare(operations), "registration fence preparation failed", "fence_prepare_failed"))
+                {
+                    LightDiagnostic("creation prerequisites", diagnostic);
+                    return LightFailure("shared lighting creation prerequisites unavailable");
+                }
+                for (size_t i = 0; i < Lights.size(); ++i)
+                {
+                    auto& ref = Lights[i]; ObjectIdentity identity;
+                    diagnostic.Stage("light preparation");
+                    if (!LightGuard(false) || !CheckOwned(MetadataClasses[DirectionalLight].Ref, &diagnostic) ||
+                        !LightNative(LightOperation::New, Private.Object.Bits, MetadataClasses[DirectionalLight].Ref.Object.Bits, &ref.Object.Bits, int(i)) ||
+                        !diagnostic.Check(ref.Object.Bits != 0, "allocated light presence", 1, ref.Object.Bits != 0) ||
+                        !diagnostic.Observe(Hold(ref.Object.Bits, ref), "light retention failed; ownership not established") ||
+                        !Identify(ref.Object.Bits, identity, sizeof(SDK::UDirectionalLightComponent), &diagnostic) || !LightState(ref, false, &diagnostic) ||
+                        !LightGuard(false) || !LightNative(LightOperation::Flags, ref.Object.Bits, 0, nullptr, int(i)) ||
+                        (diagnostic.Stage("configuration/transform"), !diagnostic.Observe(ConfigureLight(ref.Object.Bits, i), "configuration/transform operation interrupted")) || !LightGuard(false) ||
+                        !LightNative(LightOperation::Register, ref.Object.Bits, Private.Object.Bits, nullptr, int(i)) || !LightState(ref, true, &diagnostic))
+                    {
+                        LightDiagnostic("prepare light", diagnostic, int(i));
+                        return LightFailure("shared directional light creation/configuration/registration failed");
+                    }
+                }
+                // Null registration context creates render state immediately. Fence
+                // behind both AddLight commands, independently of building readback.
+                if (!LightFence.Insert(operations, true)) return LightFailure("shared lighting readiness fence insertion failed");
+                Rig = RigPhase::Pending;
+            }
+            if (Rig == RigPhase::Pending)
+            {
+                if (!LightFence.Poll(operations)) return false; // Nonblocking; faults quarantine through operations.
+                if (!LightState(Lights[0], true) || !LightState(Lights[1], true) || !ReleaseLightFence())
+                    return LightFailure("shared lighting render-state readiness invalid");
+                Rig = RigPhase::Ready;
+            }
+            return LightingReady() || LightFailure("shared lighting state invalid");
+        }
+        // Same retained pending-kill release contract as request-owned components.
+        bool ReleaseDestroyedLight(NativeReference& ref, ReadinessDiagnostic& diagnostic)
+        {
+            Slots::Slot slot; SlotReader reader; int32_t index{}, count{}; uint32_t flags{};
+            const auto bits = ref.Object.Bits;
+            diagnostic.Stage("pending-kill light release");
+            reader.Diagnostic = &diagnostic;
+            if (!diagnostic.Check(ref.State == Ownership::Held, "retained ownership", uint64_t(Ownership::Held), uint64_t(ref.State)) || !QuietGC(&diagnostic) ||
+                !SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), ref.Object.Index, slot), &diagnostic) ||
+                !diagnostic.Check(slot.Object == bits, "slot object", bits, slot.Object) ||
+                !diagnostic.Check(!(slot.Flags & 0x10000000), "slot unreachable mask", 0, slot.Flags & 0x10000000) ||
+                !diagnostic.Check(bool(slot.Flags & 0x20000000), "slot retained mask", 0x20000000, slot.Flags & 0x20000000) ||
+                !diagnostic.Check(bool(slot.Flags & 0x00200000), "slot garbage mask", 0x00200000, slot.Flags & 0x00200000) ||
+                !diagnostic.Observe(N::IsMemoryRangeReadable(bits, 0x28, 8), "destroyed light header unreadable", "read_failed", bits) ||
+                !Read(bits + 0xc, index, &diagnostic) || !diagnostic.Check(index == ref.Object.Index, "object index", uint64_t(ref.Object.Index), uint64_t(index)) ||
+                !Read(bits + 8, flags, &diagnostic) || !diagnostic.Check(!(flags & 0x1b400), "object flags mask", 0, flags & 0x1b400) ||
+                !Read(slot.Item + 0x14, count, &diagnostic) || !diagnostic.Check(count >= 1, "reference count >= 1", 1, uint64_t(count))) return false;
+            if (slot.Serial != ref.Object.Serial)
+            {
+                if (!diagnostic.Check(ref.Object.Serial == 0, "serial adoption requires retained zero serial", 0, uint64_t(ref.Object.Serial)) ||
+                    !diagnostic.Check(slot.Serial > 0, "serial adoption requires positive slot serial", 1, uint64_t(slot.Serial))) return false;
+                ref.Object.Serial = slot.Serial;
+            }
+            ref.State = Ownership::Uncertain;
+            if (!diagnostic.Observe(Invoke(Operation::Release, bits), "native retained-reference release interrupted")) return false;
+            ref = {}; return true;
+        }
+        bool RetireLighting()
+        {
+            // Caller excludes all request resources and uses teardown admission,
+            // never ending-gameplay flags. A pending readiness fence retains the entire world.
+            if (Rig == RigPhase::Empty || Rig == RigPhase::Released) return true;
+            if (!LightGuard(true)) return LightFailure("shared lighting teardown ownership/isolation invalid");
+            LightFenceOperations operations{*this};
+            if (Rig == RigPhase::Pending)
+            {
+                if (!LightFence.Poll(operations))
+                {
+                    if (Phase != WorldPhase::Quarantined) LightCleanupWait(2, "initial registration fence pending");
+                    return false;
+                }
+                if (!ReleaseLightFence()) return false;
+                Rig = RigPhase::Ready;
+            }
+            if (Rig == RigPhase::Ready)
+            {
+                if (!LightingReady())
+                    return LightFailure("shared lighting detach prerequisites invalid");
+                Rig = RigPhase::Detaching;
+                for (size_t i = 0; i < Lights.size(); ++i)
+                    if (!LightGuard(true) || !LightState(Lights[i], true) ||
+                        !LightNative(LightOperation::Unregister, Lights[i].Object.Bits, 0, nullptr, int(i)) || !LightState(Lights[i], false))
+                        return LightFailure("shared lighting scene detachment uncertain");
+            }
+            if (Rig != RigPhase::Detaching) return LightFailure("shared lighting retirement phase invalid");
+            // RemoveLight clears the component's proxy synchronously and hands
+            // scene-info/proxy deletion to the engine. DestroyComponent marks the
+            // UObject for GC; ULightComponent::BeginDestroy/IsReadyForFinishDestroy
+            // keep its memory/resources alive behind the engine's DestroyFence.
+            // Never delete a light/proxy manually or add a shutdown-only poll loop.
+            for (size_t i = 0; i < Lights.size(); ++i)
+            {
+                auto& ref = Lights[i];
+                uint8_t init{}, flags{};
+                ReadinessDiagnostic diagnostic;
+                diagnostic.Stage("light component destruction");
+                if (!LightGuard(true) || !LightState(ref, false) ||
+                    !Read(ref.Object.Bits + 0x97, init, &diagnostic) || !diagnostic.Check(!(init & 0x28), "initialized/begun-play mask", 0, init & 0x28) ||
+                    !LightNative(LightOperation::Destroy, ref.Object.Bits, 0, nullptr, int(i)) ||
+                    !Read(ref.Object.Bits + 0x94, flags, &diagnostic) || !diagnostic.Check(!(flags & 3), "destroyed registered/render-state mask", 0, flags & 3) ||
+                    !ReleaseDestroyedLight(ref, diagnostic))
+                {
+                    LightDiagnostic("destroy/release light", diagnostic, int(i));
+                    return LightFailure("shared lighting component destruction/release uncertain");
+                }
+            }
+            Rig = RigPhase::Released;
+            return true;
+        }
+
         // Called only by the serialized game-thread production service.
         void Create()
         {
             if (!CanStartSession()) return;
             Before = {};
+            Rig = RigPhase::Empty; // Previous lifetime has released its light references and fence.
+            LightFailureReported = false; LightCleanupWaits = 0;
             Scene = 0;
             IsolatedGameplayPackage = IsolatedGameplayScene = 0;
             Phase = WorldPhase::Preparing;
@@ -741,7 +1116,7 @@ namespace
             ReadinessDiagnostic diagnostic;
             if (!requestActive && Phase == WorldPhase::Ready && !QuietGC(&diagnostic))
             {
-                if (diagnostic.TransientGC) return false;
+                if (diagnostic.TransientGC) { LightCleanupWait(1, diagnostic.Detail); return false; }
                 LOG_ERROR("MiniMap: world cleanup GC admission failed: detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
                     diagnostic.Detail, diagnostic.Outcome, unsigned(diagnostic.ValuesAvailable),
                     static_cast<unsigned long long>(diagnostic.Expected), static_cast<unsigned long long>(diagnostic.Current),
@@ -754,12 +1129,24 @@ namespace
                 (diagnostic.Stage("native world phase"), !diagnostic.Check(Phase == WorldPhase::Ready, "native world phase", uint64_t(WorldPhase::Ready), uint64_t(Phase))) ||
                 (diagnostic.Stage("facilities"), !Facilities(&diagnostic)) || !CleanupPreconditions(&diagnostic))
             {
-                if (diagnostic.TransientGC) return false; // No cleanup operation has begun.
+                if (diagnostic.TransientGC) { LightCleanupWait(1, diagnostic.Detail); return false; } // No cleanup operation has begun.
                 LOG_ERROR("MiniMap: world cleanup admission rejected: worldPhase=%u requestActive=%u predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
                     unsigned(Phase), unsigned(requestActive), diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
                     unsigned(diagnostic.ValuesAvailable), static_cast<unsigned long long>(diagnostic.Expected),
                     static_cast<unsigned long long>(diagnostic.Current), static_cast<unsigned long long>(diagnostic.Address));
                 Quarantine("world cleanup admission or active-resource exclusion failed"); return false;
+            }
+            if (!RetireLighting()) return false; // Detach lights and hand resource destruction to the engine first.
+            // Light unregistration/destruction are native operations. Recheck the
+            // world-only contract after them, immediately before CleanupWorld.
+            if (!CleanupPreconditions(&diagnostic))
+            {
+                if (diagnostic.TransientGC) return false;
+                LOG_ERROR("MiniMap: post-lighting world cleanup admission rejected: predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
+                    diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome, unsigned(diagnostic.ValuesAvailable),
+                    static_cast<unsigned long long>(diagnostic.Expected), static_cast<unsigned long long>(diagnostic.Current),
+                    static_cast<unsigned long long>(diagnostic.Address));
+                Quarantine("world cleanup admission invalid after shared lighting retirement"); return false;
             }
             Phase = WorldPhase::Retiring;
             diagnostic.Stage("native cleanup invocation");
@@ -786,7 +1173,7 @@ namespace
     static_assert(std::is_trivially_destructible_v<NativeWorldOwner>);
     NativeWorldOwner g_nativeWorld;
 
-    enum class RequestPhase { Waiting, Preparing, Prepared, C0, Readback, Retiring, Failed, Retired, Quarantined };
+    enum class RequestPhase { Waiting, Preparing, Prepared, C0, Readback, Retiring, Failed, Retired, Quarantined, FinalColorPreparing };
     enum class ResourceOperation { New, Flags, Register, Unregister, DestroyActor, DestroyComponent, InitializeTarget, Resource, ConstructFence, BeginFence, PollFence, DestroyFence, CaptureScene };
     uint64_t g_captureServiceTick = 0; // Private service iterations, never reset at session boundaries.
 
@@ -894,19 +1281,30 @@ namespace
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
     bool ConfigureResources(SDK::USceneCaptureComponent2D* capture, SDK::UTextureRenderTarget2D* target,
-        const SDK::FVector* extent) noexcept
+        const SDK::FVector* extent, bool finalColor) noexcept
     {
         // SDK strings/arrays here borrow stack data; they do not own allocations.
         static_assert(std::is_trivially_destructible_v<SDK::FEngineShowFlagsSetting>);
         __try
         {
             MiniMapSpriteCapture::ConfigureSceneCapture(capture, *extent);
-            SDK::FEngineShowFlagsSetting flags[11]{};
+            capture->CaptureSource = finalColor ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR;
+            SDK::FEngineShowFlagsSetting flags[16]{};
             const wchar_t* names[] = {L"Fog", L"Atmosphere", L"VolumetricFog", L"Cloud", L"MotionBlur", L"TemporalAA",
-                L"AntiAliasing", L"PostProcessing", L"Bloom", L"EyeAdaptation", L"Lighting"};
-            for (int i = 0; i < 11; ++i) { flags[i].ShowFlagName = SDK::FString(names[i]); flags[i].Enabled = false; }
-            SDK::TArray<SDK::FEngineShowFlagsSetting> settings(flags, 11, 11);
+                L"AntiAliasing", L"PostProcessing", L"Bloom", L"EyeAdaptation",
+                L"Lighting", L"DirectLighting", L"Diffuse", L"Specular", L"DynamicShadows", L"Tonemapper"};
+            for (int i = 0; i < 16; ++i)
+            {
+                flags[i].ShowFlagName = SDK::FString(names[i]);
+                flags[i].Enabled = (i >= 10 && i < 15) || (finalColor && (i == 7 || i == 15));
+            }
+            SDK::TArray<SDK::FEngineShowFlagsSetting> settings(flags, 16, 16);
             capture->SetShowFlagSettings(settings);
+            // UE 5.6: GetDisplayGamma honors this before the float-format default.
+            // The final-color LUT supplies display encoding; the existing custom
+            // float target stays non-sRGB, so no hardware encoding is added.
+            static_assert(offsetof(SDK::UTextureRenderTarget, TargetGamma) == 0x140);
+            target->TargetGamma = finalColor ? 2.2f : 1.f;
             target->bAutoGenerateMips = false;
             target->bSupportsUAV = false;
             uint32_t targetFlags{};
@@ -947,7 +1345,12 @@ namespace
         NativeReference Actor, Capture, Target;
         SDK::FVector Center{}, Extent{};
         uint64_t PreparedTick{}, C0Tick{};
-        bool CaptureSubmitted = false, Committed = false; // Native lifetime history, including while Retiring.
+        bool CaptureSubmitted = false; // Monotonic scene-work history across both passes, including retirement.
+        bool Committed = false; // Current Job's readback commitment; reset only after that Job is destroyed.
+        bool FinalColorPass = false; // HDR first; switch only after its Job is fully retired.
+        uint32_t SceneSubmissions = 0; // Successful native calls, reported once after successful publication.
+        std::vector<uint8_t> Coverage; // HDR alpha survives destruction of its readback Job.
+        std::vector<uint8_t> FinalRgb;
         std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
         std::optional<bool> FinalResult; // Set once, including write failure; never retry persistence.
         bool FeedbackSubmitted = false;
@@ -976,8 +1379,8 @@ namespace
         {
             if (FailureReported) return;
             FailureReported = true;
-            Diagnostic("MiniMap: sprite request rejected: canonical=%s requestPhase=%u reason=%s; terminal publication failure, native retirement still required",
-                BlueprintPath.c_str(), unsigned(Phase), reason);
+            Diagnostic("MiniMap: sprite request rejected: canonical=%s requestPhase=%u source=%s reason=%s; terminal publication failure, native retirement still required",
+                BlueprintPath.c_str(), unsigned(Phase), FinalColorPass ? "FinalColorLDR" : "SceneColorHDR", reason);
         }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         MiniMapReadbackNative::Job* Job{};
@@ -1032,7 +1435,9 @@ namespace
                 diagnostic->Predicate = "private-world ownership/isolation validation";
                 diagnostic->Detail = "private-world validation/observation failed";
             }
-            return g_nativeWorld.PrivateState(true, diagnostic);
+            if (!g_nativeWorld.PrivateState(true, diagnostic)) return false;
+            if (diagnostic) diagnostic->Stage("shared lighting ownership/render state");
+            return g_nativeWorld.LightingReady(diagnostic);
         }
         // Only resumable entry boundaries defer. Inner native-operation guards
         // still fail closed: a partially executed operation must never be replayed.
@@ -1065,8 +1470,12 @@ namespace
         bool Call(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr)
         {
             const bool admitted = Ready();
-            if (admitted && ResourceCall(operation, object, argument, result)) return true;
-            Diagnostic("MiniMap: sprite native operation failed: canonical=%s requestPhase=%u operation=%u C0Submitted=%u C10Committed=%u reason=%s",
+            if (admitted && ResourceCall(operation, object, argument, result))
+            {
+                if (operation == ResourceOperation::CaptureScene) ++SceneSubmissions;
+                return true;
+            }
+            Diagnostic("MiniMap: sprite native operation failed: canonical=%s requestPhase=%u operation=%u captureEverSubmitted=%u readbackCommitted=%u reason=%s",
                 BlueprintPath.c_str(), unsigned(Phase), unsigned(operation), unsigned(CaptureSubmitted), unsigned(Committed),
                 admitted ? "native operation returned failure/interrupted" : "Ready admission failed; operation not invoked");
             Quarantine("request native operation interrupted or world ownership changed"); return false;
@@ -1216,9 +1625,23 @@ namespace
                     for (size_t axis = 0; axis < 3; ++axis)
                         validBounds &= std::isfinite(bounds.Min[axis]) && std::isfinite(bounds.Max[axis]) &&
                             bounds.Min[axis] <= bounds.Max[axis];
-                    if (Phase == RequestPhase::Retired && CaptureSubmitted && Committed &&
+                    if (Phase == RequestPhase::Retired && CaptureSubmitted && Committed && FinalColorPass && Coverage.size() == 256 * 256 && FinalRgb.size() == 256 * 256 * 3 &&
                         Path(BlueprintPath, wide) && Rgba.size() == 256 * 256 * 4 && validBounds)
+                    {
                         FinalResult = MiniMapBuildingCache::Write(BlueprintPath, Rgba.data(), 256, 256, bounds);
+                        if (*FinalResult)
+                        {
+                            // FinalResult is committed before logging/feedback: one message
+                            // per successful publication, even if feedback delivery retries.
+                            try
+                            {
+                                if (auto* self = GetSelf(); self && self->logger && self->logger->Info)
+                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR",
+                                        BlueprintPath.c_str(), SceneSubmissions);
+                            }
+                            catch (...) {}
+                        }
+                    }
                     else if (!FailureReported)
                         Rejected(Rgba.size() != 256 * 256 * 4 ? "capture produced no acceptable 256x256 RGBA result" :
                             !validBounds ? "cache publication bounds nonfinite/reversed" : "cache publication phase/submission/path prerequisites not satisfied");
@@ -1362,6 +1785,11 @@ namespace
             if (!Read(Capture.Object.Bits + 0x94, registered) || !(registered & 1) ||
                 !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits ||
                 !Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, TextureTarget), target) || target != Target.Object.Bits) return false;
+            SDK::ESceneCaptureSource source{}; float gamma{};
+            if (!Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, CaptureSource), source) ||
+                source != (FinalColorPass ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR) ||
+                !Read(Target.Object.Bits + offsetof(SDK::UTextureRenderTarget, TargetGamma), gamma) || gamma != (FinalColorPass ? 2.2f : 1.f))
+            { Rejected("capture source/target display gamma mismatch"); return false; }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (!Job) return false;
             const auto report = MiniMapReadbackNative::Inspect(Job);
@@ -1379,9 +1807,8 @@ namespace
             constexpr auto required = (1u << uint32_t(ReadbackPhase::ReadbackReady)) | (1u << uint32_t(ReadbackPhase::PixelsCopied)) | (1u << uint32_t(ReadbackPhase::Verified));
             const auto* pixels = MiniMapReadbackNative::FloatPixels(Job);
             const auto* stats = MiniMapReadbackNative::FloatStats(Job);
-            MiniMapCapturePng::Image image;
             // FloatPixels is packed by the adapter, independent of staging pitch.
-            // Same predicates and short-circuit order; no extra pixel pass or native observation.
+            // Both sources use the same verified RGBA16F copy/retirement contract.
             const char* rejected = nullptr;
             if (!report.HasPixels) rejected = "readback report has no pixels";
             else if (!report.NativeEnqueueEverInvoked) rejected = "readback native enqueue was never invoked";
@@ -1389,18 +1816,47 @@ namespace
             else if ((report.Visited & required) != required) rejected = "required readback verification phases not visited";
             else if (!pixels || !stats) rejected = "readback pixel buffer/statistics unavailable";
             else if (pixels->size() != 256 * 256 * 8) rejected = "unexpected packed 256x256 float RGBA byte length";
-            else if (!MiniMapCapturePng::Convert(pixels->data(), pixels->size(), 256, 256, 256, 256, image)) rejected = "RGBA pixel conversion failed";
-            else if (image.Rgba.size() != 256 * 256 * 4) rejected = "unexpected converted 256x256 RGBA byte length";
-            else if (image.Sanitized) rejected = "converted pixels required sanitization";
             else if (stats->Nonfinite) rejected = "readback contains nonfinite pixel data";
-            else if (!stats->Foreground) rejected = "readback has no foreground pixels";
-            else if (!stats->Background) rejected = "readback has no background pixels";
+            else if (!FinalColorPass && !stats->Foreground) rejected = "HDR coverage has no foreground pixels";
+            else if (!FinalColorPass && !stats->Background) rejected = "HDR coverage has no background pixels";
             if (rejected) { Rejected(rejected); return; }
-            Rgba = std::move(image.Rgba); // Completion may persist only after native retirement.
+            if (FinalColorPass)
+            {
+                if (!MiniMapCapturePng::FinalColorRgb(*pixels, 256, 256, FinalRgb))
+                    Rejected("final-color RGBA16F display RGB conversion failed");
+                else if (!MiniMapCapturePng::CombineFinalColorCoverage(FinalRgb, Coverage, 256, 256, Rgba))
+                    Rejected("final RGB/HDR coverage dimensions or pixel conversion failed");
+            }
+            else if (!MiniMapCapturePng::HdrCoverage(*pixels, 256, 256, Coverage))
+                Rejected("HDR inverse-opacity coverage conversion failed");
+            // Only the combined canvas may persist, after native retirement.
+        }
+        void PrepareFinalColor()
+        {
+            // No second component, target or native binding: the first readback
+            // has completed its GPU copy, unmapped, released RHI owners, destroyed
+            // all callables and been deleted before this stage can run.
+            if (FinalColorPass || Job || Committed || Coverage.size() != 256 * 256 ||
+                !ActorState(true) || !g_nativeWorld.CheckOwned(Capture) || !g_nativeWorld.CheckOwned(Target) ||
+                Fence.GetState() != MiniMapCaptureRetirement::FenceState::Constructed)
+            { Quarantine("final-color preparation ownership or HDR readback retirement invalid"); return; }
+            FinalColorPass = true; // A failed/interrupted reconfiguration is never replayed.
+            if (!Ready() || !ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, true))
+            { Quarantine("final-color configuration interrupted"); return; }
+            uintptr_t resource{};
+            if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
+            if (!resource) { Fail("final-color render-target resource getter returned null"); return; }
+            Job = MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource), 256, 256);
+            if (!Job) { Fail("final-color readback Job creation returned null"); return; }
+            if (!CaptureState()) { Quarantine("prepared final-color ownership/configuration invalid"); return; }
+            PreparedTick = g_captureServiceTick;
+            Phase = RequestPhase::Prepared;
         }
 #endif
-        // One iteration advances only this request; preparation always returns
-        // before C0, and C10 retains the ten-service-tick minimum interval.
+        // HDR C0 warms the scene; HDR C10 waits at least ten admitted service
+        // ticks. After HDR Job retirement, final color submits once on the tick
+        // after reconfiguration, without another warm-up or ten-tick delay.
         void Service()
         {
             if (Phase == RequestPhase::Quarantined || Phase == RequestPhase::Failed || Phase == RequestPhase::Retired) return;
@@ -1415,11 +1871,12 @@ namespace
                 if (Phase == RequestPhase::Waiting) { Prepare(); return; }
                 if (Phase == RequestPhase::Retiring) { Retire(); return; }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+                if (Phase == RequestPhase::FinalColorPreparing) { PrepareFinalColor(); return; }
                 if (Phase == RequestPhase::Prepared || Phase == RequestPhase::C0)
                 {
                     if (g_captureServiceTick <= PreparedTick || (Phase == RequestPhase::C0 && g_captureServiceTick - C0Tick < 10)) return;
                     if (!CaptureState()) { Quarantine("capture submission native ownership or prerequisites invalid"); return; }
-                    if (Phase == RequestPhase::Prepared)
+                    if (Phase == RequestPhase::Prepared && !FinalColorPass)
                     {
                         CaptureSubmitted = true; // BEFORE CaptureScene can enqueue anything.
                         if (!Call(ResourceOperation::CaptureScene, Capture.Object.Bits)) return;
@@ -1428,11 +1885,11 @@ namespace
                         return;
                     }
                     if (!MiniMapReadbackNative::MarkExternalCaptureCommitted(Job))
-                    { Quarantine("C10 readback commitment uncertain"); return; }
+                    { Quarantine("capture readback commitment uncertain"); return; }
                     Committed = true;
                     if (!Call(ResourceOperation::CaptureScene, Capture.Object.Bits)) return;
                     Phase = RequestPhase::Readback;
-                    if (!ServiceReadback(Job, g_captureServiceTick)) Quarantine("C10 readback submission interrupted");
+                    if (!ServiceReadback(Job, g_captureServiceTick)) Quarantine("capture readback submission interrupted");
                     return;
                 }
                 if (Phase == RequestPhase::Readback)
@@ -1459,6 +1916,16 @@ namespace
                         catch (...) { Rejected("CPU exception converting verified readback pixels"); Rgba.clear(); }
                     }
                     else Rejected(report.Failure ? report.Failure : "readback terminal outcome was not Verified");
+                    if (!FinalColorPass && !FailureReported && Coverage.size() == 256 * 256)
+                    {
+                        // Inspect already proved cleanup complete and zero native
+                        // users; DestroyIfRetired additionally excludes RHI owners.
+                        if (!MiniMapReadbackNative::DestroyIfRetired(Job))
+                        { Quarantine("HDR readback retirement before final color uncertain"); return; }
+                        Committed = false; // Per-Job state; CaptureSubmitted remains monotonic for retirement.
+                        Phase = RequestPhase::FinalColorPreparing;
+                        return; // Re-admit GC/world/lighting before changing capture configuration.
+                    }
                     Retire(); // Rgba stays owned until every native dependency retires.
                     return;
                 }
@@ -1566,7 +2033,7 @@ namespace
             if (!NewResource(CaptureType, Capture, sizeof(SDK::USceneCaptureComponent2D)) ||
                 !NewResource(TargetType, Target, sizeof(SDK::UTextureRenderTarget2D))) return;
             if (!ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
-                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent))
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, false))
             { Quarantine("capture configuration interrupted"); return; }
             if (!Call(ResourceOperation::InitializeTarget, Target.Object.Bits)) return;
             if (!Ready() || !PositionCapture(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
@@ -1693,6 +2160,11 @@ namespace MiniMapBuildingSpriteRenderer
         }
         if (!g_nativeWorld.GameplayUnchanged() || !g_nativeWorld.PrivateState(true))
         { g_nativeWorld.Quarantine("idle capture world identity or isolation changed"); return; }
+        try
+        {
+            if (!g_nativeWorld.ServiceLighting()) return; // Registration fence completes before FIFO admission.
+        }
+        catch (...) { g_nativeWorld.LightFailure("shared lighting initialization/service exception"); return; }
         try
         {
             static_assert(std::is_nothrow_move_assignable_v<std::string>);
