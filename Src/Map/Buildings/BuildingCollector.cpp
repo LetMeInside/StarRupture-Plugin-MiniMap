@@ -62,13 +62,26 @@ namespace
         alignas(16) std::array<std::byte, 0x350> Storage = {};
         bool Constructed = false;
     };
+    struct Acquisition
+    {
+        bool Complete = false, TintObserved = false;
+    };
     struct Entry
     {
         Record Data;
         uint64_t Epoch = 0;
+        uint64_t Observation = 0; // Eligible only in this collector invocation.
+        Acquisition Acquired;
         Clock::time_point Due = {};
         bool Read = false;
         uint8_t PreviousSources = 0;
+    };
+    struct IndexedEntry
+    {
+        Record Data;
+        uint64_t SeenQuery = 0;
+        IndexedEntry() = default;
+        explicit IndexedEntry(const Record& data) : Data(data) {} // try_emplace copies only on insertion.
     };
     struct Definition
     {
@@ -88,6 +101,7 @@ namespace
             Filter=0, SnapshotTime=0, Total=0, MaxTick=0, GridMax=0,
             DefinitionTime=0, OrdinaryTime=0, SplineTime=0;
         double SnapshotBuild=0;
+        size_t OverlapCandidates=0, OverlapComplete=0, OverlapReused=0, OverlapIncomplete=0, OverlapIneligible=0;
         size_t Added=0, Removed=0, OffAdded=0, OffRemoved=0, DefinitionMiss=0, Stale=0, Refreshed=0, Polls=0, IdentityPolls=0, GridCalls=0;
         size_t NewAttempts=0, RetryAttempts=0, ResolvedNow=0, CachedReuse=0, DynamicReads=0,
             TransformReads=0, MembershipTransforms=0, MembershipTags=0, PlacementReads=0, Conversions=0, ConversionSuccess=0,
@@ -103,7 +117,8 @@ namespace
     Query g_offQuery, g_splineQuery;
     uint64_t g_generation=0, g_epoch=0;
     std::unordered_map<uint64_t,Entry> g_cache;
-    std::unordered_map<uint64_t,Record> g_indexedCopies; // Last copied observations; membership follows successful grid enumerations.
+    std::unordered_map<uint64_t,IndexedEntry> g_indexedCopies; // Copied payload plus current-query membership.
+    uint64_t g_indexedQuery=0; // Independent of the acquisition callback observation.
     uint64_t g_observation=0;
     std::unordered_map<uint64_t,Definition> g_definitions;
     std::vector<uint64_t> g_keys, g_near, g_pending;
@@ -497,8 +512,10 @@ namespace
             if(retain) g_metrics.OrdinaryTime+=Ms(start);
         }
     }
-    bool Read(const Native& n,Record& r)
+    bool Read(const Native& n,Record& r,Acquisition* acquired=nullptr)
     {
+        if(acquired)*acquired={}; // A usable retained transform is not a complete acquisition.
+        bool freshTransform=false, freshPlacement=false, tintObserved=false;
         // Defensive guard; membership callers also bypass Read for resolved data.
         if(r.StaticResolved()) {++g_metrics.CachedReuse;return true;}
         g_snapshotDirty=true; // Conservative for unresolved/dynamic observations.
@@ -522,7 +539,7 @@ namespace
             double norm=0; for(double q:rotation) norm+=q*q;
             if(std::all_of(position.begin(),position.end(),finite) && std::all_of(rotation.begin(),rotation.end(),finite) &&
                 std::all_of(scale.begin(),scale.end(),finite) && std::isfinite(norm) && norm>0)
-            { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; }
+            { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; freshTransform=true; }
         }
         const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
         // Remember actual dynamic-source evidence for this lifetime. A missing
@@ -571,6 +588,7 @@ namespace
                     { definition.InteriorTagChecked=true; definition.InteriorOnly=tag==InteriorTagResult::Present; }
                 }
                 r.InteriorKnown=definition.InteriorTagChecked; r.InteriorOnly=definition.InteriorOnly;
+                freshPlacement=true;
                 if(!r.HasSpline && r.InteriorKnown && !r.InteriorOnly)
                 { DefinitionBlueprint(definition,placement,r); r.CanonicalBlueprint=definition.CanonicalBlueprint; }
                 // Optional geometry is solely for the existing spatial envelope.
@@ -584,7 +602,7 @@ namespace
             }
         }
         if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
-            r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A};
+        { r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A}; tintObserved=true; }
         const double dynamic=Ms(start); g_metrics.Dynamic+=dynamic;
         if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
         const auto boundsStart=Clock::now();
@@ -603,7 +621,53 @@ namespace
         r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown &&
             !r.DynamicObserved && (r.InteriorOnly || bool(r.CanonicalBlueprint));
         if(r.StaticAcquired)++g_metrics.ResolvedNow;
+        if(acquired)
+        {
+            // Missing optional tint/target bounds are legitimate. Invalid or
+            // unresolved geometry keeps the original later acquisition path.
+            acquired->TintObserved=tintObserved;
+            acquired->Complete=freshTransform && freshPlacement && r.InteriorKnown && !r.InteriorOnly &&
+                r.Extent.Valid && !r.UnboundedGeometry && !r.InvalidFootprintSource &&
+                (r.HasSpline ? (r.Curve && r.GeometryStatus==GeometryIssue::None) :
+                    (r.CanonicalBlueprint && r.GeometryStatus!=GeometryIssue::InvalidTransform));
+        }
         return r.TransformValid;
+    }
+    bool ReuseAcquisition(const Native& n,Record& r,const Entry& entry)
+    {
+        const auto& sample=entry.Data;
+        if(sample.Generation!=g_generation || r.Generation!=g_generation ||
+            sample.Index!=r.Index || sample.Serial!=r.Serial)return false;
+        // Another acquisition can enrich shared definition geometry in this pass.
+        // If its copied metadata changed, retain the original indexed Read.
+        const auto definition=g_definitions.find(Key(sample.DefinitionObjectIndex,int32_t(sample.BuildingId)));
+        if(definition==g_definitions.end())return false;
+        const auto& d=definition->second;
+        if(d.ObjectSerial!=sample.DefinitionObjectSerial || d.NameIndex!=sample.DefinitionIndex ||
+            d.NameNumber!=sample.DefinitionNumber || !d.InteriorTagChecked || d.InteriorOnly!=sample.InteriorOnly ||
+            d.Geometry!=sample.DefinitionShape || (!sample.HasSpline && d.CanonicalBlueprint!=sample.CanonicalBlueprint))return false;
+        if(!Live(n,{r.Index,r.Serial}))return false;
+        // Only a complete same-invocation sample reaches here. Preserve fields
+        // that Read would retain from the INDEXED prior record, not the global one.
+        const auto sources=r.Sources, category=r.Category;
+        const auto tint=entry.Acquired.TintObserved?sample.Tint:r.Tint;
+        const bool dynamic=r.DynamicObserved || r.HasSpline || sample.HasSpline;
+        const bool changed=r.DefinitionValid && (r.DefinitionObjectIndex!=sample.DefinitionObjectIndex ||
+            r.DefinitionObjectSerial!=sample.DefinitionObjectSerial || r.DefinitionIndex!=sample.DefinitionIndex ||
+            r.DefinitionNumber!=sample.DefinitionNumber || r.BuildingId!=sample.BuildingId);
+        const auto canonical=sample.HasSpline?(changed?nullptr:r.CanonicalBlueprint):sample.CanonicalBlueprint;
+        const auto curve=sample.HasSpline && r.Curve && r.Curve->Issue==sample.Curve->Issue &&
+            r.Curve->Reconstructed==sample.Curve->Reconstructed && r.Curve->Segments==sample.Curve->Segments
+            ?r.Curve:sample.Curve; // Geometry also retains an equal indexed curve owner.
+        r=sample;
+        r.Sources=sources; r.Category=category; r.Tint=tint; r.CanonicalBlueprint=canonical; r.Curve=curve;
+        r.DynamicObserved=dynamic;
+        r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown && !dynamic &&
+            (r.InteriorOnly || bool(r.CanonicalBlueprint));
+        if(r.StaticAcquired)++g_metrics.ResolvedNow;
+        ++g_metrics.Refreshed; // Logical record refresh; native acquisition counters exclude this reuse.
+        g_snapshotDirty=true;
+        return true;
     }
     void Destroy()
     {
@@ -620,6 +684,7 @@ namespace
         g_debugOracle={}; g_debugLastGridMs=0;
 #endif
         g_cache.clear(); g_indexedCopies.clear(); g_observation=0; g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
+        g_indexedQuery=0;
         g_definitionDiagnostics=0;
         g_curveScratch={};
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
@@ -700,7 +765,7 @@ namespace
                 {
                     g_snapshotDirty=true;
                     if(const auto indexed=g_indexedCopies.find(Key(id));indexed!=g_indexedCopies.end())
-                        entry.Data=indexed->second; // Same entity lifetime changing acquisition source.
+                        entry.Data=indexed->second.Data; // Same entity lifetime changing acquisition source.
                     entry.Data.Sources=source;
                     entry.Data.Generation=g_generation; entry.Data.Index=id.Index; entry.Data.Serial=id.SerialNumber;
                     entry.Read=entry.Data.StaticResolved();
@@ -726,7 +791,7 @@ namespace
                 if(n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
                 {
                     auto [copy,added]=g_indexedCopies.try_emplace(it->first,it->second.Data);
-                    if(added)copy->second.Sources=0;
+                    if(added)copy->second.Data.Sources=0;
                 }
                 it=g_cache.erase(it); ++g_metrics.Removed; g_snapshotDirty=true;
             }
@@ -746,7 +811,8 @@ namespace
             auto& e=it->second;
             if(e.Data.StaticResolved()) {e.Read=true;++g_metrics.CachedReuse;return;}
             if(now<e.Due) return;
-            e.Read=Read(n,e.Data);
+            e.Observation=g_observation;
+            e.Read=Read(n,e.Data,&e.Acquired);
             const bool unresolved=!e.Data.TransformValid || (!e.Data.HasSpline &&
                 (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
             // Missing required facts retry on the normal next acquisition slice,
@@ -790,8 +856,8 @@ namespace
         const auto previous=g_indexedCopies.find(Key(handle.Entity));
         auto keepCopied=[&]()
         {
-            if(previous!=g_indexedCopies.end() && previous->second.Position[0]>context.Region.MinX && previous->second.Position[0]<context.Region.MaxX &&
-                previous->second.Position[1]>context.Region.MinY && previous->second.Position[1]<context.Region.MaxY)
+            if(previous!=g_indexedCopies.end() && previous->second.Data.Position[0]>context.Region.MinX && previous->second.Data.Position[0]<context.Region.MaxX &&
+                previous->second.Data.Position[1]>context.Region.MinY && previous->second.Data.Position[1]<context.Region.MaxY)
             {
                 if(g_indexedHandles.size()>=kMaximumHandles){context.Overflow=true;return false;}
                 g_indexedHandles.push_back(handle.Entity);
@@ -807,7 +873,7 @@ namespace
         ++g_metrics.MembershipTags;
         n.gridDiagnostic.viewConstruct(view.data(),g_manager,handle.Entity);
         if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Building)) return true;
-        if(previous!=g_indexedCopies.end() && previous->second.StaticResolved())return keepCopied();
+        if(previous!=g_indexedCopies.end() && previous->second.Data.StaticResolved())return keepCopied();
         ++g_metrics.MembershipTransforms;
         const auto* transform=static_cast<const SDK::FTransform*>(Fragment(n,handle.Entity,g_types.Transform));
         if(!transform) return keepCopied();
@@ -830,17 +896,22 @@ namespace
         g_metrics.GridMax=(std::max)(g_metrics.GridMax,elapsed);
         ++g_metrics.GridCalls;
     }
-    std::vector<Record> IndexedRecords(const Native& n,const MiniMapMap::PlayerPose& pose)
+    size_t IndexedRecords(const Native& n,const MiniMapMap::PlayerPose& pose)
     {
-        std::vector<Record> records;
+        size_t indexedCount=0;
+        if(++g_indexedQuery==0)
+        {
+            g_indexedQuery=1;
+            for(auto& [key,entry]:g_indexedCopies)entry.SeenQuery=0;
+        }
         g_gridSucceeded=false; g_gridResults=0;
         auto copied=[&]()
         {
             for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
-                if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}))
+                if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
                 {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
-                else {if(it->second.Sources&Indexed)records.push_back(it->second);++it;}
-            return records;
+                else {if(it->second.Data.Sources&Indexed)++indexedCount;++it;}
+            return indexedCount;
         };
         void* grid=n.gridDiagnostic.getSubsystem(g_world);
         if(!IsClass(static_cast<SDK::UObject*>(grid),g_types.GridClass) ||
@@ -896,38 +967,53 @@ namespace
             g_metrics.GridExtract+=Ms(extraction);
         }
         const auto extraction=Clock::now();
-        std::unordered_set<uint64_t> seen;
-        seen.reserve(g_indexedHandles.size());
         for(const auto id:g_indexedHandles)
         {
-            const auto key=Key(id); if(!seen.insert(key).second)continue;
+            const auto key=Key(id);
             auto [it,added]=g_indexedCopies.try_emplace(key);
-            auto& r=it->second;
+            auto& entry=it->second;
+            if(entry.SeenQuery==g_indexedQuery)continue;
+            entry.SeenQuery=g_indexedQuery; // Mark before acquisition, including failed attempts.
+            auto& r=entry.Data;
+            const auto cached=(added || !r.StaticResolved())?g_cache.find(key):g_cache.end();
             if(added)
             {
                 g_snapshotDirty=true;
-                if(const auto cached=g_cache.find(key);cached!=g_cache.end())r=cached->second.Data;
+                if(cached!=g_cache.end())r=cached->second.Data;
                 r.Generation=g_generation;r.Index=id.Index;r.Serial=id.SerialNumber;
             }
             if(r.Sources!=Indexed)g_snapshotDirty=true;
             r.Sources=Indexed;
             if(r.StaticResolved())++g_metrics.CachedReuse;
-            else Read(n,r); // Only newly discovered/unresolved or dynamic data.
+            else
+            {
+                if(cached!=g_cache.end() && cached->second.Observation==g_observation)
+                {
+                    ++g_metrics.OverlapCandidates; // Would otherwise perform a second Read attempt.
+                    if(!cached->second.Acquired.Complete)++g_metrics.OverlapIncomplete;
+                    else
+                    {
+                        ++g_metrics.OverlapComplete;
+                        if(ReuseAcquisition(n,r,cached->second)){++g_metrics.OverlapReused;continue;}
+                        ++g_metrics.OverlapIneligible;
+                    }
+                }
+                Read(n,r); // Original path for absent, partial, invalid or incompatible samples.
+            }
         }
-        records.reserve(g_indexedCopies.size());
         for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
         {
             // Successful enumeration owns scope membership; a failed query does
             // not assert removal. Entity serial validity is the removal oracle.
-            if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}) ||
-                (g_gridSucceeded && !seen.contains(it->first)))
+            if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}) ||
+                (g_gridSucceeded && it->second.SeenQuery!=g_indexedQuery))
             {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
-            else {if(it->second.Sources&Indexed)records.push_back(it->second);++it;}
+            else {if(it->second.Data.Sources&Indexed)++indexedCount;++it;}
         }
         g_metrics.GridExtract+=Ms(extraction);
-        return records;
+        return indexedCount;
     }
-    void Publish(std::vector<Record> indexed,const Native& n)
+    void Publish(size_t indexedCount,const Native& n)
     {
         const auto start=Clock::now();
         // Keep actual removal detection at publication cadence, including when
@@ -954,7 +1040,7 @@ namespace
         ++g_metrics.SnapshotsBuilt;
         auto result=std::make_shared<Snapshot>(); result->Generation=g_generation; result->Region=g_region;
         result->Complete=g_gridSucceeded && g_identitySucceeded;
-        result->Records.reserve(indexed.size()+g_near.size());
+        result->Records.reserve(indexedCount+g_near.size());
         g_near.clear(); g_duplicates=0;
         auto add=[&](const Record& r)
         {
@@ -966,7 +1052,9 @@ namespace
             // definition/entity provenance to draw an acquired sprite.
             if(!r.HasSpline && (!r.CanonicalBlueprint || !r.InteriorKnown)) result->Complete=false;
         };
-        for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
+        // Pruning has finished; only owned snapshot copies escape this iteration.
+        for(const auto& [key,entry]:g_indexedCopies)
+            if(entry.Data.Sources&Indexed)add(entry.Data); // Fresh local data wins deterministic dedupe.
         for(const auto& [key,e]:g_cache)
         {
             if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid) { result->Complete=false; continue; }
@@ -1031,7 +1119,12 @@ namespace
             g_unavailableLogged=true; return;
         }
         {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorEnsure);if(!Ensure(*n)) return;}
-        if(++g_observation==0) {g_observation=1;for(auto& [key,d]:g_definitions){d.IdentityObservation=0;d.GeometryObservation=0;}}
+        if(++g_observation==0)
+        {
+            g_observation=1;
+            for(auto& [key,d]:g_definitions){d.IdentityObservation=0;d.GeometryObservation=0;}
+            for(auto& [key,e]:g_cache)e.Observation=0;
+        }
         double radius=0; { std::scoped_lock lock(g_mutex); radius=g_viewRadius; }
         MiniMapMap::PlayerPose pose;
         if(radius<=0 || !MiniMapMap::TryGetPlayerPose(pose)) return;
@@ -1053,8 +1146,8 @@ namespace
         {
             g_nextLocal=now+kLocalCadence;
             MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorPublish);
-            auto indexed=IndexedRecords(*n,pose); g_indexed=indexed.size();
-            Publish(std::move(indexed),*n); ++g_metrics.Polls;
+            g_indexed=IndexedRecords(*n,pose);
+            Publish(g_indexed,*n); ++g_metrics.Polls;
         }
         const double total=Ms(start); g_metrics.Total+=total; g_metrics.MaxTick=(std::max)(g_metrics.MaxTick,total);
         if(total>20 && now>=g_nextWarning)
@@ -1087,6 +1180,8 @@ namespace
                 g_metrics.Conversions,g_metrics.ConversionSuccess,g_metrics.InteriorReads,g_metrics.OrdinaryGeometry,g_metrics.OrdinaryDefinitions,
                 g_metrics.SnapshotsBuilt,g_metrics.SnapshotsReused,g_metrics.GridQuery,g_metrics.GridExtract,
                 g_metrics.SnapshotBuild,g_metrics.Total,g_metrics.MaxTick);
+            LOG_INFO("MiniMap: BuildingCollector overlap (production interval): candidates=%zu complete=%zu reused=%zu incomplete=%zu ineligible=%zu; reused counts eliminated full acquisitions, excludes membership reads",
+                g_metrics.OverlapCandidates,g_metrics.OverlapComplete,g_metrics.OverlapReused,g_metrics.OverlapIncomplete,g_metrics.OverlapIneligible);
             size_t ordinary=0,proxy=0,meshWidth=0,railExtension=0,unresolvedSpline=0,reconstructed=0,
                 ordinaryCross=0,splineCross=0,ordinarySourceOnly=0,segments=0,invalidFootprint=0;
             std::array<size_t,10> issues={};
