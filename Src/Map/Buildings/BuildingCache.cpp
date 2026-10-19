@@ -54,7 +54,7 @@ namespace
     constexpr size_t kMaxPngBytes = 128u * 1024u * 1024u;
     constexpr size_t kMaxFileNameBytes = 240;
 #pragma pack(push, 1)
-    // 24-byte format core followed by the 48-byte spatial extension.
+    // Existing format core/bounds followed by the processed-image sampling map.
     struct SpriteHeader
     {
         char Magic[8];
@@ -64,9 +64,11 @@ namespace
         uint32_t PngBytes;
         double Min[3];
         double Max[3];
+        uint16_t SourceX, SourceY;
+        double SourceStep;
     };
 #pragma pack(pop)
-    static_assert(sizeof(SpriteHeader) == 72);
+    static_assert(sizeof(SpriteHeader) == 84);
 
     bool ValidUtf8(const std::string& s)
     {
@@ -200,15 +202,18 @@ namespace
             uint64_t(header.Width) * header.Height * 4 > kMaxRgbaBytes || !header.PngBytes ||
             header.PngBytes > kMaxPngBytes || uint64_t(length.QuadPart) != sizeof(SpriteHeader) + uint64_t(header.PngBytes))
             return {S::Invalid, "sprite header/format"};
-        std::vector<uint8_t> png(header.PngBytes);
-        if (!ReadFile(handle, png.data(), header.PngBytes, &read, nullptr)) return {S::IOError, "sprite payload read", GetLastError()};
-        if (read != header.PngBytes) return {S::Invalid, "truncated sprite payload"};
         MiniMapBuildingCache::Sprite candidate;
-        const auto result = Decode(png, header.Width, header.Height, candidate.Rgba);
-        if (result.Status != S::Loaded) return result;
         candidate.Width = header.Width; candidate.Height = header.Height;
         std::copy_n(header.Min, 3, candidate.Bounds.Min.begin());
         std::copy_n(header.Max, 3, candidate.Bounds.Max.begin());
+        candidate.Mapping = {header.SourceX, header.SourceY, header.SourceStep};
+        if (!MiniMapBuildingCache::ValidSpatial(candidate.Width, candidate.Height, candidate.Bounds, candidate.Mapping))
+            return {S::Invalid, "sprite spatial mapping"};
+        std::vector<uint8_t> png(header.PngBytes);
+        if (!ReadFile(handle, png.data(), header.PngBytes, &read, nullptr)) return {S::IOError, "sprite payload read", GetLastError()};
+        if (read != header.PngBytes) return {S::Invalid, "truncated sprite payload"};
+        const auto result = Decode(png, header.Width, header.Height, candidate.Rgba);
+        if (result.Status != S::Loaded) return result;
         out = std::move(candidate);
         return {S::Loaded, "loaded"};
     }
@@ -269,9 +274,9 @@ namespace MiniMapBuildingCache
     }
 
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
-        uint32_t width, uint32_t height, const SpatialBounds& bounds)
+        uint32_t width, uint32_t height, const SpatialBounds& bounds, const ImageMapping& mapping)
     {
-        if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
+        if (!rgba || !ValidSpatial(width, height, bounds, mapping) ||
             uint64_t(width) * height * 4 > kMaxRgbaBytes)
             return WriteRejected(canonicalBlueprintPath, "serialization input pointer/dimensions/byte bound rejected");
         std::filesystem::path path, diagnostic;
@@ -304,6 +309,7 @@ namespace MiniMapBuildingCache
         header.Width = width; header.Height = height; header.PngBytes = static_cast<uint32_t>(png.size());
         std::copy(bounds.Min.begin(), bounds.Min.end(), header.Min);
         std::copy(bounds.Max.begin(), bounds.Max.end(), header.Max);
+        header.SourceX = mapping.X; header.SourceY = mapping.Y; header.SourceStep = mapping.Step;
         {
             std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
             if (!output) return WriteRejected(canonicalBlueprintPath, "open sprite output temporary failed");
@@ -318,11 +324,6 @@ namespace MiniMapBuildingCache
             std::filesystem::remove(temporary, ec);
             return WriteRejected(canonicalBlueprintPath, "atomic sprite publication failed", error, true);
         }
-#if defined(MINIMAP_BUILDING_CAPTURE_PNGS)
-        // Write is called only after native retirement. The full source canvas
-        // is still owned here; optional diagnostics never change its cache result.
-        (void)WriteDiagnosticPng(canonicalBlueprintPath, rgba, width, height);
-#endif
         return true;
     }
 

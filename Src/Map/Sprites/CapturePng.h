@@ -118,6 +118,12 @@ namespace MiniMapCapturePng
                 {out.X0=(std::min)(out.X0,x);out.Y0=(std::min)(out.Y0,y);
                  out.X1=(std::max)(out.X1,x+1);out.Y1=(std::max)(out.Y1,y+1);}
             if(!out.X1){out.Empty=true;out.Reason="empty_alpha_capture";return out;}
+            // Move the atlas's former one-source-pixel transparent guard here,
+            // before filtering. The atlas will only copy/pack processed pixels.
+            if(out.X0) --out.X0;
+            if(out.Y0) --out.Y0;
+            if(out.X1<width) ++out.X1;
+            if(out.Y1<height) ++out.Y1;
             const double requestedRatio=(orthoExtent/double(width))*pixelsPerWorldUnit;
             if(!std::isfinite(requestedRatio)||requestedRatio<=0)return out;
             out.Insufficient=requestedRatio>1;out.Ratio=(std::min)(1.0,requestedRatio);

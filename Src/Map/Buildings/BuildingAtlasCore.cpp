@@ -160,7 +160,7 @@ namespace MiniMapBuildingAtlasCore
     {
         try
         {
-            if (width != SourceSize || height != SourceSize) return Result::UnsupportedDimensions;
+            if (!width || !height || width > SourceSize || height > SourceSize) return Result::UnsupportedDimensions;
             std::size_t bytes{};
             if (!ImageBytes(width, height, bytes)) return Result::Overflow;
             if (rgba.size() != bytes) return Result::InvalidBuffer;
@@ -169,37 +169,13 @@ namespace MiniMapBuildingAtlasCore
                 [](const CroppedSource& source, const std::string& key) { return BytesLess(source.Identifier, key); });
             if (position != Retained.end() && position->Identifier == identifier) return Result::DuplicateIdentifier;
             if (Retained.size() >= MaximumSources) return Result::SourceLimit;
-            std::size_t x0 = width, y0 = height, x1 = 0, y1 = 0;
-            for (std::size_t y = 0; y < height; ++y)
-                for (std::size_t x = 0; x < width; ++x)
-                {
-                    std::size_t offset{};
-                    if (!Pixel(x, y, width, height, bytes, offset)) return Result::InternalError;
-                    if (!rgba[offset + 3]) continue;
-                    x0 = (std::min)(x0, x); y0 = (std::min)(y0, y);
-                    x1 = (std::max)(x1, x + 1); y1 = (std::max)(y1, y + 1);
-                }
-            if (!x1 || !y1) return Result::EmptyAlpha;
-            if (x0) --x0;
-            if (y0) --y0;
-            if (x1 < width) ++x1;
-            if (y1 < height) ++y1;
+            bool coverage = false;
+            for (std::size_t i = 3; i < rgba.size(); i += 4) coverage |= rgba[i] != 0;
+            if (!coverage) return Result::EmptyAlpha;
             CroppedSource source;
             source.Identifier = identifier;
-            source.Crop = {std::uint16_t(x0), std::uint16_t(y0), std::uint16_t(x1 - x0), std::uint16_t(y1 - y0)};
-            std::size_t cropBytes{}, rowBytes{};
-            if (!ImageBytes(source.Crop.Width, source.Crop.Height, cropBytes) ||
-                !Multiply(source.Crop.Width, 4, rowBytes)) return Result::Overflow;
-            source.Rgba.resize(cropBytes);
-            for (std::size_t y = 0; y < source.Crop.Height; ++y)
-            {
-                std::size_t from{}, to{}, fromEnd{}, toEnd{};
-                if (!Pixel(x0, y0 + y, width, height, bytes, from) ||
-                    !Pixel(0, y, source.Crop.Width, source.Crop.Height, cropBytes, to) ||
-                    !AddSize(from, rowBytes, fromEnd) || fromEnd > bytes ||
-                    !AddSize(to, rowBytes, toEnd) || toEnd > cropBytes) return Result::InternalError;
-                std::memcpy(source.Rgba.data() + to, rgba.data() + from, rowBytes);
-            }
+            source.Crop = {0, 0, std::uint16_t(width), std::uint16_t(height)};
+            source.Rgba.assign(rgba.begin(), rgba.end());
             // String/vector moves are noexcept; insertion has the strong failure guarantee.
             Retained.insert(position, std::move(source));
             return Result::Ok;

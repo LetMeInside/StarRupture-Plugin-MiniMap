@@ -9,12 +9,12 @@
 
 namespace MiniMapBuildingAtlasCore
 {
-    inline constexpr std::uint16_t SourceSize = 256;
+    inline constexpr std::uint16_t SourceSize = 256; // Input dimension limit, never a reserved atlas slot.
     inline constexpr std::uint16_t Gutter = 2;
     inline constexpr std::size_t MaximumSources = 64;
 
-    // Half-open rectangle. Crop coordinates refer to the original source canvas;
-    // allocation/content coordinates refer to the atlas canvas.
+    // Half-open rectangle in the processed input image. Its origin is zero;
+    // capture-space anchoring belongs to the coordinator's spatial metadata.
     struct CropRect
     {
         std::uint16_t X{}, Y{}, Width{}, Height{};
@@ -28,7 +28,7 @@ namespace MiniMapBuildingAtlasCore
     {
         std::string Identifier;
         CropRect Crop;
-        std::vector<std::uint8_t> Rgba; // Crop.Width * Crop.Height * 4, no full source retained.
+        std::vector<std::uint8_t> Rgba; // Processed Width * Height * 4; never resampled here.
     };
     struct PackedSource
     {
@@ -58,7 +58,8 @@ namespace MiniMapBuildingAtlasCore
     class Atlas
     {
     public:
-        // Copies only the guarded crop. The caller retains ownership of input.
+        // Copies an already processed positive image bounded by SourceSize on
+        // each axis. No crop/downscale is repeated; input ownership stays with caller.
         // Failure leaves sources and current layout unchanged; identifiers are opaque bytes.
         Result Add(const std::string& identifier, std::uint32_t width, std::uint32_t height,
             std::span<const std::uint8_t> rgba) noexcept;

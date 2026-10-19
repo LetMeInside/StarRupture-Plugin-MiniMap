@@ -3,6 +3,7 @@
 #include "Map/Buildings/BuildingSpriteRenderer.h"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Map.h"
+#include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
@@ -1352,6 +1353,7 @@ namespace
         std::vector<uint8_t> Coverage; // HDR alpha survives destruction of its readback Job.
         std::vector<uint8_t> FinalRgb;
         std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
+        MiniMapCapturePng::ProcessedImage Processed;
         std::optional<bool> FinalResult; // Set once, including write failure; never retry persistence.
         bool FeedbackSubmitted = false;
         enum class WaitReason { AdmissionGC, PreparationAdmission, ReadbackPrerequisite,
@@ -1626,25 +1628,38 @@ namespace
                         validBounds &= std::isfinite(bounds.Min[axis]) && std::isfinite(bounds.Max[axis]) &&
                             bounds.Min[axis] <= bounds.Max[axis];
                     if (Phase == RequestPhase::Retired && CaptureSubmitted && Committed && FinalColorPass && Coverage.size() == 256 * 256 && FinalRgb.size() == 256 * 256 * 3 &&
-                        Path(BlueprintPath, wide) && Rgba.size() == 256 * 256 * 4 && validBounds)
+                        Path(BlueprintPath, wide) && Rgba.size() == 256 * 256 * 4 && validBounds && Processed.Ok)
                     {
-                        FinalResult = MiniMapBuildingCache::Write(BlueprintPath, Rgba.data(), 256, 256, bounds);
+                        const auto& pixels = Processed.Passthrough ? Rgba : Processed.Rgba;
+                        const MiniMapBuildingCache::ImageMapping mapping{
+                            uint16_t(Processed.X0), uint16_t(Processed.Y0), Processed.SourceStep};
+                        if (pixels.size() != Processed.Width * Processed.Height * 4)
+                        { Rejected("processed sprite dimensions/buffer inconsistent"); }
+                        else FinalResult = MiniMapBuildingCache::Write(BlueprintPath, pixels.data(),
+                            uint32_t(Processed.Width), uint32_t(Processed.Height), bounds, mapping);
                         if (*FinalResult)
                         {
+#if defined(MINIMAP_BUILDING_CAPTURE_PNGS)
+                            // Keep the original source PNG; all native owners have retired.
+                            // Optional export failure cannot invalidate processed persistence.
+                            (void)MiniMapBuildingCache::WriteDiagnosticPng(BlueprintPath, Rgba.data(), 256, 256);
+#endif
                             // FinalResult is committed before logging/feedback: one message
                             // per successful publication, even if feedback delivery retries.
                             try
                             {
                                 if (auto* self = GetSelf(); self && self->logger && self->logger->Info)
-                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR",
-                                        BlueprintPath.c_str(), SceneSubmissions);
+                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR output=%zux%zu sourceOrigin=%zu,%zu sourceStep=%.9g targetPixelsPerMeter=%.9g",
+                                        BlueprintPath.c_str(), SceneSubmissions, Processed.Width, Processed.Height,
+                                        Processed.X0, Processed.Y0, Processed.SourceStep, 1 / MiniMapMap::MinimumMetersPerPixel);
                             }
                             catch (...) {}
                         }
                     }
                     else if (!FailureReported)
                         Rejected(Rgba.size() != 256 * 256 * 4 ? "capture produced no acceptable 256x256 RGBA result" :
-                            !validBounds ? "cache publication bounds nonfinite/reversed" : "cache publication phase/submission/path prerequisites not satisfied");
+                            !validBounds ? "cache publication bounds nonfinite/reversed" : !Processed.Ok ? "sprite spatial processing failed" :
+                            "cache publication phase/submission/path prerequisites not satisfied");
                 }
                 catch (...) { Rejected("CPU/cache exception during final publication"); } // No remaining native ownership.
             }
@@ -1826,6 +1841,15 @@ namespace
                     Rejected("final-color RGBA16F display RGB conversion failed");
                 else if (!MiniMapCapturePng::CombineFinalColorCoverage(FinalRgb, Coverage, 256, 256, Rgba))
                     Rejected("final RGB/HDR coverage dimensions or pixel conversion failed");
+                else
+                {
+                    // Fixed authored building size; maximum MiniMap zoom, no
+                    // per-instance scale registry or resolution-upgrade policy.
+                    const double orthoWidth = double(float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1));
+                    const double density = 1 / (100 * MiniMapMap::MinimumMetersPerPixel);
+                    Processed = MiniMapCapturePng::Process(Rgba, 256, 256, orthoWidth, density);
+                    if (!Processed.Ok) Rejected(Processed.Reason);
+                }
             }
             else if (!MiniMapCapturePng::HdrCoverage(*pixels, 256, 256, Coverage))
                 Rejected("HDR inverse-opacity coverage conversion failed");

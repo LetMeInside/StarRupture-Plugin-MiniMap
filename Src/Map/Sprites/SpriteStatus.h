@@ -27,8 +27,9 @@ namespace MiniMapSpriteStatus
         // Original capture-space bounds.
         std::array<double, 3> Min{};
         std::array<double, 3> Max{};
-        // Half-open source-canvas crop: X, Y, Width, Height (original 256x256).
-        std::array<uint16_t, 4> Crop{0, 0, 256, 256};
+        // Original capture-pixel boundaries represented by the processed image:
+        // left, top, right, bottom. Includes ceil-rounded transparent margins.
+        std::array<double, 4> SourceRect{};
     };
 
     struct Status

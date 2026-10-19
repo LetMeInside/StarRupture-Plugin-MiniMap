@@ -135,9 +135,10 @@ namespace
         // Match the float OrthoWidth actually assigned by ConfigureSceneCapture.
         const double halfWidth=double(float(2*(std::max)(extent[0],extent[1])*1.1))*0.5;
         if (!std::isfinite(halfWidth) || !(halfWidth>0)) return false;
-        const auto& crop=entry.Crop;
-        if (!crop[2] || !crop[3] || uint32_t(crop[0])+crop[2]>256 || uint32_t(crop[1])+crop[3]>256) return false;
-        const double left=crop[0],top=crop[1],right=left+crop[2],bottom=top+crop[3];
+        const auto& rect=entry.SourceRect;
+        for (double value:rect) if (!std::isfinite(value)) return false;
+        if (rect[0]<0 || rect[1]<0 || rect[0]>=256 || rect[1]>=256 || rect[2]<=rect[0] || rect[3]<=rect[1]) return false;
+        const double left=rect[0],top=rect[1],right=rect[2],bottom=rect[3];
         const std::array<std::array<double,2>,4> source{{{left,top},{right,top},{right,bottom},{left,bottom}}};
         bounds={};
         for (size_t i=0;i<source.size();++i)

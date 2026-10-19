@@ -23,7 +23,12 @@ namespace MiniMapBuildingAtlas
         std::shared_ptr<const C::Layout> Pixels;
         std::shared_ptr<Revision> NextRetained; // Explicit uncertain-release ownership only.
     };
-    struct SourceBounds { std::string Identifier; MiniMapBuildingCache::SpatialBounds Bounds; };
+    struct SourceBounds
+    {
+        std::string Identifier;
+        MiniMapBuildingCache::SpatialBounds Bounds;
+        std::array<double, 4> SourceRect;
+    };
     struct Session
     {
         uint64_t Serial{};
@@ -210,6 +215,11 @@ namespace MiniMapBuildingAtlas
             if (!Admitted(batch)) return AddResult::Unavailable;
             for (const auto& bounds : batch->Bounds)
                 if (bounds.Identifier == name) return AddResult::Retained;
+            if (!MiniMapBuildingCache::ValidSpatial(sprite.Width, sprite.Height, sprite.Bounds, sprite.Mapping))
+            {
+                SpriteDiagnostic("MiniMap: atlas spatial metadata rejected: canonical=%s reason=invalid processed dimensions/capture mapping", name.c_str());
+                return AddResult::Invalid;
+            }
             for (size_t i = 0; i < 3; ++i)
                 if (!std::isfinite(sprite.Bounds.Min[i]) || !std::isfinite(sprite.Bounds.Max[i]) ||
                     sprite.Bounds.Max[i] < sprite.Bounds.Min[i])
@@ -229,12 +239,14 @@ namespace MiniMapBuildingAtlas
                 return AddResult::CapacityDeferred;
             }
             // Allocate representation identity before Add can acquire retained pixels.
-            batch->Bounds.push_back({name, sprite.Bounds});
+            batch->Bounds.push_back({name, sprite.Bounds,
+                {double(sprite.Mapping.X), double(sprite.Mapping.Y), sprite.Mapping.X + sprite.Width * sprite.Mapping.Step,
+                 sprite.Mapping.Y + sprite.Height * sprite.Mapping.Step}});
             const auto result = batch->Core.Add(name, sprite.Width, sprite.Height, sprite.Rgba);
             if (result != C::Result::Ok)
             {
                 batch->Bounds.pop_back();
-                const auto reason = result == C::Result::UnsupportedDimensions ? "unsupported fixed source dimensions" :
+                const auto reason = result == C::Result::UnsupportedDimensions ? "unsupported processed image dimensions" :
                     result == C::Result::InvalidBuffer ? "RGBA byte length rejected" : result == C::Result::EmptyAlpha ? "no alpha occupancy" :
                     result == C::Result::SourceLimit ? "source capacity" : result == C::Result::AllocationFailure ? "CPU allocation failed" :
                     result == C::Result::Overflow ? "size arithmetic overflow" : result == C::Result::DuplicateIdentifier ? "duplicate source identifier" :
@@ -322,15 +334,8 @@ namespace MiniMapBuildingAtlas
                     { SpriteDiagnostic("MiniMap: atlas publication rejected: canonical=%s reason=source bounds missing; attempt=%u/3", image.Identifier.c_str(), batch->UploadAttempts); return; }
                     S::AtlasEntry entry;
                     entry.Region = {image.Corners[0].U, image.Corners[0].V, image.Corners[2].U, image.Corners[2].V};
-                    entry.Crop = {image.Crop.X, image.Crop.Y, image.Crop.Width, image.Crop.Height};
+                    entry.SourceRect = bounds->SourceRect;
                     entry.Min = bounds->Bounds.Min; entry.Max = bounds->Bounds.Max;
-                    // Observe copied metadata only. Do not introduce a new
-                    // publication rejection or change the existing drawing guard.
-                    if (!image.Crop.Width || !image.Crop.Height ||
-                        uint32_t(image.Crop.X) + image.Crop.Width > C::SourceSize ||
-                        uint32_t(image.Crop.Y) + image.Crop.Height > C::SourceSize)
-                        SpriteDiagnostic("MiniMap: atlas candidate metadata invalid: canonical=%s reason=crop outside original capture canvas; crop=%u,%u,%u,%u attempt=%u/3; existing publication/drawing policy unchanged",
-                            image.Identifier.c_str(), unsigned(image.Crop.X), unsigned(image.Crop.Y), unsigned(image.Crop.Width), unsigned(image.Crop.Height), batch->UploadAttempts);
                     entries.emplace_back(image.Identifier, entry);
                 }
                 if (!Admitted(batch)) return; // Session may have ended during CPU preparation.
