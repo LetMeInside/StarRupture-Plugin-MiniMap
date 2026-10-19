@@ -1,3 +1,4 @@
+#include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingCache.h"
@@ -276,6 +277,7 @@ namespace MiniMapBuildingCache
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
         uint32_t width, uint32_t height, const SpatialBounds& bounds, const ImageMapping& mapping)
     {
+        MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Persistence);
         if (!rgba || !ValidSpatial(width, height, bounds, mapping) ||
             uint64_t(width) * height * 4 > kMaxRgbaBytes)
             return WriteRejected(canonicalBlueprintPath, "serialization input pointer/dimensions/byte bound rejected");
@@ -285,32 +287,22 @@ namespace MiniMapBuildingCache
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
         if (ec) return WriteRejected(canonicalBlueprintPath, "create cache directory failed", uint32_t(ec.value()), true);
-        const auto pngTemporary = path.wstring() + L".png.tmp";
-        std::vector<uint8_t> pixels(rgba, rgba + size_t(width) * height * 4);
-        const auto pngResult = MiniMapCapturePng::Write(pngTemporary, width, height, pixels, false);
-        if (!pngResult.Ok || pngResult.Bytes == 0 || pngResult.Bytes > kMaxPngBytes)
-        {
-            // Encoder stage/error are already observed; log before temporary cleanup.
-            WriteRejected(canonicalBlueprintPath, !pngResult.Ok ? pngResult.Stage : "serialized PNG byte length rejected", uint32_t(pngResult.Error), true);
-            std::filesystem::remove(pngTemporary, ec); return false;
-        }
-        std::vector<uint8_t> png(static_cast<size_t>(pngResult.Bytes));
-        {
-            std::ifstream input(pngTemporary, std::ios::binary);
-            input.read(reinterpret_cast<char*>(png.data()), static_cast<std::streamsize>(png.size()));
-            if (!input || input.peek() != std::char_traits<char>::eof())
-            { input.close(); std::filesystem::remove(pngTemporary, ec); return WriteRejected(canonicalBlueprintPath, "serialized PNG temporary read/length failed"); }
-        }
-        std::filesystem::remove(pngTemporary, ec);
-        if (ec) return WriteRejected(canonicalBlueprintPath, "remove serialized PNG temporary failed", uint32_t(ec.value()), true);
+        auto pixels=MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::RgbaCopy,[&]{return std::vector<uint8_t>(rgba,rgba+size_t(width)*height*4);});
+        std::vector<uint8_t> png;
+        const auto pngResult = MiniMapCapturePng::Encode(width, height, pixels, false, png);
+        if (!pngResult.Ok || pngResult.Bytes == 0 || pngResult.Bytes > kMaxPngBytes || png.size() != pngResult.Bytes)
+            return WriteRejected(canonicalBlueprintPath, !pngResult.Ok ? pngResult.Stage : "serialized PNG byte length rejected", uint32_t(pngResult.Error), true);
         const auto temporary = path.wstring() + L".tmp";
+        MiniMapCaptureTiming::Span headerTiming(MiniMapCaptureTiming::Stage::Header);
         SpriteHeader header{};
         std::memcpy(header.Magic, kMagic, sizeof(kMagic)); header.Version = kVersion;
         header.Width = width; header.Height = height; header.PngBytes = static_cast<uint32_t>(png.size());
         std::copy(bounds.Min.begin(), bounds.Min.end(), header.Min);
         std::copy(bounds.Max.begin(), bounds.Max.end(), header.Max);
         header.SourceX = mapping.X; header.SourceY = mapping.Y; header.SourceStep = mapping.Step;
+        headerTiming.Stop();
         {
+            MiniMapCaptureTiming::Span outputTiming(MiniMapCaptureTiming::Stage::SpriteWrite);
             std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
             if (!output) return WriteRejected(canonicalBlueprintPath, "open sprite output temporary failed");
             output.write(reinterpret_cast<const char*>(&header), sizeof(header));
@@ -318,7 +310,7 @@ namespace MiniMapBuildingCache
             output.close();
             if (!output) { std::filesystem::remove(temporary, ec); return WriteRejected(canonicalBlueprintPath, "write/close sprite temporary failed"); }
         }
-        if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::SpriteRename,[&]{return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);}))
         {
             const auto error = GetLastError();
             std::filesystem::remove(temporary, ec);
@@ -330,6 +322,8 @@ namespace MiniMapBuildingCache
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height) noexcept
     {
+        MiniMapCaptureTiming::PngContext pngRole(1);
+        MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::SourcePng);
         try
         {
             if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
@@ -354,6 +348,9 @@ namespace MiniMapBuildingCache
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
         uint32_t width, uint32_t height, uint64_t revision) noexcept
     {
+        MiniMapCaptureTiming::PngContext pngRole(2);
+        MiniMapCaptureTiming::Span preparation(MiniMapCaptureTiming::Stage::ExportPrep);
+        MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::AtlasExport);
         std::string name;
         const char* stage = "diagnostic namespace";
         uint32_t code = 0;
@@ -433,6 +430,7 @@ namespace MiniMapBuildingCache
                     if (code != ERROR_FILE_EXISTS && code != ERROR_ALREADY_EXISTS) return false;
                 }
                 if (!reserved) return false;
+                preparation.Stop();
                 stage = "PNG encoding";
                 const auto encoded = MiniMapCapturePng::Write(temporary.Path, width, height, rgba, false);
                 if (!encoded.Ok || !encoded.Bytes)
@@ -447,7 +445,7 @@ namespace MiniMapBuildingCache
                     const auto destination = directory / std::filesystem::path(std::wstring(name.begin(), name.end()));
                     // No REPLACE_EXISTING: a concurrent writer winning this name
                     // keeps its file. Retry the SAME encoded image at the next number.
-                    if (MoveFileExW(temporary.Path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+                    if (MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::ExportRename,[&]{return MoveFileExW(temporary.Path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH);}))
                     { temporary.Path.clear(); return true; }
                     code = GetLastError();
                     if (code != ERROR_FILE_EXISTS && code != ERROR_ALREADY_EXISTS) return false;

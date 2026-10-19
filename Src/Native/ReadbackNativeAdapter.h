@@ -1,4 +1,5 @@
 #pragma once
+#include "CaptureTiming.h"
 
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include <cstdint>
@@ -33,6 +34,7 @@ namespace MiniMapReadbackNative
         int Pitch = 0, BufferHeight = 0;
         uint64_t CompletionFrames = 0;
         double CompletionMs = 0;
+        MiniMapCaptureTiming::Record Timing; // Copied only after all native callbacks retire.
     };
     // One job; native objects remain private to this TU's render commands.
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)

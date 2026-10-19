@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <utility>
+
+namespace MiniMapBuildingCache { struct Sprite; }
 
 namespace MiniMapSpriteQueues
 {
@@ -11,6 +15,10 @@ namespace MiniMapSpriteQueues
     {
         std::string BlueprintPath;
         bool Success = false;
+        uint64_t Session = 0;
+        // Optional owned immutable CPU pixels, never a native/readback pointer.
+        // Kept in this existing completion queue and the bounded draw handoff.
+        std::shared_ptr<const MiniMapBuildingCache::Sprite> Payload;
     };
 
     class SpriteFifo

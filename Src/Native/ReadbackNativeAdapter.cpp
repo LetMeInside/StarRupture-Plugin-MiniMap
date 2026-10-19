@@ -193,6 +193,7 @@ namespace MiniMapReadbackNative
         uint32 SubmitSpec = 0, PollSpec = 0;
         int Pitch = 0, Height = 0;
         double CompletionMs = 0;
+        MiniMapCaptureTiming::Record Timing; // RT-only until zero outstanding/callables.
         uint64_t CompletionFrames = 0;
         bool HasPixels = false;
         // Render-thread-only: no UObject/world/component references.
@@ -234,15 +235,19 @@ namespace MiniMapReadbackNative
         }
         void Cleanup(Job* job)
         {
+            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::ReadbackCleanup);
             Enter(job, Phase::CleanupPending);
             Operations::DestroyCompleted(job->Readback);
             job->Readback = nullptr;
             Operations::ReleaseCompleted(job->Texture);
+            job->Timing.End=MiniMapCaptureTiming::Now();
             Enter(job, Phase::CleanupComplete);
         }
 
         void Execute(Job* job, FRHICommandListImmediate& provided)
         {
+            MiniMapCaptureTiming::Context timingContext(job->Timing);
+            MiniMapCaptureTiming::Span commandTiming(MiniMapCaptureTiming::Stage::ReadbackCommand);
             if (job->Current.load(std::memory_order_acquire) == Phase::CommandQueued)
             {
                 if (!Operations::Prerequisites())
@@ -289,14 +294,14 @@ namespace MiniMapReadbackNative
                 return; // Never map in the submission command.
             }
 
-            const auto ready = Operations::Check(job->Readback);
+            const auto ready = MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::ReadbackCheck,[&]{return Operations::Check(job->Readback);});
             if (ready == Operations::Readiness::Pending) return;
             if (ready != Operations::Readiness::Complete)
             { Fail(job, "copy readiness fence/staging/backend invalid; retirement unproven", true); return; }
             Enter(job, Phase::ReadbackReady);
             if (job->Result.load() == Outcome::Cancelled) { Cleanup(job); return; }
 
-            auto* mapped = static_cast<const uint8_t*>(Operations::Map(job->Readback, job->Pitch, job->Height));
+            auto* mapped = static_cast<const uint8_t*>(MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Map,[&]{return Operations::Map(job->Readback, job->Pitch, job->Height);}));
             if (!mapped)
             {
                 job->CompletionMs = double(NowNs() - job->StartNs.load()) / 1e6;
@@ -308,14 +313,14 @@ namespace MiniMapReadbackNative
             size_t row=0,total=0,source=0;
             bool dimensions=job->Pitch>0 && job->Pitch<=16384 && job->Height>0 && job->Height<=16384 &&
                 MiniMapFloatPixels::Size(job->Width,job->ImageHeight,size_t(job->Pitch),size_t(job->Height),row,total,source);
-            if (dimensions) dimensions=MiniMapFloatPixels::CopyRows(mapped,source,job->Width,job->ImageHeight,job->Pitch,job->Height,job->FloatCpu);
-            Operations::Unmap(job->Readback);
+            if (dimensions) dimensions=MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::CopyRows,[&]{return MiniMapFloatPixels::CopyRows(mapped,source,job->Width,job->ImageHeight,job->Pitch,job->Height,job->FloatCpu);});
+            MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Unmap,[&]{return Operations::Unmap(job->Readback);});
             job->CompletionMs = double(NowNs() - job->StartNs.load()) / 1e6;
             job->CompletionFrames = job->Frame.load() - job->StartFrame.load();
             if (dimensions)
             {
                 Enter(job, Phase::PixelsCopied);
-                dimensions=MiniMapFloatPixels::Analyze(job->FloatCpu.data(),job->FloatCpu.size(),job->Width,job->ImageHeight,job->FloatStatistics);
+                dimensions=MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Analyze,[&]{return MiniMapFloatPixels::Analyze(job->FloatCpu.data(),job->FloatCpu.size(),job->Width,job->ImageHeight,job->FloatStatistics);});
                 job->HasPixels = true;
             }
             job->DataReady.store(true, std::memory_order_release);
@@ -430,6 +435,7 @@ namespace MiniMapReadbackNative
         const bool initial = phase == Phase::ReadyToSubmit;
         if (initial)
         {
+            job->Timing.Begin=MiniMapCaptureTiming::Now(); // Before publication to the render command.
             job->StartNs.store(NowNs()); job->StartFrame.store(frame);
             Enter(job, Phase::CommandQueued);
         }
@@ -437,9 +443,9 @@ namespace MiniMapReadbackNative
         bool submitted=false;
         try
         {
-            submitted=Operations::Submit(initial ? TEXT("MiniMapR1Submit") : TEXT("MiniMapR1Poll"),
+            submitted=MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Enqueue,[&]{return Operations::Submit(initial ? TEXT("MiniMapR1Submit") : TEXT("MiniMapR1Poll"),
                 initial ? job->SubmitSpec : job->PollSpec, MoveTemp(callable),
-                initial ? &job->Enqueue : nullptr, initial ? &job->NativeEnqueueEverInvoked : nullptr);
+                initial ? &job->Enqueue : nullptr, initial ? &job->NativeEnqueueEverInvoked : nullptr);});
         }
         catch (...)
         {
@@ -488,6 +494,9 @@ namespace MiniMapReadbackNative
             report.Pitch = job->Pitch; report.BufferHeight = job->Height;
             report.CompletionMs = job->CompletionMs; report.CompletionFrames = job->CompletionFrames;
         }
+        // The RT timing record is immutable only after BOTH callback destruction
+        // and outstanding-work retirement, not merely the early DataReady flag.
+        if(report.Current==Phase::CleanupComplete && !report.Callables && !report.Outstanding)report.Timing=job->Timing;
         return report;
     }
 

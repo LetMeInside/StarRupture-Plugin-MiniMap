@@ -194,11 +194,17 @@ namespace MiniMapBuildingInventory
 {
     bool Initialize(IPluginSelf* self)
     {
+#if !defined(MINIMAP_BUILDING_INVENTORY_ORACLE) || !MINIMAP_BUILDING_INVENTORY_ORACLE
+        (void)self;
+        LOG_INFO("MiniMap: BuildingInventory oracle disabled; opt in with MiniMapBuildingInventoryOracle=true");
+        return true; // No callback, query setup, roots, enumeration or comparison.
+#else
         if (g_initialized) return true;
         if (!self || !self->hooks || !self->hooks->Engine || !self->hooks->ObjectWalker ||
             !self->hooks->ObjectWalker->IsReady || !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
         g_inventorySelf = self; Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized = true;
         return true;
+#endif
     }
     void Reset() { g_ready = false; Clear("lifecycle"); }
     void OnExperienceLoadComplete() { if (g_initialized) { g_ready = true; g_nextPoll = {}; } }

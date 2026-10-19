@@ -1,3 +1,4 @@
+#include "CaptureTiming.h"
 #include "CallbackTiming.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -139,6 +140,7 @@ static void EndBuildingSession()
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingScheduler::EndSession();
     }
+    MiniMapCaptureTiming::Flush();
 }
 static bool BuildingServiceGameThread() noexcept
 {
@@ -149,6 +151,7 @@ static bool BuildingServiceGameThread() noexcept
 }
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
+    MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::BuildingCaptureService,true);
     if(!MiniMapMap::GameplayReady())return;
     // Integration lock is outermost; FIFO/feedback locks are acquired only inside
     // it. Renderer functions never reacquire it or invoke scheduler transitions.
@@ -159,6 +162,7 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
     if (MiniMapMap::GameplayReady() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
+    MiniMapCaptureTiming::Flush(); // All lifecycle/backend locks have been released.
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {

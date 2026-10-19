@@ -72,6 +72,10 @@ namespace MiniMapBuildingCollector
         int32_t DefinitionObjectIndex = 0; // World-scoped metadata identity; no UObject pointer.
         uint8_t Category = 0xFF, Sources = 0;
         bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorKnown = false, InteriorOnly = false;
+        // Production acquisition state, not eligibility. Ordinary facts are
+        // immutable for this entity index/serial; splines continue refreshing.
+        bool AcquisitionAttempted = false, StaticAcquired = false, DynamicObserved = false;
+        bool StaticResolved() const noexcept { return StaticAcquired && !HasSpline && !DynamicObserved; }
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
         std::array<float, 4> Tint = { 1, 1, 1, 1 };

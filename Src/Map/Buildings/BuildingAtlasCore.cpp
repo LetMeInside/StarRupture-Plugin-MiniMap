@@ -1,3 +1,4 @@
+#include "CaptureTiming.h"
 #include "BuildingAtlasCore.h"
 
 #include <algorithm>
@@ -88,6 +89,8 @@ namespace MiniMapBuildingAtlasCore
         Result Pack(const std::vector<const CroppedSource*>& sources, const Layout& previous, std::uint16_t side,
             Layout& candidate, bool buildPixels = true)
         {
+            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Pack);
+            if(MiniMapCaptureTiming::Current)++MiniMapCaptureTiming::Current->Probes;
             std::vector<const CroppedSource*> order;
             order.reserve(sources.size());
             for (const auto* source : sources)
@@ -175,10 +178,11 @@ namespace MiniMapBuildingAtlasCore
             }
             // Subset fit probes use the same placement algorithm, but only the
             // final selection needs a complete RGBA canvas.
+            timing.Stop(); // Packing/probes exclude canvas allocation and pixel loops.
             if (!buildPixels) return Result::Ok;
             std::size_t bytes{};
             if (!ImageBytes(side, side, bytes)) return Result::Overflow;
-            candidate.Rgba.assign(bytes, 0);
+            MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Clear,[&]{candidate.Rgba.assign(bytes,0);});
             for (const auto& image : candidate.Images)
             {
                 const auto found = std::find_if(sources.begin(), sources.end(),
@@ -186,6 +190,10 @@ namespace MiniMapBuildingAtlasCore
                 if (found == sources.end()) return Result::InternalError;
                 const auto& source = **found;
                 const auto& allocation = image.Allocation;
+                // Pack appends retained images first, then new images. No extra
+                // identifier scan is needed just to classify timing samples.
+                const bool retained=std::size_t(&image-candidate.Images.data())<previous.Images.size();
+                MiniMapCaptureTiming::Span pixelsTiming(retained?MiniMapCaptureTiming::Stage::OldPixels:MiniMapCaptureTiming::Stage::NewPixels);
                 for (std::size_t y = 0; y < allocation.Height; ++y)
                     for (std::size_t x = 0; x < allocation.Width; ++x)
                     {

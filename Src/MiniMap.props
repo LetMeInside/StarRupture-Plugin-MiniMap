@@ -1,6 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
+    <!-- Independent full-world correctness oracle; enable explicitly for diagnostics. -->
+    <MiniMapBuildingInventoryOracle Condition="'$(MiniMapBuildingInventoryOracle)' == ''">false</MiniMapBuildingInventoryOracle>
     <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">true</MiniMapDebugUI>
     <!-- Development source PNGs stay enabled in Client Release testing; independent of native capture. -->
     <MiniMapBuildingCapturePngs Condition="'$(MiniMapBuildingCapturePngs)' == ''">true</MiniMapBuildingCapturePngs>
@@ -33,6 +35,9 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapBuildingInventoryOracle)' == 'true'">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_INVENTORY_ORACLE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_DEBUG_UI=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>

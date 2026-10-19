@@ -1,3 +1,4 @@
+#include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlas.h"
@@ -38,6 +39,7 @@ namespace MiniMapBuildingAtlas
         bool CapacityWaitReported = false, BatchExceptionReported = false;
         uint32_t DrawDiagnostics = 0; // Once per invalid published-entry category per session.
         uint64_t NextAttempt = 0, CandidateRevision = 0, PublishedRevision = 0;
+        MiniMapCaptureTiming::Record Timing;
         C::Atlas Core;
         X::Backend Backend;
         std::vector<SourceBounds> Bounds; // Representation metadata, never class-status truth.
@@ -145,6 +147,8 @@ namespace
         g_serviceFinished.wait(lock, [&] { return !session || !session->Busy; });
         // EndBatch has now returned from Create/GetSize AND all candidate/old
         // releases. No batch can cross another backend boundary during teardown.
+        if(session && session->Timing.Begin && !session->Timing.Finished)
+        {auto& t=session->Timing;t.End=MiniMapCaptureTiming::Now();t.Finished=true;MiniMapCaptureTiming::Defer(t,"atlas-cancelled");}
         g_session.reset();
         if (session) old = std::move(session->Published);
         if (g_statuses)
@@ -173,6 +177,11 @@ namespace MiniMapBuildingAtlas
         if (!textures || !textures->LoadFromRGBA || !textures->FreeTexture || !textures->GetSize || !textures->GetFreeSlotCount) return false;
         g_statuses = &statuses; g_textures = textures; g_interfacesAlive = true;
         return true;
+    }
+    void ObservePublication(uint64_t& session,uint64_t& revision) noexcept
+    {
+        session=g_session?g_session->Serial:0;
+        revision=g_session?g_session->PublishedRevision:0;
     }
     bool InitializeSession(uint64_t serial)
     {
@@ -210,6 +219,11 @@ namespace MiniMapBuildingAtlas
             SpriteDiagnostic("MiniMap: atlas admission unavailable: canonical=%s reason=no admitted atlas batch", name.c_str());
             return AddResult::Unavailable;
         }
+        if(batch->Timing.Finished)batch->Timing={};
+        if(!batch->Timing.Begin){batch->Timing.Begin=MiniMapCaptureTiming::Now();batch->Timing.Thread=MiniMapCaptureTiming::Thread();}
+        MiniMapCaptureTiming::Context timingContext(batch->Timing);
+        MiniMapCaptureTiming::Span sourceTiming(MiniMapCaptureTiming::Stage::SourceAdd);
+        batch->Timing.Key=MiniMapCaptureTiming::Key(name.c_str());
         try
         {
             if (!Admitted(batch)) return AddResult::Unavailable;
@@ -266,7 +280,15 @@ namespace MiniMapBuildingAtlas
     }
     void EndBatch(const Batch& batch, uint64_t tick) noexcept
     {
+        MiniMapCallbackTiming::Phase callbackTiming(MiniMapCallbackTiming::Id::AtlasPublication);
         if (!batch) return;
+        auto& timing=batch->Timing;
+        const bool timed=!timing.Finished && (timing.Begin || batch->Dirty || batch->UploadPending);
+        MiniMapCaptureTiming::Context timingContext(timed?&timing:nullptr);
+        if(timed && !timing.Begin){timing.Begin=MiniMapCaptureTiming::Now();timing.Thread=MiniMapCaptureTiming::Thread();}
+        if(timed){timing.Session=batch->Serial;if(!timing.Candidate)timing.Candidate=batch->Core.Current().Revision+1;}
+        MiniMapCaptureTiming::Span publicationTiming(MiniMapCaptureTiming::Stage::Publication);
+        MiniMapCaptureTiming::Span preparation(MiniMapCaptureTiming::Stage::Prepare);
         const bool sourceAdmission = batch->Dirty;
         std::shared_ptr<Revision> candidate, old;
         std::shared_ptr<const C::Layout> previousPixels;
@@ -325,7 +347,10 @@ namespace MiniMapBuildingAtlas
                 // Allocate every fallible CPU publication object BEFORE acquiring a GPU reference.
                 if (batch->PublishedRevision == (std::numeric_limits<uint64_t>::max)()) return;
                 candidate = std::make_shared<Revision>();
-                auto pixels = std::make_shared<C::Layout>(layout);
+                auto pixels = MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::LayoutCopy,[&]{return std::make_shared<C::Layout>(layout);});
+                timing.Candidate=layout.Revision;timing.Id=batch->PublishedRevision+1;
+                timing.Width=layout.Width;timing.Height=layout.Height;timing.Sources=uint32_t(layout.Images.size());timing.Bytes=layout.Rgba.size();
+                timing.Padded=0;for(const auto& image:layout.Images)timing.Padded+=uint64_t(image.Allocation.Width)*image.Allocation.Height;
                 // Core revisions identify proposals. Public/PNG revisions count
                 // only committed GPU generations, including after failed uploads.
                 pixels->Revision = batch->PublishedRevision + 1;
@@ -345,6 +370,7 @@ namespace MiniMapBuildingAtlas
                     entries.emplace_back(image.Identifier, entry);
                 }
                 if (!Admitted(batch)) return; // Session may have ended during CPU preparation.
+                preparation.Stop();
                 const auto result = batch->Backend.Create(layout.Rgba, layout.Width, layout.Height, candidate->Texture);
                 if (result == X::TransferResult::OwnershipUncertain)
                 {
@@ -362,7 +388,10 @@ namespace MiniMapBuildingAtlas
                     return;
                 }
                 {
+                    MiniMapCaptureTiming::Span commitWait(MiniMapCaptureTiming::Stage::CommitWait);
                     std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                    commitWait.Stop();
+                    MiniMapCaptureTiming::Span commitHold(MiniMapCaptureTiming::Stage::CommitHold);
                     if (!Current(batch) || MiniMapBuildingSchedulerInternal::ActiveSession() != batch->Serial ||
                         layout.Revision != batch->CandidateRevision) return;
                     // Validate all dictionary entries before changing any publication.
@@ -376,6 +405,7 @@ namespace MiniMapBuildingAtlas
                             return;
                         }
                     }
+                    MiniMapCaptureTiming::Span commitTiming(MiniMapCaptureTiming::Stage::Commit);
                     old = std::move(batch->Published);
                     batch->Published = candidate;
                     for (const auto& entry : entries)
@@ -387,14 +417,11 @@ namespace MiniMapBuildingAtlas
                     }
                     batch->PublishedRevision = candidate->Pixels->Revision;
                     batch->UploadPending = false;
+                    commitTiming.Stop();
+                    timing.Ok=true;timing.Published=batch->PublishedRevision;
                     // Freeze the actually published pixels, not Core.Current().
                     // Exactly one diagnostic attempt for this successful swap.
                     diagnosticPixels = batch->Published->Pixels;
-                    SpriteDiagnostic("MiniMap: atlas committed: revision=%llu sources=%zu size=%ux%u candidateRevision=%llu kind=%s reason=%s",
-                        static_cast<unsigned long long>(batch->PublishedRevision), entries.size(),
-                        unsigned(layout.Width), unsigned(layout.Height), static_cast<unsigned long long>(layout.Revision),
-                        batch->PublishedRevision==1?"initial-available-batch":"incremental",
-                        sourceAdmission?"source-admission":"pending-upload-retry");
                     candidate.reset(); // Current publication now owns the acquired reference.
                 }
             }();
@@ -410,20 +437,31 @@ namespace MiniMapBuildingAtlas
                     SpriteDiagnostic("MiniMap: atlas exception affected batch includes canonical=%s", bounds.Identifier.c_str());
             }
         }
+        if(diagnosticPixels)
+        {
+                    SpriteDiagnostic("MiniMap: atlas committed: revision=%llu sources=%zu size=%ux%u candidateRevision=%llu kind=%s reason=%s",
+                        static_cast<unsigned long long>(batch->PublishedRevision), diagnosticPixels->Images.size(),
+                        unsigned(diagnosticPixels->Width), unsigned(diagnosticPixels->Height), static_cast<unsigned long long>(timing.Candidate),
+                        batch->PublishedRevision==1?"initial-available-batch":"incremental",
+                        sourceAdmission?"source-admission":"pending-upload-retry");
+        }
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
-        Release(batch, old);
+        MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::OldRetire,[&]{Release(batch,old);});
         if (diagnosticPixels)
             MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,
                 diagnosticPixels->Width, diagnosticPixels->Height, diagnosticPixels->Revision);
-        // Stop() cannot finish or admit a replacement session until the export
-        // above completes, including when cancellation followed publication.
+        preparation.Stop();publicationTiming.Stop();
+        if(timed && (diagnosticPixels || batch->PackAttempts>=3 || batch->UploadAttempts>=3 || batch->Backend.UploadOwnershipUncertain()))
+        {timing.End=MiniMapCaptureTiming::Now();timing.Finished=true;MiniMapCaptureTiming::Defer(timing,"atlas");}
+        // Keep timing finalization inside Busy as well as synchronous export.
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             batch->Busy = false;
         }
         g_serviceFinished.notify_all();
     }
+
     void EndSession()
     {
         Stop(false);

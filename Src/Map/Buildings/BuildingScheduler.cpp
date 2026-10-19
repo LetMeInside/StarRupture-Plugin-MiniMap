@@ -31,7 +31,12 @@ namespace
     // leaves excess identities undiscovered until a later pass, never orphaned
     // as PendingCache without a work item. These are NOT native capture queues.
     constexpr size_t MaximumBatchNames = 256;
-    struct Names { std::array<std::string, MaximumBatchNames> Paths; size_t Count = 0; };
+    struct Names
+    {
+        std::array<std::string, MaximumBatchNames> Paths;
+        std::array<std::shared_ptr<const C::Sprite>, MaximumBatchNames> Payloads;
+        size_t Count = 0;
+    };
     Names g_pass, g_completed;
     struct RetentionRetry
     {
@@ -39,6 +44,7 @@ namespace
         C::Sprite Sprite;
         uint64_t Serial, NextTick;
         unsigned Attempts;
+        std::shared_ptr<const C::Sprite> Payload;
     };
     // Bounded decoded work payloads, NOT another per-class status dictionary.
     // Moving into an empty slot needs no allocation, including under memory
@@ -55,7 +61,7 @@ namespace
 
     void Clear(Names& names) noexcept
     {
-        for (size_t i = 0; i < names.Count; ++i) names.Paths[i].clear();
+        for (size_t i = 0; i < names.Count; ++i) { names.Paths[i].clear(); names.Payloads[i].reset(); }
         names.Count = 0;
     }
     bool Room() noexcept { return g_pass.Count + g_completed.Count < MaximumBatchNames; }
@@ -70,9 +76,9 @@ namespace
         }
     };
     void RetainDecoded(const A::Batch& batch, std::string& path, C::Sprite& sprite,
-        uint64_t serial, uint64_t tick, unsigned attempts)
+        uint64_t serial, uint64_t tick, unsigned attempts, std::shared_ptr<const C::Sprite> payload = {})
     {
-        const auto added = A::Add(batch, path, sprite); // No lifecycle lock.
+        const auto added = A::Add(batch, path, payload ? *payload : sprite); // No lifecycle lock.
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         if (!Admitted(serial)) return;
         const auto it = g_statuses->find(path);
@@ -102,7 +108,7 @@ namespace
                     const auto next = tick > maximum - 60 ? maximum : tick + 60;
                     SpriteDiagnostic("MiniMap: atlas retention unavailable for '%s'; decoded retry scheduled (attempt %u/3)",
                         path.c_str(), attempts);
-                    slot.emplace(RetentionRetry{std::move(path), std::move(sprite), serial, next, attempts});
+                    slot.emplace(RetentionRetry{std::move(path), std::move(sprite), serial, next, attempts, std::move(payload)});
                     return;
                 }
             // Storage pressure is explicit and non-spinning. This valid cache
@@ -162,9 +168,12 @@ namespace MiniMapBuildingScheduler
         g_passOpen = true; g_drawThread = std::this_thread::get_id();
         MiniMapSpriteQueues::Feedback feedback;
         // Leave feedback in its original queue if this handoff is full. A success
-        // can always move its already-owned string into the reserved pass slot.
+        // can move its owned string and optional CPU payload into the pass slot.
         while (Room() && g_feedback.Remove(feedback))
         {
+            // All feedback originates from an admitted request under the same
+            // lifecycle lock. Reject old generations before looking up the path.
+            if (feedback.Session != g_serial) continue;
             const auto it = g_statuses->find(feedback.BlueprintPath);
             if (it == g_statuses->end() || it->second.Where != S::Location::Queued)
             {
@@ -177,6 +186,7 @@ namespace MiniMapBuildingScheduler
             }
             if (feedback.Success)
             {
+                g_pass.Payloads[g_pass.Count] = std::move(feedback.Payload);
                 g_pass.Paths[g_pass.Count++] = std::move(feedback.BlueprintPath);
                 it->second.Where = S::Location::PendingCache;
             }
@@ -205,7 +215,11 @@ namespace MiniMapBuildingScheduler
             // Failed allocation leaves this class Unknown and eligible next pass.
             std::string copy(path);
             const auto [it, added] = g_statuses->try_emplace(path, S::Location::PendingCache);
-            if (added) g_pass.Paths[g_pass.Count++] = std::move(copy);
+            if (added)
+            {
+                g_pass.Payloads[g_pass.Count].reset(); // Ordinary discovery uses disk.
+                g_pass.Paths[g_pass.Count++] = std::move(copy);
+            }
         }
         catch (...)
         {
@@ -222,9 +236,13 @@ namespace MiniMapBuildingScheduler
         if (g_drawThread != std::this_thread::get_id())
         { LOG_ERROR("MiniMap: building draw pass must end on its starting UI thread"); return; }
         // Caller still holds LifecycleMutex. Slots are bounded before discovery;
-        // moving strings cannot allocate. Service cannot observe a partial close.
+        // moving strings/payload owners cannot allocate. No I/O or pixel work;
+        // Service cannot observe a partial close.
         for (size_t i = 0; i < g_pass.Count; ++i)
+        {
+            g_completed.Payloads[g_completed.Count] = std::move(g_pass.Payloads[i]);
             g_completed.Paths[g_completed.Count++] = std::move(g_pass.Paths[i]);
+        }
         g_pass.Count = 0; g_passOpen = false;
     }
     void Service()
@@ -239,7 +257,11 @@ namespace MiniMapBuildingScheduler
             if (g_serviceTick != (std::numeric_limits<uint64_t>::max)()) ++g_serviceTick;
             tick = g_serviceTick;
             names.Count = g_completed.Count;
-            for (size_t i = 0; i < names.Count; ++i) names.Paths[i] = std::move(g_completed.Paths[i]);
+            for (size_t i = 0; i < names.Count; ++i)
+            {
+                names.Paths[i] = std::move(g_completed.Paths[i]);
+                names.Payloads[i] = std::move(g_completed.Payloads[i]);
+            }
             g_completed.Count = 0;
             for (size_t i = 0; i < g_retentionRetries.size(); ++i)
                 if (g_retentionRetries[i] && g_retentionRetries[i]->NextTick <= tick)
@@ -266,9 +288,9 @@ namespace MiniMapBuildingScheduler
                 const auto it = g_statuses->find(retry->Path);
                 if (it == g_statuses->end() || it->second.Where != S::Location::FileCache) continue;
             }
-            RetainDecoded(batch, retry->Path, retry->Sprite, serial, tick, retry->Attempts + 1);
+            RetainDecoded(batch, retry->Path, retry->Sprite, serial, tick, retry->Attempts + 1, std::move(retry->Payload));
         }
-        size_t servicedNames = 0, loadedSprites = 0, missingSprites = 0;
+        size_t servicedNames = 0, loadedSprites = 0, missingSprites = 0, directSprites = 0;
         for (;;)
         {
             servicedNames += names.Count;
@@ -290,7 +312,11 @@ namespace MiniMapBuildingScheduler
                     }
                 }
                 C::Sprite sprite;
-                const auto result = C::TryLoad(path, sprite); // One read/decode; NO lifecycle lock.
+                const auto& payload = names.Payloads[i];
+                // Successful current-session capture already owns these exact
+                // pixels. Warm-cache/fallback remains one unchanged read/decode.
+                const auto result = payload ? C::LoadResult{C::LoadStatus::Loaded, "capture payload"}
+                    : C::TryLoad(path, sprite); // NO lifecycle lock.
                 {
                     std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
                     if (!Admitted(serial)) break;
@@ -322,7 +348,8 @@ namespace MiniMapBuildingScheduler
                     it->second.Where = S::Location::FileCache;
                 }
                 ++loadedSprites;
-                RetainDecoded(batch, path, sprite, serial, tick, 1);
+                if (payload) ++directSprites;
+                RetainDecoded(batch, path, sprite, serial, tick, 1, payload);
             }
             // EndDraw may have closed more discoveries while TryLoad ran unlocked.
             // Take those already available names into the SAME CPU/GPU batch. The
@@ -332,14 +359,21 @@ namespace MiniMapBuildingScheduler
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             if (!Admitted(serial) || servicedNames >= MaximumBatchNames || !g_completed.Count) break;
             names.Count = (std::min)(g_completed.Count, MaximumBatchNames - servicedNames);
-            for (size_t i = 0; i < names.Count; ++i) names.Paths[i] = std::move(g_completed.Paths[i]);
+            for (size_t i = 0; i < names.Count; ++i)
+            {
+                names.Paths[i] = std::move(g_completed.Paths[i]);
+                names.Payloads[i] = std::move(g_completed.Payloads[i]);
+            }
             g_completed.Count -= names.Count;
             for (size_t i = 0; i < g_completed.Count; ++i)
+            {
                 g_completed.Paths[i] = std::move(g_completed.Paths[i + names.Count]);
+                g_completed.Payloads[i] = std::move(g_completed.Payloads[i + names.Count]);
+            }
         }
         if (servicedNames)
-            SpriteDiagnostic("MiniMap: sprite cache batch closed: session=%llu names=%zu loaded=%zu missing=%zu scope=available-handoffs; at most one atlas publication attempt follows",
-                static_cast<unsigned long long>(serial), servicedNames, loadedSprites, missingSprites);
+            SpriteDiagnostic("MiniMap: sprite cache batch closed: session=%llu names=%zu loaded=%zu missing=%zu direct=%zu scope=available-handoffs; at most one atlas publication attempt follows",
+                static_cast<unsigned long long>(serial), servicedNames, loadedSprites, missingSprites, directSprites);
         // Finish performs one layout/transfer at most for the entire available
         // batch, or services a pending retry without any cache reread. No disk
         // access, layout construction or GPU call occurs in EndDraw/UI rendering.

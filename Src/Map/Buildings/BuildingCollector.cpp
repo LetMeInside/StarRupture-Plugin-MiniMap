@@ -87,7 +87,11 @@ namespace
             Dynamic=0, BoundsTime=0, OffDynamic=0, OffBounds=0, CacheService=0,
             Filter=0, SnapshotTime=0, Total=0, MaxTick=0, GridMax=0,
             DefinitionTime=0, OrdinaryTime=0, SplineTime=0;
+        double SnapshotBuild=0;
         size_t Added=0, Removed=0, OffAdded=0, OffRemoved=0, DefinitionMiss=0, Stale=0, Refreshed=0, Polls=0, IdentityPolls=0, GridCalls=0;
+        size_t NewAttempts=0, RetryAttempts=0, ResolvedNow=0, CachedReuse=0, DynamicReads=0,
+            TransformReads=0, MembershipTransforms=0, MembershipTags=0, PlacementReads=0, Conversions=0, ConversionSuccess=0,
+            InteriorReads=0, OrdinaryGeometry=0, OrdinaryDefinitions=0, SnapshotsBuilt=0, SnapshotsReused=0;
     };
     IPluginSelf* g_collectorSelf=nullptr;
     bool g_initialized=false, g_ready=false, g_typesReady=false, g_unavailableLogged=false;
@@ -112,6 +116,7 @@ namespace
     std::shared_ptr<const Snapshot> g_snapshot;
     Clock::time_point g_nextLocal={}, g_nextIdentity={}, g_nextLog={}, g_nextWarning={};
     Metrics g_metrics;
+    bool g_snapshotDirty=true, g_publishedGrid=false, g_publishedIdentity=false;
 #if MINIMAP_DEBUG_UI
     struct DebugOracle
     {
@@ -155,23 +160,33 @@ namespace
         if(!type)return ClassObservation::Unavailable;
         for(unsigned depth=0;type && depth<64;++depth,type=type->SuperStruct)
         {
+            // base is acquired/rooted by ResolveTypes for this session. Equality
+            // reads no memory through type; validate only before following an
+            // otherwise unverified superclass pointer.
+            if(type==base)
+            {
+#if !defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+                // The legacy metadata-walker configuration does not own roots.
+                if(!MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(type),sizeof(SDK::UStruct))) return ClassObservation::Unavailable;
+#endif
+                return ClassObservation::Matches;
+            }
             if(!MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(type),sizeof(SDK::UStruct))) return ClassObservation::Unavailable;
-            if(type==base) return ClassObservation::Matches;
         }
         return type?ClassObservation::Unavailable:ClassObservation::Other;
     }
     bool IsClass(const SDK::UObject* object,const SDK::UClass* base)
     { return ObserveClass(object,base)==ClassObservation::Matches; }
     enum class InteriorTagResult : uint8_t { Unknown, Absent, Present };
-    InteriorTagResult ReadInteriorTag(const SDK::UCrBuildingData* building)
+    InteriorTagResult ReadInteriorTag(const SDK::UCrBuildingData* building,bool production=false)
     {
+        if(production)++g_metrics.InteriorReads;
 #if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
         const auto* native=MiniMapNative::Get();
         if(!native || !native->asset.nameEqualsWide) return InteriorTagResult::Unknown;
         const auto* tags=&building->Tags;
-        const auto address=reinterpret_cast<uintptr_t>(tags);
-        if(!MiniMapNative::IsMemoryRangeReadable(address,sizeof(*tags),alignof(void*)))
-            return InteriorTagResult::Unknown;
+        // Both callers have just validated sizeof(UCrBuildingData). Tags is
+        // inline in that same range; only its separate allocation needs a query.
         const int32_t count=tags->Num(),capacity=tags->Max();
         const auto* data=tags->GetDataPtr();
         constexpr int32_t maximumTags=4096;
@@ -278,12 +293,17 @@ namespace
 #endif
     const void* Fragment(const Native& n,Id id,const SDK::UScriptStruct* type)
     { return type?n.mass.getFragmentDataPtr(g_manager,id,type):nullptr; }
-    const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id)
+    const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id,bool production=false)
     {
         if(!MiniMapResidentMetadata::Available())return nullptr;
+        if(production)++g_metrics.PlacementReads;
         const auto* wrapper=n.mass.getConstSharedFragmentPtr(g_manager,id,g_types.Parameters);
         const uint8_t* memory=nullptr;
-        if(wrapper && MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(wrapper),sizeof(memory),alignof(void*)))
+        // The synchronous Mass API borrows manager-owned shared storage. The
+        // verified native caller reads this wrapper and aligned payload directly
+        // (Fingerprints.cpp InternalGetConstSharedFragmentPtr anchor). No yield,
+        // entity mutation or retained pointer intervenes in this acquisition.
+        if(wrapper && !(reinterpret_cast<uintptr_t>(wrapper)&(alignof(void*)-1)))
             std::memcpy(&memory,wrapper,sizeof(memory));
         const auto alignment=g_types.Parameters->MinAlignment;
         if(!memory || alignment<=0 || (alignment&(alignment-1))) return nullptr;
@@ -291,7 +311,7 @@ namespace
         if(raw>(std::numeric_limits<uintptr_t>::max)()-sizeof(void*)-uintptr_t(alignment-1))return nullptr;
         const uintptr_t base=raw+sizeof(void*);
         const auto address=(base+alignment-1)&~uintptr_t(alignment-1);
-        if(!MiniMapNative::IsMemoryRangeReadable(address,sizeof(SDK::FCrBuildingParameters),alignment))return nullptr;
+        if(address>(std::numeric_limits<uintptr_t>::max)()-sizeof(SDK::FCrBuildingParameters))return nullptr;
         return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
     DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline)
@@ -385,11 +405,15 @@ namespace
     }
     std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool spline,bool measure=true)
     {
+        // Ordinary definition geometry is copied once. The independent oracle
+        // passes measure=false and still observes native geometry for comparison.
+        if(measure && !spline && definition.Geometry)return definition.Geometry;
         if(definition.GeometryObservation!=g_observation || (spline && !definition.GeometryHasSpline))
         {
             definition.GeometryObservation=g_observation;
             definition.GeometryHasSpline=spline;
             const auto start=Clock::now();
+            if(measure && !spline)++g_metrics.OrdinaryDefinitions;
             auto shape=ResolveGeometry(placement,spline);
             if(!definition.Geometry || !(*definition.Geometry==shape))
                 definition.Geometry=std::make_shared<const DefinitionGeometry>(std::move(shape));
@@ -401,8 +425,10 @@ namespace
     {
         if(definition.CanonicalBlueprint || definition.IdentityInterrupted || definition.IdentityObservation==g_observation) return;
         definition.IdentityObservation=g_observation; // Memoize this definition's observation, not a quota across types.
+        ++g_metrics.Conversions; // Production resolver attempts; oracle calls are separate.
         const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
             {record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,record.BuildingId,definition.ObjectSerial});
+        if(result.Path)++g_metrics.ConversionSuccess;
         // An invalid/unavailable authored identity does not invalidate the building.
         // Resident metadata or authored data may settle; retry only this definition.
         definition.CanonicalBlueprint=result.Path;
@@ -457,6 +483,7 @@ namespace
         }
         else if(r.TransformValid)
         {
+            if(retain)++g_metrics.OrdinaryGeometry;
             const auto start=Clock::now(); r.Curve.reset();
             if(targetingBox) r.LocalFootprint=MiniMapBuildingGeometry::Copy(*targetingBox);
             else if(r.DefinitionShape) r.LocalFootprint=r.DefinitionShape->TargetingBox;
@@ -472,12 +499,20 @@ namespace
     }
     bool Read(const Native& n,Record& r)
     {
+        // Defensive guard; membership callers also bypass Read for resolved data.
+        if(r.StaticResolved()) {++g_metrics.CachedReuse;return true;}
+        g_snapshotDirty=true; // Conservative for unresolved/dynamic observations.
+        if(r.HasSpline || r.DynamicObserved)++g_metrics.DynamicReads;
+        else if(r.AcquisitionAttempted)++g_metrics.RetryAttempts;
+        else ++g_metrics.NewAttempts;
+        r.AcquisitionAttempted=true;
         const Id id{r.Index,r.Serial};
         if(!n.mass.isEntityValid(g_manager,id)) { ++g_metrics.Stale; return false; }
         // Built is a precondition of fragment access, not copied-data eligibility.
         // An unavailable refresh does not erase a prior successful observation.
         if(!n.mass.isEntityBuilt(g_manager,id)) return r.TransformValid;
         const auto start=Clock::now();
+        ++g_metrics.TransformReads;
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
         {
             const Point position{t->Translation.X,t->Translation.Y,t->Translation.Z};
@@ -490,13 +525,17 @@ namespace
             { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; }
         }
         const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
+        // Remember actual dynamic-source evidence for this lifetime. A missing
+        // spline fragment during a later observation must not freeze the record.
+        // HasSpline itself keeps its existing per-observation rendering semantics.
+        r.DynamicObserved=r.DynamicObserved || r.HasSpline || spline!=nullptr;
         r.HasSpline=spline!=nullptr;
         // These are the ONLY UObject accesses needed for ordinary identity and
         // Interior facts. Failure leaves already copied facts intact. No raw
         // placement pointer survives this synchronous acquisition scope.
         if(MiniMapResidentMetadata::Available())
         {
-            const auto* parameters=Parameters(n,id);
+            const auto* parameters=Parameters(n,id,true);
             const auto* placement=parameters?parameters->PlacementData:nullptr;
             const auto object=reinterpret_cast<uintptr_t>(placement);
             int32_t serial=0;
@@ -526,7 +565,7 @@ namespace
                     const auto tag=kind==ClassObservation::Unavailable?InteriorTagResult::Unknown:
                         kind==ClassObservation::Matches
                         ?(MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
-                            ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement)):InteriorTagResult::Unknown)
+                            ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement),true):InteriorTagResult::Unknown)
                         :InteriorTagResult::Absent;
                     if(tag!=InteriorTagResult::Unknown)
                     { definition.InteriorTagChecked=true; definition.InteriorOnly=tag==InteriorTagResult::Present; }
@@ -560,6 +599,10 @@ namespace
         const double boundsTime=Ms(boundsStart); g_metrics.BoundsTime+=boundsTime;
         if(r.Sources&OffGrid) g_metrics.OffBounds+=boundsTime;
         r.RefreshedAtSeconds=Seconds(); ++g_metrics.Refreshed;
+        // Known Interior is terminal exclusion and needs no classname conversion.
+        r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown &&
+            !r.DynamicObserved && (r.InteriorOnly || bool(r.CanonicalBlueprint));
+        if(r.StaticAcquired)++g_metrics.ResolvedNow;
         return r.TransformValid;
     }
     void Destroy()
@@ -591,6 +634,7 @@ namespace
         g_ordinaryQueryPadding=kOriginPadding;
         g_initialDiscoveryReports=0;
         g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={};
+        g_snapshotDirty=true; g_publishedGrid=g_publishedIdentity=false;
         g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
         g_indexedHandles.clear(); g_xyQuery=false;
         g_gridSucceeded=g_identitySucceeded=false;
@@ -654,13 +698,16 @@ namespace
                 entry.Epoch=g_epoch; entry.Data.Sources|=source;
                 if(added)
                 {
+                    g_snapshotDirty=true;
                     if(const auto indexed=g_indexedCopies.find(Key(id));indexed!=g_indexedCopies.end())
                         entry.Data=indexed->second; // Same entity lifetime changing acquisition source.
                     entry.Data.Sources=source;
                     entry.Data.Generation=g_generation; entry.Data.Index=id.Index; entry.Data.Serial=id.SerialNumber;
+                    entry.Read=entry.Data.StaticResolved();
                     g_pending.push_back(Key(id));
                     ++g_metrics.Added;
                 }
+                if(source&IndexedSpline)entry.Data.DynamicObserved=true;
             }
         };
         merge(off.Array,OffGrid); merge(splines.Array,IndexedSpline);
@@ -671,7 +718,19 @@ namespace
             const uint8_t after=current?it->second.Data.Sources:0;
             g_metrics.OffAdded+=!(before&OffGrid) && (after&OffGrid);
             g_metrics.OffRemoved+=(before&OffGrid) && !(after&OffGrid);
-            if(!current) { it=g_cache.erase(it); ++g_metrics.Removed; } else ++it;
+            if(before!=after)g_snapshotDirty=true;
+            if(!current)
+            {
+                // Preserve the same lifetime's copied payload for an off-grid ->
+                // indexed transition. Sources=0 is staging, never publication.
+                if(n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
+                {
+                    auto [copy,added]=g_indexedCopies.try_emplace(it->first,it->second.Data);
+                    if(added)copy->second.Sources=0;
+                }
+                it=g_cache.erase(it); ++g_metrics.Removed; g_snapshotDirty=true;
+            }
+            else ++it;
         }
         g_keys.clear(); g_keys.reserve(g_cache.size());
         for(const auto& [key,entry]:g_cache) g_keys.push_back(key);
@@ -684,7 +743,9 @@ namespace
         auto service=[&](uint64_t key)
         {
             auto it=g_cache.find(key); if(it==g_cache.end()) return;
-            auto& e=it->second; if(now<e.Due) return;
+            auto& e=it->second;
+            if(e.Data.StaticResolved()) {e.Read=true;++g_metrics.CachedReuse;return;}
+            if(now<e.Due) return;
             e.Read=Read(n,e.Data);
             const bool unresolved=!e.Data.TransformValid || (!e.Data.HasSpline &&
                 (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
@@ -738,6 +799,16 @@ namespace
             return true;
         };
         if(!n.mass.isEntityBuilt(g_manager,handle.Entity))return keepCopied();
+        // This is the existing source membership filter, not Interior
+        // acquisition. Grid cells contain non-buildings too; keep this filter
+        // even for copied ordinary instances so removed BuildingTag membership
+        // cannot become a ghost. It never accesses placement or geometry.
+        alignas(8) std::array<std::byte,0x28> view={};
+        ++g_metrics.MembershipTags;
+        n.gridDiagnostic.viewConstruct(view.data(),g_manager,handle.Entity);
+        if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Building)) return true;
+        if(previous!=g_indexedCopies.end() && previous->second.StaticResolved())return keepCopied();
+        ++g_metrics.MembershipTransforms;
         const auto* transform=static_cast<const SDK::FTransform*>(Fragment(n,handle.Entity,g_types.Transform));
         if(!transform) return keepCopied();
         const auto& p=transform->Translation;
@@ -745,11 +816,6 @@ namespace
         // Reproduce FindEntitiesInBox's STRICT XY origin tests, with no Z test.
         if(!(p.X>context.Region.MinX && p.X<context.Region.MaxX &&
              p.Y>context.Region.MinY && p.Y<context.Region.MaxY)) return true;
-        alignas(8) std::array<std::byte,0x28> view={};
-        n.gridDiagnostic.viewConstruct(view.data(),g_manager,handle.Entity);
-        // Required BuildingTag filter, same HasTag operation as the native box
-        // callback. No unfiltered grid population enters extraction.
-        if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Building)) return true;
         if(g_indexedHandles.size()>=kMaximumHandles) { context.Overflow=true; return false; }
         g_indexedHandles.push_back(handle.Entity); // Copy 8-byte identity only.
         return true; // Native traversal interprets false as early termination.
@@ -771,8 +837,9 @@ namespace
         auto copied=[&]()
         {
             for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
-                if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}))it=g_indexedCopies.erase(it);
-                else {records.push_back(it->second);++it;}
+                if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}))
+                {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
+                else {if(it->second.Sources&Indexed)records.push_back(it->second);++it;}
             return records;
         };
         void* grid=n.gridDiagnostic.getSubsystem(g_world);
@@ -838,11 +905,14 @@ namespace
             auto& r=it->second;
             if(added)
             {
+                g_snapshotDirty=true;
                 if(const auto cached=g_cache.find(key);cached!=g_cache.end())r=cached->second.Data;
                 r.Generation=g_generation;r.Index=id.Index;r.Serial=id.SerialNumber;
             }
+            if(r.Sources!=Indexed)g_snapshotDirty=true;
             r.Sources=Indexed;
-            Read(n,r); // Updates only acquired fields; unavailable fields stay copied.
+            if(r.StaticResolved())++g_metrics.CachedReuse;
+            else Read(n,r); // Only newly discovered/unresolved or dynamic data.
         }
         records.reserve(g_indexedCopies.size());
         for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
@@ -850,8 +920,9 @@ namespace
             // Successful enumeration owns scope membership; a failed query does
             // not assert removal. Entity serial validity is the removal oracle.
             if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}) ||
-                (g_gridSucceeded && !seen.contains(it->first))) it=g_indexedCopies.erase(it);
-            else {records.push_back(it->second);++it;}
+                (g_gridSucceeded && !seen.contains(it->first)))
+            {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
+            else {if(it->second.Sources&Indexed)records.push_back(it->second);++it;}
         }
         g_metrics.GridExtract+=Ms(extraction);
         return records;
@@ -859,6 +930,28 @@ namespace
     void Publish(std::vector<Record> indexed,const Native& n)
     {
         const auto start=Clock::now();
+        // Keep actual removal detection at publication cadence, including when
+        // immutable observations let us reuse the previous snapshot wholesale.
+        for(auto it=g_cache.begin();it!=g_cache.end();)
+            if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
+            {it=g_cache.erase(it);g_snapshotDirty=true;++g_metrics.Removed;}
+            else ++it;
+        const auto previous=MiniMapBuildingCollector::GetSnapshot();
+        const auto sameRegion=[&]
+        {
+            if(!previous)return false;
+            const auto& r=previous->Region;
+            return r.Valid==g_region.Valid && r.MinX==g_region.MinX && r.MinY==g_region.MinY &&
+                r.MaxX==g_region.MaxX && r.MaxY==g_region.MaxY;
+        };
+        if(!g_snapshotDirty && previous && previous->Generation==g_generation && sameRegion() &&
+            g_publishedGrid==g_gridSucceeded && g_publishedIdentity==g_identitySucceeded)
+        {
+            ++g_metrics.SnapshotsReused;
+            g_metrics.Filter+=Ms(start);
+            return; // Pointer identity lets BuildingVisuals skip preparation too.
+        }
+        ++g_metrics.SnapshotsBuilt;
         auto result=std::make_shared<Snapshot>(); result->Generation=g_generation; result->Region=g_region;
         result->Complete=g_gridSucceeded && g_identitySucceeded;
         result->Records.reserve(indexed.size()+g_near.size());
@@ -879,7 +972,6 @@ namespace
             if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid) { result->Complete=false; continue; }
             if(!e.Data.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)) continue;
             g_near.push_back(key);
-            if(!n.mass.isEntityValid(g_manager,{e.Data.Index,e.Data.Serial})) { ++g_metrics.Stale; continue; }
             add(e.Data);
         }
         g_metrics.Filter+=Ms(start);
@@ -922,7 +1014,9 @@ namespace
             catch(...) {} // Diagnostics must not prevent snapshot publication.
         }
         { std::scoped_lock lock(g_mutex); g_snapshot=std::move(result); }
+        g_snapshotDirty=false; g_publishedGrid=g_gridSucceeded; g_publishedIdentity=g_identitySucceeded;
         g_metrics.SnapshotTime+=Ms(publication);
+        g_metrics.SnapshotBuild+=Ms(start);
     }
     void OnTick(float)
     {
@@ -987,6 +1081,12 @@ namespace
             LOG_INFO("MiniMap: BuildingCollector: gridTiming mode=%s calls=%zu total=%.3fms mean=%.3fms maxCall=%.3fms visitedLast=%zu indexed=%zu slabs=0",
                 g_xyQuery?"XY/all-Z":"fallback-sphere",g_metrics.GridCalls,g_metrics.GridQuery,
                 g_metrics.GridCalls?g_metrics.GridQuery/g_metrics.GridCalls:0.0,g_metrics.GridMax,g_gridVisited,g_indexed);
+            LOG_INFO("MiniMap: BuildingCollector acquisition (production interval, excludes oracle): newAttempts=%zu unresolvedRetries=%zu staticResolvedNow=%zu cachedReuseVisits=%zu dynamicReads=%zu transformFragments=%zu membershipTransforms=%zu membershipTags=%zu placementFragments=%zu canonicalAttempts=%zu canonicalResolved=%zu interiorReads=%zu ordinaryGeometry=%zu ordinaryDefinitionTraversals=%zu snapshotsBuilt=%zu snapshotsReused=%zu membershipMs=%.3f extractionMs=%.3f snapshotBuildMs=%.3f callbackTotalMs=%.3f callbackMaxMs=%.3f",
+                g_metrics.NewAttempts,g_metrics.RetryAttempts,g_metrics.ResolvedNow,g_metrics.CachedReuse,g_metrics.DynamicReads,
+                g_metrics.TransformReads,g_metrics.MembershipTransforms,g_metrics.MembershipTags,g_metrics.PlacementReads,
+                g_metrics.Conversions,g_metrics.ConversionSuccess,g_metrics.InteriorReads,g_metrics.OrdinaryGeometry,g_metrics.OrdinaryDefinitions,
+                g_metrics.SnapshotsBuilt,g_metrics.SnapshotsReused,g_metrics.GridQuery,g_metrics.GridExtract,
+                g_metrics.SnapshotBuild,g_metrics.Total,g_metrics.MaxTick);
             size_t ordinary=0,proxy=0,meshWidth=0,railExtension=0,unresolvedSpline=0,reconstructed=0,
                 ordinaryCross=0,splineCross=0,ordinarySourceOnly=0,segments=0,invalidFootprint=0;
             std::array<size_t,10> issues={};
@@ -1219,7 +1319,7 @@ namespace MiniMapBuildingCollector
 #endif
         // Unknown eligibility contributes to unresolvedWorldwide, never to expected
         // or missing. cacheComplete remains the unchanged production snapshot bit.
-        LOG_INFO("MiniMap: BuildingCollector: oracle cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms interiorExcluded=%zu eligibilityUnknown=%zu",
+        LOG_INFO("MiniMap: BuildingCollector: oracle independent reacquisition (excluded from production acquisition counters) cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms interiorExcluded=%zu eligibilityUnknown=%zu",
             matching,g_expected,g_expected-g_missingCount,g_missingCount,g_persistent,g_missingOff,g_missingGrid,
             g_unresolvedCached,g_snapshotDuplicates,g_stale,g_unresolved,int(g_comparison->Complete),
             queryMs,referenceMs,queryMs+Ms(g_compareStart),g_interiorExcluded,g_eligibilityUnknown);

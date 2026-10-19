@@ -34,6 +34,8 @@ namespace MiniMapBuildingAtlas
     // UI callback only; caller holds LifecycleMutex from lookup through submit.
     // Borrowed metadata/texture: never release or retain the binding separately.
     const MiniMapSpriteStatus::AtlasEntry* Find(const std::string& canonicalBlueprint) noexcept;
+    // Diagnostic values only, under the SAME caller-held lifecycle lock as Find.
+    void ObservePublication(uint64_t& session, uint64_t& revision) noexcept;
     bool SubmitQuad(IModLoaderImGui*, PluginDrawList, const MiniMapSpriteStatus::AtlasEntry&,
         const std::array<MiniMapBuildingAtlasAlienX::Point, 4>& positions, uint32_t color) noexcept;
 
