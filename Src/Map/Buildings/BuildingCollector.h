@@ -68,16 +68,20 @@ namespace MiniMapBuildingCollector
         uint32_t BuildingId = 0;
         int32_t DefinitionIndex = 0;
         uint32_t DefinitionNumber = 0;
+        int32_t DefinitionObjectSerial = 0; // Copied lifetime discriminator, never a native pointer.
         int32_t DefinitionObjectIndex = 0; // World-scoped metadata identity; no UObject pointer.
         uint8_t Category = 0xFF, Sources = 0;
-        bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorOnly = false;
+        bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorKnown = false, InteriorOnly = false;
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
         std::array<float, 4> Tint = { 1, 1, 1, 1 };
         Bounds Extent;
         Bounds SourceFootprint; // Transformed targeting proxy, separate from admission fallback.
         LocalBounds LocalFootprint;
-        // Exact authored blueprint path, shared across instances; absent while unresolved.
+        // Owned copied facts. A failed refresh does not erase them; a positively
+        // observed identity change or entity/scope removal invalidates them.
+        // An ordinary instance is eligible with TransformValid, this canonical
+        // path and known non-Interior classification. Sprite availability is separate.
         std::shared_ptr<const std::string> CanonicalBlueprint;
         std::shared_ptr<const DefinitionGeometry> DefinitionShape;
         std::shared_ptr<const SplineGeometry> Curve;
@@ -93,7 +97,7 @@ namespace MiniMapBuildingCollector
     {
         uint64_t Generation = 0;
         Bounds Region;
-        bool Complete = false; // Identity/cache completeness; NOT proof of exact visual geometry.
+        bool Complete = false; // Observation completeness; never an atlas publication barrier.
         double PublishedAtSeconds = 0;
         std::vector<Record> Records;
     };

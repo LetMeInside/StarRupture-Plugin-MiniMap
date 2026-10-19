@@ -50,7 +50,42 @@ namespace MiniMapBuildingAtlasCore
             return a.X < std::uint32_t(b.X) + b.Width && b.X < std::uint32_t(a.X) + a.Width &&
                 a.Y < std::uint32_t(b.Y) + b.Height && b.Y < std::uint32_t(a.Y) + a.Height;
         }
-        Result Pack(const std::vector<const CroppedSource*>& sources, std::uint16_t side,
+        void Occupy(std::vector<Rect>& free, const Rect& used)
+        {
+            std::vector<Rect> remaining;
+            for (const auto& r : free)
+            {
+                if (!Overlaps(r, used)) { remaining.push_back(r); continue; }
+                const unsigned right = unsigned(r.X) + r.Width, bottom = unsigned(r.Y) + r.Height;
+                const unsigned usedRight = unsigned(used.X) + used.Width, usedBottom = unsigned(used.Y) + used.Height;
+                auto append = [&](unsigned x, unsigned y, unsigned w, unsigned h)
+                { if (w && h) remaining.push_back({std::uint16_t(x), std::uint16_t(y), std::uint16_t(w), std::uint16_t(h)}); };
+                // Maximal free rectangles can overlap each other, never occupied
+                // pixels. Keep full strips so a later image can span old split
+                // boundaries; subtract each new allocation from ALL free space.
+                if (used.X > r.X) append(r.X, r.Y, used.X - r.X, r.Height);
+                if (usedRight < right) append(usedRight, r.Y, right - usedRight, r.Height);
+                if (used.Y > r.Y) append(r.X, r.Y, r.Width, used.Y - r.Y);
+                if (usedBottom < bottom) append(r.X, usedBottom, r.Width, bottom - usedBottom);
+            }
+            for (std::size_t i = 0; i < remaining.size();)
+            {
+                const auto& a = remaining[i];
+                bool contained = false;
+                for (std::size_t j = 0; j < remaining.size(); ++j)
+                {
+                    if (i == j) continue;
+                    const auto& b = remaining[j];
+                    if (a.X >= b.X && a.Y >= b.Y && unsigned(a.X) + a.Width <= unsigned(b.X) + b.Width &&
+                        unsigned(a.Y) + a.Height <= unsigned(b.Y) + b.Height)
+                    { contained = true; break; }
+                }
+                if (contained) remaining.erase(remaining.begin() + i);
+                else ++i;
+            }
+            free.swap(remaining);
+        }
+        Result Pack(const std::vector<const CroppedSource*>& sources, const Layout& previous, std::uint16_t side,
             Layout& candidate, bool buildPixels = true)
         {
             std::vector<const CroppedSource*> order;
@@ -80,6 +115,24 @@ namespace MiniMapBuildingAtlasCore
             std::vector<Rect> free{{0, 0, side, side}};
             candidate.Width = candidate.Height = side;
             candidate.Images.reserve(sources.size());
+            // Reconstruct free space around immutable retained allocations. Split
+            // every intersecting free rectangle into maximal strips; this also
+            // exposes the new right/bottom area when the canvas grows.
+            for (const auto& image : previous.Images)
+            {
+                const auto source = std::find_if(order.begin(), order.end(),
+                    [&](const CroppedSource* s) { return s->Identifier == image.Identifier; });
+                if (source == order.end() || !Inside(image.Allocation, side) ||
+                    image.Content.X != image.Allocation.X + Gutter || image.Content.Y != image.Allocation.Y + Gutter ||
+                    image.Content.Width != (*source)->Crop.Width || image.Content.Height != (*source)->Crop.Height ||
+                    image.Allocation.Width != image.Content.Width + 2 * Gutter ||
+                    image.Allocation.Height != image.Content.Height + 2 * Gutter) return Result::InternalError;
+                for (const auto& placed : candidate.Images)
+                    if (Overlaps(image.Allocation, placed.Allocation)) return Result::InternalError;
+                Occupy(free, image.Allocation);
+                candidate.Images.push_back(image);
+                order.erase(source); // Only previously unplaced sources enter the allocator below.
+            }
             for (const auto* source : order)
             {
                 const std::uint16_t width = std::uint16_t(source->Crop.Width + 2 * Gutter);
@@ -98,17 +151,11 @@ namespace MiniMapBuildingAtlasCore
                 }
                 if (best == free.size()) return Result::Capacity;
                 const Rect slot = free[best];
-                free.erase(free.begin() + best);
-                const std::uint16_t dx = std::uint16_t(slot.Width - width), dy = std::uint16_t(slot.Height - height);
                 const Rect allocation{slot.X, slot.Y, width, height};
                 if (!Inside(allocation, side)) return Result::InternalError;
                 for (const auto& placed : candidate.Images)
                     if (Overlaps(allocation, placed.Allocation)) return Result::InternalError;
-                // Report's split rule; append right then bottom, retaining stable list order.
-                const Rect right{std::uint16_t(slot.X + width), slot.Y, dx, dx > dy ? slot.Height : height};
-                const Rect bottom{slot.X, std::uint16_t(slot.Y + height), dx > dy ? width : slot.Width, dy};
-                if (right.Width && right.Height) free.push_back(right);
-                if (bottom.Width && bottom.Height) free.push_back(bottom);
+                Occupy(free, allocation);
                 const Rect content{std::uint16_t(slot.X + Gutter), std::uint16_t(slot.Y + Gutter), source->Crop.Width, source->Crop.Height};
                 if (!Inside(content, side)) return Result::InternalError;
                 const double u0 = double(content.X) / side, v0 = double(content.Y) / side;
@@ -117,16 +164,28 @@ namespace MiniMapBuildingAtlasCore
                 candidate.Images.push_back({source->Identifier, source->Crop, allocation, content,
                     {{{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}}});
             }
+            // Recompute ALL UVs, including retained images after canvas growth.
+            for (auto& image : candidate.Images)
+            {
+                const auto& r = image.Content;
+                const double u0 = double(r.X) / side, v0 = double(r.Y) / side;
+                const double u1 = double(unsigned(r.X) + r.Width) / side;
+                const double v1 = double(unsigned(r.Y) + r.Height) / side;
+                image.Corners = {{{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}};
+            }
             // Subset fit probes use the same placement algorithm, but only the
             // final selection needs a complete RGBA canvas.
             if (!buildPixels) return Result::Ok;
             std::size_t bytes{};
             if (!ImageBytes(side, side, bytes)) return Result::Overflow;
             candidate.Rgba.assign(bytes, 0);
-            for (std::size_t i = 0; i < order.size(); ++i)
+            for (const auto& image : candidate.Images)
             {
-                const auto& source = *order[i];
-                const auto& allocation = candidate.Images[i].Allocation;
+                const auto found = std::find_if(sources.begin(), sources.end(),
+                    [&](const CroppedSource* s) { return s->Identifier == image.Identifier; });
+                if (found == sources.end()) return Result::InternalError;
+                const auto& source = **found;
+                const auto& allocation = image.Allocation;
                 for (std::size_t y = 0; y < allocation.Height; ++y)
                     for (std::size_t x = 0; x < allocation.Width; ++x)
                     {
@@ -198,7 +257,7 @@ namespace MiniMapBuildingAtlasCore
             {
                 if (side < Packed.Width || side < Packed.Height) continue;
                 Layout candidate;
-                const auto result = Pack(sources, side, candidate);
+                const auto result = Pack(sources, Packed, side, candidate);
                 if (result == Result::Capacity) continue;
                 if (result != Result::Ok) return result;
                 candidate.Revision = Packed.Revision + 1;
@@ -245,7 +304,7 @@ namespace MiniMapBuildingAtlasCore
                 {
                     if (side < minimumSide) continue;
                     Layout probe;
-                    const auto result = Pack(selection, side, probe, false);
+                    const auto result = Pack(selection, Packed, side, probe, false);
                     if (result == Result::Capacity) continue;
                     if (result != Result::Ok) return result;
                     minimumSide = side;
@@ -276,7 +335,7 @@ namespace MiniMapBuildingAtlasCore
             if (selection.empty()) return Result::Capacity;
 
             Layout candidate;
-            const auto result = Pack(selection, minimumSide, candidate);
+            const auto result = Pack(selection, Packed, minimumSide, candidate);
             if (result != Result::Ok) return result;
             candidate.DeferredIdentifiers.reserve(Retained.size() - selection.size());
             for (std::size_t i = 0; i < Retained.size(); ++i)

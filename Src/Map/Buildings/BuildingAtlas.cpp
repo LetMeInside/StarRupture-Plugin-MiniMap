@@ -267,6 +267,7 @@ namespace MiniMapBuildingAtlas
     void EndBatch(const Batch& batch, uint64_t tick) noexcept
     {
         if (!batch) return;
+        const bool sourceAdmission = batch->Dirty;
         std::shared_ptr<Revision> candidate, old;
         std::shared_ptr<const C::Layout> previousPixels;
         std::shared_ptr<const C::Layout> diagnosticPixels;
@@ -322,8 +323,13 @@ namespace MiniMapBuildingAtlas
 
                 const auto& layout = batch->Core.Current();
                 // Allocate every fallible CPU publication object BEFORE acquiring a GPU reference.
+                if (batch->PublishedRevision == (std::numeric_limits<uint64_t>::max)()) return;
                 candidate = std::make_shared<Revision>();
-                candidate->Pixels = std::make_shared<const C::Layout>(layout);
+                auto pixels = std::make_shared<C::Layout>(layout);
+                // Core revisions identify proposals. Public/PNG revisions count
+                // only committed GPU generations, including after failed uploads.
+                pixels->Revision = batch->PublishedRevision + 1;
+                candidate->Pixels = std::move(pixels);
                 std::vector<std::pair<std::string, S::AtlasEntry>> entries;
                 entries.reserve(layout.Images.size());
                 for (const auto& image : layout.Images)
@@ -379,11 +385,16 @@ namespace MiniMapBuildingAtlas
                         status.Atlas.Texture = candidate->Texture.Binding();
                         status.Where = S::Location::Atlas;
                     }
-                    batch->PublishedRevision = layout.Revision;
+                    batch->PublishedRevision = candidate->Pixels->Revision;
                     batch->UploadPending = false;
                     // Freeze the actually published pixels, not Core.Current().
                     // Exactly one diagnostic attempt for this successful swap.
                     diagnosticPixels = batch->Published->Pixels;
+                    SpriteDiagnostic("MiniMap: atlas committed: revision=%llu sources=%zu size=%ux%u candidateRevision=%llu kind=%s reason=%s",
+                        static_cast<unsigned long long>(batch->PublishedRevision), entries.size(),
+                        unsigned(layout.Width), unsigned(layout.Height), static_cast<unsigned long long>(layout.Revision),
+                        batch->PublishedRevision==1?"initial-available-batch":"incremental",
+                        sourceAdmission?"source-admission":"pending-upload-retry");
                     candidate.reset(); // Current publication now owns the acquired reference.
                 }
             }();

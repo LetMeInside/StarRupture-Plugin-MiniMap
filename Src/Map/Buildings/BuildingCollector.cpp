@@ -19,6 +19,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
+#include <string_view>
 #if MINIMAP_DEBUG_UI
 #include <iomanip>
 #include <sstream>
@@ -44,7 +46,6 @@ namespace
     constexpr auto kDistantCadence = std::chrono::seconds(2);
     constexpr auto kLogCadence = std::chrono::seconds(5);
     constexpr double kRefreshBudgetMs = 2.0; // Soft budget, checked after each entity.
-    constexpr size_t kServiceVisitsPerTick = 512;
     constexpr int kMaximumHandles = 1000000;
 
     struct Types
@@ -74,9 +75,9 @@ namespace
         uint32_t Id; uint8_t Category; int32_t NameIndex; uint32_t NameNumber;
         std::shared_ptr<const DefinitionGeometry> Geometry;
         std::shared_ptr<const std::string> CanonicalBlueprint;
-        Clock::time_point RetryAt = {};
-        Clock::time_point IdentityRetryAt = {};
         int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
+        uint64_t IdentityObservation=0, GeometryObservation=0;
+        bool IdentityInterrupted=false, GeometryHasSpline=false;
         uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
         bool InteriorTagChecked=false, InteriorOnly=false;
     };
@@ -98,6 +99,8 @@ namespace
     Query g_offQuery, g_splineQuery;
     uint64_t g_generation=0, g_epoch=0;
     std::unordered_map<uint64_t,Entry> g_cache;
+    std::unordered_map<uint64_t,Record> g_indexedCopies; // Last copied observations; membership follows successful grid enumerations.
+    uint64_t g_observation=0;
     std::unordered_map<uint64_t,Definition> g_definitions;
     std::vector<uint64_t> g_keys, g_near, g_pending;
     size_t g_cursor=0, g_nearCursor=0;
@@ -124,7 +127,7 @@ namespace
     std::vector<Id> g_indexedHandles; // Retains plugin-owned capacity; no grid shared-pointer members.
     size_t g_gridVisited=0;
     bool g_xyQuery=false;
-    bool g_identityConversionAvailable=false;
+    unsigned g_initialDiscoveryReports=0;
 
     uint64_t Key(int32_t index,int32_t serial)
     { return (uint64_t(uint32_t(serial))<<32)|uint32_t(index); }
@@ -143,14 +146,22 @@ namespace
         // itself asserts on invalid identity: the order of these checks matters.
         return n.mass.isEntityValid(g_manager,id) && n.mass.isEntityBuilt(g_manager,id);
     }
-    bool IsClass(const SDK::UObject* object,const SDK::UClass* base)
+    enum class ClassObservation { Unavailable, Other, Matches };
+    ClassObservation ObserveClass(const SDK::UObject* object,const SDK::UClass* base)
     {
-        if(!object || !base) return false;
+        if(!object || !base || !MiniMapResidentMetadata::Available() ||
+            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(object),sizeof(SDK::UObject))) return ClassObservation::Unavailable;
         const SDK::UStruct* type=object->Class;
+        if(!type)return ClassObservation::Unavailable;
         for(unsigned depth=0;type && depth<64;++depth,type=type->SuperStruct)
-            if(type==base) return true;
-        return false;
+        {
+            if(!MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(type),sizeof(SDK::UStruct))) return ClassObservation::Unavailable;
+            if(type==base) return ClassObservation::Matches;
+        }
+        return type?ClassObservation::Unavailable:ClassObservation::Other;
     }
+    bool IsClass(const SDK::UObject* object,const SDK::UClass* base)
+    { return ObserveClass(object,base)==ClassObservation::Matches; }
     enum class InteriorTagResult : uint8_t { Unknown, Absent, Present };
     InteriorTagResult ReadInteriorTag(const SDK::UCrBuildingData* building)
     {
@@ -186,43 +197,43 @@ namespace
     }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     std::array<uintptr_t,18> g_metadataRoots{};
-    size_t g_metadataCount=0,g_metadataStep=0;
-    Clock::time_point g_metadataRetry{};
-    bool ResolveTypes()
+    size_t g_metadataCount=0;
+    bool ResolveTypes(bool splineMetadata=false)
     {
         MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::CollectorMetadata);
-        if(g_typesReady)return true;
+        if(g_typesReady && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings)))return true;
         if(!MiniMapResidentMetadata::Available())return false;
-        if(Clock::now()<g_metadataRetry)return false;
-        // One metadata item per callback, including optional geometry metadata.
-        // No worldwide ObjectWalker scan and no partial query construction.
-        uintptr_t acquired=0;
-        switch(g_metadataStep++)
+        // Resolve the finite metadata set while native admission permits it.
+        // Rooted successes are reused; unavailable operations retry on acquisition.
+        for(size_t step=0;step<(splineMetadata?g_metadataRoots.size():size_t(12));++step)
         {
-        case 0: if(!g_types.Building){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 1: if(!g_types.Grid){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 2: if(!g_types.Transform){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 3: if(!g_types.Parameters){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 4: if(!g_types.Spline){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 5: if(!g_types.Tint){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 6: if(!g_types.Placement){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 7: if(!g_types.BuildingData){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 8: if(!g_types.GridClass){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 9: if(!g_types.TargetBox){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-        case 10: if(!g_types.Config){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 11: if(!g_types.TargetTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 12: if(!g_types.VisualTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 13: if(!g_types.CosmeticTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 14: if(!g_types.DroneRail){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 15: if(!g_types.Walkway){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 16: if(!g_types.StaticMesh){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
-        case 17: if(!g_types.DronesSettings){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            if(!MiniMapResidentMetadata::Available())return false;
+            uintptr_t acquired=0;
+            switch(step)
+            {
+            case 0: if(!g_types.Building){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 1: if(!g_types.Grid){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 2: if(!g_types.Transform){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 3: if(!g_types.Parameters){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 4: if(!g_types.Spline){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 5: if(!g_types.Tint){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 6: if(!g_types.Placement){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 7: if(!g_types.BuildingData){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 8: if(!g_types.GridClass){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 9: if(!g_types.TargetBox){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
+            case 10: if(!g_types.Config){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 11: if(!g_types.TargetTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 12: if(!g_types.VisualTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 13: if(!g_types.CosmeticTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 14: if(!g_types.DroneRail){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 15: if(!g_types.Walkway){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 16: if(!g_types.StaticMesh){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            case 17: if(!g_types.DronesSettings){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
+            }
+            if(acquired)g_metadataRoots[g_metadataCount++]=acquired;
         }
-        if(acquired)g_metadataRoots[g_metadataCount++]=acquired;
-        if(g_metadataStep<g_metadataRoots.size())return false;
         g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
             g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
-        if(!g_typesReady){g_metadataStep=0;g_metadataRetry=Clock::now()+std::chrono::seconds(1);}
         return g_typesReady;
     }
 #else
@@ -234,9 +245,9 @@ namespace
         auto* type=static_cast<SDK::UStruct*>(info.object);
         return type->Size==int32_t(size)?type:nullptr;
     }
-    bool ResolveTypes()
+    bool ResolveTypes(bool splineMetadata=false)
     {
-        if(g_typesReady) return true;
+        if(g_typesReady && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings))) return true;
         if(!g_collectorSelf->hooks->ObjectWalker->IsReady()) return false;
         g_types.Building=static_cast<SDK::UScriptStruct*>(Metadata("CrMassBuildingTag","ScriptStruct",sizeof(SDK::FCrMassBuildingTag)));
         g_types.Grid=static_cast<SDK::UScriptStruct*>(Metadata("CrMassEntityGridTag","ScriptStruct",sizeof(SDK::FCrMassEntityGridTag)));
@@ -251,12 +262,15 @@ namespace
         g_types.TargetBox=static_cast<SDK::UScriptStruct*>(Metadata("CrBuildingAggroTargetDataFragment","ScriptStruct",sizeof(SDK::FCrBuildingAggroTargetDataFragment)));
         g_types.Config=static_cast<SDK::UClass*>(Metadata("MassEntityConfigAsset","Class",sizeof(SDK::UMassEntityConfigAsset)));
         g_types.TargetTrait=static_cast<SDK::UClass*>(Metadata("CrBuildingAggroTargetDataTrait","Class",sizeof(SDK::UCrBuildingAggroTargetDataTrait)));
-        g_types.VisualTrait=static_cast<SDK::UClass*>(Metadata("MassVisualizationTrait","Class",sizeof(SDK::UMassVisualizationTrait)));
-        g_types.CosmeticTrait=static_cast<SDK::UClass*>(Metadata("CrMassRepVisCosmeticsTrait","Class",sizeof(SDK::UCrMassRepVisCosmeticsTrait)));
-        g_types.DroneRail=static_cast<SDK::UClass*>(Metadata("CrDronePathPointConnection","Class",sizeof(SDK::ACrDronePathPointConnection)));
-        g_types.Walkway=static_cast<SDK::UClass*>(Metadata("CrModularRampWalkway","Class",sizeof(SDK::ACrModularRampWalkway)));
-        g_types.StaticMesh=static_cast<SDK::UClass*>(Metadata("StaticMesh","Class",sizeof(SDK::UStaticMesh)));
-        g_types.DronesSettings=static_cast<SDK::UClass*>(Metadata("DronesDeveloperSettings","Class",sizeof(SDK::UDronesDeveloperSettings)));
+        if(splineMetadata)
+        {
+            g_types.VisualTrait=static_cast<SDK::UClass*>(Metadata("MassVisualizationTrait","Class",sizeof(SDK::UMassVisualizationTrait)));
+            g_types.CosmeticTrait=static_cast<SDK::UClass*>(Metadata("CrMassRepVisCosmeticsTrait","Class",sizeof(SDK::UCrMassRepVisCosmeticsTrait)));
+            g_types.DroneRail=static_cast<SDK::UClass*>(Metadata("CrDronePathPointConnection","Class",sizeof(SDK::ACrDronePathPointConnection)));
+            g_types.Walkway=static_cast<SDK::UClass*>(Metadata("CrModularRampWalkway","Class",sizeof(SDK::ACrModularRampWalkway)));
+            g_types.StaticMesh=static_cast<SDK::UClass*>(Metadata("StaticMesh","Class",sizeof(SDK::UStaticMesh)));
+            g_types.DronesSettings=static_cast<SDK::UClass*>(Metadata("DronesDeveloperSettings","Class",sizeof(SDK::UDronesDeveloperSettings)));
+        }
         g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
             g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
         return g_typesReady;
@@ -266,18 +280,26 @@ namespace
     { return type?n.mass.getFragmentDataPtr(g_manager,id,type):nullptr; }
     const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id)
     {
+        if(!MiniMapResidentMetadata::Available())return nullptr;
         const auto* wrapper=n.mass.getConstSharedFragmentPtr(g_manager,id,g_types.Parameters);
         const uint8_t* memory=nullptr;
-        if(wrapper) std::memcpy(&memory,wrapper,sizeof(memory));
+        if(wrapper && MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(wrapper),sizeof(memory),alignof(void*)))
+            std::memcpy(&memory,wrapper,sizeof(memory));
         const auto alignment=g_types.Parameters->MinAlignment;
         if(!memory || alignment<=0 || (alignment&(alignment-1))) return nullptr;
-        const uintptr_t base=reinterpret_cast<uintptr_t>(memory+sizeof(void*));
-        return reinterpret_cast<const SDK::FCrBuildingParameters*>((base+alignment-1)&~uintptr_t(alignment-1));
+        const auto raw=reinterpret_cast<uintptr_t>(memory);
+        if(raw>(std::numeric_limits<uintptr_t>::max)()-sizeof(void*)-uintptr_t(alignment-1))return nullptr;
+        const uintptr_t base=raw+sizeof(void*);
+        const auto address=(base+alignment-1)&~uintptr_t(alignment-1);
+        if(!MiniMapNative::IsMemoryRangeReadable(address,sizeof(SDK::FCrBuildingParameters),alignment))return nullptr;
+        return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
-    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement)
+    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline)
     {
         DefinitionGeometry shape;
-        if(!placement || !g_types.Config) return shape;
+        if(spline)ResolveTypes(true); // Optional metadata is never an ordinary-building prerequisite.
+        if(!placement || !g_types.Config || !MiniMapResidentMetadata::Available() ||
+            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(placement),sizeof(SDK::UAuActorPlacementData))) return shape;
         auto readTemplate=[&](const SDK::UClass* type)
         {
             // Do not call GetDefaultObject: that can create/load a CDO. Only
@@ -327,23 +349,28 @@ namespace
         for(size_t depth=0;config && depth<visited.size();++depth)
         {
             if((reinterpret_cast<uintptr_t>(config)&7) || !IsClass(config,g_types.Config) ||
+                !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(config),sizeof(SDK::UMassEntityConfigAsset)) ||
                 std::find(visited.begin(),visited.begin()+depth,config)!=visited.begin()+depth)
             { shape.Issue=GeometryIssue::InvalidArray; return shape; }
             visited[depth]=config;
             const auto& traits=config->Config.Traits;
             if(traits.Num()<0 || traits.Num()>256 || traits.Max()<traits.Num() || (traits.Num() && !traits.GetDataPtr()))
             { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            if(traits.Num() && !MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(traits.GetDataPtr()),
+                size_t(traits.Num())*sizeof(void*),alignof(void*)))
+            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
             for(const auto* trait:traits)
             {
                 if(reinterpret_cast<uintptr_t>(trait)&7) { shape.Issue=GeometryIssue::InvalidArray; return shape; }
-                if(!shape.TargetingBox.Valid && IsClass(trait,g_types.TargetTrait))
+                if(!shape.TargetingBox.Valid && IsClass(trait,g_types.TargetTrait) &&
+                    MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(trait),sizeof(SDK::UCrBuildingAggroTargetDataTrait)))
                     shape.TargetingBox=MiniMapBuildingGeometry::Copy(static_cast<const SDK::UCrBuildingAggroTargetDataTrait*>(trait)->BuildingBoundingBox);
-                if(IsClass(trait,g_types.CosmeticTrait))
+                if(spline && IsClass(trait,g_types.CosmeticTrait))
                 {
                     const auto* visual=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
                     readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
                 }
-                else if(IsClass(trait,g_types.VisualTrait))
+                else if(spline && IsClass(trait,g_types.VisualTrait))
                 {
                     const auto* visual=static_cast<const SDK::UMassVisualizationTrait*>(trait);
                     readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
@@ -356,34 +383,30 @@ namespace
         // foundations and mesh/component variants may add geometry.
         return shape;
     }
-    std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool measure=true)
+    std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool spline,bool measure=true)
     {
-        const auto now=Clock::now();
-        if(!definition.Geometry || now>=definition.RetryAt)
+        if(definition.GeometryObservation!=g_observation || (spline && !definition.GeometryHasSpline))
         {
+            definition.GeometryObservation=g_observation;
+            definition.GeometryHasSpline=spline;
             const auto start=Clock::now();
-            auto shape=ResolveGeometry(placement);
+            auto shape=ResolveGeometry(placement,spline);
             if(!definition.Geometry || !(*definition.Geometry==shape))
                 definition.Geometry=std::make_shared<const DefinitionGeometry>(std::move(shape));
-            // Resident assets/config may settle after load. Bounded per-definition
-            // retry; no synchronous loads and no fragment/asset pointers cached.
-            definition.RetryAt=now+kLogCadence;
             if(measure) g_metrics.DefinitionTime+=Ms(start);
         }
         return definition.Geometry;
     }
     void DefinitionBlueprint(Definition& definition,const SDK::UAuActorPlacementData* placement,const Record& record)
     {
-        if(definition.CanonicalBlueprint || !g_identityConversionAvailable) return;
-        const auto now=Clock::now();
-        if(now<definition.IdentityRetryAt) return;
-        g_identityConversionAvailable=false; // At most one conversion, including indexed reads, per collector callback.
-        definition.IdentityRetryAt=now+kLogCadence;
+        if(definition.CanonicalBlueprint || definition.IdentityInterrupted || definition.IdentityObservation==g_observation) return;
+        definition.IdentityObservation=g_observation; // Memoize this definition's observation, not a quota across types.
         const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
             {record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,record.BuildingId,definition.ObjectSerial});
         // An invalid/unavailable authored identity does not invalidate the building.
         // Resident metadata or authored data may settle; retry only this definition.
         definition.CanonicalBlueprint=result.Path;
+        definition.IdentityInterrupted=result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted;
         if(!result.Path)
         {
             const auto bit=uint64_t(1)<<unsigned(result.Failure);
@@ -392,7 +415,7 @@ namespace
                 definition.IdentityDiagnostics|=bit;
                 const auto state=result.State==MiniMapBuildingBlueprintIdentity::Status::Invalid?"invalid":
                     result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted?"interrupted":"unavailable";
-                SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d name=%d:%u serial=%d stage=canonical resolution state=%s reason=%s policy=existing definition retry; interrupted conversion may require restart; path=unavailable",
+                SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d name=%d:%u serial=%d stage=canonical resolution state=%s reason=%s policy=normal acquisition retry; uncertain native operations are not retried; path=unavailable",
                     record.BuildingId,record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,
                     definition.ObjectSerial,state,result.Detail);
             }
@@ -450,96 +473,80 @@ namespace
     bool Read(const Native& n,Record& r)
     {
         const Id id{r.Index,r.Serial};
-        if(!Live(n,id)) { ++g_metrics.Stale; return false; }
+        if(!n.mass.isEntityValid(g_manager,id)) { ++g_metrics.Stale; return false; }
+        // Built is a precondition of fragment access, not copied-data eligibility.
+        // An unavailable refresh does not erase a prior successful observation.
+        if(!n.mass.isEntityBuilt(g_manager,id)) return r.TransformValid;
         const auto start=Clock::now();
-        r.TransformValid=false; r.DefinitionValid=false; r.Extent={}; r.BoundsKind=Coverage::Unresolved;
-        r.InteriorOnly=false;
-        r.DefinitionShape.reset();
-        r.CanonicalBlueprint.reset();
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
         {
-            r.Position={t->Translation.X,t->Translation.Y,t->Translation.Z};
-            r.Rotation={t->Rotation.X,t->Rotation.Y,t->Rotation.Z,t->Rotation.W};
-            r.Scale={t->Scale3D.X,t->Scale3D.Y,t->Scale3D.Z};
+            const Point position{t->Translation.X,t->Translation.Y,t->Translation.Z};
+            const Point scale{t->Scale3D.X,t->Scale3D.Y,t->Scale3D.Z};
+            const std::array<double,4> rotation{t->Rotation.X,t->Rotation.Y,t->Rotation.Z,t->Rotation.W};
             auto finite=[](double v){return std::isfinite(v);};
-            double norm=0; for(double q:r.Rotation) norm+=q*q;
-            r.TransformValid=std::all_of(r.Position.begin(),r.Position.end(),finite) &&
-                std::all_of(r.Rotation.begin(),r.Rotation.end(),finite) &&
-                std::all_of(r.Scale.begin(),r.Scale.end(),finite) && std::isfinite(norm) && norm>0;
+            double norm=0; for(double q:rotation) norm+=q*q;
+            if(std::all_of(position.begin(),position.end(),finite) && std::all_of(rotation.begin(),rotation.end(),finite) &&
+                std::all_of(scale.begin(),scale.end(),finite) && std::isfinite(norm) && norm>0)
+            { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; }
         }
         const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
         r.HasSpline=spline!=nullptr;
-        const auto* parameters=Parameters(n,id);
-        const auto* placement=parameters?parameters->PlacementData:nullptr;
-        if((reinterpret_cast<uintptr_t>(placement)&7)==0 && IsClass(placement,g_types.Placement))
+        // These are the ONLY UObject accesses needed for ordinary identity and
+        // Interior facts. Failure leaves already copied facts intact. No raw
+        // placement pointer survives this synchronous acquisition scope.
+        if(MiniMapResidentMetadata::Available())
         {
-            r.DefinitionIndex=placement->Name.ComparisonIndex; r.DefinitionNumber=placement->Name.Number;
-            r.DefinitionObjectIndex=placement->Index;
-            // Short FNames alone can alias assets in different packages.
-            const auto key=Key(placement->Index,int32_t(placement->BuildingID));
+            const auto* parameters=Parameters(n,id);
+            const auto* placement=parameters?parameters->PlacementData:nullptr;
+            const auto object=reinterpret_cast<uintptr_t>(placement);
             int32_t serial=0;
-            const bool serialValid=MiniMapResidentMetadata::Serial(reinterpret_cast<uintptr_t>(placement),serial);
-            auto it=g_definitions.find(key);
-            if(it==g_definitions.end() || it->second.NameIndex!=r.DefinitionIndex || it->second.NameNumber!=r.DefinitionNumber ||
-                (serialValid && it->second.ObjectSerial!=serial))
+            if(MiniMapResidentMetadata::Serial(object,serial) &&
+                MiniMapResidentMetadata::Validate(object,sizeof(SDK::UAuActorPlacementData)) && IsClass(placement,g_types.Placement))
             {
-                uint8_t category=0xFF;
-                if(IsClass(placement,g_types.BuildingData)) category=uint8_t(static_cast<const SDK::UCrBuildingData*>(placement)->Type);
-                it=g_definitions.insert_or_assign(key,Definition{uint32_t(placement->BuildingID),category,r.DefinitionIndex,r.DefinitionNumber}).first;
-                it->second.ObjectSerial=serial;
-                ++g_metrics.DefinitionMiss;
-            }
-            if(!serialValid)
-            {
-                constexpr auto bit=uint64_t(1)<<62;
-                if(!r.HasSpline && !(it->second.IdentityDiagnostics&bit))
+                const auto index=placement->Index, name=placement->Name.ComparisonIndex;
+                const auto number=placement->Name.Number, building=uint32_t(placement->BuildingID);
+                // A positively observed change invalidates only this instance's
+                // old facts. A failed observation is not evidence of a change.
+                if(r.DefinitionValid && (r.DefinitionObjectIndex!=index || r.DefinitionObjectSerial!=serial ||
+                    r.DefinitionIndex!=name || r.DefinitionNumber!=number || r.BuildingId!=building))
+                { r.CanonicalBlueprint.reset(); r.InteriorKnown=false; r.InteriorOnly=false; r.DefinitionShape.reset(); }
+                r.DefinitionObjectIndex=index; r.DefinitionObjectSerial=serial;
+                r.DefinitionIndex=name; r.DefinitionNumber=number; r.BuildingId=building; r.DefinitionValid=true;
+                const auto key=Key(index,int32_t(building));
+                auto it=g_definitions.find(key);
+                if(it==g_definitions.end() || it->second.NameIndex!=name || it->second.NameNumber!=number || it->second.ObjectSerial!=serial)
                 {
-                    it->second.IdentityDiagnostics|=bit;
-                    SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d stage=definition lifetime reason=object serial observation failed; canonical withheld; policy=retry existing observation",
-                        it->second.Id,r.DefinitionObjectIndex);
+                    it=g_definitions.insert_or_assign(key,Definition{building,0xFF,name,number}).first;
+                    it->second.ObjectSerial=serial; ++g_metrics.DefinitionMiss;
                 }
-                it->second.CanonicalBlueprint.reset();
-            }
-            if(serialValid && !it->second.InteriorTagChecked)
-            {
-                const auto tagResult=IsClass(placement,g_types.BuildingData)
-                    ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement))
-                    :InteriorTagResult::Absent;
-                if(tagResult!=InteriorTagResult::Unknown)
+                auto& definition=it->second;
+                if(!definition.InteriorTagChecked)
                 {
-                    it->second.InteriorTagChecked=true;
-                    it->second.InteriorOnly=tagResult==InteriorTagResult::Present;
+                    const auto kind=ObserveClass(placement,g_types.BuildingData);
+                    const auto tag=kind==ClassObservation::Unavailable?InteriorTagResult::Unknown:
+                        kind==ClassObservation::Matches
+                        ?(MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
+                            ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement)):InteriorTagResult::Unknown)
+                        :InteriorTagResult::Absent;
+                    if(tag!=InteriorTagResult::Unknown)
+                    { definition.InteriorTagChecked=true; definition.InteriorOnly=tag==InteriorTagResult::Present; }
                 }
+                r.InteriorKnown=definition.InteriorTagChecked; r.InteriorOnly=definition.InteriorOnly;
+                if(!r.HasSpline && r.InteriorKnown && !r.InteriorOnly)
+                { DefinitionBlueprint(definition,placement,r); r.CanonicalBlueprint=definition.CanonicalBlueprint; }
+                // Optional geometry is solely for the existing spatial envelope.
+                // Ordinary instances never inspect mesh/template/render resources.
+                if(!r.InteriorOnly)r.DefinitionShape=DefinitionShape(definition,placement,r.HasSpline);
             }
-            r.InteriorOnly=serialValid && it->second.InteriorTagChecked && it->second.InteriorOnly;
-            r.BuildingId=it->second.Id; r.Category=it->second.Category; r.DefinitionValid=true;
-            r.DefinitionShape=DefinitionShape(it->second,placement);
-            if(!r.HasSpline && serialValid && !it->second.InteriorOnly)
+            else if(!r.CanonicalBlueprint && !r.HasSpline && !(g_definitionDiagnostics&1))
             {
-                DefinitionBlueprint(it->second,placement,r);
-                r.CanonicalBlueprint=it->second.CanonicalBlueprint;
+                g_definitionDiagnostics|=1;
+                SpriteDiagnostic("MiniMap: building acquisition unavailable: entity=%d:%d placement identity not safely readable; copied facts preserved; normal acquisition retries",r.Index,r.Serial);
             }
         }
-        else if(!r.HasSpline)
-        {
-            // No valid definition owner exists here. Use a fixed generation-scoped
-            // aggregate, not a per-instance/path registry or repeated frame logs.
-            const unsigned issue=!parameters?0:!placement?1:(reinterpret_cast<uintptr_t>(placement)&7)?2:3;
-            const auto bit=uint32_t(1)<<issue;
-            if(!(g_definitionDiagnostics&bit))
-            {
-                g_definitionDiagnostics|=bit;
-                const auto reason=issue==0?"building parameters unavailable":issue==1?"placement definition is null":
-                    issue==2?"placement definition pointer unaligned":"placement definition class validation failed";
-                SpriteDiagnostic("MiniMap: sprite discovery unavailable: entity=%d:%d stage=placement definition reason=%s; building/canonical=unavailable; policy=existing collector refresh; further diagnostics for this reason suppressed until reset",
-                    r.Index,r.Serial,reason);
-            }
-        }
-        r.Tint={1,1,1,1};
         if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
             r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A};
-        const double dynamic=Ms(start);
-        g_metrics.Dynamic+=dynamic;
+        const double dynamic=Ms(start); g_metrics.Dynamic+=dynamic;
         if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
         const auto boundsStart=Clock::now();
         const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(n,id,g_types.TargetBox));
@@ -550,25 +557,10 @@ namespace
                 std::abs(r.SourceFootprint.MinY-r.Position[1]),std::abs(r.SourceFootprint.MaxY-r.Position[1])});
             g_ordinaryQueryPadding=(std::max)(g_ordinaryQueryPadding,reach);
         }
-        const double boundsTime=Ms(boundsStart);
-        g_metrics.BoundsTime+=boundsTime;
+        const double boundsTime=Ms(boundsStart); g_metrics.BoundsTime+=boundsTime;
         if(r.Sources&OffGrid) g_metrics.OffBounds+=boundsTime;
-        r.RefreshedAtSeconds=Seconds();
-        ++g_metrics.Refreshed;
-        return true;
-    }
-    bool DefinitionProvenanceCurrent(const Native& n,const Record& r,const Definition& definition)
-    {
-        if(definition.Id!=r.BuildingId || definition.NameIndex!=r.DefinitionIndex || definition.NameNumber!=r.DefinitionNumber ||
-            !Live(n,{r.Index,r.Serial})) return false;
-        const auto* parameters=Parameters(n,{r.Index,r.Serial});
-        const auto* placement=parameters?parameters->PlacementData:nullptr;
-        if(!placement || (reinterpret_cast<uintptr_t>(placement)&7)!=0) return false;
-        int32_t serial=0;
-        if(!MiniMapResidentMetadata::Serial(reinterpret_cast<uintptr_t>(placement),serial)) return false;
-        return IsClass(placement,g_types.Placement) && placement->Index==r.DefinitionObjectIndex &&
-            placement->Name.ComparisonIndex==r.DefinitionIndex && placement->Name.Number==r.DefinitionNumber &&
-            uint32_t(placement->BuildingID)==r.BuildingId && serial==definition.ObjectSerial;
+        r.RefreshedAtSeconds=Seconds(); ++g_metrics.Refreshed;
+        return r.TransformValid;
     }
     void Destroy()
     {
@@ -584,7 +576,7 @@ namespace
         MiniMapDebugText::Clear();
         g_debugOracle={}; g_debugLastGridMs=0;
 #endif
-        g_cache.clear(); g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
+        g_cache.clear(); g_indexedCopies.clear(); g_observation=0; g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
         g_definitionDiagnostics=0;
         g_curveScratch={};
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
@@ -592,12 +584,12 @@ namespace
         for(size_t i=0;i<g_metadataCount;++i)
             if(!MiniMapResidentMetadata::Release(g_metadataRoots[i]))g_metadataRoots[retained++]=g_metadataRoots[i];
         // Failed checked releases remain owned; the native helper disables new acquisition.
-        g_metadataCount=retained;g_metadataStep=0;g_metadataRetry={};
+        g_metadataCount=retained;
 #endif
         g_cursor=g_nearCursor=0; g_epoch=0; g_types={}; g_typesReady=false;
         g_region={}; g_queryRegion={}; g_lastRadius=0;
         g_ordinaryQueryPadding=kOriginPadding;
-        g_identityConversionAvailable=false;
+        g_initialDiscoveryReports=0;
         g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={};
         g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
         g_indexedHandles.clear(); g_xyQuery=false;
@@ -662,6 +654,9 @@ namespace
                 entry.Epoch=g_epoch; entry.Data.Sources|=source;
                 if(added)
                 {
+                    if(const auto indexed=g_indexedCopies.find(Key(id));indexed!=g_indexedCopies.end())
+                        entry.Data=indexed->second; // Same entity lifetime changing acquisition source.
+                    entry.Data.Sources=source;
                     entry.Data.Generation=g_generation; entry.Data.Index=id.Index; entry.Data.Serial=id.SerialNumber;
                     g_pending.push_back(Key(id));
                     ++g_metrics.Added;
@@ -691,23 +686,28 @@ namespace
             auto it=g_cache.find(key); if(it==g_cache.end()) return;
             auto& e=it->second; if(now<e.Due) return;
             e.Read=Read(n,e.Data);
-            e.Due=now+(MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)?kLocalCadence:kDistantCadence);
+            const bool unresolved=!e.Data.TransformValid || (!e.Data.HasSpline &&
+                (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
+            // Missing required facts retry on the normal next acquisition slice,
+            // without the settled-record movement cadence becoming a cooldown.
+            e.Due=unresolved?Clock::time_point{}:
+                now+(MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)?kLocalCadence:kDistantCadence);
         };
-        // Newly discovered identities get a bounded priority slice. Initial
-        // warm-up also proceeds through the fair sweep, without a load-time burst.
-        size_t pendingVisits=0;
-        while(!g_pending.empty() && pendingVisits<128 && Ms(start)<kRefreshBudgetMs*0.25)
-        { const auto key=g_pending.back(); g_pending.pop_back(); service(key); ++pendingVisits; }
+        // Measured startup refresh cost includes a 5.467ms single service slice.
+        // Retain the existing soft CPU time budget for worldwide refresh work,
+        // not a canonical-conversion quota or a publication delay.
+        while(!g_pending.empty() && Ms(start)<kRefreshBudgetMs*0.25)
+        { const auto key=g_pending.back(); g_pending.pop_back(); service(key); }
         // Local candidates have priority, but reserve half the budget for
         // discovery/distant validation so a dense factory cannot starve warm-up.
         size_t visited=0;
-        while(visited<g_near.size() && visited<kServiceVisitsPerTick && Ms(start)<kRefreshBudgetMs*0.5)
+        while(visited<g_near.size() && Ms(start)<kRefreshBudgetMs*0.5)
         {
             if(g_nearCursor>=g_near.size()) g_nearCursor=0;
             service(g_near[g_nearCursor++]); ++visited;
         }
         visited=0;
-        while(visited<g_keys.size() && visited<kServiceVisitsPerTick && Ms(start)<kRefreshBudgetMs)
+        while(visited<g_keys.size() && Ms(start)<kRefreshBudgetMs)
         {
             if(g_cursor>=g_keys.size()) g_cursor=0;
             service(g_keys[g_cursor++]); ++visited;
@@ -725,10 +725,23 @@ namespace
         auto& context=*static_cast<GridVisitContext*>(object);
         ++g_gridVisited;
         const auto& n=context.Api;
-        if(!Live(n,handle.Entity)) return true;
+        if(!n.mass.isEntityValid(g_manager,handle.Entity)) return true;
+        const auto previous=g_indexedCopies.find(Key(handle.Entity));
+        auto keepCopied=[&]()
+        {
+            if(previous!=g_indexedCopies.end() && previous->second.Position[0]>context.Region.MinX && previous->second.Position[0]<context.Region.MaxX &&
+                previous->second.Position[1]>context.Region.MinY && previous->second.Position[1]<context.Region.MaxY)
+            {
+                if(g_indexedHandles.size()>=kMaximumHandles){context.Overflow=true;return false;}
+                g_indexedHandles.push_back(handle.Entity);
+            }
+            return true;
+        };
+        if(!n.mass.isEntityBuilt(g_manager,handle.Entity))return keepCopied();
         const auto* transform=static_cast<const SDK::FTransform*>(Fragment(n,handle.Entity,g_types.Transform));
-        if(!transform) return true;
+        if(!transform) return keepCopied();
         const auto& p=transform->Translation;
+        if(!std::isfinite(p.X) || !std::isfinite(p.Y) || !std::isfinite(p.Z))return keepCopied();
         // Reproduce FindEntitiesInBox's STRICT XY origin tests, with no Z test.
         if(!(p.X>context.Region.MinX && p.X<context.Region.MaxX &&
              p.Y>context.Region.MinY && p.Y<context.Region.MaxY)) return true;
@@ -755,11 +768,19 @@ namespace
     {
         std::vector<Record> records;
         g_gridSucceeded=false; g_gridResults=0;
+        auto copied=[&]()
+        {
+            for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
+                if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}))it=g_indexedCopies.erase(it);
+                else {records.push_back(it->second);++it;}
+            return records;
+        };
         void* grid=n.gridDiagnostic.getSubsystem(g_world);
-        if(!IsClass(static_cast<SDK::UObject*>(grid),g_types.GridClass)) return records;
+        if(!IsClass(static_cast<SDK::UObject*>(grid),g_types.GridClass) ||
+            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(grid),0xF0+sizeof(void*))) return copied();
         const void* manager=nullptr;
         std::memcpy(&manager,static_cast<const uint8_t*>(grid)+0xF0,sizeof(manager));
-        if(manager!=g_manager) return records;
+        if(manager!=g_manager) return copied();
         g_queryZ=pose.WorldZ;
         g_indexedHandles.clear(); g_gridVisited=0;
         g_xyQuery=n.gridDiagnostic.forEachCellInRadius!=nullptr;
@@ -808,13 +829,29 @@ namespace
             g_metrics.GridExtract+=Ms(extraction);
         }
         const auto extraction=Clock::now();
-        records.reserve(g_indexedHandles.size());
+        std::unordered_set<uint64_t> seen;
+        seen.reserve(g_indexedHandles.size());
         for(const auto id:g_indexedHandles)
         {
-            Record r; r.Generation=g_generation; r.Index=id.Index;
-            r.Serial=id.SerialNumber; r.Sources=Indexed;
-            if(const auto cached=g_cache.find(Key(id));cached!=g_cache.end()) r.Curve=cached->second.Data.Curve;
-            if(Read(n,r)) records.push_back(r);
+            const auto key=Key(id); if(!seen.insert(key).second)continue;
+            auto [it,added]=g_indexedCopies.try_emplace(key);
+            auto& r=it->second;
+            if(added)
+            {
+                if(const auto cached=g_cache.find(key);cached!=g_cache.end())r=cached->second.Data;
+                r.Generation=g_generation;r.Index=id.Index;r.Serial=id.SerialNumber;
+            }
+            r.Sources=Indexed;
+            Read(n,r); // Updates only acquired fields; unavailable fields stay copied.
+        }
+        records.reserve(g_indexedCopies.size());
+        for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
+        {
+            // Successful enumeration owns scope membership; a failed query does
+            // not assert removal. Entity serial validity is the removal oracle.
+            if(!n.mass.isEntityValid(g_manager,{it->second.Index,it->second.Serial}) ||
+                (g_gridSucceeded && !seen.contains(it->first))) it=g_indexedCopies.erase(it);
+            else {records.push_back(it->second);++it;}
         }
         g_metrics.GridExtract+=Ms(extraction);
         return records;
@@ -829,35 +866,20 @@ namespace
         auto add=[&](const Record& r)
         {
             if(r.InteriorOnly) return;
-            if(!r.TransformValid || !r.DefinitionValid || !r.Extent.Valid) { result->Complete=false; return; }
+            if(!r.TransformValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
             result->Records.push_back(r);
-            result->Records.back().CanonicalBlueprint.reset();
-            const auto definition=g_definitions.find(Key(r.DefinitionObjectIndex,r.BuildingId));
-            if(!r.HasSpline&&definition!=g_definitions.end())
-            {
-                if(DefinitionProvenanceCurrent(n,r,definition->second))
-                    result->Records.back().CanonicalBlueprint=definition->second.CanonicalBlueprint;
-                else
-                {
-                    constexpr auto bit=uint64_t(1)<<63;
-                    if(!(definition->second.IdentityDiagnostics&bit))
-                    {
-                        definition->second.IdentityDiagnostics|=bit;
-                        SpriteDiagnostic("MiniMap: sprite identity withheld: building=%u definition=%d stage=snapshot provenance reason=definition/entity identity observation or validation failed; canonical=%s; policy=clear identity and retry",
-                            r.BuildingId,r.DefinitionObjectIndex,definition->second.CanonicalBlueprint?definition->second.CanonicalBlueprint->c_str():"unavailable");
-                    }
-                    definition->second.CanonicalBlueprint.reset();
-                }
-            }
+            // Publication consumes copied facts only, never reopens native
+            // definition/entity provenance to draw an acquired sprite.
+            if(!r.HasSpline && (!r.CanonicalBlueprint || !r.InteriorKnown)) result->Complete=false;
         };
         for(const auto& r:indexed) add(r); // Fresh local data wins deterministic dedupe.
         for(const auto& [key,e]:g_cache)
         {
-            if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || !e.Data.DefinitionValid) { result->Complete=false; continue; }
+            if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid) { result->Complete=false; continue; }
             if(!e.Data.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)) continue;
             g_near.push_back(key);
-            if(!Live(n,{e.Data.Index,e.Data.Serial})) { ++g_metrics.Stale; continue; }
+            if(!n.mass.isEntityValid(g_manager,{e.Data.Index,e.Data.Serial})) { ++g_metrics.Stale; continue; }
             add(e.Data);
         }
         g_metrics.Filter+=Ms(start);
@@ -878,6 +900,27 @@ namespace
             else { result->Records[written++]=r; }
         }
         result->Records.resize(written);
+        if(g_initialDiscoveryReports<8)
+        {
+            ++g_initialDiscoveryReports;
+            try
+            {
+                std::vector<std::string_view> canonical;
+                size_t unresolved=0;
+                for(const auto& r:result->Records)
+                {
+                    if(r.HasSpline)continue;
+                    if(r.CanonicalBlueprint)canonical.emplace_back(*r.CanonicalBlueprint);
+                    else ++unresolved;
+                }
+                std::sort(canonical.begin(),canonical.end());
+                const auto count=std::unique(canonical.begin(),canonical.end())-canonical.begin();
+                SpriteDiagnostic("MiniMap: initial discovery observation: generation=%llu sample=%u/8 boundary=available-scoped-pass acceptedRecords=%zu canonicalTypes=%zu unresolvedOrdinary=%zu snapshotComplete=%d gridQuery=%d identityQuery=%d pendingRefresh=%zu; all available definitions serviced without conversion quota",
+                    static_cast<unsigned long long>(g_generation),g_initialDiscoveryReports,result->Records.size(),size_t(count),
+                    unresolved,int(result->Complete),int(g_gridSucceeded),int(g_identitySucceeded),g_pending.size());
+            }
+            catch(...) {} // Diagnostics must not prevent snapshot publication.
+        }
         { std::scoped_lock lock(g_mutex); g_snapshot=std::move(result); }
         g_metrics.SnapshotTime+=Ms(publication);
     }
@@ -887,7 +930,6 @@ namespace
         if(!MiniMapMap::GameplayReady())return;
         if(!g_ready || !MiniMapMap::HasWorld()) return;
         const auto start=Clock::now(); const auto* n=MiniMapNative::Get();
-        g_identityConversionAvailable=true;
         if(!n || !n->gridDiagnostic.IsAvailable() || !n->texture.memoryFree || !n->mass.getConstSharedFragmentPtr ||
             !n->mass.isEntityValid || !n->mass.isEntityBuilt || !n->mass.addSplineRequirement)
         {
@@ -895,6 +937,7 @@ namespace
             g_unavailableLogged=true; return;
         }
         {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorEnsure);if(!Ensure(*n)) return;}
+        if(++g_observation==0) {g_observation=1;for(auto& [key,d]:g_definitions){d.IdentityObservation=0;d.GeometryObservation=0;}}
         double radius=0; { std::scoped_lock lock(g_mutex); radius=g_viewRadius; }
         MiniMapMap::PlayerPose pose;
         if(radius<=0 || !MiniMapMap::TryGetPlayerPose(pose)) return;
@@ -933,7 +976,7 @@ namespace
             for(const auto& [key,e]:g_cache)
             {
                 off+=(e.Data.Sources&OffGrid)!=0; tagged+=(e.Data.Sources&IndexedSpline)!=0;
-                pending+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || !e.Data.DefinitionValid;
+                pending+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || (!e.Data.HasSpline && (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
                 if(e.Read) maxAge=(std::max)(maxAge,Seconds()-e.Data.RefreshedAtSeconds);
             }
             auto snapshot=MiniMapBuildingCollector::GetSnapshot();
@@ -1014,11 +1057,13 @@ namespace
     size_t g_interiorExcluded=0,g_eligibilityUnknown=0;
     size_t g_missingOff=0,g_missingGrid=0,g_stale=0,g_unresolvedCached=0,g_snapshotDuplicates=0;
     std::unordered_map<uint64_t,Definition> g_oracleDefinitions; // Copied metadata, independent of production cache.
+    uint64_t g_oraclePass=0;
     Clock::time_point g_compareStart;
     void ClearComparison()
     {
         g_comparison.reset(); g_remaining.clear(); g_previousMissing.clear(); g_missing.clear();
         g_oracleDefinitions.clear();
+        g_oraclePass=0;
         g_expected=g_missingCount=g_persistent=g_unresolved=0;
         g_interiorExcluded=g_eligibilityUnknown=0;
         g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
@@ -1029,8 +1074,11 @@ namespace MiniMapBuildingCollector
     bool Initialize(IPluginSelf* self)
     {
         if(g_initialized) return true;
-        if(!self || !self->hooks || !self->hooks->Engine || !self->hooks->ObjectWalker ||
-            !self->hooks->ObjectWalker->IsReady || !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
+        if(!self || !self->hooks || !self->hooks->Engine) return false;
+#if !defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+        if(!self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
+            !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
+#endif
         g_collectorSelf=self; Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
     }
     void Reset()
@@ -1075,6 +1123,7 @@ namespace MiniMapBuildingCollector
         g_comparison=GetSnapshot();
         if(!g_comparison || g_comparison->Generation!=g_generation) { g_comparison.reset(); return false; }
         g_compareStart=Clock::now();
+        if(++g_oraclePass==0){g_oraclePass=1;for(auto& [key,d]:g_oracleDefinitions)d.IdentityObservation=0;}
         g_remaining.clear(); g_missing.clear();
         g_expected=g_missingCount=g_persistent=g_unresolved=0;
         g_interiorExcluded=g_eligibilityUnknown=0;
@@ -1082,10 +1131,10 @@ namespace MiniMapBuildingCollector
         for(const auto& r:g_comparison->Records)
         {
             g_snapshotDuplicates+=!g_remaining.insert(Key(r.Index,r.Serial)).second;
-            if(!Live(*n,{r.Index,r.Serial})) ++g_stale;
+            if(!n->mass.isEntityValid(g_manager,{r.Index,r.Serial})) ++g_stale;
         }
         for(const auto& [key,e]:g_cache)
-            g_unresolvedCached+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || !e.Data.DefinitionValid;
+            g_unresolvedCached+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || (!e.Data.HasSpline && (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
         return true;
     }
     void ObserveBaseline(const MiniMapBuildingInventory::Record& r)
@@ -1115,8 +1164,9 @@ namespace MiniMapBuildingCollector
             !MiniMapResidentMetadata::Validate(object,sizeof(SDK::UAuActorPlacementData)) ||
             !IsClass(placement,g_types.Placement))
         { ++g_unresolved; ++g_eligibilityUnknown; return; }
-        auto tagResult=InteriorTagResult::Absent;
-        if(IsClass(placement,g_types.BuildingData))
+        const auto kind=ObserveClass(placement,g_types.BuildingData);
+        auto tagResult=kind==ClassObservation::Unavailable?InteriorTagResult::Unknown:InteriorTagResult::Absent;
+        if(kind==ClassObservation::Matches)
             tagResult=MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
                 ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement))
                 :InteriorTagResult::Unknown;
@@ -1132,7 +1182,19 @@ namespace MiniMapBuildingCollector
                 entry->second.ObjectSerial!=serial))
                 entry->second=Definition{uint32_t(placement->BuildingID),0xFF,placement->Name.ComparisonIndex,placement->Name.Number};
             entry->second.ObjectSerial=serial;
-            geometry.DefinitionShape=DefinitionShape(entry->second,placement,false);
+            // Independent canonical acquisition; no production identity cache or
+            // eligibility helper supplies the oracle's expected membership.
+            if(!r.HasSpline && !entry->second.CanonicalBlueprint && !entry->second.IdentityInterrupted &&
+                entry->second.IdentityObservation!=g_oraclePass)
+            {
+                entry->second.IdentityObservation=g_oraclePass;
+                const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
+                    {placement->Index,placement->Name.ComparisonIndex,placement->Name.Number,uint32_t(placement->BuildingID),serial});
+                entry->second.CanonicalBlueprint=result.Path;
+                entry->second.IdentityInterrupted=result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted;
+            }
+            if(!r.HasSpline && !entry->second.CanonicalBlueprint) {++g_unresolved;++g_eligibilityUnknown;return;}
+            geometry.DefinitionShape=DefinitionShape(entry->second,placement,r.HasSpline,false);
         }
         const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(*n,id,g_types.TargetBox));
         Geometry(geometry,spline,targeting?&targeting->BuildingBoundingBox:nullptr,false);

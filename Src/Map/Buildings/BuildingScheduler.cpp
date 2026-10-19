@@ -5,6 +5,7 @@
 #include "BuildingCache.h"
 #include "Map/Map.h"
 #include "plugin_helpers.h"
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <optional>
@@ -267,58 +268,81 @@ namespace MiniMapBuildingScheduler
             }
             RetainDecoded(batch, retry->Path, retry->Sprite, serial, tick, retry->Attempts + 1);
         }
-        for (size_t i = 0; i < names.Count; ++i)
+        size_t servicedNames = 0, loadedSprites = 0, missingSprites = 0;
+        for (;;)
         {
-            auto& path = names.Paths[i];
+            servicedNames += names.Count;
+            for (size_t i = 0; i < names.Count; ++i)
             {
-                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-                if (!Admitted(serial)) break;
-                const auto it = g_statuses->find(path);
-                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
+                auto& path = names.Paths[i];
                 {
-                    if (!g_invalidHandoffReported)
+                    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                    if (!Admitted(serial)) break;
+                    const auto it = g_statuses->find(path);
+                    if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
                     {
-                        g_invalidHandoffReported = true;
-                        SpriteDiagnostic("MiniMap: sprite completed-pass item ignored: canonical=%s reason=expected PendingCache status missing/changed; further invalid handoff diagnostics suppressed for session", path.c_str());
+                        if (!g_invalidHandoffReported)
+                        {
+                            g_invalidHandoffReported = true;
+                            SpriteDiagnostic("MiniMap: sprite completed-pass item ignored: canonical=%s reason=expected PendingCache status missing/changed; further invalid handoff diagnostics suppressed for session", path.c_str());
+                        }
+                        continue;
                     }
-                    continue;
                 }
-            }
-            C::Sprite sprite;
-            const auto result = C::TryLoad(path, sprite); // One read/decode; NO lifecycle lock.
-            {
-                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-                if (!Admitted(serial)) break;
-                const auto it = g_statuses->find(path);
-                if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
+                C::Sprite sprite;
+                const auto result = C::TryLoad(path, sprite); // One read/decode; NO lifecycle lock.
                 {
-                    if (!g_invalidHandoffReported)
+                    std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                    if (!Admitted(serial)) break;
+                    const auto it = g_statuses->find(path);
+                    if (it == g_statuses->end() || it->second.Where != S::Location::PendingCache)
                     {
-                        g_invalidHandoffReported = true;
-                        SpriteDiagnostic("MiniMap: sprite cache result ignored: canonical=%s reason=expected PendingCache status missing/changed after read; further invalid handoff diagnostics suppressed for session", path.c_str());
+                        if (!g_invalidHandoffReported)
+                        {
+                            g_invalidHandoffReported = true;
+                            SpriteDiagnostic("MiniMap: sprite cache result ignored: canonical=%s reason=expected PendingCache status missing/changed after read; further invalid handoff diagnostics suppressed for session", path.c_str());
+                        }
+                        continue;
                     }
-                    continue;
+                    if (result.Status == C::LoadStatus::Missing)
+                    {
+                        ++missingSprites;
+                        try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
+                        catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
+                        continue;
+                    }
+                    if (result.Status != C::LoadStatus::Loaded)
+                    {
+                        // Explicit non-spinning policy; I/O errors never enqueue capture.
+                        it->second.Where = S::Location::Failed;
+                        SpriteDiagnostic("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
+                            path.c_str(), unsigned(result.Status), result.Detail, unsigned(result.Error));
+                        continue;
+                    }
+                    it->second.Where = S::Location::FileCache;
                 }
-                if (result.Status == C::LoadStatus::Missing)
-                {
-                    try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
-                    catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
-                    continue;
-                }
-                if (result.Status != C::LoadStatus::Loaded)
-                {
-                    // Explicit non-spinning policy; I/O errors never enqueue capture.
-                    it->second.Where = S::Location::Failed;
-                    SpriteDiagnostic("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
-                        path.c_str(), unsigned(result.Status), result.Detail, unsigned(result.Error));
-                    continue;
-                }
-                it->second.Where = S::Location::FileCache;
+                ++loadedSprites;
+                RetainDecoded(batch, path, sprite, serial, tick, 1);
             }
-            RetainDecoded(batch, path, sprite, serial, tick, 1);
+            // EndDraw may have closed more discoveries while TryLoad ran unlocked.
+            // Take those already available names into the SAME CPU/GPU batch. The
+            // empty handoff observation below is the publication boundary, not a
+            // timer or a wait for future identities/captures. Bound total work by
+            // the existing handoff capacity; overflow remains owned by g_completed.
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            if (!Admitted(serial) || servicedNames >= MaximumBatchNames || !g_completed.Count) break;
+            names.Count = (std::min)(g_completed.Count, MaximumBatchNames - servicedNames);
+            for (size_t i = 0; i < names.Count; ++i) names.Paths[i] = std::move(g_completed.Paths[i]);
+            g_completed.Count -= names.Count;
+            for (size_t i = 0; i < g_completed.Count; ++i)
+                g_completed.Paths[i] = std::move(g_completed.Paths[i + names.Count]);
         }
-        // Finish performs one RepackSubset/transfer at most for ALL loaded names,
-        // or services a bounded pending candidate retry without any cache reread.
+        if (servicedNames)
+            SpriteDiagnostic("MiniMap: sprite cache batch closed: session=%llu names=%zu loaded=%zu missing=%zu scope=available-handoffs; at most one atlas publication attempt follows",
+                static_cast<unsigned long long>(serial), servicedNames, loadedSprites, missingSprites);
+        // Finish performs one layout/transfer at most for the entire available
+        // batch, or services a pending retry without any cache reread. No disk
+        // access, layout construction or GPU call occurs in EndDraw/UI rendering.
     }
     void EndSession()
     {

@@ -6,10 +6,10 @@
 #include "BuildingAtlas.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingGeometry.h"
+#include "BuildingVisibilityTrace.h"
 #include "DebugText.h"
 #include "plugin_helpers.h"
 #include <chrono>
-#include <map>
 #include <mutex>
 #include <sstream>
 #include <iomanip>
@@ -25,33 +25,10 @@ namespace
     namespace G = MiniMapBuildingVisualGeometry;
     namespace C = MiniMapBuildingCollector;
     using Clock = std::chrono::steady_clock;
-    // Generation, object index, BuildingID, FName comparison index, FName number.
-    using DefinitionKey = std::array<uint64_t,5>;
-    constexpr auto kRetry = std::chrono::seconds(1);
-    constexpr auto kResolvedRetry = std::chrono::seconds(5);
-    constexpr size_t kDefinitionsPerTick = 16;
-    constexpr double kDefinitionBudgetMs = 1.0;
-    constexpr double kPlaceholderHalfSize = 200; // 4m symbol, NOT a footprint/admission bound.
-    enum class Source { TargetingProxy, Placeholder };
-    struct Visual
-    {
-        C::LocalBounds Local;
-        Source Kind=Source::Placeholder;
-        // Bounds carry local center/aspect. Local +X is UE forward; instances
-        // apply the full signed scale/quaternion. No texture/resource ownership.
-    };
-    struct Entry
-    {
-        Visual Data;
-        std::shared_ptr<const C::DefinitionGeometry> Input;
-        Clock::time_point RetryAt={};
-        double SourceTime=0;
-        bool Ready=false, Queued=true;
-    };
+    constexpr auto kDebugInterval = std::chrono::seconds(5);
     struct Instance
     {
         C::Record SpriteSource;
-        G::Polygon Shape;
         C::Bounds Bounds;
         G::XY Origin;
         std::shared_ptr<const C::SplineGeometry> Curve;
@@ -59,7 +36,7 @@ namespace
         double HalfWidth=0;
         double Elevation=0;
         int32_t EntityIndex=0,EntitySerial=0;
-        bool Spline=false, Proxy=false, WidthFallback=false, Unresolved=false;
+        bool Spline=false, WidthFallback=false, Unresolved=false;
     };
     struct Snapshot
     {
@@ -70,13 +47,12 @@ namespace
     struct RenderStats
     {
         size_t Ordinary=0,Splines=0,Culled=0,Unresolved=0,Points=0,Limited=0;
-        size_t OrdinaryProxy=0,OrdinaryPlaceholder=0,OrdinaryAtlas=0,WidthSource=0,WidthFallback=0;
+        size_t OrdinaryAtlas=0,WidthSource=0,WidthFallback=0;
         double Ms=0;
     };
     IPluginSelf* g_visualsSelf=nullptr;
     bool g_initialized=false;
     uint64_t g_generation=0;
-    std::map<DefinitionKey,Entry> g_definitions; // Game-thread only; copied metadata only.
     std::shared_ptr<const C::Snapshot> g_lastInput;
     std::mutex g_mutex;
     std::shared_ptr<const Snapshot> g_published;
@@ -86,15 +62,76 @@ namespace
     double g_prepareMax=0, g_renderMax=0;
     size_t g_prepareCount=0, g_renderCount=0;
 
+    namespace V = MiniMapBuildingVisibilityTrace;
+    std::mutex g_traceMutex;
+    V::Trace g_trace;
+    std::weak_ptr<const C::Snapshot> g_traceInput;
+    uint64_t TraceKey(int32_t index,int32_t serial)
+    { return (uint64_t(uint32_t(serial))<<32)|uint32_t(index); }
+    void TraceState(size_t sample,V::Stage stage,V::State state,const C::Record* record=nullptr)
+    {
+        if(!g_trace.Observe(sample,stage,state))return;
+        const auto& id=g_trace.Samples[sample];
+        const char* stages[]{"collector","prepared","render"};
+        try { if(auto* self=GetSelf();self&&self->logger&&self->logger->Warn)
+            self->logger->Warn(self,"MiniMap: sprite visibility: generation=%llu entity=%d:%d building=%u definition=%d stage=%s state=%s canonical=%s tintAlpha=%.3f event=%zu/128",
+                static_cast<unsigned long long>(g_trace.Generation),id.Index,id.Serial,id.Building,id.Definition,
+                stages[unsigned(stage)],V::Name(state),record&&record->CanonicalBlueprint?record->CanonicalBlueprint->c_str():"unavailable",
+                record?double(record->Tint[3]):-1.0,g_trace.Events); }
+        catch(...) {} // Diagnostics cannot alter visibility/admission.
+    }
+    void TraceFrame(const std::shared_ptr<const C::Snapshot>& current,
+        const std::shared_ptr<const Snapshot>& prepared,bool admitted)
+    {
+        if(!current)return;
+        std::lock_guard<std::mutex> lock(g_traceMutex);
+        if(g_trace.Generation!=current->Generation) {g_trace.Reset(current->Generation);g_traceInput.reset();}
+        if(g_trace.Events>=V::Trace::MaximumEvents)return;
+        if(g_traceInput.lock()!=current)
+        {
+            for(const auto& record:current->Records)
+                if(!record.HasSpline)g_trace.Consider(record.Index,record.Serial,record.DefinitionObjectIndex,record.BuildingId);
+            g_traceInput=current;
+        }
+        for(size_t i=0;i<g_trace.Count;++i)
+        {
+            const auto& id=g_trace.Samples[i];const auto key=TraceKey(id.Index,id.Serial);
+            const auto found=std::lower_bound(current->Records.begin(),current->Records.end(),key,
+                [](const C::Record& r,uint64_t value){return TraceKey(r.Index,r.Serial)<value;});
+            const auto* record=found!=current->Records.end()&&TraceKey(found->Index,found->Serial)==key?&*found:nullptr;
+            TraceState(i,V::Stage::Collector,!record?V::State::Absent:
+                !record->CanonicalBlueprint?V::State::CanonicalUnavailable:V::State::Present,record);
+            const Instance* instance=nullptr;
+            if(prepared&&prepared->Generation==current->Generation)
+            {
+                const auto p=std::lower_bound(prepared->Instances.begin(),prepared->Instances.end(),key,
+                    [](const Instance& r,uint64_t value){return TraceKey(r.EntityIndex,r.EntitySerial)<value;});
+                if(p!=prepared->Instances.end()&&TraceKey(p->EntityIndex,p->EntitySerial)==key)instance=&*p;
+            }
+            TraceState(i,V::Stage::Prepared,!instance?V::State::Absent:
+                !instance->SpriteSource.CanonicalBlueprint?V::State::CanonicalUnavailable:V::State::Present,
+                instance?&instance->SpriteSource:nullptr);
+            if(!instance)TraceState(i,V::Stage::Render,V::State::Absent);
+            else if(!admitted)TraceState(i,V::Stage::Render,V::State::SessionUnavailable);
+        }
+    }
+    void TraceRender(const C::Record& record,V::State state)
+    {
+        std::lock_guard<std::mutex> lock(g_traceMutex);
+        if(record.Generation!=g_trace.Generation||g_trace.Events>=V::Trace::MaximumEvents)return;
+        for(size_t i=0;i<g_trace.Count;++i)
+            if(record.Index==g_trace.Samples[i].Index&&record.Serial==g_trace.Samples[i].Serial)
+            {TraceState(i,V::Stage::Render,state,&record);return;}
+    }
+
     double Ms(Clock::time_point start)
     { return std::chrono::duration<double,std::milli>(Clock::now()-start).count(); }
     auto DrawKey(const Instance& i)
     {return std::tuple(i.Spline?0:1,i.Elevation,i.Origin.Y,i.Origin.X,i.EntitySerial,i.EntityIndex);}
-    C::LocalBounds Placeholder()
-    { return {{-kPlaceholderHalfSize,-kPlaceholderHalfSize,0},{kPlaceholderHalfSize,kPlaceholderHalfSize,0},true}; }
     void Clear()
     {
-        g_generation=0; g_definitions.clear(); g_lastInput.reset(); g_nextDebug={};
+        {std::lock_guard<std::mutex> lock(g_traceMutex);g_trace.Reset(0);g_traceInput.reset();}
+        g_generation=0; g_lastInput.reset(); g_nextDebug={};
         g_prepareMax=0; g_prepareCount=0;
         std::scoped_lock lock(g_mutex); g_published.reset(); g_render={}; g_debugText.clear();
         g_renderMax=0; g_renderCount=0;
@@ -114,14 +151,13 @@ namespace
         if (!(entry.Region[2]>entry.Region[0] && entry.Region[3]>entry.Region[1])) return false;
         double norm=0;
         for (double q:record.Rotation) { if (!std::isfinite(q)) return false; norm+=q*q; }
-        if (!std::isfinite(norm) || std::abs(norm-1)>0.001) return false;
+        if (!std::isfinite(norm) || !(norm>0)) return false;
         const double inverse=1/std::sqrt(norm);
         const double x=record.Rotation[0]*inverse,y=record.Rotation[1]*inverse,
             z=record.Rotation[2]*inverse,w=record.Rotation[3]*inverse;
-        // The source is a top view, so tilt/upside-down changes visibility in a
-        // way a flat sprite cannot reproduce. q and -q have identical eligibility.
-        if (std::abs(x)>1e-6 || std::abs(y)>1e-6 || !(record.Scale[2]>0) ||
-            record.Scale[0]==0 || record.Scale[1]==0) return false;
+        // Apply the copied transform, including tilt and signed scale. Only a
+        // nonfinite/degenerate projected quad is unrepresentable; these are not
+        // additional building-instance eligibility rules.
         std::array<double,3> center{},extent{};
         for (size_t axis=0;axis<3;++axis)
         {
@@ -184,34 +220,9 @@ namespace
         const auto start=Clock::now(),now=start;
         auto result=std::make_shared<Snapshot>(); result->Generation=input->Generation;
         result->Instances.reserve(input->Records.size());
-        size_t built=0; double cacheMs=0;
         for(const auto& r:input->Records)
         {
             if(r.Generation!=input->Generation) continue;
-            Entry* cached=nullptr;
-            // Spline definitions already share copied width metadata in B.2;
-            // their curves are instance-specific. Only ordinary shapes need this cache.
-            if(!r.HasSpline)
-            {
-                const DefinitionKey key={r.Generation,uint32_t(r.DefinitionObjectIndex),r.BuildingId,uint32_t(r.DefinitionIndex),r.DefinitionNumber};
-                auto& entry=g_definitions[key];
-                // New copied source versions are picked up on the next eligible
-                // preparation. Unresolved definitions retry; no UObject lookup here.
-                const bool newer=r.RefreshedAtSeconds>=entry.SourceTime;
-                entry.Queued=entry.Queued || !entry.Ready || (newer && entry.Input!=r.DefinitionShape) || now>=entry.RetryAt;
-                if(entry.Queued && built<kDefinitionsPerTick && cacheMs<kDefinitionBudgetMs)
-                {
-                    const auto cacheStart=Clock::now();
-                    if(newer || !entry.Ready) { entry.Input=r.DefinitionShape; entry.SourceTime=r.RefreshedAtSeconds; }
-                    entry.Data={Placeholder(),Source::Placeholder};
-                    if(entry.Input && G::Valid(entry.Input->TargetingBox))
-                        entry.Data={entry.Input->TargetingBox,Source::TargetingProxy};
-                    entry.Ready=true; entry.Queued=false; ++built;
-                    entry.RetryAt=now+(entry.Data.Kind==Source::TargetingProxy?kResolvedRetry:kRetry);
-                    cacheMs+=Ms(cacheStart);
-                }
-                cached=&entry;
-            }
             Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]}; instance.Tint=r.Tint;
             instance.Elevation=r.Position[2];instance.EntityIndex=r.Index;instance.EntitySerial=r.Serial;
             instance.SpriteSource=r;
@@ -227,16 +238,6 @@ namespace
                     r.DefinitionShape->SplineMeshCrossSection*scale;
                 if(!std::isfinite(instance.HalfWidth) || instance.HalfWidth<=0)
                 { instance.HalfWidth=MiniMapBuildingGeometry::kSplineSafetyAllowance; instance.WidthFallback=true; }
-            }
-            else
-            {
-                const auto& entry=*cached;
-                // A per-entity copied proxy can differ from definition defaults.
-                const auto local=G::Valid(r.LocalFootprint)?r.LocalFootprint:
-                    (entry.Ready?entry.Data.Local:Placeholder());
-                instance.Proxy=G::Valid(r.LocalFootprint) || (entry.Ready && entry.Data.Kind==Source::TargetingProxy);
-                instance.Shape=G::Project(local,r); instance.Bounds=G::Bounds(instance.Shape);
-                instance.Unresolved=instance.Shape.Count<3;
             }
             result->Instances.push_back(std::move(instance));
         }
@@ -261,31 +262,24 @@ namespace
         g_prepareMax=(std::max)(g_prepareMax,Ms(start)); ++g_prepareCount;
         if(now>=g_nextDebug)
         {
-            size_t proxy=0,fallback=0,queued=0;
-            for(const auto& [key,e]:g_definitions)
-            { proxy+=e.Ready && e.Data.Kind==Source::TargetingProxy; fallback+=e.Ready && e.Data.Kind==Source::Placeholder; queued+=e.Queued; }
             RenderStats render; double renderMax; size_t renderCount;
             { std::scoped_lock lock(g_mutex); render=g_render; renderMax=g_renderMax; renderCount=g_renderCount;
                 g_renderMax=0; g_renderCount=0; }
             std::ostringstream text; text<<std::fixed<<std::setprecision(2)
-                <<"\n\nBuildingVisuals (atlas + geometry fallback)"
-                <<"\nOrdinary definitions: "<<g_definitions.size()<<" ready: "<<proxy+fallback<<" queued: "<<queued
-                <<"\nDefinition proxy/placeholder: "<<proxy<<'/'<<fallback
-                <<" (fallback retries: 1s)"
+                <<"\n\nBuildingVisuals (atlas sprites)"
                 <<"\nDrawn ordinary/spline: "<<render.Ordinary<<'/'<<render.Splines
-                <<"\nDrawn ordinary proxy/placeholder: "<<render.OrdinaryProxy<<'/'<<render.OrdinaryPlaceholder
                 <<"\nDrawn ordinary atlas: "<<render.OrdinaryAtlas
                 <<"\nDrawn spline width source/fallback: "<<render.WidthSource<<'/'<<render.WidthFallback
                 <<"\nCulled/unresolved: "<<render.Culled<<'/'<<render.Unresolved
                 <<"\nCurve points/depth-limited: "<<render.Points<<'/'<<render.Limited
-                <<"\nLast resolve/prepare: "<<cacheMs<<'/'<<prepareMs<<" ms"
+                <<"\nLast prepare: "<<prepareMs<<" ms"
                 <<"\nLast render: "<<render.Ms<<" ms"
                 <<"\nInterval max prepare/render: "<<g_prepareMax<<'/'<<renderMax<<" ms";
             { std::scoped_lock lock(g_mutex); g_debugText=text.str(); }
             LOG_INFO("MiniMap: BuildingVisuals timing: prepareLast=%.3fms prepareMax=%.3fms prepares=%zu renderLast=%.3fms renderMax=%.3fms frames=%zu instances=%zu",
                 prepareMs,g_prepareMax,g_prepareCount,render.Ms,renderMax,renderCount,input->Records.size());
             g_prepareMax=0; g_prepareCount=0;
-            g_nextDebug=now+kResolvedRetry;
+            g_nextDebug=now+kDebugInterval;
         }
 #endif
     }
@@ -355,7 +349,8 @@ namespace MiniMapBuildingVisuals
         if(!ui || !transform.Valid) return;
         std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(g_mutex); snapshot=g_published; }
         const auto current=C::GetSnapshot();
-        if(!snapshot || !current || snapshot->Generation!=current->Generation) return;
+        if(!snapshot || !current || snapshot->Generation!=current->Generation)
+        {TraceFrame(current,snapshot,false);return;}
         const auto dl=ui->GetWindowDrawList(); if(!dl) return;
         const auto start=Clock::now(); RenderStats stats;
         const C::Bounds viewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
@@ -370,6 +365,7 @@ namespace MiniMapBuildingVisuals
             MiniMapMap::GameplayReady() &&
             currentSession &&
             currentSession->Generation == snapshot->Generation;
+        TraceFrame(currentSession,snapshot,schedulerValid);
         struct FinishDraw
         {
             bool Admitted;
@@ -390,22 +386,31 @@ namespace MiniMapBuildingVisuals
             // Discover before proxy culling: the authored assembly may extend
             // beyond its proxy. Native capture is serviced on the game thread.
             if(!spline && schedulerValid)MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
+            auto visibility=instance.SpriteSource.CanonicalBlueprint?V::State::AtlasMissing:V::State::CanonicalUnavailable;
+            if(!ui->DL_AddImageQuad)visibility=V::State::SubmitRejected;
+            if(!schedulerValid)visibility=V::State::SessionUnavailable;
             if(!spline && schedulerValid && ui->DL_AddImageQuad && instance.SpriteSource.CanonicalBlueprint)
             {
                 if (const auto* entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint))
                 {
+                    visibility=V::State::QuadRejected;
                     std::array<MiniMapBuildingAtlasAlienX::Point,4> points;
                     C::Bounds spriteBounds;
                     if (AtlasQuad(instance.SpriteSource,*entry,transform,points,spriteBounds))
                     {
                         // A captured assembly may extend beyond the targeting
                         // proxy, including instances whose proxy is unresolved.
-                        if (!G::Intersects(spriteBounds,viewport)) { ++stats.Culled; continue; }
+                        if (!G::Intersects(spriteBounds,viewport))
+                        {TraceRender(instance.SpriteSource,V::State::Culled);++stats.Culled;continue;}
+                        visibility=V::State::SubmitRejected;
                         if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,Color(instance.Tint,255)))
-                        { ++stats.Ordinary; ++stats.OrdinaryAtlas; continue; }
+                        {TraceRender(instance.SpriteSource,V::State::Submitted);++stats.Ordinary;++stats.OrdinaryAtlas;continue;}
                     }
                 }
             }
+            // Ordinary buildings without a ready atlas sprite stay invisible.
+            // Keep discovery above so the existing scheduler can load or capture them.
+            if(!spline) {TraceRender(instance.SpriteSource,visibility);continue;}
             if(instance.Unresolved)
             {
                 ++stats.Unresolved; MiniMapMap::ScreenPoint p;
@@ -415,8 +420,7 @@ namespace MiniMapBuildingVisuals
                 }
                 continue;
             }
-            // B.2 bounds include spline width/caps; ordinary bounds are the
-            // projected proxy, not the 50m discovery allowance. Pad for AA/minimum stroke.
+            // B.2 bounds include spline width/caps. Pad for AA/minimum stroke.
             const C::Bounds paddedViewport={viewport.MinX-1,viewport.MinY-1,viewport.MaxX+1,viewport.MaxY+1,true};
             if(!G::Intersects(G::ScreenBounds(instance.Bounds,transform),paddedViewport))
             { ++stats.Culled; continue; }
@@ -427,21 +431,6 @@ namespace MiniMapBuildingVisuals
                 else ++stats.Culled;
                 continue;
             }
-            std::array<float,16> xy; C::Bounds screenBounds; bool valid=true;
-            for(size_t i=0;i<instance.Shape.Count;++i)
-            {
-                MiniMapMap::ScreenPoint p;
-                if(!transform.WorldToScreen(instance.Shape.Points[i].X,instance.Shape.Points[i].Y,p)) { valid=false; break; }
-                xy[i*2]=p.X; xy[i*2+1]=p.Y;
-                if(!screenBounds.Valid) screenBounds={p.X,p.Y,p.X,p.Y,true};
-                else { screenBounds.MinX=(std::min)(screenBounds.MinX,double(p.X)); screenBounds.MinY=(std::min)(screenBounds.MinY,double(p.Y));
-                    screenBounds.MaxX=(std::max)(screenBounds.MaxX,double(p.X)); screenBounds.MaxY=(std::max)(screenBounds.MaxY,double(p.Y)); }
-            }
-            if(!valid || !G::Intersects(screenBounds,viewport)) { ++stats.Culled; continue; }
-            if(instance.Proxy) ui->DL_AddConvexPolyFilled(dl,xy.data(),int(instance.Shape.Count),Color(instance.Tint,70));
-            ui->DL_AddPolyline(dl,xy.data(),int(instance.Shape.Count),Color(instance.Tint,instance.Proxy?150:95),PluginDrawFlags_Closed,1);
-            ++stats.Ordinary;
-            stats.OrdinaryProxy+=instance.Proxy; stats.OrdinaryPlaceholder+=!instance.Proxy;
         }
         }
         ui->DL_PopClipRect(dl); stats.Ms=Ms(start);

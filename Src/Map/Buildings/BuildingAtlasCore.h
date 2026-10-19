@@ -39,8 +39,8 @@ namespace MiniMapBuildingAtlasCore
     };
     struct Layout
     {
-        std::uint16_t Width{}, Height{}; // Zero until the first successful repack.
-        std::uint64_t Revision{};
+        std::uint16_t Width{}, Height{}; // Zero until the first successful layout.
+        std::uint64_t Revision{}; // Core: CPU proposal; PublishedImage: committed GPU generation.
         std::vector<PackedSource> Images; // Deterministic packing order.
         std::vector<std::uint8_t> Rgba;
         // Retained but not admitted by the last successful RepackSubset, in
@@ -64,12 +64,14 @@ namespace MiniMapBuildingAtlasCore
         Result Add(const std::string& identifier, std::uint32_t width, std::uint32_t height,
             std::span<const std::uint8_t> rgba) noexcept;
         // Complete-set attempts at 512 then 1024, without shrinking the current
-        // canvas. Failure preserves the last layout.
+        // canvas or moving any current allocation. Failure preserves the last layout.
         Result Repack() noexcept;
         // Current().Images is mandatory. Consider remaining retained identifiers
         // in ascending unsigned-byte order, accepting each only if the entire
-        // selection fits at 512 or 1024 without shrinking. Commit once; Ok can
-        // include capacity-deferred sources in Current().DeferredIdentifiers.
+        // selection fits at 512 or 1024 without shrinking or relocating retained
+        // allocations. Growth preserves pixel coordinates and recalculates UVs.
+        // Commit once; Ok can include capacity-deferred sources in
+        // Current().DeferredIdentifiers.
         // Errors preserve all current metadata, pixels, revision and sources.
         Result RepackSubset() noexcept;
         // Read-only views: Sources references invalidate on a successful Add;

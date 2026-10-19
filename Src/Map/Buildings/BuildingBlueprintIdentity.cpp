@@ -10,6 +10,7 @@
 #include <new>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace
 {
@@ -74,24 +75,13 @@ namespace
         }
         return false;
     }
-    bool Canonical(std::string_view path)
+    bool HasClassname(std::string_view path)
     {
-        // Same representation accepted by BuildingSpriteRenderer::Path. Nothing
-        // is normalized or assembled from the authored FName fragments.
-        if (path.size() > 1024 || !path.starts_with("/Game/") || !path.ends_with("_C")) return false;
-        for (const auto marker : {"/Engine/Transient", "UEDPIE_", "REINST_", "SKEL_"})
-            if (path.find(marker) != path.npos) return false;
-        const auto dot = path.find('.'), slash = path.rfind('/');
-        if (dot == path.npos || dot <= slash + 1 || path.find('.', dot + 1) != path.npos ||
-            path.substr(slash + 1, dot - slash - 1) != path.substr(dot + 1, path.size() - dot - 3)) return false;
-        for (size_t i = 1; i < path.size(); ++i)
-        {
-            const auto c = static_cast<unsigned char>(path[i]);
-            if (c < 128 && !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '_' && c != '/' && c != '.') return false;
-            if (c == '/' && (i > dot || path[i - 1] == '/')) return false;
-        }
-        return true;
+        // The typed authored reference and checked conversion supply identity.
+        // Capture/cache naming support is a separate representation concern.
+        return !path.empty() && path!="None";
     }
+
 }
 
 namespace MiniMapBuildingBlueprintIdentity
@@ -133,7 +123,7 @@ namespace MiniMapBuildingBlueprintIdentity
             if (path.AssetPath.PackageName.ComparisonIndex < 0 || path.AssetPath.AssetName.ComparisonIndex < 0 ||
                 length < 0 || capacity < length || capacity > 1024 ||
                 (capacity && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(subpath), size_t(length ? length : 1) * sizeof(*subpath), alignof(decltype(*subpath))) ||
-                    (length && subpath[length - 1] != 0))) || length > 1)
+                    (length && subpath[length - 1] != 0))))
                 return Rejected(Issue::SoftPath, "soft class path structure/subpath rejected", Status::Invalid);
             const auto functionClass = metadata(L"/Script/CoreUObject.Function", sizeof(SDK::UFunction));
             const auto library = metadata(L"/Script/Engine.KismetSystemLibrary", sizeof(SDK::UKismetSystemLibrary));
@@ -155,21 +145,27 @@ namespace MiniMapBuildingBlueprintIdentity
             const auto& value = params.ReturnValue;
             const auto* text = value.CStr();
             const auto num = value.Num(), max = value.Max();
-            // A structurally valid but overlong path is an ordinary unresolved
-            // identity, not uncertain ownership of the returned allocation.
+            // Validate only the actual returned allocation before reading its text.
+            // The established structural bound also bounds UTF-8 allocation.
             if (num < 0 || max < num || max > 65536 || (max && !text) || (!max && text) ||
                 (num && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(text), size_t(num) * sizeof(wchar_t), alignof(wchar_t)) || text[num - 1] != 0)))
             { interrupted = true; return Rejected(Issue::ReturnedAllocation, "returned string allocation malformed/unreadable", Status::Interrupted); } // Cannot safely free a malformed returned allocation.
-            if (num <= 1 || num > 1025) return Rejected(Issue::ReturnedLength, "returned identity empty/overlong", Status::Invalid);
+            if (num <= 1) return Rejected(Issue::ReturnedLength, "returned classname is empty", Status::Invalid);
             for (int32_t i = 0; i < num - 1; ++i) if (text[i] < 32 || text[i] == 127)
-                return Rejected(Issue::ReturnedCharacter, "returned identity contains control characters", Status::Invalid);
-            std::array<char, 1025> utf8{};
-            const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, num - 1, utf8.data(), 1024, nullptr, nullptr);
-            if (size <= 0 || !Canonical(std::string_view(utf8.data(), size)))
-                return Rejected(Issue::CanonicalPath, "UTF-8 conversion/canonical Blueprint syntax rejected", Status::Invalid);
+                return Rejected(Issue::ReturnedCharacter, "returned classname contains control characters", Status::Invalid);
             if (!Matches(object, placement, identity)) return Rejected(Issue::DefinitionChanged, "definition identity revalidation failed after conversion");
-            try { return {std::make_shared<const std::string>(utf8.data(), size_t(size)), Status::Resolved}; }
-            catch (const std::bad_alloc&) { return Rejected(Issue::Allocation, "canonical identity CPU allocation failed"); } // CPU allocation failure still follows checked native cleanup.
+            try
+            {
+                const auto size=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text,num-1,nullptr,0,nullptr,nullptr);
+                if(size<=0)return Rejected(Issue::CanonicalPath,"classname UTF-8 conversion rejected",Status::Invalid);
+                std::string utf8(size_t(size),'\0');
+                if(WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text,num-1,utf8.data(),size,nullptr,nullptr)!=size || !HasClassname(utf8))
+                    return Rejected(Issue::CanonicalPath,"classname unavailable/invalid UTF-8",Status::Invalid);
+                return {std::make_shared<const std::string>(std::move(utf8)),Status::Resolved};
+            }
+            catch(const std::bad_alloc&) {return Rejected(Issue::Allocation,"classname CPU allocation failed");}
+            // All CPU exits still follow the checked native string/root cleanup.
+
         };
         auto result = convert();
         if (interrupted || (params.ReturnValue.CStr() && !Free(memory, params.ReturnValue.CStr())))
