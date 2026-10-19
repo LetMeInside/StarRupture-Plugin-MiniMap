@@ -1040,14 +1040,20 @@ namespace
         ++g_metrics.SnapshotsBuilt;
         auto result=std::make_shared<Snapshot>(); result->Generation=g_generation; result->Region=g_region;
         result->Complete=g_gridSucceeded && g_identitySucceeded;
-        result->Records.reserve(indexedCount+g_near.size());
+        struct Candidate
+        {
+            uint64_t Identity;
+            const Record* Data; // Borrowed only until synchronous materialization below.
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(indexedCount+g_near.size());
         g_near.clear(); g_duplicates=0;
         auto add=[&](const Record& r)
         {
             if(r.InteriorOnly) return;
             if(!r.TransformValid || !r.Extent.Valid) { result->Complete=false; return; }
             if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
-            result->Records.push_back(r);
+            candidates.push_back({Key(r.Index,r.Serial),&r});
             // Publication consumes copied facts only, never reopens native
             // definition/entity provenance to draw an acquired sprite.
             if(!r.HasSpline && (!r.CanonicalBlueprint || !r.InteriorKnown)) result->Complete=false;
@@ -1065,21 +1071,23 @@ namespace
         g_metrics.Filter+=Ms(start);
         const auto publication=Clock::now();
         result->PublishedAtSeconds=Seconds();
-        std::sort(result->Records.begin(),result->Records.end(),[](const Record& a,const Record& b)
+        std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b)
         {
-            const auto ka=Key(a.Index,a.Serial),kb=Key(b.Index,b.Serial);
-            if(ka!=kb) return ka<kb;
-            if(bool(a.Sources&Indexed)!=bool(b.Sources&Indexed)) return bool(a.Sources&Indexed);
-            return a.RefreshedAtSeconds>b.RefreshedAtSeconds;
+            if(a.Identity!=b.Identity) return a.Identity<b.Identity;
+            if(bool(a.Data->Sources&Indexed)!=bool(b.Data->Sources&Indexed)) return bool(a.Data->Sources&Indexed);
+            return a.Data->RefreshedAtSeconds>b.Data->RefreshedAtSeconds;
         });
-        size_t written=0;
-        for(const auto& r:result->Records)
+        result->Records.reserve(candidates.size()); // No relocation of materialized Records.
+        for(size_t first=0;first<candidates.size();)
         {
-            if(written && Key(result->Records[written-1].Index,result->Records[written-1].Serial)==Key(r.Index,r.Serial))
-            { result->Records[written-1].Sources|=r.Sources; ++g_duplicates; }
-            else { result->Records[written++]=r; }
+            size_t next=first+1;
+            auto sources=candidates[first].Data->Sources;
+            while(next<candidates.size() && candidates[next].Identity==candidates[first].Identity)
+            { sources|=candidates[next].Data->Sources; ++g_duplicates; ++next; }
+            result->Records.push_back(*candidates[first].Data);
+            result->Records.back().Sources=sources;
+            first=next;
         }
-        result->Records.resize(written);
         if(g_initialDiscoveryReports<8)
         {
             ++g_initialDiscoveryReports;
