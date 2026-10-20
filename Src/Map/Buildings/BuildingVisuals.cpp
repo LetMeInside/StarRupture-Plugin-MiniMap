@@ -96,6 +96,35 @@ namespace
     std::weak_ptr<const C::Snapshot> g_traceInput;
     uint64_t TraceKey(int32_t index,int32_t serial)
     { return (uint64_t(uint32_t(serial))<<32)|uint32_t(index); }
+    // Callback-local values only. The loader's Present guard serializes all UI
+    // callbacks (including the early TraceFrame path). Only TraceFrame adds
+    // targets; concurrent Clear can only empty them. Never retain across Render.
+    struct TraceTargets
+    {
+        uint64_t Generation=0;
+        size_t Count=0;
+        std::array<uint64_t,V::Trace::MaximumSamples> Keys{};
+        bool Contains(const C::Record& record) const
+        {
+            return Count && record.Generation==Generation &&
+                std::binary_search(Keys.begin(),Keys.begin()+Count,TraceKey(record.Index,record.Serial));
+        }
+    };
+    // Caller holds g_traceMutex, including when the collector was withdrawn
+    // after Render retained its prepared snapshot. That path can still report
+    // SessionUnavailable against the existing trace generation.
+    TraceTargets TraceView()
+    {
+        TraceTargets targets;
+        if(g_trace.Events<V::Trace::MaximumEvents)
+        {
+            targets.Generation=g_trace.Generation;targets.Count=g_trace.Count;
+            for(size_t i=0;i<targets.Count;++i)
+                targets.Keys[i]=TraceKey(g_trace.Samples[i].Index,g_trace.Samples[i].Serial);
+            std::sort(targets.Keys.begin(),targets.Keys.begin()+targets.Count);
+        }
+        return targets;
+    }
     void TraceState(size_t sample,V::Stage stage,V::State state,const C::Record* record=nullptr)
     {
         if(!g_trace.Observe(sample,stage,state))return;
@@ -108,13 +137,13 @@ namespace
                 record?double(record->Tint[3]):-1.0,g_trace.Events); }
         catch(...) {} // Diagnostics cannot alter visibility/admission.
     }
-    void TraceFrame(const std::shared_ptr<const C::Snapshot>& current,
+    TraceTargets TraceFrame(const std::shared_ptr<const C::Snapshot>& current,
         const std::shared_ptr<const Snapshot>& prepared,bool admitted)
     {
-        if(!current)return;
         std::lock_guard<std::mutex> lock(g_traceMutex);
+        if(!current)return TraceView();
         if(g_trace.Generation!=current->Generation) {g_trace.Reset(current->Generation);g_traceInput.reset();}
-        if(g_trace.Events>=V::Trace::MaximumEvents)return;
+        if(g_trace.Events>=V::Trace::MaximumEvents)return {};
         if(g_traceInput.lock()!=current)
         {
             for(const auto& record:current->Records)
@@ -142,9 +171,11 @@ namespace
             if(!instance)TraceState(i,V::Stage::Render,V::State::Absent);
             else if(!admitted)TraceState(i,V::Stage::Render,V::State::SessionUnavailable);
         }
+        return TraceView();
     }
-    void TraceRender(const C::Record& record,V::State state)
+    void TraceRender(const TraceTargets& targets,const C::Record& record,V::State state)
     {
+        if(!targets.Contains(record))return;
         std::lock_guard<std::mutex> lock(g_traceMutex);
         if(record.Generation!=g_trace.Generation||g_trace.Events>=V::Trace::MaximumEvents)return;
         for(size_t i=0;i<g_trace.Count;++i)
@@ -464,7 +495,7 @@ namespace MiniMapBuildingVisuals
             MiniMapMap::GameplayReady() &&
             currentSession &&
             currentSession->Generation == snapshot->Generation;
-        TraceFrame(currentSession,snapshot,schedulerValid);
+        const auto traceTargets=TraceFrame(currentSession,snapshot,schedulerValid);
         // The locked publication fixes Region/SourceRect/Min/Max for every resolved entry.
         // Snapshot identity fixes copied transforms, membership and instance indices.
         if(schedulerValid)worldQuads.Bind(snapshot,session,revision);
@@ -533,16 +564,16 @@ namespace MiniMapBuildingVisuals
                         // A captured assembly may extend beyond the targeting
                         // proxy, including instances whose proxy is unresolved.
                         if (!G::Intersects(spriteBounds,viewport))
-                        {TraceRender(instance.SpriteSource,V::State::Culled);++stats.Culled;continue;}
+                        {TraceRender(traceTargets,instance.SpriteSource,V::State::Culled);++stats.Culled;continue;}
                         visibility=V::State::SubmitRejected;
                         if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,Color(instance.Tint,255)))
-                        {TraceRender(instance.SpriteSource,V::State::Submitted);++stats.Ordinary;++stats.OrdinaryAtlas;continue;}
+                        {TraceRender(traceTargets,instance.SpriteSource,V::State::Submitted);++stats.Ordinary;++stats.OrdinaryAtlas;continue;}
                     }
                 }
             }
             // Ordinary buildings without a ready atlas sprite stay invisible.
             // Keep discovery above so the existing scheduler can load or capture them.
-            if(!spline) {TraceRender(instance.SpriteSource,visibility);continue;}
+            if(!spline) {TraceRender(traceTargets,instance.SpriteSource,visibility);continue;}
             if(instance.Unresolved)
             {
                 ++stats.Unresolved; MiniMapMap::ScreenPoint p;
