@@ -250,15 +250,126 @@ namespace
         }
         return true;
     }
+    // Candidate A: copy the stable transform once per quad after its Valid guard.
+    // Keep every dynamic numerical guard and both float rounding stages.
+    struct PreparedTransform : MiniMapMap::Transform {
+    using ScreenPoint = MiniMapMap::ScreenPoint;
+    explicit PreparedTransform(const MiniMapMap::Transform& t):MiniMapMap::Transform(t) {}
+    bool DirectionToScreen(
+                double worldDirectionX,
+                double worldDirectionY,
+                ScreenPoint& outDirection) const
+            {
+                outDirection = {};
+
+                if (
+                    !std::isfinite(worldDirectionX) ||
+                    !std::isfinite(worldDirectionY))
+                {
+                    return false;
+                }
+
+                const double screenX =
+                    CosMapRotation *
+                    worldDirectionX -
+                    SinMapRotation *
+                    worldDirectionY;
+
+                const double screenY =
+                    SinMapRotation *
+                    worldDirectionX +
+                    CosMapRotation *
+                    worldDirectionY;
+
+                if (!std::isfinite(screenX) ||
+                    !std::isfinite(screenY))
+                {
+                    return false;
+                }
+
+                outDirection.X =
+                    static_cast<float>(
+                        screenX);
+
+                outDirection.Y =
+                    static_cast<float>(
+                        screenY);
+
+                return true;
+            }
+    bool WorldToScreen(
+                double worldX,
+                double worldY,
+                ScreenPoint& outPoint) const
+            {
+                outPoint = {};
+
+                if (
+                    !std::isfinite(worldX) ||
+                    !std::isfinite(worldY))
+                {
+                    return false;
+                }
+
+                const double dx =
+                    worldX -
+                    PlayerWorldX;
+
+                const double dy =
+                    worldY -
+                    PlayerWorldY;
+
+                ScreenPoint direction = {};
+
+                if (!DirectionToScreen(
+                    dx,
+                    dy,
+                    direction))
+                {
+                    return false;
+                }
+
+                const double screenX =
+                    static_cast<double>(
+                        CenterX) +
+                    PixelsPerWorldUnit *
+                    static_cast<double>(
+                        direction.X);
+
+                const double screenY =
+                    static_cast<double>(
+                        CenterY) +
+                    PixelsPerWorldUnit *
+                    static_cast<double>(
+                        direction.Y);
+
+                if (!std::isfinite(screenX) ||
+                    !std::isfinite(screenY))
+                {
+                    return false;
+                }
+
+                outPoint.X =
+                    static_cast<float>(
+                        screenX);
+
+                outPoint.Y =
+                    static_cast<float>(
+                        screenY);
+
+                return true;
+            }
+    };
     bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapMap::Transform& transform,
         std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds)
     {
         if (!transform.Valid) return false;
+        PreparedTransform prepared(transform);
         bounds={};
         for (size_t i=0;i<corners.size();++i)
         {
             MiniMapMap::ScreenPoint p;
-            if (!transform.WorldToScreen(corners[i].X,corners[i].Y,p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
+            if (!prepared.WorldToScreen(corners[i].X,corners[i].Y,p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
             points[i]={p.X,p.Y};
             if (!bounds.Valid) bounds={p.X,p.Y,p.X,p.Y,true};
             else { bounds.MinX=(std::min)(bounds.MinX,double(p.X)); bounds.MinY=(std::min)(bounds.MinY,double(p.Y));
