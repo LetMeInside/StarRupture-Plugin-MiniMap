@@ -49,6 +49,29 @@ namespace
         size_t CanonicalTypeCount=0;
         std::vector<size_t> DrawOrder; // Prepared on snapshot changes, never sorted in Render.
     };
+    // Render's UI thread owns this storage; OnTick/Clear never touch it.
+    // Only copied world XY is retained, after validating all three world axes.
+    struct WorldQuad
+    {
+        enum class Status : uint8_t { Unknown, Valid, Invalid };
+        std::array<G::XY,4> Corners;
+        Status State=Status::Unknown;
+    };
+    struct WorldQuadCache
+    {
+        std::weak_ptr<const Snapshot> Owner;
+        uint64_t Session=0,Revision=0;
+        std::vector<WorldQuad> Slots; // One contiguous allocation, indexed by Instance, not type.
+        void Bind(const std::shared_ptr<const Snapshot>& snapshot,uint64_t session,uint64_t revision)
+        {
+            if(Owner.lock()==snapshot && Session==session && Revision==revision)return;
+            Owner.reset(); // Allocation failure cannot leave old slots associated with new input.
+            try{Slots.resize(snapshot->Instances.size());}
+            catch(...){Slots.clear();return;} // Recompute locally; retry allocation next callback.
+            for(auto& slot:Slots)slot.State=WorldQuad::Status::Unknown;
+            Session=session;Revision=revision;Owner=snapshot;
+        }
+    };
     struct RenderStats
     {
         size_t Ordinary=0,Splines=0,Culled=0,Unresolved=0,Points=0,Limited=0;
@@ -147,11 +170,10 @@ namespace
         return channel(tint[0])|(channel(tint[1])<<8)|(channel(tint[2])<<16)|
             (uint32_t(std::lround(double(alpha)*std::clamp(std::isfinite(tint[3])?tint[3]:1.0f,0.0f,1.0f)))<<24);
     }
-    bool AtlasQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
-        const MiniMapMap::Transform& transform,
-        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds)
+    bool BuildWorldQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
+        std::array<G::XY,4>& corners)
     {
-        if (!record.TransformValid || !transform.Valid) return false;
+        if (!record.TransformValid) return false;
         for (double value:entry.Region) if (!std::isfinite(value) || value<0 || value>1) return false;
         if (!(entry.Region[2]>entry.Region[0] && entry.Region[3]>entry.Region[1])) return false;
         double norm=0;
@@ -181,7 +203,6 @@ namespace
         if (rect[0]<0 || rect[1]<0 || rect[0]>=256 || rect[1]>=256 || rect[2]<=rect[0] || rect[3]<=rect[1]) return false;
         const double left=rect[0],top=rect[1],right=rect[2],bottom=rect[3];
         const std::array<std::array<double,2>,4> source{{{left,top},{right,top},{right,bottom},{left,bottom}}};
-        bounds={};
         for (size_t i=0;i<source.size();++i)
         {
             // Capture rotation (-90,-90,0): image right=+X, image down=+Y.
@@ -194,8 +215,19 @@ namespace
             const std::array<double,3> world{{record.Position[0]+v[0]+w*tx+y*tz-z*ty,
                 record.Position[1]+v[1]+w*ty+z*tx-x*tz,record.Position[2]+v[2]+w*tz+x*ty-y*tx}};
             for (double value:world) if (!std::isfinite(value)) return false;
+            corners[i]={world[0],world[1]};
+        }
+        return true;
+    }
+    bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapMap::Transform& transform,
+        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds)
+    {
+        if (!transform.Valid) return false;
+        bounds={};
+        for (size_t i=0;i<corners.size();++i)
+        {
             MiniMapMap::ScreenPoint p;
-            if (!transform.WorldToScreen(world[0],world[1],p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
+            if (!transform.WorldToScreen(corners[i].X,corners[i].Y,p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
             points[i]={p.X,p.Y};
             if (!bounds.Valid) bounds={p.X,p.Y,p.X,p.Y,true};
             else { bounds.MinX=(std::min)(bounds.MinX,double(p.X)); bounds.MinY=(std::min)(bounds.MinY,double(p.Y));
@@ -212,6 +244,21 @@ namespace
             winding=cross;
         }
         return true;
+    }
+    bool AtlasQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
+        const MiniMapMap::Transform& transform,
+        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds, WorldQuad* cached)
+    {
+        if (!transform.Valid) return false;
+        if (!cached)
+        {
+            WorldQuad local; // Allocate fallback storage only when the slot vector is unavailable.
+            return AtlasQuad(record,entry,transform,points,bounds,&local);
+        }
+        auto& quad=*cached;
+        if (quad.State==WorldQuad::Status::Unknown)
+            quad.State=BuildWorldQuad(record,entry,quad.Corners)?WorldQuad::Status::Valid:WorldQuad::Status::Invalid;
+        return quad.State==WorldQuad::Status::Valid && ProjectWorldQuad(quad.Corners,transform,points,bounds);
     }
     void OnTick(float)
     {
@@ -361,10 +408,11 @@ namespace MiniMapBuildingVisuals
     {
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         if(!ui || !transform.Valid) return;
+        static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
         std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(g_mutex); snapshot=g_published; }
         const auto current=C::GetSnapshot();
         if(!snapshot || !current || snapshot->Generation!=current->Generation)
-        {TraceFrame(current,snapshot,false);return;}
+        {worldQuads={};TraceFrame(current,snapshot,false);return;}
         const auto dl=ui->GetWindowDrawList(); if(!dl) return;
         const auto start=Clock::now(); RenderStats stats;
         MiniMapCaptureTiming::Record transition;
@@ -417,6 +465,10 @@ namespace MiniMapBuildingVisuals
             currentSession &&
             currentSession->Generation == snapshot->Generation;
         TraceFrame(currentSession,snapshot,schedulerValid);
+        // The locked publication fixes Region/SourceRect/Min/Max for every resolved entry.
+        // Snapshot identity fixes copied transforms, membership and instance indices.
+        if(schedulerValid)worldQuads.Bind(snapshot,session,revision);
+        else worldQuads={};
         struct FinishDraw
         {
             bool Admitted;
@@ -475,7 +527,8 @@ namespace MiniMapBuildingVisuals
                     visibility=V::State::QuadRejected;
                     std::array<MiniMapBuildingAtlasAlienX::Point,4> points;
                     C::Bounds spriteBounds;
-                    if (AtlasQuad(instance.SpriteSource,*entry,transform,points,spriteBounds))
+                    auto* worldQuad=index<worldQuads.Slots.size()?&worldQuads.Slots[index]:nullptr;
+                    if (AtlasQuad(instance.SpriteSource,*entry,transform,points,spriteBounds,worldQuad))
                     {
                         // A captured assembly may extend beyond the targeting
                         // proxy, including instances whose proxy is unresolved.
