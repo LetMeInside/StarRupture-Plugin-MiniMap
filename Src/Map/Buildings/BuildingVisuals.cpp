@@ -15,6 +15,8 @@
 #include <sstream>
 #include <iomanip>
 #include <numeric>
+#include <string_view>
+#include <unordered_map>
 #include <tuple>
 #include <algorithm>
 #ifndef MINIMAP_STAGE_C_VISUALS_ENABLED
@@ -30,6 +32,7 @@ namespace
     struct Instance
     {
         C::Record SpriteSource;
+        size_t CanonicalType=size_t(-1); // Immutable value-identity slot; no atlas state.
         C::Bounds Bounds;
         G::XY Origin;
         std::shared_ptr<const C::SplineGeometry> Curve;
@@ -43,6 +46,7 @@ namespace
     {
         uint64_t Generation=0;
         std::vector<Instance> Instances; // Same stable identity order as collector.
+        size_t CanonicalTypeCount=0;
         std::vector<size_t> DrawOrder; // Prepared on snapshot changes, never sorted in Render.
     };
     struct RenderStats
@@ -221,12 +225,21 @@ namespace
         const auto start=Clock::now(),now=start;
         auto result=std::make_shared<Snapshot>(); result->Generation=input->Generation;
         result->Instances.reserve(input->Records.size());
+        // Borrow input-owned strings only during preparation; equality is string value, not shared_ptr identity.
+        std::unordered_map<std::string_view,size_t> canonicalTypes;
+        if(!input->Records.empty())canonicalTypes.reserve(64);
         for(const auto& r:input->Records)
         {
             if(r.Generation!=input->Generation) continue;
             Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]}; instance.Tint=r.Tint;
             instance.Elevation=r.Position[2];instance.EntityIndex=r.Index;instance.EntitySerial=r.Serial;
             instance.SpriteSource=r;
+            if(!r.HasSpline && r.CanonicalBlueprint)
+            {
+                const auto [type,inserted]=canonicalTypes.try_emplace(std::string_view(*r.CanonicalBlueprint),result->CanonicalTypeCount);
+                if(inserted)++result->CanonicalTypeCount;
+                instance.CanonicalType=type->second;
+            }
             if(r.HasSpline)
             {
                 instance.Curve=r.Curve; instance.Bounds=r.Extent;
@@ -417,19 +430,47 @@ namespace MiniMapBuildingVisuals
             // including unresolved markers, without per-segment checks.
             first=std::partition_point(first,snapshot->DrawOrder.end(),[&](size_t index)
                 {return snapshot->Instances[index].Spline;});
+        // Pass-local borrowed entries: destroyed before FinishDraw and LifecycleMutex unlock.
+        // A positive Find proves Atlas status; discovery cannot replace/erase that status here.
+        // Do not memoize misses: Current() also reads GameplayReady, which may close outside this mutex.
+        std::vector<const MiniMapSpriteStatus::AtlasEntry*> atlasByType;
+        try{atlasByType.resize(snapshot->CanonicalTypeCount,nullptr);}
+        catch(...){} // Preserve the original per-instance path on allocation failure.
         for(auto it=first;it!=snapshot->DrawOrder.end();++it)
         {
             const auto index=*it;
             const auto& instance=snapshot->Instances[index];const bool spline=instance.Spline;
+            auto* resolution=instance.CanonicalType<atlasByType.size()?&atlasByType[instance.CanonicalType]:nullptr;
             // Discover before proxy culling: the authored assembly may extend
             // beyond its proxy. Native capture is serviced on the game thread.
-            if(!spline && schedulerValid)MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
+            if(!spline && schedulerValid)
+            {
+                // Only an already-positive atlas resolution proves this call is an effect-free known-type return.
+                // Unknown/missing types still call on EVERY occurrence, preserving allocation-failure retries.
+                if(resolution && *resolution)
+                {}
+                else
+                {
+                    MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
+                }
+            }
             auto visibility=instance.SpriteSource.CanonicalBlueprint?V::State::AtlasMissing:V::State::CanonicalUnavailable;
             if(!ui->DL_AddImageQuad)visibility=V::State::SubmitRejected;
             if(!schedulerValid)visibility=V::State::SessionUnavailable;
             if(!spline && schedulerValid && ui->DL_AddImageQuad && instance.SpriteSource.CanonicalBlueprint)
             {
-                if (const auto* entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint))
+                const MiniMapSpriteStatus::AtlasEntry* entry;
+                if(resolution && *resolution)
+                {
+                    // Match Find's dynamic admission predicate even while the atlas publication is locked.
+                    entry=MiniMapMap::GameplayReady()?*resolution:nullptr;
+                }
+                else
+                {
+                    entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint);
+                    if(resolution && entry)*resolution=entry;
+                }
+                if (entry)
                 {
                     visibility=V::State::QuadRejected;
                     std::array<MiniMapBuildingAtlasAlienX::Point,4> points;
