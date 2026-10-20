@@ -1,7 +1,5 @@
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_BUILDING_SPRITES)
 #include "BuildingSprites.h"
-#include "Map/FogOfWar/FogOfWar.h"
-#include "SpriteCandidateIdentity.h"
 #include "BuildingSpriteCapture.h"
 #include "CapturePng.h"
 #include "plugin_helpers.h"
@@ -22,12 +20,6 @@ namespace MiniMapBuildingSprites
         ~Texture(){if(Handle&&Free)Free(Handle);} // v70 deferred texture retirement.
     };
     using RenderGeneration=MiniMapSessionPublication::Store<Texture>;
-    struct DrawState
-    {
-        std::shared_ptr<const RenderGeneration::Pin> Frame;
-        std::shared_ptr<Texture> Resolve(const MiniMapSpriteDiscoveryCore::Key& key)const
-        {return Frame?Frame->Owner->Resolve(*Frame,key):nullptr;}
-    };
     namespace
     {
         struct TimingStats
@@ -44,10 +36,6 @@ namespace MiniMapBuildingSprites
             std::array<TimingStats,size_t(Timing::Count)> Timings{};
             size_t Hits{},Fallbacks{},Completed{},Failed{},SuccessfulTypes{},UploadFailures{};
             uint64_t UploadSequence{};
-            std::array<size_t,size_t(DrawCounter::Count)> DrawCounts{};
-            size_t DiagnosticFrames{},DiagnosticReports{},SampledHandleChecks{},SampledInvalidHandles{};
-            size_t SpatialReports{},SpatialCompleted{};
-            uint32_t ReportedDrawReasons{};
         };
         // Explicit lifetime through discovery; no owning static initializer.
         std::unique_ptr<Owner> owner;
@@ -56,8 +44,7 @@ namespace MiniMapBuildingSprites
         std::mutex access;
         std::shared_ptr<RenderGeneration> retired;
         RenderGeneration* retiredTail=nullptr;
-        // The access lock serializes policy mutation. Draw only reads immutable
-        // image versions under Generation::Mutex, never policy Entry fields.
+        // The access lock serializes policy mutation. Image versions are synchronized by Generation::Mutex.
         struct AccessLock
         {
             std::unique_lock<std::mutex> Lock{access};
@@ -69,14 +56,6 @@ namespace MiniMapBuildingSprites
         bool SourceCurrent(const MiniMapSpriteDiscoveryCore::Key& key) // access held
         {
             return owner&&owner->Jobs.SourceCurrent(key);
-        }
-        const char* DrawLabel(DrawCounter reason)
-        {
-            const char* labels[]={"calls","no_ready_view","generation_mismatch","invalid_candidate_inputs",
-                "lookup_attempts","lookup_misses","lookup_matches","invalid_instance_transform",
-                "quad_validation_failure","projection_failure","viewport_rejection",
-                "fog_of_war_rejection","invalid_texture_handle","image_quad_submissions"};
-            return size_t(reason)<size_t(DrawCounter::Count)?labels[size_t(reason)]:"none";
         }
 
     }
@@ -325,164 +304,6 @@ namespace MiniMapBuildingSprites
         catch(...)
         {LOG_WARN("MiniMap: sprite publication exception; building=%u",key.Building);
          try{RecordForLease(token,P::State::Failed,"texture_publication_exception");}catch(...){} }
-    }
-    DrawFrame BeginDraw()
-    {
-        AccessLock lock;DrawFrame frame;
-        if(owner)
-        {
-            frame.Generation=owner->Jobs.Generation;frame.ReportedReasons=owner->ReportedDrawReasons;
-            try{auto view=std::make_shared<DrawState>();view->Frame=owner->Generation->Begin();if(view->Frame)frame.View=std::move(view);}catch(...){owner->Jobs.AllocationFailed();}
-            if(owner->Completed&&owner->SpatialReports<8&&
-                (owner->SpatialCompleted!=owner->Completed||owner->DiagnosticFrames==59||owner->DiagnosticFrames==299))
-                try{frame.Spatial=std::make_unique<SpatialSnapshot>();}catch(...){} // Diagnostics cannot prevent drawing.
-        }
-        return frame;
-    }
-    void EndDraw(const DrawFrame& frame)
-    {
-        AccessLock lock;if(!owner||owner->Jobs.Generation!=frame.Generation||
-            (frame.View&&frame.View->Frame->Owner!=owner->Generation))return;
-        owner->Hits+=frame.Hits;owner->Fallbacks+=frame.Fallbacks;
-        for(size_t i=0;i<frame.Counts.size();++i)owner->DrawCounts[i]+=frame.Counts[i];
-        if(frame.Spatial)
-        {
-            ++owner->SpatialReports;owner->SpatialCompleted=owner->Completed;
-            bool ascendingZ=true;
-            for(size_t i=1;i<frame.Spatial->Count;++i)
-                ascendingZ&=frame.Spatial->Entries[i-1].Position[2]<=frame.Spatial->Entries[i].Position[2];
-            LOG_INFO("MiniMap: sprite layering snapshot: generation=%llu frameAfterPublication=%zu submissions=%zu ascendingWorldZ=%d skipped=%zu lookupMisses=%zu projectionFailures=%zu viewportRejections=%zu fogRejections=%zu invalidHandles=%zu quadFailures=%zu details=%zu; order=world_Z_then_Y_then_X; spatial overlaps are screen AABBs, not opaque-pixel occlusion proof",
-                (unsigned long long)frame.Generation,owner->DiagnosticFrames+1,frame.Hits,int(ascendingZ),
-                frame.Counts[size_t(DrawCounter::Calls)]-frame.Hits,frame.Counts[size_t(DrawCounter::LookupMisses)],
-                frame.Counts[size_t(DrawCounter::ProjectionFailure)],frame.Counts[size_t(DrawCounter::ViewportRejection)],
-                frame.Counts[size_t(DrawCounter::FogRejection)],frame.Counts[size_t(DrawCounter::InvalidHandle)],frame.Counts[size_t(DrawCounter::QuadFailure)],
-                (std::min)(frame.Spatial->Count,size_t(64)));
-            for(size_t i=0;i<(std::min)(frame.Spatial->Count,size_t(64));++i)
-            {
-                const auto& spatial=frame.Spatial->Entries[i];
-                size_t lowerOverlaps=0,equalOverlaps=0,higherOverlaps=0;
-                for(size_t j=0;j<frame.Spatial->Count;++j)
-                {
-                    const auto& f=frame.Spatial->Entries[j];
-                    if(j!=i&&spatial.ScreenBounds[0]<f.ScreenBounds[2]&&spatial.ScreenBounds[2]>f.ScreenBounds[0]&&
-                        spatial.ScreenBounds[1]<f.ScreenBounds[3]&&spatial.ScreenBounds[3]>f.ScreenBounds[1])
-                    {
-                        if(f.Position[2]<spatial.Position[2])++lowerOverlaps;
-                        else if(f.Position[2]>spatial.Position[2])++higherOverlaps;
-                        else ++equalOverlaps;
-                    }
-                }
-                int width=0,height=0;auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
-                if(api&&api->GetSize)api->GetSize(spatial.Handle,&width,&height);
-            }
-        }
-        if(frame.SampleReason!=DrawCounter::Count&&!(owner->ReportedDrawReasons&(1u<<size_t(frame.SampleReason))))
-        {
-            owner->ReportedDrawReasons|=1u<<size_t(frame.SampleReason);
-            int backendWidth=0,backendHeight=0;
-            if(frame.View)
-            {
-                auto image=frame.View->Resolve(frame.SampleKey);
-                auto* self=GetSelf();auto* api=self&&self->hooks?self->hooks->ImGuiTextures:nullptr;
-                if(image&&api&&api->GetSize)
-                {
-                    api->GetSize(image->Handle,&backendWidth,&backendHeight);
-                    ++owner->SampledHandleChecks;owner->SampledInvalidHandles+=backendWidth<=0||backendHeight<=0;
-                }
-            }
-            LOG_INFO("MiniMap: sprite draw sample: reason=%s key=%s representativePublishedKey=%s valid(definition,visual,transform)=%d,%d,%d backend=%dx%d position=(%.9g,%.9g,%.9g) scale=(%.9g,%.9g,%.9g) quaternion=(%.9g,%.9g,%.9g,%.9g) region=(%.9g,%.9g,%.9g,%.9g) geometry=%d projected=%d world=(%.9g,%.9g;%.9g,%.9g;%.9g,%.9g;%.9g,%.9g) screen=(%.9g,%.9g;%.9g,%.9g;%.9g,%.9g;%.9g,%.9g)",
-                DrawLabel(frame.SampleReason),MiniMapSpriteDiscoveryCore::KeyText(frame.SampleKey).c_str(),
-                MiniMapSpriteDiscoveryCore::KeyText(frame.SamplePublishedKey).c_str(),
-                int(frame.SampleDefinitionValid),int(frame.SampleVisualValid),int(frame.SampleTransformValid),backendWidth,backendHeight,
-                frame.SamplePosition[0],frame.SamplePosition[1],frame.SamplePosition[2],frame.SampleScale[0],frame.SampleScale[1],frame.SampleScale[2],
-                frame.SampleRotation[0],frame.SampleRotation[1],frame.SampleRotation[2],frame.SampleRotation[3],
-                frame.SampleRegion[0],frame.SampleRegion[1],frame.SampleRegion[2],frame.SampleRegion[3],int(frame.SampleGeometry),int(frame.SampleProjection),
-                frame.SampleWorld[0][0],frame.SampleWorld[0][1],frame.SampleWorld[1][0],frame.SampleWorld[1][1],
-                frame.SampleWorld[2][0],frame.SampleWorld[2][1],frame.SampleWorld[3][0],frame.SampleWorld[3][1],
-                frame.SampleScreen[0][0],frame.SampleScreen[0][1],frame.SampleScreen[1][0],frame.SampleScreen[1][1],
-                frame.SampleScreen[2][0],frame.SampleScreen[2][1],frame.SampleScreen[3][0],frame.SampleScreen[3][1]);
-            if(frame.SampleProjection)LOG_INFO("MiniMap: sprite draw sample viewport: min=(%.9g,%.9g) max=(%.9g,%.9g)",
-                frame.SampleViewport[0],frame.SampleViewport[1],frame.SampleViewport[2],frame.SampleViewport[3]);
-        }
-        // Six cumulative summaries after publication, independent of the game's frame rate.
-        constexpr size_t reportFrames[]={1,60,300,1800,3600,7200};
-        if(owner->Completed&&owner->DiagnosticReports<std::size(reportFrames)&&
-            ++owner->DiagnosticFrames>=reportFrames[owner->DiagnosticReports])
-        {
-            ++owner->DiagnosticReports;const auto& c=owner->DrawCounts;
-            LOG_INFO("MiniMap: sprite draw counters: generation=%llu framesAfterPublication=%zu ready=%zu calls=%zu noReadyView=%zu generationMismatch=%zu invalidInputs=%zu lookupAttempts=%zu lookupMisses=%zu lookupMatches=%zu invalidTransforms=%zu quadFailures=%zu projectionFailures=%zu viewportRejections=%zu fogRejections=%zu invalidHandles=%zu submissions=%zu sampledBackendHandleChecks=%zu sampledBackendInvalidHandles=%zu",
-                (unsigned long long)frame.Generation,owner->DiagnosticFrames,owner->Jobs.SelectedCount,
-                c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11],c[12],c[13],owner->SampledHandleChecks,owner->SampledInvalidHandles);
-        }
-    }
-    bool Draw(DrawFrame& frame,IModLoaderImGui* ui,PluginDrawList dl,const MiniMapMap::Transform& transform,const MiniMapBuildingCollector::Record& record)
-    {
-        auto count=[&](DrawCounter reason){++frame.Counts[size_t(reason)];};
-        auto sample=[&](DrawCounter reason,const Texture* texture=nullptr,
-            const std::array<std::array<double,2>,4>* quad=nullptr,
-            const std::array<MiniMapMap::ScreenPoint,4>* screen=nullptr)
-        {
-            if(frame.SampleReason!=DrawCounter::Count||(frame.ReportedReasons&(1u<<size_t(reason))))return;
-            frame.SampleReason=reason;const auto input=MiniMapSpriteCandidates::Copy(record);
-            frame.SampleKey=input.Identity;frame.SampleDefinitionValid=input.DefinitionValid;
-            frame.SampleVisualValid=input.VisualInputsValid;frame.SampleTransformValid=record.TransformValid;
-            frame.SamplePosition=record.Position;frame.SampleScale=record.Scale;frame.SampleRotation=record.Rotation;
-            frame.SampleViewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
-                transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2};
-            frame.SamplePublishedKey=frame.SampleKey; // Exact queried key, never a history scan.
-            if(texture)frame.SampleRegion=texture->Region;
-            if(quad){frame.SampleWorld=*quad;frame.SampleGeometry=true;}
-            if(screen){for(size_t i=0;i<4;++i)frame.SampleScreen[i]={(*screen)[i].X,(*screen)[i].Y};frame.SampleProjection=true;}
-        };
-        count(DrawCounter::Calls);
-        if(record.Generation!=frame.Generation)
-        {count(DrawCounter::GenerationMismatch);sample(DrawCounter::GenerationMismatch);return false;}
-        // No native reads or key lookup for an empty immutable view.
-        if(!frame.View)
-        {count(DrawCounter::NoReadyView);sample(DrawCounter::NoReadyView);return false;}
-        const auto copy=MiniMapSpriteCandidates::Copy(record);
-        if(!copy.DefinitionValid||!copy.VisualInputsValid)
-        {count(DrawCounter::InvalidInputs);sample(DrawCounter::InvalidInputs);return false;}
-        count(DrawCounter::LookupAttempts);
-        auto texture=frame.View->Resolve(copy.Identity);
-        if(!texture)
-        {count(DrawCounter::LookupMisses);sample(DrawCounter::LookupMisses);return false;}
-        count(DrawCounter::LookupMatches);
-        if(!texture||!texture->Handle)
-        {count(DrawCounter::InvalidHandle);sample(DrawCounter::InvalidHandle,texture.get());return false;}
-        std::array<std::array<double,2>,4> quad{};
-        if(!record.TransformValid)
-        {count(DrawCounter::InvalidTransform);sample(DrawCounter::InvalidTransform,texture.get());return false;}
-        if(!P::Quad(record.Position,record.Rotation,record.Scale,texture->Bounds,quad,texture->Region))
-        {count(DrawCounter::QuadFailure);sample(DrawCounter::QuadFailure,texture.get());return false;}
-        // Cull only proven opaque coverage; partial/unknown fog stays drawable
-        // beneath the overlay, including the local-awareness feather.
-        std::array<MiniMapMap::ScreenPoint,4> p;
-        for(size_t i=0;i<4;++i)if(!transform.WorldToScreen(quad[i][0],quad[i][1],p[i]))
-        {count(DrawCounter::ProjectionFailure);sample(DrawCounter::ProjectionFailure,texture.get(),&quad);return false;}
-        float sx=p[0].X,sy=p[0].Y,ex=sx,ey=sy;
-        for(const auto& v:p){sx=(std::min)(sx,v.X);sy=(std::min)(sy,v.Y);ex=(std::max)(ex,v.X);ey=(std::max)(ey,v.Y);}
-        if(ex<transform.CenterX-transform.Width/2||sx>transform.CenterX+transform.Width/2||
-            ey<transform.CenterY-transform.Height/2||sy>transform.CenterY+transform.Height/2)
-        {count(DrawCounter::ViewportRejection);sample(DrawCounter::ViewportRejection,texture.get(),&quad,&p);return false;}
-        double minX=quad[0][0],minY=quad[0][1],maxX=minX,maxY=minY;
-        for(const auto& v:quad){minX=(std::min)(minX,v[0]);minY=(std::min)(minY,v[1]);maxX=(std::max)(maxX,v[0]);maxY=(std::max)(maxY,v[1]);}
-        if(MiniMapFogOfWar::IsWorldRectangleFullyObscured(minX,minY,maxX,maxY,transform))
-        {count(DrawCounter::FogRejection);sample(DrawCounter::FogRejection,texture.get(),&quad,&p);return false;}
-        ui->DL_AddImageQuad(dl,texture->Handle,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,p[3].X,p[3].Y,0,0,1,0,1,1,0,1,0xffffffff);
-        if(frame.Spatial&&frame.Spatial->Count<frame.Spatial->Entries.size())
-        {
-            auto& spatial=frame.Spatial->Entries[frame.Spatial->Count++];
-            spatial.Index=record.Index;spatial.Serial=record.Serial;spatial.Building=record.BuildingId;
-            spatial.Handle=texture->Handle;
-            spatial.Position=record.Position;spatial.ScreenBounds={sx,sy,ex,ey};
-            const auto& q=record.Rotation;double norm=0;for(double v:q)norm+=v*v;
-            spatial.Yaw=std::atan2(2*(q[3]*q[2]+q[0]*q[1]),norm-2*(q[1]*q[1]+q[2]*q[2]))*180/3.14159265358979323846;
-            spatial.WorldWidth=std::hypot(quad[1][0]-quad[0][0],quad[1][1]-quad[0][1]);
-            spatial.WorldHeight=std::hypot(quad[3][0]-quad[0][0],quad[3][1]-quad[0][1]);
-        }
-        count(DrawCounter::Submissions);sample(DrawCounter::Submissions,texture.get(),&quad,&p);
-        ++frame.Hits;return true;
     }
     void RecordTiming(Timing kind,double ms) noexcept
     {
