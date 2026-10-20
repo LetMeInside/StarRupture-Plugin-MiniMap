@@ -160,6 +160,26 @@ namespace MiniMapBuildingAtlasAlienX
         }
         catch (...) { return false; } // No ownership change; never retry a possibly recorded draw here.
     }
+    bool Backend::SubmitPreparedQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
+        const std::array<Point, 4>& p, const MiniMapSpriteStatus::PreparedAtlasUV& prepared, std::uint32_t color) const noexcept
+    {
+        if (prepared.Status() != MiniMapSpriteStatus::PreparedAtlasUV::State::Valid) return false;
+        const auto& uv = prepared.Corners();
+        if (!ui || !list || !ui->DL_AddImageQuad || !texture.IsValid() || !texture.Handle ||
+            !texture.ImageWidth || !texture.ImageHeight) return false;
+        for (std::size_t i = 0; i < 4; ++i)
+            if (!std::isfinite(p[i].X) || !std::isfinite(p[i].Y)) return false;
+        try
+        {
+            // Same live texture/position guards and void API semantics as SubmitQuad.
+            // FromRegion proves all UV floats finite; do not revalidate them per sprite.
+            ui->DL_AddImageQuad(list, texture.Handle,
+                p[0].X, p[0].Y, p[1].X, p[1].Y, p[2].X, p[2].Y, p[3].X, p[3].Y,
+                uv[0].U, uv[0].V, uv[1].U, uv[1].V, uv[2].U, uv[2].V, uv[3].U, uv[3].V, color);
+            return true; // Submission only, not GPU completion or visibility proof.
+        }
+        catch (...) { return false; } // Never retry a possibly recorded draw.
+    }
 }
 
 #endif

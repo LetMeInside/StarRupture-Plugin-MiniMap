@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "plugin_interface.h"
+#include "Map/Sprites/SpriteStatus.h"
 #include <array>
 #include <cstdint>
 #include <span>
@@ -12,7 +13,7 @@ namespace MiniMapBuildingAtlasAlienX
     enum class TransferResult { Complete, Rejected, Unavailable, OwnershipUncertain };
     enum class ReleaseResult { Empty, Released, OwnershipUncertain };
     struct Point { float X{}, Y{}; };
-    struct UV { float U{}, V{}; };
+    using UV = MiniMapSpriteStatus::AtlasUV;
 
     class Backend;
     class Texture
@@ -71,6 +72,10 @@ namespace MiniMapBuildingAtlasAlienX
         // Corners/UVs are forwarded in supplied order; no clipping-state changes.
         bool SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
             const std::array<Point, 4>& positions, const std::array<UV, 4>& uvs,
+            std::uint32_t packedColor) const noexcept;
+        // Publication-validated UVs only. All dynamic/position guards remain live.
+        bool SubmitPreparedQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
+            const std::array<Point, 4>& positions, const MiniMapSpriteStatus::PreparedAtlasUV& uvs,
             std::uint32_t packedColor) const noexcept;
         bool UploadOwnershipUncertain() const noexcept { return UploadUncertain; }
 

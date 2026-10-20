@@ -10,6 +10,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace MiniMapBuildingAtlas
@@ -365,6 +366,7 @@ namespace MiniMapBuildingAtlas
                     { SpriteDiagnostic("MiniMap: atlas publication rejected: canonical=%s reason=source bounds missing; attempt=%u/3", image.Identifier.c_str(), batch->UploadAttempts); return; }
                     S::AtlasEntry entry;
                     entry.Region = {image.Corners[0].U, image.Corners[0].V, image.Corners[2].U, image.Corners[2].V};
+                    entry.UVs = S::PreparedAtlasUV::FromRegion(entry.Region);
                     entry.SourceRect = bounds->SourceRect;
                     entry.Min = bounds->Bounds.Min; entry.Max = bounds->Bounds.Max;
                     entries.emplace_back(image.Identifier, entry);
@@ -491,8 +493,13 @@ namespace MiniMapBuildingAtlas
     {
         if (!Current(g_session) || !g_session->Published || !entry.Texture ||
             entry.Texture != g_session->Published->Texture.Binding()) return false;
-        const auto& r = entry.Region;
-        for (double value : r) if (!std::isfinite(value) || value < 0 || value > 1)
+        // Default/compatibility entries retain submission-time preparation.
+        // Published entries never take this branch; Region is immutable there.
+        std::optional<S::PreparedAtlasUV> local;
+        const auto* uv = &entry.UVs;
+        if (uv->Status() == S::PreparedAtlasUV::State::Unprepared)
+        { local.emplace(S::PreparedAtlasUV::FromRegion(entry.Region)); uv = &*local; }
+        if (uv->Status() == S::PreparedAtlasUV::State::InvalidRegion)
         {
             if (!(g_session->DrawDiagnostics & 2))
             {
@@ -501,7 +508,7 @@ namespace MiniMapBuildingAtlas
             }
             return false;
         }
-        if (!(r[2] > r[0] && r[3] > r[1]))
+        if (uv->Status() == S::PreparedAtlasUV::State::InvalidRectangle)
         {
             if (!(g_session->DrawDiagnostics & 4))
             {
@@ -510,9 +517,7 @@ namespace MiniMapBuildingAtlas
             }
             return false;
         }
-        const std::array<X::UV, 4> uv{{{float(r[0]), float(r[1])}, {float(r[2]), float(r[1])},
-            {float(r[2]), float(r[3])}, {float(r[0]), float(r[3])}}};
-        return g_session->Backend.SubmitQuad(ui, list, g_session->Published->Texture, positions, uv, color);
+        return g_session->Backend.SubmitPreparedQuad(ui, list, g_session->Published->Texture, positions, *uv, color);
     }
     std::shared_ptr<const C::Layout> PublishedImage()
     {
