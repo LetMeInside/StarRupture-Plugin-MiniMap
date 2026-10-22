@@ -94,8 +94,23 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="CacheIdentity.h" />
+    <ClInclude Include="CaptureTiming.h" />
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineDiagnostics.h" />
+    <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
+    <ClInclude Include="Map\Sprites\BlueprintIdentityCacheCore.h" />
+    <ClInclude Include="Map\Sprites\CaptureDispatchCore.h" />
+    <ClInclude Include="Map\Sprites\CaptureFifoRuntimeCore.h" />
+    <ClInclude Include="Map\Sprites\CaptureLeaseCore.h" />
+    <ClInclude Include="Map\Sprites\CaptureWorkLedgerCore.h" />
+    <ClInclude Include="Map\Sprites\SessionSpritePublicationCore.h" />
+    <ClInclude Include="Map\Sprites\SessionTextureAccountingCore.h" />
+    <ClInclude Include="Native\BC3Decode.h" />
+    <ClInclude Include="Native\DefinitionAcquisitionCore.h" />
+    <ClInclude Include="Native\DefinitionDiagnosticCore.h" />
+    <ClInclude Include="Native\MapMenuDevSettingsLookup.h" />
     <ClInclude Include="PluginPaths.h" />
     <ClInclude Include="Map\Sprites\CapturePng.h" />
     <ClInclude Include="Map\Sprites\SpriteQueues.h" />
@@ -136,10 +151,17 @@
     <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
     <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineVisualSections.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineProfiles.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineEnvelope.h" />
     <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
+    <ClInclude Include="Native\NativeVisualAccess.h" />
+    <ClInclude Include="Native\VisualAccessCore.h" />
     <ClInclude Include="Native\ResidentMetadata.h" />
     <ClInclude Include="Map\Buildings\BuildingBlueprintIdentity.h" />
     <ClInclude Include="Map\Sprites\PrivateCaptureWorld.h" />
@@ -152,6 +174,7 @@
     <ClInclude Include="Map\Terrain\TerrainDiagnostics.h" />
     <ClInclude Include="Map\Terrain\TerrainSource.h" />
     <ClInclude Include="Map\Terrain\TerrainCache.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="UI\MapOverlays.h" />
     <ClInclude Include="UI\MiniMapUI.h" />
     <ClInclude Include="plugin.h" />
@@ -205,6 +228,7 @@
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
+    <ClCompile Include="Native\NativeVisualAccess.cpp" />
     <ClCompile Include="Map\Sprites\PrivateCaptureWorld.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <ExcludedFromBuild>true</ExcludedFromBuild>
@@ -223,6 +247,9 @@
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="MiniMap.props" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
