@@ -491,21 +491,6 @@ namespace
                     LOG_INFO("MiniMap: spline fully occluded: generation=%llu collectorRecord=%zu entity=%d:%d category=%u",
                         static_cast<unsigned long long>(owner.Generation),record.RecordIndex,spline.Index,spline.Serial,unsigned(record.Category));
                 }
-                for(const auto& example:coverage->Examples)
-                {
-                    if(example.SplineRecord>=records.size() || example.OrdinaryRecord>=records.size())continue;
-                    const auto& spline=records[example.SplineRecord];const auto& ordinary=records[example.OrdinaryRecord];
-                    const auto& evidence=example.Evidence;
-                    const char* type=ordinary.CanonicalBlueprint?ordinary.CanonicalBlueprint->c_str():"-";
-                    LOG_INFO("MiniMap: spline subtraction: generation=%llu atlas=%llu:%llu splineRecord=%zu entity=%d:%d category=%u section=%zu ordinaryRecord=%zu entity=%d:%d buildingId=%u definition=%d:%u type=%s topZ=%.6f sectionZ=%.6f..%.6f finalSection=%s removedArea=%.6g hiddenXY=[%.6f,%.6f..%.6f,%.6f] witnessXYZ=(%.6f,%.6f,%.6f)",
-                        static_cast<unsigned long long>(owner.Generation),static_cast<unsigned long long>(owner.Binding.AtlasSession),
-                        static_cast<unsigned long long>(owner.Binding.AtlasRevision),example.SplineRecord,spline.Index,spline.Serial,
-                        unsigned(example.Category),example.Section,example.OrdinaryRecord,ordinary.Index,ordinary.Serial,ordinary.BuildingId,
-                        ordinary.DefinitionIndex,ordinary.DefinitionNumber,type,evidence.TopZ,example.StartZ,example.EndZ,
-                        example.FullyRemoved?"fully_removed":"partially_removed",double(evidence.Area),evidence.HiddenBounds.Min[0],
-                        evidence.HiddenBounds.Min[1],evidence.HiddenBounds.Max[0],evidence.HiddenBounds.Max[1],
-                        evidence.Witness[0],evidence.Witness[1],evidence.Witness[2]);
-                }
             }
             if(rendered.CoverageOwner)
             {
