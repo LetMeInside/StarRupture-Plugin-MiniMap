@@ -1,6 +1,6 @@
 ﻿#pragma once
-#include "plugin_interface.h"
-IPluginSelf* GetSelf();
+#include "plugin.h"
+inline IPluginSelf* GetSelf() { return g_self; }
 inline IPluginHooks* GetHooks() { auto* s = GetSelf(); return s ? s->hooks : nullptr; }
 inline IPluginConfig* GetConfig() { auto* s = GetSelf(); return s ? s->config : nullptr; }
 #define LOG_TRACE(format, ...) if (auto s = GetSelf()) s->logger->Trace(s, format, ##__VA_ARGS__)

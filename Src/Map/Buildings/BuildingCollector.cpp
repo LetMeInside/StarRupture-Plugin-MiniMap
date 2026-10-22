@@ -117,7 +117,6 @@ namespace
             TransformReads=0, MembershipTransforms=0, MembershipTags=0, PlacementReads=0, Conversions=0, ConversionSuccess=0,
             InteriorReads=0, OrdinaryGeometry=0, OrdinaryDefinitions=0, SnapshotsBuilt=0, SnapshotsReused=0;
     };
-    IPluginSelf* g_collectorSelf=nullptr;
     bool g_initialized=false, g_ready=false, g_typesReady=false, g_unavailableLogged=false;
     uint32_t g_definitionDiagnostics=0; // Four pre-definition categories per collector lifetime/generation.
     bool g_gridSucceeded=false, g_identitySucceeded=false;
@@ -279,8 +278,11 @@ namespace
 #else
     SDK::UObject* Metadata(const char* name,const char* kind,size_t size)
     {
+        auto* self=GetSelf();
+        if(!self || !self->hooks || !self->hooks->ObjectWalker ||
+            !self->hooks->ObjectWalker->FindObjectsByNameInto)return nullptr;
         PluginObjectInfo info={};
-        if(g_collectorSelf->hooks->ObjectWalker->FindObjectsByNameInto(name,PluginObjectLookup_Both,&info,1)!=1 ||
+        if(self->hooks->ObjectWalker->FindObjectsByNameInto(name,PluginObjectLookup_Both,&info,1)!=1 ||
             std::strcmp(info.className,kind)!=0) return nullptr;
         auto* type=static_cast<SDK::UStruct*>(info.object);
         return type->Size==int32_t(size)?type:nullptr;
@@ -288,7 +290,9 @@ namespace
     bool ResolveTypes(bool splineMetadata=false)
     {
         if(g_typesReady && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings))) return true;
-        if(!g_collectorSelf->hooks->ObjectWalker->IsReady()) return false;
+        auto* self=GetSelf();
+        if(!self || !self->hooks || !self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
+            !self->hooks->ObjectWalker->FindObjectsByNameInto || !self->hooks->ObjectWalker->IsReady()) return false;
         g_types.Building=static_cast<SDK::UScriptStruct*>(Metadata("CrMassBuildingTag","ScriptStruct",sizeof(SDK::FCrMassBuildingTag)));
         g_types.Grid=static_cast<SDK::UScriptStruct*>(Metadata("CrMassEntityGridTag","ScriptStruct",sizeof(SDK::FCrMassEntityGridTag)));
         g_types.Transform=static_cast<SDK::UScriptStruct*>(Metadata("TransformFragment","ScriptStruct",sizeof(SDK::FTransform)));
@@ -2231,7 +2235,7 @@ namespace MiniMapBuildingCollector
         if(!self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
             !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
 #endif
-        g_collectorSelf=self; Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
+        Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
     }
     void Reset()
     {
@@ -2275,7 +2279,9 @@ namespace MiniMapBuildingCollector
     void Shutdown()
     {
         if(!g_initialized) return;
-        g_collectorSelf->hooks->Engine->UnregisterOnTick(&OnTick); Reset(); g_collectorSelf=nullptr; g_initialized=false;
+        auto* self=GetSelf();
+        self->hooks->Engine->UnregisterOnTick(&OnTick);
+        Reset(); g_initialized=false;
     }
     bool BeginComparison(const SDK::UWorld* world,const void* manager)
     {

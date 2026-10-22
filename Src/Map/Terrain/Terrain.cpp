@@ -56,8 +56,6 @@ namespace
     };
 
 
-    IPluginSelf* g_terrainSelf = nullptr;
-
     bool g_initialized = false;
     bool g_tickRegistered = false;
 
@@ -192,15 +190,16 @@ namespace
     void FreeTexture(
         PluginTextureHandle texture)
     {
+        auto* self = GetSelf();
         if (texture == nullptr ||
-            g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr ||
-            g_terrainSelf->hooks->ImGuiTextures == nullptr)
+            self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr)
         {
             return;
         }
 
-        g_terrainSelf->
+        self->
             hooks->
             ImGuiTextures->
             FreeTexture(
@@ -256,9 +255,10 @@ namespace
         outLoadedFromCache =
             false;
 
-        if (g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr ||
-            g_terrainSelf->hooks->ImGuiTextures == nullptr ||
+        auto* self = GetSelf();
+        if (self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr ||
             sourceTile.Texture == nullptr)
         {
             return nullptr;
@@ -481,7 +481,7 @@ namespace
             chunkY);
 
         PluginTextureHandle texture =
-            g_terrainSelf->
+            self->
             hooks->
             ImGuiTextures->
             LoadFromRGBA(
@@ -519,14 +519,15 @@ namespace
     bool ReconcileViewport(
         const MiniMapMap::PlayerPose& playerPose)
     {
+        auto* self = GetSelf();
         SDK::FVector playerLocation = {};
         playerLocation.X = playerPose.WorldX;
         playerLocation.Y = playerPose.WorldY;
         playerLocation.Z = playerPose.WorldZ;
 
-        if (g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr ||
-            g_terrainSelf->hooks->ImGuiTextures == nullptr ||
+        if (self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr ||
             !MiniMapMap::HasWorld())
         {
             return false;
@@ -1053,9 +1054,6 @@ namespace MiniMapTerrain
             return true;
         }
 
-        g_terrainSelf =
-            self;
-
         g_updateAccumulator =
             kUpdateIntervalSeconds;
 
@@ -1096,8 +1094,8 @@ namespace MiniMapTerrain
             false,
             std::memory_order_release);
 
-        const bool terrainSelfAvailable=g_terrainSelf!=nullptr;
-        auto* terrainHooks=terrainSelfAvailable?g_terrainSelf->hooks:nullptr;
+        const bool terrainSelfAvailable=self!=nullptr;
+        auto* terrainHooks=terrainSelfAvailable?self->hooks:nullptr;
         const bool terrainHooksAvailable=terrainHooks!=nullptr;
         auto* terrainEngine=terrainHooksAvailable?terrainHooks->Engine:nullptr;
         auto* terrainTextures=terrainHooksAvailable?terrainHooks->ImGuiTextures:nullptr;
@@ -1113,14 +1111,11 @@ namespace MiniMapTerrain
                 "matches PluginInit baseline captured=%d self=%d hooks=%d engine=%d imguiTextures=%d",
                 int(terrainSelfAvailable),int(terrainHooksAvailable),int(terrainEngineAvailable),
                 int(terrainImGuiTexturesAvailable),int(baseline.Captured),
-                int(baseline.Captured && g_terrainSelf && baseline.Self && static_cast<const void*>(g_terrainSelf)==baseline.Self),
+                int(baseline.Captured && self && baseline.Self && static_cast<const void*>(self)==baseline.Self),
                 int(baseline.Captured && terrainHooks && baseline.Hooks && static_cast<const void*>(terrainHooks)==baseline.Hooks),
                 int(baseline.Captured && terrainEngine && baseline.Engine && static_cast<const void*>(terrainEngine)==baseline.Engine),
                 int(baseline.Captured && terrainTextures && baseline.ImGuiTextures &&
                     static_cast<const void*>(terrainTextures)==baseline.ImGuiTextures));
-
-            g_terrainSelf =
-                nullptr;
 
             return false;
         }
@@ -1131,9 +1126,6 @@ namespace MiniMapTerrain
             LOG_ERROR(
                 "MiniMap: terrain source initialization failed");
 
-            g_terrainSelf =
-                nullptr;
-
             return false;
         }
 
@@ -1142,15 +1134,12 @@ namespace MiniMapTerrain
         {
             MiniMapTerrainSource::Shutdown();
 
-            g_terrainSelf =
-                nullptr;
-
             return false;
         }
 
         if (!g_tickRegistered)
         {
-            g_terrainSelf->
+            self->
                 hooks->
                 Engine->
                 RegisterOnTick(
@@ -1179,12 +1168,13 @@ namespace MiniMapTerrain
 
         MiniMapMouseWheel::ClearPendingZoom();
 
+        auto* self = GetSelf();
         if (g_tickRegistered &&
-            g_terrainSelf != nullptr &&
-            g_terrainSelf->hooks != nullptr &&
-            g_terrainSelf->hooks->Engine != nullptr)
+            self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->Engine != nullptr)
         {
-            g_terrainSelf->
+            self->
                 hooks->
                 Engine->
                 UnregisterOnTick(
@@ -1223,9 +1213,6 @@ namespace MiniMapTerrain
 
         MiniMapTerrainDiagnostics::Shutdown();
         MiniMapTerrainSource::Shutdown();
-
-        g_terrainSelf =
-            nullptr;
 
         g_updateAccumulator =
             0.0f;

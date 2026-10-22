@@ -129,10 +129,10 @@ namespace
     };
 
 
-    IPluginSelf* g_self =
-        nullptr;
-
     bool g_initialized =
+        false;
+
+    bool g_pluginSelfAvailable =
         false;
 
     bool g_tickRegistered =
@@ -209,11 +209,13 @@ namespace
         SDK::UTexture2D* texture,
         const char* name)
     {
+        auto* self = GetSelf();
         if (texture == nullptr ||
             name == nullptr ||
-            g_self == nullptr ||
-            g_self->hooks == nullptr ||
-            g_self->hooks->ImGuiTextures == nullptr)
+            !g_pluginSelfAvailable ||
+            self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr)
         {
             return nullptr;
         }
@@ -273,7 +275,7 @@ namespace
         }
 
         auto* textures =
-            g_self->
+            self->
                 hooks->
                 ImGuiTextures;
 
@@ -737,8 +739,8 @@ namespace
         if (g_devSettings ==
             nullptr)
         {
-            g_devSettings =
-                MiniMapNative::FindMapMenuDevSettingsCDO(g_self, false);
+            if (auto* self = GetSelf())
+                g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
 
             if (g_devSettings ==
                 nullptr)
@@ -866,9 +868,7 @@ namespace MiniMapPointsOfInterest
             return false;
         }
 
-        g_self =
-            self;
-
+        g_pluginSelfAvailable = true;
         Reset();
 
         self->
@@ -1071,12 +1071,13 @@ namespace MiniMapPointsOfInterest
             return;
         }
 
+        auto* self = GetSelf();
         if (g_tickRegistered &&
-            g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->Engine != nullptr)
+            self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->Engine != nullptr)
         {
-            g_self->
+            self->
                 hooks->
                 Engine->
                 UnregisterOnTick(
@@ -1092,8 +1093,8 @@ namespace MiniMapPointsOfInterest
          * Deliberately retain cached immutable icon textures. AlienX does not
          * currently provide fence-aware texture retirement.
          */
-        g_self =
-            nullptr;
+        g_pluginSelfAvailable =
+            false;
 
         g_initialized =
             false;

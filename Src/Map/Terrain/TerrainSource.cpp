@@ -15,7 +15,7 @@
 
 namespace
 {
-    IPluginSelf* g_sourceSelf = nullptr;
+    bool g_pluginSelfAvailable = false;
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
 
 
@@ -35,8 +35,9 @@ namespace
 
         if (g_devSettings == nullptr)
         {
+            auto* self = g_pluginSelfAvailable ? GetSelf() : nullptr;
             g_devSettings =
-                MiniMapNative::FindMapMenuDevSettingsCDO(g_sourceSelf, true);
+                MiniMapNative::FindMapMenuDevSettingsCDO(self, true);
 
             if (g_devSettings == nullptr)
             {
@@ -141,11 +142,11 @@ namespace MiniMapTerrainSource
     bool Initialize(
         IPluginSelf* self)
     {
-        g_sourceSelf = self;
+        g_pluginSelfAvailable = self != nullptr;
         g_devSettings = nullptr;
 
-        if (g_sourceSelf == nullptr ||
-            g_sourceSelf->hooks == nullptr)
+        if (self == nullptr ||
+            self->hooks == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: hooks are unavailable "
@@ -161,7 +162,7 @@ namespace MiniMapTerrainSource
     void Shutdown()
     {
         g_devSettings = nullptr;
-        g_sourceSelf = nullptr;
+        g_pluginSelfAvailable = false;
     }
 
 

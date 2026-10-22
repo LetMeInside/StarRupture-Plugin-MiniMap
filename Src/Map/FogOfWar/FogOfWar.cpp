@@ -130,10 +130,10 @@ namespace
         int32_t Y1 = 0;
     };
 
-    IPluginSelf* g_self =
-        nullptr;
-
     bool g_initialized =
+        false;
+
+    bool g_pluginSelfAvailable =
         false;
 
     bool g_tickRegistered =
@@ -173,9 +173,11 @@ namespace
             return true;
         }
 
-        if (g_self == nullptr ||
-            g_self->hooks == nullptr ||
-            g_self->hooks->ImGuiTextures == nullptr)
+        auto* self = GetSelf();
+        if (!g_pluginSelfAvailable ||
+            self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr)
         {
             return false;
         }
@@ -188,7 +190,7 @@ namespace
         };
 
         g_blackFogTexture =
-            g_self->
+            self->
                 hooks->
                 ImGuiTextures->
                 LoadFromRGBA(
@@ -1272,9 +1274,7 @@ namespace MiniMapFogOfWar
             return false;
         }
 
-        g_self =
-            self;
-
+        g_pluginSelfAvailable = true;
         ClearSnapshot();
 
         g_snapshotAccumulator =
@@ -1753,12 +1753,13 @@ namespace MiniMapFogOfWar
             return;
         }
 
+        auto* self = GetSelf();
         if (g_tickRegistered &&
-            g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->Engine != nullptr)
+            self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->Engine != nullptr)
         {
-            g_self->hooks->Engine->UnregisterOnTick(
+            self->hooks->Engine->UnregisterOnTick(
                 &OnTick);
         }
 
@@ -1778,10 +1779,10 @@ namespace MiniMapFogOfWar
          * process-lifetime data and is safer to retain than to free while an
          * overlay draw may still reference it.
          */
-        g_self =
-            nullptr;
-
         g_initialized =
+            false;
+
+        g_pluginSelfAvailable =
             false;
 
         LOG_INFO(

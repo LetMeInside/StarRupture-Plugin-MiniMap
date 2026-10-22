@@ -27,8 +27,6 @@ namespace
     };
 
 
-    IPluginSelf* g_inputSelf = nullptr;
-
     std::atomic<bool> g_uiReady = false;
     std::atomic<bool> g_acceptInstall = false;
     std::atomic<bool> g_attached = false;
@@ -38,6 +36,7 @@ namespace
     bool g_tickRegistered = false;
     bool g_shutdownRegistered = false;
     bool g_installAttempted = false;
+    bool g_initialized = false;
 
     HWND g_window = nullptr;
     DWORD g_windowThreadId = 0;
@@ -738,13 +737,12 @@ namespace MiniMapMouseWheel
             return false;
         }
 
-        if (g_inputSelf != nullptr)
+        if (g_initialized)
         {
             return true;
         }
 
-        g_inputSelf =
-            self;
+        g_initialized = true;
 
         g_uiReady.store(
             false,
@@ -787,30 +785,23 @@ namespace MiniMapMouseWheel
                 static_cast<unsigned long>(
                     GetLastError()));
 
-            g_inputSelf =
-                nullptr;
-
+            g_initialized = false;
             return false;
         }
 
-        g_inputSelf->
-            hooks->
-            Engine->
+        self->hooks->Engine->
             RegisterOnTick(
                 &OnTick);
 
         g_tickRegistered =
             true;
 
-        g_inputSelf->
-            hooks->
-            Engine->
+        self->hooks->Engine->
             RegisterOnShutdown(
                 &OnEngineShutdown);
 
         g_shutdownRegistered =
             true;
-
         LOG_INFO(
             "MiniMap: window subclass: "
             "diagnostic initialized; waiting for first widget render");
@@ -847,13 +838,14 @@ namespace MiniMapMouseWheel
             }
         }
 
-        if (g_inputSelf != nullptr &&
-            g_inputSelf->hooks != nullptr &&
-            g_inputSelf->hooks->Engine != nullptr)
+        auto* self = GetSelf();
+        if (self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->Engine != nullptr)
         {
             if (g_shutdownRegistered)
             {
-                g_inputSelf->
+                self->
                     hooks->
                     Engine->
                     UnregisterOnShutdown(
@@ -862,7 +854,7 @@ namespace MiniMapMouseWheel
 
             if (g_tickRegistered)
             {
-                g_inputSelf->
+                self->
                     hooks->
                     Engine->
                     UnregisterOnTick(
@@ -892,8 +884,8 @@ namespace MiniMapMouseWheel
         g_windowThreadId =
             0;
 
-        g_inputSelf =
-            nullptr;
+        g_initialized =
+            false;
 
         LOG_INFO(
             "MiniMap: window subclass: "

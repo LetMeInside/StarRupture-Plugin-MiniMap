@@ -59,8 +59,8 @@ namespace
         bool Enabled = false;
     };
 
-    IPluginSelf* g_foundablesSelf = nullptr;
     bool g_initialized = false;
+    bool g_pluginSelfAvailable = false;
     bool g_tickRegistered = false;
     bool g_experienceReady = false;
     float g_snapshotAccumulator = 0.0f;
@@ -119,11 +119,13 @@ namespace
         SDK::UTexture2D* texture,
         const char* name)
     {
+        auto* self=GetSelf();
         if (texture == nullptr ||
             name == nullptr ||
-            g_foundablesSelf == nullptr ||
-            g_foundablesSelf->hooks == nullptr ||
-            g_foundablesSelf->hooks->ImGuiTextures == nullptr)
+            !g_pluginSelfAvailable ||
+            self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->ImGuiTextures == nullptr)
         {
             return nullptr;
         }
@@ -170,7 +172,7 @@ namespace
             return nullptr;
         }
 
-        auto* textures = g_foundablesSelf->hooks->ImGuiTextures;
+        auto* textures = self->hooks->ImGuiTextures;
 
         if (textures->GetFreeSlotCount() <= 0)
         {
@@ -537,7 +539,7 @@ namespace
 
         if (g_devSettings == nullptr)
         {
-            g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(g_foundablesSelf, false);
+            if(auto* self=GetSelf())g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
 
             if (g_devSettings == nullptr)
             {
@@ -734,7 +736,7 @@ namespace MiniMapFoundables
             return false;
         }
 
-        g_foundablesSelf = self;
+        g_pluginSelfAvailable = true;
         Reset();
 
         self->hooks->Engine->RegisterOnTick(&OnTick);
@@ -878,19 +880,20 @@ namespace MiniMapFoundables
             return;
         }
 
+        auto* self=GetSelf();
         if (g_tickRegistered &&
-            g_foundablesSelf != nullptr &&
-            g_foundablesSelf->hooks != nullptr &&
-            g_foundablesSelf->hooks->Engine != nullptr)
+            self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->Engine != nullptr)
         {
-            g_foundablesSelf->hooks->Engine->UnregisterOnTick(&OnTick);
+            self->hooks->Engine->UnregisterOnTick(&OnTick);
         }
 
         g_tickRegistered = false;
 
         Reset();
 
-        g_foundablesSelf = nullptr;
+        g_pluginSelfAvailable = false;
         g_initialized = false;
 
         LOG_INFO("MiniMap: Mass foundable subsystem shut down");

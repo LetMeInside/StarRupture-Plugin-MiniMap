@@ -1,5 +1,5 @@
 #pragma once
-#include "plugin_interface.h"
+#include "plugin_helpers.h"
 #include <array>
 #include <algorithm>
 #include <chrono>
@@ -13,7 +13,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "Native/NativeApi.h"
 #endif
-IPluginSelf* GetSelf();
 namespace MiniMapCallbackTiming
 {
     using Clock=std::chrono::steady_clock;

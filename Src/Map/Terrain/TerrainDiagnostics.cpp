@@ -24,7 +24,7 @@
 
 namespace
 {
-    IPluginSelf* g_terrainSelf = nullptr;
+    bool g_pluginSelfAvailable = false;
     SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
 
     PluginTextureHandle g_terrainTexture = nullptr;
@@ -78,12 +78,14 @@ namespace
 
     void ProcessTerrainDiagnostic()
     {
+        auto* self = GetSelf();
         LOG_INFO(
             "MiniMap: processing F8 terrain diagnostic "
             "on game-thread tick");
 
-        if (g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr)
+        if (!g_pluginSelfAvailable ||
+            self == nullptr ||
+            self->hooks == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -111,7 +113,7 @@ namespace
             return;
         }
 
-        if (g_terrainSelf->hooks->ImGuiTextures == nullptr)
+        if (self->hooks->ImGuiTextures == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -180,7 +182,7 @@ namespace
         // ---------------------------------------------------------------------
 
         auto* devSettings =
-            MiniMapNative::FindMapMenuDevSettingsCDO(g_terrainSelf, true);
+            MiniMapNative::FindMapMenuDevSettingsCDO(self, true);
 
         if (devSettings == nullptr)
         {
@@ -906,7 +908,7 @@ namespace
             gridY);
 
         g_referenceTerrainTexture =
-            g_terrainSelf->
+            self->
             hooks->
             ImGuiTextures->
             LoadFromUTexture2D(
@@ -925,7 +927,7 @@ namespace
         int referenceWidth = 0;
         int referenceHeight = 0;
 
-        g_terrainSelf->
+        self->
             hooks->
             ImGuiTextures->
             GetSize(
@@ -947,7 +949,7 @@ namespace
             std::chrono::steady_clock::now();
 
         g_terrainTexture =
-            g_terrainSelf->
+            self->
             hooks->
             ImGuiTextures->
             LoadFromRGBA(
@@ -971,7 +973,7 @@ namespace
         int textureWidth = 0;
         int textureHeight = 0;
 
-        g_terrainSelf->
+        self->
             hooks->
             ImGuiTextures->
             GetSize(
@@ -1049,15 +1051,15 @@ namespace MiniMapTerrainDiagnostics
 
     bool Initialize(IPluginSelf* self)
     {
-        g_terrainSelf = self;
+        g_pluginSelfAvailable = self != nullptr;
         g_terrainData = nullptr;
 
         g_diagnosticPending.store(
             false,
             std::memory_order_release);
 
-        if (g_terrainSelf == nullptr ||
-            g_terrainSelf->hooks == nullptr)
+        if (self == nullptr ||
+            self->hooks == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: hooks are unavailable "
@@ -1100,7 +1102,7 @@ namespace MiniMapTerrainDiagnostics
             return false;
         }
 
-        g_terrainSelf = self;
+        g_pluginSelfAvailable = true;
 
         g_diagnosticPending.store(
             false,
@@ -1135,13 +1137,15 @@ namespace MiniMapTerrainDiagnostics
             false,
             std::memory_order_release);
 
-        if (g_terrainSelf != nullptr &&
-            g_terrainSelf->hooks != nullptr)
+        auto* self = GetSelf();
+        if (g_pluginSelfAvailable &&
+            self != nullptr &&
+            self->hooks != nullptr)
         {
             if (g_diagnosticKeyRegistered &&
-                g_terrainSelf->hooks->Input != nullptr)
+                self->hooks->Input != nullptr)
             {
-                g_terrainSelf->
+                self->
                     hooks->
                     Input->
                     UnregisterKeybindByName(
@@ -1155,9 +1159,9 @@ namespace MiniMapTerrainDiagnostics
             }
 
             if (g_tickRegistered &&
-                g_terrainSelf->hooks->Engine != nullptr)
+                self->hooks->Engine != nullptr)
             {
-                g_terrainSelf->
+                self->
                     hooks->
                     Engine->
                     UnregisterOnTick(
@@ -1187,6 +1191,7 @@ namespace MiniMapTerrainDiagnostics
         // texture records until its synchronized backend cleanup.
         g_terrainData =
             nullptr;
+        g_pluginSelfAvailable = false;
     }
 
 

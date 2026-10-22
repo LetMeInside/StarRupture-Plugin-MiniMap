@@ -15,7 +15,6 @@
 #endif
 
 IPluginSelf* g_self = nullptr;
-IPluginSelf* GetSelf() { return g_self; }
 static MiniMapPluginInitHookBaseline g_pluginInitHookBaseline;
 MiniMapPluginInitHookBaseline GetPluginInitHookBaseline() { return g_pluginInitHookBaseline; }
 static void ResetPluginInitHookBaseline() { g_pluginInitHookBaseline = {}; }

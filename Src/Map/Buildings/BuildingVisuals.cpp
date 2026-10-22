@@ -120,7 +120,6 @@ namespace
         default:++stats.SplineOther;break;
         }
     }
-    IPluginSelf* g_visualsSelf=nullptr;
     bool g_initialized=false;
     uint64_t g_generation=0;
     std::shared_ptr<const C::Snapshot> g_lastInput;
@@ -659,13 +658,15 @@ namespace MiniMapBuildingVisuals
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return true;
         if(g_initialized) return true;
         if(!self || !self->hooks || !self->hooks->Engine) return false;
-        g_visualsSelf=self; Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
+        Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
     }
     void Reset() { Clear(); }
     void Shutdown()
     {
         if(!g_initialized) return;
-        g_visualsSelf->hooks->Engine->UnregisterOnTick(&OnTick); Reset(); g_visualsSelf=nullptr; g_initialized=false;
+        auto* self=GetSelf();
+        self->hooks->Engine->UnregisterOnTick(&OnTick);
+        Reset(); g_initialized=false;
     }
     std::string GetDebugText()
     {

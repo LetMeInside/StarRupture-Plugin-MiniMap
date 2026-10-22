@@ -46,7 +46,6 @@ namespace
         float Visibility = 0.0f;
     };
 
-    IPluginSelf* g_alienActorsSelf = nullptr;
     bool g_initialized = false;
     bool g_experienceReady = false;
     bool g_queryConstructed = false;
@@ -354,7 +353,6 @@ namespace MiniMapAlienActors
         {
             return false;
         }
-        g_alienActorsSelf = self;
         Reset();
         // AlienX dispatches these callbacks after the original engine tick.
         self->hooks->Engine->RegisterOnTick(&OnTick);
@@ -440,9 +438,9 @@ namespace MiniMapAlienActors
     {
         if (!g_initialized) return;
         g_experienceReady = false;
-        g_alienActorsSelf->hooks->Engine->UnregisterOnTick(&OnTick);
+        auto* self=GetSelf();
+        self->hooks->Engine->UnregisterOnTick(&OnTick);
         Reset(); // Destruct while NativeApi is still available.
-        g_alienActorsSelf = nullptr;
         g_initialized = false;
     }
 }

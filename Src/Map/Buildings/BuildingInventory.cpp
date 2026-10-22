@@ -23,7 +23,6 @@ namespace
     constexpr auto kOracleInterval = std::chrono::seconds(10);
     constexpr std::ptrdiff_t kManagerOffset = 0x38;
     constexpr int32_t kMaximumHandles = 1000000;
-    IPluginSelf* g_inventorySelf = nullptr;
     bool g_initialized = false, g_ready = false, g_constructed = false;
     uint64_t g_generation = 0;
     SDK::UWorld* g_world = nullptr;
@@ -77,8 +76,11 @@ namespace
 #else
     SDK::UScriptStruct* FindStruct(const char* name, size_t size)
     {
+        auto* self=GetSelf();
+        if(!self || !self->hooks || !self->hooks->ObjectWalker ||
+            !self->hooks->ObjectWalker->FindObjectsByNameInto)return nullptr;
         PluginObjectInfo info = {};
-        if (g_inventorySelf->hooks->ObjectWalker->FindObjectsByNameInto(name, PluginObjectLookup_Both, &info, 1) != 1 ||
+        if (self->hooks->ObjectWalker->FindObjectsByNameInto(name, PluginObjectLookup_Both, &info, 1) != 1 ||
             std::strcmp(info.className, "ScriptStruct") != 0) return nullptr;
         auto* type = static_cast<SDK::UScriptStruct*>(info.object);
         return type->Size == int32_t(size) ? type : nullptr;
@@ -97,7 +99,9 @@ namespace
             std::memcpy(&manager, reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset, sizeof(manager));
         if (g_constructed && world == g_world && subsystem == g_subsystem && manager == g_manager) return true;
         if (g_constructed) Clear("world/manager changed");
-        if (!manager || !g_inventorySelf->hooks->ObjectWalker->IsReady()) return false;
+        auto* self=GetSelf();
+        if (!manager || !self || !self->hooks || !self->hooks->ObjectWalker ||
+            !self->hooks->ObjectWalker->IsReady || !self->hooks->ObjectWalker->IsReady()) return false;
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         if(!MiniMapResidentMetadata::Available())return false;
         if(Clock::now()<g_metadataRetry)return false;
@@ -202,7 +206,7 @@ namespace MiniMapBuildingInventory
         if (g_initialized) return true;
         if (!self || !self->hooks || !self->hooks->Engine || !self->hooks->ObjectWalker ||
             !self->hooks->ObjectWalker->IsReady || !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
-        g_inventorySelf = self; Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized = true;
+        Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized = true;
         return true;
 #endif
     }
@@ -211,9 +215,10 @@ namespace MiniMapBuildingInventory
     void Shutdown()
     {
         if (!g_initialized) return;
-        g_inventorySelf->hooks->Engine->UnregisterOnTick(&OnTick);
+        auto* self=GetSelf();
+        self->hooks->Engine->UnregisterOnTick(&OnTick);
         Reset(); // Query destruction precedes NativeApi shutdown.
-        g_inventorySelf = nullptr; g_initialized = false;
+        g_initialized = false;
     }
 }
 #endif
