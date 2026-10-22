@@ -99,6 +99,9 @@
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineDiagnostics.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineOcclusion.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
     <ClInclude Include="Map\Sprites\BlueprintIdentityCacheCore.h" />
     <ClInclude Include="Map\Sprites\CaptureDispatchCore.h" />
@@ -155,6 +158,8 @@
     <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineVisualSections.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineProfiles.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineAppearance.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineAppearance.inl" />
     <ClInclude Include="Map\Buildings\BuildingSplineEnvelope.h" />
     <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />

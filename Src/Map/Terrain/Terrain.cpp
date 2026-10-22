@@ -78,7 +78,7 @@ namespace
         MiniMapMap::MinimumMetersPerPixel;
 
     constexpr double kMaximumMetersPerPixel =
-        2.0 / 3.0;
+        MiniMapMap::MaximumMetersPerPixel;
 
     constexpr double kZoomStep =
         1.25;

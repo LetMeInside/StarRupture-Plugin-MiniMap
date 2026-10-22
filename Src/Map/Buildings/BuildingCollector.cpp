@@ -6,12 +6,14 @@
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
 #include "BuildingBlueprintIdentity.h"
+#include "BuildingSplineAppearance.h"
 #include "Native/ResidentMetadata.h"
 #include "Native/NativeVisualAccess.h"
 #include "DebugText.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "Native/DefinitionAcquisitionCore.h"
+#include "Native/TextureAccess.h"
 #include "plugin_helpers.h"
 #include "SDK/Chimera_classes.hpp"
 
@@ -23,11 +25,11 @@
 #include <unordered_set>
 #include <algorithm>
 #include <string_view>
-#include <Windows.h>
-#if MINIMAP_DEBUG_UI
 #include <iomanip>
 #include <sstream>
-#endif
+#include <locale>
+#include <type_traits>
+#include <Windows.h>
 
 namespace
 {
@@ -96,6 +98,10 @@ namespace
         bool IdentityInterrupted=false, GeometryHasSpline=false;
         MiniMapBuildingSplineProfiles::Availability ActorClassReference=MiniMapBuildingSplineProfiles::Availability::Unverified;
         uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
+        // Immutable diagnostic publication only. Kept OUTSIDE geometry/profile
+        // equality, snapshot identity and every production readiness predicate.
+        std::shared_ptr<const MiniMapBuildingSplineAppearance::Report> Appearance;
+        bool AppearanceFailureLogged=false;
         bool InteriorTagChecked=false, InteriorOnly=false;
     };
     struct Metrics
@@ -718,6 +724,7 @@ namespace
             read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),current) && current==cdo &&
             ProfileDerives(cdo,reinterpret_cast<const SDK::UClass*>(type))==ProfileCheck::Matches;
     }
+#include "BuildingSplineAppearance.inl"
     // The caller holds the class and owns the final publication transaction.
     // Leave the CDO held for final revalidation and any stable template inventory.
     template<class Context> bool ProfileNativeCopy(uintptr_t type,P::Set& profiles,P::Profile& copy,
@@ -767,6 +774,8 @@ namespace
     {
         namespace B=MiniMapBuildingBlueprintIdentity;
         auto& acquisition=profiles.Acquisition;
+        // Same definition/resource owner as geometry; never an entity or actor cache.
+        const auto previousAppearance=definition.Appearance;
         if(previous && previous->Generation==profiles.Generation && previous->Definition==profiles.Definition &&
             previous->Acquisition.PlacementInventory==P::Availability::Available && !previous->Acquisition.NativeCopyAttempted &&
             std::none_of(previous->Profiles.begin(),previous->Profiles.end(),[](const P::Profile& p)
@@ -887,6 +896,7 @@ namespace
         P::Profile copy;bool nativeBuilder=false,ownersValid=false;
         acquisition.NativeCopyAttempted=true;acquisition.NativeNumericalCopy=P::Availability::Pending;
         const auto first=profiles.Profiles.size();bool accepted=false;
+        std::shared_ptr<const Appearance::Report> appearance;
         // Early inspection failures leave this lambda, not the retained scope.
         // No caller callback, loading, yielding or Blueprint execution occurs.
         auto inspect=[&]()
@@ -920,6 +930,23 @@ namespace
             ownersValid=ProfileNativeCopy(type,profiles,copy,defaults,context,nativeBuilder);
             if(!ownersValid)
             {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
+            // This diagnostic is deliberately independent of Mass actors and of
+            // geometry eligibility. Failure cannot reject a geometry transaction.
+            if(path=="/Game/Chimera/Buildings/Modular/Walkway/BP_Walkway.BP_Walkway_C")
+            {
+                try
+                {
+                    AppearanceOps ops;
+                    appearance=Appearance::Acquire(ops,type,profiles.Generation,path,previousAppearance);
+                }
+                catch(...) {} // Diagnostic allocation/inspection failure has no production effect.
+                if(!appearance && !definition.AppearanceFailureLogged)
+                {
+                    definition.AppearanceFailureLogged=true;
+                    SpriteDiagnostic("MiniMap: authored spline appearance: definition=%d:%d class=%s unavailable: diagnostic inspection/allocation or scope validation/release failed; no current appearance observation; geometry admission unchanged",
+                        profiles.Definition.Value.Index,profiles.Definition.Value.Serial,path.c_str());
+                }
+            }
             if(!nativeBuilder)
             {
                 acquisition.NativeNumericalCopy=P::Availability::Unsupported;
@@ -982,6 +1009,30 @@ namespace
         acquisition.PersistentClassIdentity=std::any_of(profiles.Profiles.begin()+first,profiles.Profiles.end(),[](const P::Profile& p)
             {return p.VisualClass.Status==P::Availability::Available;})?P::Availability::Available:P::Availability::Unverified;
         acquisition.ResidentClass=P::Availability::Available;
+        if(appearance)
+        {
+            definition.Appearance=appearance;
+            if(!previousAppearance || !appearance->SameAuthored(*previousAppearance))
+            {
+                SpriteDiagnostic("MiniMap: authored spline appearance: generation=%llu definition=%d:%d class=%s rows=%zu; authored only; identity_decode=unavailable: NativeApi exposes name equality, not FName/object-path conversion; numeric tokens preserved",
+                    static_cast<unsigned long long>(profiles.Generation),profiles.Definition.Value.Index,
+                    profiles.Definition.Value.Serial,path.c_str(),appearance->Rows.size());
+                for(const auto& row:appearance->Rows)
+                    SpriteDiagnostic("MiniMap: authored spline appearance: definition=%d:%d source=%s object={%s} %s",
+                        profiles.Definition.Value.Index,profiles.Definition.Value.Serial,row.Source.c_str(),row.Object.c_str(),row.Detail.c_str());
+            }
+            // Always retain latest owned observations. Streaming changes never
+            // republish the authored inventory, but are not frozen or hidden.
+            if(!previousAppearance || appearance->Generation!=previousAppearance->Generation ||
+                appearance->AuthoredClass!=previousAppearance->AuthoredClass || appearance->Residency!=previousAppearance->Residency)
+                for(const auto& row:appearance->Residency)
+                    if(!previousAppearance || appearance->Generation!=previousAppearance->Generation ||
+                        appearance->AuthoredClass!=previousAppearance->AuthoredClass ||
+                        std::find(previousAppearance->Residency.begin(),previousAppearance->Residency.end(),row)==previousAppearance->Residency.end())
+                        SpriteDiagnostic("MiniMap: spline texture observation: generation=%llu definition=%d:%d source=%s object={%s} %s",
+                            static_cast<unsigned long long>(profiles.Generation),profiles.Definition.Value.Index,
+                            profiles.Definition.Value.Serial,row.Source.c_str(),row.Object.c_str(),row.Detail.c_str());
+        }
     }
     DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline,Definition* definition=nullptr)
     {

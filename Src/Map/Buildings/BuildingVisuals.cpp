@@ -36,6 +36,7 @@ namespace
     namespace S = MiniMapBuildingSplineGeometry;
     namespace A = MiniMapBuildingSplineOcclusionAdapter;
     namespace OR = MiniMapBuildingSplineOcclusionRender;
+    namespace P = MiniMapBuildingSplinePolicy;
     static_assert(uint8_t(SDK::EInterpCurveMode::CIM_Linear)==S::Linear &&
         uint8_t(SDK::EInterpCurveMode::CIM_Constant)==S::Constant &&
         uint8_t(SDK::EInterpCurveMode::CIM_CurveAuto)==1 &&
@@ -44,7 +45,7 @@ namespace
         uint8_t(SDK::EInterpCurveMode::CIM_CurveAutoClamped)==5);
     using Clock = std::chrono::steady_clock;
     constexpr auto kDebugInterval = std::chrono::seconds(5);
-    constexpr uint8_t kSplineFillOpacity=210; // Max 210/255; Color multiplies by clamped record alpha, preserving zero.
+    constexpr uint8_t kSplineFillOpacity=255; // Color multiplies by clamped record alpha, preserving zero.
     struct Instance
     {
         C::Record SpriteSource;
@@ -682,6 +683,8 @@ namespace MiniMapBuildingVisuals
         if(!ui || !transform.Valid) return;
         static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
         static std::shared_ptr<const A::RenderPlan> occlusionPlan; // Same UI-thread lifetime as quad cache.
+        static thread_local std::vector<OR::BoundaryEdge> droneRailOutlineScratch;
+        static thread_local OR::WalkwayInsetScratch walkwayInsetScratch;
         std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(g_mutex); snapshot=g_published; }
         const auto current=C::GetSnapshot();
         if(!snapshot || !current || snapshot->Generation!=current->Generation)
@@ -886,13 +889,34 @@ namespace MiniMapBuildingVisuals
                     stats.AllocationFailures+=planned->Diagnostic.Counts[size_t(A::Failure::AllocationFailure)]+planned->Diagnostic.PlannerAllocationFailures;
                     stats.Unresolved+=planned->Diagnostic.Counts[size_t(A::Failure::Selection)];
                     if(planned->AllocationFailed && !stats.AllocationFailures)++stats.AllocationFailures;
+                    auto splineSource=request.Splines.begin();
                     for(const auto& record:planned->Records)
                     {
+                        const auto& source=request.Snapshot->Records[record.RecordIndex];
+                        const bool droneRail=P::IsDroneRailDefinition(source.DefinitionValid,source.BuildingId);
+                        const bool walkway=P::IsWalkwayDefinition(source.DefinitionValid,source.BuildingId);
+                        const float extraWidthPixels=droneRail?OR::DroneRailExtraWidthPixels(transform.MetersPerPixel):0.0f;
+                        const A::SplineSource* sourceEnvelope=nullptr;
+                        if(P::kDroneRailOutlineEnabled || extraWidthPixels>0.0f || walkway)
+                        {
+                            while(splineSource!=request.Splines.end() && splineSource->RecordIndex!=record.RecordIndex)++splineSource;
+                            if(splineSource!=request.Splines.end())sourceEnvelope=&*splineSource++;
+                        }
+                        const MiniMapBuildingSplineEnvelope::Profile* renderProfile=nullptr;
+                        if(sourceEnvelope && sourceEnvelope->Envelope && record.SourceProfile<sourceEnvelope->Envelope->Profiles.size())
+                            renderProfile=&sourceEnvelope->Envelope->Profiles[record.SourceProfile];
                         stats.FailedSections+=record.FailedSections;
                         if(OR::FullyOccluded(record)){++stats.FullyOccluded;continue;}
-                        const auto& source=request.Snapshot->Records[record.RecordIndex];
                         OR::SubmissionDiagnostics visibility;
-                        const auto submitted=OR::Submit(ui,dl,transform,record,viewport,Color(source.Tint,kSplineFillOpacity),&visibility);
+                        const auto baseRgb=P::RepresentativeRgb(source.DefinitionValid,source.BuildingId);
+                        if(P::kDroneRailOutlineEnabled && P::IsDroneRailDefinition(source.DefinitionValid,source.BuildingId) && sourceEnvelope &&
+                            renderProfile)
+                            OR::SubmitDroneRailOutline(ui,dl,transform,record,
+                                *renderProfile,*sourceEnvelope->Envelope,
+                                P::ApplyTint(P::kDroneRailOutlineRgb,source.Tint,kSplineFillOpacity),
+                                P::kDroneRailOutlineThicknessPixels,droneRailOutlineScratch);
+                        const auto submitted=OR::Submit(ui,dl,transform,record,viewport,
+                            P::ApplyTint(baseRgb,source.Tint,kSplineFillOpacity),&visibility,renderProfile,extraWidthPixels);
                         stats.OutsideViewportTriangles+=visibility.OutsideViewportTriangles;
                         stats.ProjectionRejectedTriangles+=visibility.ProjectionRejectedTriangles;
                         stats.RejectedSplineRecords+=visibility.Rejected || visibility.ProjectionRejectedTriangles!=0;
@@ -900,6 +924,13 @@ namespace MiniMapBuildingVisuals
                         if(!submitted.Triangles && visibility.OutsideViewportTriangles && !visibility.Rejected &&
                             !visibility.ProjectionRejectedTriangles && !visibility.Transparent)++stats.OutsideViewportRecords;
                         stats.Points+=submitted.ProjectedVertices;stats.Triangles+=submitted.Triangles;
+                        if(walkway && sourceEnvelope && sourceEnvelope->Envelope && renderProfile)
+                        {
+                            const auto inset=OR::SubmitWalkwayInsets(ui,dl,transform,record,*renderProfile,
+                                viewport,P::ApplyTint(P::kWalkwayInsetRgb,source.Tint,kSplineFillOpacity),
+                                P::kWalkwayInsetFractionPerSide,walkwayInsetScratch);
+                            stats.Points+=inset.ProjectedVertices;stats.Triangles+=inset.Triangles;
+                        }
                         if(submitted.Triangles)
                         {++stats.Splines;CountSplineSubmission(stats,MiniMapBuildingSplinePolicy::SplineCategory(record.Category));}
                         else if(!record.FailedSections)++stats.Culled;

@@ -1,5 +1,8 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include "SDK/AuActorPlacement_structs.hpp"
 
@@ -42,6 +45,70 @@ namespace MiniMapBuildingSplinePolicy
         default:return Category::Other;
         }
     }
+    // User-sampled representative sRGB values, not authenticated shader output.
+    // Packed as 0xRRGGBB; application to the ImGui vertex color happens below.
+    inline constexpr uint32_t kNeutralWhiteRgb =0xFFFFFF;
+    inline constexpr uint32_t kWalkwayRgb = 0x1F1E1C;
+    inline constexpr uint32_t kWalkwayInsetRgb = 0x080808;
+    inline constexpr double kWalkwayInsetFractionPerSide = 0.05;
+    inline constexpr uint32_t kZipRailRgb = 0x80EBDD;
+    inline constexpr uint32_t kDroneRailRgb = 0x000000;
+    inline constexpr uint32_t kDroneRailOutlineRgb = 0xB0B0B0;
+    inline constexpr float kDroneRailOutlineThicknessPixels = 1.0f;
+    inline bool kDroneRailOutlineEnabled = false;
+
+    inline bool IsDroneRailDefinition(bool definitionValid,uint32_t buildingId)
+    {
+        if(!definitionValid)return false;
+        switch(static_cast<SDK::ECrBuildingID>(buildingId))
+        {
+        case SDK::ECrBuildingID::DroneRailT1:
+        case SDK::ECrBuildingID::DroneRailT2:
+        case SDK::ECrBuildingID::DroneRailT3:
+        case SDK::ECrBuildingID::DroneRailT4:
+        case SDK::ECrBuildingID::DroneRailT5:return true;
+        default:return false;
+        }
+    }
+
+    inline bool IsWalkwayDefinition(bool definitionValid,uint32_t buildingId)
+    {
+        return definitionValid && static_cast<SDK::ECrBuildingID>(buildingId)==SDK::ECrBuildingID::Walkway;
+    }
+
+    // Resolve representative color from the exact validated definition ID.
+    // Broad Rails/Ziplines categories are intentionally insufficient: other
+    // rail and zipline definitions retain the neutral-white rendering.
+    inline uint32_t RepresentativeRgb(bool definitionValid,uint32_t buildingId)
+    {
+        if(!definitionValid)return kNeutralWhiteRgb;
+        if(IsDroneRailDefinition(definitionValid,buildingId))return kDroneRailRgb;
+        switch(static_cast<SDK::ECrBuildingID>(buildingId))
+        {
+        // The existing Walkways category identifies these placement families.
+        case SDK::ECrBuildingID::Walkway:
+        case SDK::ECrBuildingID::RailingWalkway:return kWalkwayRgb;
+        case SDK::ECrBuildingID::ZipRail:return kZipRailRgb;
+        default:return kNeutralWhiteRgb;
+        }
+    }
+
+    // Preserve the established per-instance tint/alpha behavior while
+    // multiplying RGB by the selected representative color. ImGui packing is
+    // R in the low byte, followed by G, B, then alpha.
+    inline uint32_t ApplyTint(uint32_t rgb,const std::array<float,4>& tint,uint8_t alpha)
+    {
+        auto factor=[](float value)
+        {return std::clamp(std::isfinite(value)?value:1.0f,0.0f,1.0f);};
+        auto channel=[&](uint32_t value,float amount)
+        {return uint32_t(std::lround(float(value)*factor(amount)));};
+        const uint32_t red=channel((rgb>>16)&0xFF,tint[0]);
+        const uint32_t green=channel((rgb>>8)&0xFF,tint[1]);
+        const uint32_t blue=channel(rgb&0xFF,tint[2]);
+        const uint32_t outputAlpha=uint32_t(std::lround(double(alpha)*factor(tint[3])));
+        return red|(green<<8)|(blue<<16)|(outputAlpha<<24);
+    }
+
     // Native access status does not imply complete visual geometry. Missing actor access must not erase the logical Mass record.
     enum class VisualAcquisitionState : uint8_t
     { NotRequested, NativeAccessPending, NativeAccessAvailable, NativeAccessIncomplete };

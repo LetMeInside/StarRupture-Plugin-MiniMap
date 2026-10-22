@@ -9,6 +9,7 @@
 namespace MiniMapMap
 {
     inline constexpr double MinimumMetersPerPixel = 0.125;
+    inline constexpr double MaximumMetersPerPixel = 2.0 / 3.0;
     struct ScreenPoint
     {
         float X = 0.0f;
@@ -28,6 +29,7 @@ namespace MiniMapMap
         double CosMapRotation = 1.0;
 
         double PixelsPerWorldUnit = 0.0;
+        double MetersPerPixel = 0.0;
 
         float CenterX = 0.0f;
         float CenterY = 0.0f;
@@ -229,6 +231,9 @@ namespace MiniMapMap
             1.0 /
             (100.0 *
                 metersPerPixel);
+
+        outTransform.MetersPerPixel =
+            metersPerPixel;
 
         outTransform.CenterX =
             viewportX +
