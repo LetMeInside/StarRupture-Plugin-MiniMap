@@ -2357,7 +2357,8 @@ namespace MiniMapFingerprints
         MEMORY_BASIC_INFORMATION releasePage{};
         if (releaseRef<readbackImage || releaseRef>readbackImageEnd || releaseBytes.size()>readbackImageEnd-releaseRef ||
             !MiniMapNative::ReadMemory(releaseRef, releaseBytes.data(), releaseBytes.size()) || releaseBytes!=releasePrefix ||
-            !VirtualQuery(reinterpret_cast<void*>(releaseRef), &releasePage, sizeof(releasePage)) || releasePage.State!=MEM_COMMIT ||
+            !(MiniMapNative::CountDirectQuery(MiniMapNative::QuerySite::Fingerprint),
+              VirtualQuery(reinterpret_cast<void*>(releaseRef), &releasePage, sizeof(releasePage))) || releasePage.State!=MEM_COMMIT ||
             (releasePage.Protect & (PAGE_GUARD|PAGE_NOACCESS)) ||
             !(releasePage.Protect & (PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return invalidRelease();
 #endif

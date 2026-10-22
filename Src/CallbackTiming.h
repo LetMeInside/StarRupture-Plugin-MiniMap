@@ -6,6 +6,7 @@
 #include <mutex>
 #include <limits>
 #include <optional>
+#include <atomic>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -20,6 +21,59 @@ namespace MiniMapCallbackTiming
     inline constexpr const char* Names[]={"OnPluginLoadHooks [plugin.cpp]","GetPluginInfo [plugin.cpp]","PluginInit [plugin.cpp]","PluginShutdown [plugin.cpp]","OnWorldBeginPlay [plugin.cpp]","OnExperienceLoadComplete [plugin.cpp]","OnAfterWorldEndPlay [plugin.cpp]","OnTick [Map/FogOfWar.cpp]","OnTick [Map/Foundables.cpp]","OnTick [Map/AlienActors.cpp]","OnTick [Map/BuildingInventory.cpp]","OnTick [Map/BuildingCollector.cpp]","OnTick [Map/BuildingVisuals.cpp]","OnTick [Map/PointsOfInterest.cpp]","OnTerrainTick [Map/Terrain.cpp]","OnTick [Map/TerrainDiagnostics.cpp]","OnDiagnosticKeyPressed [Map/TerrainDiagnostics.cpp]","Render [UI/MiniMapUI.cpp]","OnToggleKeyPressed [UI/MiniMapUI.cpp]","OnTick [Input/MouseWheel.cpp]","OnEngineShutdown [Input/MouseWheel.cpp]","Tick [Map/BuildingSpriteCapture.cpp]","BeginShutdown [Map/BuildingSpriteCapture.cpp]","BeforeEndPlay [Map/BuildingSpriteCapture.cpp]","Stop [Map/BuildingRepresentation.cpp]","BeforeEndPlay [Map/BuildingRepresentation.cpp]","Tick [Map/SpriteDiscovery.cpp]","BeforeEndPlay [Map/SpriteDiscovery.cpp]","OnBeforeWorldEndPlay [plugin.cpp]","resident metadata lookup","collector metadata setup","collector ensure/query construction","collector identity reconciliation","collector refresh","collector indexed query/publication","collector diagnostics","inventory ensure/query construction","inventory oracle poll","discovery registry/snapshot","discovery native class preparation","discovery candidate processing","discovery diagnostic construction","capture component setup","public CaptureScene dispatch","capture readback service","capture image export/publication","capture retirement","authored ActorClass identity","resident authored class lookup","building capture game-thread service","atlas publication"};
 
     static_assert(std::size(Names)==size_t(Id::Count));
+#if defined(MODLOADER_CLIENT_BUILD)
+    inline std::atomic<uint64_t> QueryWorldGeneration{};
+    inline std::atomic<bool> QueryInitialAcquisition{true};
+    inline std::atomic<unsigned> QueryCollectorCallbacks{},QueryCaptureCallbacks{};
+    inline MiniMapNative::QueryPhase QueryAttribution(Id kind) noexcept
+    {
+        using P=MiniMapNative::QueryPhase;
+        switch(kind)
+        {
+        case Id::PluginLoadHooks:return P::HookResolution;
+        case Id::PluginInit:return P::PluginInitialization;
+        case Id::PluginShutdown:case Id::CaptureShutdown:case Id::MouseShutdown:return P::Shutdown;
+        case Id::WorldBegin:case Id::ExperienceComplete:return P::WorldSetup;
+        case Id::WorldBeforeEnd:case Id::WorldEnd:case Id::CaptureWorldEnd:
+        case Id::RepresentationWorldEnd:case Id::DiscoveryWorldEnd:return P::WorldCleanup;
+        case Id::CollectorPublish:return P::IndexedGridPolling;
+        case Id::CollectorTick:case Id::CollectorEnsure:case Id::CollectorMetadata:
+        case Id::CollectorReconcile:case Id::CollectorRefresh:case Id::CollectorDiagnostics:
+            return QueryInitialAcquisition.load(std::memory_order_relaxed)?P::InitialCollector:P::OtherCollector;
+        case Id::CaptureTick:case Id::CaptureSetup:case Id::CaptureSubmit:case Id::CaptureReadback:
+        case Id::CaptureExport:case Id::CaptureRetire:case Id::BuildingCaptureService:return P::SpriteCapture;
+        default:return P::Unclassified; // Inherit a classified enclosing scope, otherwise explicit unknown.
+        }
+    }
+    inline void ReportDirectQueries(IPluginSelf* self,const char* boundary) noexcept
+    {
+        if(!self||!self->logger)return; // Counters remain available when no logger exists.
+        try {
+            static std::mutex reporting;
+            static MiniMapNative::DirectQuerySnapshot previous;
+            std::scoped_lock lock(reporting);
+            const auto current=MiniMapNative::SnapshotDirectQueries();
+            self->logger->Info(self,
+                "MiniMap: direct VirtualQuery boundary=%s generation=%llu stable=%d total=%llu native=%llu fingerprint=%llu delta=%llu deltaFrom=previous-successful-report initialObservationPending=%d activeCollectorCallbacks=%u activeCaptureCallbacks=%u captureWorkPending=unknown build=%s sourceRevision=unstamped; MiniMap direct attempts only, loader-induced UNKNOWN; inclusive callback profiles separate",
+                boundary,QueryWorldGeneration.load(std::memory_order_relaxed),int(current.Stable),current.Total,
+                current.Sites[0],current.Sites[1],current.Total-previous.Total,
+                int(QueryInitialAcquisition.load(std::memory_order_relaxed)),
+                QueryCollectorCallbacks.load(std::memory_order_relaxed),QueryCaptureCallbacks.load(std::memory_order_relaxed),
+#if defined(NDEBUG)
+                "Client Release"
+#else
+                "Client Debug"
+#endif
+            );
+            self->logger->Info(self,
+                "MiniMap: direct VirtualQuery exclusive cumulative roots unknown/hooks/init/world/initialCollector/indexed/otherCollector/capture/cleanup/shutdown=%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu threads(other/init/game/ui)=%llu/%llu/%llu/%llu; one cell per attempt, unstable snapshots are per-cell observations",
+                current.Phases[0],current.Phases[1],current.Phases[2],current.Phases[3],current.Phases[4],
+                current.Phases[5],current.Phases[6],current.Phases[7],current.Phases[8],current.Phases[9],
+                current.Threads[0],current.Threads[1],current.Threads[2],current.Threads[3]);
+            previous=current;
+        }catch(...) {} // Reporting never affects native admission or lifecycle control.
+    }
+#endif
     struct Stats
     {
         unsigned long long Calls{},FullCalls{},Over2{},Over8{},Over16{},Over33{},GameCalls{};
@@ -50,6 +104,11 @@ namespace MiniMapCallbackTiming
     inline void StartWorldTrace() noexcept
     {
         std::scoped_lock lock(Access);StartupStart=Clock::now();GameThread=GetCurrentThreadId();
+#if defined(MODLOADER_CLIENT_BUILD)
+        MiniMapNative::SetQueryThreadIdentity(MiniMapNative::QueryThread::Game,GameThread);
+        QueryWorldGeneration.store(TraceGeneration+1,std::memory_order_relaxed);
+        QueryInitialAcquisition.store(true,std::memory_order_relaxed);
+#endif
         EventCount=ReportedEvents=StartupCalls=0;
         OutlierCount=ReportedOutliers=0;OutlierKinds={};++TraceGeneration;
     }
@@ -73,6 +132,9 @@ namespace MiniMapCallbackTiming
              copy=Samples;LastReport=now;generation=TraceGeneration;
              while(ReportedOutliers<OutlierCount && outlierCount<outliers.size())outliers[outlierCount++]=Outliers[ReportedOutliers++];
              while(ReportedEvents<EventCount&&eventCount<events.size())events[eventCount++]=Events[ReportedEvents++];}
+#if defined(MODLOADER_CLIENT_BUILD)
+            ReportDirectQueries(self,"periodic-callback-observation");
+#endif
             for(size_t i=0;i<count;++i)self->logger->Info(self,"MiniMap: %s took %.3f ms to finish (entry preceded logger availability)",Names[size_t(pending[i].Kind)],pending[i].Ms);
             for(size_t i=0;i<copy.size();++i)if(copy[i].Calls){const auto& s=copy[i];
                 self->logger->Info(self,"MiniMap: callback profile %s: calls=%llu bodyMax=%.3f bodyTotal=%.3f fullCalls=%llu fullMax=%.3f fullTotal=%.3f reportingMax=%.3f ms over(2/8/16/33)=%llu/%llu/%llu/%llu thread(last/max)=%lu/%lu gameThreadCalls=%llu identity=%llu readable=%llu virtualQueries=%llu interval=%.3fs; cumulative inclusive, nested totals not additive",
@@ -93,13 +155,23 @@ namespace MiniMapCallbackTiming
         Clock::time_point Start=Clock::now();Id Kind;bool Frequent,Nested;IPluginSelf* Self;
         DWORD Thread=GetCurrentThreadId();
 #if defined(MODLOADER_CLIENT_BUILD)
+        MiniMapNative::ScopedQueryPhase QueryScope;
         MiniMapNative::ValidationProfile NativeProfile;
         std::optional<MiniMapNative::ScopedValidationProfile> NativeScope;
 #endif
     public:
         Scope(Id kind,bool frequent,IPluginSelf* self=nullptr,bool nested=false) noexcept:Kind(kind),Frequent(frequent),Nested(nested),Self(self?self:GetSelf())
+#if defined(MODLOADER_CLIENT_BUILD)
+            ,QueryScope(QueryAttribution(kind))
+#endif
         {
 #if defined(MODLOADER_CLIENT_BUILD)
+            if(kind==Id::PluginLoadHooks||kind==Id::PluginInit)
+                MiniMapNative::SetQueryThreadIdentity(MiniMapNative::QueryThread::Initialization,Thread);
+            if(kind==Id::WidgetRender)
+                MiniMapNative::SetQueryThreadIdentity(MiniMapNative::QueryThread::UI,Thread);
+            if(kind==Id::CollectorTick)QueryCollectorCallbacks.fetch_add(1,std::memory_order_relaxed);
+            if(kind==Id::CaptureTick||kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_add(1,std::memory_order_relaxed);
             NativeProfile.MeasureTime=false;NativeScope.emplace(NativeProfile);
 #endif
         }
@@ -109,6 +181,12 @@ namespace MiniMapCallbackTiming
             const auto bodyEnd=Clock::now();const double ms=std::chrono::duration<double,std::milli>(bodyEnd-Start).count();
 #if defined(MODLOADER_CLIENT_BUILD)
             NativeScope.reset(); // Merge nested counters before sampling parent.
+            if(Kind==Id::CollectorTick)QueryCollectorCallbacks.fetch_sub(1,std::memory_order_relaxed);
+            if(Kind==Id::CaptureTick||Kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_sub(1,std::memory_order_relaxed);
+            if(Kind==Id::PluginLoadHooks||Kind==Id::PluginInit||Kind==Id::WorldBegin||
+                Kind==Id::ExperienceComplete||Kind==Id::WorldBeforeEnd||Kind==Id::WorldEnd||Kind==Id::PluginShutdown)
+                ReportDirectQueries(Self,Names[size_t(Kind)]); // Scope exit includes early failure returns.
+
 #endif
             try {
                 {std::scoped_lock lock(Access);auto& s=Samples[size_t(Kind)];s.Add(ms);

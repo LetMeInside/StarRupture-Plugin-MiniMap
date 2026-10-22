@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <array>
 
 class FRHIComputeCommandList;
 struct FRHITransitionInfo;
@@ -584,6 +585,38 @@ namespace MiniMapNative
 
     bool Initialize(
         const MiniMapFingerprints::ResolvedAddresses& addresses);
+
+    // Direct MiniMap-issued OS attempts only; never a readiness or query budget.
+    enum class QuerySite : size_t { NativeApi, Fingerprint, Count };
+    enum class QueryPhase : size_t { Unclassified, HookResolution, PluginInitialization,
+        WorldSetup, InitialCollector, IndexedGridPolling, OtherCollector, SpriteCapture,
+        WorldCleanup, Shutdown, Count };
+    enum class QueryThread : size_t { Other, Initialization, Game, UI, Count };
+    inline constexpr size_t QueryCellCount=size_t(QuerySite::Count)*size_t(QueryPhase::Count)*size_t(QueryThread::Count);
+    struct DirectQuerySnapshot
+    {
+        std::array<uint64_t,QueryCellCount> Cells{};
+        std::array<uint64_t,size_t(QuerySite::Count)> Sites{};
+        std::array<uint64_t,size_t(QueryPhase::Count)> Phases{};
+        std::array<uint64_t,size_t(QueryThread::Count)> Threads{};
+        uint64_t Total{};
+        bool Stable{};
+    };
+    // Bounded double collect: Stable means all cells agreed across two passes.
+    // An unstable result is a monotonic per-cell observation, not an atomic cut.
+    // Totals derive from those same cells; lifecycle metadata is sampled separately.
+    DirectQuerySnapshot SnapshotDirectQueries() noexcept;
+    void CountDirectQuery(QuerySite) noexcept;
+    void SetQueryThreadIdentity(QueryThread,uint32_t thread) noexcept;
+    class ScopedQueryPhase
+    {
+        QueryPhase Previous;
+    public:
+        explicit ScopedQueryPhase(QueryPhase) noexcept;
+        ~ScopedQueryPhase() noexcept;
+        ScopedQueryPhase(const ScopedQueryPhase&)=delete;
+        ScopedQueryPhase& operator=(const ScopedQueryPhase&)=delete;
+    };
 
     // Opt-in, current-thread diagnostic counters. No object identities are cached.
     struct ValidationProfile

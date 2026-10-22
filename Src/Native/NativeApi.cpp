@@ -13,6 +13,7 @@
 #include <cstring>
 #include <type_traits>
 #include <chrono>
+#include <atomic>
 
 namespace
 {
@@ -23,6 +24,60 @@ namespace
 
 namespace MiniMapNative
 {
+    // BEGIN direct-query accounting (constant initialized; independent of NativeApi lifetime).
+    namespace
+    {
+        constinit std::array<std::atomic<uint64_t>,QueryCellCount> directQueries{};
+        constinit std::array<std::atomic<uint32_t>,size_t(QueryThread::Count)> queryThreadIds{};
+        thread_local QueryPhase queryPhase=QueryPhase::Unclassified;
+        static_assert(std::atomic<uint64_t>::is_always_lock_free);
+        static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    }
+    void SetQueryThreadIdentity(QueryThread kind,uint32_t thread) noexcept
+    {
+        queryThreadIds[size_t(kind)].store(thread,std::memory_order_relaxed);
+    }
+    ScopedQueryPhase::ScopedQueryPhase(QueryPhase phase) noexcept:Previous(queryPhase)
+    {
+        // Lifecycle cleanup remains the root even when teardown invokes capture helpers.
+        if(queryPhase!=QueryPhase::Shutdown && queryPhase!=QueryPhase::WorldCleanup &&
+            phase!=QueryPhase::Unclassified) queryPhase=phase;
+    }
+    ScopedQueryPhase::~ScopedQueryPhase() noexcept {queryPhase=Previous;}
+    void CountDirectQuery(QuerySite site) noexcept
+    {
+        const auto id=GetCurrentThreadId();
+        QueryThread thread=QueryThread::Other;
+        // Verified game/UI identities take precedence when initialization shares a thread.
+        for(auto kind:{QueryThread::Initialization,QueryThread::UI,QueryThread::Game})
+            if(queryThreadIds[size_t(kind)].load(std::memory_order_relaxed)==id)thread=kind;
+        const size_t cell=(size_t(site)*size_t(QueryPhase::Count)+size_t(queryPhase))*size_t(QueryThread::Count)+size_t(thread);
+        directQueries[cell].fetch_add(1,std::memory_order_relaxed);
+    }
+    DirectQuerySnapshot SnapshotDirectQueries() noexcept
+    {
+        DirectQuerySnapshot result;
+        auto collect=[](auto& values) noexcept {
+            for(size_t i=0;i<QueryCellCount;++i)values[i]=directQueries[i].load(std::memory_order_relaxed);
+        };
+        collect(result.Cells);
+        for(unsigned attempt=0;attempt<4;++attempt)
+        {
+            std::array<uint64_t,QueryCellCount> next{};collect(next);
+            if(next==result.Cells){result.Stable=true;break;}
+            result.Cells=next;
+        }
+        for(size_t site=0;site<size_t(QuerySite::Count);++site)
+            for(size_t phase=0;phase<size_t(QueryPhase::Count);++phase)
+                for(size_t thread=0;thread<size_t(QueryThread::Count);++thread)
+                {
+                    const auto value=result.Cells[(site*size_t(QueryPhase::Count)+phase)*size_t(QueryThread::Count)+thread];
+                    result.Total+=value;result.Sites[site]+=value;result.Phases[phase]+=value;result.Threads[thread]+=value;
+                }
+        return result;
+    }
+    // END direct-query accounting.
+
     namespace
     {
         thread_local ValidationProfile* validationProfile=nullptr;
@@ -72,6 +127,7 @@ namespace MiniMapNative
         {
             MEMORY_BASIC_INFORMATION m{};
             if(validationProfile)++validationProfile->VirtualQueries;
+            CountDirectQuery(QuerySite::NativeApi);
             if(!VirtualQuery(reinterpret_cast<const void*>(p),&m,sizeof(m))||m.State!=MEM_COMMIT||
                 (m.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
             const auto protection=m.Protect&0xff;

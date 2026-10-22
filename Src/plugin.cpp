@@ -85,10 +85,13 @@ void OnPluginLoadHooks(
 
     g_resolvedAddresses = {};
 
-    if (!MiniMapFingerprints::Resolve(
+    const bool fingerprintsResolved=MiniMapFingerprints::Resolve(
         self,
         scanner,
-        g_resolvedAddresses))
+        g_resolvedAddresses);
+    MiniMapCallbackTiming::ReportDirectQueries(self,fingerprintsResolved?
+        "mandatory-fingerprint-resolution-complete":"mandatory-fingerprint-resolution-refused");
+    if (!fingerprintsResolved)
     {
         LOG_ERROR(
             "MiniMap: native fingerprint resolution failed");
@@ -136,6 +139,7 @@ static void SetServicesAdmitted(bool ready)
 }
 static void EndBuildingSession()
 {
+    MiniMapNative::ScopedQueryPhase queryPhase(MiniMapNative::QueryPhase::WorldCleanup);
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingSchedulerInternal::StopSession();
@@ -170,6 +174,17 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     // batch on this existing GT callback, never while holding LifecycleMutex.
     if (MiniMapMap::GameplayReady() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
     MiniMapCaptureTiming::Flush(); // All lifecycle/backend locks have been released.
+    // Observation only: Complete describes available scoped observation, not
+    // worldwide discovery or capture completion. Never a service readiness gate.
+    if(MiniMapCallbackTiming::QueryInitialAcquisition.load(std::memory_order_relaxed))
+    {
+        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
+        if(snapshot && snapshot->Complete)
+        {
+            MiniMapCallbackTiming::QueryInitialAcquisition.store(false,std::memory_order_relaxed);
+            MiniMapCallbackTiming::ReportDirectQueries(GetSelf(),"first-observed-complete-collector-publication-not-capture-completion");
+        }
+    }
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
