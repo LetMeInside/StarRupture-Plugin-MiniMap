@@ -7,9 +7,11 @@
 #include "BuildingVisuals.h"
 #include "BuildingBlueprintIdentity.h"
 #include "Native/ResidentMetadata.h"
+#include "Native/NativeVisualAccess.h"
 #include "DebugText.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
+#include "Native/DefinitionAcquisitionCore.h"
 #include "plugin_helpers.h"
 #include "SDK/Chimera_classes.hpp"
 
@@ -21,6 +23,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <string_view>
+#include <Windows.h>
 #if MINIMAP_DEBUG_UI
 #include <iomanip>
 #include <sstream>
@@ -91,6 +94,7 @@ namespace
         int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
         uint64_t IdentityObservation=0, GeometryObservation=0;
         bool IdentityInterrupted=false, GeometryHasSpline=false;
+        MiniMapBuildingSplineProfiles::Availability ActorClassReference=MiniMapBuildingSplineProfiles::Availability::Unverified;
         uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
         bool InteriorTagChecked=false, InteriorOnly=false;
     };
@@ -329,14 +333,696 @@ namespace
         if(address>(std::numeric_limits<uintptr_t>::max)()-sizeof(SDK::FCrBuildingParameters))return nullptr;
         return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
-    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline)
+    namespace P=MiniMapBuildingSplineProfiles;
+    void FinalizeProfiles(P::Set& profiles)
+    {
+        profiles.Acquisition.PlacementUsable=std::any_of(profiles.Profiles.begin(),profiles.Profiles.end(),[](const P::Profile& p)
+            {return p.Provenance==P::Origin::PlacementActorClass && MiniMapBuildingSplineEnvelope::Eligibility(p)==0;});
+        P::Finalize(profiles);
+    }
+    // Borrowed reads only inside the existing synchronous game-thread resolver.
+    // Unlike ResidentMetadata::Validate/Serial these never probe memory pages.
+    bool ProfileReadBytes(uintptr_t address,void* output,size_t size) noexcept
+    {
+        if(!address || address>UINTPTR_MAX-size)return false;
+        __try {std::memcpy(output,reinterpret_cast<const void*>(address),size);return true;}
+        __except(GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
+            ?EXCEPTION_EXECUTE_HANDLER:EXCEPTION_CONTINUE_SEARCH) {return false;}
+    }
+    struct ProfileReader
+    {
+        template<class T> bool Read(uintptr_t address,T& value)
+        {return ProfileReadBytes(address,&value,sizeof(value));}
+    };
+    bool ProfileIdentity(uintptr_t object,P::Identity& identity,MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr)
+    {
+        const auto* n=MiniMapNative::Get();
+        ProfileReader read;int32_t index=-1,serial=0;
+        if(!MiniMapDefinitionAcquisition::ReadStableIdentity(read,n?reinterpret_cast<uintptr_t>(n->asset.objectArray):0,
+            object,sizeof(SDK::UObject),index,serial,observation))return false;
+        identity={index,serial};return true;
+    }
+    enum class ProfileCheck : uint8_t { Matches,NoMatch,Unverified,Invalid };
+    bool ProfileTransient(uintptr_t object,size_t extent,MiniMapDefinitionAcquisition::IdentityObservation* observation,
+        MiniMapDefinitionAcquisition::IdentityRole role,uint32_t depth,uintptr_t lookup,
+        MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        A::IdentityObservation local;auto* out=observation?observation:&local;
+        const auto* n=MiniMapNative::Get();ProfileReader read;
+        const auto valid=A::ValidateTransientObject(read,n?reinterpret_cast<uintptr_t>(n->asset.objectArray):0,object,extent,out);
+        out->Role=role;out->Depth=depth;out->IsLookupResult=object==lookup;
+        if(firstZero && firstZero->Predicate==A::IdentityPredicate::Unobserved &&
+            out->SlotObserved && out->Serial==0)*firstZero=*out;
+        return valid==A::TransientValidity::Valid;
+    }
+    ProfileCheck ProfileNativeClass(uintptr_t type,const wchar_t* name,const wchar_t* package=L"/Script/Engine",
+        MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
+        MiniMapDefinitionAcquisition::IdentityRole role=MiniMapDefinitionAcquisition::IdentityRole::ClassNode,
+        uint32_t depth=0,uintptr_t lookup=0,MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        const auto* n=MiniMapNative::Get();ProfileReader read;SDK::FName typeName{},outerName{};uintptr_t outer=0;
+        auto fail=[&](A::IdentityPredicate p){if(observation)observation->Predicate=p;return ProfileCheck::Unverified;};
+        if(!n || !n->asset.nameEqualsWide)return fail(A::IdentityPredicate::NameFacility);
+        if(!ProfileTransient(type,sizeof(SDK::UObject),observation,role,depth,lookup,firstZero))return ProfileCheck::Unverified;
+        if(!read.Read(type+0x18,typeName))return fail(A::IdentityPredicate::NameRead);
+        if(!read.Read(type+0x20,outer))return fail(A::IdentityPredicate::OuterRead);
+        const auto outerRole=role==A::IdentityRole::MetaclassNode?A::IdentityRole::MetaclassOuter:A::IdentityRole::ClassOuter;
+        if(!ProfileTransient(outer,sizeof(SDK::UObject),observation,outerRole,depth,lookup,firstZero))return ProfileCheck::Unverified;
+        if(!read.Read(outer+0x18,outerName))return fail(A::IdentityPredicate::PackageRead);
+        return typeName.Number==0 && outerName.Number==0 && n->asset.nameEqualsWide(typeName,name) &&
+            n->asset.nameEqualsWide(outerName,package)?ProfileCheck::Matches:ProfileCheck::NoMatch;
+    }
+    ProfileCheck ProfileDerives(uintptr_t object,const SDK::UClass* expected,const wchar_t* nativeName=nullptr,
+        const wchar_t* package=L"/Script/Engine",MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
+        uintptr_t lookup=0,MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        ProfileReader read;uintptr_t type=0;
+        if(!ProfileTransient(object,sizeof(SDK::UObject),observation,A::IdentityRole::LookupResult,0,lookup,firstZero))return ProfileCheck::Unverified;
+        if(!read.Read(object+0x10,type)){if(observation)observation->Predicate=A::IdentityPredicate::MetaclassRead;return ProfileCheck::Unverified;}
+        std::unordered_set<uintptr_t> seen;uint32_t depth=0;
+        while(type)
+        {
+            if(!seen.insert(type).second)
+            {
+                if(observation){*observation={};observation->Predicate=A::IdentityPredicate::HierarchyCycle;
+                    observation->Role=A::IdentityRole::MetaclassNode;observation->Depth=depth;observation->IsLookupResult=type==lookup;}
+                return ProfileCheck::Invalid;
+            }
+            if(!ProfileTransient(type,sizeof(SDK::UClass),observation,A::IdentityRole::MetaclassNode,depth,lookup,firstZero))return ProfileCheck::Unverified;
+            if(expected && type==reinterpret_cast<uintptr_t>(expected))return ProfileCheck::Matches;
+            const auto nodeObservation=observation?*observation:A::IdentityObservation{};
+            if(nativeName)
+            {
+                const auto native=ProfileNativeClass(type,nativeName,package,observation,A::IdentityRole::MetaclassNode,depth,lookup,firstZero);
+                if(native!=ProfileCheck::NoMatch)return native;
+            }
+            if(observation)*observation=nodeObservation;
+            if(!read.Read(type+offsetof(SDK::UStruct,SuperStruct),type)){if(observation)observation->Predicate=A::IdentityPredicate::SuperclassRead;return ProfileCheck::Unverified;}
+            ++depth;
+        }
+        return ProfileCheck::NoMatch;
+    }
+    void ProfileMesh(uintptr_t mesh,P::Profile& profile)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        profile.Geometry.reset();profile.ObservedMeshSerial=P::MeshSerial::Unobserved;
+        profile.MeshRead=P::MeshAcquisition::Null;
+        if(!mesh)return;
+        profile.MeshRead=P::MeshAcquisition::Interrupted;
+        const auto world=MiniMapMap::GetWorld();const auto generation=g_generation;
+        const auto context=[&](){return world && world==g_world && world==MiniMapMap::GetWorld() &&
+            generation==g_generation && MiniMapResidentMetadata::Available();};
+        if(!context())return;
+        A::IdentityObservation observed;
+        profile.MeshRead=P::MeshAcquisition::TransientInvalid;
+        if(!ProfileTransient(mesh,sizeof(SDK::UStaticMesh),&observed,A::IdentityRole::LookupResult,0,mesh))return;
+        profile.ObservedMeshSerial=observed.Serial==0?P::MeshSerial::Zero:
+            observed.Serial>0?P::MeshSerial::Positive:P::MeshSerial::Negative;
+        profile.MeshRead=P::MeshAcquisition::RetainFailed;
+        if(!MiniMapResidentMetadata::Retain(mesh,sizeof(SDK::UStaticMesh)))return;
+        struct RetainedMesh
+        {
+            uintptr_t Object;bool Held=true;
+            bool Release(){Held=false;return MiniMapResidentMetadata::Release(Object);}
+            ~RetainedMesh(){if(Held)MiniMapResidentMetadata::Release(Object);}
+        } retained{mesh};
+        // Only copied POD escapes this scope; neither the serial nor pointer is a cache key.
+        P::Bounds bounds;bool copied=false;
+        auto inspect=[&]()
+        {
+            if(!context()){profile.MeshRead=P::MeshAcquisition::Interrupted;return;}
+            if(!g_types.StaticMesh){profile.MeshRead=P::MeshAcquisition::TransientInvalid;return;}
+            const auto kind=ProfileDerives(mesh,g_types.StaticMesh);
+            if(kind!=ProfileCheck::Matches)
+            {profile.MeshRead=kind==ProfileCheck::NoMatch?P::MeshAcquisition::ClassMismatch:P::MeshAcquisition::TransientInvalid;return;}
+            ProfileReader read;SDK::FBoxSphereBounds native{};
+            static_assert(offsetof(SDK::UStaticMesh,ExtendedBounds)==0x240);
+            if(!read.Read(mesh+offsetof(SDK::UStaticMesh,ExtendedBounds),native))
+            {profile.MeshRead=P::MeshAcquisition::BoundsReadFailed;return;}
+            bounds={{native.Origin.X,native.Origin.Y,native.Origin.Z},
+                {native.BoxExtent.X,native.BoxExtent.Y,native.BoxExtent.Z},native.SphereRadius};
+            if(!P::Valid(bounds)){profile.MeshRead=P::MeshAcquisition::InvalidBounds;return;}
+            copied=true;
+        };
+        inspect(); // The guard releases exactly once on exceptions as well.
+        if(!context()) {profile.MeshRead=P::MeshAcquisition::Interrupted;copied=false;}
+        else if(!ProfileTransient(mesh,sizeof(SDK::UStaticMesh),nullptr,A::IdentityRole::LookupResult,0,mesh))
+        {profile.MeshRead=P::MeshAcquisition::TransientInvalid;copied=false;}
+        const bool released=retained.Release();
+        if(!released){profile.MeshRead=P::MeshAcquisition::ReleaseFailed;return;}
+        if(!context()){profile.MeshRead=P::MeshAcquisition::Interrupted;return;}
+        if(copied)
+        {
+            profile.Geometry=std::make_shared<const P::Mesh>(P::Mesh{{bounds,P::Availability::Available}});
+            profile.MeshRead=P::MeshAcquisition::Copied;
+        }
+    }
+    void ProfileTemplate(uintptr_t component,const P::Profile& source,P::Set& profiles)
+    {
+        ProfileReader read;P::Profile result=source;P::Identity id;
+        result.Source=P::Selection::Candidate;
+        result.Construction={P::Mechanism::Unknown,P::Availability::Unverified};
+        if(!ProfileIdentity(component,id))
+        {result.Template.Status=P::Availability::Pending;profiles.Profiles.push_back(std::move(result));return;}
+        result.Template={id,P::Availability::Available};
+        // Attached static meshes can also extend the visual envelope. They are
+        // still candidates: neither enumeration nor their type proves use.
+        const auto splineKind=ProfileDerives(component,nullptr,L"SplineMeshComponent");
+        const bool splineMesh=splineKind==ProfileCheck::Matches;
+        const auto staticKind=splineMesh?ProfileCheck::NoMatch:
+            splineKind==ProfileCheck::Unverified?ProfileCheck::Unverified:
+            ProfileDerives(component,nullptr,L"StaticMeshComponent");
+        if(!splineMesh && staticKind!=ProfileCheck::Matches)
+        {
+            if(splineKind==ProfileCheck::Unverified || staticKind==ProfileCheck::Unverified)
+            {result.Construction.Status=P::Availability::Pending;result.Status=P::State::Pending;}
+            else if(splineKind==ProfileCheck::Invalid || staticKind==ProfileCheck::Invalid)
+            {result.Construction.Status=P::Availability::Invalid;result.Status=P::State::Partial;}
+            else result.Status=P::State::Unsupported;
+            profiles.Profiles.push_back(std::move(result));return;
+        }
+        SDK::FVector location{},scale{};SDK::FRotator rotation{};uintptr_t mesh=0;
+        static_assert(offsetof(SDK::USceneComponent,RelativeLocation)==0x140 &&
+            offsetof(SDK::USceneComponent,RelativeRotation)==0x158 && offsetof(SDK::USceneComponent,RelativeScale3D)==0x170 &&
+            offsetof(SDK::UStaticMeshComponent,StaticMesh)==0x588);
+        result.TemplateTransform.Status=P::Availability::Pending;
+        if(read.Read(component+offsetof(SDK::USceneComponent,RelativeLocation),location) &&
+            read.Read(component+offsetof(SDK::USceneComponent,RelativeRotation),rotation) &&
+            read.Read(component+offsetof(SDK::USceneComponent,RelativeScale3D),scale))
+        {
+            P::RelativeTransform transform{{location.X,location.Y,location.Z},{rotation.Pitch,rotation.Yaw,rotation.Roll},{scale.X,scale.Y,scale.Z}};
+            if(MiniMapVisualAccess::Finite(transform.Translation) && MiniMapVisualAccess::Finite(transform.RotationDegrees) &&
+                MiniMapVisualAccess::Finite(transform.Scale))result.TemplateTransform={transform,P::Availability::Available};
+            else result.TemplateTransform.Status=P::Availability::Invalid;
+        }
+        if(splineMesh)
+        {
+            SDK::FSplineMeshParams params{};SDK::FVector up{};uint8_t axis=0;
+            if(read.Read(component+offsetof(SDK::USplineMeshComponent,ForwardAxis),axis))
+                result.TemplateForwardAxis={axis,axis<=2?P::Availability::Available:P::Availability::Invalid};
+            else result.TemplateForwardAxis.Status=P::Availability::Pending;
+            result.TemplateCrossSection.Status=P::Availability::Pending;
+            if(read.Read(component+offsetof(SDK::USplineMeshComponent,SplineParams),params) &&
+                read.Read(component+offsetof(SDK::USplineMeshComponent,SplineUpDir),up))
+            {
+                P::CrossSection section{{params.StartScale.X,params.StartScale.Y},{params.EndScale.X,params.EndScale.Y},
+                    {params.StartOffset.X,params.StartOffset.Y},{params.EndOffset.X,params.EndOffset.Y},params.StartRoll,params.EndRoll,{up.X,up.Y,up.Z}};
+                bool valid=MiniMapVisualAccess::Finite(section.Up) && std::isfinite(section.StartRoll) && std::isfinite(section.EndRoll);
+                for(const auto* pair:{&section.StartScale,&section.EndScale,&section.StartOffset,&section.EndOffset})
+                    for(double value:*pair)valid=valid && std::isfinite(value);
+                if(valid)result.TemplateCrossSection={section,P::Availability::Available};
+                else result.TemplateCrossSection.Status=P::Availability::Invalid;
+            }
+        }
+        else
+        {
+            result.TemplateForwardAxis.Status=P::Availability::Unsupported;
+            result.TemplateCrossSection.Status=P::Availability::Unsupported;
+        }
+        result.SplineTemplate=splineMesh && source.TemplateOwner.Status==P::Availability::Available &&
+            source.VisualClass.Status==P::Availability::Available && source.Defaults.Status==P::Availability::Available;
+        result.MeshRead=P::MeshAcquisition::BoundsReadFailed;
+        if(read.Read(component+offsetof(SDK::UStaticMeshComponent,StaticMesh),mesh))ProfileMesh(mesh,result);
+        profiles.Profiles.push_back(std::move(result));
+    }
+    void ProfileClass(const SDK::UClass* visualClass,bool highResolution,P::Set& profiles,
+        P::Origin provenance=P::Origin::MassRepresentation,bool* cdoAbsent=nullptr,bool includeNative=true)
+    {
+        if(cdoAbsent)*cdoAbsent=false;
+        if(includeNative)++profiles.Acquisition.Classes;
+        ProfileReader read;P::Profile source;P::Identity id;const uintptr_t type=reinterpret_cast<uintptr_t>(visualClass);
+        source.HighResolution=highResolution;
+        source.Provenance=provenance;
+        source.VisualClass.Status=P::Availability::Pending;
+        if(!ProfileIdentity(type,id))
+        {source.Status=P::State::Pending;profiles.Inventory=P::Availability::Pending;profiles.Profiles.push_back(std::move(source));return;}
+        source.VisualClass={id,P::Availability::Available};
+        uintptr_t cdo=0;source.Defaults.Status=P::Availability::Pending;
+        const bool cdoRead=read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),cdo);
+        if(cdoAbsent && cdoRead && !cdo)*cdoAbsent=true;
+        if(cdoRead && cdo && ProfileIdentity(cdo,id))
+        {
+            uint32_t flags=0;
+            if(read.Read(cdo+8,flags))
+            {
+                if(flags&0x10)
+                {
+                    uintptr_t defaultsClass=0;
+                    const auto defaults=ProfileDerives(cdo,visualClass);
+                    if(defaults==ProfileCheck::Matches && read.Read(cdo+0x10,defaultsClass) && defaultsClass==type)
+                        source.Defaults={id,P::Availability::Available};
+                    else if(defaults==ProfileCheck::Matches)source.Defaults.Status=P::Availability::Invalid;
+                    else if(defaults==ProfileCheck::NoMatch || defaults==ProfileCheck::Invalid)
+                        source.Defaults.Status=P::Availability::Invalid;
+                }
+                else source.Defaults.Status=P::Availability::Invalid;
+            }
+        }
+        if(includeNative)
+        {
+            const SDK::UClass* builder=nullptr;size_t meshOffset=0;P::Mechanism mechanism=P::Mechanism::Unknown;
+            profiles.Acquisition.Defaults+=source.Defaults.Status==P::Availability::Available;
+            static_assert(offsetof(SDK::ACrDronePathPointConnection,SplineMesh)==0x708 &&
+                offsetof(SDK::ACrModularRampWalkway,SplineMesh)==0x6f8);
+            const auto droneBuilder=source.Defaults.Status==P::Availability::Available?
+                ProfileDerives(cdo,g_types.DroneRail):ProfileCheck::Unverified;
+            const auto walkwayBuilder=source.Defaults.Status==P::Availability::Available && droneBuilder==ProfileCheck::NoMatch?
+                ProfileDerives(cdo,g_types.Walkway):ProfileCheck::Unverified;
+            if(droneBuilder==ProfileCheck::Matches)
+            {builder=g_types.DroneRail;meshOffset=offsetof(SDK::ACrDronePathPointConnection,SplineMesh);mechanism=P::Mechanism::DroneRail;}
+            else if(walkwayBuilder==ProfileCheck::Matches)
+            {builder=g_types.Walkway;meshOffset=offsetof(SDK::ACrModularRampWalkway,SplineMesh);mechanism=P::Mechanism::ModularWalkway;}
+            if(builder)
+            {
+                ++profiles.Acquisition.NativeBuilders;
+                P::Profile input=source;input.Source=P::Selection::NativeBuilderInput;
+                input.Construction={mechanism,P::Availability::Available};
+                input.ConstructionForwardAxis={0,P::Availability::Available};
+                input.ConstructionTransform={{{},{},{1,1,1}},P::Availability::Available};
+                input.ConstructionCrossSection={{{1,1},{1,1},{0,0},{0,0},0,0,{0,0,1}},P::Availability::Available};
+                // Do not certify arbitrary Blueprint overrides/additional geometry.
+                input.ActiveUse=provenance==P::Origin::MassRepresentation && visualClass==builder?
+                    P::Availability::Available:P::Availability::Unverified;
+                uintptr_t mesh=0;input.MeshRead=P::MeshAcquisition::BoundsReadFailed;
+                if(read.Read(cdo+meshOffset,mesh))ProfileMesh(mesh,input);
+                input.Status=input.ActiveUse==P::Availability::Available && input.Geometry &&
+                    input.Geometry->LocalBounds.Status==P::Availability::Available?P::State::Complete:P::State::Partial;
+                profiles.Profiles.push_back(std::move(input));
+            }
+            else
+            {
+                const bool known=source.Defaults.Status==P::Availability::Available && g_types.DroneRail && g_types.Walkway &&
+                    droneBuilder==ProfileCheck::NoMatch && walkwayBuilder==ProfileCheck::NoMatch;
+                const bool invalid=source.Defaults.Status==P::Availability::Invalid ||
+                    droneBuilder==ProfileCheck::Invalid || walkwayBuilder==ProfileCheck::Invalid;
+                source.Construction.Status=known?P::Availability::Unsupported:
+                    invalid?P::Availability::Invalid:P::Availability::Pending;
+                source.Status=known?P::State::Unsupported:invalid?P::State::Partial:P::State::Pending;
+                profiles.Profiles.push_back(source);
+            }
+        }
+        std::unordered_set<uintptr_t> seen;
+        for(uintptr_t current=type;current && seen.insert(current).second;)
+        {
+            uintptr_t meta=0,parent=0;
+            if(!ProfileIdentity(current,id) || !read.Read(current+0x10,meta))
+            {profiles.Inventory=P::Availability::Pending;return;}
+            const auto blueprintClass=ProfileNativeClass(meta,L"BlueprintGeneratedClass");
+            if(blueprintClass==ProfileCheck::Unverified)
+            {profiles.Inventory=P::Availability::Pending;return;}
+            if(blueprintClass==ProfileCheck::Matches)
+            {
+                // Verified FindComponentTemplateByName body: this class's array
+                // only. Inventory is copied as candidates, never as active use.
+                struct Array {uintptr_t Data;int32_t Num,Max;};Array templates{};
+                static_assert(offsetof(SDK::UBlueprintGeneratedClass,ComponentTemplates)==0x220);
+                if(!read.Read(current+offsetof(SDK::UBlueprintGeneratedClass,ComponentTemplates),templates))
+                {profiles.Inventory=P::Availability::Pending;return;}
+                if(templates.Num<0 || templates.Max<templates.Num || (templates.Num && !templates.Data) ||
+                    size_t(templates.Num)>SIZE_MAX/sizeof(uintptr_t) ||
+                    templates.Data>UINTPTR_MAX-size_t(templates.Num)*sizeof(uintptr_t))
+                {profiles.Inventory=P::Availability::Invalid;return;}
+                P::Profile owner=source;owner.TemplateOwner={id,P::Availability::Available};
+                for(int32_t i=0;i<templates.Num;++i)
+                {
+                    uintptr_t component=0;
+                    if(!read.Read(templates.Data+size_t(i)*sizeof(uintptr_t),component))
+                    {profiles.Inventory=P::Availability::Pending;continue;}
+                    if(component){++profiles.Acquisition.Templates;ProfileTemplate(component,owner,profiles);}
+                }
+            }
+            if(!read.Read(current+offsetof(SDK::UStruct,SuperStruct),parent))
+            {profiles.Inventory=P::Availability::Pending;return;}
+            current=parent;
+            if(current && seen.contains(current)){profiles.Inventory=P::Availability::Invalid;return;}
+        }
+    }
+    ProfileCheck ProfileActorClass(uintptr_t type,MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
+        MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        const auto lookup=type;
+        // Certify the metaclass before interpreting the returned object as UStruct.
+        const auto kind=ProfileDerives(type,nullptr,L"Class",L"/Script/CoreUObject",observation,lookup,firstZero);
+        if(kind!=ProfileCheck::Matches){if(kind==ProfileCheck::NoMatch && observation)observation->Predicate=A::IdentityPredicate::MetaclassMismatch;return kind;}
+        ProfileReader read;std::unordered_set<uintptr_t> seen;uint32_t depth=0;
+        while(type)
+        {
+            if(!seen.insert(type).second)
+            {
+                if(observation){*observation={};observation->Predicate=A::IdentityPredicate::HierarchyCycle;
+                    observation->Role=A::IdentityRole::ClassNode;observation->Depth=depth;observation->IsLookupResult=type==lookup;}
+                return ProfileCheck::Invalid;
+            }
+            if(!ProfileTransient(type,sizeof(SDK::UClass),observation,A::IdentityRole::ClassNode,depth,lookup,firstZero))return ProfileCheck::Unverified;
+            const auto nodeObservation=observation?*observation:A::IdentityObservation{};
+            const auto actor=ProfileNativeClass(type,L"Actor",L"/Script/Engine",observation,A::IdentityRole::ClassNode,depth,lookup,firstZero);
+            if(actor!=ProfileCheck::NoMatch)return actor;
+            if(observation)*observation=nodeObservation;
+            if(!read.Read(type+offsetof(SDK::UStruct,SuperStruct),type)){if(observation)observation->Predicate=A::IdentityPredicate::SuperclassRead;return ProfileCheck::Unverified;}
+            ++depth;
+        }
+        if(observation)observation->Predicate=A::IdentityPredicate::ActorMismatch;
+        return ProfileCheck::NoMatch;
+    }
+    struct ProfileRetention
+    {
+        uintptr_t Object=0; // Borrowed only inside this synchronous stack scope.
+        int32_t Index=-1; // Transient slot correspondence, never a published identity.
+        ProfileRetention()=default;
+        explicit ProfileRetention(uintptr_t held):Object(held){}
+        ProfileRetention(const ProfileRetention&)=delete;
+        ProfileRetention& operator=(const ProfileRetention&)=delete;
+        bool Retain(uintptr_t object,size_t extent)
+        {
+            if(!MiniMapResidentMetadata::Retain(object,extent))return false;
+            Object=object;return true;
+        }
+        bool Release()
+        {
+            const auto object=Object;Object=0;
+            return !object || MiniMapResidentMetadata::Release(object);
+        }
+        ~ProfileRetention(){if(Object)Release();}
+    };
+    bool ProfileCDORelationship(uintptr_t type,uintptr_t cdo,int32_t expectedIndex)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        ProfileReader read;uintptr_t current=0,actual=0;uint32_t flags=0;A::IdentityObservation observation;
+        return ProfileTransient(cdo,sizeof(SDK::UObject),&observation,A::IdentityRole::LookupResult,0,cdo) &&
+            observation.Index==expectedIndex && observation.Serial>=0 &&
+            read.Read(cdo+8,flags) && (flags&0x10) && read.Read(cdo+0x10,actual) && actual==type &&
+            read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),current) && current==cdo &&
+            ProfileDerives(cdo,reinterpret_cast<const SDK::UClass*>(type))==ProfileCheck::Matches;
+    }
+    // The caller holds the class and owns the final publication transaction.
+    // Leave the CDO held for final revalidation and any stable template inventory.
+    template<class Context> bool ProfileNativeCopy(uintptr_t type,P::Set& profiles,P::Profile& copy,
+        ProfileRetention& defaults,Context context,bool& nativeBuilder)
+    {
+        namespace A=MiniMapDefinitionAcquisition;
+        copy.Ownership=P::Backing::NativeCopy;copy.Source=P::Selection::NativeBuilderInput;
+        copy.Provenance=P::Origin::PlacementActorClass;copy.HighResolution=false;
+        copy.Status=P::State::Partial;copy.ActiveUse=P::Availability::Unverified;
+        P::Identity id;A::IdentityObservation observation;
+        // Optional positive identities remain truthful; zero never becomes {Index,0}.
+        if(ProfileIdentity(type,id,&observation))copy.VisualClass={id,P::Availability::Available};
+        else if(observation.Predicate!=A::IdentityPredicate::ZeroSerial)return false;
+        ProfileReader read;uintptr_t cdo=0;
+        if(!context() || !read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),cdo))return false;
+        profiles.Acquisition.CdoAbsent=!cdo;
+        if(!cdo || !ProfileTransient(cdo,sizeof(SDK::UObject),&observation,A::IdentityRole::LookupResult,0,cdo))return false;
+        defaults.Index=observation.Index;
+        if(!defaults.Retain(cdo,sizeof(SDK::UObject)))return false;
+        if(!context() || !ProfileCDORelationship(type,cdo,defaults.Index))return false;
+        if(ProfileIdentity(cdo,id,&observation))copy.Defaults={id,P::Availability::Available};
+        else if(observation.Predicate!=A::IdentityPredicate::ZeroSerial)return false;
+        profiles.Acquisition.CdoAvailability=copy.Defaults.Status;
+        const auto drone=g_types.DroneRail?ProfileDerives(cdo,g_types.DroneRail):ProfileCheck::Unverified;
+        const auto walkway=drone==ProfileCheck::NoMatch && g_types.Walkway?
+            ProfileDerives(cdo,g_types.Walkway):ProfileCheck::Unverified;
+        size_t meshOffset=0;
+        static_assert(offsetof(SDK::ACrDronePathPointConnection,SplineMesh)==0x708 &&
+            offsetof(SDK::ACrModularRampWalkway,SplineMesh)==0x6f8);
+        if(drone==ProfileCheck::Matches)
+        {copy.Construction={P::Mechanism::DroneRail,P::Availability::Available};meshOffset=offsetof(SDK::ACrDronePathPointConnection,SplineMesh);}
+        else if(walkway==ProfileCheck::Matches)
+        {copy.Construction={P::Mechanism::ModularWalkway,P::Availability::Available};meshOffset=offsetof(SDK::ACrModularRampWalkway,SplineMesh);}
+        else return drone==ProfileCheck::NoMatch && walkway==ProfileCheck::NoMatch;
+        nativeBuilder=true;
+        ++profiles.Acquisition.Classes;++profiles.Acquisition.Defaults;++profiles.Acquisition.NativeBuilders;
+        copy.ConstructionForwardAxis={0,P::Availability::Available};
+        copy.ConstructionTransform={{{},{},{1,1,1}},P::Availability::Available};
+        copy.ConstructionCrossSection={{{1,1},{1,1},{0,0},{0,0},0,0,{0,0,1}},P::Availability::Available};
+        uintptr_t mesh=0;copy.MeshRead=P::MeshAcquisition::BoundsReadFailed;
+        if(read.Read(cdo+meshOffset,mesh))ProfileMesh(mesh,copy);
+        profiles.Acquisition.NativeCopyMesh=copy.MeshRead;
+        return context() && ProfileCDORelationship(type,cdo,defaults.Index);
+    }
+    void PlacementProfiles(const SDK::UAuActorPlacementData* placement,Definition& definition,P::Set& profiles,
+        const P::Set* previous)
+    {
+        namespace B=MiniMapBuildingBlueprintIdentity;
+        auto& acquisition=profiles.Acquisition;
+        if(previous && previous->Generation==profiles.Generation && previous->Definition==profiles.Definition &&
+            previous->Acquisition.PlacementInventory==P::Availability::Available && !previous->Acquisition.NativeCopyAttempted &&
+            std::none_of(previous->Profiles.begin(),previous->Profiles.end(),[](const P::Profile& p)
+                {return p.Provenance==P::Origin::PlacementActorClass && P::Pending(p);}))
+        {
+            acquisition.ActorClassReference=previous->Acquisition.ActorClassReference;
+            acquisition.ResidentClass=previous->Acquisition.ResidentClass;
+            acquisition.CanonicalClassPath=previous->Acquisition.CanonicalClassPath;
+            acquisition.ResidentLookup=previous->Acquisition.ResidentLookup;
+            acquisition.IdentityValidation=previous->Acquisition.IdentityValidation;
+            acquisition.LookupValidation=previous->Acquisition.LookupValidation;
+            acquisition.PublicationIdentity=previous->Acquisition.PublicationIdentity;
+            acquisition.TraversalZero=previous->Acquisition.TraversalZero;
+            acquisition.PersistentClassIdentity=previous->Acquisition.PersistentClassIdentity;
+            acquisition.NativeNumericalCopy=previous->Acquisition.NativeNumericalCopy;
+            acquisition.NativeCopyMesh=previous->Acquisition.NativeCopyMesh;
+            acquisition.ResidentLookupExecuted=previous->Acquisition.ResidentLookupExecuted;
+            acquisition.ResidentLookupCompleted=previous->Acquisition.ResidentLookupCompleted;
+            acquisition.ResidentObjectFound=previous->Acquisition.ResidentObjectFound;
+            acquisition.CdoAbsent=previous->Acquisition.CdoAbsent;
+            acquisition.CdoAvailability=previous->Acquisition.CdoAvailability;
+            for(const auto& profile:previous->Profiles)
+                if(profile.Provenance==P::Origin::PlacementActorClass)profiles.Profiles.push_back(profile);
+            return; // Other pending sources must not retraverse settled placement metadata.
+        }
+        if(definition.CanonicalBlueprint)definition.ActorClassReference=P::Availability::Available;
+        acquisition.ActorClassReference=definition.ActorClassReference;
+        acquisition.ResidentClass=P::Availability::Pending;
+        acquisition.CanonicalClassPath=definition.CanonicalBlueprint;
+        acquisition.ResidentLookup=P::ClassLookup::Unattempted;acquisition.IdentityValidation={};
+        acquisition.LookupValidation={};acquisition.PublicationIdentity={};acquisition.TraversalZero={};
+        acquisition.ResidentLookupExecuted=false;acquisition.ResidentLookupCompleted=false;acquisition.ResidentObjectFound=false;
+        acquisition.CdoAbsent=false;acquisition.CdoAvailability=P::Availability::Unverified;
+        const auto world=MiniMapMap::GetWorld();
+        if(!world || world!=g_world)
+        {profiles.Inventory=P::Availability::Pending;return;}
+        if(!MiniMapResidentMetadata::Available())
+        {acquisition.ResidentLookup=P::ClassLookup::FacilityUnavailable;profiles.Inventory=P::Availability::Pending;return;}
+        if(!definition.CanonicalBlueprint && !definition.IdentityInterrupted &&
+            definition.ActorClassReference!=P::Availability::Unsupported &&
+            definition.ActorClassReference!=P::Availability::Invalid && definition.IdentityObservation!=g_observation)
+        {
+            definition.IdentityObservation=g_observation;++g_metrics.Conversions;
+            const auto result=B::Resolve(placement,g_types.Placement,
+                {placement->Index,definition.NameIndex,definition.NameNumber,definition.Id,definition.ObjectSerial});
+            // Conversion failures also include malformed text. Only a copied
+            // empty authored reference establishes Missing; do not label an
+            // invalid nonempty class path as an absent property.
+            SDK::FSoftObjectPtr reference{};ProfileReader read;
+            static_assert(sizeof(reference)==0x28 && offsetof(SDK::UAuActorPlacementData,ActorClass)==0x38);
+            const bool missing=result.State==B::Status::Invalid &&
+                (result.Failure==B::Issue::ReturnedLength || result.Failure==B::Issue::CanonicalPath) &&
+                read.Read(reinterpret_cast<uintptr_t>(placement)+offsetof(SDK::UAuActorPlacementData,ActorClass),reference) &&
+                reference.ObjectID.AssetPath.PackageName.ComparisonIndex==0 && reference.ObjectID.AssetPath.PackageName.Number==0 &&
+                reference.ObjectID.AssetPath.AssetName.ComparisonIndex==0 && reference.ObjectID.AssetPath.AssetName.Number==0 &&
+                reference.ObjectID.SubPathString.Num()<=1;
+            definition.CanonicalBlueprint=result.Path;
+            definition.IdentityInterrupted=result.State==B::Status::Interrupted;
+            definition.ActorClassReference=result.Path?P::Availability::Available:
+                result.State==B::Status::Invalid?
+                    (missing?P::Availability::Unsupported:P::Availability::Invalid):
+                result.State==B::Status::Interrupted?P::Availability::Invalid:P::Availability::Pending;
+            if(result.Path)++g_metrics.ConversionSuccess;
+        }
+        acquisition.ActorClassReference=definition.ActorClassReference;
+        if(!definition.CanonicalBlueprint)
+        {
+            acquisition.CanonicalClassPath.reset();
+            acquisition.ResidentLookup=definition.ActorClassReference==P::Availability::Invalid?
+                P::ClassLookup::CanonicalInvalid:P::ClassLookup::CanonicalUnavailable;
+            acquisition.ResidentClass=definition.ActorClassReference==P::Availability::Pending ||
+                definition.ActorClassReference==P::Availability::Unverified?P::Availability::Pending:
+                definition.ActorClassReference;
+            if(acquisition.ResidentClass==P::Availability::Pending)profiles.Inventory=P::Availability::Pending;
+            return;
+        }
+        const auto& path=*definition.CanonicalBlueprint;
+        acquisition.CanonicalClassPath=definition.CanonicalBlueprint;
+        const int length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),nullptr,0);
+        if(length<=0){acquisition.ResidentLookup=P::ClassLookup::CanonicalInvalid;acquisition.ResidentClass=P::Availability::Invalid;return;}
+        std::wstring wide(size_t(length),L'\0');
+        if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),wide.data(),length)!=length)
+        {acquisition.ResidentLookup=P::ClassLookup::CanonicalInvalid;acquisition.ResidentClass=P::Availability::Invalid;return;}
+        const auto context=[&]()
+        {
+            P::Identity current;
+            return world==MiniMapMap::GetWorld() && world==g_world && profiles.Generation==g_generation &&
+                MiniMapResidentMetadata::Available() && profiles.Definition.Status==P::Availability::Available &&
+                ProfileIdentity(reinterpret_cast<uintptr_t>(placement),current) && current==profiles.Definition.Value;
+        };
+        auto* hooks=GetHooks();auto* engine=hooks?hooks->Engine:nullptr;
+        const auto find=engine && engine->GetStaticFindObjectByNameAddress?engine->GetStaticFindObjectByNameAddress():0;
+        uintptr_t type=0;
+        if(!find)
+        {acquisition.ResidentLookup=P::ClassLookup::FacilityUnavailable;profiles.Inventory=P::Availability::Pending;return;}
+        acquisition.ResidentLookupExecuted=true;
+        acquisition.ResidentLookupCompleted=MiniMapResidentMetadata::FindResident(find,0,wide.c_str(),false,type);
+        if(!acquisition.ResidentLookupCompleted)
+        {acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;}
+        if(!type)
+        {acquisition.ResidentLookup=P::ClassLookup::ReturnedNull;profiles.Inventory=P::Availability::Pending;return;} // Resident-only miss, never load.
+        acquisition.ResidentObjectFound=true;
+        namespace A=MiniMapDefinitionAcquisition;
+        if(!MiniMapResidentMetadata::Available() || world!=MiniMapMap::GetWorld() || world!=g_world || profiles.Generation!=g_generation)
+        {acquisition.IdentityValidation.Predicate=A::IdentityPredicate::ContextChanged;profiles.Inventory=P::Availability::Pending;return;}
+        if(!ProfileTransient(type,sizeof(SDK::UObject),&acquisition.IdentityValidation,A::IdentityRole::LookupResult,0,type))
+        {acquisition.LookupValidation=acquisition.IdentityValidation;acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
+        acquisition.LookupValidation=acquisition.IdentityValidation;
+        // Retain the eligible UObject before extended class inspection. Retain
+        // itself rechecks quiet-game-thread admission and slot correspondence.
+        if(!MiniMapResidentMetadata::Retain(type,sizeof(SDK::UObject)))
+        {
+            acquisition.IdentityValidation.Predicate=A::IdentityPredicate::RetainFailed;
+            acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;
+        }
+        ProfileRetention retained{type};
+        ProfileRetention defaults;
+        P::Profile copy;bool nativeBuilder=false,ownersValid=false;
+        acquisition.NativeCopyAttempted=true;acquisition.NativeNumericalCopy=P::Availability::Pending;
+        const auto first=profiles.Profiles.size();bool accepted=false;
+        // Early inspection failures leave this lambda, not the retained scope.
+        // No caller callback, loading, yielding or Blueprint execution occurs.
+        auto inspect=[&]()
+        {
+            if(!MiniMapResidentMetadata::Available() || world!=MiniMapMap::GetWorld() || world!=g_world || profiles.Generation!=g_generation)
+            {
+                acquisition.IdentityValidation.Predicate=A::IdentityPredicate::ContextChanged;
+                acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;
+            }
+            if(!ProfileTransient(type,sizeof(SDK::UObject),&acquisition.IdentityValidation,A::IdentityRole::LookupResult,0,type) ||
+                acquisition.IdentityValidation.Index!=acquisition.LookupValidation.Index)
+            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
+            const auto actor=ProfileActorClass(type,&acquisition.IdentityValidation,&acquisition.TraversalZero);
+            if(actor==ProfileCheck::NoMatch)
+            {acquisition.ResidentLookup=P::ClassLookup::TypeRejected;acquisition.ResidentClass=P::Availability::Invalid;return;}
+            if(actor!=ProfileCheck::Matches)
+            {
+                acquisition.ResidentLookup=actor==ProfileCheck::Invalid?P::ClassLookup::IdentityRejected:P::ClassLookup::IdentityUnverified;
+                acquisition.ResidentClass=actor==ProfileCheck::Unverified?P::Availability::Pending:P::Availability::Invalid;
+                if(acquisition.ResidentClass==P::Availability::Pending)profiles.Inventory=P::Availability::Pending;
+                return;
+            }
+            acquisition.ResidentLookup=P::ClassLookup::ClassValidated;
+            P::Identity before,after;
+            const bool publishable=ProfileIdentity(type,before,&acquisition.PublicationIdentity);
+            acquisition.PublicationIdentity.Role=A::IdentityRole::PublicationOwner;
+            acquisition.PublicationIdentity.IsLookupResult=true;
+            acquisition.IdentityValidation=acquisition.PublicationIdentity;
+            if(!publishable && acquisition.PublicationIdentity.Predicate!=A::IdentityPredicate::ZeroSerial)
+            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
+            ownersValid=ProfileNativeCopy(type,profiles,copy,defaults,context,nativeBuilder);
+            if(!ownersValid)
+            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
+            if(!nativeBuilder)
+            {
+                acquisition.NativeNumericalCopy=P::Availability::Unsupported;
+                // Stable template-only observations retain their existing settled
+                // reuse. Only native copies/transient owners require refresh.
+                acquisition.NativeCopyAttempted=!publishable || copy.Defaults.Status!=P::Availability::Available;
+            }
+            // Templates still need stable class AND CDO owners. Never use the
+            // numerical-copy contract as permission to publish template identities.
+            if(publishable && copy.Defaults.Status==P::Availability::Available)
+                ProfileClass(reinterpret_cast<const SDK::UClass*>(type),false,profiles,P::Origin::PlacementActorClass,
+                    &acquisition.CdoAbsent,!nativeBuilder);
+            P::Identity finalDefaults;A::IdentityObservation finalClass;
+            const bool stableClass=!publishable || (ProfileIdentity(type,after) && before==after);
+            const bool stableDefaults=copy.Defaults.Status!=P::Availability::Available ||
+                (ProfileIdentity(defaults.Object,finalDefaults) && finalDefaults==copy.Defaults.Value);
+            if(!context() || !ProfileTransient(type,sizeof(SDK::UClass),&finalClass,A::IdentityRole::LookupResult,0,type) ||
+                finalClass.Index!=acquisition.LookupValidation.Index || finalClass.Serial<0 ||
+                ProfileActorClass(type)!=ProfileCheck::Matches || !ProfileCDORelationship(type,defaults.Object,defaults.Index) ||
+                !stableClass || !stableDefaults)
+            {
+                acquisition.IdentityValidation.Predicate=!stableClass || !stableDefaults?
+                    A::IdentityPredicate::IdentityChanged:A::IdentityPredicate::ContextChanged;
+                acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;
+            }
+            if(nativeBuilder && copy.MeshRead==P::MeshAcquisition::Copied && copy.Geometry)
+            {
+                // Allocate before releasing owners; failure is contained by the
+                // transaction. No seal is exposed until both releases succeed.
+                copy.CopyObservation=std::make_shared<const P::NativeCopyObservation>();
+                profiles.Profiles.reserve(profiles.Profiles.size()+1);
+            }
+            accepted=true;
+        };
+        try{inspect();}
+        catch(...)
+        {
+            profiles.Profiles.resize(first);accepted=false;
+            acquisition.ResidentLookup=P::ClassLookup::Interrupted;
+            acquisition.ResidentClass=P::Availability::Pending;profiles.Inventory=P::Availability::Pending;
+        } // The common exit attempts each successful retention's release once.
+        const bool contextValid=context();
+        const bool defaultsReleased=defaults.Release();
+        const bool released=retained.Release();
+        if(!contextValid || !defaultsReleased || !released || !context())
+        {
+            acquisition.IdentityValidation.Predicate=!defaultsReleased || !released?A::IdentityPredicate::ReleaseFailed:A::IdentityPredicate::ContextChanged;
+            acquisition.ResidentLookup=P::ClassLookup::Interrupted;acquisition.ResidentClass=P::Availability::Pending;
+            profiles.Inventory=P::Availability::Pending;accepted=false;
+        }
+        if(!accepted){profiles.Profiles.resize(first);return;}
+        if(nativeBuilder && copy.MeshRead==P::MeshAcquisition::Copied && copy.Geometry)
+        {
+            // Publish the complete observation only after all required releases.
+            // Capacity was reserved above; Profile moves own no borrowed pointers.
+            profiles.Profiles.insert(profiles.Profiles.begin()+first,std::move(copy));
+            acquisition.NativeNumericalCopy=P::Availability::Available;
+        }
+        else if(nativeBuilder)profiles.Inventory=P::Availability::Pending;
+        acquisition.PersistentClassIdentity=std::any_of(profiles.Profiles.begin()+first,profiles.Profiles.end(),[](const P::Profile& p)
+            {return p.VisualClass.Status==P::Availability::Available;})?P::Availability::Available:P::Availability::Unverified;
+        acquisition.ResidentClass=P::Availability::Available;
+    }
+    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline,Definition* definition=nullptr)
     {
         DefinitionGeometry shape;
-        if(spline)ResolveTypes(true); // Optional metadata is never an ordinary-building prerequisite.
-        if(!placement || !g_types.Config || !MiniMapResidentMetadata::Available() ||
-            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(placement),sizeof(SDK::UAuActorPlacementData))) return shape;
-        auto readTemplate=[&](const SDK::UClass* type)
+        std::shared_ptr<P::Set> profiles;
+        if(spline)
         {
+            profiles=std::make_shared<P::Set>();profiles->Generation=g_generation;
+            profiles->Definition.Status=P::Availability::Pending;
+            profiles->Inventory=P::Availability::Pending;
+            shape.Profiles=profiles;
+        }
+        if(spline)ResolveTypes(true); // Optional metadata is never an ordinary-building prerequisite.
+        if(!placement || (!spline && !g_types.Config) || !MiniMapResidentMetadata::Available() ||
+            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(placement),sizeof(SDK::UAuActorPlacementData))) return shape;
+        if(profiles)
+        {
+            profiles->Inventory=P::Availability::Available;
+            profiles->Acquisition.Placement=P::Availability::Available;
+            profiles->Acquisition.TraitTypesReady=g_types.CosmeticTrait && g_types.VisualTrait;
+            P::Identity id;
+            if(ProfileIdentity(reinterpret_cast<uintptr_t>(placement),id))profiles->Definition={id,P::Availability::Available};
+            if(definition)PlacementProfiles(placement,*definition,*profiles,
+                definition->Geometry && definition->Geometry->Profiles?definition->Geometry->Profiles.get():nullptr);
+            else profiles->Inventory=P::Availability::Pending;
+            profiles->Acquisition.PlacementInventory=profiles->Inventory;
+            profiles->Inventory=profiles->Acquisition.TraitTypesReady?P::Availability::Available:P::Availability::Pending;
+        }
+        auto finish=[&]()
+        {
+            profiles->Acquisition.MassInventory=profiles->Inventory;
+            if(profiles->Acquisition.PlacementInventory==P::Availability::Pending)
+                profiles->Inventory=P::Availability::Pending;
+            FinalizeProfiles(*profiles);
+        };
+        auto readTemplate=[&](const SDK::UClass* type,bool highResolution)
+        {
+            if(profiles)
+            {
+                ProfileClass(type,highResolution,*profiles);
+            }
             // Do not call GetDefaultObject: that can create/load a CDO. Only
             // already resident, hard-referenced template defaults are inspected.
             const auto* object=type?type->ClassDefaultObject:nullptr;
@@ -380,35 +1066,92 @@ namespace
             }
         };
         const auto* config=placement->EntityType.EntityConfigPtr;
+        if(profiles)
+        {
+            // This SDK field is a transient native cache, distinct from the
+            // authored EntityConfig soft reference. Null means unexamined, not
+            // an available, empty inventory. Do not load or guess its target.
+            profiles->Acquisition.MassCacheAbsent=!config;
+            profiles->Acquisition.EntityConfig=config?P::Availability::Available:P::Availability::Pending;
+            if(!config)profiles->Inventory=P::Availability::Pending;
+        }
         std::array<const SDK::UMassEntityConfigAsset*,32> visited={};
         for(size_t depth=0;config && depth<visited.size();++depth)
         {
-            if((reinterpret_cast<uintptr_t>(config)&7) || !IsClass(config,g_types.Config) ||
-                !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(config),sizeof(SDK::UMassEntityConfigAsset)) ||
+            const auto configKind=ObserveClass(config,g_types.Config);
+            const bool configReadable=configKind==ClassObservation::Matches &&
+                MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(config),sizeof(SDK::UMassEntityConfigAsset));
+            if(profiles && (configKind==ClassObservation::Unavailable ||
+                (configKind==ClassObservation::Matches && !configReadable)))
+            {
+                shape.Issue=GeometryIssue::InvalidArray; // Preserve the existing admission result.
+                profiles->Acquisition.EntityConfig=P::Availability::Pending;
+                profiles->Inventory=P::Availability::Pending;finish();
+                return shape;
+            }
+            if((reinterpret_cast<uintptr_t>(config)&7) || !configReadable ||
                 std::find(visited.begin(),visited.begin()+depth,config)!=visited.begin()+depth)
-            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            {
+                shape.Issue=GeometryIssue::InvalidArray;
+                if(profiles){profiles->Acquisition.EntityConfig=P::Availability::Invalid;profiles->Inventory=P::Availability::Invalid;finish();}
+                return shape;
+            }
             visited[depth]=config;
+            if(profiles)++profiles->Acquisition.Configs;
+            if(profiles)
+            {
+                P::Identity id;
+                if(ProfileIdentity(reinterpret_cast<uintptr_t>(config),id))profiles->Resources.push_back(id);
+                else profiles->Inventory=P::Availability::Pending;
+            }
             const auto& traits=config->Config.Traits;
             if(traits.Num()<0 || traits.Num()>256 || traits.Max()<traits.Num() || (traits.Num() && !traits.GetDataPtr()))
-            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            {
+                shape.Issue=GeometryIssue::InvalidArray;
+                if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
+                return shape;
+            }
             if(traits.Num() && !MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(traits.GetDataPtr()),
                 size_t(traits.Num())*sizeof(void*),alignof(void*)))
-            { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+            {
+                shape.Issue=GeometryIssue::InvalidArray;
+                if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
+                return shape;
+            }
             for(const auto* trait:traits)
             {
-                if(reinterpret_cast<uintptr_t>(trait)&7) { shape.Issue=GeometryIssue::InvalidArray; return shape; }
+                if(profiles)++profiles->Acquisition.Traits;
+                if(profiles)
+                {
+                    P::Identity id;
+                    if(ProfileIdentity(reinterpret_cast<uintptr_t>(trait),id))profiles->Resources.push_back(id);
+                    else profiles->Inventory=P::Availability::Pending;
+                }
+                if(reinterpret_cast<uintptr_t>(trait)&7)
+                {
+                    shape.Issue=GeometryIssue::InvalidArray;
+                    if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
+                    return shape;
+                }
                 if(!shape.TargetingBox.Valid && IsClass(trait,g_types.TargetTrait) &&
                     MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(trait),sizeof(SDK::UCrBuildingAggroTargetDataTrait)))
                     shape.TargetingBox=MiniMapBuildingGeometry::Copy(static_cast<const SDK::UCrBuildingAggroTargetDataTrait*>(trait)->BuildingBoundingBox);
-                if(spline && IsClass(trait,g_types.CosmeticTrait))
+                const auto cosmetic=spline?ObserveClass(trait,g_types.CosmeticTrait):ClassObservation::Other;
+                const auto visualKind=spline && cosmetic!=ClassObservation::Matches?
+                    ObserveClass(trait,g_types.VisualTrait):ClassObservation::Other;
+                if(profiles && (cosmetic==ClassObservation::Unavailable || visualKind==ClassObservation::Unavailable))
+                    profiles->Inventory=P::Availability::Pending;
+                if(spline && cosmetic==ClassObservation::Matches)
                 {
+                    ++profiles->Acquisition.VisualTraits;
                     const auto* visual=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
-                    readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
+                    readTemplate(visual->HighResTemplateActor,true); readTemplate(visual->LowResTemplateActor,false);
                 }
-                else if(spline && IsClass(trait,g_types.VisualTrait))
+                else if(spline && visualKind==ClassObservation::Matches)
                 {
+                    ++profiles->Acquisition.VisualTraits;
                     const auto* visual=static_cast<const SDK::UMassVisualizationTrait*>(trait);
-                    readTemplate(visual->HighResTemplateActor); readTemplate(visual->LowResTemplateActor);
+                    readTemplate(visual->HighResTemplateActor,true); readTemplate(visual->LowResTemplateActor,false);
                 }
             }
             config=config->Config.Parent;
@@ -416,20 +1159,173 @@ namespace
         // Partial resident sources are useful, but do not establish full visual
         // coverage. In particular Blueprint construction scripts, dynamic poles,
         // foundations and mesh/component variants may add geometry.
+        if(profiles)
+        {
+            if(config)profiles->Inventory=P::Availability::Pending; // Parent traversal did not establish absence.
+            finish();
+        }
         return shape;
+    }
+    template<class T> void PreserveKnown(P::Field<T>& current,const P::Field<T>& previous)
+    {
+        if((current.Status==P::Availability::Pending || current.Status==P::Availability::Unverified) &&
+            previous.Status!=P::Availability::Pending && previous.Status!=P::Availability::Unverified)
+            current=previous;
+    }
+    bool Compatible(const P::Field<P::Identity>& current,const P::Field<P::Identity>& previous)
+    {
+        const bool currentKnown=current.Status==P::Availability::Available || current.Status==P::Availability::Invalid;
+        const bool previousKnown=previous.Status==P::Availability::Available || previous.Status==P::Availability::Invalid;
+        return !currentKnown || !previousKnown || current.Value==previous.Value;
+    }
+    bool Invalid(const P::Profile& profile)
+    {
+        return profile.VisualClass.Status==P::Availability::Invalid || profile.Defaults.Status==P::Availability::Invalid ||
+            profile.TemplateOwner.Status==P::Availability::Invalid || profile.Template.Status==P::Availability::Invalid ||
+            profile.Construction.Status==P::Availability::Invalid || profile.TemplateTransform.Status==P::Availability::Invalid ||
+            profile.ConstructionTransform.Status==P::Availability::Invalid || profile.TemplateCrossSection.Status==P::Availability::Invalid ||
+            profile.ConstructionCrossSection.Status==P::Availability::Invalid || profile.TemplateForwardAxis.Status==P::Availability::Invalid ||
+            profile.ConstructionForwardAxis.Status==P::Availability::Invalid ||
+            profile.MeshRead==P::MeshAcquisition::ClassMismatch || profile.MeshRead==P::MeshAcquisition::InvalidBounds ||
+            (profile.Geometry && profile.Geometry->LocalBounds.Status==P::Availability::Invalid);
+    }
+    bool SameOwner(const P::Field<P::Identity>& a,const P::Field<P::Identity>& b)
+    {
+        return a.Status==P::Availability::Available && b.Status==P::Availability::Available &&
+            a.Value.Index>=0 && a.Value.Serial>0 && a.Value==b.Value;
+    }
+    bool SameProfile(const P::Profile& current,const P::Profile& previous)
+    {
+        if(P::Copied(current) || P::Copied(previous))return false;
+        return current.Provenance==previous.Provenance && current.HighResolution==previous.HighResolution && current.Source==previous.Source &&
+            SameOwner(current.VisualClass,previous.VisualClass) && SameOwner(current.Defaults,previous.Defaults) &&
+            (current.Source!=P::Selection::Candidate ||
+                (SameOwner(current.TemplateOwner,previous.TemplateOwner) && SameOwner(current.Template,previous.Template))) &&
+            (current.Construction.Status!=P::Availability::Available || previous.Construction.Status!=P::Availability::Available ||
+                current.Construction.Value==previous.Construction.Value);
+    }
+    bool SameProfileGroup(const P::Profile& current,const P::Profile& previous)
+    {
+        if(P::Copied(current) || P::Copied(previous))return false;
+        return current.Provenance==previous.Provenance && current.HighResolution==previous.HighResolution && current.Source==previous.Source &&
+            SameOwner(current.VisualClass,previous.VisualClass) && SameOwner(current.Defaults,previous.Defaults) &&
+            (current.Source!=P::Selection::Candidate || SameOwner(current.TemplateOwner,previous.TemplateOwner));
+    }
+    bool SameResources(const P::Set& current,const P::Set& previous)
+    {
+        if(current.Inventory!=P::Availability::Pending)return current.Resources==previous.Resources;
+        return std::all_of(current.Resources.begin(),current.Resources.end(),[&](P::Identity id)
+            {return std::find(previous.Resources.begin(),previous.Resources.end(),id)!=previous.Resources.end();});
+    }
+    bool SameResolvedProfileIdentities(const P::Set& current,const P::Set& previous)
+    {
+        auto changed=[](const auto& a,const auto& b)
+        {
+            const bool knownA=a.Status==P::Availability::Available || a.Status==P::Availability::Invalid;
+            const bool knownB=b.Status==P::Availability::Available || b.Status==P::Availability::Invalid;
+            return knownA && knownB && a.Value!=b.Value;
+        };
+        for(const auto& a:current.Profiles)
+            for(const auto& b:previous.Profiles)
+                if(!P::Copied(a) && !P::Copied(b) && a.Provenance==b.Provenance && a.HighResolution==b.HighResolution && a.Source==b.Source &&
+                    (changed(a.VisualClass,b.VisualClass) || changed(a.TemplateOwner,b.TemplateOwner) ||
+                        changed(a.Template,b.Template) || changed(a.Defaults,b.Defaults)))return false;
+        return true;
+    }
+    bool SameDefinition(const P::Set& current,const P::Set& previous)
+    {
+        return current.Generation==previous.Generation && SameOwner(current.Definition,previous.Definition) &&
+            SameResources(current,previous) && SameResolvedProfileIdentities(current,previous);
+    }
+    void PreserveProfiles(P::Set& current,const P::Set& previous)
+    {
+        if(!SameDefinition(current,previous))return;
+        std::vector<bool> used(previous.Profiles.size());
+        for(auto& profile:current.Profiles)
+        {
+            if(P::Copied(profile))continue; // Indivisible; never merge fields from another acquisition.
+            size_t match=previous.Profiles.size(),matches=0;
+            for(size_t i=0;i<previous.Profiles.size();++i)
+                if(!used[i] && SameProfile(profile,previous.Profiles[i])){match=i;++matches;}
+            if(matches!=1)continue;
+            used[match]=true;const auto& old=previous.Profiles[match];
+            PreserveKnown(profile.VisualClass,old.VisualClass);PreserveKnown(profile.Defaults,old.Defaults);
+            PreserveKnown(profile.TemplateOwner,old.TemplateOwner);PreserveKnown(profile.Template,old.Template);
+            PreserveKnown(profile.Construction,old.Construction);PreserveKnown(profile.TemplateTransform,old.TemplateTransform);
+            PreserveKnown(profile.ConstructionTransform,old.ConstructionTransform);
+            PreserveKnown(profile.TemplateCrossSection,old.TemplateCrossSection);
+            PreserveKnown(profile.ConstructionCrossSection,old.ConstructionCrossSection);
+            PreserveKnown(profile.TemplateForwardAxis,old.TemplateForwardAxis);
+            PreserveKnown(profile.ConstructionForwardAxis,old.ConstructionForwardAxis);
+            if((profile.ActiveUse==P::Availability::Pending || profile.ActiveUse==P::Availability::Unverified) &&
+                old.ActiveUse!=P::Availability::Pending && old.ActiveUse!=P::Availability::Unverified)
+                profile.ActiveUse=old.ActiveUse;
+            // A new mesh observation must stand on its own. Without a persistent
+            // mesh key, never restore old bounds over a null/failed/new observation.
+            if(!Invalid(profile))
+            {
+                if(profile.Status!=P::State::Complete && old.Status==P::State::Complete)profile.Status=old.Status;
+                else if(profile.Status==P::State::Pending && old.Status!=P::State::Pending)profile.Status=old.Status;
+            }
+        }
+        if(current.Inventory==P::Availability::Pending)
+            for(size_t i=0;i<previous.Profiles.size();++i)
+            {
+                if(used[i] || P::Copied(previous.Profiles[i]) || P::Pending(previous.Profiles[i]))continue;
+                if(previous.Profiles[i].Provenance==P::Origin::PlacementActorClass &&
+                    (current.Acquisition.NativeCopyAttempted || current.Acquisition.ResidentLookupExecuted))continue;
+                const bool replaced=std::any_of(current.Profiles.begin(),current.Profiles.end(),[&](const P::Profile& profile)
+                    {return SameProfileGroup(profile,previous.Profiles[i]) && !SameProfile(profile,previous.Profiles[i]);});
+                if(!replaced)current.Profiles.push_back(previous.Profiles[i]);
+            }
+        PreserveKnown(current.Definition,previous.Definition);
+        if(current.Inventory==P::Availability::Pending)current.Resources=previous.Resources;
+        FinalizeProfiles(current);
     }
     std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool spline,bool measure=true)
     {
         // Ordinary definition geometry is copied once. The independent oracle
         // passes measure=false and still observes native geometry for comparison.
         if(measure && !spline && definition.Geometry)return definition.Geometry;
+        // Stable definition metadata is reusable; live spline geometry is copied below in Geometry().
+        if(measure && spline && definition.Geometry && definition.Geometry->Profiles &&
+            !P::NeedsRetry(*definition.Geometry->Profiles,g_generation))return definition.Geometry;
         if(definition.GeometryObservation!=g_observation || (spline && !definition.GeometryHasSpline))
         {
             definition.GeometryObservation=g_observation;
             definition.GeometryHasSpline=spline;
             const auto start=Clock::now();
             if(measure && !spline)++g_metrics.OrdinaryDefinitions;
-            auto shape=ResolveGeometry(placement,spline);
+            auto shape=ResolveGeometry(placement,spline,&definition);
+            if(spline && shape.Profiles && definition.Geometry && definition.Geometry->Profiles &&
+                P::NeedsRetry(*shape.Profiles,g_generation) &&
+                SameDefinition(*shape.Profiles,*definition.Geometry->Profiles))
+            {
+                const auto& previous=*definition.Geometry;
+                if(!shape.TargetingBox.Valid)shape.TargetingBox=previous.TargetingBox;
+                const bool preserveNative=!shape.Profiles->Acquisition.NativeCopyAttempted &&
+                    !previous.Profiles->Acquisition.NativeCopyAttempted;
+                if(preserveNative && !shape.HasSplineMesh && previous.HasSplineMesh)
+                {
+                    shape.SplineMeshBounds=previous.SplineMeshBounds;
+                    shape.SplineMeshCrossSection=previous.SplineMeshCrossSection;
+                    shape.VisualClassObjectIndex=previous.VisualClassObjectIndex;
+                    shape.SplineMeshObjectIndex=previous.SplineMeshObjectIndex;
+                    shape.SplineMeshNameIndex=previous.SplineMeshNameIndex;
+                    shape.SplineMeshNameNumber=previous.SplineMeshNameNumber;
+                    shape.HasSplineMesh=true;
+                }
+                if(preserveNative && !shape.HasRailExtension && previous.HasRailExtension)
+                {shape.RailEndpointExtension=previous.RailEndpointExtension;shape.HasRailExtension=true;}
+            }
+            if(spline && shape.Profiles && definition.Geometry && definition.Geometry->Profiles)
+            {
+                auto profiles=std::make_shared<P::Set>(*shape.Profiles);
+                PreserveProfiles(*profiles,*definition.Geometry->Profiles);
+                shape.Profiles=std::move(profiles);
+            }
+            if(shape.Profiles && definition.Geometry && definition.Geometry->Profiles &&
+                *shape.Profiles==*definition.Geometry->Profiles)shape.Profiles=definition.Geometry->Profiles;
             if(!definition.Geometry || !(*definition.Geometry==shape))
                 definition.Geometry=std::make_shared<const DefinitionGeometry>(std::move(shape));
             if(measure) g_metrics.DefinitionTime+=Ms(start);
@@ -678,6 +1574,7 @@ namespace
     }
     void Clear()
     {
+        MiniMapNativeVisualAccess::ResetWorld();
         Destroy();
 #if MINIMAP_DEBUG_UI
         MiniMapDebugText::Clear();
@@ -717,6 +1614,7 @@ namespace
         if(!manager || !ResolveTypes()) return false;
         if(g_offQuery.Constructed) return true;
         g_manager=manager; g_world=world;
+        MiniMapNativeVisualAccess::InitializeWorld(g_world,g_manager,g_generation);
         for(auto* q:{&g_offQuery,&g_splineQuery})
         {
             n.mass.queryConstruct(q->Storage.data(),reinterpret_cast<const uint8_t*>(subsystem)+0x38);
@@ -1314,6 +2212,15 @@ namespace MiniMapBuildingCollector
         return visitor(parameters->PlacementData,context)?DiagnosticVisitStatus::Visited:DiagnosticVisitStatus::VisitorRejected;
     }
 #endif
+    MiniMapVisualAccess::Observation ObserveNativeVisuals(const Record& record)
+    {
+        const MiniMapVisualAccess::Token token{record.Generation,{record.Index,record.Serial}};
+        return MiniMapNativeVisualAccess::Observe(token,[](uint64_t generation,const SDK::UWorld* world,const void* manager)
+        {
+            return g_initialized && MiniMapMap::GameplayReady() && generation==g_generation &&
+                world && world==g_world && world==MiniMapMap::GetWorld() && manager && manager==g_manager;
+        });
+    }
     void Shutdown()
     {
         if(!g_initialized) return;

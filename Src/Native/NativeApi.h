@@ -33,6 +33,7 @@ namespace SDK
     class USkeletalMesh;
     class USkeletalMeshComponent;
     class UActorComponent;
+    class AActor;
     class UTextureRenderTarget2D;
     class UStaticMeshComponent;
     class UStaticMesh;
@@ -60,6 +61,7 @@ namespace SDK
     class UCrMapMenuCategoryData;
     class UCrPlayerMapMenuDataComponent;
     class UMassEntitySubsystem;
+    class UMassActorSubsystem;
     class UScriptStruct;
 
     struct FCrAbandonBaseData;
@@ -354,6 +356,32 @@ namespace MiniMapNative
         }
     };
 
+    // CL-127004 Win64 register contracts verified against matching PE/PDB.
+    // Stack-only native output storage; never put these pointers in snapshots.
+    struct NativeComponentArray
+    {
+        SDK::UActorComponent** Data=nullptr;
+        int32_t Num=0,Max=0;
+    };
+    static_assert(sizeof(NativeComponentArray)==0x10);
+    struct NativeComponentClass {SDK::UClass* Class=nullptr;};
+    static_assert(sizeof(NativeComponentClass)==8);
+    struct VisualAccessApi
+    {
+        using ActorFromEntityFn=SDK::AActor* (*)(const SDK::UMassActorSubsystem*,MassEntityHandle,uint32_t);
+        // Nontrivial native FMassEntityHandle return: explicit hidden RDX output.
+        // TObjectKey<const AActor> is an 8-byte weak identity VALUE in R8.
+        using EntityFromActorFn=MassEntityHandle* (*)(const SDK::UMassActorSubsystem*,MassEntityHandle*,uint64_t);
+        // TSubclassOf storage passed indirectly in R8; native TArray returned in RDX.
+        using ComponentsFn=NativeComponentArray* (*)(const SDK::AActor*,NativeComponentArray*,const NativeComponentClass*);
+        // FTransform return uses aligned caller-owned RDX storage.
+        using ComponentTransformFn=SDK::FTransform* (*)(const SDK::USceneComponent*,SDK::FTransform*);
+        ActorFromEntityFn actorFromEntity=nullptr;
+        EntityFromActorFn entityFromActor=nullptr;
+        ComponentsFn components=nullptr;
+        ComponentTransformFn componentTransform=nullptr;
+    };
+
     struct TextureApi
     {
         using SubmitRenderCommandFn = void (*)(void*, const wchar_t*, uint32_t&, TStatId,
@@ -550,6 +578,7 @@ namespace MiniMapNative
         MassApi mass;
         GridDiagnosticApi gridDiagnostic;
         TextureApi texture;
+        VisualAccessApi visualAccess;
     };
 
 

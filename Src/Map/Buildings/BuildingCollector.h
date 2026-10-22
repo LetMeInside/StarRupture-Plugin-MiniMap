@@ -1,6 +1,8 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
+#include "Native/VisualAccessCore.h"
+#include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
 #include <array>
 #include <cstddef>
@@ -44,11 +46,13 @@ namespace MiniMapBuildingCollector
         uint32_t SplineMeshNameNumber = 0;
         bool HasSplineMesh = false, HasRailExtension = false;
         GeometryIssue Issue = GeometryIssue::MissingSource;
+        std::shared_ptr<const MiniMapBuildingSplineProfiles::Set> Profiles;
         bool operator==(const DefinitionGeometry&) const = default;
     };
     struct CurveSegment
     {
-        std::array<Point, 4> Controls = {}; // World-space cubic Bezier, Unreal units.
+        std::array<Point, 4> Controls = {}; // Copied world-space XYZ cubic Bezier, Unreal units; no entity transform applied.
+        // Initialized and reconstructed controls retain this verified world-space basis.
         double StartKey = 0, EndKey = 1;
         uint8_t Mode = 0; // Native EInterpCurveMode; constant jumps stay discontinuous.
         bool operator==(const CurveSegment&) const = default;
@@ -116,6 +120,8 @@ namespace MiniMapBuildingCollector
     enum class DiagnosticVisitStatus { Visited,VisitorRejected,CollectorUnavailable,WorldGenerationChanged,InvalidCopiedDefinition,StaleEntity,ParametersUnavailable };
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
 #endif
+    // Game-thread copied native access; no native pointers leave this call.
+    MiniMapVisualAccess::Observation ObserveNativeVisuals(const Record&);
     void Shutdown();
     // Diagnostic sink only. Never used to populate production records/caches.
     bool BeginComparison(const SDK::UWorld* world, const void* manager);

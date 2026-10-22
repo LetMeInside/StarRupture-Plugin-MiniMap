@@ -25,6 +25,10 @@ namespace MiniMapFingerprints
         uintptr_t getControlRotation = 0;
         uintptr_t isPlayerInForgottenEngine = 0;
         uintptr_t getComponentLocation = 0;
+        uintptr_t visualActorFromEntity = 0;
+        uintptr_t visualEntityFromActor = 0;
+        uintptr_t visualComponents = 0;
+        uintptr_t visualComponentTransform = 0;
 
         uintptr_t getAllActorsOfClass = 0;
         uintptr_t pointOfInterestStaticClass = 0;

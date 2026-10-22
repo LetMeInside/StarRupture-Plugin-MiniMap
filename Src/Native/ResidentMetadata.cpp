@@ -55,7 +55,10 @@ namespace
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
-    bool Lookup(uintptr_t address, uintptr_t type, const wchar_t* path, bool exact, uintptr_t& result) noexcept
+}
+namespace MiniMapResidentMetadata
+{
+    bool FindResident(uintptr_t address, uintptr_t type, const wchar_t* path, bool exact, uintptr_t& result) noexcept
     {
         using Find = SDK::UObject*(*)(SDK::UClass*, SDK::UObject*, const wchar_t*, bool);
         __try
@@ -66,9 +69,6 @@ namespace
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
-}
-namespace MiniMapResidentMetadata
-{
     bool Available() { return !g_uncertain && QuietGameThread(); }
     bool Validate(uintptr_t object, size_t extent)
     {
@@ -80,7 +80,7 @@ namespace MiniMapResidentMetadata
         int32_t index{}; MiniMapDefinitionAcquisition::Slot slot; SlotReader reader;
         if (!Available() || !Validate(object) || !reader.Read(object + 0xc, index) ||
             MiniMapDefinitionAcquisition::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), index, slot) != MiniMapDefinitionAcquisition::Status::Success ||
-            slot.Object != object || (slot.Flags & 0x10200000)) return false;
+            slot.Object != object || (slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags)) return false;
         serial = slot.Serial; return true;
     }
     bool Retain(uintptr_t object, size_t extent)
@@ -109,7 +109,7 @@ namespace MiniMapResidentMetadata
         bool coreHeld = false, expectedHeld = false;
         auto lookup = [&](uintptr_t type, const wchar_t* name, bool exact, uintptr_t& result)
         {
-            if (Lookup(address, type, name, exact, result)) return true;
+            if (FindResident(address, type, name, exact, result)) return true;
             Uncertain("resident lookup interrupted"); return false;
         };
         const auto read = [](uintptr_t object, uintptr_t& type) { return N::ReadMemory(object + 0x10, &type, sizeof(type)); };

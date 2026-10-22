@@ -7,6 +7,10 @@ namespace MiniMapResidentMetadata
 {
     // Synchronous game-thread operations only; no loading or object-table scan.
     bool Available();
+    // Shared existing ModLoader resident lookup operation, also used by capture.
+    // No binding/cache/load is introduced; callers provide the established
+    // Engine lookup address and own admission, identity and retention checks.
+    bool FindResident(uintptr_t address, uintptr_t type, const wchar_t* path, bool exact, uintptr_t& object) noexcept;
     bool Validate(uintptr_t object, size_t extent = 0x28);
     bool Serial(uintptr_t object, int32_t& serial);
     bool Retain(uintptr_t object, size_t extent = 0x28);

@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "NativeApi.h"
+#include "DefinitionAcquisitionCore.h"
 #include "Fingerprints.h"
 #include "plugin_helpers.h"
 
@@ -118,7 +119,7 @@ namespace MiniMapNative
         uintptr_t actual=0;uint32_t internalFlags=0,objectFlags=0;
         copy(chunk+itemOffset,0,actual);copy(chunk+itemOffset,8,internalFlags);copy(p,8,objectFlags);
         // PDB: Unreachable | Garbage; pending load/postload and destruction.
-        return actual==p&&!(internalFlags&0x10200000)&&!(objectFlags&0x1b400);
+        return actual==p&&!(internalFlags&MiniMapDefinitionAcquisition::UnusableObjectItemFlags)&&!(objectFlags&0x1b400);
     }
 
 
@@ -126,6 +127,8 @@ namespace MiniMapNative
         const MiniMapFingerprints::ResolvedAddresses& addresses)
     {
         Shutdown();
+        if(!addresses.visualActorFromEntity || !addresses.visualEntityFromActor ||
+            !addresses.visualComponents || !addresses.visualComponentTransform)return false;
 
         if (addresses.softObjectLoadSynchronous == 0 ||
             addresses.getBrushResourceAsTexture2D == 0 ||
@@ -478,6 +481,10 @@ namespace MiniMapNative
         g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
 #endif
 
+        g_nativeApi.visualAccess.actorFromEntity=reinterpret_cast<decltype(g_nativeApi.visualAccess.actorFromEntity)>(addresses.visualActorFromEntity);
+        g_nativeApi.visualAccess.entityFromActor=reinterpret_cast<decltype(g_nativeApi.visualAccess.entityFromActor)>(addresses.visualEntityFromActor);
+        g_nativeApi.visualAccess.components=reinterpret_cast<decltype(g_nativeApi.visualAccess.components)>(addresses.visualComponents);
+        g_nativeApi.visualAccess.componentTransform=reinterpret_cast<decltype(g_nativeApi.visualAccess.componentTransform)>(addresses.visualComponentTransform);
         g_initialized = true;
 
         LOG_INFO(

@@ -7,6 +7,7 @@
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
+#include "Native/ResidentMetadata.h"
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Native/CaptureRetirementCore.h"
@@ -261,18 +262,7 @@ namespace
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
 
-    bool FindResident(uintptr_t address, uintptr_t type, const wchar_t* path, bool exact, uintptr_t& object) noexcept
-    {
-        using Find = SDK::UObject*(*)(SDK::UClass*, SDK::UObject*, const wchar_t*, bool);
-        __try
-        {
-            object = reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(address)(
-                reinterpret_cast<SDK::UClass*>(type), nullptr, path, exact));
-            return true;
-        }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-    }
+    using MiniMapResidentMetadata::FindResident;
 
     enum class LightOperation { New, Flags, Register, Unregister, Destroy, ConstructFence, BeginFence, PollFence, DestroyFence };
     bool LightCall(LightOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr) noexcept
@@ -406,7 +396,7 @@ namespace
             if (!Read(object + 0xc, index, diagnostic) ||
                 !SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(api->asset.objectArray), index, slot), diagnostic) ||
                 (!diagnostic ? slot.Object != object : !diagnostic->Check(slot.Object == object, "identity slot object", object, slot.Object)) ||
-                (!diagnostic ? bool(slot.Flags & 0x10200000) : !diagnostic->Check(!(slot.Flags & 0x10200000), "identity slot flags", 0, slot.Flags & 0x10200000))) return false;
+                (!diagnostic ? bool(slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags) : !diagnostic->Check(!(slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags), "identity slot flags", 0, slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags))) return false;
             identity = {object, index, slot.Serial};
             return true;
         }
