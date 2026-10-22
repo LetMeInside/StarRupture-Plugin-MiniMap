@@ -16,6 +16,14 @@
 
 IPluginSelf* g_self = nullptr;
 IPluginSelf* GetSelf() { return g_self; }
+static MiniMapPluginInitHookBaseline g_pluginInitHookBaseline;
+MiniMapPluginInitHookBaseline GetPluginInitHookBaseline() { return g_pluginInitHookBaseline; }
+static void ResetPluginInitHookBaseline() { g_pluginInitHookBaseline = {}; }
+static void CapturePluginInitHookBaseline(IPluginSelf* self)
+{
+    auto* hooks=self?self->hooks:nullptr;
+    g_pluginInitHookBaseline={true,self,hooks,hooks?hooks->Engine:nullptr,hooks?hooks->ImGuiTextures:nullptr};
+}
 
 #ifdef MODLOADER_CLIENT_BUILD
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
@@ -294,6 +302,7 @@ extern "C"
         bool PluginInit(IPluginSelf* self)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInit,false,self);
+        ResetPluginInitHookBaseline();
 #ifdef MODLOADER_CLIENT_BUILD
         MiniMapCacheIdentity::Reset();
 #endif
@@ -531,6 +540,7 @@ extern "C"
 
         // Registration can replay startup events: prepare every owner first,
         // establish world identity before accepting experience completion.
+        CapturePluginInitHookBaseline(g_self);
         g_self->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
         g_self->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
         g_self->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
@@ -602,6 +612,7 @@ extern "C"
         MiniMapNative::Shutdown();
 #endif
 
+        ResetPluginInitHookBaseline();
         g_self = nullptr;
     }
 }

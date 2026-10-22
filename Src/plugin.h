@@ -5,6 +5,17 @@
 
 extern IPluginSelf* g_self;
 
+struct MiniMapPluginInitHookBaseline
+{
+    bool Captured = false;
+    const void* Self = nullptr;
+    const void* Hooks = nullptr;
+    const void* Engine = nullptr;
+    const void* ImGuiTextures = nullptr;
+};
+
+MiniMapPluginInitHookBaseline GetPluginInitHookBaseline();
+
 extern "C"
 {
     __declspec(dllexport) PluginInfo* GetPluginInfo();
