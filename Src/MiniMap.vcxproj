@@ -158,8 +158,6 @@
     <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineVisualSections.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineProfiles.h" />
-    <ClInclude Include="Map\Buildings\BuildingSplineAppearance.h" />
-    <ClInclude Include="Map\Buildings\BuildingSplineAppearance.inl" />
     <ClInclude Include="Map\Buildings\BuildingSplineEnvelope.h" />
     <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
