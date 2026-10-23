@@ -10,6 +10,10 @@
 #include <stdexcept>
 #include <limits>
 
+#ifdef MINIMAP_OCCLUSION_BENCHMARK
+#include <chrono>
+#endif
+
 // Standalone numerical planner; no renderer or runtime dependencies.
 namespace MiniMapBuildingSplineOcclusion
 {
@@ -48,6 +52,17 @@ namespace MiniMapBuildingSplineOcclusion
         RemovalDiagnostics Removed;
     };
 
+#ifdef MINIMAP_OCCLUSION_BENCHMARK
+    // Standalone-only phase measurement; absent from Client/Server builds.
+    struct BenchmarkPhases { double QueryMs=0,SubtractionMs=0; };
+    inline thread_local BenchmarkPhases MeasuredPhases;
+    struct BenchmarkTimer
+    {
+        double& Elapsed;
+        std::chrono::steady_clock::time_point Begin=std::chrono::steady_clock::now();
+        ~BenchmarkTimer(){Elapsed+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-Begin).count();}
+    };
+#endif
     namespace Detail
     {
         // Binary64 storage; widened intermediates where supported (MSVC long
@@ -211,18 +226,84 @@ namespace MiniMapBuildingSplineOcclusion
         }
     }
     struct BoundedOccluder { Occluder Value; AABB Box; };
+    // Balanced median BVH. Each canonical ordinal occurs in exactly one leaf.
+    // Bounds use endpoint min/max only: no overflowing extents, centers or bins.
+    class OccluderIndex
+    {
+        struct Node { AABB Box; size_t Begin=0,End=0,Left=0,Right=0; };
+        std::vector<Node> Nodes;
+        std::vector<size_t> Ordinals;
+        size_t BuildRange(const std::vector<BoundedOccluder>& values,size_t begin,size_t end,size_t axis)
+        {
+            AABB box=values[Ordinals[begin]].Box;
+            for(size_t i=begin+1;i<end;++i)for(size_t a=0;a<2;++a)
+            {
+                box.Min[a]=(std::min)(box.Min[a],values[Ordinals[i]].Box.Min[a]);
+                box.Max[a]=(std::max)(box.Max[a],values[Ordinals[i]].Box.Max[a]);
+            }
+            const size_t node=Nodes.size();Nodes.push_back({box,begin,end,0,0});
+            if(end-begin>8) // Leaf granularity only, never a population/work limit.
+            {
+                const size_t middle=begin+(end-begin)/2;
+                std::nth_element(Ordinals.begin()+begin,Ordinals.begin()+middle,Ordinals.begin()+end,
+                    [&](size_t a,size_t b)
+                    {
+                        const auto& x=values[a].Box;const auto& y=values[b].Box;
+                        if(x.Min[axis]!=y.Min[axis])return x.Min[axis]<y.Min[axis];
+                        if(x.Max[axis]!=y.Max[axis])return x.Max[axis]<y.Max[axis];
+                        return a<b;
+                    });
+                const size_t left=BuildRange(values,begin,middle,1-axis);
+                const size_t right=BuildRange(values,middle,end,1-axis);
+                Nodes[node].Left=left;Nodes[node].Right=right;
+            }
+            return node;
+        }
+        void QueryRange(size_t node,const AABB& box,const std::vector<BoundedOccluder>& values,
+            std::vector<size_t>& candidates) const
+        {
+            const auto& n=Nodes[node];
+            if(Disjoint(box,n.Box))return;
+            if(n.Left)
+            {QueryRange(n.Left,box,values,candidates);QueryRange(n.Right,box,values,candidates);}
+            else for(size_t i=n.Begin;i<n.End;++i)
+                if(!Disjoint(box,values[Ordinals[i]].Box))candidates.push_back(Ordinals[i]);
+        }
+    public:
+        void Build(const std::vector<BoundedOccluder>& values)
+        {
+            Nodes.clear();Ordinals.resize(values.size());
+            for(size_t i=0;i<values.size();++i)Ordinals[i]=i;
+            if(!values.empty())
+            {
+                Nodes.reserve(AddSize(values.size(),values.size())-1);
+                BuildRange(values,0,values.size(),0);
+            }
+        }
+        // Throws allocation/length failure to the planner transaction. Never
+        // returns a partial successful candidate set or falls back to scanning.
+        void Query(const AABB& box,const std::vector<BoundedOccluder>& values,std::vector<size_t>& candidates) const
+        {
+            candidates.clear();
+            if(!Nodes.empty())QueryRange(0,box,values,candidates);
+            std::sort(candidates.begin(),candidates.end());
+        }
+    };
     class PreparedOccluders
     {
         std::vector<BoundedOccluder> Values;
+        OccluderIndex Index;
         Status State=Status::Complete;
-        friend PreparedOccluders PrepareOccluders(std::span<const Occluder>);
+        template<bool Indexed> friend PreparedOccluders PrepareOccludersImpl(std::span<const Occluder>);
     public:
         Status GetStatus() const {return State;}
         const std::vector<BoundedOccluder>& Items() const {return Values;}
+        void Candidates(const AABB& box,std::vector<size_t>& output) const
+        {Detail::Require(State==Status::Complete,State);Index.Query(box,Values,output);}
     };
     // Validate/canonicalize and calculate each unchanged quad's AABB once, then
     // share this owned numerical set across all section transactions.
-    inline PreparedOccluders PrepareOccluders(std::span<const Occluder> input)
+    template<bool Indexed> inline PreparedOccluders PrepareOccludersImpl(std::span<const Occluder> input)
     {
         PreparedOccluders result;
         try
@@ -232,15 +313,18 @@ namespace MiniMapBuildingSplineOcclusion
             std::sort(result.Values.begin(),result.Values.end(),[](const auto& a,const auto& b)
             {const auto& x=a.Value;const auto& y=b.Value;
              if(x.Key!=y.Key)return x.Key<y.Key;if(x.Corners!=y.Corners)return x.Corners<y.Corners;return x.TopZ<y.TopZ;});
+            if constexpr(Indexed)result.Index.Build(result.Values);
         }
         catch(Status state){result.State=state;result.Values.clear();}
         catch(const std::bad_alloc&){result.State=Status::AllocationFailure;result.Values.clear();}
         catch(const std::length_error&){result.State=Status::AllocationFailure;result.Values.clear();}
         return result;
     }
+    inline PreparedOccluders PrepareOccluders(std::span<const Occluder> input)
+    {return PrepareOccludersImpl<true>(input);}
     // Input triangle interiors must not overlap. Shared edges must have
     // identical XYZ endpoints. No population, work or fragment quotas exist.
-    inline Result Plan(std::span<const Triangle> input,const PreparedOccluders& occluders)
+    template<bool Indexed> inline Result PlanImpl(std::span<const Triangle> input,const PreparedOccluders& occluders)
     {
         Result result;
         try
@@ -250,6 +334,7 @@ namespace MiniMapBuildingSplineOcclusion
             for(auto& triangle:triangles)Detail::Canonical(triangle);
             std::sort(triangles.begin(),triangles.end(),[](const Triangle& a,const Triangle& b)
                 {return a.Key!=b.Key?a.Key<b.Key:a.Vertices<b.Vertices;});
+            std::vector<size_t> candidates;
             for(const auto& triangle:triangles)
             {
                 const auto box=Bounds(triangle.Vertices);
@@ -258,11 +343,22 @@ namespace MiniMapBuildingSplineOcclusion
                     original.push_back({triangle.Vertices[i],{Detail::MakeEdge(triangle.Vertices[i],triangle.Vertices[(i+1)%3]),
                         Detail::MakeEdge(triangle.Vertices[i],triangle.Vertices[(i+2)%3])},2});
                 std::vector<Detail::Polygon> frontier{std::move(original)};
-                for(const auto& prepared:occluders.Items())
                 {
+#ifdef MINIMAP_OCCLUSION_BENCHMARK
+                    BenchmarkTimer queryTimer{MeasuredPhases.QueryMs};
+#endif
+                    if constexpr(Indexed)occluders.Candidates(box,candidates);
+                }
+                const size_t count=Indexed?candidates.size():occluders.Items().size();
+                for(size_t candidate=0;candidate<count;++candidate)
+                {
+                    const auto& prepared=occluders.Items()[Indexed?candidates[candidate]:candidate];
                     // Strict AABB separation only; boundary contact and every
                     // potentially intersecting quad still reach exact clipping.
                     if(Disjoint(box,prepared.Box))continue;
+#ifdef MINIMAP_OCCLUSION_BENCHMARK
+                    BenchmarkTimer subtractionTimer{MeasuredPhases.SubtractionMs};
+#endif
                     const auto& occluder=prepared.Value;
                     std::vector<Detail::Polygon> next;
                     for(auto& existing:frontier)
@@ -296,6 +392,18 @@ namespace MiniMapBuildingSplineOcclusion
         catch(const std::length_error&) {result.State=Status::AllocationFailure;result.Visible.clear();result.Removed={};}
         return result;
     }
+    inline Result Plan(std::span<const Triangle> input,const PreparedOccluders& occluders)
+    {return PlanImpl<true>(input,occluders);}
+#ifdef MINIMAP_OCCLUSION_REFERENCE_TESTS
+    // Standalone reference only. Same canonical preparation and unchanged
+    // subtraction, with the original all-occluder scan and no index allocation.
+    inline PreparedOccluders PrepareOccludersReference(std::span<const Occluder> input)
+    {return PrepareOccludersImpl<false>(input);}
+    inline Result PlanReference(std::span<const Triangle> input,const PreparedOccluders& occluders)
+    {return PlanImpl<false>(input,occluders);}
+    inline Result PlanReference(const Input& input)
+    {return PlanReference(input.Triangles,PrepareOccludersReference(input.Occluders));}
+#endif
     inline Result Plan(const Input& input)
     {return Plan(input.Triangles,PrepareOccluders(input.Occluders));}
 }

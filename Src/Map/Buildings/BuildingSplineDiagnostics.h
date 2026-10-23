@@ -83,6 +83,13 @@ namespace MiniMapBuildingSplineDiagnostics
         // Mirror Prepare's early-return order, rather than infer from aggregate reason bits.
         if(!record.HasSpline)return Cause::Other;
         if(!record.Curve || !sampled)return Cause::Sampling;
+        if(result && result->SyntheticThin)
+        {
+            if(!E::ThinIdentity(record))return Cause::Definition;
+            if(!sampled || !sampled->Complete())return Cause::Sampling;
+            if(result->Status==E::State::Partial || result->Status==E::State::Complete)return Cause::Drawable;
+            return (result->Reasons&(E::DegenerateFrame|E::DegenerateProjection))?Cause::RejectedCells:Cause::Sampling;
+        }
         const auto metadata=E::Metadata(record);
         if(!metadata)return Cause::NoProfileOwner;
         if(!record.DefinitionValid || metadata->Definition.Status!=P::Availability::Available ||

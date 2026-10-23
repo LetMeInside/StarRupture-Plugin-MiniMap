@@ -3,6 +3,7 @@
 #include "BuildingSplineGeometry.h"
 #include "BuildingSplineProfiles.h"
 #include <limits>
+#include <bit>
 
 // Pure copied-data preparation. These are bounds envelopes of logical paths,
 // not native deformed mesh surfaces or conservative collector admission bounds.
@@ -13,6 +14,7 @@ namespace MiniMapBuildingSplineEnvelope
     namespace P=MiniMapBuildingSplineProfiles;
     namespace V=MiniMapBuildingGeometryTypes;
     using XY=std::array<double,2>;
+    inline constexpr uint32_t NumericalPolicy=1;
     enum class State : uint8_t { Pending, Partial, Complete, Unsupported, Invalid };
     enum Reason : uint32_t
     {
@@ -37,8 +39,48 @@ namespace MiniMapBuildingSplineEnvelope
         double StartT=0,EndT=1;
         Ring Start,End;
     };
+    // Published through const Result only. Copies share storage; every mutable
+    // operation detaches first. No mutable array borrow escapes preparation.
+    // This keeps the existing read interface for selection/render consumers.
+    template<class T> class SharedValues
+    {
+        std::shared_ptr<std::vector<T>> Values;
+        const std::vector<T>& Read() const
+        {static const std::vector<T> empty;return Values?*Values:empty;}
+        std::vector<T>& Write()
+        {
+            if(!Values)Values=std::make_shared<std::vector<T>>();
+            else if(Values.use_count()!=1)Values=std::make_shared<std::vector<T>>(*Values);
+            return *Values;
+        }
+    public:
+        using const_iterator=typename std::vector<T>::const_iterator;
+        SharedValues()=default;
+        SharedValues(std::initializer_list<T> values):Values(std::make_shared<std::vector<T>>(values)){}
+        size_t size() const noexcept {return Values?Values->size():0;}
+        bool empty() const noexcept {return !size();}
+        const T* data() const noexcept {return Values?Values->data():nullptr;}
+        const T& operator[](size_t i) const {return Read()[i];}
+        T& operator[](size_t i) {return Write()[i];}
+        const_iterator begin() const {return Read().begin();}
+        const_iterator end() const {return Read().end();}
+        void clear() noexcept {Values.reset();}
+        void push_back(const T& value) {Write().push_back(value);}
+        template<class It> void insert(const_iterator position,It first,It last)
+        {
+            const auto offset=position-begin();auto& values=Write();
+            values.insert(values.begin()+offset,first,last);
+        }
+        void insert(const_iterator position,size_t count,const T& value)
+        {
+            const auto offset=position-begin();auto& values=Write();
+            values.insert(values.begin()+offset,count,value);
+        }
+        bool Shares(const SharedValues& other) const noexcept {return Values==other.Values;}
+    };
     struct Profile
     {
+        bool SyntheticThin=false; // Owned numerical policy, never a native observation.
         size_t SourceProfile=0;
         P::Identity VisualClass;
         P::Backing Ownership=P::Backing::PersistentIdentity;
@@ -48,9 +90,9 @@ namespace MiniMapBuildingSplineEnvelope
         bool HighResolution=true; // Meaningful only for Mass representation alternatives.
         State Status=State::Unsupported;
         uint32_t Reasons=None;
-        std::vector<XY> Vertices; // World XY; no root or map transform remains to apply.
-        std::vector<uint32_t> Indices; // CCW triangles in independently validated ribbon cells.
-        std::vector<Section> Sections; // No inferred joins, caps or run connections.
+        SharedValues<XY> Vertices; // World XY; no root or map transform remains to apply.
+        SharedValues<uint32_t> Indices; // CCW triangles in independently validated ribbon cells.
+        SharedValues<Section> Sections; // No inferred joins, caps or run connections.
     };
     struct Result
     {
@@ -60,17 +102,96 @@ namespace MiniMapBuildingSplineEnvelope
         uint32_t Reasons=None;
         std::vector<Profile> Profiles;
         std::shared_ptr<const S::PreparedCurve> Sampling;
+        C::Record Input; // Owned copied input witness; never a native pointer/borrow.
+        bool SyntheticThin=false;
+        uint32_t Policy=NumericalPolicy; // Sampling output is compared separately.
     };
     inline std::shared_ptr<const P::Set> Metadata(const C::Record& record)
     {return record.DefinitionShape?record.DefinitionShape->Profiles:nullptr;}
-    inline bool SameInputs(const C::Record& a,const C::Record& b)
+    inline bool Exact(double a,double b)
+    {return std::bit_cast<uint64_t>(a)==std::bit_cast<uint64_t>(b);}
+    template<size_t N> bool Exact(const std::array<double,N>& a,const std::array<double,N>& b)
+    {for(size_t i=0;i<N;++i)if(!Exact(a[i],b[i]))return false;return true;}
+    inline bool Exact(const P::RelativeTransform& a,const P::RelativeTransform& b)
+    {return Exact(a.Translation,b.Translation) && Exact(a.RotationDegrees,b.RotationDegrees) && Exact(a.Scale,b.Scale);}
+    inline bool Exact(const P::CrossSection& a,const P::CrossSection& b)
+    {return Exact(a.StartScale,b.StartScale) && Exact(a.EndScale,b.EndScale) && Exact(a.StartOffset,b.StartOffset) &&
+        Exact(a.EndOffset,b.EndOffset) && Exact(a.StartRoll,b.StartRoll) && Exact(a.EndRoll,b.EndRoll) && Exact(a.Up,b.Up);}
+    inline bool SameProfileInputs(const P::Profile& a,const P::Profile& b)
     {
-        return a.Generation==b.Generation && a.Index==b.Index && a.Serial==b.Serial && a.HasSpline==b.HasSpline &&
-            a.DefinitionValid==b.DefinitionValid && a.DefinitionObjectIndex==b.DefinitionObjectIndex &&
-            a.DefinitionObjectSerial==b.DefinitionObjectSerial && a.TransformValid==b.TransformValid &&
-            a.Position==b.Position && a.Rotation==b.Rotation && a.Scale==b.Scale &&
-            a.Curve==b.Curve && Metadata(a)==Metadata(b);
+        if(bool(a.CopyObservation)!=bool(b.CopyObservation) || bool(a.Geometry)!=bool(b.Geometry))return false;
+        // Compare every profile field, substituting only fresh owned observation
+        // pointers. Status/identity/selection values still participate in equality.
+        auto values=a;values.CopyObservation=b.CopyObservation;values.Geometry=b.Geometry;
+        if(!(values==b))return false;
+        if(a.Geometry)
+        {
+            const auto& x=a.Geometry->LocalBounds;const auto& y=b.Geometry->LocalBounds;
+            if(x.Status!=y.Status || !Exact(x.Value.Origin,y.Value.Origin) ||
+                !Exact(x.Value.Extent,y.Value.Extent) || !Exact(x.Value.SphereRadius,y.Value.SphereRadius))return false;
+        }
+        return Exact(a.TemplateTransform.Value,b.TemplateTransform.Value) && Exact(a.ConstructionTransform.Value,b.ConstructionTransform.Value) &&
+            Exact(a.TemplateCrossSection.Value,b.TemplateCrossSection.Value) && Exact(a.ConstructionCrossSection.Value,b.ConstructionCrossSection.Value);
     }
+    inline bool SameCurveInputs(const C::SplineGeometry& a,const C::SplineGeometry& b)
+    {
+        if(a.Issue!=b.Issue || a.Reconstructed!=b.Reconstructed || a.Segments.size()!=b.Segments.size())return false;
+        for(size_t i=0;i<a.Segments.size();++i)
+        {
+            const auto& x=a.Segments[i];const auto& y=b.Segments[i];
+            if(x.Mode!=y.Mode || !Exact(x.StartKey,y.StartKey) || !Exact(x.EndKey,y.EndKey))return false;
+            for(size_t j=0;j<4;++j)if(!Exact(x.Controls[j],y.Controls[j]))return false;
+        }
+        return true;
+    }
+    inline bool SameSampling(const S::PreparedCurve* a,const S::PreparedCurve* b)
+    {
+        if(bool(a)!=bool(b))return false;
+        if(!a)return true;
+        if(a->SourceIssue!=b->SourceIssue || a->PreparationIssue!=b->PreparationIssue || a->LimitedLeaves!=b->LimitedLeaves ||
+            a->Reconstructed!=b->Reconstructed || a->Sections!=b->Sections || a->Samples.size()!=b->Samples.size())return false;
+        for(size_t i=0;i<a->Samples.size();++i)
+            if(!Exact(a->Samples[i].Position,b->Samples[i].Position) || !Exact(a->Samples[i].T,b->Samples[i].T))return false;
+        return true;
+    }
+    inline bool NumericalEquivalent(const C::Record& a,const S::PreparedCurve* sampled,const Result& previous,bool thin=false)
+    {
+        if(previous.SyntheticThin!=thin)return false;
+        const auto& b=previous.Input;
+        if(previous.Policy!=NumericalPolicy || a.Generation!=b.Generation || a.Index!=b.Index || a.Serial!=b.Serial || a.HasSpline!=b.HasSpline ||
+            a.BuildingId!=b.BuildingId || a.DefinitionValid!=b.DefinitionValid || a.DefinitionObjectIndex!=b.DefinitionObjectIndex ||
+            a.DefinitionObjectSerial!=b.DefinitionObjectSerial || a.DefinitionIndex!=b.DefinitionIndex || a.DefinitionNumber!=b.DefinitionNumber ||
+            a.TransformValid!=b.TransformValid || !Exact(a.Position,b.Position) || !Exact(a.Rotation,b.Rotation) || !Exact(a.Scale,b.Scale) ||
+            bool(a.Curve)!=bool(b.Curve))return false;
+        if(a.Curve && !SameCurveInputs(*a.Curve,*b.Curve))return false;
+        if(!SameSampling(sampled,previous.Sampling.get()))return false;
+        // Synthetic geometry consumes no native mesh/profile observations.
+        // The complete 41E record/curve/sampling/policy comparisons above remain.
+        if(thin)return true;
+        const auto x=Metadata(a),y=Metadata(b);
+        if(bool(x)!=bool(y))return false;
+        if(!x)return true;
+        if(x->Generation!=y->Generation || x->Definition!=y->Definition || x->Resources!=y->Resources || x->ActiveSet!=y->ActiveSet ||
+            x->Inventory!=y->Inventory || x->Status!=y->Status || x->Profiles.size()!=y->Profiles.size())return false;
+        for(size_t i=0;i<x->Profiles.size();++i)if(!SameProfileInputs(x->Profiles[i],y->Profiles[i]))return false;
+        return true;
+    }
+    struct ReuseCounts
+    {
+        uint64_t Checks=0,Reused=0,Rebuilt=0,NoPrevious=0,DifferentInputs=0;
+        uint64_t IdentifiedRails=0,ThinPreparations=0,ThinDrawable=0,UnknownSplineTypes=0,ThinRejected=0;
+        void ThinResult(bool rebuilt,const Result& result) noexcept
+        {
+            ++IdentifiedRails;ThinPreparations+=rebuilt;
+            if(result.Status==State::Partial || result.Status==State::Complete)++ThinDrawable;
+            if((result.Status!=State::Partial && result.Status!=State::Complete) ||
+                (result.Reasons&(DegenerateFrame|DegenerateProjection|Discontinuity)))++ThinRejected;
+        }
+        void Add(const ReuseCounts& b) noexcept
+        {Checks+=b.Checks;Reused+=b.Reused;Rebuilt+=b.Rebuilt;NoPrevious+=b.NoPrevious;DifferentInputs+=b.DifferentInputs;
+         IdentifiedRails+=b.IdentifiedRails;ThinPreparations+=b.ThinPreparations;ThinDrawable+=b.ThinDrawable;
+         UnknownSplineTypes+=b.UnknownSplineTypes;ThinRejected+=b.ThinRejected;}
+    };
     inline V::Point Cross(const V::Point& a,const V::Point& b)
     {return {a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};}
     inline bool Normalize(V::Point& value)
@@ -349,7 +470,7 @@ namespace MiniMapBuildingSplineEnvelope
     }
     inline Result Prepare(const C::Record& record,const S::PreparedCurve* sampled)
     {
-        Result result;result.Generation=record.Generation;result.Entity={record.Index,record.Serial};
+        Result result;result.Input=record;result.Generation=record.Generation;result.Entity={record.Index,record.Serial};
         result.Definition={record.DefinitionObjectIndex,record.DefinitionObjectSerial};
         if(!record.HasSpline){result.Status=State::Unsupported;result.Reasons=InvalidSource;return result;}
         if(!record.Curve || !sampled){result.Reasons=MissingCurve;return result;}
@@ -436,12 +557,88 @@ namespace MiniMapBuildingSplineEnvelope
         result.Status=geometry?State::Partial:pending?State::Pending:invalid?State::Invalid:State::Unsupported;
         return result;
     }
-    inline std::shared_ptr<const Result> PrepareOwned(const C::Record& record,std::shared_ptr<const S::PreparedCurve> sampled,
-        const C::Record* previousRecord=nullptr,std::shared_ptr<const Result> previous={})
+    inline constexpr double ThinHalfWidth=5.0; // 10 cm full world width; bump NumericalPolicy if changed.
+    inline bool ThinIdentity(const C::Record& record)
     {
-        if(previousRecord && previous && previous->Sampling==sampled && SameInputs(record,*previousRecord))return previous;
-        auto result=Prepare(record,sampled.get());result.Sampling=std::move(sampled);
-        return std::make_shared<const Result>(std::move(result));
+        return record.Generation!=0 && record.Index>0 && record.Serial>0 && record.HasSpline && record.DefinitionValid &&
+            record.DefinitionObjectIndex>0 && record.DefinitionObjectSerial>0 && record.TransformValid &&
+            V::Valid(V::Transform{record.Position,record.Scale,record.Rotation});
+    }
+    // Shared synthetic thin-profile facility, available to either thin category.
+    // Dispatch is owned by the authoritative BuildingID policy in BuildingVisuals.
+    // Native Zipline preparation remains unchanged until its numerical width is equivalent.
+    inline Result PrepareThin(const C::Record& record,const S::PreparedCurve* sampled)
+    {
+        Result result;result.Input=record;result.Generation=record.Generation;result.Entity={record.Index,record.Serial};
+        result.Definition={record.DefinitionObjectIndex,record.DefinitionObjectSerial};result.SyntheticThin=true;
+        auto reject=[&](State state,uint32_t reason)
+        {result.Status=state;result.Reasons=reason;result.Profiles.clear();return result;};
+        if(!ThinIdentity(record))return reject(State::Invalid,InvalidSource);
+        if(!record.Curve || !sampled)return reject(State::Pending,MissingCurve);
+        if(record.Curve->Issue!=C::GeometryIssue::None || sampled->SourceIssue!=C::GeometryIssue::None ||
+            sampled->PreparationIssue!=C::GeometryIssue::None || sampled->Sections.size()!=record.Curve->Segments.size())
+            return reject(State::Invalid,InvalidSource);
+        if(!sampled->Complete())return reject(State::Unsupported,SamplingLimited);
+        Profile profile;profile.SyntheticThin=true;profile.HighResolution=false;
+        profile.Reasons=RibbonApproximation;
+        // Numerical cross-section values only. No Mesh, profile owner, fake
+        // native availability, UObject identity or CopyObservation is constructed.
+        const P::Bounds bounds{{0,0,0},{0,ThinHalfWidth,0},ThinHalfWidth};
+        const P::CrossSection cross{{1,1},{1,1},{0,0},{0,0},0,0,{0,0,1}};
+        for(size_t segment=0;segment<sampled->Sections.size();++segment)
+        {
+            const auto& section=sampled->Sections[segment];const auto& source=record.Curve->Segments[segment];
+            if(section.Discontinuous || source.Mode==S::Constant){profile.Reasons|=Discontinuity;continue;}
+            if(section.First>sampled->Samples.size() || section.Count>sampled->Samples.size()-section.First || section.Count<2)
+                return reject(State::Invalid,InvalidSource);
+            for(size_t j=1;j<section.Count;++j)
+            {
+                const auto& a=sampled->Samples[section.First+j-1];const auto& b=sampled->Samples[section.First+j];
+                if(a.T>=b.T || a.T<0 || b.T>1)return reject(State::Invalid,InvalidSource);
+                S::Evaluation start,end;std::array<XY,4> first,last;
+                Section cell;cell.SourceSegment=segment;cell.StartT=a.T;cell.EndT=b.T;
+                if(!S::Evaluate(source,a.T,start) || !S::Evaluate(source,b.T,end))return reject(State::Invalid,InvalidSource);
+                // Controls already are world-space. Identity root/component
+                // projects the synthetic cross-section without reapplying TRS.
+                if(!Project({},start,bounds,cross,first,cell.Start) || !Project({},end,bounds,cross,last,cell.End) ||
+                    (source.Mode!=S::Linear && !FrameValid({}, {},cross.Up,Subcurve(source,a.T,b.T))))
+                {profile.Reasons|=DegenerateFrame;continue;}
+                if(!AppendRibbon(cell,profile))profile.Reasons|=DegenerateProjection;
+            }
+        }
+        if(profile.Indices.empty())return reject(State::Unsupported,profile.Reasons|DegenerateProjection);
+        profile.Status=State::Partial;result.Status=State::Partial;result.Reasons=profile.Reasons;
+        result.Profiles.push_back(std::move(profile));return result;
+    }
+    inline std::shared_ptr<const Result> PrepareOwned(const C::Record& record,std::shared_ptr<const S::PreparedCurve> sampled,
+        const C::Record* previousRecord=nullptr,std::shared_ptr<const Result> previous={},ReuseCounts* counts=nullptr,bool thin=false)
+    {
+        const bool candidate=previousRecord && previous;
+        if(counts){if(candidate)++counts->Checks;else ++counts->NoPrevious;}
+        if(candidate && NumericalEquivalent(record,sampled.get(),*previous,thin))
+        {
+            // Copy only binding/diagnostic values and shared numerical arrays.
+            // Never retain the old result, input witness, mesh owner or seal.
+            auto result=std::make_shared<Result>(*previous);
+            result->Input=record;result->Sampling=std::move(sampled);
+            result->Generation=record.Generation;result->Entity={record.Index,record.Serial};
+            result->Definition={record.DefinitionObjectIndex,record.DefinitionObjectSerial};
+            const auto metadata=Metadata(record);
+            if(!thin)for(auto& profile:result->Profiles)
+            {
+                const auto& current=metadata->Profiles[profile.SourceProfile];
+                profile.Geometry=current.Geometry;profile.CopyObservation=current.CopyObservation;
+                profile.VisualClass=current.VisualClass.Value;profile.Ownership=current.Ownership;
+                profile.Provenance=current.Provenance;profile.HighResolution=current.HighResolution;
+            }
+            if(counts){++counts->Reused;if(thin)counts->ThinResult(false,*result);}
+            return result;
+        }
+        if(counts && candidate)++counts->DifferentInputs;
+        auto result=thin?PrepareThin(record,sampled.get()):Prepare(record,sampled.get());result.Sampling=std::move(sampled);
+        auto owned=std::make_shared<const Result>(std::move(result));
+        if(counts){++counts->Rebuilt;if(thin)counts->ThinResult(true,*owned);}
+        return owned;
     }
 }
 #endif

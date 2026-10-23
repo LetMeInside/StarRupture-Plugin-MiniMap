@@ -53,10 +53,6 @@ namespace MiniMapBuildingSplinePolicy
     inline constexpr double kWalkwayInsetFractionPerSide = 0.05;
     inline constexpr uint32_t kZipRailRgb = 0x80EBDD;
     inline constexpr uint32_t kDroneRailRgb = 0x000000;
-    inline constexpr uint32_t kDroneRailOutlineRgb = 0xB0B0B0;
-    inline constexpr float kDroneRailOutlineThicknessPixels = 1.0f;
-    inline bool kDroneRailOutlineEnabled = false;
-
     inline bool IsDroneRailDefinition(bool definitionValid,uint32_t buildingId)
     {
         if(!definitionValid)return false;

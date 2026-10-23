@@ -40,6 +40,7 @@ namespace MiniMapBuildingVisuals
         {
             if(!Drawable(geometry.Status) || geometry.SourceProfile>=metadata.Profiles.size() ||
                 geometry.Indices.empty() || geometry.Indices.size()%3)return false;
+            if(geometry.SyntheticThin)return false; // Never interpret as a native owner/seal.
             const auto& source=metadata.Profiles[geometry.SourceProfile];
             if(!source.Geometry || source.Geometry!=geometry.Geometry ||
                 source.Geometry->LocalBounds.Status!=P::Availability::Available ||
@@ -80,6 +81,18 @@ namespace MiniMapBuildingVisuals
         }
         inline const E::Profile* SelectSpline(const C::Record& record,const E::Result& geometry)
         {
+            if(geometry.SyntheticThin)
+            {
+                if(!E::ThinIdentity(record) || !Drawable(geometry.Status) || geometry.Policy!=E::NumericalPolicy ||
+                    geometry.Generation!=record.Generation || geometry.Entity!=P::Identity{record.Index,record.Serial} ||
+                    geometry.Definition!=P::Identity{record.DefinitionObjectIndex,record.DefinitionObjectSerial} ||
+                    !E::NumericalEquivalent(record,geometry.Sampling.get(),geometry,true) || geometry.Profiles.size()!=1)return nullptr;
+                const auto& profile=geometry.Profiles[0];
+                if(!profile.SyntheticThin || profile.Geometry || profile.CopyObservation || !Drawable(profile.Status) ||
+                    profile.Indices.empty() || profile.Indices.size()%3)return nullptr;
+                for(size_t first=0;first<profile.Indices.size();first+=3)if(!WorldTriangle(profile,first))return nullptr;
+                return &profile;
+            }
             const auto metadata=E::Metadata(record);
             if(!record.HasSpline || !record.DefinitionValid || !Drawable(geometry.Status) || !metadata ||
                 geometry.Generation!=record.Generation || geometry.Entity!=P::Identity{record.Index,record.Serial} ||

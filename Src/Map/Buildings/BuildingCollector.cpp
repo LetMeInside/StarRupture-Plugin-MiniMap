@@ -3,6 +3,7 @@
 
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
+#include "BuildingSplinePolicy.h"
 #include "BuildingInventory.h"
 #include "BuildingVisuals.h"
 #include "BuildingBlueprintIdentity.h"
@@ -1490,7 +1491,15 @@ namespace
                 { DefinitionBlueprint(definition,placement,r); r.CanonicalBlueprint=definition.CanonicalBlueprint; }
                 // Optional geometry is solely for the existing spatial envelope.
                 // Ordinary instances never inspect mesh/template/render resources.
-                if(!r.InteriorOnly)r.DefinitionShape=DefinitionShape(definition,placement,r.HasSpline);
+                if(!r.InteriorOnly)
+                {
+                    // An identified DroneRail uses an owned synthetic thin profile.
+                    // Keep authoritative placement/lifetime checks; do not open
+                    // optional class/CDO/template/mesh resources for this representation.
+                    if(r.HasSpline && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId))
+                        r.DefinitionShape.reset();
+                    else r.DefinitionShape=DefinitionShape(definition,placement,r.HasSpline);
+                }
             }
             else if(!r.CanonicalBlueprint && !r.HasSpline && !(g_definitionDiagnostics&1))
             {
