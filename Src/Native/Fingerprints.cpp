@@ -49,29 +49,6 @@ namespace MiniMapFingerprints
         }
 
 
-#if defined(MODLOADER_CLIENT_BUILD)
-        // The verified CL-127004 executable/PDB were used as offline ABI
-        // evidence for these entry points and register contracts.
-        auto resolveVisualAccess=[&](const char* name,const char* pattern,PluginScanKind kind,uintptr_t& output)
-        {
-            PluginScanRequest request=PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName=name;request.pattern=pattern;request.kind=kind;
-            request.flags=PLUGIN_SCAN_FLAG_NONE;
-            output=scanner->Resolve(self,&request);return output!=0;
-        };
-        if(!resolveVisualAccess("MiniMap::VisualAccess::GetActorFromHandle",
-            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 83 79 38 00 41 8B F0 48 8B DA 48 8B F9 75 26 4C 8D 0D 3E 3C B4 03 41 B8 3A 04 00 00 48 8D 15 5D 85 B4 03 48 8D 0D EE D2 B4 03 E8 01 9A 02 FA 84",
-            PLUGIN_SCAN_FUNCTION_START,addresses.visualActorFromEntity))return false;
-        if(!resolveVisualAccess("MiniMap::VisualAccess::GetEntityHandleFromActor",
-            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 83 79 38 00 49 8B D8 48 8B FA 48 8B F1 75 26 4C 8D 0D CE 27 B4 03 41 B8 3A 04 00 00 48 8D 15 ED 70 B4 03 48 8D 0D 7E BE B4 03 E8 91 85 02 FA 84",
-            PLUGIN_SCAN_FUNCTION_START,addresses.visualEntityFromActor))return false;
-        if(!resolveVisualAccess("MiniMap::VisualAccess::K2_GetComponentsByClass",
-            "48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 40 49 8B 18 33 FF 40 38 3D 92 1B E0 09 48 8B F2 48 8B E9 48 89 7C 24 30 89 7C 24 3C 74 3F 48 85 DB 74 3A 48 8B CB E8 92 0A 10 FD 8B 44",
-            PLUGIN_SCAN_FUNCTION_START,addresses.visualComponents))return false;
-        if(!resolveVisualAccess("MiniMap::VisualAccess::K2_GetComponentToWorld",
-            "0F 28 81 F0 01 00 00 48 8B C2 0F 28 89 00 02 00 00 0F 29 02 0F 28 81 10 02 00 00 0F 29 4A 10 0F 28 89 20 02 00 00 0F 29 42 20 0F 28 81 30 02 00 00 0F 29 4A 30 0F 28 89 40 02 00 00 0F 29 42 40",
-            PLUGIN_SCAN_CODE,addresses.visualComponentTransform))return false;
-#endif
 
         // -------------------------------------------------------------------
         // FSoftObjectPtr::LoadSynchronous

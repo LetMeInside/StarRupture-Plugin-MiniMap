@@ -1,7 +1,7 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
-#include "Native/VisualAccessCore.h"
+#include "BuildingGeometryTypes.h"
 #include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
 #include <array>
@@ -120,8 +120,6 @@ namespace MiniMapBuildingCollector
     enum class DiagnosticVisitStatus { Visited,VisitorRejected,CollectorUnavailable,WorldGenerationChanged,InvalidCopiedDefinition,StaleEntity,ParametersUnavailable };
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
 #endif
-    // Game-thread copied native access; no native pointers leave this call.
-    MiniMapVisualAccess::Observation ObserveNativeVisuals(const Record&);
     void Shutdown();
     // Diagnostic sink only. Never used to populate production records/caches.
     bool BeginComparison(const SDK::UWorld* world, const void* manager);

@@ -156,15 +156,13 @@
     <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
-    <ClInclude Include="Map\Buildings\BuildingSplineVisualSections.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineProfiles.h" />
+    <ClInclude Include="Map\Buildings\BuildingGeometryTypes.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineEnvelope.h" />
     <ClInclude Include="Map\Buildings\BuildingVisuals.h" />
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
-    <ClInclude Include="Native\NativeVisualAccess.h" />
-    <ClInclude Include="Native\VisualAccessCore.h" />
     <ClInclude Include="Native\ResidentMetadata.h" />
     <ClInclude Include="Map\Buildings\BuildingBlueprintIdentity.h" />
     <ClInclude Include="Map\Sprites\PrivateCaptureWorld.h" />
@@ -231,7 +229,6 @@
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
-    <ClCompile Include="Native\NativeVisualAccess.cpp" />
     <ClCompile Include="Map\Sprites\PrivateCaptureWorld.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <ExcludedFromBuild>true</ExcludedFromBuild>

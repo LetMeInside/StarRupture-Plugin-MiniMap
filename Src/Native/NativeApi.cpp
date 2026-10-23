@@ -183,8 +183,6 @@ namespace MiniMapNative
         const MiniMapFingerprints::ResolvedAddresses& addresses)
     {
         Shutdown();
-        if(!addresses.visualActorFromEntity || !addresses.visualEntityFromActor ||
-            !addresses.visualComponents || !addresses.visualComponentTransform)return false;
 
         if (addresses.softObjectLoadSynchronous == 0 ||
             addresses.getBrushResourceAsTexture2D == 0 ||
@@ -537,10 +535,6 @@ namespace MiniMapNative
         g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
 #endif
 
-        g_nativeApi.visualAccess.actorFromEntity=reinterpret_cast<decltype(g_nativeApi.visualAccess.actorFromEntity)>(addresses.visualActorFromEntity);
-        g_nativeApi.visualAccess.entityFromActor=reinterpret_cast<decltype(g_nativeApi.visualAccess.entityFromActor)>(addresses.visualEntityFromActor);
-        g_nativeApi.visualAccess.components=reinterpret_cast<decltype(g_nativeApi.visualAccess.components)>(addresses.visualComponents);
-        g_nativeApi.visualAccess.componentTransform=reinterpret_cast<decltype(g_nativeApi.visualAccess.componentTransform)>(addresses.visualComponentTransform);
         g_initialized = true;
 
         LOG_INFO(

@@ -8,7 +8,6 @@
 #include "BuildingVisualGeometry.h"
 #include "BuildingSplineGeometry.h"
 #include "BuildingSplinePolicy.h"
-#include "BuildingSplineVisualSections.h"
 #include "BuildingSplineEnvelope.h"
 #include "BuildingSplineDiagnostics.h"
 #include "BuildingSplineOcclusionRender.h"
@@ -56,11 +55,7 @@ namespace
         std::shared_ptr<const C::SplineGeometry> Curve;
         std::shared_ptr<const S::PreparedCurve> PreparedSpline;
         std::shared_ptr<const MiniMapBuildingSplineEnvelope::Result> PreparedEnvelope;
-        std::shared_ptr<const MiniMapVisualAccess::Observation> NativeVisuals;
-        std::shared_ptr<const MiniMapBuildingSplineVisualSections::Result> NativeVisualSections;
         MiniMapBuildingSplinePolicy::SplineCategory SplineCategory=MiniMapBuildingSplinePolicy::SplineCategory::Other;
-        MiniMapBuildingSplinePolicy::VisualAcquisitionState VisualAcquisition=
-            MiniMapBuildingSplinePolicy::VisualAcquisitionState::NotRequested;
         std::array<float,4> Tint={1,1,1,1};
         double Elevation=0;
         int32_t EntityIndex=0,EntitySerial=0;
@@ -545,7 +540,7 @@ namespace
         // Borrow input-owned strings only during preparation; equality is string value, not shared_ptr identity.
         std::unordered_map<std::string_view,size_t> canonicalTypes;
         if(!input->Records.empty())canonicalTypes.reserve(64);
-        // Prepare native visuals for every current-generation spline in this collector snapshot.
+        // Prepare owned geometry for every current-generation spline in this collector snapshot.
         for(const auto& r:input->Records)
         {
             if(r.Generation!=input->Generation) continue;
@@ -562,13 +557,6 @@ namespace
             if(r.HasSpline)
             {
                 instance.SplineCategory=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
-                instance.VisualAcquisition=MiniMapBuildingSplinePolicy::VisualAcquisitionState::NativeAccessPending;
-                instance.NativeVisuals=std::make_shared<const MiniMapVisualAccess::Observation>(C::ObserveNativeVisuals(r));
-                instance.NativeVisualSections=std::make_shared<const MiniMapBuildingSplineVisualSections::Result>(
-                    MiniMapBuildingSplineVisualSections::Prepare(*instance.NativeVisuals));
-                instance.VisualAcquisition=instance.NativeVisuals->State==MiniMapVisualAccess::Status::Ready?
-                    MiniMapBuildingSplinePolicy::VisualAcquisitionState::NativeAccessAvailable:
-                    MiniMapBuildingSplinePolicy::VisualAcquisitionState::NativeAccessIncomplete;
                 instance.Curve=r.Curve; instance.Bounds=r.Extent;
                 instance.Unresolved=!r.Curve || r.Curve->Issue!=C::GeometryIssue::None || r.Curve->Segments.empty();
                 if(r.Curve)
@@ -588,7 +576,7 @@ namespace
                 instance.PreparedEnvelope=MiniMapBuildingSplineEnvelope::PrepareOwned(r,instance.PreparedSpline,
                     old?&old->SpriteSource:nullptr,old?old->PreparedEnvelope:nullptr);
                 // Surface submission consumes only PreparedEnvelope. Admission
-                // bounds and native observations do not establish visual widths.
+                // bounds do not establish visual widths.
             }
             result->Instances.push_back(std::move(instance));
         }

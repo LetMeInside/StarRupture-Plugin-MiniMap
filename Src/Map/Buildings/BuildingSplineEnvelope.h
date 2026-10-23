@@ -11,7 +11,7 @@ namespace MiniMapBuildingSplineEnvelope
     namespace C=MiniMapBuildingCollector;
     namespace S=MiniMapBuildingSplineGeometry;
     namespace P=MiniMapBuildingSplineProfiles;
-    namespace V=MiniMapVisualAccess;
+    namespace V=MiniMapBuildingGeometryTypes;
     using XY=std::array<double,2>;
     enum class State : uint8_t { Pending, Partial, Complete, Unsupported, Invalid };
     enum Reason : uint32_t

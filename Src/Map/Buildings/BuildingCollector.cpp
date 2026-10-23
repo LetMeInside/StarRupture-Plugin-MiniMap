@@ -7,7 +7,6 @@
 #include "BuildingVisuals.h"
 #include "BuildingBlueprintIdentity.h"
 #include "Native/ResidentMetadata.h"
-#include "Native/NativeVisualAccess.h"
 #include "DebugText.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
@@ -516,8 +515,8 @@ namespace
             read.Read(component+offsetof(SDK::USceneComponent,RelativeScale3D),scale))
         {
             P::RelativeTransform transform{{location.X,location.Y,location.Z},{rotation.Pitch,rotation.Yaw,rotation.Roll},{scale.X,scale.Y,scale.Z}};
-            if(MiniMapVisualAccess::Finite(transform.Translation) && MiniMapVisualAccess::Finite(transform.RotationDegrees) &&
-                MiniMapVisualAccess::Finite(transform.Scale))result.TemplateTransform={transform,P::Availability::Available};
+            if(MiniMapBuildingGeometryTypes::Finite(transform.Translation) && MiniMapBuildingGeometryTypes::Finite(transform.RotationDegrees) &&
+                MiniMapBuildingGeometryTypes::Finite(transform.Scale))result.TemplateTransform={transform,P::Availability::Available};
             else result.TemplateTransform.Status=P::Availability::Invalid;
         }
         if(splineMesh)
@@ -532,7 +531,7 @@ namespace
             {
                 P::CrossSection section{{params.StartScale.X,params.StartScale.Y},{params.EndScale.X,params.EndScale.Y},
                     {params.StartOffset.X,params.StartOffset.Y},{params.EndOffset.X,params.EndOffset.Y},params.StartRoll,params.EndRoll,{up.X,up.Y,up.Z}};
-                bool valid=MiniMapVisualAccess::Finite(section.Up) && std::isfinite(section.StartRoll) && std::isfinite(section.EndRoll);
+                bool valid=MiniMapBuildingGeometryTypes::Finite(section.Up) && std::isfinite(section.StartRoll) && std::isfinite(section.EndRoll);
                 for(const auto* pair:{&section.StartScale,&section.EndScale,&section.StartOffset,&section.EndOffset})
                     for(double value:*pair)valid=valid && std::isfinite(value);
                 if(valid)result.TemplateCrossSection={section,P::Availability::Available};
@@ -1576,7 +1575,6 @@ namespace
     }
     void Clear()
     {
-        MiniMapNativeVisualAccess::ResetWorld();
         Destroy();
 #if MINIMAP_DEBUG_UI
         MiniMapDebugText::Clear();
@@ -1616,7 +1614,6 @@ namespace
         if(!manager || !ResolveTypes()) return false;
         if(g_offQuery.Constructed) return true;
         g_manager=manager; g_world=world;
-        MiniMapNativeVisualAccess::InitializeWorld(g_world,g_manager,g_generation);
         for(auto* q:{&g_offQuery,&g_splineQuery})
         {
             n.mass.queryConstruct(q->Storage.data(),reinterpret_cast<const uint8_t*>(subsystem)+0x38);
@@ -2214,15 +2211,6 @@ namespace MiniMapBuildingCollector
         return visitor(parameters->PlacementData,context)?DiagnosticVisitStatus::Visited:DiagnosticVisitStatus::VisitorRejected;
     }
 #endif
-    MiniMapVisualAccess::Observation ObserveNativeVisuals(const Record& record)
-    {
-        const MiniMapVisualAccess::Token token{record.Generation,{record.Index,record.Serial}};
-        return MiniMapNativeVisualAccess::Observe(token,[](uint64_t generation,const SDK::UWorld* world,const void* manager)
-        {
-            return g_initialized && MiniMapMap::GameplayReady() && generation==g_generation &&
-                world && world==g_world && world==MiniMapMap::GetWorld() && manager && manager==g_manager;
-        });
-    }
     void Shutdown()
     {
         if(!g_initialized) return;

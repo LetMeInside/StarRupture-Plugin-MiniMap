@@ -109,9 +109,6 @@ namespace MiniMapBuildingSplinePolicy
         return red|(green<<8)|(blue<<16)|(outputAlpha<<24);
     }
 
-    // Native access status does not imply complete visual geometry. Missing actor access must not erase the logical Mass record.
-    enum class VisualAcquisitionState : uint8_t
-    { NotRequested, NativeAccessPending, NativeAccessAvailable, NativeAccessIncomplete };
 
 }
 #endif

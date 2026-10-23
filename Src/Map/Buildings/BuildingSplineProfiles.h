@@ -1,5 +1,6 @@
 #pragma once
-#include "Native/VisualAccessCore.h"
+#include "BuildingGeometryTypes.h"
+#include <vector>
 #include "Native/DefinitionAcquisitionCore.h"
 #include <algorithm>
 #include <memory>
@@ -8,8 +9,8 @@
 // Owned numerical snapshots. Template candidates retain approximate provenance.
 namespace MiniMapBuildingSplineProfiles
 {
-    using Identity=MiniMapVisualAccess::Identity;
-    using Point=MiniMapVisualAccess::Point;
+    using Identity=MiniMapBuildingGeometryTypes::Identity;
+    using Point=MiniMapBuildingGeometryTypes::Point;
     enum class State : uint8_t { Pending, Partial, Complete, Unsupported };
     enum class Availability : uint8_t { Unverified, Available, Pending, Unsupported, Invalid };
     template<class T> struct Field
@@ -26,7 +27,7 @@ namespace MiniMapBuildingSplineProfiles
     };
     inline bool Valid(const Bounds& b)
     {
-        return MiniMapVisualAccess::Finite(b.Origin) && MiniMapVisualAccess::Finite(b.Extent) &&
+        return MiniMapBuildingGeometryTypes::Finite(b.Origin) && MiniMapBuildingGeometryTypes::Finite(b.Extent) &&
             b.Extent[0]>=0 && b.Extent[1]>=0 && b.Extent[2]>=0 &&
             std::isfinite(b.SphereRadius) && b.SphereRadius>=0;
     }
