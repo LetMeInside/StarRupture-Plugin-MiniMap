@@ -12,6 +12,7 @@
 #include <vector>
 
 namespace MiniMapBuildingInventory { struct Record; }
+namespace MiniMapBuildingSplineEnvelope { struct Result; }
 namespace SDK { class UObject; }
 namespace MiniMapBuildingCollector
 {
@@ -76,10 +77,21 @@ namespace MiniMapBuildingCollector
         int32_t DefinitionObjectIndex = 0; // World-scoped metadata identity; no UObject pointer.
         uint8_t Category = 0xFF, Sources = 0;
         bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorKnown = false, InteriorOnly = false;
-        // Production acquisition state, not eligibility. Ordinary facts are
-        // immutable for this entity index/serial; splines continue refreshing.
+        // Acquisition state is separate from render eligibility. Settlement is
+        // acknowledged only after initialized, authoritative numerical preparation.
         bool AcquisitionAttempted = false, StaticAcquired = false, DynamicObserved = false;
         bool StaticResolved() const noexcept { return StaticAcquired && !HasSpline && !DynamicObserved; }
+        bool SplineReady = false, SplineSettled = false, SplineTintKnown = false;
+        uint64_t RenderRevision = 0; // Exact render-input transitions, not observation time.
+        // Stage 41I: latest copied diagnostic evidence only. Never compared for
+        // rendering, used for eligibility, or used as a lifetime certificate.
+        struct AuditState
+        {
+            uint64_t PreparedRevision = 0;
+            uint8_t Acquisition = 0; // attempted/valid/built/fresh transform/fresh placement
+            uint8_t Preparation = 0; // observed/complete sampling/eligible
+            uint8_t Acknowledgement = 0;
+        } Audit;
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
         std::array<float, 4> Tint = { 1, 1, 1, 1 };
@@ -99,7 +111,7 @@ namespace MiniMapBuildingCollector
         bool InvalidFootprintSource = false;
         bool UnboundedGeometry = false; // Unresolved spline: explicitly admit, never silently lose crossings.
         Coverage BoundsKind = Coverage::Unresolved;
-        double RefreshedAtSeconds = 0; // steady_clock; dynamic data/bounds sample time.
+        double RefreshedAtSeconds = 0; // steady_clock observation telemetry, not a render revision.
     };
     struct Snapshot
     {
@@ -114,6 +126,9 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
+    // Game-thread visual preparation acknowledgement. Uses copied inputs and
+    // current Mass lifetime only; never reopens placement or profile objects.
+    void ObserveSplinePreparation(const Record&, const MiniMapBuildingSplineEnvelope::Result&);
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Caller must be on the game thread. Borrowing ends when visitor returns.
     // Revalidates the Mass identity; does not resolve the copied UObject index.

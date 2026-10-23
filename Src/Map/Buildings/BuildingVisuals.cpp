@@ -122,7 +122,7 @@ namespace
         PhaseAggregate SnapshotAcquire,LockWait,Ordinary,PlanPreparation,SplineSubmission,
             BaseCoreAndFinalize,RenderTotal,Unaccounted,SnapshotPreparation;
         uint64_t PreparedInstances=0,OrdinarySubmitted=0,SplineRecords=0,PlanReuses=0,PlanRebuilds=0,
-            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,BaseCoreSubmissions=0,RailBodyTriangles=0;
+            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,BaseCoreSubmissions=0,RailBodyTriangles=0,SnapshotPreparationSkips=0;
     };
     void CountSplineSubmission(RenderStats& stats,MiniMapBuildingSplinePolicy::SplineCategory category)
     {
@@ -480,10 +480,15 @@ namespace
         try
         {
             MiniMapBuildingSplineDiagnostics::Summary summary;
+            size_t currentSplines=0,currentSampled=0,currentComplete=0,currentEnvelopes=0,currentSelected=0;
             for(const auto& instance:snapshot->Instances)if(instance.Spline)
             {
-                summary.Add(instance.SpriteSource,instance.PreparedSpline.get(),instance.PreparedEnvelope.get(),
-                    instance.PreparedEnvelope && MiniMapBuildingVisuals::Detail::SelectSpline(instance.SpriteSource,*instance.PreparedEnvelope));
+                ++currentSplines;currentSampled+=bool(instance.PreparedSpline);
+                currentComplete+=instance.PreparedSpline && instance.PreparedSpline->Complete();
+                currentEnvelopes+=bool(instance.PreparedEnvelope);
+                const bool selected=instance.PreparedEnvelope && MiniMapBuildingVisuals::Detail::SelectSpline(instance.SpriteSource,*instance.PreparedEnvelope);
+                currentSelected+=selected;
+                summary.Add(instance.SpriteSource,instance.PreparedSpline.get(),instance.PreparedEnvelope.get(),selected);
             }
             const auto text=summary.Text();
             const auto acquisition=summary.AcquisitionText();
@@ -492,10 +497,10 @@ namespace
             {std::scoped_lock lock(g_mutex);rendered=g_render;reuses=g_planReuses;rebuilds=g_planRebuilds;
                 envelopes=g_envelopeReuse;g_envelopeReuse={};
                 g_planReuses=0;g_planRebuilds=0;phases=g_buildingVisualsTiming;g_buildingVisualsTiming={};}
-            LOG_INFO("MiniMap: spline envelope reuse: checks=%llu reused=%llu rebuilt=%llu noPrevious=%llu differentInputs=%llu",
+            LOG_INFO("MiniMap: spline envelope reuse: checks=%llu reused=%llu rebuilt=%llu noPrevious=%llu differentInputs=%llu currentSplineRecords=%zu currentSampled=%zu currentCompleteSampling=%zu currentEnvelopes=%zu currentSelected=%zu",
                 static_cast<unsigned long long>(envelopes.Checks),static_cast<unsigned long long>(envelopes.Reused),
                 static_cast<unsigned long long>(envelopes.Rebuilt),static_cast<unsigned long long>(envelopes.NoPrevious),
-                static_cast<unsigned long long>(envelopes.DifferentInputs));
+                static_cast<unsigned long long>(envelopes.DifferentInputs),currentSplines,currentSampled,currentComplete,currentEnvelopes,currentSelected);
             LOG_INFO("MiniMap: shared thin spline: identifiedDroneRails=%llu syntheticPreparations=%llu drawableWithoutNativeProfiles=%llu unknownTypeSplines=%llu rejectedRailGeometry=%llu submittedRailRecords=%zu railBodyTriangles(lastFrame/interval)=%zu/%llu",
                 static_cast<unsigned long long>(envelopes.IdentifiedRails),static_cast<unsigned long long>(envelopes.ThinPreparations),
                 static_cast<unsigned long long>(envelopes.ThinDrawable),static_cast<unsigned long long>(envelopes.UnknownSplineTypes),
@@ -514,7 +519,7 @@ namespace
                 phases.BaseCoreAndFinalize.TotalMs,phases.BaseCoreAndFinalize.MeanMs(),phases.BaseCoreAndFinalize.MaxMs,
                 phases.RenderTotal.TotalMs,phases.RenderTotal.MeanMs(),phases.RenderTotal.MaxMs,
                 phases.Unaccounted.TotalMs,phases.Unaccounted.MeanMs(),phases.Unaccounted.MaxMs);
-            LOG_INFO("MiniMap: BuildingVisuals render workload: samples=%llu preparedInstances=%llu ordinarySubmitted=%llu splineRequests=%llu planReuse=%llu planRebuild=%llu retainedPlanTriangles=%llu bodyTriangleSubmissions=%llu walkwayInsetTriangleSubmissions=%llu baseCoreSubmissions=%llu snapshotPreparationSamples=%llu snapshotPreparationMs(total/mean/max)=%.3f/%.3f/%.3f",
+            LOG_INFO("MiniMap: BuildingVisuals render workload: samples=%llu preparedInstances=%llu ordinarySubmitted=%llu splineRequests=%llu planReuse=%llu planRebuild=%llu retainedPlanTriangles=%llu bodyTriangleSubmissions=%llu walkwayInsetTriangleSubmissions=%llu baseCoreSubmissions=%llu snapshotPreparationSamples=%llu snapshotPreparationMs(total/mean/max)=%.3f/%.3f/%.3f snapshotPreparationSkips=%llu",
                 static_cast<unsigned long long>(phases.RenderTotal.Samples),
                 static_cast<unsigned long long>(phases.PreparedInstances),static_cast<unsigned long long>(phases.OrdinarySubmitted),
                 static_cast<unsigned long long>(phases.SplineRecords),static_cast<unsigned long long>(phases.PlanReuses),
@@ -522,7 +527,8 @@ namespace
                 static_cast<unsigned long long>(phases.BodyTriangles),static_cast<unsigned long long>(phases.WalkwayInsetTriangles),
                 static_cast<unsigned long long>(phases.BaseCoreSubmissions),
                 static_cast<unsigned long long>(phases.SnapshotPreparation.Samples),
-                phases.SnapshotPreparation.TotalMs,phases.SnapshotPreparation.MeanMs(),phases.SnapshotPreparation.MaxMs);
+                phases.SnapshotPreparation.TotalMs,phases.SnapshotPreparation.MeanMs(),phases.SnapshotPreparation.MaxMs,
+                static_cast<unsigned long long>(phases.SnapshotPreparationSkips));
             const auto* coverage=rendered.CoverageOwner?&rendered.CoverageOwner->Coverage:nullptr;
             LOG_INFO("MiniMap: spline visibility: occludedSections=%zu fullyRemovedSections=%zu removedPolygons=%zu removedWorldXYArea=%.6g coverageExamplesAllocationFailed=%u plannerExamplesAllocationFailed=%u outsideViewportRecords=%zu outsideViewportTriangles=%zu rejectedRecords=%zu projectionRejectedTriangles=%zu transparentRecords=%zu",
                 coverage?coverage->Sections:0,coverage?coverage->FullyRemovedSections:0,coverage?coverage->Polygons:0,
@@ -579,7 +585,7 @@ namespace
         const auto input=C::GetSnapshot();
         if(!input) { if(g_lastInput) Clear(); return; }
         if(input->Generation!=g_generation) { Clear(); g_generation=input->Generation; }
-        if(input==g_lastInput) return;
+        if(input==g_lastInput){std::scoped_lock lock(g_mutex);++g_buildingVisualsTiming.SnapshotPreparationSkips;return;}
         std::shared_ptr<const Snapshot> previous;
         {std::scoped_lock lock(g_mutex);previous=g_published;}
         // Snapshot-local reuse only; no collector, native acquisition or refresh
@@ -650,9 +656,13 @@ namespace
                 {return DrawKey(result->Instances[a])<DrawKey(result->Instances[b]);});
         }
         const double prepareMs=Ms(start);
+        const auto prepared=result; // Keep the completed transaction for readiness acknowledgements.
         { std::scoped_lock lock(g_mutex); g_published=std::move(result);g_buildingVisualsTiming.SnapshotPreparation.Add(prepareMs);
             g_envelopeReuse.Add(envelopeReuse); }
         g_lastInput=input;
+        for(const auto& instance:prepared->Instances)
+            if(instance.Spline && instance.PreparedEnvelope)
+                C::ObserveSplinePreparation(instance.SpriteSource,*instance.PreparedEnvelope);
 #if MINIMAP_DEBUG_UI
         g_prepareMax=(std::max)(g_prepareMax,Ms(start)); ++g_prepareCount;
         if(now>=g_nextDebug)

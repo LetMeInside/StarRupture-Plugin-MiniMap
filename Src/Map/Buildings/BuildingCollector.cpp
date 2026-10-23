@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingCollector.h"
+#include "BuildingCollectorAudit.h"
 #include "BuildingGeometry.h"
 #include "BuildingSplinePolicy.h"
 #include "BuildingInventory.h"
@@ -25,6 +26,7 @@
 #include <string_view>
 #include <iomanip>
 #include <sstream>
+#include <bit>
 #include <Windows.h>
 
 namespace
@@ -108,6 +110,7 @@ namespace
         size_t NewAttempts=0, RetryAttempts=0, ResolvedNow=0, CachedReuse=0, DynamicReads=0,
             TransformReads=0, MembershipTransforms=0, MembershipTags=0, PlacementReads=0, Conversions=0, ConversionSuccess=0,
             InteriorReads=0, OrdinaryGeometry=0, OrdinaryDefinitions=0, SnapshotsBuilt=0, SnapshotsReused=0;
+        size_t SplineAcquired=0, SplineSettled=0, SettledBypasses=0, SplineRetries=0, PlacementAvoided=0;
     };
     bool g_initialized=false, g_ready=false, g_typesReady=false, g_unavailableLogged=false;
     uint32_t g_definitionDiagnostics=0; // Four pre-definition categories per collector lifetime/generation.
@@ -121,6 +124,7 @@ namespace
     std::unordered_map<uint64_t,IndexedEntry> g_indexedCopies; // Copied payload plus current-query membership.
     uint64_t g_indexedQuery=0; // Independent of the acquisition callback observation.
     uint64_t g_observation=0;
+    uint64_t g_renderRevision=0; // Monotonic within this collector generation.
     std::unordered_map<uint64_t,Definition> g_definitions;
     std::vector<uint64_t> g_keys, g_near, g_pending;
     size_t g_cursor=0, g_nearCursor=0;
@@ -132,6 +136,7 @@ namespace
     std::shared_ptr<const Snapshot> g_snapshot;
     Clock::time_point g_nextLocal={}, g_nextIdentity={}, g_nextLog={}, g_nextWarning={};
     Metrics g_metrics;
+    MiniMapBuildingCollectorAudit::Events g_audit;
     bool g_snapshotDirty=true, g_publishedGrid=false, g_publishedIdentity=false;
 #if MINIMAP_DEBUG_UI
     struct DebugOracle
@@ -232,7 +237,8 @@ namespace
     bool ResolveTypes(bool splineMetadata=false)
     {
         MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::CollectorMetadata);
-        if(g_typesReady && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings)))return true;
+        if(g_typesReady && g_types.Tint && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings)))return true;
+        if(g_typesReady && !splineMetadata && !MiniMapResidentMetadata::Available())return true;
         if(!MiniMapResidentMetadata::Available())return false;
         // Resolve the finite metadata set while native admission permits it.
         // Rooted successes are reused; unavailable operations retry on acquisition.
@@ -281,7 +287,8 @@ namespace
     }
     bool ResolveTypes(bool splineMetadata=false)
     {
-        if(g_typesReady && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings))) return true;
+        if(g_typesReady && g_types.Tint && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings))) return true;
+        if(g_typesReady && !splineMetadata && !MiniMapResidentMetadata::Available())return true;
         auto* self=GetSelf();
         if(!self || !self->hooks || !self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
             !self->hooks->ObjectWalker->FindObjectsByNameInto || !self->hooks->ObjectWalker->IsReady()) return false;
@@ -1410,22 +1417,63 @@ namespace
             if(retain) g_metrics.OrdinaryTime+=Ms(start);
         }
     }
-    bool Read(const Native& n,Record& r,Acquisition* acquired=nullptr)
+    template<class T,size_t Size> bool ExactValues(const std::array<T,Size>& a,const std::array<T,Size>& b)
+    {
+        for(size_t i=0;i<Size;++i)
+        {
+            if constexpr(sizeof(T)==sizeof(uint64_t))
+            {if(std::bit_cast<uint64_t>(a[i])!=std::bit_cast<uint64_t>(b[i]))return false;}
+            else {if(std::bit_cast<uint32_t>(a[i])!=std::bit_cast<uint32_t>(b[i]))return false;}
+        }
+        return true;
+    }
+    bool SameBounds(const Bounds& a,const Bounds& b)
+    {return a.Valid==b.Valid && ExactValues(std::array{a.MinX,a.MinY,a.MaxX,a.MaxY},std::array{b.MinX,b.MinY,b.MaxX,b.MaxY});}
+    bool SameRenderState(const Record& a,const Record& b)
+    {
+        // Acquisition-only flags, Sources (handled by reconciliation/publication),
+        // and observation time do not invalidate an immutable render owner.
+        return a.Generation==b.Generation && a.Index==b.Index && a.Serial==b.Serial &&
+            a.BuildingId==b.BuildingId && a.DefinitionIndex==b.DefinitionIndex && a.DefinitionNumber==b.DefinitionNumber &&
+            a.DefinitionObjectIndex==b.DefinitionObjectIndex && a.DefinitionObjectSerial==b.DefinitionObjectSerial &&
+            a.TransformValid==b.TransformValid && a.DefinitionValid==b.DefinitionValid && a.HasSpline==b.HasSpline &&
+            a.InteriorKnown==b.InteriorKnown && a.InteriorOnly==b.InteriorOnly && a.SplineReady==b.SplineReady &&
+            a.SplineTintKnown==b.SplineTintKnown &&
+            ExactValues(a.Position,b.Position) && ExactValues(a.Scale,b.Scale) && ExactValues(a.Rotation,b.Rotation) &&
+            ExactValues(a.Tint,b.Tint) && SameBounds(a.Extent,b.Extent) && SameBounds(a.SourceFootprint,b.SourceFootprint) &&
+            a.LocalFootprint.Valid==b.LocalFootprint.Valid && ExactValues(a.LocalFootprint.Min,b.LocalFootprint.Min) &&
+            ExactValues(a.LocalFootprint.Max,b.LocalFootprint.Max) && a.CanonicalBlueprint==b.CanonicalBlueprint &&
+            a.DefinitionShape==b.DefinitionShape && a.Curve==b.Curve &&
+            std::bit_cast<uint64_t>(a.SplineInflation)==std::bit_cast<uint64_t>(b.SplineInflation) &&
+            a.GeometryStatus==b.GeometryStatus && a.UsesSafetyAllowance==b.UsesSafetyAllowance &&
+            a.InvalidFootprintSource==b.InvalidFootprintSource && a.UnboundedGeometry==b.UnboundedGeometry && a.BoundsKind==b.BoundsKind;
+    }
+    void ObserveRenderRevision(const Record& before,const Record& after)
+    {
+        MiniMapBuildingCollectorAudit::ObserveRevision(g_audit,before,after);
+        namespace Policy=MiniMapBuildingSplinePolicy;
+        g_audit.TypeKnownGained+=Policy::Classify(before.DefinitionValid,before.BuildingId)==Policy::Category::Other &&
+            Policy::Classify(after.DefinitionValid,after.BuildingId)!=Policy::Category::Other;
+    }
+    bool ReadAcquiring(const Native& n,Record& r,Acquisition* acquired=nullptr)
     {
         if(acquired)*acquired={}; // A usable retained transform is not a complete acquisition.
         bool freshTransform=false, freshPlacement=false, tintObserved=false;
         // Defensive guard; membership callers also bypass Read for resolved data.
         if(r.StaticResolved()) {++g_metrics.CachedReuse;return true;}
-        g_snapshotDirty=true; // Conservative for unresolved/dynamic observations.
+        g_snapshotDirty=true; // Remains dirty if the acquisition transaction throws.
         if(r.HasSpline || r.DynamicObserved)++g_metrics.DynamicReads;
         else if(r.AcquisitionAttempted)++g_metrics.RetryAttempts;
         else ++g_metrics.NewAttempts;
         r.AcquisitionAttempted=true;
+        r.Audit.Acquisition=1;
         const Id id{r.Index,r.Serial};
         if(!n.mass.isEntityValid(g_manager,id)) { ++g_metrics.Stale; return false; }
+        r.Audit.Acquisition|=2;
         // Built is a precondition of fragment access, not copied-data eligibility.
         // An unavailable refresh does not erase a prior successful observation.
         if(!n.mass.isEntityBuilt(g_manager,id)) return r.TransformValid;
+        r.Audit.Acquisition|=4;
         const auto start=Clock::now();
         ++g_metrics.TransformReads;
         if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
@@ -1440,10 +1488,10 @@ namespace
             { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; freshTransform=true; }
         }
         const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
-        // Remember actual dynamic-source evidence for this lifetime. A missing
-        // spline fragment during a later observation must not freeze the record.
-        // HasSpline itself keeps its existing per-observation rendering semantics.
-        r.DynamicObserved=r.DynamicObserved || r.HasSpline || spline!=nullptr;
+        // Preserve spline-source evidence during initial acquisition: a missing
+        // fragment must not turn a known spline into terminal ordinary state.
+        // HasSpline retains existing acquiring-record rendering semantics.
+        r.DynamicObserved=r.DynamicObserved || r.HasSpline || spline!=nullptr || (r.Sources&IndexedSpline)!=0;
         r.HasSpline=spline!=nullptr;
         // These are the ONLY UObject accesses needed for ordinary identity and
         // Interior facts. Failure leaves already copied facts intact. No raw
@@ -1509,10 +1557,15 @@ namespace
         }
         if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
         { r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A}; tintObserved=true; }
+        // With the resolved fragment type and a valid/built entity, the Mass
+        // optional fragment lookup establishes presence OR confirmed absence.
+        // A missing metadata type is not evidence that customization is absent.
+        r.SplineTintKnown=g_types.Tint!=nullptr;
         const double dynamic=Ms(start); g_metrics.Dynamic+=dynamic;
         if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
         const auto boundsStart=Clock::now();
-        const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(n,id,g_types.TargetBox));
+        // A spline's Geometry branch never consumes targeting bounds.
+        const auto* targeting=r.HasSpline?nullptr:static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(n,id,g_types.TargetBox));
         Geometry(r,spline,targeting?&targeting->BuildingBoundingBox:nullptr);
         if(!r.HasSpline && r.SourceFootprint.Valid)
         {
@@ -1523,6 +1576,11 @@ namespace
         const double boundsTime=Ms(boundsStart); g_metrics.BoundsTime+=boundsTime;
         if(r.Sources&OffGrid) g_metrics.OffBounds+=boundsTime;
         r.RefreshedAtSeconds=Seconds(); ++g_metrics.Refreshed;
+        r.Audit.Acquisition|=uint8_t((freshTransform?8:0)|(freshPlacement?16:0));
+        r.SplineReady=r.HasSpline && freshTransform && freshPlacement && r.SplineTintKnown && r.InteriorKnown && !r.InteriorOnly &&
+            r.DefinitionObjectIndex>0 && r.DefinitionObjectSerial>0 && r.Curve && !r.Curve->Reconstructed &&
+            !r.Curve->Segments.empty() && r.GeometryStatus==GeometryIssue::None && r.Extent.Valid && !r.UnboundedGeometry &&
+            MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId)!=MiniMapBuildingSplinePolicy::Category::Other;
         // Known Interior is terminal exclusion and needs no classname conversion.
         r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown &&
             !r.DynamicObserved && (r.InteriorOnly || bool(r.CanonicalBlueprint));
@@ -1539,6 +1597,128 @@ namespace
         }
         return r.TransformValid;
     }
+    bool Read(const Native& n,Record& r,Acquisition* acquired=nullptr)
+    {
+        if(r.StaticResolved()){if(acquired)*acquired={};++g_metrics.CachedReuse;return true;}
+        if(r.SplineSettled)
+        {
+            if(acquired)*acquired={};
+            if(r.Generation!=g_generation || !n.mass.isEntityValid(g_manager,{r.Index,r.Serial}))
+            {++g_metrics.Stale;return false;}
+            if(!n.mass.isEntityBuilt(g_manager,{r.Index,r.Serial}))return r.TransformValid;
+            ++g_metrics.SettledBypasses; ++g_metrics.PlacementAvoided;
+            // All constructed visual properties, including optional RGBA tint,
+            // are now owned. Only current Mass lifetime/membership is observed.
+            r.RefreshedAtSeconds=Seconds(); // Telemetry, not a render transition.
+            return true;
+        }
+        if(r.DynamicObserved || r.HasSpline)++g_metrics.SplineRetries;
+        const bool dirty=g_snapshotDirty;
+        Record next=r; // Commit copied facts only after a completed acquisition.
+        const bool read=ReadAcquiring(n,next,acquired);
+        const bool changed=!SameRenderState(r,next);
+        if(changed){ObserveRenderRevision(r,next);next.RenderRevision=++g_renderRevision;}
+        if((!r.Curve || r.Curve->Issue!=GeometryIssue::None || r.Curve->Segments.empty()) &&
+            next.Curve && next.Curve->Issue==GeometryIssue::None && !next.Curve->Segments.empty())++g_metrics.SplineAcquired;
+        r=std::move(next);
+        g_snapshotDirty=dirty || changed;
+        return read;
+    }
+    // These observers only retain outcomes of operations the existing path
+    // already performs. No second SelectSpline, preparation, or native lookup.
+    struct PreparationAudit
+    {
+        const Record& Input;
+        MiniMapBuildingCollectorAudit::Ack Outcome=MiniMapBuildingCollectorAudit::Ack::Other;
+        uint8_t Evidence=1;
+        explicit PreparationAudit(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared):Input(r)
+        {
+            ++g_audit.AckAttempts;++g_audit.Prepared;
+            if(prepared.Sampling && prepared.Sampling->Complete()){Evidence|=2;++g_audit.SamplingComplete;}
+        }
+        ~PreparationAudit()
+        {
+            namespace A=MiniMapBuildingCollectorAudit;
+            g_audit.Acknowledgements.Add(Outcome);
+            auto save=[&](Record& target)
+            {
+                if(target.Generation!=Input.Generation || target.RenderRevision!=Input.RenderRevision)return;
+                target.Audit.PreparedRevision=Input.RenderRevision;target.Audit.Preparation=Evidence;
+                target.Audit.Acknowledgement=uint8_t(Outcome);
+            };
+            const auto key=Key(Input.Index,Input.Serial);
+            if(auto it=g_cache.find(key);it!=g_cache.end())save(it->second.Data);
+            if(auto it=g_indexedCopies.find(key);it!=g_indexedCopies.end())save(it->second.Data);
+        }
+        bool Reject(MiniMapBuildingCollectorAudit::Ack reason){Outcome=reason;return false;}
+    };
+    bool SplinePreparationReady(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared,PreparationAudit* audit=nullptr)
+    {
+        namespace E=MiniMapBuildingSplineEnvelope;
+        namespace A=MiniMapBuildingCollectorAudit;
+        auto reject=[&](A::Ack reason){if(audit)audit->Reject(reason);return false;};
+        if(!r.SplineReady)return reject(A::Ack::RecordNotReady);
+        if(!r.Curve)return reject(A::Ack::MissingCurve);
+        if(r.Curve->Reconstructed)return reject(A::Ack::Reconstructed);
+        if(!prepared.Sampling)return reject(A::Ack::MissingSampling);
+        if(!prepared.Sampling->Complete())return reject(A::Ack::Sampling);
+        // Identical Stage 41H predicates and short circuit order.
+        constexpr uint32_t incomplete=E::MissingCurve|E::MissingMetadata|E::MissingFields|E::InvalidSource|E::InvalidRoot|
+            E::DegenerateFrame|E::Discontinuity|E::SamplingLimited|E::DegenerateProjection|E::UnsupportedProjection;
+        const auto* selected=MiniMapBuildingVisuals::Detail::SelectSpline(r,prepared);
+        if(!selected)return reject(A::Ack::Envelope);
+        if((prepared.Reasons&incomplete) || (selected->Reasons&incomplete))return reject(A::Ack::RejectedCells);
+        if(prepared.SyntheticThin)
+        {
+            if(MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId))return true;
+            return reject(A::Ack::SyntheticType);
+        }
+        const auto metadata=E::Metadata(r);
+        if(!metadata)return reject(A::Ack::Metadata);
+        if(selected->SourceProfile>=metadata->Profiles.size())return reject(A::Ack::ProfileIndex);
+        const auto& source=metadata->Profiles[selected->SourceProfile];
+        if(P::Copied(source) && source.Source==P::Selection::NativeBuilderInput && !P::Pending(source))return true;
+        if(metadata->Inventory==P::Availability::Available && !P::Pending(*metadata))return true;
+        return reject(A::Ack::NativeProfileOrInventory);
+    }
+    void SettlePrepared(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared)
+    {
+        namespace A=MiniMapBuildingCollectorAudit;
+        PreparationAudit audit(r,prepared);
+        if(r.Generation!=g_generation){audit.Outcome=A::Ack::Generation;return;}
+        if(!r.RenderRevision){audit.Outcome=A::Ack::ZeroRevision;return;}
+        if(!SplinePreparationReady(r,prepared,&audit))return;
+        audit.Evidence|=4;++g_audit.Eligible;
+        const auto* native=MiniMapNative::Get();
+        if(!native){audit.Outcome=A::Ack::NativeUnavailable;return;}
+        if(!Live(*native,{r.Index,r.Serial})){audit.Outcome=A::Ack::MassNotLive;return;}
+        const auto key=Key(r.Index,r.Serial);
+        const auto global=g_cache.find(key);
+        const auto indexed=g_indexedCopies.find(key);
+        const auto current=[&](const Record& candidate)
+        {return candidate.Generation==r.Generation && candidate.RenderRevision==r.RenderRevision;};
+        if((global==g_cache.end() || !current(global->second.Data)) &&
+            (indexed==g_indexedCopies.end() || !current(indexed->second.Data)))
+        {audit.Outcome=global==g_cache.end() && indexed==g_indexedCopies.end()?A::Ack::SourceAbsent:A::Ack::StaleRevision;return;}
+        if((global!=g_cache.end() && global->second.Data.SplineSettled) ||
+            (indexed!=g_indexedCopies.end() && indexed->second.Data.SplineSettled))
+        {audit.Outcome=A::Ack::AlreadySettled;return;}
+        Record settled=r;
+        settled.SplineSettled=true;
+        auto install=[&](Record& target)
+        {
+            if(target.Generation!=r.Generation)return;
+            const auto sources=target.Sources;
+            if(!SameRenderState(target,settled))g_snapshotDirty=true;
+            target=settled;target.Sources=sources;
+        };
+        // Only existing entries are enriched. No membership insertion and no
+        // resurrection from a retained render snapshot are possible here.
+        if(global!=g_cache.end()){install(global->second.Data);global->second.Read=true;}
+        if(indexed!=g_indexedCopies.end())install(indexed->second.Data);
+        ++g_metrics.SplineSettled;
+        audit.Outcome=A::Ack::Settled;
+    }
     bool ReuseAcquisition(const Native& n,Record& r,const Entry& entry)
     {
         const auto& sample=entry.Data;
@@ -1553,6 +1733,7 @@ namespace
             d.NameNumber!=sample.DefinitionNumber || !d.InteriorTagChecked || d.InteriorOnly!=sample.InteriorOnly ||
             d.Geometry!=sample.DefinitionShape || (!sample.HasSpline && d.CanonicalBlueprint!=sample.CanonicalBlueprint))return false;
         if(!Live(n,{r.Index,r.Serial}))return false;
+        const Record before=r;
         // Only a complete same-invocation sample reaches here. Preserve fields
         // that Read would retain from the INDEXED prior record, not the global one.
         const auto sources=r.Sources, category=r.Category;
@@ -1572,8 +1753,153 @@ namespace
             (r.InteriorOnly || bool(r.CanonicalBlueprint));
         if(r.StaticAcquired)++g_metrics.ResolvedNow;
         ++g_metrics.Refreshed; // Logical record refresh; native acquisition counters exclude this reuse.
-        g_snapshotDirty=true;
+        const bool changedRender=!SameRenderState(before,r);
+        if(changedRender)ObserveRenderRevision(before,r);
+        r.RenderRevision=changedRender?++g_renderRevision:before.RenderRevision;
+        if(!changedRender && before.Audit.PreparedRevision==before.RenderRevision)
+        {
+            // Preserve diagnostic acknowledgement evidence across equivalent
+            // source-copy enrichment; never restore acquisition/lifetime state.
+            r.Audit.PreparedRevision=before.Audit.PreparedRevision;r.Audit.Preparation=before.Audit.Preparation;
+            r.Audit.Acknowledgement=before.Audit.Acknowledgement;
+        }
+        g_snapshotDirty=g_snapshotDirty || changedRender;
         return true;
+    }
+    uint64_t SettlementBlockers(const Record& r,bool admitted)
+    {
+        namespace A=MiniMapBuildingCollectorAudit;
+        uint64_t mask=0;
+        auto block=[&](A::Block reason,bool present){if(present)mask|=A::Bit(reason);};
+        const auto category=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
+        const bool synthetic=MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId);
+        block(A::Block::NoAcquisition,!r.AcquisitionAttempted);
+        block(A::Block::NotLiveOrBuilt,(r.Audit.Acquisition&1) && (r.Audit.Acquisition&6)!=6);
+        block(A::Block::MissingBuildingId,!r.DefinitionValid);
+        block(A::Block::UnknownType,category==MiniMapBuildingSplinePolicy::Category::Other);
+        block(A::Block::Definition,!r.DefinitionValid || r.DefinitionObjectIndex<=0 || r.DefinitionObjectSerial<=0);
+        block(A::Block::Transform,!r.TransformValid);
+        block(A::Block::MissingCurve,!r.HasSpline || !r.Curve);
+        block(A::Block::Reconstructed,r.Curve && r.Curve->Reconstructed);
+        block(A::Block::InvalidCurve,r.Curve && (r.Curve->Segments.empty() || r.Curve->Issue!=GeometryIssue::None));
+        block(A::Block::TintUnknown,!r.SplineTintKnown);
+        block(A::Block::InteriorUnknown,!r.InteriorKnown);block(A::Block::InteriorExcluded,r.InteriorOnly);
+        block(A::Block::Admission,!admitted);
+        block(A::Block::FreshTransform,(r.Audit.Acquisition&7)==7 && !(r.Audit.Acquisition&8));
+        block(A::Block::FreshPlacement,(r.Audit.Acquisition&7)==7 && !(r.Audit.Acquisition&16));
+        block(A::Block::InvalidCurve,r.GeometryStatus!=GeometryIssue::None || !r.Extent.Valid || r.UnboundedGeometry);
+        const bool current=r.Audit.Preparation && r.Audit.PreparedRevision==r.RenderRevision;
+        block(A::Block::AwaitingPreparation,r.SplineReady && !r.Audit.Preparation);
+        block(A::Block::StalePreparation,r.SplineReady && r.Audit.Preparation && !current);
+        if(current)
+        {
+            block(A::Block::Sampling,!(r.Audit.Preparation&2));
+            const auto ack=static_cast<A::Ack>(r.Audit.Acknowledgement);
+            block(A::Block::Envelope,ack==A::Ack::Envelope);
+            block(A::Block::RejectedCells,ack==A::Ack::RejectedCells);
+            block(A::Block::NativeProfile,ack==A::Ack::Metadata || ack==A::Ack::ProfileIndex);
+            block(A::Block::TemplateInventory,ack==A::Ack::NativeProfileOrInventory);
+            block(A::Block::AckRejected,(r.Audit.Preparation&4) && ack!=A::Ack::Settled && ack!=A::Ack::AlreadySettled);
+            block(A::Block::SyntheticEligible,synthetic && (r.Audit.Preparation&4));
+        }
+        // Missing owned metadata is observable; a more specific native cause is not.
+        block(A::Block::NativeProfile,!synthetic && category!=MiniMapBuildingSplinePolicy::Category::Other &&
+            (!r.DefinitionShape || !r.DefinitionShape->Profiles));
+        if(!r.SplineReady && !mask)mask|=A::Bit(A::Block::OtherReadiness);
+        if(!r.SplineSettled && !mask)mask|=A::Bit(A::Block::EligibleUnsettled);
+        return mask;
+    }
+    MiniMapBuildingCollectorAudit::Census SplineCensus(const Snapshot* snapshot)
+    {
+        namespace A=MiniMapBuildingCollectorAudit;
+        A::Census census;
+        auto known=[](const Record& r){return r.HasSpline || r.DynamicObserved || (r.Sources&IndexedSpline)!=0;};
+        auto count=[&](const Record& r,bool spline)
+        {
+            if(r.Generation!=g_generation || !spline)return;
+            bool admitted=false;
+            if(snapshot && snapshot->Generation==g_generation)
+            {
+                const auto key=Key(r.Index,r.Serial);
+                const auto it=std::lower_bound(snapshot->Records.begin(),snapshot->Records.end(),key,
+                    [](const Record& candidate,uint64_t value){return Key(candidate.Index,candidate.Serial)<value;});
+                admitted=it!=snapshot->Records.end() && Key(it->Index,it->Serial)==key;
+            }
+            const auto category=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
+            census.Add(size_t(category),admitted,r.SplineReady,r.SplineSettled,
+                r.Audit.Preparation && r.Audit.PreparedRevision==r.RenderRevision,SettlementBlockers(r,admitted),
+                r.Audit.PreparedRevision==r.RenderRevision && (r.Audit.Preparation&4));
+        };
+        // The same indexed-preferred choice as canonical publication. Union the
+        // spline-source evidence, but count each generation/index/serial once.
+        for(const auto& [key,e]:g_cache)
+        {
+            if(e.Data.Generation!=g_generation)continue;
+            const auto it=g_indexedCopies.find(key);
+            const bool indexed=it!=g_indexedCopies.end() && it->second.Data.Generation==g_generation;
+            const auto visible=[&](const Record& r)
+            {
+                const auto& region=snapshot && snapshot->Generation==g_generation?snapshot->Region:g_region;
+                return !r.InteriorOnly && r.TransformValid && r.Extent.Valid &&
+                    (r.UnboundedGeometry || MiniMapBuildingGeometry::Intersects(r.Extent,region));
+            };
+            const bool active=indexed && (it->second.Data.Sources&Indexed);
+            const bool indexedWins=active && (visible(it->second.Data) || !e.Read || !visible(e.Data));
+            const auto& r=indexedWins?it->second.Data:e.Data;
+            count(r,known(e.Data) || (indexed && known(it->second.Data)));
+        }
+        for(const auto& [key,e]:g_indexedCopies)
+        {
+            const auto it=g_cache.find(key);
+            if(it==g_cache.end() || it->second.Data.Generation!=g_generation)count(e.Data,known(e.Data));
+        }
+        return census;
+    }
+    struct PublicationAudit
+    {
+        MiniMapBuildingCollectorAudit::Publication Outcome=MiniMapBuildingCollectorAudit::Publication::Failed;
+        uint64_t Flags=0;
+        ~PublicationAudit()
+        {
+            g_audit.Publications.Add(Outcome);g_audit.PublicationFlags.AddMask(Flags);
+        }
+    };
+    template<class E,size_t N> std::string AuditCounts(const MiniMapBuildingCollectorAudit::Counts<E>& counts,const char* const (&names)[N])
+    {
+        std::ostringstream out;
+        for(size_t i=0;i<N;++i){if(i)out<<',';out<<names[i]<<'='<<counts.Values[i];}
+        return out.str();
+    }
+    void ReportAudit(const Snapshot* snapshot) noexcept
+    {
+        try
+        {
+            namespace A=MiniMapBuildingCollectorAudit;
+            const auto c=SplineCensus(snapshot);
+            std::ostringstream categories;
+            constexpr const char* names[]={"walkway","rail","zipline","other"};
+            for(size_t i=0;i<4;++i){if(i)categories<<',';categories<<names[i]<<'=';for(size_t j=0;j<4;++j){if(j)categories<<'/';categories<<c.Category[i][j];}}
+            LOG_INFO("MiniMap: 41I census (current unique gen/index/serial): known=%llu admitted=%llu ready=%llu settled=%llu currentPrepared=%llu numericEligible=%llu syntheticEligibleUnsettled=%llu category(known/admitted/ready/settled)=[%s] primary=[%s]",
+                (unsigned long long)c.Known,(unsigned long long)c.Admitted,(unsigned long long)c.Ready,(unsigned long long)c.Settled,
+                (unsigned long long)c.CurrentPrepared,(unsigned long long)c.NumericallyEligible,(unsigned long long)c.SyntheticEligible,categories.str().c_str(),
+                AuditCounts(c.Primary,A::BlockNames).c_str());
+            LOG_INFO("MiniMap: 41I census concurrent blockers (current distinct identities; nonexclusive): [%s]",AuditCounts(c.Overlapping,A::BlockNames).c_str());
+            LOG_INFO("MiniMap: 41I acknowledgements (interval events): attempts=%llu prepared=%llu samplingComplete=%llu eligible=%llu outcomes=[%s]",
+                (unsigned long long)g_audit.AckAttempts,(unsigned long long)g_audit.Prepared,(unsigned long long)g_audit.SamplingComplete,
+                (unsigned long long)g_audit.Eligible,AuditCounts(g_audit.Acknowledgements,A::AckNames).c_str());
+            LOG_INFO("MiniMap: 41I publication (interval Publish visits): primary=[%s] overlapping=[%s] revisionOnlyPublished=%llu ordinaryChanged=%llu splineChanged=%llu publishedRevisionFields=[%s]",
+                AuditCounts(g_audit.Publications,A::PublicationNames).c_str(),AuditCounts(g_audit.PublicationFlags,A::PublicationNames).c_str(),
+                (unsigned long long)g_audit.RevisionOnlyPublished,(unsigned long long)g_audit.PublishedOrdinary,(unsigned long long)g_audit.PublishedSpline,
+                AuditCounts(g_audit.PublishedRevisionFlags,A::RevisionNames).c_str());
+            LOG_INFO("MiniMap: 41I revisions (interval assignment events): total=%llu ordinary=%llu spline=%llu readyGained=%llu readyLost=%llu initialDefinition=%llu initialCurve=%llu initialProfile=%llu typeKnownGained=%llu tintKnownGained=%llu interiorKnownGained=%llu primary=[%s] overlapping=[%s]",
+                (unsigned long long)g_audit.RevisionEvents,(unsigned long long)g_audit.OrdinaryRevisions,(unsigned long long)g_audit.SplineRevisions,
+                (unsigned long long)g_audit.ReadyGained,(unsigned long long)g_audit.ReadyLost,(unsigned long long)g_audit.InitialDefinition,
+                (unsigned long long)g_audit.InitialCurve,(unsigned long long)g_audit.InitialProfile,
+                (unsigned long long)g_audit.TypeKnownGained,(unsigned long long)g_audit.TintKnownGained,(unsigned long long)g_audit.InteriorKnownGained,
+                AuditCounts(g_audit.RevisionPrimary,A::RevisionNames).c_str(),AuditCounts(g_audit.RevisionFlags,A::RevisionNames).c_str());
+        }
+        catch(...) {} // Reporting allocation failure never participates in production.
+        g_audit={};
     }
     void Destroy()
     {
@@ -1589,7 +1915,7 @@ namespace
         MiniMapDebugText::Clear();
         g_debugOracle={}; g_debugLastGridMs=0;
 #endif
-        g_cache.clear(); g_indexedCopies.clear(); g_observation=0; g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
+        g_cache.clear(); g_indexedCopies.clear(); g_observation=0; g_renderRevision=0; g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
         g_indexedQuery=0;
         g_definitionDiagnostics=0;
         g_curveScratch={};
@@ -1604,7 +1930,7 @@ namespace
         g_region={}; g_queryRegion={}; g_lastRadius=0;
         g_ordinaryQueryPadding=kOriginPadding;
         g_initialDiscoveryReports=0;
-        g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={};
+        g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={}; g_audit={};
         g_snapshotDirty=true; g_publishedGrid=g_publishedIdentity=false;
         g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
         g_indexedHandles.clear(); g_xyQuery=false;
@@ -1674,7 +2000,7 @@ namespace
                         entry.Data=indexed->second.Data; // Same entity lifetime changing acquisition source.
                     entry.Data.Sources=source;
                     entry.Data.Generation=g_generation; entry.Data.Index=id.Index; entry.Data.Serial=id.SerialNumber;
-                    entry.Read=entry.Data.StaticResolved();
+                    entry.Read=entry.Data.StaticResolved() || entry.Data.SplineSettled;
                     g_pending.push_back(Key(id));
                     ++g_metrics.Added;
                 }
@@ -1718,8 +2044,10 @@ namespace
             if(e.Data.StaticResolved()) {e.Read=true;++g_metrics.CachedReuse;return;}
             if(now<e.Due) return;
             e.Observation=g_observation;
+            const bool wasRead=e.Read;
             e.Read=Read(n,e.Data,&e.Acquired);
-            const bool unresolved=!e.Data.TransformValid || (!e.Data.HasSpline &&
+            if(e.Read!=wasRead)g_snapshotDirty=true; // Admission/completeness transition.
+            const bool unresolved=((e.Data.HasSpline || e.Data.DynamicObserved) && !e.Data.SplineReady) || !e.Data.TransformValid || (!e.Data.HasSpline &&
                 (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
             // Missing required facts retry on the normal next acquisition slice,
             // without the settled-record movement cadence becoming a cooldown.
@@ -1779,7 +2107,7 @@ namespace
         ++g_metrics.MembershipTags;
         n.gridDiagnostic.viewConstruct(view.data(),g_manager,handle.Entity);
         if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Building)) return true;
-        if(previous!=g_indexedCopies.end() && previous->second.Data.StaticResolved())return keepCopied();
+        if(previous!=g_indexedCopies.end() && (previous->second.Data.StaticResolved() || previous->second.Data.SplineSettled))return keepCopied();
         ++g_metrics.MembershipTransforms;
         const auto* transform=static_cast<const SDK::FTransform*>(Fragment(n,handle.Entity,g_types.Transform));
         if(!transform) return keepCopied();
@@ -1921,6 +2249,8 @@ namespace
     }
     void Publish(size_t indexedCount,const Native& n)
     {
+        namespace A=MiniMapBuildingCollectorAudit;
+        PublicationAudit audit;
         const auto start=Clock::now();
         // Keep actual removal detection at publication cadence, including when
         // immutable observations let us reuse the previous snapshot wholesale.
@@ -1939,6 +2269,7 @@ namespace
         if(!g_snapshotDirty && previous && previous->Generation==g_generation && sameRegion() &&
             g_publishedGrid==g_gridSucceeded && g_publishedIdentity==g_identitySucceeded)
         {
+            audit.Outcome=A::Publication::FastReuse;
             ++g_metrics.SnapshotsReused;
             g_metrics.Filter+=Ms(start);
             return; // Pointer identity lets BuildingVisuals skip preparation too.
@@ -1980,9 +2311,11 @@ namespace
         std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b)
         {
             if(a.Identity!=b.Identity) return a.Identity<b.Identity;
-            if(bool(a.Data->Sources&Indexed)!=bool(b.Data->Sources&Indexed)) return bool(a.Data->Sources&Indexed);
-            return a.Data->RefreshedAtSeconds>b.Data->RefreshedAtSeconds;
+            // Each source map has at most one entry per identity. Indexed wins
+            // the sole possible cross-map tie; observation time has no role.
+            return bool(a.Data->Sources&Indexed) && !(b.Data->Sources&Indexed);
         });
+        A::Population population(previous?&previous->Records:nullptr,&g_audit);
         result->Records.reserve(candidates.size()); // No relocation of materialized Records.
         for(size_t first=0;first<candidates.size();)
         {
@@ -1992,7 +2325,35 @@ namespace
             { sources|=candidates[next].Data->Sources; ++g_duplicates; ++next; }
             result->Records.push_back(*candidates[first].Data);
             result->Records.back().Sources=sources;
+            population.Observe(result->Records.back());
             first=next;
+        }
+        population.Finish();
+        audit.Flags=population.Flags;
+        if(!previous)audit.Flags|=A::Bit(A::Publication::NoPrevious);
+        else
+        {
+            if(previous->Generation!=result->Generation)audit.Flags|=A::Bit(A::Publication::Generation);
+            if(!sameRegion())audit.Flags|=A::Bit(A::Publication::Region);
+            if(previous->Complete!=result->Complete)audit.Flags|=A::Bit(A::Publication::Completeness);
+        }
+        if(g_publishedGrid!=g_gridSucceeded || g_publishedIdentity!=g_identitySucceeded)audit.Flags|=A::Bit(A::Publication::Query);
+        g_audit.PublishedRevisionFlags.AddMask(population.PublishedRevisionReasons);
+        g_audit.PublishedOrdinary+=population.OrdinaryChanged;g_audit.PublishedSpline+=population.SplineChanged;
+        // Dirty can originate from an out-of-region acquisition or a second
+        // source copy catching up. Preserve the exact published owner when the
+        // canonical render population is unchanged. Revision compares are O(N),
+        // never a rescan of immutable curves/profiles and never hash-only.
+        if(previous && previous->Generation==result->Generation && sameRegion() && previous->Complete==result->Complete &&
+            g_publishedGrid==g_gridSucceeded && g_publishedIdentity==g_identitySucceeded &&
+            previous->Records.size()==result->Records.size() &&
+            population.Equal)
+        {
+            audit.Outcome=A::Publication::CanonicalReuse;
+            --g_metrics.SnapshotsBuilt;++g_metrics.SnapshotsReused;
+            g_snapshotDirty=false;
+            g_metrics.SnapshotTime+=Ms(publication);g_metrics.SnapshotBuild+=Ms(start);
+            return;
         }
         if(g_initialDiscoveryReports<8)
         {
@@ -2016,6 +2377,7 @@ namespace
             catch(...) {} // Diagnostics must not prevent snapshot publication.
         }
         { std::scoped_lock lock(g_mutex); g_snapshot=std::move(result); }
+        audit.Outcome=A::PrimaryPublication(audit.Flags);
         g_snapshotDirty=false; g_publishedGrid=g_gridSucceeded; g_publishedIdentity=g_identitySucceeded;
         g_metrics.SnapshotTime+=Ms(publication);
         g_metrics.SnapshotBuild+=Ms(start);
@@ -2081,7 +2443,17 @@ namespace
                 if(e.Read) maxAge=(std::max)(maxAge,Seconds()-e.Data.RefreshedAtSeconds);
             }
             auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-            if(snapshot) for(const auto& r:snapshot->Records) { splines+=r.HasSpline; localAge=(std::max)(localAge,Seconds()-r.RefreshedAtSeconds); }
+            if(snapshot) for(const auto& r:snapshot->Records)
+            {
+                splines+=r.HasSpline;
+                // Render owners intentionally retain their acquisition sample
+                // time. Current observation telemetry lives in collector copies.
+                double observed=r.RefreshedAtSeconds;
+                const auto key=Key(r.Index,r.Serial);
+                if(const auto it=g_cache.find(key);it!=g_cache.end())observed=(std::max)(observed,it->second.Data.RefreshedAtSeconds);
+                if(const auto it=g_indexedCopies.find(key);it!=g_indexedCopies.end())observed=(std::max)(observed,it->second.Data.RefreshedAtSeconds);
+                localAge=(std::max)(localAge,Seconds()-observed);
+            }
             LOG_INFO("MiniMap: BuildingCollector: gridResults=%zu indexed=%zu offGridCached=%zu taggedSplines=%zu candidates=%zu splines=%zu pending=%zu dedup=%zu added=%zu removed=%zu offDelta=+%zu/-%zu definitionMiss=%zu stale=%zu refreshed=%zu polls=%zu identityPolls=%zu ageMax(local/global)=%.3f/%.3fs intervalSums(ms): gridQuery=%.3f gridExtract=%.3f offGridQuery=%.3f splineQuery=%.3f reconcile=%.3f dynamicRefresh=%.3f bounds=%.3f offTransform=%.3f offBounds=%.3f cacheService=%.3f filter=%.3f snapshot=%.3f total=%.3f maxTick=%.3f",
                 g_gridResults,g_indexed,off,tagged,snapshot?snapshot->Records.size():0,splines,pending,g_duplicates,g_metrics.Added,g_metrics.Removed,g_metrics.OffAdded,g_metrics.OffRemoved,g_metrics.DefinitionMiss,g_metrics.Stale,g_metrics.Refreshed,g_metrics.Polls,g_metrics.IdentityPolls,localAge,maxAge,
                 g_metrics.GridQuery,g_metrics.GridExtract,g_metrics.OffQuery,g_metrics.SplineQuery,g_metrics.Reconcile,g_metrics.Dynamic,g_metrics.BoundsTime,g_metrics.OffDynamic,g_metrics.OffBounds,g_metrics.CacheService,g_metrics.Filter,g_metrics.SnapshotTime,g_metrics.Total,g_metrics.MaxTick);
@@ -2094,6 +2466,8 @@ namespace
                 g_metrics.Conversions,g_metrics.ConversionSuccess,g_metrics.InteriorReads,g_metrics.OrdinaryGeometry,g_metrics.OrdinaryDefinitions,
                 g_metrics.SnapshotsBuilt,g_metrics.SnapshotsReused,g_metrics.GridQuery,g_metrics.GridExtract,
                 g_metrics.SnapshotBuild,g_metrics.Total,g_metrics.MaxTick);
+            LOG_INFO("MiniMap: static spline acquisition (production interval): firstUsableCurves=%zu newlySettledLifetimes=%zu settledBypasses=%zu unresolvedAttempts=%zu placementOperationsAvoided=%zu; bypass eliminates placement/serial/extent/class/transform/curve/profile/target/tint reads; probe elimination is source-calculated, not measured; only Mass lifetime/membership remain",
+                g_metrics.SplineAcquired,g_metrics.SplineSettled,g_metrics.SettledBypasses,g_metrics.SplineRetries,g_metrics.PlacementAvoided);
             LOG_INFO("MiniMap: BuildingCollector overlap (production interval): candidates=%zu complete=%zu reused=%zu incomplete=%zu ineligible=%zu; reused counts eliminated full acquisitions, excludes membership reads",
                 g_metrics.OverlapCandidates,g_metrics.OverlapComplete,g_metrics.OverlapReused,g_metrics.OverlapIncomplete,g_metrics.OverlapIneligible);
             size_t ordinary=0,proxy=0,meshWidth=0,railExtension=0,unresolvedSpline=0,reconstructed=0,
@@ -2155,6 +2529,7 @@ namespace
             text << MiniMapBuildingVisuals::GetDebugText();
             MiniMapDebugText::Publish(text.str());
 #endif
+            ReportAudit(snapshot.get());
             g_metrics={}; g_nextLog=now+kLogCadence;
         }
     }
@@ -2205,6 +2580,11 @@ namespace MiniMapBuildingCollector
         std::scoped_lock lock(g_mutex); g_viewRadius=std::isfinite(radius)?radius:0;
     }
     std::shared_ptr<const Snapshot> GetSnapshot() { std::scoped_lock lock(g_mutex); return g_snapshot; }
+    void ObserveSplinePreparation(const Record& record,const MiniMapBuildingSplineEnvelope::Result& prepared)
+    {
+        if(g_ready && MiniMapMap::GameplayReady())SettlePrepared(record,prepared);
+        else {++g_audit.AckAttempts;g_audit.Acknowledgements.Add(MiniMapBuildingCollectorAudit::Ack::Inactive);}
+    }
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record& r,bool(*visitor)(const SDK::UObject*,void*),void* context)
     {
