@@ -135,6 +135,7 @@ namespace
         }
     }
     BuildingVisualsTimingTotals g_buildingVisualsTiming;
+    Clock::time_point g_timingIntervalStart{};
     bool g_initialized=false;
     uint64_t g_generation=0;
     std::shared_ptr<const C::Snapshot> g_lastInput;
@@ -254,6 +255,7 @@ namespace
         g_generation=0; g_lastInput.reset(); g_nextDebug={};
         g_prepareMax=0; g_prepareCount=0;
         std::scoped_lock lock(g_mutex); g_published.reset(); g_render={};g_buildingVisualsTiming={};g_debugText.clear();
+        g_timingIntervalStart=Clock::now();
         g_nextSplineDebug={};
 #if MINIMAP_DEBUG_UI
         g_splineDebugText.clear();
@@ -842,31 +844,67 @@ namespace MiniMapBuildingVisuals
             if(baseCore(snapshot->Instances[index]))submitOrdinary(index,false);
         }
         ui->DL_PopClipRect(dl); stats.Ms=Ms(start);
-        { std::scoped_lock lock(g_mutex); if(g_published==snapshot)
-            { g_render=stats;g_planReuses+=stats.PlanReuses;g_planRebuilds+=stats.PlanRebuilds;
-              g_renderMax=(std::max)(g_renderMax,stats.Ms); ++g_renderCount; }
-          const auto phaseEnd=Clock::now();
-          const double renderTotalMs=elapsedMs(measuredBegin,phaseEnd);
-          const double baseCoreFinalizeMs=elapsedMs(baseCoreFinalizeBegin,phaseEnd);
-          const double unaccountedMs=(std::max)(0.0,renderTotalMs-(snapshotAcquireMs+lifecycleWaitMs+ordinaryMs+
-              splinePlanMs+splineSubmissionMs+baseCoreFinalizeMs));
-          g_buildingVisualsTiming.SnapshotAcquire.Add(snapshotAcquireMs);
-          g_buildingVisualsTiming.LockWait.Add(lifecycleWaitMs);
-          g_buildingVisualsTiming.Ordinary.Add(ordinaryMs);
-          g_buildingVisualsTiming.PlanPreparation.Add(splinePlanMs);
-          g_buildingVisualsTiming.SplineSubmission.Add(splineSubmissionMs);
-          g_buildingVisualsTiming.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
-          g_buildingVisualsTiming.RenderTotal.Add(renderTotalMs);
-          g_buildingVisualsTiming.Unaccounted.Add(unaccountedMs);
-          g_buildingVisualsTiming.PreparedInstances+=workload.PreparedInstances;
-          g_buildingVisualsTiming.OrdinarySubmitted+=workload.OrdinarySubmitted;
-          g_buildingVisualsTiming.SplineRecords+=workload.SplineRecords;
-          g_buildingVisualsTiming.PlanReuses+=stats.PlanReuses;g_buildingVisualsTiming.PlanRebuilds+=stats.PlanRebuilds;
-          g_buildingVisualsTiming.RetainedPlanTriangles+=workload.RetainedPlanTriangles;
-          g_buildingVisualsTiming.BodyTriangles+=workload.BodyTriangles;
-          g_buildingVisualsTiming.RailBodyTriangles+=workload.RailBodyTriangles;
-          g_buildingVisualsTiming.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
-          g_buildingVisualsTiming.BaseCoreSubmissions+=workload.BaseCoreSubmissions; }
+        BuildingVisualsTimingTotals timingReport;double timingIntervalMs=0;bool emitTimingReport=false;
+        {
+            std::scoped_lock lock(g_mutex);
+            if(g_published==snapshot)
+            {
+                g_render=stats;g_planReuses+=stats.PlanReuses;g_planRebuilds+=stats.PlanRebuilds;
+                g_renderMax=(std::max)(g_renderMax,stats.Ms); ++g_renderCount;
+                const auto phaseEnd=Clock::now();
+                const double renderTotalMs=elapsedMs(measuredBegin,phaseEnd);
+                const double baseCoreFinalizeMs=elapsedMs(baseCoreFinalizeBegin,phaseEnd);
+                const double unaccountedMs=(std::max)(0.0,renderTotalMs-(snapshotAcquireMs+lifecycleWaitMs+ordinaryMs+
+                    splinePlanMs+splineSubmissionMs+baseCoreFinalizeMs));
+                g_buildingVisualsTiming.SnapshotAcquire.Add(snapshotAcquireMs);
+                g_buildingVisualsTiming.LockWait.Add(lifecycleWaitMs);
+                g_buildingVisualsTiming.Ordinary.Add(ordinaryMs);
+                g_buildingVisualsTiming.PlanPreparation.Add(splinePlanMs);
+                g_buildingVisualsTiming.SplineSubmission.Add(splineSubmissionMs);
+                g_buildingVisualsTiming.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
+                g_buildingVisualsTiming.RenderTotal.Add(renderTotalMs);
+                g_buildingVisualsTiming.Unaccounted.Add(unaccountedMs);
+                g_buildingVisualsTiming.PreparedInstances+=workload.PreparedInstances;
+                g_buildingVisualsTiming.OrdinarySubmitted+=workload.OrdinarySubmitted;
+                g_buildingVisualsTiming.SplineRecords+=workload.SplineRecords;
+                g_buildingVisualsTiming.PlanReuses+=stats.PlanReuses;g_buildingVisualsTiming.PlanRebuilds+=stats.PlanRebuilds;
+                g_buildingVisualsTiming.RetainedPlanTriangles+=workload.RetainedPlanTriangles;
+                g_buildingVisualsTiming.BodyTriangles+=workload.BodyTriangles;
+                g_buildingVisualsTiming.RailBodyTriangles+=workload.RailBodyTriangles;
+                g_buildingVisualsTiming.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
+                g_buildingVisualsTiming.BaseCoreSubmissions+=workload.BaseCoreSubmissions;
+                if(g_timingIntervalStart==Clock::time_point{})g_timingIntervalStart=phaseEnd;
+                timingIntervalMs=elapsedMs(g_timingIntervalStart,phaseEnd);
+                if(timingIntervalMs>=10000.0)
+                {
+                    timingReport=g_buildingVisualsTiming;g_buildingVisualsTiming={};
+                    g_timingIntervalStart=phaseEnd;emitTimingReport=true;
+                }
+            }
+        }
+        if(emitTimingReport)
+        {
+            const auto phase=[](const char* name,const PhaseAggregate& value)
+            {
+                LOG_INFO("MiniMap: Stage42J renderer_phase=%s samples=%llu totalMs=%.3f meanMs=%.3f maxMs=%.3f",
+                    name,(unsigned long long)value.Samples,value.TotalMs,value.MeanMs(),value.MaxMs);
+            };
+            LOG_INFO("MiniMap: Stage42J renderer generation=%llu intervalMs=%.1f",
+                (unsigned long long)snapshot->Generation,timingIntervalMs);
+            phase("snapshotAcquire",timingReport.SnapshotAcquire);phase("lifecycleLockWait",timingReport.LockWait);
+            phase("ordinarySubmission",timingReport.Ordinary);phase("planPreparation",timingReport.PlanPreparation);
+            phase("splineSubmission",timingReport.SplineSubmission);phase("baseCoreAndFinalize",timingReport.BaseCoreAndFinalize);
+            phase("buildingRenderTotal",timingReport.RenderTotal);phase("unaccounted",timingReport.Unaccounted);
+            phase("snapshotPreparation",timingReport.SnapshotPreparation);
+            LOG_INFO("MiniMap: Stage42J renderer_work generation=%llu intervalMs=%.1f preparedInstances=%llu ordinarySubmissions=%llu splineRecords=%llu planReuses=%llu planRebuilds=%llu retainedPlanTriangles=%llu bodyTriangles=%llu walkwayInsetTriangles=%llu railBodyTriangles=%llu baseCoreSubmissions=%llu snapshotPreparationSkips=%llu",
+                (unsigned long long)snapshot->Generation,timingIntervalMs,
+                (unsigned long long)timingReport.PreparedInstances,(unsigned long long)timingReport.OrdinarySubmitted,
+                (unsigned long long)timingReport.SplineRecords,(unsigned long long)timingReport.PlanReuses,
+                (unsigned long long)timingReport.PlanRebuilds,(unsigned long long)timingReport.RetainedPlanTriangles,
+                (unsigned long long)timingReport.BodyTriangles,(unsigned long long)timingReport.WalkwayInsetTriangles,
+                (unsigned long long)timingReport.RailBodyTriangles,(unsigned long long)timingReport.BaseCoreSubmissions,
+                (unsigned long long)timingReport.SnapshotPreparationSkips);
+        }
     }
 }
 #endif

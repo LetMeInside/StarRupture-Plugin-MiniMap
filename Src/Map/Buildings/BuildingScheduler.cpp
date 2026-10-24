@@ -115,10 +115,8 @@ namespace
             // stays FileCache/fallback, never Failed or a capture request.
             SpriteDiagnostic("MiniMap: decoded retention retry storage full (256) for '%s'; FileCache/fallback preserved for session", path.c_str());
         }
-        else if (added == A::AddResult::CapacityDeferred)
-            SpriteDiagnostic("MiniMap: sprite atlas admission deferred: canonical=%s reason=source capacity; FileCache/fallback preserved, no recapture", path.c_str());
-        // Retained: Core owns the crop. CapacityDeferred: legitimate fallback.
-        // Neither outcome leaves a decoded retry or schedules another read.
+        // Retained: Core owns the processed pixels even if complete-set packing
+        // cannot yet publish them. FileCache remains valid; no recapture/read.
     }
 }
 

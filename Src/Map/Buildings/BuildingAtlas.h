@@ -13,7 +13,7 @@ namespace MiniMapBuildingAtlas
 {
     struct Session;
     using Batch = std::shared_ptr<Session>;
-    enum class AddResult { Retained, CapacityDeferred, Invalid, Unavailable };
+    enum class AddResult { Retained, Invalid, Unavailable };
 
     // Borrow the plugin dictionary and v70 API until Shutdown. Lifecycle methods
     // take their own brief LifecycleMutex scopes: do not call under that mutex.
@@ -22,6 +22,8 @@ namespace MiniMapBuildingAtlas
     // Game-thread service only. One batch at a time; no caller-held lifecycle lock.
     // EndBatch also services a pending upload retry when no sources were added.
     Batch BeginBatch(uint64_t sessionSerial);
+    // Retained includes sources awaiting complete-set packing/publication;
+    // their processed pixels remain eligible without another cache read/capture.
     AddResult Add(const Batch&, const std::string& canonicalBlueprint,
         const MiniMapBuildingCache::Sprite&) noexcept;
     void EndBatch(const Batch&, uint64_t serviceTick) noexcept;

@@ -35,7 +35,7 @@ namespace MiniMapBuildingAtlas
     {
         uint64_t Serial{};
         bool Active = true, Busy = false, Retained = false;
-        bool Dirty = false, UploadPending = false, CapacityReported = false;
+        bool Dirty = false, UploadPending = false;
         unsigned PackAttempts = 0, UploadAttempts = 0;
         bool CapacityWaitReported = false, BatchExceptionReported = false;
         uint32_t DrawDiagnostics = 0; // Once per invalid published-entry category per session.
@@ -198,7 +198,6 @@ namespace MiniMapBuildingAtlas
         {
             session = std::make_shared<Session>();
             session->Serial = serial;
-            session->Bounds.reserve(C::MaximumSources);
             if (!session->Backend.Initialize(g_textures)) return false; // No GPU operation.
         }
         catch (...) { return false; }
@@ -247,12 +246,6 @@ namespace MiniMapBuildingAtlas
                 SpriteDiagnostic("MiniMap: atlas bounds rejected: canonical=%s reason=nonpositive XY extent", name.c_str());
                 return AddResult::Invalid;
             }
-            if (batch->Bounds.size() >= C::MaximumSources)
-            {
-                if (!batch->CapacityReported) SpriteDiagnostic("MiniMap: atlas source limit (64); additional valid sprites remain FileCache/fallback");
-                batch->CapacityReported = true;
-                return AddResult::CapacityDeferred;
-            }
             // Allocate representation identity before Add can acquire retained pixels.
             batch->Bounds.push_back({name, sprite.Bounds,
                 {double(sprite.Mapping.X), double(sprite.Mapping.Y), sprite.Mapping.X + sprite.Width * sprite.Mapping.Step,
@@ -263,11 +256,10 @@ namespace MiniMapBuildingAtlas
                 batch->Bounds.pop_back();
                 const auto reason = result == C::Result::UnsupportedDimensions ? "unsupported processed image dimensions" :
                     result == C::Result::InvalidBuffer ? "RGBA byte length rejected" : result == C::Result::EmptyAlpha ? "no alpha occupancy" :
-                    result == C::Result::SourceLimit ? "source capacity" : result == C::Result::AllocationFailure ? "CPU allocation failed" :
+                    result == C::Result::AllocationFailure ? "CPU allocation failed" :
                     result == C::Result::Overflow ? "size arithmetic overflow" : result == C::Result::DuplicateIdentifier ? "duplicate source identifier" :
                     result == C::Result::EmptyIdentifier ? "empty source identifier" : "core rejected source (see result)";
                 SpriteDiagnostic("MiniMap: atlas Add rejected '%s' (core result %u, reason=%s)", name.c_str(), unsigned(result), reason);
-                if (result == C::Result::SourceLimit) return AddResult::CapacityDeferred;
                 if (result == C::Result::AllocationFailure || result == C::Result::Overflow || result == C::Result::InternalError)
                     return AddResult::Unavailable;
                 return AddResult::Invalid;
@@ -308,11 +300,16 @@ namespace MiniMapBuildingAtlas
                 {
                     if (batch->PackAttempts >= 3) return;
                     ++batch->PackAttempts;
-                    const auto result = batch->Core.RepackSubset();
+                    // Every retained cache source belongs to this candidate. Never
+                    // publish a fitting subset or evict an existing allocation.
+                    // Repack commits only a complete 512/1024 CPU layout.
+                    const auto result = batch->Core.Repack();
                     if (result != C::Result::Ok)
                     {
                         batch->NextAttempt = Later(tick);
-                        SpriteDiagnostic("MiniMap: atlas subset repack unavailable (%u, attempt %u/3)", unsigned(result), batch->PackAttempts);
+                        if (result == C::Result::Capacity)
+                            SpriteDiagnostic("MiniMap: atlas physical packing capacity exhausted: retained=%zu supported=512/1024 max=1024 gutter=2 stable allocations; complete candidate not published, previous atlas and FileCache sources preserved", batch->Core.Sources().size());
+                        SpriteDiagnostic("MiniMap: atlas complete-set repack unavailable (%u, attempt %u/3)", unsigned(result), batch->PackAttempts);
                         for (const auto& source : batch->Core.Sources())
                             SpriteDiagnostic("MiniMap: atlas repack candidate includes canonical=%s result=%u attempt=%u/3; previous representation preserved",
                                 source.Identifier.c_str(), unsigned(result), batch->PackAttempts);
@@ -323,10 +320,6 @@ namespace MiniMapBuildingAtlas
                     batch->UploadAttempts = 0;
                     batch->CapacityWaitReported = false;
                     batch->UploadPending = !previousPixels || !SameImage(batch->Core.Current(), *previousPixels);
-                    // At most MaximumSources identifiers per successful repack revision.
-                    for (const auto& identifier : batch->Core.Current().DeferredIdentifiers)
-                        SpriteDiagnostic("MiniMap: atlas packing deferred: canonical=%s candidateRevision=%llu reason=canvas capacity; FileCache/fallback preserved",
-                            identifier.c_str(), static_cast<unsigned long long>(batch->CandidateRevision));
                 }
                 if (!batch->UploadPending || batch->UploadAttempts >= 3 || !Admitted(batch)) return;
                 batch->NextAttempt = Later(tick);

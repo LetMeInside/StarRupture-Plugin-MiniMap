@@ -11,7 +11,6 @@ namespace MiniMapBuildingAtlasCore
 {
     inline constexpr std::uint16_t SourceSize = 256; // Input dimension limit, never a reserved atlas slot.
     inline constexpr std::uint16_t Gutter = 2;
-    inline constexpr std::size_t MaximumSources = 64;
 
     // Half-open rectangle in the processed input image. Its origin is zero;
     // capture-space anchoring belongs to the coordinator's spatial metadata.
@@ -51,13 +50,14 @@ namespace MiniMapBuildingAtlasCore
     enum class Result
     {
         Ok, UnsupportedDimensions, InvalidBuffer, EmptyIdentifier, DuplicateIdentifier,
-        SourceLimit, EmptyAlpha, EmptySources, Overflow, AllocationFailure, Capacity, InternalError
+        EmptyAlpha, EmptySources, Overflow, AllocationFailure, Capacity, InternalError
     };
 
     // Single-owner CPU object. Callers serialize mutation and inspection.
     class Atlas
     {
     public:
+        // Retains all valid identifiers without a source-count admission ceiling.
         // Copies an already processed positive image bounded by SourceSize on
         // each axis. No crop/downscale is repeated; input ownership stays with caller.
         // Failure leaves sources and current layout unchanged; identifiers are opaque bytes.

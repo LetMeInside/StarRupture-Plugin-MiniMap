@@ -235,7 +235,6 @@ namespace MiniMapBuildingAtlasCore
             const auto position = std::lower_bound(Retained.begin(), Retained.end(), identifier,
                 [](const CroppedSource& source, const std::string& key) { return BytesLess(source.Identifier, key); });
             if (position != Retained.end() && position->Identifier == identifier) return Result::DuplicateIdentifier;
-            if (Retained.size() >= MaximumSources) return Result::SourceLimit;
             bool coverage = false;
             for (std::size_t i = 3; i < rgba.size(); i += 4) coverage |= rgba[i] != 0;
             if (!coverage) return Result::EmptyAlpha;
