@@ -41,6 +41,8 @@ namespace MiniMapBuildingCollector
         LocalBounds TargetingBox;
         LocalBounds SplineMeshBounds;
         double SplineMeshCrossSection = 0, RailEndpointExtension = 0;
+        // Legacy owned layout/fixture fields; no native acquisition or rendering
+        // consumer. Profile bindings use their separate authoritative identities.
         int32_t VisualClassObjectIndex = 0;
         int32_t SplineMeshObjectIndex = 0;
         int32_t SplineMeshNameIndex = 0;

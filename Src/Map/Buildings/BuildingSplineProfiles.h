@@ -160,8 +160,12 @@ namespace MiniMapBuildingSplineProfiles
     inline bool NeedsRetry(const Set& set,uint64_t generation)
     {
         if(set.Generation!=generation)return true;
-        // Copied owners are not a persistent cache key. Refresh on the existing
-        // observation path; DefinitionShape still reuses within one observation.
+        // A committed numerical copy is owned data, not a live native owner.
+        // Retry other initial dependencies without reopening that completed copy.
+        // In particular do not hide a still-pending Mass source behind placement.
+        if(std::any_of(set.Profiles.begin(),set.Profiles.end(),[](const Profile& p){return Copied(p) && !Pending(p);}))
+            return set.Definition.Status!=Availability::Available || set.Inventory!=Availability::Available || Pending(set);
+        // Failed/uncommitted observations keep the existing retry behavior.
         if(set.Acquisition.NativeCopyAttempted ||
             std::any_of(set.Profiles.begin(),set.Profiles.end(),[](const Profile& p){return Copied(p);}))return true;
         // An unexamined null Mass cache is still Pending evidence. It need not
