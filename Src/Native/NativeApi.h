@@ -68,6 +68,8 @@ namespace SDK
     struct FRotator;
     struct FSlateBrush;
     struct FBox;
+    struct FAuAPPayloadDataHandle;
+    struct FAuAPSplineActorPayloadData;
 }
 
 namespace MiniMapFingerprints
@@ -542,6 +544,20 @@ namespace MiniMapNative
         DestroyActorFn destroyActor = nullptr;
     };
 
+    // Stage 42G. Use the scoped BuildingSplinePayload adapter for numerical copies.
+    // The caller must own a valid engine read scope on the game thread.
+    struct SplinePayloadApi
+    {
+        // Explicit Win64 hidden return buffer (RCX), const handle (RDX), buffer in RAX.
+        using GetFn = SDK::FAuAPSplineActorPayloadData* (__fastcall*)(
+            SDK::FAuAPSplineActorPayloadData*, const SDK::FAuAPPayloadDataHandle*);
+        // Non-deleting destructor: RCX is the constructed value, never its owner buffer.
+        using DestroyFn = void (__fastcall*)(SDK::FAuAPSplineActorPayloadData*);
+        GetFn get = nullptr;
+        DestroyFn destroy = nullptr;
+        SDK::UScriptStruct* payloadType = nullptr; // Engine static metadata, warmed only at initialization.
+    };
+
     struct NativeApi
     {
         AssetApi asset;
@@ -549,6 +565,7 @@ namespace MiniMapNative
         PlayerApi player;
         PointsOfInterestApi pointsOfInterest;
         MassApi mass;
+        SplinePayloadApi splinePayload;
         GridDiagnosticApi gridDiagnostic;
         TextureApi texture;
     };

@@ -153,6 +153,7 @@
     <ClInclude Include="Map\Buildings\BuildingScheduler.h" />
     <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
     <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplinePayload.h" />
     <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
@@ -229,6 +230,7 @@
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingSplinePayload.cpp" />
     <ClCompile Include="Map\Sprites\PrivateCaptureWorld.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <ExcludedFromBuild>true</ExcludedFromBuild>

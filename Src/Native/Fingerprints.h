@@ -55,6 +55,10 @@ namespace MiniMapFingerprints
         uintptr_t transformFragmentStaticStruct = 0;
         uintptr_t inventoryFragmentStaticStruct = 0;
         uintptr_t foundableParametersStaticStruct = 0;
+        // Mandatory Client spline-payload value-copy, cleanup and initialization metadata.
+        uintptr_t getSplineActorData = 0;
+        uintptr_t destroySplineActorPayloadData = 0;
+        uintptr_t splineActorPayloadStaticStruct = 0;
 
         // Optional Stage A.1 diagnostic; never a dependency of map rendering.
         uintptr_t getEntityGridSubsystem = 0;

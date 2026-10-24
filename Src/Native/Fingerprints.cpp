@@ -1233,6 +1233,61 @@ namespace MiniMapFingerprints
             foundableCategoryAddress;
 
 
+#if defined(MODLOADER_CLIENT_BUILD)
+        // Shared thread predicate is also required by the standalone payload adapter.
+        {
+            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+            request.hookName = "MiniMap::GameThread";
+            request.pattern = "48 83 EC 28 80 3D ?? ?? ?? ?? 00 74 ?? 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 02 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 81 3C 02 02 00 00 40 0F 94 C0 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 8B 04 02 C1 E8 05 24 01 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 83 3D ?? ?? ?? ?? 00 BA D0 09 00 00 75 ?? 65 48 8B 04 25 58 00 00 00 8B 0D ?? ?? ?? ?? 48 8B 0C C8 8B 04 0A 83 F8 10 74 ?? 83 F8 02 74 ?? 3D 10 00 00 40 74 ?? 32 C0 C3 B0 01 C3 8B 05 ?? ?? ?? ?? 65 48 8B 0C 25 58 00 00 00 48 8B 0C C1 8B 04 11 83 E8 10 A9 EF FF FF BF 0F 94 C0 C3 CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 20 0F 94 C0 C3 48 83 EC 28 83 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 0C C8 75 ?? 8B 04 0A 83 F8 02 74 ?? 83 F8 10 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 83 3C 0A 10 0F 94 C0 48 83 C4 28 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 04 0F 94 C0 C3 48 8B 49 08 48 8B 01 48 FF A0 B8 00 00 00 CC CC 40 53 48 83 EC 20 48 8B 19 48 85 DB 74 ?? 48 83 BB 90 00 00 00 00 74 ?? FF 15 ?? ?? ?? ?? 48 8B 8B 90 00 00 00 3B 41 34 74 ?? B0 01 48 83 C4 20 5B C3 32 C0 48 83 C4 20 5B C3 CC CC CC CC CC CC 0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC";
+            request.kind = PLUGIN_SCAN_FUNCTION_START;
+            request.flags = PLUGIN_SCAN_FLAG_NONE;
+            request.module = nullptr;
+            request.resultOffset = 0;
+            addresses.isGameThread = scanner->Resolve(self, &request);
+            if (!addresses.isGameThread) return false;
+        }
+
+        // Stage 42G, CL-127004. Mandatory typed native functions, not hooks.
+        // The getter's generic forwarding body is not unique. Follow the call
+        // at +0x0C in SetActorPlacementPayloadData's unique numerical-copy site.
+        PluginScanRequest splinePayloadRequest = PLUGIN_SCAN_REQUEST_INIT;
+        splinePayloadRequest.hookName = "MiniMap::SplinePayload::GetSplineActorData";
+        splinePayloadRequest.pattern =
+            "48 8D 97 30 03 00 00 48 8D 4C 24 58 E8 ?? ?? ?? ?? "
+            "83 BC 24 D0 00 00 00 00 48 8B CF 7E ?? 48 8B 07";
+        splinePayloadRequest.kind = PLUGIN_SCAN_FUNCTION_START;
+        splinePayloadRequest.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        splinePayloadRequest.followRel32At = 0x0C;
+        addresses.getSplineActorData = scanner->Resolve(self, &splinePayloadRequest);
+        if (!addresses.getSplineActorData) return false;
+
+        PluginScanRequest splinePayloadDestroyRequest = PLUGIN_SCAN_REQUEST_INIT;
+        splinePayloadDestroyRequest.hookName = "MiniMap::SplinePayload::Destroy";
+        splinePayloadDestroyRequest.pattern =
+            "40 53 48 83 EC 20 48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 "
+            "48 8D 05 ?? ?? ?? ?? 48 89 41 68 8B 51 78 48 8B 49 70 "
+            "E8 ?? ?? ?? ?? 48 8B 4B 70 48 85 C9 74 05 E8 ?? ?? ?? ?? "
+            "48 8D 05 ?? ?? ?? ?? 48 89 03 48 8B 4B 50";
+        splinePayloadDestroyRequest.kind = PLUGIN_SCAN_FUNCTION_START;
+        splinePayloadDestroyRequest.flags = PLUGIN_SCAN_FLAG_NONE;
+        addresses.destroySplineActorPayloadData = scanner->Resolve(self, &splinePayloadDestroyRequest);
+        if (!addresses.destroySplineActorPayloadData) return false;
+
+        // Warm the exact type cache used by GetValue during NativeApi initialization.
+        // The fixed name-string LEA displacement distinguishes this generated
+        // StaticStruct body in CL-127004; no absolute runtime address is embedded.
+        PluginScanRequest splinePayloadTypeRequest = PLUGIN_SCAN_REQUEST_INIT;
+        splinePayloadTypeRequest.hookName = "MiniMap::SplinePayload::StaticStruct";
+        splinePayloadTypeRequest.pattern =
+            "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75 ?? E8 ?? ?? ?? ?? "
+            "48 8B D0 4C 8D 05 41 FF B5 05 48 8D 0D ?? ?? ?? ?? "
+            "E8 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 83 C4 28 C3";
+        splinePayloadTypeRequest.kind = PLUGIN_SCAN_FUNCTION_START;
+        splinePayloadTypeRequest.flags = PLUGIN_SCAN_FLAG_NONE;
+        addresses.splineActorPayloadStaticStruct = scanner->Resolve(self, &splinePayloadTypeRequest);
+        if (!addresses.splineActorPayloadStaticStruct) return false;
+#endif
+
         PluginScanRequest massSubsystemRequest =
             PLUGIN_SCAN_REQUEST_INIT;
 
@@ -1888,17 +1943,6 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
             addresses.transitionResources = scanner->Resolve(self, &request);
             if (!addresses.transitionResources) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::GameThread";
-            request.pattern = "48 83 EC 28 80 3D ?? ?? ?? ?? 00 74 ?? 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 02 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 81 3C 02 02 00 00 40 0F 94 C0 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 8B 04 02 C1 E8 05 24 01 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 83 3D ?? ?? ?? ?? 00 BA D0 09 00 00 75 ?? 65 48 8B 04 25 58 00 00 00 8B 0D ?? ?? ?? ?? 48 8B 0C C8 8B 04 0A 83 F8 10 74 ?? 83 F8 02 74 ?? 3D 10 00 00 40 74 ?? 32 C0 C3 B0 01 C3 8B 05 ?? ?? ?? ?? 65 48 8B 0C 25 58 00 00 00 48 8B 0C C1 8B 04 11 83 E8 10 A9 EF FF FF BF 0F 94 C0 C3 CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 20 0F 94 C0 C3 48 83 EC 28 83 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 0C C8 75 ?? 8B 04 0A 83 F8 02 74 ?? 83 F8 10 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 83 3C 0A 10 0F 94 C0 48 83 C4 28 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 04 0F 94 C0 C3 48 8B 49 08 48 8B 01 48 FF A0 B8 00 00 00 CC CC 40 53 48 83 EC 20 48 8B 19 48 85 DB 74 ?? 48 83 BB 90 00 00 00 00 74 ?? FF 15 ?? ?? ?? ?? 48 8B 8B 90 00 00 00 3B 41 34 74 ?? B0 01 48 83 C4 20 5B C3 32 C0 48 83 C4 20 5B C3 CC CC CC CC CC CC 0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.isGameThread = scanner->Resolve(self, &request);
-            if (!addresses.isGameThread) return false;
         }
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;

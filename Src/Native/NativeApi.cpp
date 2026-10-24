@@ -222,6 +222,10 @@ namespace MiniMapNative
             addresses.transformFragmentStaticStruct == 0 ||
             addresses.inventoryFragmentStaticStruct == 0 ||
             addresses.foundableParametersStaticStruct == 0 ||
+            addresses.getSplineActorData == 0 ||
+            addresses.destroySplineActorPayloadData == 0 ||
+            addresses.splineActorPayloadStaticStruct == 0 ||
+            addresses.isGameThread == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
             addresses.canLoadFromDisk == 0 ||
@@ -280,7 +284,6 @@ namespace MiniMapNative
         if (!addresses.initRenderTarget) return false;
         if (!addresses.getRenderTargetResource) return false;
         if (!addresses.transitionResources) return false;
-        if (!addresses.isGameThread) return false;
         if (!addresses.renderFenceConstruct) return false;
         if (!addresses.renderFenceDestroy) return false;
         if (!addresses.renderFenceBegin) return false;
@@ -528,12 +531,20 @@ namespace MiniMapNative
         g_nativeApi.texture.initRenderTarget = reinterpret_cast<decltype(g_nativeApi.texture.initRenderTarget)>(addresses.initRenderTarget);
         g_nativeApi.texture.getRenderTargetResource = reinterpret_cast<decltype(g_nativeApi.texture.getRenderTargetResource)>(addresses.getRenderTargetResource);
         g_nativeApi.texture.transitionResources = reinterpret_cast<decltype(g_nativeApi.texture.transitionResources)>(addresses.transitionResources);
-        g_nativeApi.player.isGameThread = reinterpret_cast<decltype(g_nativeApi.player.isGameThread)>(addresses.isGameThread);
         g_nativeApi.texture.renderFenceConstruct = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceConstruct)>(addresses.renderFenceConstruct);
         g_nativeApi.texture.renderFenceDestroy = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceDestroy)>(addresses.renderFenceDestroy);
         g_nativeApi.texture.renderFenceBegin = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceBegin)>(addresses.renderFenceBegin);
         g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
 #endif
+
+        g_nativeApi.player.isGameThread = reinterpret_cast<PlayerApi::IsGameThreadFn>(addresses.isGameThread);
+        g_nativeApi.splinePayload.get = reinterpret_cast<SplinePayloadApi::GetFn>(addresses.getSplineActorData);
+        g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);
+        // This populates the same static type cache used by the native typed getter.
+        // No script-struct discovery belongs in the gameplay numerical adapter.
+        g_nativeApi.splinePayload.payloadType =
+            reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
+        if (!g_nativeApi.splinePayload.payloadType) return false;
 
         g_initialized = true;
 
