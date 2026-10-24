@@ -1,2806 +1,473 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
-
 #include "BuildingCollector.h"
-#include "BuildingCollectorAudit.h"
-#include "BuildingGeometry.h"
-#include "BuildingSplinePolicy.h"
-#include "BuildingInventory.h"
-#include "BuildingVisuals.h"
 #include "BuildingBlueprintIdentity.h"
-#include "Native/ResidentMetadata.h"
-#include "DebugText.h"
-#include "Map/Map.h"
+#include "BuildingGeometry.h"
+#include "BuildingSplinePayload.h"
+#include "BuildingSplinePolicy.h"
+#include "BuildingSplineEnvelope.h"
+#include "BuildingSpriteGeometry.h"
+#include "BuildingAtlas.h"
+#include "BuildingScheduler.h"
 #include "Native/NativeApi.h"
-#include "Native/DefinitionAcquisitionCore.h"
+#include "Map/Map.h"
 #include "plugin_helpers.h"
-#include "SDK/Chimera_classes.hpp"
-
+#include <SDK/Chimera_classes.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <limits>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
-#include <algorithm>
-#include <string_view>
-#include <iomanip>
-#include <sstream>
-#include <bit>
-#include <Windows.h>
 
 namespace
 {
-    template<class... Args> void SpriteDiagnostic(const char* format, Args... args) noexcept
-    {
-        try { if (auto* self=GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self,format,args...); }
-        catch (...) {} // Diagnostics never participate in collector admission.
-    }
     using namespace MiniMapBuildingCollector;
-    using Clock = std::chrono::steady_clock;
-    using Id = MiniMapNative::MassEntityHandle;
-    using Native = MiniMapNative::NativeApi;
-    constexpr double kOriginPadding = MiniMapBuildingGeometry::kOrdinarySafetyAllowance;
-    constexpr double kSplinePadding = MiniMapBuildingGeometry::kSplineSafetyAllowance;
-    constexpr double kMovementPadding = 5000.0;
-    constexpr double kFallbackVerticalExtent = 100000.0; // Original policy if optional XY traversal is unavailable.
-    constexpr auto kLocalCadence = std::chrono::milliseconds(200);
-    constexpr auto kIdentityCadence = std::chrono::seconds(1);
-    constexpr auto kDistantCadence = std::chrono::seconds(2);
-    constexpr auto kLogCadence = std::chrono::seconds(5);
-    constexpr double kRefreshBudgetMs = 2.0; // Soft budget, checked after each entity.
-    constexpr int kMaximumHandles = 1000000;
-
+    using Native=MiniMapNative::NativeApi;
+    using Id=MiniMapNative::MassEntityHandle;
+    using Clock=std::chrono::steady_clock;
+    namespace P=MiniMapBuildingSplineProfiles;
+    namespace G=MiniMapBuildingGeometry;
     struct Types
     {
-        SDK::UScriptStruct *Building=nullptr, *Grid=nullptr, *Transform=nullptr,
-            *Parameters=nullptr, *Spline=nullptr, *Tint=nullptr, *TargetBox=nullptr;
-        SDK::UClass *Placement=nullptr, *BuildingData=nullptr, *GridClass=nullptr;
-        SDK::UClass *Config=nullptr, *TargetTrait=nullptr, *VisualTrait=nullptr,
-            *CosmeticTrait=nullptr, *DroneRail=nullptr, *Walkway=nullptr, *StaticMesh=nullptr,
-            *DronesSettings=nullptr;
-    };
-    struct Query
-    {
-        alignas(16) std::array<std::byte, 0x350> Storage = {};
-        bool Constructed = false;
-    };
-    struct Acquisition
-    {
-        bool Complete = false, TintObserved = false;
-    };
-    struct Entry
-    {
-        Record Data;
-        uint64_t Epoch = 0;
-        uint64_t Observation = 0; // Eligible only in this collector invocation.
-        Acquisition Acquired;
-        Clock::time_point Due = {};
-        bool Read = false;
-        uint8_t PreviousSources = 0;
-    };
-    struct IndexedEntry
-    {
-        Record Data;
-        uint64_t SeenQuery = 0;
-        IndexedEntry() = default;
-        explicit IndexedEntry(const Record& data) : Data(data) {} // try_emplace copies only on insertion.
-    };
+        SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
+        SDK::UClass *BuildingData=nullptr,*Visual=nullptr,*Cosmetic=nullptr,*Walkway=nullptr,*Blueprint=nullptr,*SplineMesh=nullptr;
+    } types;
+    struct Entry {Record Data;const SDK::UAuActorPlacementData* Definition=nullptr;bool Complete=false;};
     struct Definition
     {
-        uint32_t Id; uint8_t Category; int32_t NameIndex; uint32_t NameNumber;
-        std::shared_ptr<const DefinitionGeometry> Geometry;
-        std::shared_ptr<const MiniMapBuildingSplineProfiles::Set> PlacementProfiles; // Owned source domain, before Mass inventory.
-        std::shared_ptr<const std::string> CanonicalBlueprint;
-        int32_t ObjectSerial=0; // Observed UObject lifetime, not a session generation or pointer.
-        uint64_t IdentityObservation=0, GeometryObservation=0;
-        bool IdentityInterrupted=false, GeometryHasSpline=false;
-        MiniMapBuildingSplineProfiles::Availability ActorClassReference=MiniMapBuildingSplineProfiles::Availability::Unverified;
-        uint64_t IdentityDiagnostics=0; // Once per issue for this existing definition owner; no identity registry.
-        bool InteriorTagChecked=false, InteriorOnly=false;
+        // A strong engine reference makes this engine-facing lookup key stable
+        // for the session. It is never exposed to snapshots or renderers.
+        SDK::UAuActorPlacementData* Root=nullptr;
+        std::shared_ptr<const std::string> Blueprint;
+        std::shared_ptr<const DefinitionGeometry> Recipe;
+        bool Interior=false,Prepared=false;
+        Definition()=default;
+        Definition(const Definition&)=delete;
+        Definition& operator=(const Definition&)=delete;
+        ~Definition(){if(Root)if(const auto* n=MiniMapNative::Get())n->asset.releaseObject(Root);}
     };
-    struct Metrics
+    std::unordered_map<uint64_t,Entry> entities;
+    std::unordered_map<const SDK::UAuActorPlacementData*,std::shared_ptr<Definition>> definitions;
+    std::vector<SDK::UObject*> metadata;
+    alignas(16) std::array<std::byte,0x350> query{};
+    bool queryConstructed=false,initialized=false,ready=false,dirty=false,remoteTurn=false,membershipComplete=false;
+    const void* manager=nullptr;
+    SDK::UWorld* world=nullptr;
+    uint64_t generation=0;
+    Clock::time_point nextMembership{};
+    std::mutex publicationMutex;
+    std::shared_ptr<const Snapshot> snapshot;
+    double viewRadius=0;
+    Bounds region;
+    uint64_t atlasSession=0,atlasRevision=0;
+    uint64_t Key(Id id){return uint64_t(uint32_t(id.Index))|(uint64_t(uint32_t(id.SerialNumber))<<32);}
+    bool Is(const SDK::UObject* object,const SDK::UClass* base)
     {
-        double GridQuery=0, GridExtract=0, OffQuery=0, SplineQuery=0, Reconcile=0,
-            Dynamic=0, BoundsTime=0, OffDynamic=0, OffBounds=0, CacheService=0,
-            Filter=0, SnapshotTime=0, Total=0, MaxTick=0, GridMax=0,
-            DefinitionTime=0, OrdinaryTime=0, SplineTime=0;
-        double SnapshotBuild=0;
-        size_t OverlapCandidates=0, OverlapComplete=0, OverlapReused=0, OverlapIncomplete=0, OverlapIneligible=0;
-        size_t Added=0, Removed=0, OffAdded=0, OffRemoved=0, DefinitionMiss=0, Stale=0, Refreshed=0, Polls=0, IdentityPolls=0, GridCalls=0;
-        size_t NewAttempts=0, RetryAttempts=0, ResolvedNow=0, CachedReuse=0, DynamicReads=0,
-            TransformReads=0, MembershipTransforms=0, MembershipTags=0, PlacementReads=0, Conversions=0, ConversionSuccess=0,
-            InteriorReads=0, OrdinaryGeometry=0, OrdinaryDefinitions=0, SnapshotsBuilt=0, SnapshotsReused=0;
-        size_t SplineAcquired=0, SplineSettled=0, SettledBypasses=0, SplineRetries=0, PlacementAvoided=0;
-        size_t ReadyRailBypasses=0, NativeCopyReuses=0, PlacementSourceReuses=0;
-    };
-    bool g_initialized=false, g_ready=false, g_typesReady=false, g_unavailableLogged=false;
-    uint32_t g_definitionDiagnostics=0; // Four pre-definition categories per collector lifetime/generation.
-    bool g_gridSucceeded=false, g_identitySucceeded=false;
-    SDK::UWorld* g_world=nullptr;
-    const void* g_manager=nullptr; // Game-thread query owner identity only; never published.
-    Types g_types;
-    Query g_offQuery, g_splineQuery;
-    uint64_t g_generation=0, g_epoch=0;
-    std::unordered_map<uint64_t,Entry> g_cache;
-    std::unordered_map<uint64_t,IndexedEntry> g_indexedCopies; // Copied payload plus current-query membership.
-    uint64_t g_indexedQuery=0; // Independent of the acquisition callback observation.
-    uint64_t g_observation=0;
-    uint64_t g_renderRevision=0; // Monotonic within this collector generation.
-    std::unordered_map<uint64_t,Definition> g_definitions;
-    std::vector<uint64_t> g_keys, g_near, g_pending;
-    size_t g_cursor=0, g_nearCursor=0;
-    Bounds g_region, g_queryRegion;
-    double g_queryZ=0, g_lastRadius=0;
-    double g_ordinaryQueryPadding=kOriginPadding;
-    std::mutex g_mutex;
-    double g_viewRadius=0;
-    std::shared_ptr<const Snapshot> g_snapshot;
-    Clock::time_point g_nextLocal={}, g_nextIdentity={}, g_nextLog={}, g_nextWarning={};
-    Metrics g_metrics;
-    MiniMapBuildingCollectorAudit::Events g_audit;
-    bool g_snapshotDirty=true, g_publishedGrid=false, g_publishedIdentity=false;
-#if MINIMAP_DEBUG_UI
-    struct DebugOracle
-    {
-        bool Valid=false;
-        size_t Missing=0, Repeated=0, Stale=0, Duplicate=0;
-        size_t Expected=0, Present=0, UnresolvedCached=0, UnresolvedWorldwide=0;
-    };
-    DebugOracle g_debugOracle;
-    double g_debugLastGridMs=0;
-#endif
-    SplineGeometry g_curveScratch; // Game-thread scratch retains capacity; unchanged curves reuse ownership.
-    size_t g_indexed=0, g_gridResults=0, g_duplicates=0;
-    std::vector<Id> g_indexedHandles; // Retains plugin-owned capacity; no grid shared-pointer members.
-    size_t g_gridVisited=0;
-    bool g_xyQuery=false;
-    unsigned g_initialDiscoveryReports=0;
-
-    uint64_t Key(int32_t index,int32_t serial)
-    { return (uint64_t(uint32_t(serial))<<32)|uint32_t(index); }
-    uint64_t Key(Id id) { return Key(id.Index,id.SerialNumber); }
-    double Ms(Clock::time_point start) { return std::chrono::duration<double,std::milli>(Clock::now()-start).count(); }
-    double Seconds() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
-    void ClearComparison();
-    Bounds Box(double x,double y,double r) { return {x-r,y-r,x+r,y+r,true}; }
-    Bounds Pad(Bounds b,double r)
-    { if(b.Valid) { b.MinX-=r; b.MinY-=r; b.MaxX+=r; b.MaxY+=r; } return b; }
-    bool Contains(const Bounds& a,const Bounds& b)
-    { return a.Valid && b.Valid && a.MinX<=b.MinX && a.MinY<=b.MinY && a.MaxX>=b.MaxX && a.MaxY>=b.MaxY; }
-    bool Live(const Native& n,Id id)
-    {
-        // InternalGetFragmentDataPtr asserts on an unbuilt entity. IsEntityBuilt
-        // itself asserts on invalid identity: the order of these checks matters.
-        return n.mass.isEntityValid(g_manager,id) && n.mass.isEntityBuilt(g_manager,id);
+        if(!object || !base)return false;
+        for(auto* type=object->Class;type;type=static_cast<SDK::UClass*>(type->SuperStruct))if(type==base)return true;
+        return false;
     }
-    enum class ClassObservation { Unavailable, Other, Matches };
-    ClassObservation ObserveClass(const SDK::UObject* object,const SDK::UClass* base)
+    // Called only at initialization/experience initialization, never in an
+    // entity-dependent loop. Metadata is rooted until collector shutdown.
+    bool InitializeMetadata()
     {
-        if(!object || !base || !MiniMapResidentMetadata::Available() ||
-            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(object),sizeof(SDK::UObject))) return ClassObservation::Unavailable;
-        const SDK::UStruct* type=object->Class;
-        if(!type)return ClassObservation::Unavailable;
-        for(unsigned depth=0;type && depth<64;++depth,type=type->SuperStruct)
+        if(types.Building)return true;
+        auto* hooks=GetHooks();const auto* n=MiniMapNative::Get();
+        if(!hooks || !hooks->Engine || !n)return false;
+        const auto address=hooks->Engine->GetStaticFindObjectByNameAddress();if(!address)return false;
+        using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
+        auto find=reinterpret_cast<Find>(address);
+        // Roll back partial initialization without duplicating roots on retry.
+        struct Roots
         {
-            // base is acquired/rooted by ResolveTypes for this session. Equality
-            // reads no memory through type; validate only before following an
-            // otherwise unverified superclass pointer.
-            if(type==base)
-            {
-#if !defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-                // The legacy metadata-walker configuration does not own roots.
-                if(!MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(type),sizeof(SDK::UStruct))) return ClassObservation::Unavailable;
-#endif
-                return ClassObservation::Matches;
-            }
-            if(!MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(type),sizeof(SDK::UStruct))) return ClassObservation::Unavailable;
-        }
-        return type?ClassObservation::Unavailable:ClassObservation::Other;
-    }
-    bool IsClass(const SDK::UObject* object,const SDK::UClass* base)
-    { return ObserveClass(object,base)==ClassObservation::Matches; }
-    enum class InteriorTagResult : uint8_t { Unknown, Absent, Present };
-    InteriorTagResult ReadInteriorTag(const SDK::UCrBuildingData* building,bool production=false)
-    {
-        if(production)++g_metrics.InteriorReads;
-#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-        const auto* native=MiniMapNative::Get();
-        if(!native || !native->asset.nameEqualsWide) return InteriorTagResult::Unknown;
-        const auto* tags=&building->Tags;
-        // Both callers have just validated sizeof(UCrBuildingData). Tags is
-        // inline in that same range; only its separate allocation needs a query.
-        const int32_t count=tags->Num(),capacity=tags->Max();
-        const auto* data=tags->GetDataPtr();
-        constexpr int32_t maximumTags=4096;
-        if(count<0 || capacity<count || capacity>maximumTags || (capacity&&!data) || (!capacity&&data) ||
-            (data&&(reinterpret_cast<uintptr_t>(data)&(alignof(SDK::FName)-1))))
-            return InteriorTagResult::Unknown;
-        const size_t bytes=size_t(count)*sizeof(SDK::FName);
-        if(bytes&&!MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(data),bytes,alignof(SDK::FName)))
-            return InteriorTagResult::Unknown;
-        bool invalidElement=false;
-        for(int32_t i=0;i<count;++i)
+            const Native& N;std::vector<SDK::UObject*> Values;
+            ~Roots(){for(auto* p:Values)N.asset.releaseObject(p);}
+        } roots{*n,{}};
+        auto lookup=[&](const wchar_t* path)
         {
-            const auto name=data[i];
-            if(name.ComparisonIndex<0) { invalidElement=true; continue; }
-            if(name.Number==0 && native->asset.nameEqualsWide(name,L"Interior"))
-                return InteriorTagResult::Present;
-        }
-        return invalidElement?InteriorTagResult::Unknown:InteriorTagResult::Absent;
-#else
-        (void)building;
-        return InteriorTagResult::Unknown;
-#endif
+            auto* value=find(nullptr,nullptr,path,false);
+            if(value){roots.Values.push_back(value);n->asset.retainObject(value);}return value;
+        };
+        Types candidate;
+        candidate.Building=static_cast<SDK::UScriptStruct*>(lookup(L"/Script/Chimera.CrMassBuildingTag"));
+        candidate.Transform=static_cast<SDK::UScriptStruct*>(lookup(L"/Script/MassCommon.TransformFragment"));
+        candidate.Parameters=static_cast<SDK::UScriptStruct*>(lookup(L"/Script/Chimera.CrBuildingParameters"));
+        candidate.Spline=static_cast<SDK::UScriptStruct*>(lookup(L"/Script/AuActorPlacement.AuSplineConnectionFragment"));
+        candidate.AP=static_cast<SDK::UScriptStruct*>(lookup(L"/Script/AuActorPlacement.AuAPMassFragment"));
+        candidate.BuildingData=static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrBuildingData"));
+        candidate.Visual=static_cast<SDK::UClass*>(lookup(L"/Script/MassRepresentation.MassVisualizationTrait"));
+        candidate.Cosmetic=static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrMassRepVisCosmeticsTrait"));
+        candidate.Walkway=static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrModularRampWalkway"));
+        candidate.Blueprint=static_cast<SDK::UClass*>(lookup(L"/Script/Engine.BlueprintGeneratedClass"));
+        candidate.SplineMesh=static_cast<SDK::UClass*>(lookup(L"/Script/Engine.SplineMeshComponent"));
+        if(!candidate.Building || !candidate.Transform || !candidate.Parameters || !candidate.Spline || !candidate.AP ||
+            !candidate.BuildingData || !candidate.Visual || !candidate.Cosmetic || !candidate.Walkway || !candidate.Blueprint || !candidate.SplineMesh ||
+            !MiniMapBuildingBlueprintIdentity::Initialize())return false;
+        metadata=std::move(roots.Values);types=candidate;return true;
     }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-    std::array<uintptr_t,18> g_metadataRoots{};
-    size_t g_metadataCount=0;
-    bool ResolveTypes(bool splineMetadata=false)
+    const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id)
     {
-        MiniMapCallbackTiming::Phase timing(MiniMapCallbackTiming::Id::CollectorMetadata);
-        if(g_typesReady && g_types.Tint && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings)))return true;
-        if(g_typesReady && !splineMetadata && !MiniMapResidentMetadata::Available())return true;
-        if(!MiniMapResidentMetadata::Available())return false;
-        // Resolve the finite metadata set while native admission permits it.
-        // Rooted successes are reused; unavailable operations retry on acquisition.
-        for(size_t step=0;step<(splineMetadata?g_metadataRoots.size():size_t(12));++step)
-        {
-            if(!MiniMapResidentMetadata::Available())return false;
-            uintptr_t acquired=0;
-            switch(step)
-            {
-            case 0: if(!g_types.Building){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassBuildingTag",true,sizeof(SDK::FCrMassBuildingTag));g_types.Building=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 1: if(!g_types.Grid){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassEntityGridTag",true,sizeof(SDK::FCrMassEntityGridTag));g_types.Grid=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 2: if(!g_types.Transform){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassCommon.TransformFragment",true,sizeof(SDK::FTransform));g_types.Transform=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 3: if(!g_types.Parameters){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingParameters",true,sizeof(SDK::FCrBuildingParameters));g_types.Parameters=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 4: if(!g_types.Spline){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuSplineConnectionFragment",true,sizeof(SDK::FAuSplineConnectionFragment));g_types.Spline=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 5: if(!g_types.Tint){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingVisualCustomizationFragment",true,sizeof(SDK::FCrBuildingVisualCustomizationFragment));g_types.Tint=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 6: if(!g_types.Placement){acquired=MiniMapResidentMetadata::Acquire(L"/Script/AuActorPlacement.AuActorPlacementData",false,sizeof(SDK::UAuActorPlacementData));g_types.Placement=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 7: if(!g_types.BuildingData){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingData",false,sizeof(SDK::UCrBuildingData));g_types.BuildingData=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 8: if(!g_types.GridClass){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrEntityGridSubsystem",false,sizeof(SDK::UCrEntityGridSubsystem));g_types.GridClass=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 9: if(!g_types.TargetBox){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataFragment",true,sizeof(SDK::FCrBuildingAggroTargetDataFragment));g_types.TargetBox=reinterpret_cast<SDK::UScriptStruct*>(acquired);}break;
-            case 10: if(!g_types.Config){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassSpawner.MassEntityConfigAsset",false,sizeof(SDK::UMassEntityConfigAsset));g_types.Config=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 11: if(!g_types.TargetTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrBuildingAggroTargetDataTrait",false,sizeof(SDK::UCrBuildingAggroTargetDataTrait));g_types.TargetTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 12: if(!g_types.VisualTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/MassRepresentation.MassVisualizationTrait",false,sizeof(SDK::UMassVisualizationTrait));g_types.VisualTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 13: if(!g_types.CosmeticTrait){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrMassRepVisCosmeticsTrait",false,sizeof(SDK::UCrMassRepVisCosmeticsTrait));g_types.CosmeticTrait=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 14: if(!g_types.DroneRail){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrDronePathPointConnection",false,sizeof(SDK::ACrDronePathPointConnection));g_types.DroneRail=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 15: if(!g_types.Walkway){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.CrModularRampWalkway",false,sizeof(SDK::ACrModularRampWalkway));g_types.Walkway=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 16: if(!g_types.StaticMesh){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Engine.StaticMesh",false,sizeof(SDK::UStaticMesh));g_types.StaticMesh=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            case 17: if(!g_types.DronesSettings){acquired=MiniMapResidentMetadata::Acquire(L"/Script/Chimera.DronesDeveloperSettings",false,sizeof(SDK::UDronesDeveloperSettings));g_types.DronesSettings=reinterpret_cast<SDK::UClass*>(acquired);}break;
-            }
-            if(acquired)g_metadataRoots[g_metadataCount++]=acquired;
-        }
-        g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
-            g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
-        return g_typesReady;
-    }
-#else
-    SDK::UObject* Metadata(const char* name,const char* kind,size_t size)
-    {
-        auto* self=GetSelf();
-        if(!self || !self->hooks || !self->hooks->ObjectWalker ||
-            !self->hooks->ObjectWalker->FindObjectsByNameInto)return nullptr;
-        PluginObjectInfo info={};
-        if(self->hooks->ObjectWalker->FindObjectsByNameInto(name,PluginObjectLookup_Both,&info,1)!=1 ||
-            std::strcmp(info.className,kind)!=0) return nullptr;
-        auto* type=static_cast<SDK::UStruct*>(info.object);
-        return type->Size==int32_t(size)?type:nullptr;
-    }
-    bool ResolveTypes(bool splineMetadata=false)
-    {
-        if(g_typesReady && g_types.Tint && (!splineMetadata || (g_types.VisualTrait && g_types.CosmeticTrait && g_types.DroneRail && g_types.Walkway && g_types.StaticMesh && g_types.DronesSettings))) return true;
-        if(g_typesReady && !splineMetadata && !MiniMapResidentMetadata::Available())return true;
-        auto* self=GetSelf();
-        if(!self || !self->hooks || !self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
-            !self->hooks->ObjectWalker->FindObjectsByNameInto || !self->hooks->ObjectWalker->IsReady()) return false;
-        g_types.Building=static_cast<SDK::UScriptStruct*>(Metadata("CrMassBuildingTag","ScriptStruct",sizeof(SDK::FCrMassBuildingTag)));
-        g_types.Grid=static_cast<SDK::UScriptStruct*>(Metadata("CrMassEntityGridTag","ScriptStruct",sizeof(SDK::FCrMassEntityGridTag)));
-        g_types.Transform=static_cast<SDK::UScriptStruct*>(Metadata("TransformFragment","ScriptStruct",sizeof(SDK::FTransform)));
-        g_types.Parameters=static_cast<SDK::UScriptStruct*>(Metadata("CrBuildingParameters","ScriptStruct",sizeof(SDK::FCrBuildingParameters)));
-        g_types.Spline=static_cast<SDK::UScriptStruct*>(Metadata("AuSplineConnectionFragment","ScriptStruct",sizeof(SDK::FAuSplineConnectionFragment)));
-        g_types.Tint=static_cast<SDK::UScriptStruct*>(Metadata("CrBuildingVisualCustomizationFragment","ScriptStruct",sizeof(SDK::FCrBuildingVisualCustomizationFragment)));
-        g_types.Placement=static_cast<SDK::UClass*>(Metadata("AuActorPlacementData","Class",sizeof(SDK::UAuActorPlacementData)));
-        g_types.BuildingData=static_cast<SDK::UClass*>(Metadata("CrBuildingData","Class",sizeof(SDK::UCrBuildingData)));
-        g_types.GridClass=static_cast<SDK::UClass*>(Metadata("CrEntityGridSubsystem","Class",sizeof(SDK::UCrEntityGridSubsystem)));
-        // Optional geometry sources. Missing metadata never disables B.1 acquisition.
-        g_types.TargetBox=static_cast<SDK::UScriptStruct*>(Metadata("CrBuildingAggroTargetDataFragment","ScriptStruct",sizeof(SDK::FCrBuildingAggroTargetDataFragment)));
-        g_types.Config=static_cast<SDK::UClass*>(Metadata("MassEntityConfigAsset","Class",sizeof(SDK::UMassEntityConfigAsset)));
-        g_types.TargetTrait=static_cast<SDK::UClass*>(Metadata("CrBuildingAggroTargetDataTrait","Class",sizeof(SDK::UCrBuildingAggroTargetDataTrait)));
-        if(splineMetadata)
-        {
-            g_types.VisualTrait=static_cast<SDK::UClass*>(Metadata("MassVisualizationTrait","Class",sizeof(SDK::UMassVisualizationTrait)));
-            g_types.CosmeticTrait=static_cast<SDK::UClass*>(Metadata("CrMassRepVisCosmeticsTrait","Class",sizeof(SDK::UCrMassRepVisCosmeticsTrait)));
-            g_types.DroneRail=static_cast<SDK::UClass*>(Metadata("CrDronePathPointConnection","Class",sizeof(SDK::ACrDronePathPointConnection)));
-            g_types.Walkway=static_cast<SDK::UClass*>(Metadata("CrModularRampWalkway","Class",sizeof(SDK::ACrModularRampWalkway)));
-            g_types.StaticMesh=static_cast<SDK::UClass*>(Metadata("StaticMesh","Class",sizeof(SDK::UStaticMesh)));
-            g_types.DronesSettings=static_cast<SDK::UClass*>(Metadata("DronesDeveloperSettings","Class",sizeof(SDK::UDronesDeveloperSettings)));
-        }
-        g_typesReady=g_types.Building && g_types.Grid && g_types.Transform && g_types.Parameters &&
-            g_types.Spline && g_types.Placement && g_types.BuildingData && g_types.GridClass;
-        return g_typesReady;
-    }
-#endif
-    const void* Fragment(const Native& n,Id id,const SDK::UScriptStruct* type)
-    { return type?n.mass.getFragmentDataPtr(g_manager,id,type):nullptr; }
-    const SDK::FCrBuildingParameters* Parameters(const Native& n,Id id,bool production=false)
-    {
-        if(!MiniMapResidentMetadata::Available())return nullptr;
-        if(production)++g_metrics.PlacementReads;
-        const auto* wrapper=n.mass.getConstSharedFragmentPtr(g_manager,id,g_types.Parameters);
-        const uint8_t* memory=nullptr;
-        // The synchronous Mass API borrows manager-owned shared storage. The
-        // verified native caller reads this wrapper and aligned payload directly
-        // (Fingerprints.cpp InternalGetConstSharedFragmentPtr anchor). No yield,
-        // entity mutation or retained pointer intervenes in this acquisition.
-        if(wrapper && !(reinterpret_cast<uintptr_t>(wrapper)&(alignof(void*)-1)))
-            std::memcpy(&memory,wrapper,sizeof(memory));
-        const auto alignment=g_types.Parameters->MinAlignment;
-        if(!memory || alignment<=0 || (alignment&(alignment-1))) return nullptr;
-        const auto raw=reinterpret_cast<uintptr_t>(memory);
-        if(raw>(std::numeric_limits<uintptr_t>::max)()-sizeof(void*)-uintptr_t(alignment-1))return nullptr;
-        const uintptr_t base=raw+sizeof(void*);
-        const auto address=(base+alignment-1)&~uintptr_t(alignment-1);
-        if(address>(std::numeric_limits<uintptr_t>::max)()-sizeof(SDK::FCrBuildingParameters))return nullptr;
+        const auto* wrapper=n.mass.getConstSharedFragmentPtr(manager,id,types.Parameters);
+        const uint8_t* storage=nullptr;if(wrapper)std::memcpy(&storage,wrapper,sizeof(storage));
+        if(!storage)return nullptr;
+        const auto alignment=uintptr_t(types.Parameters->MinAlignment);
+        if(!alignment || (alignment&(alignment-1)))return nullptr;
+        const auto address=(reinterpret_cast<uintptr_t>(storage)+sizeof(void*)+alignment-1)&~(alignment-1);
         return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
-    namespace P=MiniMapBuildingSplineProfiles;
-    void FinalizeProfiles(P::Set& profiles)
-    {
-        profiles.Acquisition.PlacementUsable=std::any_of(profiles.Profiles.begin(),profiles.Profiles.end(),[](const P::Profile& p)
-            {return p.Provenance==P::Origin::PlacementActorClass && MiniMapBuildingSplineEnvelope::Eligibility(p)==0;});
-        P::Finalize(profiles);
-    }
-    // Borrowed reads only inside the existing synchronous game-thread resolver.
-    // Unlike ResidentMetadata::Validate/Serial these never probe memory pages.
-    bool ProfileReadBytes(uintptr_t address,void* output,size_t size) noexcept
-    {
-        if(!address || address>UINTPTR_MAX-size)return false;
-        __try {std::memcpy(output,reinterpret_cast<const void*>(address),size);return true;}
-        __except(GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION || GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR
-            ?EXCEPTION_EXECUTE_HANDLER:EXCEPTION_CONTINUE_SEARCH) {return false;}
-    }
-    struct ProfileReader
-    {
-        template<class T> bool Read(uintptr_t address,T& value)
-        {return ProfileReadBytes(address,&value,sizeof(value));}
-    };
-    bool ProfileIdentity(uintptr_t object,P::Identity& identity,MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr)
-    {
-        const auto* n=MiniMapNative::Get();
-        ProfileReader read;int32_t index=-1,serial=0;
-        if(!MiniMapDefinitionAcquisition::ReadStableIdentity(read,n?reinterpret_cast<uintptr_t>(n->asset.objectArray):0,
-            object,sizeof(SDK::UObject),index,serial,observation))return false;
-        identity={index,serial};return true;
-    }
-    enum class ProfileCheck : uint8_t { Matches,NoMatch,Unverified,Invalid };
-    bool ProfileTransient(uintptr_t object,size_t extent,MiniMapDefinitionAcquisition::IdentityObservation* observation,
-        MiniMapDefinitionAcquisition::IdentityRole role,uint32_t depth,uintptr_t lookup,
-        MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        A::IdentityObservation local;auto* out=observation?observation:&local;
-        const auto* n=MiniMapNative::Get();ProfileReader read;
-        const auto valid=A::ValidateTransientObject(read,n?reinterpret_cast<uintptr_t>(n->asset.objectArray):0,object,extent,out);
-        out->Role=role;out->Depth=depth;out->IsLookupResult=object==lookup;
-        if(firstZero && firstZero->Predicate==A::IdentityPredicate::Unobserved &&
-            out->SlotObserved && out->Serial==0)*firstZero=*out;
-        return valid==A::TransientValidity::Valid;
-    }
-    ProfileCheck ProfileNativeClass(uintptr_t type,const wchar_t* name,const wchar_t* package=L"/Script/Engine",
-        MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
-        MiniMapDefinitionAcquisition::IdentityRole role=MiniMapDefinitionAcquisition::IdentityRole::ClassNode,
-        uint32_t depth=0,uintptr_t lookup=0,MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        const auto* n=MiniMapNative::Get();ProfileReader read;SDK::FName typeName{},outerName{};uintptr_t outer=0;
-        auto fail=[&](A::IdentityPredicate p){if(observation)observation->Predicate=p;return ProfileCheck::Unverified;};
-        if(!n || !n->asset.nameEqualsWide)return fail(A::IdentityPredicate::NameFacility);
-        if(!ProfileTransient(type,sizeof(SDK::UObject),observation,role,depth,lookup,firstZero))return ProfileCheck::Unverified;
-        if(!read.Read(type+0x18,typeName))return fail(A::IdentityPredicate::NameRead);
-        if(!read.Read(type+0x20,outer))return fail(A::IdentityPredicate::OuterRead);
-        const auto outerRole=role==A::IdentityRole::MetaclassNode?A::IdentityRole::MetaclassOuter:A::IdentityRole::ClassOuter;
-        if(!ProfileTransient(outer,sizeof(SDK::UObject),observation,outerRole,depth,lookup,firstZero))return ProfileCheck::Unverified;
-        if(!read.Read(outer+0x18,outerName))return fail(A::IdentityPredicate::PackageRead);
-        return typeName.Number==0 && outerName.Number==0 && n->asset.nameEqualsWide(typeName,name) &&
-            n->asset.nameEqualsWide(outerName,package)?ProfileCheck::Matches:ProfileCheck::NoMatch;
-    }
-    ProfileCheck ProfileDerives(uintptr_t object,const SDK::UClass* expected,const wchar_t* nativeName=nullptr,
-        const wchar_t* package=L"/Script/Engine",MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
-        uintptr_t lookup=0,MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        ProfileReader read;uintptr_t type=0;
-        if(!ProfileTransient(object,sizeof(SDK::UObject),observation,A::IdentityRole::LookupResult,0,lookup,firstZero))return ProfileCheck::Unverified;
-        if(!read.Read(object+0x10,type)){if(observation)observation->Predicate=A::IdentityPredicate::MetaclassRead;return ProfileCheck::Unverified;}
-        std::unordered_set<uintptr_t> seen;uint32_t depth=0;
-        while(type)
-        {
-            if(!seen.insert(type).second)
-            {
-                if(observation){*observation={};observation->Predicate=A::IdentityPredicate::HierarchyCycle;
-                    observation->Role=A::IdentityRole::MetaclassNode;observation->Depth=depth;observation->IsLookupResult=type==lookup;}
-                return ProfileCheck::Invalid;
-            }
-            if(!ProfileTransient(type,sizeof(SDK::UClass),observation,A::IdentityRole::MetaclassNode,depth,lookup,firstZero))return ProfileCheck::Unverified;
-            if(expected && type==reinterpret_cast<uintptr_t>(expected))return ProfileCheck::Matches;
-            const auto nodeObservation=observation?*observation:A::IdentityObservation{};
-            if(nativeName)
-            {
-                const auto native=ProfileNativeClass(type,nativeName,package,observation,A::IdentityRole::MetaclassNode,depth,lookup,firstZero);
-                if(native!=ProfileCheck::NoMatch)return native;
-            }
-            if(observation)*observation=nodeObservation;
-            if(!read.Read(type+offsetof(SDK::UStruct,SuperStruct),type)){if(observation)observation->Predicate=A::IdentityPredicate::SuperclassRead;return ProfileCheck::Unverified;}
-            ++depth;
-        }
-        return ProfileCheck::NoMatch;
-    }
-    void ProfileMesh(uintptr_t mesh,P::Profile& profile)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        profile.Geometry.reset();profile.ObservedMeshSerial=P::MeshSerial::Unobserved;
-        profile.MeshRead=P::MeshAcquisition::Null;
-        if(!mesh)return;
-        profile.MeshRead=P::MeshAcquisition::Interrupted;
-        const auto world=MiniMapMap::GetWorld();const auto generation=g_generation;
-        const auto context=[&](){return world && world==g_world && world==MiniMapMap::GetWorld() &&
-            generation==g_generation && MiniMapResidentMetadata::Available();};
-        if(!context())return;
-        A::IdentityObservation observed;
-        profile.MeshRead=P::MeshAcquisition::TransientInvalid;
-        if(!ProfileTransient(mesh,sizeof(SDK::UStaticMesh),&observed,A::IdentityRole::LookupResult,0,mesh))return;
-        profile.ObservedMeshSerial=observed.Serial==0?P::MeshSerial::Zero:
-            observed.Serial>0?P::MeshSerial::Positive:P::MeshSerial::Negative;
-        profile.MeshRead=P::MeshAcquisition::RetainFailed;
-        if(!MiniMapResidentMetadata::Retain(mesh,sizeof(SDK::UStaticMesh)))return;
-        struct RetainedMesh
-        {
-            uintptr_t Object;bool Held=true;
-            bool Release(){Held=false;return MiniMapResidentMetadata::Release(Object);}
-            ~RetainedMesh(){if(Held)MiniMapResidentMetadata::Release(Object);}
-        } retained{mesh};
-        // Only copied POD escapes this scope; neither the serial nor pointer is a cache key.
-        P::Bounds bounds;bool copied=false;
-        auto inspect=[&]()
-        {
-            if(!context()){profile.MeshRead=P::MeshAcquisition::Interrupted;return;}
-            if(!g_types.StaticMesh){profile.MeshRead=P::MeshAcquisition::TransientInvalid;return;}
-            const auto kind=ProfileDerives(mesh,g_types.StaticMesh);
-            if(kind!=ProfileCheck::Matches)
-            {profile.MeshRead=kind==ProfileCheck::NoMatch?P::MeshAcquisition::ClassMismatch:P::MeshAcquisition::TransientInvalid;return;}
-            ProfileReader read;SDK::FBoxSphereBounds native{};
-            static_assert(offsetof(SDK::UStaticMesh,ExtendedBounds)==0x240);
-            if(!read.Read(mesh+offsetof(SDK::UStaticMesh,ExtendedBounds),native))
-            {profile.MeshRead=P::MeshAcquisition::BoundsReadFailed;return;}
-            bounds={{native.Origin.X,native.Origin.Y,native.Origin.Z},
-                {native.BoxExtent.X,native.BoxExtent.Y,native.BoxExtent.Z},native.SphereRadius};
-            if(!P::Valid(bounds)){profile.MeshRead=P::MeshAcquisition::InvalidBounds;return;}
-            copied=true;
-        };
-        inspect(); // The guard releases exactly once on exceptions as well.
-        if(!context()) {profile.MeshRead=P::MeshAcquisition::Interrupted;copied=false;}
-        else if(!ProfileTransient(mesh,sizeof(SDK::UStaticMesh),nullptr,A::IdentityRole::LookupResult,0,mesh))
-        {profile.MeshRead=P::MeshAcquisition::TransientInvalid;copied=false;}
-        const bool released=retained.Release();
-        if(!released){profile.MeshRead=P::MeshAcquisition::ReleaseFailed;return;}
-        if(!context()){profile.MeshRead=P::MeshAcquisition::Interrupted;return;}
-        if(copied)
-        {
-            profile.Geometry=std::make_shared<const P::Mesh>(P::Mesh{{bounds,P::Availability::Available}});
-            profile.MeshRead=P::MeshAcquisition::Copied;
-        }
-    }
-    bool SameProfileDefinition(const P::Set* previous,const P::Set& current)
-    {
-        return previous && previous->Generation==current.Generation &&
-            previous->Definition.Status==P::Availability::Available && previous->Definition==current.Definition;
-    }
-    const P::Profile* CommittedPlacementCopy(const P::Set* previous,const P::Set& current)
-    {
-        if(!SameProfileDefinition(previous,current))return nullptr;
-        for(const auto& profile:previous->Profiles)
-            if(profile.Provenance==P::Origin::PlacementActorClass && P::Copied(profile) && !P::Pending(profile) &&
-                MiniMapBuildingSplineEnvelope::Eligibility(profile)==0)return &profile;
-        return nullptr;
-    }
-    const P::Profile* CompletedProfile(const P::Set* previous,const P::Set& current,const P::Profile& key,P::Selection source)
-    {
-        if(!SameProfileDefinition(previous,current))return nullptr;
-        for(const auto& profile:previous->Profiles)
-            if(!P::Copied(profile) && profile.Source==source && profile.Provenance==key.Provenance &&
-                profile.HighResolution==key.HighResolution && profile.VisualClass==key.VisualClass && profile.Defaults==key.Defaults &&
-                (source!=P::Selection::Candidate || (profile.TemplateOwner==key.TemplateOwner && profile.Template==key.Template)) &&
-                !P::Pending(profile) && MiniMapBuildingSplineEnvelope::Eligibility(profile)==0)return &profile;
-        return nullptr;
-    }
-    void ProfileTemplate(uintptr_t component,const P::Profile& source,P::Set& profiles,const P::Set* previous=nullptr)
-    {
-        ProfileReader read;P::Profile result=source;P::Identity id;
-        result.Source=P::Selection::Candidate;
-        result.Construction={P::Mechanism::Unknown,P::Availability::Unverified};
-        if(!ProfileIdentity(component,id))
-        {result.Template.Status=P::Availability::Pending;profiles.Profiles.push_back(std::move(result));return;}
-        result.Template={id,P::Availability::Available};
-        if(const auto* complete=CompletedProfile(previous,profiles,result,P::Selection::Candidate))
-        {profiles.Profiles.push_back(*complete);return;} // Current inventory identified this source; numbers are already owned.
-        // Attached static meshes can also extend the visual envelope. They are
-        // still candidates: neither enumeration nor their type proves use.
-        const auto splineKind=ProfileDerives(component,nullptr,L"SplineMeshComponent");
-        const bool splineMesh=splineKind==ProfileCheck::Matches;
-        const auto staticKind=splineMesh?ProfileCheck::NoMatch:
-            splineKind==ProfileCheck::Unverified?ProfileCheck::Unverified:
-            ProfileDerives(component,nullptr,L"StaticMeshComponent");
-        if(!splineMesh && staticKind!=ProfileCheck::Matches)
-        {
-            if(splineKind==ProfileCheck::Unverified || staticKind==ProfileCheck::Unverified)
-            {result.Construction.Status=P::Availability::Pending;result.Status=P::State::Pending;}
-            else if(splineKind==ProfileCheck::Invalid || staticKind==ProfileCheck::Invalid)
-            {result.Construction.Status=P::Availability::Invalid;result.Status=P::State::Partial;}
-            else result.Status=P::State::Unsupported;
-            profiles.Profiles.push_back(std::move(result));return;
-        }
-        SDK::FVector location{},scale{};SDK::FRotator rotation{};uintptr_t mesh=0;
-        static_assert(offsetof(SDK::USceneComponent,RelativeLocation)==0x140 &&
-            offsetof(SDK::USceneComponent,RelativeRotation)==0x158 && offsetof(SDK::USceneComponent,RelativeScale3D)==0x170 &&
-            offsetof(SDK::UStaticMeshComponent,StaticMesh)==0x588);
-        result.TemplateTransform.Status=P::Availability::Pending;
-        if(read.Read(component+offsetof(SDK::USceneComponent,RelativeLocation),location) &&
-            read.Read(component+offsetof(SDK::USceneComponent,RelativeRotation),rotation) &&
-            read.Read(component+offsetof(SDK::USceneComponent,RelativeScale3D),scale))
-        {
-            P::RelativeTransform transform{{location.X,location.Y,location.Z},{rotation.Pitch,rotation.Yaw,rotation.Roll},{scale.X,scale.Y,scale.Z}};
-            if(MiniMapBuildingGeometryTypes::Finite(transform.Translation) && MiniMapBuildingGeometryTypes::Finite(transform.RotationDegrees) &&
-                MiniMapBuildingGeometryTypes::Finite(transform.Scale))result.TemplateTransform={transform,P::Availability::Available};
-            else result.TemplateTransform.Status=P::Availability::Invalid;
-        }
-        if(splineMesh)
-        {
-            SDK::FSplineMeshParams params{};SDK::FVector up{};uint8_t axis=0;
-            if(read.Read(component+offsetof(SDK::USplineMeshComponent,ForwardAxis),axis))
-                result.TemplateForwardAxis={axis,axis<=2?P::Availability::Available:P::Availability::Invalid};
-            else result.TemplateForwardAxis.Status=P::Availability::Pending;
-            result.TemplateCrossSection.Status=P::Availability::Pending;
-            if(read.Read(component+offsetof(SDK::USplineMeshComponent,SplineParams),params) &&
-                read.Read(component+offsetof(SDK::USplineMeshComponent,SplineUpDir),up))
-            {
-                P::CrossSection section{{params.StartScale.X,params.StartScale.Y},{params.EndScale.X,params.EndScale.Y},
-                    {params.StartOffset.X,params.StartOffset.Y},{params.EndOffset.X,params.EndOffset.Y},params.StartRoll,params.EndRoll,{up.X,up.Y,up.Z}};
-                bool valid=MiniMapBuildingGeometryTypes::Finite(section.Up) && std::isfinite(section.StartRoll) && std::isfinite(section.EndRoll);
-                for(const auto* pair:{&section.StartScale,&section.EndScale,&section.StartOffset,&section.EndOffset})
-                    for(double value:*pair)valid=valid && std::isfinite(value);
-                if(valid)result.TemplateCrossSection={section,P::Availability::Available};
-                else result.TemplateCrossSection.Status=P::Availability::Invalid;
-            }
-        }
-        else
-        {
-            result.TemplateForwardAxis.Status=P::Availability::Unsupported;
-            result.TemplateCrossSection.Status=P::Availability::Unsupported;
-        }
-        result.SplineTemplate=splineMesh && source.TemplateOwner.Status==P::Availability::Available &&
-            source.VisualClass.Status==P::Availability::Available && source.Defaults.Status==P::Availability::Available;
-        result.MeshRead=P::MeshAcquisition::BoundsReadFailed;
-        if(read.Read(component+offsetof(SDK::UStaticMeshComponent,StaticMesh),mesh))ProfileMesh(mesh,result);
-        profiles.Profiles.push_back(std::move(result));
-    }
-    void ProfileClass(const SDK::UClass* visualClass,bool highResolution,P::Set& profiles,
-        P::Origin provenance=P::Origin::MassRepresentation,bool* cdoAbsent=nullptr,bool includeNative=true,const P::Set* previous=nullptr)
-    {
-        if(cdoAbsent)*cdoAbsent=false;
-        if(includeNative)++profiles.Acquisition.Classes;
-        ProfileReader read;P::Profile source;P::Identity id;const uintptr_t type=reinterpret_cast<uintptr_t>(visualClass);
-        source.HighResolution=highResolution;
-        source.Provenance=provenance;
-        source.VisualClass.Status=P::Availability::Pending;
-        if(!ProfileIdentity(type,id))
-        {source.Status=P::State::Pending;profiles.Inventory=P::Availability::Pending;profiles.Profiles.push_back(std::move(source));return;}
-        source.VisualClass={id,P::Availability::Available};
-        uintptr_t cdo=0;source.Defaults.Status=P::Availability::Pending;
-        const bool cdoRead=read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),cdo);
-        if(cdoAbsent && cdoRead && !cdo)*cdoAbsent=true;
-        if(cdoRead && cdo && ProfileIdentity(cdo,id))
-        {
-            uint32_t flags=0;
-            if(read.Read(cdo+8,flags))
-            {
-                if(flags&0x10)
-                {
-                    uintptr_t defaultsClass=0;
-                    const auto defaults=ProfileDerives(cdo,visualClass);
-                    if(defaults==ProfileCheck::Matches && read.Read(cdo+0x10,defaultsClass) && defaultsClass==type)
-                        source.Defaults={id,P::Availability::Available};
-                    else if(defaults==ProfileCheck::Matches)source.Defaults.Status=P::Availability::Invalid;
-                    else if(defaults==ProfileCheck::NoMatch || defaults==ProfileCheck::Invalid)
-                        source.Defaults.Status=P::Availability::Invalid;
-                }
-                else source.Defaults.Status=P::Availability::Invalid;
-            }
-        }
-        const auto* completedBuilder=includeNative?CompletedProfile(previous,profiles,source,P::Selection::NativeBuilderInput):nullptr;
-        if(completedBuilder)
-        {
-            ++profiles.Acquisition.NativeBuilders;
-            profiles.Acquisition.Defaults+=source.Defaults.Status==P::Availability::Available;
-            profiles.Profiles.push_back(*completedBuilder);
-        }
-        else if(includeNative)
-        {
-            const SDK::UClass* builder=nullptr;size_t meshOffset=0;P::Mechanism mechanism=P::Mechanism::Unknown;
-            profiles.Acquisition.Defaults+=source.Defaults.Status==P::Availability::Available;
-            static_assert(offsetof(SDK::ACrDronePathPointConnection,SplineMesh)==0x708 &&
-                offsetof(SDK::ACrModularRampWalkway,SplineMesh)==0x6f8);
-            const auto droneBuilder=source.Defaults.Status==P::Availability::Available?
-                ProfileDerives(cdo,g_types.DroneRail):ProfileCheck::Unverified;
-            const auto walkwayBuilder=source.Defaults.Status==P::Availability::Available && droneBuilder==ProfileCheck::NoMatch?
-                ProfileDerives(cdo,g_types.Walkway):ProfileCheck::Unverified;
-            if(droneBuilder==ProfileCheck::Matches)
-            {builder=g_types.DroneRail;meshOffset=offsetof(SDK::ACrDronePathPointConnection,SplineMesh);mechanism=P::Mechanism::DroneRail;}
-            else if(walkwayBuilder==ProfileCheck::Matches)
-            {builder=g_types.Walkway;meshOffset=offsetof(SDK::ACrModularRampWalkway,SplineMesh);mechanism=P::Mechanism::ModularWalkway;}
-            if(builder)
-            {
-                ++profiles.Acquisition.NativeBuilders;
-                P::Profile input=source;input.Source=P::Selection::NativeBuilderInput;
-                input.Construction={mechanism,P::Availability::Available};
-                input.ConstructionForwardAxis={0,P::Availability::Available};
-                input.ConstructionTransform={{{},{},{1,1,1}},P::Availability::Available};
-                input.ConstructionCrossSection={{{1,1},{1,1},{0,0},{0,0},0,0,{0,0,1}},P::Availability::Available};
-                // Do not certify arbitrary Blueprint overrides/additional geometry.
-                input.ActiveUse=provenance==P::Origin::MassRepresentation && visualClass==builder?
-                    P::Availability::Available:P::Availability::Unverified;
-                uintptr_t mesh=0;input.MeshRead=P::MeshAcquisition::BoundsReadFailed;
-                if(read.Read(cdo+meshOffset,mesh))ProfileMesh(mesh,input);
-                input.Status=input.ActiveUse==P::Availability::Available && input.Geometry &&
-                    input.Geometry->LocalBounds.Status==P::Availability::Available?P::State::Complete:P::State::Partial;
-                profiles.Profiles.push_back(std::move(input));
-            }
-            else
-            {
-                const bool known=source.Defaults.Status==P::Availability::Available && g_types.DroneRail && g_types.Walkway &&
-                    droneBuilder==ProfileCheck::NoMatch && walkwayBuilder==ProfileCheck::NoMatch;
-                const bool invalid=source.Defaults.Status==P::Availability::Invalid ||
-                    droneBuilder==ProfileCheck::Invalid || walkwayBuilder==ProfileCheck::Invalid;
-                source.Construction.Status=known?P::Availability::Unsupported:
-                    invalid?P::Availability::Invalid:P::Availability::Pending;
-                source.Status=known?P::State::Unsupported:invalid?P::State::Partial:P::State::Pending;
-                profiles.Profiles.push_back(source);
-            }
-        }
-        std::unordered_set<uintptr_t> seen;
-        for(uintptr_t current=type;current && seen.insert(current).second;)
-        {
-            uintptr_t meta=0,parent=0;
-            if(!ProfileIdentity(current,id) || !read.Read(current+0x10,meta))
-            {profiles.Inventory=P::Availability::Pending;return;}
-            const auto blueprintClass=ProfileNativeClass(meta,L"BlueprintGeneratedClass");
-            if(blueprintClass==ProfileCheck::Unverified)
-            {profiles.Inventory=P::Availability::Pending;return;}
-            if(blueprintClass==ProfileCheck::Matches)
-            {
-                // Verified FindComponentTemplateByName body: this class's array
-                // only. Inventory is copied as candidates, never as active use.
-                struct Array {uintptr_t Data;int32_t Num,Max;};Array templates{};
-                static_assert(offsetof(SDK::UBlueprintGeneratedClass,ComponentTemplates)==0x220);
-                if(!read.Read(current+offsetof(SDK::UBlueprintGeneratedClass,ComponentTemplates),templates))
-                {profiles.Inventory=P::Availability::Pending;return;}
-                if(templates.Num<0 || templates.Max<templates.Num || (templates.Num && !templates.Data) ||
-                    size_t(templates.Num)>SIZE_MAX/sizeof(uintptr_t) ||
-                    templates.Data>UINTPTR_MAX-size_t(templates.Num)*sizeof(uintptr_t))
-                {profiles.Inventory=P::Availability::Invalid;return;}
-                P::Profile owner=source;owner.TemplateOwner={id,P::Availability::Available};
-                for(int32_t i=0;i<templates.Num;++i)
-                {
-                    uintptr_t component=0;
-                    if(!read.Read(templates.Data+size_t(i)*sizeof(uintptr_t),component))
-                    {profiles.Inventory=P::Availability::Pending;continue;}
-                    if(component){++profiles.Acquisition.Templates;ProfileTemplate(component,owner,profiles,previous);}
-                }
-            }
-            if(!read.Read(current+offsetof(SDK::UStruct,SuperStruct),parent))
-            {profiles.Inventory=P::Availability::Pending;return;}
-            current=parent;
-            if(current && seen.contains(current)){profiles.Inventory=P::Availability::Invalid;return;}
-        }
-    }
-    ProfileCheck ProfileActorClass(uintptr_t type,MiniMapDefinitionAcquisition::IdentityObservation* observation=nullptr,
-        MiniMapDefinitionAcquisition::IdentityObservation* firstZero=nullptr)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        const auto lookup=type;
-        // Certify the metaclass before interpreting the returned object as UStruct.
-        const auto kind=ProfileDerives(type,nullptr,L"Class",L"/Script/CoreUObject",observation,lookup,firstZero);
-        if(kind!=ProfileCheck::Matches){if(kind==ProfileCheck::NoMatch && observation)observation->Predicate=A::IdentityPredicate::MetaclassMismatch;return kind;}
-        ProfileReader read;std::unordered_set<uintptr_t> seen;uint32_t depth=0;
-        while(type)
-        {
-            if(!seen.insert(type).second)
-            {
-                if(observation){*observation={};observation->Predicate=A::IdentityPredicate::HierarchyCycle;
-                    observation->Role=A::IdentityRole::ClassNode;observation->Depth=depth;observation->IsLookupResult=type==lookup;}
-                return ProfileCheck::Invalid;
-            }
-            if(!ProfileTransient(type,sizeof(SDK::UClass),observation,A::IdentityRole::ClassNode,depth,lookup,firstZero))return ProfileCheck::Unverified;
-            const auto nodeObservation=observation?*observation:A::IdentityObservation{};
-            const auto actor=ProfileNativeClass(type,L"Actor",L"/Script/Engine",observation,A::IdentityRole::ClassNode,depth,lookup,firstZero);
-            if(actor!=ProfileCheck::NoMatch)return actor;
-            if(observation)*observation=nodeObservation;
-            if(!read.Read(type+offsetof(SDK::UStruct,SuperStruct),type)){if(observation)observation->Predicate=A::IdentityPredicate::SuperclassRead;return ProfileCheck::Unverified;}
-            ++depth;
-        }
-        if(observation)observation->Predicate=A::IdentityPredicate::ActorMismatch;
-        return ProfileCheck::NoMatch;
-    }
-    struct ProfileRetention
-    {
-        uintptr_t Object=0; // Borrowed only inside this synchronous stack scope.
-        int32_t Index=-1; // Transient slot correspondence, never a published identity.
-        ProfileRetention()=default;
-        explicit ProfileRetention(uintptr_t held):Object(held){}
-        ProfileRetention(const ProfileRetention&)=delete;
-        ProfileRetention& operator=(const ProfileRetention&)=delete;
-        bool Retain(uintptr_t object,size_t extent)
-        {
-            if(!MiniMapResidentMetadata::Retain(object,extent))return false;
-            Object=object;return true;
-        }
-        bool Release()
-        {
-            const auto object=Object;Object=0;
-            return !object || MiniMapResidentMetadata::Release(object);
-        }
-        ~ProfileRetention(){if(Object)Release();}
-    };
-    bool ProfileCDORelationship(uintptr_t type,uintptr_t cdo,int32_t expectedIndex)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        ProfileReader read;uintptr_t current=0,actual=0;uint32_t flags=0;A::IdentityObservation observation;
-        return ProfileTransient(cdo,sizeof(SDK::UObject),&observation,A::IdentityRole::LookupResult,0,cdo) &&
-            observation.Index==expectedIndex && observation.Serial>=0 &&
-            read.Read(cdo+8,flags) && (flags&0x10) && read.Read(cdo+0x10,actual) && actual==type &&
-            read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),current) && current==cdo &&
-            ProfileDerives(cdo,reinterpret_cast<const SDK::UClass*>(type))==ProfileCheck::Matches;
-    }
-    // Used only when an unfinished source needs current templates. This is the
-    // original CDO borrow/retain/identity boundary, not a certificate from old data.
-    template<class Context> bool ProfileDefaults(uintptr_t type,P::Set& profiles,ProfileRetention& defaults,
-        Context context,P::Field<P::Identity>& identity)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        P::Identity id;A::IdentityObservation observation;
-        ProfileReader read;uintptr_t cdo=0;
-        if(!context() || !read.Read(type+offsetof(SDK::UClass,ClassDefaultObject),cdo))return false;
-        profiles.Acquisition.CdoAbsent=!cdo;
-        if(!cdo || !ProfileTransient(cdo,sizeof(SDK::UObject),&observation,A::IdentityRole::LookupResult,0,cdo))return false;
-        defaults.Index=observation.Index;
-        if(!defaults.Retain(cdo,sizeof(SDK::UObject)))return false;
-        if(!context() || !ProfileCDORelationship(type,cdo,defaults.Index))return false;
-        if(ProfileIdentity(cdo,id,&observation))identity={id,P::Availability::Available};
-        else if(observation.Predicate!=A::IdentityPredicate::ZeroSerial)return false;
-        profiles.Acquisition.CdoAvailability=identity.Status;
-        return true;
-    }
-    // The caller holds the class and owns the final publication transaction.
-    // Leave the CDO held for final revalidation and any stable template inventory.
-    template<class Context> bool ProfileNativeCopy(uintptr_t type,P::Set& profiles,P::Profile& copy,
-        ProfileRetention& defaults,Context context,bool& nativeBuilder)
-    {
-        namespace A=MiniMapDefinitionAcquisition;
-        copy.Ownership=P::Backing::NativeCopy;copy.Source=P::Selection::NativeBuilderInput;
-        copy.Provenance=P::Origin::PlacementActorClass;copy.HighResolution=false;
-        copy.Status=P::State::Partial;copy.ActiveUse=P::Availability::Unverified;
-        P::Identity id;A::IdentityObservation observation;
-        // Optional positive identities remain truthful; zero never becomes {Index,0}.
-        if(ProfileIdentity(type,id,&observation))copy.VisualClass={id,P::Availability::Available};
-        else if(observation.Predicate!=A::IdentityPredicate::ZeroSerial)return false;
-        if(!ProfileDefaults(type,profiles,defaults,context,copy.Defaults))return false;
-        const auto cdo=defaults.Object;
-        ProfileReader read;
-        const auto drone=g_types.DroneRail?ProfileDerives(cdo,g_types.DroneRail):ProfileCheck::Unverified;
-        const auto walkway=drone==ProfileCheck::NoMatch && g_types.Walkway?
-            ProfileDerives(cdo,g_types.Walkway):ProfileCheck::Unverified;
-        size_t meshOffset=0;
-        static_assert(offsetof(SDK::ACrDronePathPointConnection,SplineMesh)==0x708 &&
-            offsetof(SDK::ACrModularRampWalkway,SplineMesh)==0x6f8);
-        if(drone==ProfileCheck::Matches)
-        {copy.Construction={P::Mechanism::DroneRail,P::Availability::Available};meshOffset=offsetof(SDK::ACrDronePathPointConnection,SplineMesh);}
-        else if(walkway==ProfileCheck::Matches)
-        {copy.Construction={P::Mechanism::ModularWalkway,P::Availability::Available};meshOffset=offsetof(SDK::ACrModularRampWalkway,SplineMesh);}
-        else return drone==ProfileCheck::NoMatch && walkway==ProfileCheck::NoMatch;
-        nativeBuilder=true;
-        ++profiles.Acquisition.Classes;++profiles.Acquisition.Defaults;++profiles.Acquisition.NativeBuilders;
-        copy.ConstructionForwardAxis={0,P::Availability::Available};
-        copy.ConstructionTransform={{{},{},{1,1,1}},P::Availability::Available};
-        copy.ConstructionCrossSection={{{1,1},{1,1},{0,0},{0,0},0,0,{0,0,1}},P::Availability::Available};
-        uintptr_t mesh=0;copy.MeshRead=P::MeshAcquisition::BoundsReadFailed;
-        if(read.Read(cdo+meshOffset,mesh))ProfileMesh(mesh,copy);
-        profiles.Acquisition.NativeCopyMesh=copy.MeshRead;
-        return context() && ProfileCDORelationship(type,cdo,defaults.Index);
-    }
-    void PlacementProfiles(const SDK::UAuActorPlacementData* placement,Definition& definition,P::Set& profiles,
-        const P::Set* previous)
-    {
-        namespace B=MiniMapBuildingBlueprintIdentity;
-        auto& acquisition=profiles.Acquisition;
-        if(SameProfileDefinition(previous,profiles) && previous->Acquisition.PlacementInventory==P::Availability::Available &&
-            std::none_of(previous->Profiles.begin(),previous->Profiles.end(),[](const P::Profile& p)
-                {return p.Provenance==P::Origin::PlacementActorClass && P::Pending(p);}))
-        {
-            const bool traitTypesReady=acquisition.TraitTypesReady;
-            profiles=*previous; // This cache is captured before Mass discovery; counters and owners stay source-local.
-            profiles.Acquisition.TraitTypesReady=traitTypesReady;
-            ++g_metrics.PlacementSourceReuses;
-            return;
-        }
-        const auto* committed=CommittedPlacementCopy(previous,profiles);
-        if(committed)
-        {
-            profiles.Profiles.push_back(*committed);
-            acquisition.NativeCopyAttempted=true;acquisition.NativeNumericalCopy=P::Availability::Available;
-            acquisition.NativeCopyMesh=committed->MeshRead;
-            ++acquisition.Classes;++acquisition.Defaults;++acquisition.NativeBuilders;
-            ++g_metrics.NativeCopyReuses;
-        }
-        if(definition.CanonicalBlueprint)definition.ActorClassReference=P::Availability::Available;
-        acquisition.ActorClassReference=definition.ActorClassReference;
-        acquisition.ResidentClass=P::Availability::Pending;
-        acquisition.CanonicalClassPath=definition.CanonicalBlueprint;
-        acquisition.ResidentLookup=P::ClassLookup::Unattempted;acquisition.IdentityValidation={};
-        acquisition.LookupValidation={};acquisition.PublicationIdentity={};acquisition.TraversalZero={};
-        acquisition.ResidentLookupExecuted=false;acquisition.ResidentLookupCompleted=false;acquisition.ResidentObjectFound=false;
-        acquisition.CdoAbsent=false;acquisition.CdoAvailability=P::Availability::Unverified;
-        const auto world=MiniMapMap::GetWorld();
-        if(!world || world!=g_world)
-        {profiles.Inventory=P::Availability::Pending;return;}
-        if(!MiniMapResidentMetadata::Available())
-        {acquisition.ResidentLookup=P::ClassLookup::FacilityUnavailable;profiles.Inventory=P::Availability::Pending;return;}
-        if(!definition.CanonicalBlueprint && !definition.IdentityInterrupted &&
-            definition.ActorClassReference!=P::Availability::Unsupported &&
-            definition.ActorClassReference!=P::Availability::Invalid && definition.IdentityObservation!=g_observation)
-        {
-            definition.IdentityObservation=g_observation;++g_metrics.Conversions;
-            const auto result=B::Resolve(placement,g_types.Placement,
-                {placement->Index,definition.NameIndex,definition.NameNumber,definition.Id,definition.ObjectSerial});
-            // Conversion failures also include malformed text. Only a copied
-            // empty authored reference establishes Missing; do not label an
-            // invalid nonempty class path as an absent property.
-            SDK::FSoftObjectPtr reference{};ProfileReader read;
-            static_assert(sizeof(reference)==0x28 && offsetof(SDK::UAuActorPlacementData,ActorClass)==0x38);
-            const bool missing=result.State==B::Status::Invalid &&
-                (result.Failure==B::Issue::ReturnedLength || result.Failure==B::Issue::CanonicalPath) &&
-                read.Read(reinterpret_cast<uintptr_t>(placement)+offsetof(SDK::UAuActorPlacementData,ActorClass),reference) &&
-                reference.ObjectID.AssetPath.PackageName.ComparisonIndex==0 && reference.ObjectID.AssetPath.PackageName.Number==0 &&
-                reference.ObjectID.AssetPath.AssetName.ComparisonIndex==0 && reference.ObjectID.AssetPath.AssetName.Number==0 &&
-                reference.ObjectID.SubPathString.Num()<=1;
-            definition.CanonicalBlueprint=result.Path;
-            definition.IdentityInterrupted=result.State==B::Status::Interrupted;
-            definition.ActorClassReference=result.Path?P::Availability::Available:
-                result.State==B::Status::Invalid?
-                    (missing?P::Availability::Unsupported:P::Availability::Invalid):
-                result.State==B::Status::Interrupted?P::Availability::Invalid:P::Availability::Pending;
-            if(result.Path)++g_metrics.ConversionSuccess;
-        }
-        acquisition.ActorClassReference=definition.ActorClassReference;
-        if(!definition.CanonicalBlueprint)
-        {
-            acquisition.CanonicalClassPath.reset();
-            acquisition.ResidentLookup=definition.ActorClassReference==P::Availability::Invalid?
-                P::ClassLookup::CanonicalInvalid:P::ClassLookup::CanonicalUnavailable;
-            acquisition.ResidentClass=definition.ActorClassReference==P::Availability::Pending ||
-                definition.ActorClassReference==P::Availability::Unverified?P::Availability::Pending:
-                definition.ActorClassReference;
-            if(acquisition.ResidentClass==P::Availability::Pending)profiles.Inventory=P::Availability::Pending;
-            return;
-        }
-        const auto& path=*definition.CanonicalBlueprint;
-        acquisition.CanonicalClassPath=definition.CanonicalBlueprint;
-        const int length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),nullptr,0);
-        if(length<=0){acquisition.ResidentLookup=P::ClassLookup::CanonicalInvalid;acquisition.ResidentClass=P::Availability::Invalid;return;}
-        std::wstring wide(size_t(length),L'\0');
-        if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.data(),int(path.size()),wide.data(),length)!=length)
-        {acquisition.ResidentLookup=P::ClassLookup::CanonicalInvalid;acquisition.ResidentClass=P::Availability::Invalid;return;}
-        const auto context=[&]()
-        {
-            P::Identity current;
-            return world==MiniMapMap::GetWorld() && world==g_world && profiles.Generation==g_generation &&
-                MiniMapResidentMetadata::Available() && profiles.Definition.Status==P::Availability::Available &&
-                ProfileIdentity(reinterpret_cast<uintptr_t>(placement),current) && current==profiles.Definition.Value;
-        };
-        auto* hooks=GetHooks();auto* engine=hooks?hooks->Engine:nullptr;
-        const auto find=engine && engine->GetStaticFindObjectByNameAddress?engine->GetStaticFindObjectByNameAddress():0;
-        uintptr_t type=0;
-        if(!find)
-        {acquisition.ResidentLookup=P::ClassLookup::FacilityUnavailable;profiles.Inventory=P::Availability::Pending;return;}
-        acquisition.ResidentLookupExecuted=true;
-        acquisition.ResidentLookupCompleted=MiniMapResidentMetadata::FindResident(find,0,wide.c_str(),false,type);
-        if(!acquisition.ResidentLookupCompleted)
-        {acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;}
-        if(!type)
-        {acquisition.ResidentLookup=P::ClassLookup::ReturnedNull;profiles.Inventory=P::Availability::Pending;return;} // Resident-only miss, never load.
-        acquisition.ResidentObjectFound=true;
-        namespace A=MiniMapDefinitionAcquisition;
-        if(!MiniMapResidentMetadata::Available() || world!=MiniMapMap::GetWorld() || world!=g_world || profiles.Generation!=g_generation)
-        {acquisition.IdentityValidation.Predicate=A::IdentityPredicate::ContextChanged;profiles.Inventory=P::Availability::Pending;return;}
-        if(!ProfileTransient(type,sizeof(SDK::UObject),&acquisition.IdentityValidation,A::IdentityRole::LookupResult,0,type))
-        {acquisition.LookupValidation=acquisition.IdentityValidation;acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
-        acquisition.LookupValidation=acquisition.IdentityValidation;
-        // Retain the eligible UObject before extended class inspection. Retain
-        // itself rechecks quiet-game-thread admission and slot correspondence.
-        if(!MiniMapResidentMetadata::Retain(type,sizeof(SDK::UObject)))
-        {
-            acquisition.IdentityValidation.Predicate=A::IdentityPredicate::RetainFailed;
-            acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;
-        }
-        ProfileRetention retained{type};
-        ProfileRetention defaults;
-        P::Profile copy;P::Field<P::Identity> observedDefaults;
-        bool nativeBuilder=committed!=nullptr,ownersValid=false;
-        acquisition.NativeCopyAttempted=true;
-        if(!committed)acquisition.NativeNumericalCopy=P::Availability::Pending;
-        const auto first=profiles.Profiles.size();bool accepted=false;
-        // Early inspection failures leave this lambda, not the retained scope.
-        // No caller callback, loading, yielding or Blueprint execution occurs.
-        auto inspect=[&]()
-        {
-            if(!MiniMapResidentMetadata::Available() || world!=MiniMapMap::GetWorld() || world!=g_world || profiles.Generation!=g_generation)
-            {
-                acquisition.IdentityValidation.Predicate=A::IdentityPredicate::ContextChanged;
-                acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;
-            }
-            if(!ProfileTransient(type,sizeof(SDK::UObject),&acquisition.IdentityValidation,A::IdentityRole::LookupResult,0,type) ||
-                acquisition.IdentityValidation.Index!=acquisition.LookupValidation.Index)
-            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
-            const auto actor=ProfileActorClass(type,&acquisition.IdentityValidation,&acquisition.TraversalZero);
-            if(actor==ProfileCheck::NoMatch)
-            {acquisition.ResidentLookup=P::ClassLookup::TypeRejected;acquisition.ResidentClass=P::Availability::Invalid;return;}
-            if(actor!=ProfileCheck::Matches)
-            {
-                acquisition.ResidentLookup=actor==ProfileCheck::Invalid?P::ClassLookup::IdentityRejected:P::ClassLookup::IdentityUnverified;
-                acquisition.ResidentClass=actor==ProfileCheck::Unverified?P::Availability::Pending:P::Availability::Invalid;
-                if(acquisition.ResidentClass==P::Availability::Pending)profiles.Inventory=P::Availability::Pending;
-                return;
-            }
-            acquisition.ResidentLookup=P::ClassLookup::ClassValidated;
-            P::Identity before,after;
-            const bool publishable=ProfileIdentity(type,before,&acquisition.PublicationIdentity);
-            acquisition.PublicationIdentity.Role=A::IdentityRole::PublicationOwner;
-            acquisition.PublicationIdentity.IsLookupResult=true;
-            acquisition.IdentityValidation=acquisition.PublicationIdentity;
-            if(!publishable && acquisition.PublicationIdentity.Predicate!=A::IdentityPredicate::ZeroSerial)
-            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
-            if(committed)ownersValid=ProfileDefaults(type,profiles,defaults,context,observedDefaults);
-            else
-            {
-                ownersValid=ProfileNativeCopy(type,profiles,copy,defaults,context,nativeBuilder);
-                observedDefaults=copy.Defaults;
-            }
-            if(!ownersValid)
-            {acquisition.ResidentLookup=P::ClassLookup::IdentityUnverified;profiles.Inventory=P::Availability::Pending;return;}
-            if(!nativeBuilder)
-            {
-                acquisition.NativeNumericalCopy=P::Availability::Unsupported;
-                // Stable template-only observations retain their existing settled
-                // reuse. Only native copies/transient owners require refresh.
-                acquisition.NativeCopyAttempted=!publishable || copy.Defaults.Status!=P::Availability::Available;
-            }
-            // Templates still need stable class AND CDO owners. Never use the
-            // numerical-copy contract as permission to publish template identities.
-            if(publishable && observedDefaults.Status==P::Availability::Available)
-                ProfileClass(reinterpret_cast<const SDK::UClass*>(type),false,profiles,P::Origin::PlacementActorClass,
-                    &acquisition.CdoAbsent,!nativeBuilder,previous);
-            P::Identity finalDefaults;A::IdentityObservation finalClass;
-            const bool stableClass=!publishable || (ProfileIdentity(type,after) && before==after);
-            const bool stableDefaults=observedDefaults.Status!=P::Availability::Available ||
-                (ProfileIdentity(defaults.Object,finalDefaults) && finalDefaults==observedDefaults.Value);
-            if(!context() || !ProfileTransient(type,sizeof(SDK::UClass),&finalClass,A::IdentityRole::LookupResult,0,type) ||
-                finalClass.Index!=acquisition.LookupValidation.Index || finalClass.Serial<0 ||
-                ProfileActorClass(type)!=ProfileCheck::Matches || !ProfileCDORelationship(type,defaults.Object,defaults.Index) ||
-                !stableClass || !stableDefaults)
-            {
-                acquisition.IdentityValidation.Predicate=!stableClass || !stableDefaults?
-                    A::IdentityPredicate::IdentityChanged:A::IdentityPredicate::ContextChanged;
-                acquisition.ResidentLookup=P::ClassLookup::Interrupted;profiles.Inventory=P::Availability::Pending;return;
-            }
-            if(!committed && nativeBuilder && copy.MeshRead==P::MeshAcquisition::Copied && copy.Geometry)
-            {
-                // Allocate before releasing owners; failure is contained by the
-                // transaction. No seal is exposed until both releases succeed.
-                copy.CopyObservation=std::make_shared<const P::NativeCopyObservation>();
-                profiles.Profiles.reserve(profiles.Profiles.size()+1);
-            }
-            accepted=true;
-        };
-        try{inspect();}
-        catch(...)
-        {
-            profiles.Profiles.resize(first);accepted=false;
-            acquisition.ResidentLookup=P::ClassLookup::Interrupted;
-            acquisition.ResidentClass=P::Availability::Pending;profiles.Inventory=P::Availability::Pending;
-        } // The common exit attempts each successful retention's release once.
-        const bool contextValid=context();
-        const bool defaultsReleased=defaults.Release();
-        const bool released=retained.Release();
-        if(!contextValid || !defaultsReleased || !released || !context())
-        {
-            acquisition.IdentityValidation.Predicate=!defaultsReleased || !released?A::IdentityPredicate::ReleaseFailed:A::IdentityPredicate::ContextChanged;
-            acquisition.ResidentLookup=P::ClassLookup::Interrupted;acquisition.ResidentClass=P::Availability::Pending;
-            profiles.Inventory=P::Availability::Pending;accepted=false;
-        }
-        if(!accepted){profiles.Profiles.resize(first);return;}
-        if(!committed && nativeBuilder && copy.MeshRead==P::MeshAcquisition::Copied && copy.Geometry)
-        {
-            // Publish the complete observation only after all required releases.
-            // Capacity was reserved above; Profile moves own no borrowed pointers.
-            profiles.Profiles.insert(profiles.Profiles.begin()+first,std::move(copy));
-            acquisition.NativeNumericalCopy=P::Availability::Available;
-        }
-        else if(nativeBuilder && !committed)profiles.Inventory=P::Availability::Pending;
-        acquisition.PersistentClassIdentity=std::any_of(committed?profiles.Profiles.begin():profiles.Profiles.begin()+first,profiles.Profiles.end(),[](const P::Profile& p)
-            {return p.VisualClass.Status==P::Availability::Available;})?P::Availability::Available:P::Availability::Unverified;
-        acquisition.ResidentClass=P::Availability::Available;
-    }
-    void ApplySplineMeshBounds(DefinitionGeometry& shape,const Point& origin,const Point& extent)
-    {
-            if(!MiniMapBuildingGeometry::Finite(extent) || !MiniMapBuildingGeometry::Finite(origin) ||
-                std::any_of(extent.begin(),extent.end(),[](double v){return v<0;}))
-            { shape.Issue=GeometryIssue::NonFinite; return; }
-            const double width=std::hypot(std::abs(origin[1])+extent[1],std::abs(origin[2])+extent[2]);
-            if(!std::isfinite(width) || width<=0 || width>MiniMapBuildingGeometry::kMaximumGeometrySpan)
-            { shape.Issue=GeometryIssue::Oversized; return; }
-            if(!shape.HasSplineMesh || width>shape.SplineMeshCrossSection)
-            {
-                shape.SplineMeshCrossSection=width; shape.HasSplineMesh=true;
-                shape.SplineMeshBounds.Valid=true;
-                for(size_t axis=0;axis<3;++axis)
-                { shape.SplineMeshBounds.Min[axis]=origin[axis]-extent[axis]; shape.SplineMeshBounds.Max[axis]=origin[axis]+extent[axis]; }
-            }
-    }
-    DefinitionGeometry ResolveGeometry(const SDK::UAuActorPlacementData* placement,bool spline,Definition* definition=nullptr,bool reuseOwned=true)
-    {
-        DefinitionGeometry shape;
-        std::shared_ptr<P::Set> profiles;
-        if(spline)
-        {
-            profiles=std::make_shared<P::Set>();profiles->Generation=g_generation;
-            profiles->Definition.Status=P::Availability::Pending;
-            profiles->Inventory=P::Availability::Pending;
-            shape.Profiles=profiles;
-        }
-        if(spline)ResolveTypes(true); // Optional metadata is never an ordinary-building prerequisite.
-        if(!placement || (!spline && !g_types.Config) || !MiniMapResidentMetadata::Available() ||
-            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(placement),sizeof(SDK::UAuActorPlacementData))) return shape;
-        if(profiles)
-        {
-            profiles->Inventory=P::Availability::Available;
-            profiles->Acquisition.Placement=P::Availability::Available;
-            profiles->Acquisition.TraitTypesReady=g_types.CosmeticTrait && g_types.VisualTrait;
-            P::Identity id;
-            if(ProfileIdentity(reinterpret_cast<uintptr_t>(placement),id))profiles->Definition={id,P::Availability::Available};
-            if(definition)PlacementProfiles(placement,*definition,*profiles,reuseOwned?definition->PlacementProfiles.get():nullptr);
-            else profiles->Inventory=P::Availability::Pending;
-            profiles->Acquisition.PlacementInventory=profiles->Inventory;
-            if(reuseOwned && definition && (!definition->PlacementProfiles || !(*definition->PlacementProfiles==*profiles)))
-                definition->PlacementProfiles=std::make_shared<const P::Set>(*profiles);
-            profiles->Inventory=profiles->Acquisition.TraitTypesReady?P::Availability::Available:P::Availability::Pending;
-        }
-        auto finish=[&]()
-        {
-            profiles->Acquisition.MassInventory=profiles->Inventory;
-            if(profiles->Acquisition.PlacementInventory==P::Availability::Pending)
-                profiles->Inventory=P::Availability::Pending;
-            FinalizeProfiles(*profiles);
-        };
-        auto readTemplate=[&](const SDK::UClass* type,bool highResolution)
-        {
-            if(profiles)
-            {
-                const auto first=profiles->Profiles.size();
-                ProfileClass(type,highResolution,*profiles,P::Origin::MassRepresentation,nullptr,true,
-                    reuseOwned && definition && definition->Geometry && definition->Geometry->Profiles?definition->Geometry->Profiles.get():nullptr);
-                // The native modular builder's verified mesh bounds have already
-                // been copied above (or retained from this completed source).
-                // Reuse the identical numeric radial allowance, not its CDO/mesh.
-                for(size_t i=first;i<profiles->Profiles.size();++i)
-                {
-                    const auto& source=profiles->Profiles[i];
-                    if(source.Source==P::Selection::NativeBuilderInput && source.Construction.Status==P::Availability::Available &&
-                        source.Construction.Value==P::Mechanism::ModularWalkway && source.Geometry && !P::Pending(source) &&
-                        MiniMapBuildingSplineEnvelope::Eligibility(source)==0)
-                    {
-                        const auto& bounds=source.Geometry->LocalBounds.Value;
-                        ApplySplineMeshBounds(shape,bounds.Origin,bounds.Extent);
-                        return;
-                    }
-                }
-            }
-            // Do not call GetDefaultObject: that can create/load a CDO. Only
-            // already resident, hard-referenced template defaults are inspected.
-            const auto* object=type?type->ClassDefaultObject:nullptr;
-            const SDK::UStaticMesh* mesh=nullptr;
-            if(IsClass(object,g_types.DroneRail))
-            {
-                mesh=static_cast<const SDK::ACrDronePathPointConnection*>(object)->SplineMesh;
-                const auto* settings=g_types.DronesSettings?g_types.DronesSettings->ClassDefaultObject:nullptr;
-                if(IsClass(settings,g_types.DronesSettings))
-                {
-                    const double extension=static_cast<const SDK::UDronesDeveloperSettings*>(settings)->RailMeshVisualExtraLength;
-                    if(std::isfinite(extension) && std::abs(extension)<=MiniMapBuildingGeometry::kMaximumGeometrySpan)
-                    { shape.RailEndpointExtension=std::abs(extension); shape.HasRailExtension=true; }
-                }
-            }
-            else if(IsClass(object,g_types.Walkway))
-                mesh=static_cast<const SDK::ACrModularRampWalkway*>(object)->SplineMesh;
-            if(!IsClass(mesh,g_types.StaticMesh)) return;
-            // CL-127004 rail/walkway builders use forward axis X. ExtendedBounds
-            // is mesh-local, not world space. Include origin offsets and Z so a
-            // tilted/rolled cross section cannot exceed this radial allowance.
-            const auto& b=mesh->ExtendedBounds;
-            const Point extent{b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z};
-            const Point origin{b.Origin.X,b.Origin.Y,b.Origin.Z};
-            ApplySplineMeshBounds(shape,origin,extent);
-        };
-        const auto* config=placement->EntityType.EntityConfigPtr;
-        if(profiles)
-        {
-            // This SDK field is a transient native cache, distinct from the
-            // authored EntityConfig soft reference. Null means unexamined, not
-            // an available, empty inventory. Do not load or guess its target.
-            profiles->Acquisition.MassCacheAbsent=!config;
-            profiles->Acquisition.EntityConfig=config?P::Availability::Available:P::Availability::Pending;
-            if(!config)profiles->Inventory=P::Availability::Pending;
-        }
-        std::array<const SDK::UMassEntityConfigAsset*,32> visited={};
-        for(size_t depth=0;config && depth<visited.size();++depth)
-        {
-            const auto configKind=ObserveClass(config,g_types.Config);
-            const bool configReadable=configKind==ClassObservation::Matches &&
-                MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(config),sizeof(SDK::UMassEntityConfigAsset));
-            if(profiles && (configKind==ClassObservation::Unavailable ||
-                (configKind==ClassObservation::Matches && !configReadable)))
-            {
-                shape.Issue=GeometryIssue::InvalidArray; // Preserve the existing admission result.
-                profiles->Acquisition.EntityConfig=P::Availability::Pending;
-                profiles->Inventory=P::Availability::Pending;finish();
-                return shape;
-            }
-            if((reinterpret_cast<uintptr_t>(config)&7) || !configReadable ||
-                std::find(visited.begin(),visited.begin()+depth,config)!=visited.begin()+depth)
-            {
-                shape.Issue=GeometryIssue::InvalidArray;
-                if(profiles){profiles->Acquisition.EntityConfig=P::Availability::Invalid;profiles->Inventory=P::Availability::Invalid;finish();}
-                return shape;
-            }
-            visited[depth]=config;
-            if(profiles)++profiles->Acquisition.Configs;
-            if(profiles)
-            {
-                P::Identity id;
-                if(ProfileIdentity(reinterpret_cast<uintptr_t>(config),id))profiles->Resources.push_back(id);
-                else profiles->Inventory=P::Availability::Pending;
-            }
-            const auto& traits=config->Config.Traits;
-            if(traits.Num()<0 || traits.Num()>256 || traits.Max()<traits.Num() || (traits.Num() && !traits.GetDataPtr()))
-            {
-                shape.Issue=GeometryIssue::InvalidArray;
-                if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
-                return shape;
-            }
-            if(traits.Num() && !MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(traits.GetDataPtr()),
-                size_t(traits.Num())*sizeof(void*),alignof(void*)))
-            {
-                shape.Issue=GeometryIssue::InvalidArray;
-                if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
-                return shape;
-            }
-            for(const auto* trait:traits)
-            {
-                if(profiles)++profiles->Acquisition.Traits;
-                if(profiles)
-                {
-                    P::Identity id;
-                    if(ProfileIdentity(reinterpret_cast<uintptr_t>(trait),id))profiles->Resources.push_back(id);
-                    else profiles->Inventory=P::Availability::Pending;
-                }
-                if(reinterpret_cast<uintptr_t>(trait)&7)
-                {
-                    shape.Issue=GeometryIssue::InvalidArray;
-                    if(profiles){profiles->Inventory=P::Availability::Invalid;finish();}
-                    return shape;
-                }
-                if(!shape.TargetingBox.Valid && IsClass(trait,g_types.TargetTrait) &&
-                    MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(trait),sizeof(SDK::UCrBuildingAggroTargetDataTrait)))
-                    shape.TargetingBox=MiniMapBuildingGeometry::Copy(static_cast<const SDK::UCrBuildingAggroTargetDataTrait*>(trait)->BuildingBoundingBox);
-                const auto cosmetic=spline?ObserveClass(trait,g_types.CosmeticTrait):ClassObservation::Other;
-                const auto visualKind=spline && cosmetic!=ClassObservation::Matches?
-                    ObserveClass(trait,g_types.VisualTrait):ClassObservation::Other;
-                if(profiles && (cosmetic==ClassObservation::Unavailable || visualKind==ClassObservation::Unavailable))
-                    profiles->Inventory=P::Availability::Pending;
-                if(spline && cosmetic==ClassObservation::Matches)
-                {
-                    ++profiles->Acquisition.VisualTraits;
-                    const auto* visual=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
-                    readTemplate(visual->HighResTemplateActor,true); readTemplate(visual->LowResTemplateActor,false);
-                }
-                else if(spline && visualKind==ClassObservation::Matches)
-                {
-                    ++profiles->Acquisition.VisualTraits;
-                    const auto* visual=static_cast<const SDK::UMassVisualizationTrait*>(trait);
-                    readTemplate(visual->HighResTemplateActor,true); readTemplate(visual->LowResTemplateActor,false);
-                }
-            }
-            config=config->Config.Parent;
-        }
-        // Partial resident sources are useful, but do not establish full visual
-        // coverage. In particular Blueprint construction scripts, dynamic poles,
-        // foundations and mesh/component variants may add geometry.
-        if(profiles)
-        {
-            if(config)profiles->Inventory=P::Availability::Pending; // Parent traversal did not establish absence.
-            finish();
-        }
-        return shape;
-    }
-    template<class T> void PreserveKnown(P::Field<T>& current,const P::Field<T>& previous)
-    {
-        if((current.Status==P::Availability::Pending || current.Status==P::Availability::Unverified) &&
-            previous.Status!=P::Availability::Pending && previous.Status!=P::Availability::Unverified)
-            current=previous;
-    }
-    bool Compatible(const P::Field<P::Identity>& current,const P::Field<P::Identity>& previous)
-    {
-        const bool currentKnown=current.Status==P::Availability::Available || current.Status==P::Availability::Invalid;
-        const bool previousKnown=previous.Status==P::Availability::Available || previous.Status==P::Availability::Invalid;
-        return !currentKnown || !previousKnown || current.Value==previous.Value;
-    }
-    bool Invalid(const P::Profile& profile)
-    {
-        return profile.VisualClass.Status==P::Availability::Invalid || profile.Defaults.Status==P::Availability::Invalid ||
-            profile.TemplateOwner.Status==P::Availability::Invalid || profile.Template.Status==P::Availability::Invalid ||
-            profile.Construction.Status==P::Availability::Invalid || profile.TemplateTransform.Status==P::Availability::Invalid ||
-            profile.ConstructionTransform.Status==P::Availability::Invalid || profile.TemplateCrossSection.Status==P::Availability::Invalid ||
-            profile.ConstructionCrossSection.Status==P::Availability::Invalid || profile.TemplateForwardAxis.Status==P::Availability::Invalid ||
-            profile.ConstructionForwardAxis.Status==P::Availability::Invalid ||
-            profile.MeshRead==P::MeshAcquisition::ClassMismatch || profile.MeshRead==P::MeshAcquisition::InvalidBounds ||
-            (profile.Geometry && profile.Geometry->LocalBounds.Status==P::Availability::Invalid);
-    }
-    bool SameOwner(const P::Field<P::Identity>& a,const P::Field<P::Identity>& b)
-    {
-        return a.Status==P::Availability::Available && b.Status==P::Availability::Available &&
-            a.Value.Index>=0 && a.Value.Serial>0 && a.Value==b.Value;
-    }
-    bool SameProfile(const P::Profile& current,const P::Profile& previous)
-    {
-        if(P::Copied(current) || P::Copied(previous))return false;
-        return current.Provenance==previous.Provenance && current.HighResolution==previous.HighResolution && current.Source==previous.Source &&
-            SameOwner(current.VisualClass,previous.VisualClass) && SameOwner(current.Defaults,previous.Defaults) &&
-            (current.Source!=P::Selection::Candidate ||
-                (SameOwner(current.TemplateOwner,previous.TemplateOwner) && SameOwner(current.Template,previous.Template))) &&
-            (current.Construction.Status!=P::Availability::Available || previous.Construction.Status!=P::Availability::Available ||
-                current.Construction.Value==previous.Construction.Value);
-    }
-    bool SameProfileGroup(const P::Profile& current,const P::Profile& previous)
-    {
-        if(P::Copied(current) || P::Copied(previous))return false;
-        return current.Provenance==previous.Provenance && current.HighResolution==previous.HighResolution && current.Source==previous.Source &&
-            SameOwner(current.VisualClass,previous.VisualClass) && SameOwner(current.Defaults,previous.Defaults) &&
-            (current.Source!=P::Selection::Candidate || SameOwner(current.TemplateOwner,previous.TemplateOwner));
-    }
-    bool SameResources(const P::Set& current,const P::Set& previous)
-    {
-        if(current.Inventory!=P::Availability::Pending)return current.Resources==previous.Resources;
-        return std::all_of(current.Resources.begin(),current.Resources.end(),[&](P::Identity id)
-            {return std::find(previous.Resources.begin(),previous.Resources.end(),id)!=previous.Resources.end();});
-    }
-    bool SameResolvedProfileIdentities(const P::Set& current,const P::Set& previous)
-    {
-        auto changed=[](const auto& a,const auto& b)
-        {
-            const bool knownA=a.Status==P::Availability::Available || a.Status==P::Availability::Invalid;
-            const bool knownB=b.Status==P::Availability::Available || b.Status==P::Availability::Invalid;
-            return knownA && knownB && a.Value!=b.Value;
-        };
-        for(const auto& a:current.Profiles)
-            for(const auto& b:previous.Profiles)
-                if(!P::Copied(a) && !P::Copied(b) && a.Provenance==b.Provenance && a.HighResolution==b.HighResolution && a.Source==b.Source &&
-                    (changed(a.VisualClass,b.VisualClass) || changed(a.TemplateOwner,b.TemplateOwner) ||
-                        changed(a.Template,b.Template) || changed(a.Defaults,b.Defaults)))return false;
-        return true;
-    }
-    bool SameDefinition(const P::Set& current,const P::Set& previous)
-    {
-        return current.Generation==previous.Generation && SameOwner(current.Definition,previous.Definition) &&
-            SameResources(current,previous) && SameResolvedProfileIdentities(current,previous);
-    }
-    void PreserveProfiles(P::Set& current,const P::Set& previous)
-    {
-        if(!SameDefinition(current,previous))return;
-        std::vector<bool> used(previous.Profiles.size());
-        for(auto& profile:current.Profiles)
-        {
-            if(P::Copied(profile))continue; // Indivisible; never merge fields from another acquisition.
-            size_t match=previous.Profiles.size(),matches=0;
-            for(size_t i=0;i<previous.Profiles.size();++i)
-                if(!used[i] && SameProfile(profile,previous.Profiles[i])){match=i;++matches;}
-            if(matches!=1)continue;
-            used[match]=true;const auto& old=previous.Profiles[match];
-            PreserveKnown(profile.VisualClass,old.VisualClass);PreserveKnown(profile.Defaults,old.Defaults);
-            PreserveKnown(profile.TemplateOwner,old.TemplateOwner);PreserveKnown(profile.Template,old.Template);
-            PreserveKnown(profile.Construction,old.Construction);PreserveKnown(profile.TemplateTransform,old.TemplateTransform);
-            PreserveKnown(profile.ConstructionTransform,old.ConstructionTransform);
-            PreserveKnown(profile.TemplateCrossSection,old.TemplateCrossSection);
-            PreserveKnown(profile.ConstructionCrossSection,old.ConstructionCrossSection);
-            PreserveKnown(profile.TemplateForwardAxis,old.TemplateForwardAxis);
-            PreserveKnown(profile.ConstructionForwardAxis,old.ConstructionForwardAxis);
-            if((profile.ActiveUse==P::Availability::Pending || profile.ActiveUse==P::Availability::Unverified) &&
-                old.ActiveUse!=P::Availability::Pending && old.ActiveUse!=P::Availability::Unverified)
-                profile.ActiveUse=old.ActiveUse;
-            // A new mesh observation must stand on its own. Without a persistent
-            // mesh key, never restore old bounds over a null/failed/new observation.
-            if(!Invalid(profile))
-            {
-                if(profile.Status!=P::State::Complete && old.Status==P::State::Complete)profile.Status=old.Status;
-                else if(profile.Status==P::State::Pending && old.Status!=P::State::Pending)profile.Status=old.Status;
-            }
-        }
-        if(current.Inventory==P::Availability::Pending)
-            for(size_t i=0;i<previous.Profiles.size();++i)
-            {
-                if(used[i] || P::Copied(previous.Profiles[i]) || P::Pending(previous.Profiles[i]))continue;
-                if(previous.Profiles[i].Provenance==P::Origin::PlacementActorClass &&
-                    (current.Acquisition.NativeCopyAttempted || current.Acquisition.ResidentLookupExecuted))continue;
-                const bool replaced=std::any_of(current.Profiles.begin(),current.Profiles.end(),[&](const P::Profile& profile)
-                    {return SameProfileGroup(profile,previous.Profiles[i]) && !SameProfile(profile,previous.Profiles[i]);});
-                if(!replaced)current.Profiles.push_back(previous.Profiles[i]);
-            }
-        PreserveKnown(current.Definition,previous.Definition);
-        if(current.Inventory==P::Availability::Pending)current.Resources=previous.Resources;
-        FinalizeProfiles(current);
-    }
-    std::shared_ptr<const DefinitionGeometry> DefinitionShape(Definition& definition,const SDK::UAuActorPlacementData* placement,bool spline,bool measure=true)
-    {
-        // Ordinary definition geometry is copied once. The independent oracle
-        // passes measure=false and still observes native geometry for comparison.
-        if(measure && !spline && definition.Geometry)return definition.Geometry;
-        // Stable definition metadata is reusable; live spline geometry is copied below in Geometry().
-        if(measure && spline && definition.Geometry && definition.Geometry->Profiles)
-        {
-            const auto& profiles=*definition.Geometry->Profiles;
-            // A closed initial inventory owns every required numerical input.
-            // Constructed definitions are static: a native-copy commit seal is
-            // not a reason to reopen its former class/CDO/mesh owners. Pending
-            // alternatives still follow the existing acquisition path below.
-            const bool closed=profiles.Generation==g_generation &&
-                profiles.Definition.Status==P::Availability::Available && profiles.Inventory==P::Availability::Available &&
-                !P::Pending(profiles) && std::any_of(profiles.Profiles.begin(),profiles.Profiles.end(),
-                    [](const P::Profile& profile){return P::Copied(profile);});
-            if(closed || !P::NeedsRetry(profiles,g_generation))return definition.Geometry;
-        }
-        if(definition.GeometryObservation!=g_observation || (spline && !definition.GeometryHasSpline))
-        {
-            definition.GeometryObservation=g_observation;
-            definition.GeometryHasSpline=spline;
-            const auto start=Clock::now();
-            if(measure && !spline)++g_metrics.OrdinaryDefinitions;
-            auto shape=ResolveGeometry(placement,spline,&definition,measure);
-            if(spline && shape.Profiles && definition.Geometry && definition.Geometry->Profiles &&
-                P::NeedsRetry(*shape.Profiles,g_generation) &&
-                SameDefinition(*shape.Profiles,*definition.Geometry->Profiles))
-            {
-                const auto& previous=*definition.Geometry;
-                if(!shape.TargetingBox.Valid)shape.TargetingBox=previous.TargetingBox;
-                const bool preserveNative=!shape.Profiles->Acquisition.NativeCopyAttempted &&
-                    !previous.Profiles->Acquisition.NativeCopyAttempted;
-                if(preserveNative && !shape.HasSplineMesh && previous.HasSplineMesh)
-                {
-                    shape.SplineMeshBounds=previous.SplineMeshBounds;
-                    shape.SplineMeshCrossSection=previous.SplineMeshCrossSection;
-                    shape.VisualClassObjectIndex=previous.VisualClassObjectIndex;
-                    shape.SplineMeshObjectIndex=previous.SplineMeshObjectIndex;
-                    shape.SplineMeshNameIndex=previous.SplineMeshNameIndex;
-                    shape.SplineMeshNameNumber=previous.SplineMeshNameNumber;
-                    shape.HasSplineMesh=true;
-                }
-                if(preserveNative && !shape.HasRailExtension && previous.HasRailExtension)
-                {shape.RailEndpointExtension=previous.RailEndpointExtension;shape.HasRailExtension=true;}
-            }
-            if(spline && shape.Profiles && definition.Geometry && definition.Geometry->Profiles)
-            {
-                auto profiles=std::make_shared<P::Set>(*shape.Profiles);
-                PreserveProfiles(*profiles,*definition.Geometry->Profiles);
-                shape.Profiles=std::move(profiles);
-            }
-            if(shape.Profiles && definition.Geometry && definition.Geometry->Profiles &&
-                *shape.Profiles==*definition.Geometry->Profiles)shape.Profiles=definition.Geometry->Profiles;
-            if(!definition.Geometry || !(*definition.Geometry==shape))
-                definition.Geometry=std::make_shared<const DefinitionGeometry>(std::move(shape));
-            if(measure) g_metrics.DefinitionTime+=Ms(start);
-        }
-        return definition.Geometry;
-    }
-    void DefinitionBlueprint(Definition& definition,const SDK::UAuActorPlacementData* placement,const Record& record)
-    {
-        if(definition.CanonicalBlueprint || definition.IdentityInterrupted || definition.IdentityObservation==g_observation) return;
-        definition.IdentityObservation=g_observation; // Memoize this definition's observation, not a quota across types.
-        ++g_metrics.Conversions; // Production resolver attempts; oracle calls are separate.
-        const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
-            {record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,record.BuildingId,definition.ObjectSerial});
-        if(result.Path)++g_metrics.ConversionSuccess;
-        // An invalid/unavailable authored identity does not invalidate the building.
-        // Resident metadata or authored data may settle; retry only this definition.
-        definition.CanonicalBlueprint=result.Path;
-        definition.IdentityInterrupted=result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted;
-        if(!result.Path)
-        {
-            const auto bit=uint64_t(1)<<unsigned(result.Failure);
-            if(!(definition.IdentityDiagnostics&bit))
-            {
-                definition.IdentityDiagnostics|=bit;
-                const auto state=result.State==MiniMapBuildingBlueprintIdentity::Status::Invalid?"invalid":
-                    result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted?"interrupted":"unavailable";
-                SpriteDiagnostic("MiniMap: sprite identity unresolved: building=%u definition=%d name=%d:%u serial=%d stage=canonical resolution state=%s reason=%s policy=normal acquisition retry; uncertain native operations are not retried; path=unavailable",
-                    record.BuildingId,record.DefinitionObjectIndex,record.DefinitionIndex,record.DefinitionNumber,
-                    definition.ObjectSerial,state,result.Detail);
-            }
-        }
-    }
-    void Geometry(Record& r,const SDK::FAuSplineConnectionFragment* spline,const SDK::FBox* targetingBox,bool retain=true)
-    {
-        r.SourceFootprint={}; r.LocalFootprint={}; r.UnboundedGeometry=false;
-        r.InvalidFootprintSource=false;
-        r.SplineInflation=0; r.GeometryStatus=GeometryIssue::MissingSource;
-        r.UsesSafetyAllowance=true;
-        if(spline)
-        {
-            const auto start=Clock::now();
-            MiniMapBuildingGeometry::CopySpline(*spline,g_curveScratch);
-            if(retain && (!r.Curve || r.Curve->Issue!=g_curveScratch.Issue ||
-                r.Curve->Reconstructed!=g_curveScratch.Reconstructed || r.Curve->Segments!=g_curveScratch.Segments))
-                r.Curve=std::make_shared<const SplineGeometry>(g_curveScratch);
-            const auto& curve=retain?*r.Curve:g_curveScratch;
-            r.GeometryStatus=curve.Issue;
-            const double scale=(std::max)({std::abs(r.Scale[0]),std::abs(r.Scale[1]),std::abs(r.Scale[2]),1.0});
-            double sourced=0;
-            if(r.DefinitionShape)
-                sourced=r.DefinitionShape->SplineMeshCrossSection+r.DefinitionShape->RailEndpointExtension;
-            r.SplineInflation=(std::max)(kSplinePadding,sourced*scale);
-            if(std::isfinite(r.SplineInflation) && r.SplineInflation<=MiniMapBuildingGeometry::kMaximumGeometrySpan)
-                r.Extent=Pad(curve.CenterlineBounds,r.SplineInflation);
-            else { r.Extent={}; r.GeometryStatus=GeometryIssue::Oversized; }
-            if(r.Extent.Valid) r.BoundsKind=Coverage::SplineHull;
-            else
-            {
-                // No finite guessed box can guarantee an unsupported spline's
-                // crossing coverage. Keep its identity explicitly admitted.
-                r.UnboundedGeometry=true;
-                r.Extent=Box(r.Position[0],r.Position[1],kOriginPadding);
-                r.BoundsKind=Coverage::Unresolved;
-            }
-            if(retain) g_metrics.SplineTime+=Ms(start);
-        }
-        else if(r.TransformValid)
-        {
-            if(retain)++g_metrics.OrdinaryGeometry;
-            const auto start=Clock::now(); r.Curve.reset();
-            if(targetingBox) r.LocalFootprint=MiniMapBuildingGeometry::Copy(*targetingBox);
-            else if(r.DefinitionShape) r.LocalFootprint=r.DefinitionShape->TargetingBox;
-            r.InvalidFootprintSource=targetingBox && !r.LocalFootprint.Valid;
-            r.SourceFootprint=MiniMapBuildingGeometry::Footprint(r.LocalFootprint,r.Position,r.Rotation,r.Scale);
-            // Authored targeting bounds do NOT prove visual-mesh bounds. Retain
-            // B.1 safety coverage and enlarge it if a known proxy extends farther.
-            r.Extent=MiniMapBuildingGeometry::Union(Box(r.Position[0],r.Position[1],kOriginPadding),r.SourceFootprint);
-            r.BoundsKind=r.SourceFootprint.Valid?Coverage::OrdinaryProxy:Coverage::OriginPadding;
-            if(r.LocalFootprint.Valid && !r.SourceFootprint.Valid) r.GeometryStatus=GeometryIssue::InvalidTransform;
-            if(retain) g_metrics.OrdinaryTime+=Ms(start);
-        }
-    }
-    template<class T,size_t Size> bool ExactValues(const std::array<T,Size>& a,const std::array<T,Size>& b)
-    {
-        for(size_t i=0;i<Size;++i)
-        {
-            if constexpr(sizeof(T)==sizeof(uint64_t))
-            {if(std::bit_cast<uint64_t>(a[i])!=std::bit_cast<uint64_t>(b[i]))return false;}
-            else {if(std::bit_cast<uint32_t>(a[i])!=std::bit_cast<uint32_t>(b[i]))return false;}
-        }
-        return true;
-    }
-    bool SameBounds(const Bounds& a,const Bounds& b)
-    {return a.Valid==b.Valid && ExactValues(std::array{a.MinX,a.MinY,a.MaxX,a.MaxY},std::array{b.MinX,b.MinY,b.MaxX,b.MaxY});}
-    bool SameRenderState(const Record& a,const Record& b)
-    {
-        // Acquisition-only flags, Sources (handled by reconciliation/publication),
-        // and observation time do not invalidate an immutable render owner.
-        return a.Generation==b.Generation && a.Index==b.Index && a.Serial==b.Serial &&
-            a.BuildingId==b.BuildingId && a.DefinitionIndex==b.DefinitionIndex && a.DefinitionNumber==b.DefinitionNumber &&
-            a.DefinitionObjectIndex==b.DefinitionObjectIndex && a.DefinitionObjectSerial==b.DefinitionObjectSerial &&
-            a.TransformValid==b.TransformValid && a.DefinitionValid==b.DefinitionValid && a.HasSpline==b.HasSpline &&
-            a.InteriorKnown==b.InteriorKnown && a.InteriorOnly==b.InteriorOnly && a.SplineReady==b.SplineReady &&
-            a.SplineTintKnown==b.SplineTintKnown &&
-            ExactValues(a.Position,b.Position) && ExactValues(a.Scale,b.Scale) && ExactValues(a.Rotation,b.Rotation) &&
-            ExactValues(a.Tint,b.Tint) && SameBounds(a.Extent,b.Extent) && SameBounds(a.SourceFootprint,b.SourceFootprint) &&
-            a.LocalFootprint.Valid==b.LocalFootprint.Valid && ExactValues(a.LocalFootprint.Min,b.LocalFootprint.Min) &&
-            ExactValues(a.LocalFootprint.Max,b.LocalFootprint.Max) && a.CanonicalBlueprint==b.CanonicalBlueprint &&
-            a.DefinitionShape==b.DefinitionShape && a.Curve==b.Curve &&
-            std::bit_cast<uint64_t>(a.SplineInflation)==std::bit_cast<uint64_t>(b.SplineInflation) &&
-            a.GeometryStatus==b.GeometryStatus && a.UsesSafetyAllowance==b.UsesSafetyAllowance &&
-            a.InvalidFootprintSource==b.InvalidFootprintSource && a.UnboundedGeometry==b.UnboundedGeometry && a.BoundsKind==b.BoundsKind;
-    }
-    void ObserveRenderRevision(const Record& before,const Record& after)
-    {
-        MiniMapBuildingCollectorAudit::ObserveRevision(g_audit,before,after);
-        namespace Policy=MiniMapBuildingSplinePolicy;
-        g_audit.TypeKnownGained+=Policy::Classify(before.DefinitionValid,before.BuildingId)==Policy::Category::Other &&
-            Policy::Classify(after.DefinitionValid,after.BuildingId)!=Policy::Category::Other;
-    }
-    bool ReadAcquiring(const Native& n,Record& r,Acquisition* acquired=nullptr)
-    {
-        if(acquired)*acquired={}; // A usable retained transform is not a complete acquisition.
-        bool freshTransform=false, freshPlacement=false, tintObserved=false;
-        // Defensive guard; membership callers also bypass Read for resolved data.
-        if(r.StaticResolved()) {++g_metrics.CachedReuse;return true;}
-        g_snapshotDirty=true; // Remains dirty if the acquisition transaction throws.
-        if(r.HasSpline || r.DynamicObserved)++g_metrics.DynamicReads;
-        else if(r.AcquisitionAttempted)++g_metrics.RetryAttempts;
-        else ++g_metrics.NewAttempts;
-        r.AcquisitionAttempted=true;
-        r.Audit.Acquisition=1;
-        const Id id{r.Index,r.Serial};
-        if(!n.mass.isEntityValid(g_manager,id)) { ++g_metrics.Stale; return false; }
-        r.Audit.Acquisition|=2;
-        // Built is a precondition of fragment access, not copied-data eligibility.
-        // An unavailable refresh does not erase a prior successful observation.
-        if(!n.mass.isEntityBuilt(g_manager,id)) return r.TransformValid;
-        r.Audit.Acquisition|=4;
-        const auto start=Clock::now();
-        ++g_metrics.TransformReads;
-        if(const auto* t=static_cast<const SDK::FTransform*>(Fragment(n,id,g_types.Transform)))
-        {
-            const Point position{t->Translation.X,t->Translation.Y,t->Translation.Z};
-            const Point scale{t->Scale3D.X,t->Scale3D.Y,t->Scale3D.Z};
-            const std::array<double,4> rotation{t->Rotation.X,t->Rotation.Y,t->Rotation.Z,t->Rotation.W};
-            auto finite=[](double v){return std::isfinite(v);};
-            double norm=0; for(double q:rotation) norm+=q*q;
-            if(std::all_of(position.begin(),position.end(),finite) && std::all_of(rotation.begin(),rotation.end(),finite) &&
-                std::all_of(scale.begin(),scale.end(),finite) && std::isfinite(norm) && norm>0)
-            { r.Position=position; r.Scale=scale; r.Rotation=rotation; r.TransformValid=true; freshTransform=true; }
-        }
-        const auto* spline=static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(n,id,g_types.Spline));
-        // Preserve spline-source evidence during initial acquisition: a missing
-        // fragment must not turn a known spline into terminal ordinary state.
-        // HasSpline retains existing acquiring-record rendering semantics.
-        r.DynamicObserved=r.DynamicObserved || r.HasSpline || spline!=nullptr || (r.Sources&IndexedSpline)!=0;
-        r.HasSpline=spline!=nullptr;
-        // These are the ONLY UObject accesses needed for ordinary identity and
-        // Interior facts. Failure leaves already copied facts intact. No raw
-        // placement pointer survives this synchronous acquisition scope.
-        if(MiniMapResidentMetadata::Available())
-        {
-            const auto* parameters=Parameters(n,id,true);
-            const auto* placement=parameters?parameters->PlacementData:nullptr;
-            const auto object=reinterpret_cast<uintptr_t>(placement);
-            int32_t serial=0;
-            if(MiniMapResidentMetadata::Serial(object,serial) &&
-                MiniMapResidentMetadata::Validate(object,sizeof(SDK::UAuActorPlacementData)) && IsClass(placement,g_types.Placement))
-            {
-                const auto index=placement->Index, name=placement->Name.ComparisonIndex;
-                const auto number=placement->Name.Number, building=uint32_t(placement->BuildingID);
-                // A positively observed change invalidates only this instance's
-                // old facts. A failed observation is not evidence of a change.
-                if(r.DefinitionValid && (r.DefinitionObjectIndex!=index || r.DefinitionObjectSerial!=serial ||
-                    r.DefinitionIndex!=name || r.DefinitionNumber!=number || r.BuildingId!=building))
-                { r.CanonicalBlueprint.reset(); r.InteriorKnown=false; r.InteriorOnly=false; r.DefinitionShape.reset(); }
-                r.DefinitionObjectIndex=index; r.DefinitionObjectSerial=serial;
-                r.DefinitionIndex=name; r.DefinitionNumber=number; r.BuildingId=building; r.DefinitionValid=true;
-                const auto key=Key(index,int32_t(building));
-                auto it=g_definitions.find(key);
-                if(it==g_definitions.end() || it->second.NameIndex!=name || it->second.NameNumber!=number || it->second.ObjectSerial!=serial)
-                {
-                    it=g_definitions.insert_or_assign(key,Definition{building,0xFF,name,number}).first;
-                    it->second.ObjectSerial=serial; ++g_metrics.DefinitionMiss;
-                }
-                auto& definition=it->second;
-                if(!definition.InteriorTagChecked)
-                {
-                    const auto kind=ObserveClass(placement,g_types.BuildingData);
-                    const auto tag=kind==ClassObservation::Unavailable?InteriorTagResult::Unknown:
-                        kind==ClassObservation::Matches
-                        ?(MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
-                            ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement),true):InteriorTagResult::Unknown)
-                        :InteriorTagResult::Absent;
-                    if(tag!=InteriorTagResult::Unknown)
-                    { definition.InteriorTagChecked=true; definition.InteriorOnly=tag==InteriorTagResult::Present; }
-                }
-                r.InteriorKnown=definition.InteriorTagChecked; r.InteriorOnly=definition.InteriorOnly;
-                freshPlacement=true;
-                if(!r.HasSpline && r.InteriorKnown && !r.InteriorOnly)
-                { DefinitionBlueprint(definition,placement,r); r.CanonicalBlueprint=definition.CanonicalBlueprint; }
-                // Optional geometry is solely for the existing spatial envelope.
-                // Ordinary instances never inspect mesh/template/render resources.
-                if(!r.InteriorOnly)
-                {
-                    // An identified DroneRail uses an owned synthetic thin profile.
-                    // Keep authoritative placement/lifetime checks; do not open
-                    // optional class/CDO/template/mesh resources for this representation.
-                    if(r.HasSpline && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId))
-                        r.DefinitionShape.reset();
-                    else r.DefinitionShape=DefinitionShape(definition,placement,r.HasSpline);
-                }
-            }
-            else if(!r.CanonicalBlueprint && !r.HasSpline && !(g_definitionDiagnostics&1))
-            {
-                g_definitionDiagnostics|=1;
-                SpriteDiagnostic("MiniMap: building acquisition unavailable: entity=%d:%d placement identity not safely readable; copied facts preserved; normal acquisition retries",r.Index,r.Serial);
-            }
-        }
-        if(const auto* tint=static_cast<const SDK::FCrBuildingVisualCustomizationFragment*>(Fragment(n,id,g_types.Tint)))
-        { r.Tint={tint->ColorTint.R,tint->ColorTint.G,tint->ColorTint.B,tint->ColorTint.A}; tintObserved=true; }
-        // With the resolved fragment type and a valid/built entity, the Mass
-        // optional fragment lookup establishes presence OR confirmed absence.
-        // A missing metadata type is not evidence that customization is absent.
-        r.SplineTintKnown=g_types.Tint!=nullptr;
-        const double dynamic=Ms(start); g_metrics.Dynamic+=dynamic;
-        if(r.Sources&OffGrid) g_metrics.OffDynamic+=dynamic;
-        const auto boundsStart=Clock::now();
-        // A spline's Geometry branch never consumes targeting bounds.
-        const auto* targeting=r.HasSpline?nullptr:static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(n,id,g_types.TargetBox));
-        Geometry(r,spline,targeting?&targeting->BuildingBoundingBox:nullptr);
-        if(!r.HasSpline && r.SourceFootprint.Valid)
-        {
-            const double reach=(std::max)({std::abs(r.SourceFootprint.MinX-r.Position[0]),std::abs(r.SourceFootprint.MaxX-r.Position[0]),
-                std::abs(r.SourceFootprint.MinY-r.Position[1]),std::abs(r.SourceFootprint.MaxY-r.Position[1])});
-            g_ordinaryQueryPadding=(std::max)(g_ordinaryQueryPadding,reach);
-        }
-        const double boundsTime=Ms(boundsStart); g_metrics.BoundsTime+=boundsTime;
-        if(r.Sources&OffGrid) g_metrics.OffBounds+=boundsTime;
-        r.RefreshedAtSeconds=Seconds(); ++g_metrics.Refreshed;
-        r.Audit.Acquisition|=uint8_t((freshTransform?8:0)|(freshPlacement?16:0));
-        r.SplineReady=r.HasSpline && freshTransform && freshPlacement && r.SplineTintKnown && r.InteriorKnown && !r.InteriorOnly &&
-            r.DefinitionObjectIndex>0 && r.DefinitionObjectSerial>0 && r.Curve && !r.Curve->Reconstructed &&
-            !r.Curve->Segments.empty() && r.GeometryStatus==GeometryIssue::None && r.Extent.Valid && !r.UnboundedGeometry &&
-            MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId)!=MiniMapBuildingSplinePolicy::Category::Other;
-        // Known Interior is terminal exclusion and needs no classname conversion.
-        r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown &&
-            !r.DynamicObserved && (r.InteriorOnly || bool(r.CanonicalBlueprint));
-        if(r.StaticAcquired)++g_metrics.ResolvedNow;
-        if(acquired)
-        {
-            // Missing optional tint/target bounds are legitimate. Invalid or
-            // unresolved geometry keeps the original later acquisition path.
-            acquired->TintObserved=tintObserved;
-            acquired->Complete=freshTransform && freshPlacement && r.InteriorKnown && !r.InteriorOnly &&
-                r.Extent.Valid && !r.UnboundedGeometry && !r.InvalidFootprintSource &&
-                (r.HasSpline ? (r.Curve && r.GeometryStatus==GeometryIssue::None) :
-                    (r.CanonicalBlueprint && r.GeometryStatus!=GeometryIssue::InvalidTransform));
-        }
-        return r.TransformValid;
-    }
-    bool AcquiredThinRail(const Record& r)
-    {
-        // Ready already certifies authoritative type, initial visual facts and
-        // initialized, bounded owned controls. Numerical acknowledgement stays
-        // independent: this does not mark a record settled or admit membership.
-        return r.SplineReady && r.HasSpline &&
-            MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId);
-    }
-    bool Read(const Native& n,Record& r,Acquisition* acquired=nullptr)
-    {
-        if(r.StaticResolved()){if(acquired)*acquired={};++g_metrics.CachedReuse;return true;}
-        if(r.SplineSettled || AcquiredThinRail(r))
-        {
-            if(acquired)*acquired={};
-            if(r.Generation!=g_generation || !n.mass.isEntityValid(g_manager,{r.Index,r.Serial}))
-            {++g_metrics.Stale;return false;}
-            if(!n.mass.isEntityBuilt(g_manager,{r.Index,r.Serial}))return r.TransformValid;
-            if(r.SplineSettled)++g_metrics.SettledBypasses;else ++g_metrics.ReadyRailBypasses;
-            ++g_metrics.PlacementAvoided;
-            // All constructed visual properties, including optional RGBA tint,
-            // are now owned. Only current Mass lifetime/membership is observed.
-            r.RefreshedAtSeconds=Seconds(); // Telemetry, not a render transition.
-            return true;
-        }
-        if(r.DynamicObserved || r.HasSpline)++g_metrics.SplineRetries;
-        const bool dirty=g_snapshotDirty;
-        Record next=r; // Commit copied facts only after a completed acquisition.
-        const bool read=ReadAcquiring(n,next,acquired);
-        const bool changed=!SameRenderState(r,next);
-        if(changed){ObserveRenderRevision(r,next);next.RenderRevision=++g_renderRevision;}
-        if((!r.Curve || r.Curve->Issue!=GeometryIssue::None || r.Curve->Segments.empty()) &&
-            next.Curve && next.Curve->Issue==GeometryIssue::None && !next.Curve->Segments.empty())++g_metrics.SplineAcquired;
-        r=std::move(next);
-        g_snapshotDirty=dirty || changed;
-        return read;
-    }
-    // These observers only retain outcomes of operations the existing path
-    // already performs. No second SelectSpline, preparation, or native lookup.
-    struct PreparationAudit
-    {
-        const Record& Input;
-        MiniMapBuildingCollectorAudit::Ack Outcome=MiniMapBuildingCollectorAudit::Ack::Other;
-        uint8_t Evidence=1;
-        explicit PreparationAudit(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared):Input(r)
-        {
-            ++g_audit.AckAttempts;++g_audit.Prepared;
-            if(prepared.Sampling && prepared.Sampling->Complete()){Evidence|=2;++g_audit.SamplingComplete;}
-        }
-        ~PreparationAudit()
-        {
-            namespace A=MiniMapBuildingCollectorAudit;
-            g_audit.Acknowledgements.Add(Outcome);
-            auto save=[&](Record& target)
-            {
-                if(target.Generation!=Input.Generation || target.RenderRevision!=Input.RenderRevision)return;
-                target.Audit.PreparedRevision=Input.RenderRevision;target.Audit.Preparation=Evidence;
-                target.Audit.Acknowledgement=uint8_t(Outcome);
-            };
-            const auto key=Key(Input.Index,Input.Serial);
-            if(auto it=g_cache.find(key);it!=g_cache.end())save(it->second.Data);
-            if(auto it=g_indexedCopies.find(key);it!=g_indexedCopies.end())save(it->second.Data);
-        }
-        bool Reject(MiniMapBuildingCollectorAudit::Ack reason){Outcome=reason;return false;}
-    };
-    bool SplinePreparationReady(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared,PreparationAudit* audit=nullptr)
-    {
-        namespace E=MiniMapBuildingSplineEnvelope;
-        namespace A=MiniMapBuildingCollectorAudit;
-        auto reject=[&](A::Ack reason){if(audit)audit->Reject(reason);return false;};
-        if(!r.SplineReady)return reject(A::Ack::RecordNotReady);
-        if(!r.Curve)return reject(A::Ack::MissingCurve);
-        if(r.Curve->Reconstructed)return reject(A::Ack::Reconstructed);
-        if(!prepared.Sampling)return reject(A::Ack::MissingSampling);
-        if(!prepared.Sampling->Complete())return reject(A::Ack::Sampling);
-        // Identical Stage 41H predicates and short circuit order.
-        constexpr uint32_t incomplete=E::MissingCurve|E::MissingMetadata|E::MissingFields|E::InvalidSource|E::InvalidRoot|
-            E::DegenerateFrame|E::Discontinuity|E::SamplingLimited|E::DegenerateProjection|E::UnsupportedProjection;
-        const auto* selected=MiniMapBuildingVisuals::Detail::SelectSpline(r,prepared);
-        if(!selected)return reject(A::Ack::Envelope);
-        if((prepared.Reasons&incomplete) || (selected->Reasons&incomplete))return reject(A::Ack::RejectedCells);
-        if(prepared.SyntheticThin)
-        {
-            if(MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId))return true;
-            return reject(A::Ack::SyntheticType);
-        }
-        const auto metadata=E::Metadata(r);
-        if(!metadata)return reject(A::Ack::Metadata);
-        if(selected->SourceProfile>=metadata->Profiles.size())return reject(A::Ack::ProfileIndex);
-        const auto& source=metadata->Profiles[selected->SourceProfile];
-        if(P::Copied(source) && source.Source==P::Selection::NativeBuilderInput && !P::Pending(source))return true;
-        if(metadata->Inventory==P::Availability::Available && !P::Pending(*metadata))return true;
-        return reject(A::Ack::NativeProfileOrInventory);
-    }
-    void SettlePrepared(const Record& r,const MiniMapBuildingSplineEnvelope::Result& prepared)
-    {
-        namespace A=MiniMapBuildingCollectorAudit;
-        PreparationAudit audit(r,prepared);
-        if(r.Generation!=g_generation){audit.Outcome=A::Ack::Generation;return;}
-        if(!r.RenderRevision){audit.Outcome=A::Ack::ZeroRevision;return;}
-        if(!SplinePreparationReady(r,prepared,&audit))return;
-        audit.Evidence|=4;++g_audit.Eligible;
-        const auto* native=MiniMapNative::Get();
-        if(!native){audit.Outcome=A::Ack::NativeUnavailable;return;}
-        if(!Live(*native,{r.Index,r.Serial})){audit.Outcome=A::Ack::MassNotLive;return;}
-        const auto key=Key(r.Index,r.Serial);
-        const auto global=g_cache.find(key);
-        const auto indexed=g_indexedCopies.find(key);
-        const auto current=[&](const Record& candidate)
-        {return candidate.Generation==r.Generation && candidate.RenderRevision==r.RenderRevision;};
-        if((global==g_cache.end() || !current(global->second.Data)) &&
-            (indexed==g_indexedCopies.end() || !current(indexed->second.Data)))
-        {audit.Outcome=global==g_cache.end() && indexed==g_indexedCopies.end()?A::Ack::SourceAbsent:A::Ack::StaleRevision;return;}
-        if((global!=g_cache.end() && global->second.Data.SplineSettled) ||
-            (indexed!=g_indexedCopies.end() && indexed->second.Data.SplineSettled))
-        {audit.Outcome=A::Ack::AlreadySettled;return;}
-        Record settled=r;
-        settled.SplineSettled=true;
-        auto install=[&](Record& target)
-        {
-            if(target.Generation!=r.Generation)return;
-            const auto sources=target.Sources;
-            if(!SameRenderState(target,settled))g_snapshotDirty=true;
-            target=settled;target.Sources=sources;
-        };
-        // Only existing entries are enriched. No membership insertion and no
-        // resurrection from a retained render snapshot are possible here.
-        if(global!=g_cache.end()){install(global->second.Data);global->second.Read=true;}
-        if(indexed!=g_indexedCopies.end())install(indexed->second.Data);
-        ++g_metrics.SplineSettled;
-        audit.Outcome=A::Ack::Settled;
-    }
-    bool ReuseAcquisition(const Native& n,Record& r,const Entry& entry)
-    {
-        const auto& sample=entry.Data;
-        if(sample.Generation!=g_generation || r.Generation!=g_generation ||
-            sample.Index!=r.Index || sample.Serial!=r.Serial)return false;
-        // Another acquisition can enrich shared definition geometry in this pass.
-        // If its copied metadata changed, retain the original indexed Read.
-        const auto definition=g_definitions.find(Key(sample.DefinitionObjectIndex,int32_t(sample.BuildingId)));
-        if(definition==g_definitions.end())return false;
-        const auto& d=definition->second;
-        if(d.ObjectSerial!=sample.DefinitionObjectSerial || d.NameIndex!=sample.DefinitionIndex ||
-            d.NameNumber!=sample.DefinitionNumber || !d.InteriorTagChecked || d.InteriorOnly!=sample.InteriorOnly ||
-            d.Geometry!=sample.DefinitionShape || (!sample.HasSpline && d.CanonicalBlueprint!=sample.CanonicalBlueprint))return false;
-        if(!Live(n,{r.Index,r.Serial}))return false;
-        const Record before=r;
-        // Only a complete same-invocation sample reaches here. Preserve fields
-        // that Read would retain from the INDEXED prior record, not the global one.
-        const auto sources=r.Sources, category=r.Category;
-        const auto tint=entry.Acquired.TintObserved?sample.Tint:r.Tint;
-        const bool dynamic=r.DynamicObserved || r.HasSpline || sample.HasSpline;
-        const bool changed=r.DefinitionValid && (r.DefinitionObjectIndex!=sample.DefinitionObjectIndex ||
-            r.DefinitionObjectSerial!=sample.DefinitionObjectSerial || r.DefinitionIndex!=sample.DefinitionIndex ||
-            r.DefinitionNumber!=sample.DefinitionNumber || r.BuildingId!=sample.BuildingId);
-        const auto canonical=sample.HasSpline?(changed?nullptr:r.CanonicalBlueprint):sample.CanonicalBlueprint;
-        const auto curve=sample.HasSpline && r.Curve && r.Curve->Issue==sample.Curve->Issue &&
-            r.Curve->Reconstructed==sample.Curve->Reconstructed && r.Curve->Segments==sample.Curve->Segments
-            ?r.Curve:sample.Curve; // Geometry also retains an equal indexed curve owner.
-        r=sample;
-        r.Sources=sources; r.Category=category; r.Tint=tint; r.CanonicalBlueprint=canonical; r.Curve=curve;
-        r.DynamicObserved=dynamic;
-        r.StaticAcquired=!r.HasSpline && r.TransformValid && r.InteriorKnown && !dynamic &&
-            (r.InteriorOnly || bool(r.CanonicalBlueprint));
-        if(r.StaticAcquired)++g_metrics.ResolvedNow;
-        ++g_metrics.Refreshed; // Logical record refresh; native acquisition counters exclude this reuse.
-        const bool changedRender=!SameRenderState(before,r);
-        if(changedRender)ObserveRenderRevision(before,r);
-        r.RenderRevision=changedRender?++g_renderRevision:before.RenderRevision;
-        if(!changedRender && before.Audit.PreparedRevision==before.RenderRevision)
-        {
-            // Preserve diagnostic acknowledgement evidence across equivalent
-            // source-copy enrichment; never restore acquisition/lifetime state.
-            r.Audit.PreparedRevision=before.Audit.PreparedRevision;r.Audit.Preparation=before.Audit.Preparation;
-            r.Audit.Acknowledgement=before.Audit.Acknowledgement;
-        }
-        g_snapshotDirty=g_snapshotDirty || changedRender;
-        return true;
-    }
-    uint64_t SettlementBlockers(const Record& r,bool admitted)
-    {
-        namespace A=MiniMapBuildingCollectorAudit;
-        uint64_t mask=0;
-        auto block=[&](A::Block reason,bool present){if(present)mask|=A::Bit(reason);};
-        const auto category=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
-        const bool synthetic=MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId);
-        block(A::Block::NoAcquisition,!r.AcquisitionAttempted);
-        block(A::Block::NotLiveOrBuilt,(r.Audit.Acquisition&1) && (r.Audit.Acquisition&6)!=6);
-        block(A::Block::MissingBuildingId,!r.DefinitionValid);
-        block(A::Block::UnknownType,category==MiniMapBuildingSplinePolicy::Category::Other);
-        block(A::Block::Definition,!r.DefinitionValid || r.DefinitionObjectIndex<=0 || r.DefinitionObjectSerial<=0);
-        block(A::Block::Transform,!r.TransformValid);
-        block(A::Block::MissingCurve,!r.HasSpline || !r.Curve);
-        block(A::Block::Reconstructed,r.Curve && r.Curve->Reconstructed);
-        block(A::Block::InvalidCurve,r.Curve && (r.Curve->Segments.empty() || r.Curve->Issue!=GeometryIssue::None));
-        block(A::Block::TintUnknown,!r.SplineTintKnown);
-        block(A::Block::InteriorUnknown,!r.InteriorKnown);block(A::Block::InteriorExcluded,r.InteriorOnly);
-        block(A::Block::Admission,!admitted);
-        block(A::Block::FreshTransform,(r.Audit.Acquisition&7)==7 && !(r.Audit.Acquisition&8));
-        block(A::Block::FreshPlacement,(r.Audit.Acquisition&7)==7 && !(r.Audit.Acquisition&16));
-        block(A::Block::InvalidCurve,r.GeometryStatus!=GeometryIssue::None || !r.Extent.Valid || r.UnboundedGeometry);
-        const bool current=r.Audit.Preparation && r.Audit.PreparedRevision==r.RenderRevision;
-        block(A::Block::AwaitingPreparation,r.SplineReady && !r.Audit.Preparation);
-        block(A::Block::StalePreparation,r.SplineReady && r.Audit.Preparation && !current);
-        if(current)
-        {
-            block(A::Block::Sampling,!(r.Audit.Preparation&2));
-            const auto ack=static_cast<A::Ack>(r.Audit.Acknowledgement);
-            block(A::Block::Envelope,ack==A::Ack::Envelope);
-            block(A::Block::RejectedCells,ack==A::Ack::RejectedCells);
-            block(A::Block::NativeProfile,ack==A::Ack::Metadata || ack==A::Ack::ProfileIndex);
-            block(A::Block::TemplateInventory,ack==A::Ack::NativeProfileOrInventory);
-            block(A::Block::AckRejected,(r.Audit.Preparation&4) && ack!=A::Ack::Settled && ack!=A::Ack::AlreadySettled);
-            block(A::Block::SyntheticEligible,synthetic && (r.Audit.Preparation&4));
-        }
-        // Missing owned metadata is observable; a more specific native cause is not.
-        block(A::Block::NativeProfile,!synthetic && category!=MiniMapBuildingSplinePolicy::Category::Other &&
-            (!r.DefinitionShape || !r.DefinitionShape->Profiles));
-        if(!r.SplineReady && !mask)mask|=A::Bit(A::Block::OtherReadiness);
-        if(!r.SplineSettled && !mask)mask|=A::Bit(A::Block::EligibleUnsettled);
-        return mask;
-    }
-    MiniMapBuildingCollectorAudit::Census SplineCensus(const Snapshot* snapshot)
-    {
-        namespace A=MiniMapBuildingCollectorAudit;
-        A::Census census;
-        auto known=[](const Record& r){return r.HasSpline || r.DynamicObserved || (r.Sources&IndexedSpline)!=0;};
-        auto count=[&](const Record& r,bool spline)
-        {
-            if(r.Generation!=g_generation || !spline)return;
-            bool admitted=false;
-            if(snapshot && snapshot->Generation==g_generation)
-            {
-                const auto key=Key(r.Index,r.Serial);
-                const auto it=std::lower_bound(snapshot->Records.begin(),snapshot->Records.end(),key,
-                    [](const Record& candidate,uint64_t value){return Key(candidate.Index,candidate.Serial)<value;});
-                admitted=it!=snapshot->Records.end() && Key(it->Index,it->Serial)==key;
-            }
-            const auto category=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
-            census.Add(size_t(category),admitted,r.SplineReady,r.SplineSettled,
-                r.Audit.Preparation && r.Audit.PreparedRevision==r.RenderRevision,SettlementBlockers(r,admitted),
-                r.Audit.PreparedRevision==r.RenderRevision && (r.Audit.Preparation&4));
-        };
-        // The same indexed-preferred choice as canonical publication. Union the
-        // spline-source evidence, but count each generation/index/serial once.
-        for(const auto& [key,e]:g_cache)
-        {
-            if(e.Data.Generation!=g_generation)continue;
-            const auto it=g_indexedCopies.find(key);
-            const bool indexed=it!=g_indexedCopies.end() && it->second.Data.Generation==g_generation;
-            const auto visible=[&](const Record& r)
-            {
-                const auto& region=snapshot && snapshot->Generation==g_generation?snapshot->Region:g_region;
-                return !r.InteriorOnly && r.TransformValid && r.Extent.Valid &&
-                    (r.UnboundedGeometry || MiniMapBuildingGeometry::Intersects(r.Extent,region));
-            };
-            const bool active=indexed && (it->second.Data.Sources&Indexed);
-            const bool indexedWins=active && (visible(it->second.Data) || !e.Read || !visible(e.Data));
-            const auto& r=indexedWins?it->second.Data:e.Data;
-            count(r,known(e.Data) || (indexed && known(it->second.Data)));
-        }
-        for(const auto& [key,e]:g_indexedCopies)
-        {
-            const auto it=g_cache.find(key);
-            if(it==g_cache.end() || it->second.Data.Generation!=g_generation)count(e.Data,known(e.Data));
-        }
-        return census;
-    }
-    struct PublicationAudit
-    {
-        MiniMapBuildingCollectorAudit::Publication Outcome=MiniMapBuildingCollectorAudit::Publication::Failed;
-        uint64_t Flags=0;
-        ~PublicationAudit()
-        {
-            g_audit.Publications.Add(Outcome);g_audit.PublicationFlags.AddMask(Flags);
-        }
-    };
-    template<class E,size_t N> std::string AuditCounts(const MiniMapBuildingCollectorAudit::Counts<E>& counts,const char* const (&names)[N])
-    {
-        std::ostringstream out;
-        for(size_t i=0;i<N;++i){if(i)out<<',';out<<names[i]<<'='<<counts.Values[i];}
-        return out.str();
-    }
-    void ReportAudit(const Snapshot* snapshot) noexcept
-    {
-        try
-        {
-            namespace A=MiniMapBuildingCollectorAudit;
-            const auto c=SplineCensus(snapshot);
-            std::ostringstream categories;
-            constexpr const char* names[]={"walkway","rail","zipline","other"};
-            for(size_t i=0;i<4;++i){if(i)categories<<',';categories<<names[i]<<'=';for(size_t j=0;j<4;++j){if(j)categories<<'/';categories<<c.Category[i][j];}}
-            LOG_INFO("MiniMap: 41I census (current unique gen/index/serial): known=%llu admitted=%llu ready=%llu settled=%llu currentPrepared=%llu numericEligible=%llu syntheticEligibleUnsettled=%llu category(known/admitted/ready/settled)=[%s] primary=[%s]",
-                (unsigned long long)c.Known,(unsigned long long)c.Admitted,(unsigned long long)c.Ready,(unsigned long long)c.Settled,
-                (unsigned long long)c.CurrentPrepared,(unsigned long long)c.NumericallyEligible,(unsigned long long)c.SyntheticEligible,categories.str().c_str(),
-                AuditCounts(c.Primary,A::BlockNames).c_str());
-            LOG_INFO("MiniMap: 41I census concurrent blockers (current distinct identities; nonexclusive): [%s]",AuditCounts(c.Overlapping,A::BlockNames).c_str());
-            LOG_INFO("MiniMap: 41I acknowledgements (interval events): attempts=%llu prepared=%llu samplingComplete=%llu eligible=%llu outcomes=[%s]",
-                (unsigned long long)g_audit.AckAttempts,(unsigned long long)g_audit.Prepared,(unsigned long long)g_audit.SamplingComplete,
-                (unsigned long long)g_audit.Eligible,AuditCounts(g_audit.Acknowledgements,A::AckNames).c_str());
-            LOG_INFO("MiniMap: 41I publication (interval Publish visits): primary=[%s] overlapping=[%s] revisionOnlyPublished=%llu ordinaryChanged=%llu splineChanged=%llu publishedRevisionFields=[%s]",
-                AuditCounts(g_audit.Publications,A::PublicationNames).c_str(),AuditCounts(g_audit.PublicationFlags,A::PublicationNames).c_str(),
-                (unsigned long long)g_audit.RevisionOnlyPublished,(unsigned long long)g_audit.PublishedOrdinary,(unsigned long long)g_audit.PublishedSpline,
-                AuditCounts(g_audit.PublishedRevisionFlags,A::RevisionNames).c_str());
-            LOG_INFO("MiniMap: 41I revisions (interval assignment events): total=%llu ordinary=%llu spline=%llu readyGained=%llu readyLost=%llu initialDefinition=%llu initialCurve=%llu initialProfile=%llu typeKnownGained=%llu tintKnownGained=%llu interiorKnownGained=%llu primary=[%s] overlapping=[%s]",
-                (unsigned long long)g_audit.RevisionEvents,(unsigned long long)g_audit.OrdinaryRevisions,(unsigned long long)g_audit.SplineRevisions,
-                (unsigned long long)g_audit.ReadyGained,(unsigned long long)g_audit.ReadyLost,(unsigned long long)g_audit.InitialDefinition,
-                (unsigned long long)g_audit.InitialCurve,(unsigned long long)g_audit.InitialProfile,
-                (unsigned long long)g_audit.TypeKnownGained,(unsigned long long)g_audit.TintKnownGained,(unsigned long long)g_audit.InteriorKnownGained,
-                AuditCounts(g_audit.RevisionPrimary,A::RevisionNames).c_str(),AuditCounts(g_audit.RevisionFlags,A::RevisionNames).c_str());
-        }
-        catch(...) {} // Reporting allocation failure never participates in production.
-        g_audit={};
-    }
-    void Destroy()
+    void ClearSession()
     {
         if(const auto* n=MiniMapNative::Get())
-            for(auto* q:{&g_offQuery,&g_splineQuery})
-                if(q->Constructed) n->mass.queryDestruct(q->Storage.data());
-        g_offQuery={}; g_splineQuery={}; g_manager=nullptr; g_world=nullptr;
-    }
-    void Clear()
-    {
-        Destroy();
-#if MINIMAP_DEBUG_UI
-        MiniMapDebugText::Clear();
-        g_debugOracle={}; g_debugLastGridMs=0;
-#endif
-        g_cache.clear(); g_indexedCopies.clear(); g_observation=0; g_renderRevision=0; g_definitions.clear(); g_keys.clear(); g_near.clear(); g_pending.clear();
-        g_indexedQuery=0;
-        g_definitionDiagnostics=0;
-        g_curveScratch={};
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        size_t retained=0;
-        for(size_t i=0;i<g_metadataCount;++i)
-            if(!MiniMapResidentMetadata::Release(g_metadataRoots[i]))g_metadataRoots[retained++]=g_metadataRoots[i];
-        // Failed checked releases remain owned; the native helper disables new acquisition.
-        g_metadataCount=retained;
-#endif
-        g_cursor=g_nearCursor=0; g_epoch=0; g_types={}; g_typesReady=false;
-        g_region={}; g_queryRegion={}; g_lastRadius=0;
-        g_ordinaryQueryPadding=kOriginPadding;
-        g_initialDiscoveryReports=0;
-        g_nextLocal=g_nextIdentity=g_nextLog=g_nextWarning={}; g_metrics={}; g_audit={};
-        g_snapshotDirty=true; g_publishedGrid=g_publishedIdentity=false;
-        g_indexed=g_gridResults=g_duplicates=g_gridVisited=0;
-        g_indexedHandles.clear(); g_xyQuery=false;
-        g_gridSucceeded=g_identitySucceeded=false;
-        ClearComparison();
-        { std::scoped_lock lock(g_mutex); ++g_generation; g_snapshot.reset(); }
-        LOG_INFO("MiniMap: BuildingCollector: reset generation=%llu",static_cast<unsigned long long>(g_generation));
+        {
+            if(queryConstructed)n->mass.queryDestruct(query.data());
+        }
+        queryConstructed=false;manager=nullptr;world=nullptr;region={};atlasSession=atlasRevision=0;
+        entities.clear();definitions.clear();nextMembership={};dirty=true;remoteTurn=false;membershipComplete=false;
+        {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
     bool Ensure(const Native& n)
     {
-        auto* world=MiniMapMap::GetWorld();
-        auto* subsystem=world?n.mass.getMassEntitySubsystem(world):nullptr;
-        const void* manager=nullptr;
-        if(subsystem) std::memcpy(&manager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(manager));
-        if(g_manager && (manager!=g_manager || world!=g_world)) Clear();
-        if(!manager || !ResolveTypes()) return false;
-        if(g_offQuery.Constructed) return true;
-        g_manager=manager; g_world=world;
-        for(auto* q:{&g_offQuery,&g_splineQuery})
-        {
-            n.mass.queryConstruct(q->Storage.data(),reinterpret_cast<const uint8_t*>(subsystem)+0x38);
-            q->Constructed=true;
-            n.mass.addTagRequirement(q->Storage.data(),g_types.Building,SDK::EMassFragmentPresence::All);
-            n.mass.addTransformRequirement(q->Storage.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
-        }
-        n.mass.addTagRequirement(g_offQuery.Storage.data(),g_types.Grid,SDK::EMassFragmentPresence::None);
-        n.mass.addTagRequirement(g_splineQuery.Storage.data(),g_types.Grid,SDK::EMassFragmentPresence::All);
-        n.mass.addSplineRequirement(g_splineQuery.Storage.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::All));
-        LOG_INFO("MiniMap: BuildingCollector: ready local=200ms identities=1s distant=2s refreshBudget=2ms gridPolicy=%s",
-            n.gridDiagnostic.forEachCellInRadius?"XY/all-Z":"fallback-sphere-Z+/-1000m");
-        if(!n.gridDiagnostic.forEachCellInRadius)
-            LOG_WARN("MiniMap: BuildingCollector: optional XY traversal unavailable; retaining original expensive box policy");
+        auto* current=MiniMapMap::GetWorld();
+        auto* subsystem=current?n.mass.getMassEntitySubsystem(current):nullptr;
+        const void* currentManager=nullptr;
+        if(subsystem)std::memcpy(&currentManager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(currentManager));
+        if(world && (world!=current || manager!=currentManager))ClearSession();
+        if(!currentManager || !types.Building)return false;
+        if(queryConstructed)return true;
+        world=current;manager=currentManager;
+        n.mass.queryConstruct(query.data(),reinterpret_cast<const uint8_t*>(subsystem)+0x38);queryConstructed=true;
+        n.mass.addTagRequirement(query.data(),types.Building,SDK::EMassFragmentPresence::All);
+        n.mass.addTransformRequirement(query.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
         return true;
     }
-    struct Handles
+    bool Reconcile(const Native& n)
     {
-        MiniMapNative::MassEntityHandleArray Array;
-        const Native& N;
-        ~Handles() { if(Array.Data) N.texture.memoryFree(Array.Data); }
-        bool Valid() const { return Array.Num>=0 && Array.Num<=Array.Max && Array.Max<=kMaximumHandles && (!Array.Num || Array.Data); }
+        MiniMapNative::MassEntityHandleArray handles{};
+        struct Owner {const Native& N;MiniMapNative::MassEntityHandleArray& H;~Owner(){if(H.Data)N.texture.memoryFree(H.Data);}} owner{n,handles};
+        if(n.mass.getMatchingEntityHandles(query.data(),&handles)!=&handles)return false;
+        if(handles.Num<0 || handles.Max<handles.Num || (handles.Num && !handles.Data))return false;
+        // Build the complete membership set before changing it; an allocation
+        // failure or malformed query can never turn a partial set into removal.
+        std::unordered_set<uint64_t> members;members.reserve(size_t(handles.Num));
+        for(int i=0;i<handles.Num;++i)
+        {
+            const auto id=handles.Data[i];if(id.Index<0 || !id.SerialNumber)continue;
+            members.insert(Key(id));
+        }
+        for(auto key:members)
+        {
+            auto [it,added]=entities.try_emplace(key);
+            if(added){auto& r=it->second.Data;r.Generation=generation;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));dirty=true;}
+        }
+        for(auto it=entities.begin();it!=entities.end();)
+            if(!members.contains(it->first)){it=entities.erase(it);dirty=true;}else ++it;
+        return true;
+    }
+    struct Candidate
+    {
+        P::Profile Numbers;
+        std::array<int64_t,12> Order{};
     };
-    void Reconcile(const Native& n)
+    bool Mesh(SDK::UStaticMesh* mesh,P::Profile& profile)
     {
-        ++g_metrics.IdentityPolls;
-        g_identitySucceeded=false;
-        Handles off{{},n}, splines{{},n};
-        auto start=Clock::now(); n.mass.getMatchingEntityHandles(g_offQuery.Storage.data(),&off.Array);
-        g_metrics.OffQuery+=Ms(start);
-        start=Clock::now(); n.mass.getMatchingEntityHandles(g_splineQuery.Storage.data(),&splines.Array);
-        g_metrics.SplineQuery+=Ms(start);
-        if(!off.Valid() || !splines.Valid()) return; // Never infer removals from failed results.
-        g_identitySucceeded=true;
-        start=Clock::now(); ++g_epoch;
-        auto merge=[&](const auto& array,uint8_t source)
-        {
-            for(int i=0;i<array.Num;++i)
-            {
-                const auto id=array.Data[i]; if(id.Index<=0 || !id.SerialNumber) continue;
-                auto [it,added]=g_cache.try_emplace(Key(id));
-                auto& entry=it->second;
-                if(entry.Epoch!=g_epoch) { entry.PreviousSources=entry.Data.Sources; entry.Data.Sources=0; }
-                entry.Epoch=g_epoch; entry.Data.Sources|=source;
-                if(added)
-                {
-                    g_snapshotDirty=true;
-                    if(const auto indexed=g_indexedCopies.find(Key(id));indexed!=g_indexedCopies.end())
-                        entry.Data=indexed->second.Data; // Same entity lifetime changing acquisition source.
-                    entry.Data.Sources=source;
-                    entry.Data.Generation=g_generation; entry.Data.Index=id.Index; entry.Data.Serial=id.SerialNumber;
-                    entry.Read=entry.Data.StaticResolved() || entry.Data.SplineSettled;
-                    g_pending.push_back(Key(id));
-                    ++g_metrics.Added;
-                }
-                if(source&IndexedSpline)entry.Data.DynamicObserved=true;
-            }
-        };
-        merge(off.Array,OffGrid); merge(splines.Array,IndexedSpline);
-        for(auto it=g_cache.begin();it!=g_cache.end();)
-        {
-            const bool current=it->second.Epoch==g_epoch;
-            const uint8_t before=current?it->second.PreviousSources:it->second.Data.Sources;
-            const uint8_t after=current?it->second.Data.Sources:0;
-            g_metrics.OffAdded+=!(before&OffGrid) && (after&OffGrid);
-            g_metrics.OffRemoved+=(before&OffGrid) && !(after&OffGrid);
-            if(before!=after)g_snapshotDirty=true;
-            if(!current)
-            {
-                // Preserve the same lifetime's copied payload for an off-grid ->
-                // indexed transition. Sources=0 is staging, never publication.
-                if(n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
-                {
-                    auto [copy,added]=g_indexedCopies.try_emplace(it->first,it->second.Data);
-                    if(added)copy->second.Data.Sources=0;
-                }
-                it=g_cache.erase(it); ++g_metrics.Removed; g_snapshotDirty=true;
-            }
-            else ++it;
-        }
-        g_keys.clear(); g_keys.reserve(g_cache.size());
-        for(const auto& [key,entry]:g_cache) g_keys.push_back(key);
-        if(g_cursor>=g_keys.size()) g_cursor=0;
-        g_metrics.Reconcile+=Ms(start);
+        if(!mesh)return false;const auto& b=mesh->ExtendedBounds;
+        profile.LocalBounds={{b.Origin.X,b.Origin.Y,b.Origin.Z},{b.BoxExtent.X,b.BoxExtent.Y,b.BoxExtent.Z},b.SphereRadius};
+        return P::Valid(profile.LocalBounds);
     }
-    void Refresh(const Native& n)
+    bool Profiles(SDK::UClass* type,int rank,std::vector<Candidate>& result)
     {
-        const auto start=Clock::now(); const auto now=start;
-        auto service=[&](uint64_t key)
+        if(!type || !type->ClassDefaultObject)return false;
+        const auto* cdo=type->ClassDefaultObject;
+        // The old selector's exact-class preference is preserved numerically.
+        if(Is(cdo,types.Walkway))
         {
-            auto it=g_cache.find(key); if(it==g_cache.end()) return;
-            auto& e=it->second;
-            if(e.Data.StaticResolved()) {e.Read=true;++g_metrics.CachedReuse;return;}
-            if(now<e.Due) return;
-            e.Observation=g_observation;
-            const bool wasRead=e.Read;
-            e.Read=Read(n,e.Data,&e.Acquired);
-            if(e.Read!=wasRead)g_snapshotDirty=true; // Admission/completeness transition.
-            const bool unresolved=((e.Data.HasSpline || e.Data.DynamicObserved) && !e.Data.SplineReady) || !e.Data.TransformValid || (!e.Data.HasSpline &&
-                (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
-            // Missing required facts retry on the normal next acquisition slice,
-            // without the settled-record movement cadence becoming a cooldown.
-            e.Due=unresolved?Clock::time_point{}:
-                now+(MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)?kLocalCadence:kDistantCadence);
-        };
-        // Measured startup refresh cost includes a 5.467ms single service slice.
-        // Retain the existing soft CPU time budget for worldwide refresh work,
-        // not a canonical-conversion quota or a publication delay.
-        while(!g_pending.empty() && Ms(start)<kRefreshBudgetMs*0.25)
-        { const auto key=g_pending.back(); g_pending.pop_back(); service(key); }
-        // Local candidates have priority, but reserve half the budget for
-        // discovery/distant validation so a dense factory cannot starve warm-up.
-        size_t visited=0;
-        while(visited<g_near.size() && Ms(start)<kRefreshBudgetMs*0.5)
-        {
-            if(g_nearCursor>=g_near.size()) g_nearCursor=0;
-            service(g_near[g_nearCursor++]); ++visited;
+            Candidate p;p.Order={rank,0,type==types.Walkway?0:1,type->Index,0,0,0,0,0,cdo->Index,0,int64_t(result.size())};
+            if(Mesh(static_cast<const SDK::ACrModularRampWalkway*>(cdo)->SplineMesh,p.Numbers))result.push_back(std::move(p));
         }
-        visited=0;
-        while(visited<g_keys.size() && Ms(start)<kRefreshBudgetMs)
+        for(auto* current=type;current;current=static_cast<SDK::UClass*>(current->SuperStruct))
         {
-            if(g_cursor>=g_keys.size()) g_cursor=0;
-            service(g_keys[g_cursor++]); ++visited;
-        }
-        g_metrics.CacheService+=Ms(start);
-    }
-    struct GridVisitContext
-    {
-        const Native& Api;
-        const Bounds& Region;
-        bool Overflow = false;
-    };
-    bool VisitIndexed(void* object,const MiniMapNative::GridEntityHandle& handle)
-    {
-        auto& context=*static_cast<GridVisitContext*>(object);
-        ++g_gridVisited;
-        const auto& n=context.Api;
-        if(!n.mass.isEntityValid(g_manager,handle.Entity)) return true;
-        const auto previous=g_indexedCopies.find(Key(handle.Entity));
-        auto keepCopied=[&]()
-        {
-            if(previous!=g_indexedCopies.end() && previous->second.Data.Position[0]>context.Region.MinX && previous->second.Data.Position[0]<context.Region.MaxX &&
-                previous->second.Data.Position[1]>context.Region.MinY && previous->second.Data.Position[1]<context.Region.MaxY)
+            if(!Is(current,types.Blueprint))continue;
+            const auto& components=static_cast<SDK::UBlueprintGeneratedClass*>(current)->ComponentTemplates;
+            for(auto* component:components)
             {
-                if(g_indexedHandles.size()>=kMaximumHandles){context.Overflow=true;return false;}
-                g_indexedHandles.push_back(handle.Entity);
-            }
-            return true;
-        };
-        if(!n.mass.isEntityBuilt(g_manager,handle.Entity))return keepCopied();
-        // This is the existing source membership filter, not Interior
-        // acquisition. Grid cells contain non-buildings too; keep this filter
-        // even for copied ordinary instances so removed BuildingTag membership
-        // cannot become a ghost. It never accesses placement or geometry.
-        alignas(8) std::array<std::byte,0x28> view={};
-        ++g_metrics.MembershipTags;
-        n.gridDiagnostic.viewConstruct(view.data(),g_manager,handle.Entity);
-        if(!n.gridDiagnostic.viewHasTag(view.data(),g_types.Building)) return true;
-        if(previous!=g_indexedCopies.end() && (previous->second.Data.StaticResolved() || previous->second.Data.SplineSettled ||
-            AcquiredThinRail(previous->second.Data)))return keepCopied();
-        ++g_metrics.MembershipTransforms;
-        const auto* transform=static_cast<const SDK::FTransform*>(Fragment(n,handle.Entity,g_types.Transform));
-        if(!transform) return keepCopied();
-        const auto& p=transform->Translation;
-        if(!std::isfinite(p.X) || !std::isfinite(p.Y) || !std::isfinite(p.Z))return keepCopied();
-        // Reproduce FindEntitiesInBox's STRICT XY origin tests, with no Z test.
-        if(!(p.X>context.Region.MinX && p.X<context.Region.MaxX &&
-             p.Y>context.Region.MinY && p.Y<context.Region.MaxY)) return true;
-        if(g_indexedHandles.size()>=kMaximumHandles) { context.Overflow=true; return false; }
-        g_indexedHandles.push_back(handle.Entity); // Copy 8-byte identity only.
-        return true; // Native traversal interprets false as early termination.
-    }
-    void MeasureGridCall(Clock::time_point start)
-    {
-        const double elapsed=Ms(start);
-#if MINIMAP_DEBUG_UI
-        g_debugLastGridMs=elapsed;
-#endif
-        g_metrics.GridQuery+=elapsed;
-        g_metrics.GridMax=(std::max)(g_metrics.GridMax,elapsed);
-        ++g_metrics.GridCalls;
-    }
-    size_t IndexedRecords(const Native& n,const MiniMapMap::PlayerPose& pose)
-    {
-        size_t indexedCount=0;
-        if(++g_indexedQuery==0)
-        {
-            g_indexedQuery=1;
-            for(auto& [key,entry]:g_indexedCopies)entry.SeenQuery=0;
-        }
-        g_gridSucceeded=false; g_gridResults=0;
-        auto copied=[&]()
-        {
-            for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
-                if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
-                {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
-                else {if(it->second.Data.Sources&Indexed)++indexedCount;++it;}
-            return indexedCount;
-        };
-        void* grid=n.gridDiagnostic.getSubsystem(g_world);
-        if(!IsClass(static_cast<SDK::UObject*>(grid),g_types.GridClass) ||
-            !MiniMapResidentMetadata::Validate(reinterpret_cast<uintptr_t>(grid),0xF0+sizeof(void*))) return copied();
-        const void* manager=nullptr;
-        std::memcpy(&manager,static_cast<const uint8_t*>(grid)+0xF0,sizeof(manager));
-        if(manager!=g_manager) return copied();
-        g_queryZ=pose.WorldZ;
-        g_indexedHandles.clear(); g_gridVisited=0;
-        g_xyQuery=n.gridDiagnostic.forEachCellInRadius!=nullptr;
-        if(g_xyQuery)
-        {
-            const double hx=(g_queryRegion.MaxX-g_queryRegion.MinX)*0.5;
-            const double hy=(g_queryRegion.MaxY-g_queryRegion.MinY)*0.5;
-            const SDK::FVector center{g_queryRegion.MinX+hx,g_queryRegion.MinY+hy,pose.WorldZ};
-            // Outward rounding prevents narrowing the XY cell window when the
-            // native float radius is converted back to double for grid lookup.
-            const float radius=std::nextafter(static_cast<float>(std::hypot(hx,hy)),std::numeric_limits<float>::infinity());
-            GridVisitContext context{n,g_queryRegion};
-            const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&VisitIndexed,&context};
-            const auto start=Clock::now();
-            n.gridDiagnostic.forEachCellInRadius(grid,center,radius,visitor,false);
-            MeasureGridCall(start);
-            g_gridSucceeded=!context.Overflow;
-            g_gridResults=g_indexedHandles.size();
-        }
-        else
-        {
-            SDK::FBox box={};
-            box.Min={g_queryRegion.MinX,g_queryRegion.MinY,pose.WorldZ-kFallbackVerticalExtent};
-            box.Max={g_queryRegion.MaxX,g_queryRegion.MaxY,pose.WorldZ+kFallbackVerticalExtent}; box.IsValid=1;
-            SDK::UScriptStruct* tag=g_types.Building;
-            struct Tags { SDK::UScriptStruct** Data; int32_t Num,Max; } required{&tag,1,1};
-            static_assert(sizeof(Tags)==0x10);
-            MiniMapNative::GridResultArray result={};
-            const auto start=Clock::now();
-            n.gridDiagnostic.findInBox(grid,box,result,&required,nullptr);
-            MeasureGridCall(start);
-            const auto extraction=Clock::now();
-            const bool valid=result.Num>=0 && result.Num<=result.Max && result.Max<=kMaximumHandles && (!result.Num || result.Data);
-            if(valid)
-            {
-                g_gridSucceeded=true;
-                g_gridResults=result.Num;
-                g_indexedHandles.reserve(result.Num);
-                for(int i=0;i<result.Num;++i)
-                    g_indexedHandles.push_back(result.Data[i].Entity);
-                // FCrGridEntityHandle contains a native TSharedPtr. Destruct
-                // every constructed element before freeing its array storage.
-                if(result.Num) n.gridDiagnostic.destructItems(result.Data,result.Num);
-            }
-            if(result.Data) n.texture.memoryFree(result.Data);
-            g_metrics.GridExtract+=Ms(extraction);
-        }
-        const auto extraction=Clock::now();
-        for(const auto id:g_indexedHandles)
-        {
-            const auto key=Key(id);
-            auto [it,added]=g_indexedCopies.try_emplace(key);
-            auto& entry=it->second;
-            if(entry.SeenQuery==g_indexedQuery)continue;
-            entry.SeenQuery=g_indexedQuery; // Mark before acquisition, including failed attempts.
-            auto& r=entry.Data;
-            const auto cached=(added || !r.StaticResolved())?g_cache.find(key):g_cache.end();
-            if(added)
-            {
-                g_snapshotDirty=true;
-                if(cached!=g_cache.end())r=cached->second.Data;
-                r.Generation=g_generation;r.Index=id.Index;r.Serial=id.SerialNumber;
-            }
-            if(r.Sources!=Indexed)g_snapshotDirty=true;
-            r.Sources=Indexed;
-            if(r.StaticResolved())++g_metrics.CachedReuse;
-            else
-            {
-                if(cached!=g_cache.end() && cached->second.Observation==g_observation)
-                {
-                    ++g_metrics.OverlapCandidates; // Would otherwise perform a second Read attempt.
-                    if(!cached->second.Acquired.Complete)++g_metrics.OverlapIncomplete;
-                    else
-                    {
-                        ++g_metrics.OverlapComplete;
-                        if(ReuseAcquisition(n,r,cached->second)){++g_metrics.OverlapReused;continue;}
-                        ++g_metrics.OverlapIneligible;
-                    }
-                }
-                Read(n,r); // Original path for absent, partial, invalid or incompatible samples.
+                if(!Is(component,types.SplineMesh))continue;
+                const auto* spline=static_cast<const SDK::USplineMeshComponent*>(component);
+                Candidate p;p.Order={rank,1,1,type->Index,0,current->Index,0,component->Index,0,cdo->Index,0,int64_t(result.size())};
+                auto& v=p.Numbers;
+                if(!Mesh(spline->StaticMesh,v))continue;
+                v.Transform={{spline->RelativeLocation.X,spline->RelativeLocation.Y,spline->RelativeLocation.Z},
+                    {spline->RelativeRotation.Pitch,spline->RelativeRotation.Yaw,spline->RelativeRotation.Roll},
+                    {spline->RelativeScale3D.X,spline->RelativeScale3D.Y,spline->RelativeScale3D.Z}};
+                const auto& params=spline->SplineParams;
+                v.Section={{params.StartScale.X,params.StartScale.Y},{params.EndScale.X,params.EndScale.Y},
+                    {params.StartOffset.X,params.StartOffset.Y},{params.EndOffset.X,params.EndOffset.Y},
+                    params.StartRoll,params.EndRoll,{spline->SplineUpDir.X,spline->SplineUpDir.Y,spline->SplineUpDir.Z}};
+                v.ForwardAxis=uint8_t(spline->ForwardAxis);result.push_back(std::move(p));
             }
         }
-        for(auto it=g_indexedCopies.begin();it!=g_indexedCopies.end();)
-        {
-            // Successful enumeration owns scope membership; a failed query does
-            // not assert removal. Entity serial validity is the removal oracle.
-            if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}) ||
-                (g_gridSucceeded && it->second.SeenQuery!=g_indexedQuery))
-            {it=g_indexedCopies.erase(it);g_snapshotDirty=true;}
-            else {if(it->second.Data.Sources&Indexed)++indexedCount;++it;}
-        }
-        g_metrics.GridExtract+=Ms(extraction);
-        return indexedCount;
+        return true;
     }
-    void Publish(size_t indexedCount,const Native& n)
+    // No Mass fragment borrow is live here. The definition root owns its
+    // properties; synchronous loading may run engine code before copying POD.
+    bool PrepareDefinition(const Native& n,Definition& d,bool spline,uint32_t building)
     {
-        namespace A=MiniMapBuildingCollectorAudit;
-        PublicationAudit audit;
-        const auto start=Clock::now();
-        // Keep actual removal detection at publication cadence, including when
-        // immutable observations let us reuse the previous snapshot wholesale.
-        for(auto it=g_cache.begin();it!=g_cache.end();)
-            if(!n.mass.isEntityValid(g_manager,{it->second.Data.Index,it->second.Data.Serial}))
-            {it=g_cache.erase(it);g_snapshotDirty=true;++g_metrics.Removed;}
-            else ++it;
-        const auto previous=MiniMapBuildingCollector::GetSnapshot();
-        const auto sameRegion=[&]
-        {
-            if(!previous)return false;
-            const auto& r=previous->Region;
-            return r.Valid==g_region.Valid && r.MinX==g_region.MinX && r.MinY==g_region.MinY &&
-                r.MaxX==g_region.MaxX && r.MaxY==g_region.MaxY;
-        };
-        if(!g_snapshotDirty && previous && previous->Generation==g_generation && sameRegion() &&
-            g_publishedGrid==g_gridSucceeded && g_publishedIdentity==g_identitySucceeded)
-        {
-            audit.Outcome=A::Publication::FastReuse;
-            ++g_metrics.SnapshotsReused;
-            g_metrics.Filter+=Ms(start);
-            return; // Pointer identity lets BuildingVisuals skip preparation too.
-        }
-        ++g_metrics.SnapshotsBuilt;
-        auto result=std::make_shared<Snapshot>(); result->Generation=g_generation; result->Region=g_region;
-        result->Complete=g_gridSucceeded && g_identitySucceeded;
-        struct Candidate
-        {
-            uint64_t Identity;
-            const Record* Data; // Borrowed only until synchronous materialization below.
-        };
+        if(d.Prepared)return true;
+        auto* placement=d.Root;
+        d.Interior=false;
+        if(Is(placement,types.BuildingData))
+            for(const auto tag:static_cast<const SDK::UCrBuildingData*>(placement)->Tags)
+                if(tag.Number==0 && n.asset.nameEqualsWide(tag,L"Interior"))d.Interior=true;
+        if(d.Interior){d.Prepared=true;return true;}
+        if(!d.Blueprint)d.Blueprint=MiniMapBuildingBlueprintIdentity::Copy(*placement);
+        if(!d.Blueprint)return false;
+        if(!spline || MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,building))
+        {d.Prepared=true;return true;}
         std::vector<Candidate> candidates;
-        candidates.reserve(indexedCount+g_near.size());
-        g_near.clear(); g_duplicates=0;
-        auto add=[&](const Record& r)
+        auto* config=placement->EntityType.EntityConfigPtr;
+        if(!config)config=static_cast<SDK::UMassEntityConfigAsset*>(n.asset.loadSynchronous(&placement->EntityType.EntityConfig));
+        if(!config && placement->EntityType.EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex!=0)return false;
+        std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
+        for(;config;config=config->Config.Parent)
         {
-            if(r.InteriorOnly) return;
-            if(!r.TransformValid || !r.Extent.Valid) { result->Complete=false; return; }
-            if(!r.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(r.Extent,g_region)) return;
-            candidates.push_back({Key(r.Index,r.Serial),&r});
-            // Publication consumes copied facts only, never reopens native
-            // definition/entity provenance to draw an acquired sprite.
-            if(!r.HasSpline && (!r.CanonicalBlueprint || !r.InteriorKnown)) result->Complete=false;
-        };
-        // Pruning has finished; only owned snapshot copies escape this iteration.
-        for(const auto& [key,entry]:g_indexedCopies)
-            if(entry.Data.Sources&Indexed)add(entry.Data); // Fresh local data wins deterministic dedupe.
-        for(const auto& [key,e]:g_cache)
-        {
-            if(!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid) { result->Complete=false; continue; }
-            if(!e.Data.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region)) continue;
-            g_near.push_back(key);
-            add(e.Data);
-        }
-        g_metrics.Filter+=Ms(start);
-        const auto publication=Clock::now();
-        result->PublishedAtSeconds=Seconds();
-        std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b)
-        {
-            if(a.Identity!=b.Identity) return a.Identity<b.Identity;
-            // Each source map has at most one entry per identity. Indexed wins
-            // the sole possible cross-map tie; observation time has no role.
-            return bool(a.Data->Sources&Indexed) && !(b.Data->Sources&Indexed);
-        });
-        A::Population population(previous?&previous->Records:nullptr,&g_audit);
-        result->Records.reserve(candidates.size()); // No relocation of materialized Records.
-        for(size_t first=0;first<candidates.size();)
-        {
-            size_t next=first+1;
-            auto sources=candidates[first].Data->Sources;
-            while(next<candidates.size() && candidates[next].Identity==candidates[first].Identity)
-            { sources|=candidates[next].Data->Sources; ++g_duplicates; ++next; }
-            result->Records.push_back(*candidates[first].Data);
-            result->Records.back().Sources=sources;
-            population.Observe(result->Records.back());
-            first=next;
-        }
-        population.Finish();
-        audit.Flags=population.Flags;
-        if(!previous)audit.Flags|=A::Bit(A::Publication::NoPrevious);
-        else
-        {
-            if(previous->Generation!=result->Generation)audit.Flags|=A::Bit(A::Publication::Generation);
-            if(!sameRegion())audit.Flags|=A::Bit(A::Publication::Region);
-            if(previous->Complete!=result->Complete)audit.Flags|=A::Bit(A::Publication::Completeness);
-        }
-        if(g_publishedGrid!=g_gridSucceeded || g_publishedIdentity!=g_identitySucceeded)audit.Flags|=A::Bit(A::Publication::Query);
-        g_audit.PublishedRevisionFlags.AddMask(population.PublishedRevisionReasons);
-        g_audit.PublishedOrdinary+=population.OrdinaryChanged;g_audit.PublishedSpline+=population.SplineChanged;
-        // Dirty can originate from an out-of-region acquisition or a second
-        // source copy catching up. Preserve the exact published owner when the
-        // canonical render population is unchanged. Revision compares are O(N),
-        // never a rescan of immutable curves/profiles and never hash-only.
-        if(previous && previous->Generation==result->Generation && sameRegion() && previous->Complete==result->Complete &&
-            g_publishedGrid==g_gridSucceeded && g_publishedIdentity==g_identitySucceeded &&
-            previous->Records.size()==result->Records.size() &&
-            population.Equal)
-        {
-            audit.Outcome=A::Publication::CanonicalReuse;
-            --g_metrics.SnapshotsBuilt;++g_metrics.SnapshotsReused;
-            g_snapshotDirty=false;
-            g_metrics.SnapshotTime+=Ms(publication);g_metrics.SnapshotBuild+=Ms(start);
-            return;
-        }
-        if(g_initialDiscoveryReports<8)
-        {
-            ++g_initialDiscoveryReports;
-            try
+            if(!visited.insert(config).second)return false;
+            for(auto* trait:config->Config.Traits)
             {
-                std::vector<std::string_view> canonical;
-                size_t unresolved=0;
-                for(const auto& r:result->Records)
-                {
-                    if(r.HasSpline)continue;
-                    if(r.CanonicalBlueprint)canonical.emplace_back(*r.CanonicalBlueprint);
-                    else ++unresolved;
-                }
-                std::sort(canonical.begin(),canonical.end());
-                const auto count=std::unique(canonical.begin(),canonical.end())-canonical.begin();
-                SpriteDiagnostic("MiniMap: initial discovery observation: generation=%llu sample=%u/8 boundary=available-scoped-pass acceptedRecords=%zu canonicalTypes=%zu unresolvedOrdinary=%zu snapshotComplete=%d gridQuery=%d identityQuery=%d pendingRefresh=%zu; all available definitions serviced without conversion quota",
-                    static_cast<unsigned long long>(g_generation),g_initialDiscoveryReports,result->Records.size(),size_t(count),
-                    unresolved,int(result->Complete),int(g_gridSucceeded),int(g_identitySucceeded),g_pending.size());
+                SDK::UClass *high=nullptr,*low=nullptr;
+                if(Is(trait,types.Cosmetic))
+                {const auto* v=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);high=v->HighResTemplateActor;low=v->LowResTemplateActor;}
+                else if(Is(trait,types.Visual))
+                {const auto* v=static_cast<const SDK::UMassVisualizationTrait*>(trait);high=v->HighResTemplateActor;low=v->LowResTemplateActor;}
+                if(high && !Profiles(high,0,candidates))return false;
+                if(low && !Profiles(low,1,candidates))return false;
             }
-            catch(...) {} // Diagnostics must not prevent snapshot publication.
         }
-        { std::scoped_lock lock(g_mutex); g_snapshot=std::move(result); }
-        audit.Outcome=A::PrimaryPublication(audit.Flags);
-        g_snapshotDirty=false; g_publishedGrid=g_gridSucceeded; g_publishedIdentity=g_identitySucceeded;
-        g_metrics.SnapshotTime+=Ms(publication);
-        g_metrics.SnapshotBuild+=Ms(start);
+        auto* authored=static_cast<SDK::UClass*>(n.asset.loadSynchronous(&placement->ActorClass));
+        if(!authored || !Profiles(authored,2,candidates))return false;
+        std::stable_sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.Order<b.Order;});
+        auto profiles=std::make_shared<P::Set>();
+        for(auto& candidate:candidates)profiles->Profiles.push_back(std::move(candidate.Numbers));
+        if(profiles->Profiles.empty())return false;
+        auto recipe=std::make_shared<DefinitionGeometry>();recipe->Profiles=std::move(profiles);d.Recipe=std::move(recipe);d.Prepared=true;return true;
     }
+    // This function never loads assets, yields, or retains a fragment/payload.
+    bool CopyInitial(const Native& n,Entry& entry)
+    {
+        auto& r=entry.Data;
+        if(r.DefinitionValid && r.TransformValid && (!r.HasSpline || r.Curve))return true;
+        const Id id{r.Index,r.Serial};
+        if(!r.DefinitionValid)
+        {
+            const auto* parameters=Parameters(n,id);auto* placement=parameters?parameters->PlacementData:nullptr;
+            if(!placement)return false;
+            auto it=definitions.find(placement);
+            if(it==definitions.end())
+            {
+                auto definition=std::make_shared<Definition>();
+                n.asset.retainObject(placement);definition->Root=placement;
+                it=definitions.emplace(placement,std::move(definition)).first;
+            }
+            entry.Definition=placement;
+            r.BuildingId=uint32_t(placement->BuildingID);r.DefinitionObjectIndex=placement->Index;
+            r.DefinitionIndex=placement->Name.ComparisonIndex;r.DefinitionNumber=placement->Name.Number;r.DefinitionValid=true;
+        }
+        if(!r.TransformValid)
+        {
+            const auto* t=static_cast<const SDK::FTransform*>(n.mass.getFragmentDataPtr(manager,id,types.Transform));
+            if(!t)return false;
+            r.Position={t->Translation.X,t->Translation.Y,t->Translation.Z};r.Scale={t->Scale3D.X,t->Scale3D.Y,t->Scale3D.Z};
+            r.Rotation={t->Rotation.X,t->Rotation.Y,t->Rotation.Z,t->Rotation.W};
+            double norm=0;for(auto q:r.Rotation)norm+=q*q;
+            if(!G::Finite(r.Position) || !G::Finite(r.Scale) || !std::isfinite(norm) || norm<=0)return false;
+            for(auto& q:r.Rotation)q/=std::sqrt(norm);
+            r.TransformValid=true;
+        }
+        const auto* mass=static_cast<const SDK::FAuSplineConnectionFragment*>(n.mass.getFragmentDataPtr(manager,id,types.Spline));
+        r.HasSpline=mass!=nullptr;
+        if(r.HasSpline && !r.Curve)
+        {
+            auto curve=std::make_shared<SplineGeometry>();
+            if(mass)G::CopySpline(*mass,*curve);
+            if(!mass || curve->Issue!=GeometryIssue::None || curve->Segments.empty())
+            {
+                // A complete/unsupported Mass source is never silently
+                // replaced. Zero/one source point is initially incomplete.
+                if(mass && (mass->bSplineCurvesInitialized || mass->Data.SplineData.Num()>1))return false;
+                const auto* ap=static_cast<const SDK::FAuAPMassFragment*>(n.mass.getFragmentDataPtr(manager,id,types.AP));
+                if(!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload,*curve)!=MiniMapBuildingSplinePayload::CopyResult::Complete)return false;
+            }
+            r.Curve=std::move(curve);r.Extent=r.Curve->CenterlineBounds;
+        }
+        return true;
+    }
+    Bounds SplineBounds(const Record& r)
+    {
+        if(!r.Curve)return {};
+        double inflation=MiniMapBuildingSplineEnvelope::ThinHalfWidth;
+        if(!MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,r.BuildingId))
+        {
+            if(!r.DefinitionShape || !r.DefinitionShape->Profiles)return {};
+            inflation=0;
+            for(const auto& p:r.DefinitionShape->Profiles->Profiles)
+            {
+                // Project uses unit orthogonal Y/Z frame vectors. The sum of
+                // their maximum scalar magnitudes bounds every orientation;
+                // signed TRS is bounded by its largest singular scale.
+                const auto& b=p.LocalBounds;const auto& x=p.Section;
+                const double y=(std::abs(b.Origin[1])+b.Extent[1])*std::abs(x.StartScale[0])+std::abs(x.StartOffset[0]);
+                const double z=(std::abs(b.Origin[2])+b.Extent[2])*std::abs(x.StartScale[1])+std::abs(x.StartOffset[1]);
+                double component=0,root=0;
+                for(auto v:p.Transform.Scale)component=(std::max)(component,std::abs(v));
+                for(auto v:r.Scale)root=(std::max)(root,std::abs(v));
+                const auto& t=p.Transform.Translation;
+                const double reach=root*(component*(y+z)+std::hypot(t[0],t[1],t[2]));
+                if(!std::isfinite(reach))return {}; // Unknown bounds are always admitted.
+                inflation=(std::max)(inflation,reach);
+            }
+        }
+        return G::Inflate(r.Curve->CenterlineBounds,inflation+0.01);
+    }
+    void SpriteBounds(Record& r)
+    {
+        r.Extent={};
+        if(!r.CanonicalBlueprint)return;
+        const auto* entry=MiniMapBuildingAtlas::Find(*r.CanonicalBlueprint);
+        std::array<MiniMapBuildingVisualGeometry::XY,4> quad;
+        if(entry && MiniMapBuildingSpriteGeometry::BuildWorldQuad(r,*entry,quad))
+            for(const auto& point:quad)G::Add(r.Extent,point.X,point.Y);
+        r.Extent=G::Inflate(r.Extent,0.01);
+    }
+    void UpdateAtlasBounds()
+    {
+        std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        uint64_t session=0,revision=0;MiniMapBuildingAtlas::ObservePublication(session,revision);
+        if(session==atlasSession && revision==atlasRevision)return;
+        for(auto& [key,e]:entities)if(e.Complete && !e.Data.HasSpline)SpriteBounds(e.Data);
+        atlasSession=session;atlasRevision=revision;dirty=true;
+    }
+    bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions)
+    {
+        auto it=entities.find(key);if(it==entities.end() || it->second.Complete)return false;
+        auto& e=it->second;
+        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e))return false;
+        // CopyInitial has returned: no Mass borrow spans definition loading.
+        // Loading may dispatch engine callbacks: keep the definition strongly
+        // owned, and re-find the entity after returning instead of holding a
+        // map entry/reference across that call.
+        const auto definition=definitions.at(e.Definition);
+        auto result=e.Data;const auto epoch=generation;
+        if(!definition->Prepared && !attemptedDefinitions.insert(definition.get()).second)return false;
+        if(!PrepareDefinition(n,*definition,result.HasSpline,result.BuildingId))return false;
+        if(epoch!=generation || world!=MiniMapMap::GetWorld())return false;
+        it=entities.find(key);
+        if(it==entities.end() || it->second.Complete ||
+            !n.mass.isEntityValid(manager,{result.Index,result.Serial}) || !n.mass.isEntityBuilt(manager,{result.Index,result.Serial}))return false;
+        result.CanonicalBlueprint=definition->Blueprint;result.DefinitionShape=definition->Recipe;
+        result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
+        if(result.HasSpline)result.Extent=SplineBounds(result);
+        else {std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);SpriteBounds(result);}
+        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;dirty=true;return true;
+    }
+    void Publish()
+    {
+        if(!dirty)return;
+        auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
+        value->PublishedAtSeconds=std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+        for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly && (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
+        std::sort(value->Records.begin(),value->Records.end(),[](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
+        {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;
+    }
+    bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
+    {static_cast<std::unordered_set<uint64_t>*>(context)->insert(Key(handle.Entity));return true;}
     void OnTick(float)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::CollectorTick,true);
-        if(!MiniMapMap::GameplayReady())return;
-        if(!g_ready || !MiniMapMap::HasWorld()) return;
-        const auto start=Clock::now(); const auto* n=MiniMapNative::Get();
-        if(!n || !n->gridDiagnostic.IsAvailable() || !n->texture.memoryFree || !n->mass.getConstSharedFragmentPtr ||
-            !n->mass.isEntityValid || !n->mass.isEntityBuilt || !n->mass.addSplineRequirement)
+        MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
+        if(!ready || !MiniMapMap::GameplayReady())return;
+        const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
+        try
         {
-            if(!g_unavailableLogged) LOG_WARN("MiniMap: BuildingCollector: optional native prerequisites unavailable; collector disabled");
-            g_unavailableLogged=true; return;
-        }
-        {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorEnsure);if(!Ensure(*n)) return;}
-        if(++g_observation==0)
-        {
-            g_observation=1;
-            for(auto& [key,d]:g_definitions){d.IdentityObservation=0;d.GeometryObservation=0;}
-            for(auto& [key,e]:g_cache)e.Observation=0;
-        }
-        double radius=0; { std::scoped_lock lock(g_mutex); radius=g_viewRadius; }
-        MiniMapMap::PlayerPose pose;
-        if(radius<=0 || !MiniMapMap::TryGetPlayerPose(pose)) return;
-        const auto now=Clock::now(); g_region=Box(pose.WorldX,pose.WorldY,radius);
-        const bool relocate=!Contains(g_queryRegion,Pad(g_region,g_ordinaryQueryPadding)) || radius!=g_lastRadius || std::abs(pose.WorldZ-g_queryZ)>kMovementPadding;
-        if(relocate)
-        {
-            g_queryRegion=Pad(g_region,g_ordinaryQueryPadding+kMovementPadding); g_queryZ=pose.WorldZ; g_lastRadius=radius;
-            g_nextLocal={};
-            // Newly relevant cached hulls get refreshed promptly, independent of
-            // rotation. Unknown bounds still use the fair discovery sweep.
-            g_near.clear();
-            for(auto& [key,e]:g_cache) if(MiniMapBuildingGeometry::Intersects(e.Data.Extent,g_region))
-            { e.Due={}; g_near.push_back(key); }
-        }
-        if(now>=g_nextIdentity) { MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorReconcile);Reconcile(*n); g_nextIdentity=now+kIdentityCadence; }
-        {MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorRefresh);Refresh(*n);}
-        if(now>=g_nextLocal)
-        {
-            g_nextLocal=now+kLocalCadence;
-            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorPublish);
-            g_indexed=IndexedRecords(*n,pose);
-            Publish(g_indexed,*n); ++g_metrics.Polls;
-        }
-        const double total=Ms(start); g_metrics.Total+=total; g_metrics.MaxTick=(std::max)(g_metrics.MaxTick,total);
-        if(total>20 && now>=g_nextWarning)
-        {
-            LOG_WARN("MiniMap: BuildingCollector: slow callback=%.3fms indexed=%zu cached=%zu",total,g_indexed,g_cache.size());
-            g_nextWarning=now+kLogCadence;
-        }
-        if(now>=g_nextLog)
-        {
-            MiniMapCallbackTiming::Phase phase(MiniMapCallbackTiming::Id::CollectorDiagnostics);
-            size_t off=0,tagged=0,pending=0,splines=0;
-            double maxAge=0,localAge=0;
-            for(const auto& [key,e]:g_cache)
+            if(Clock::now()>=nextMembership)
             {
-                off+=(e.Data.Sources&OffGrid)!=0; tagged+=(e.Data.Sources&IndexedSpline)!=0;
-                pending+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || (!e.Data.HasSpline && (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
-                if(e.Read) maxAge=(std::max)(maxAge,Seconds()-e.Data.RefreshedAtSeconds);
+                const bool complete=Reconcile(*n);
+                if(complete!=membershipComplete){membershipComplete=complete;dirty=true;}
+                nextMembership=Clock::now()+std::chrono::seconds(1);
             }
-            auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-            if(snapshot) for(const auto& r:snapshot->Records)
+            UpdateAtlasBounds();
+            std::unordered_set<uint64_t> localCandidates;
+            MiniMapMap::PlayerPose pose;double radius;
+            {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
+            const bool hasPose=radius>0 && MiniMapMap::TryGetPlayerPose(pose);
+            if(hasPose)
             {
-                splines+=r.HasSpline;
-                // Render owners intentionally retain their acquisition sample
-                // time. Current observation telemetry lives in collector copies.
-                double observed=r.RefreshedAtSeconds;
-                const auto key=Key(r.Index,r.Serial);
-                if(const auto it=g_cache.find(key);it!=g_cache.end())observed=(std::max)(observed,it->second.Data.RefreshedAtSeconds);
-                if(const auto it=g_indexedCopies.find(key);it!=g_indexedCopies.end())observed=(std::max)(observed,it->second.Data.RefreshedAtSeconds);
-                localAge=(std::max)(localAge,Seconds()-observed);
+                const Bounds requested{pose.WorldX-radius,pose.WorldY-radius,pose.WorldX+radius,pose.WorldY+radius,true};
+                if(!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY)
+                {region=G::Inflate(requested,radius*0.5);dirty=true;}
             }
-            LOG_INFO("MiniMap: BuildingCollector: gridResults=%zu indexed=%zu offGridCached=%zu taggedSplines=%zu candidates=%zu splines=%zu pending=%zu dedup=%zu added=%zu removed=%zu offDelta=+%zu/-%zu definitionMiss=%zu stale=%zu refreshed=%zu polls=%zu identityPolls=%zu ageMax(local/global)=%.3f/%.3fs intervalSums(ms): gridQuery=%.3f gridExtract=%.3f offGridQuery=%.3f splineQuery=%.3f reconcile=%.3f dynamicRefresh=%.3f bounds=%.3f offTransform=%.3f offBounds=%.3f cacheService=%.3f filter=%.3f snapshot=%.3f total=%.3f maxTick=%.3f",
-                g_gridResults,g_indexed,off,tagged,snapshot?snapshot->Records.size():0,splines,pending,g_duplicates,g_metrics.Added,g_metrics.Removed,g_metrics.OffAdded,g_metrics.OffRemoved,g_metrics.DefinitionMiss,g_metrics.Stale,g_metrics.Refreshed,g_metrics.Polls,g_metrics.IdentityPolls,localAge,maxAge,
-                g_metrics.GridQuery,g_metrics.GridExtract,g_metrics.OffQuery,g_metrics.SplineQuery,g_metrics.Reconcile,g_metrics.Dynamic,g_metrics.BoundsTime,g_metrics.OffDynamic,g_metrics.OffBounds,g_metrics.CacheService,g_metrics.Filter,g_metrics.SnapshotTime,g_metrics.Total,g_metrics.MaxTick);
-            LOG_INFO("MiniMap: BuildingCollector: gridTiming mode=%s calls=%zu total=%.3fms mean=%.3fms maxCall=%.3fms visitedLast=%zu indexed=%zu slabs=0",
-                g_xyQuery?"XY/all-Z":"fallback-sphere",g_metrics.GridCalls,g_metrics.GridQuery,
-                g_metrics.GridCalls?g_metrics.GridQuery/g_metrics.GridCalls:0.0,g_metrics.GridMax,g_gridVisited,g_indexed);
-            LOG_INFO("MiniMap: BuildingCollector acquisition (production interval, excludes oracle): newAttempts=%zu unresolvedRetries=%zu staticResolvedNow=%zu cachedReuseVisits=%zu dynamicReads=%zu transformFragments=%zu membershipTransforms=%zu membershipTags=%zu placementFragments=%zu canonicalAttempts=%zu canonicalResolved=%zu interiorReads=%zu ordinaryGeometry=%zu ordinaryDefinitionTraversals=%zu snapshotsBuilt=%zu snapshotsReused=%zu membershipMs=%.3f extractionMs=%.3f snapshotBuildMs=%.3f callbackTotalMs=%.3f callbackMaxMs=%.3f",
-                g_metrics.NewAttempts,g_metrics.RetryAttempts,g_metrics.ResolvedNow,g_metrics.CachedReuse,g_metrics.DynamicReads,
-                g_metrics.TransformReads,g_metrics.MembershipTransforms,g_metrics.MembershipTags,g_metrics.PlacementReads,
-                g_metrics.Conversions,g_metrics.ConversionSuccess,g_metrics.InteriorReads,g_metrics.OrdinaryGeometry,g_metrics.OrdinaryDefinitions,
-                g_metrics.SnapshotsBuilt,g_metrics.SnapshotsReused,g_metrics.GridQuery,g_metrics.GridExtract,
-                g_metrics.SnapshotBuild,g_metrics.Total,g_metrics.MaxTick);
-            LOG_INFO("MiniMap: static spline acquisition (production interval): firstUsableCurves=%zu newlySettledLifetimes=%zu settledBypasses=%zu unresolvedAttempts=%zu placementOperationsAvoided=%zu readyRailBypasses=%zu nativeCopyReuses=%zu placementSourceReuses=%zu; bypass eliminates placement/serial/extent/class/transform/curve/profile/target/tint reads; probe elimination is source-calculated, not measured; only Mass lifetime/membership remain",
-                g_metrics.SplineAcquired,g_metrics.SplineSettled,g_metrics.SettledBypasses,g_metrics.SplineRetries,g_metrics.PlacementAvoided,g_metrics.ReadyRailBypasses,g_metrics.NativeCopyReuses,g_metrics.PlacementSourceReuses);
-            LOG_INFO("MiniMap: BuildingCollector overlap (production interval): candidates=%zu complete=%zu reused=%zu incomplete=%zu ineligible=%zu; reused counts eliminated full acquisitions, excludes membership reads",
-                g_metrics.OverlapCandidates,g_metrics.OverlapComplete,g_metrics.OverlapReused,g_metrics.OverlapIncomplete,g_metrics.OverlapIneligible);
-            size_t ordinary=0,proxy=0,meshWidth=0,railExtension=0,unresolvedSpline=0,reconstructed=0,
-                ordinaryCross=0,splineCross=0,ordinarySourceOnly=0,segments=0,invalidFootprint=0;
-            std::array<size_t,10> issues={};
-            if(snapshot) for(const auto& r:snapshot->Records)
-            {
-                ++issues[size_t(r.GeometryStatus)];
-                invalidFootprint+=r.InvalidFootprintSource;
-                const bool originOutside=!Contains(snapshot->Region,Box(r.Position[0],r.Position[1],0));
-                if(r.HasSpline)
+            if(hasPose && n->gridDiagnostic.forEachCellInRadius)
+                if(auto* grid=n->gridDiagnostic.getSubsystem(world))
                 {
-                    meshWidth+=r.DefinitionShape && r.DefinitionShape->HasSplineMesh;
-                    railExtension+=r.DefinitionShape && r.DefinitionShape->HasRailExtension;
-                    unresolvedSpline+=r.UnboundedGeometry;
-                    splineCross+=originOutside && !r.UnboundedGeometry;
-                    if(r.Curve) { reconstructed+=r.Curve->Reconstructed; segments+=r.Curve->Segments.size(); }
+                    const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&Near,&localCandidates};
+                    const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
+                    n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
                 }
-                else
-                {
-                    ++ordinary; proxy+=r.SourceFootprint.Valid; ordinaryCross+=originOutside;
-                    ordinarySourceOnly+=!MiniMapBuildingGeometry::Intersects(Box(r.Position[0],r.Position[1],kOriginPadding),snapshot->Region);
-                }
-            }
-            LOG_INFO("MiniMap: BuildingCollector: geometry ordinary=%zu proxy=%zu completeVisual=0 ordinarySafety50m=%zu invalidFootprint=%zu splineMeshWidth=%zu railExtension=%zu splineCapSafety=%zu unresolvedSpline=%zu reconstructed=%zu segments=%zu originOutside(ordinary/spline)=%zu/%zu ordinaryBeyondSafety=%zu issue(none/missingSource/uninitialized/looped/array/curve/mode/nonfinite/oversized/transform)=%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu/%zu queryPadding=%.1fm intervalSums(ms): definition=%.3f ordinary=%.3f spline=%.3f",
-                ordinary,proxy,ordinary,invalidFootprint,meshWidth,railExtension,splines,unresolvedSpline,reconstructed,segments,
-                ordinaryCross,splineCross,ordinarySourceOnly,issues[0],issues[1],issues[2],issues[3],issues[4],issues[5],issues[6],issues[7],issues[8],issues[9],
-                g_ordinaryQueryPadding/100.0,g_metrics.DefinitionTime,g_metrics.OrdinaryTime,g_metrics.SplineTime);
-#if MINIMAP_DEBUG_UI
-            // Reuse the existing diagnostic traversal; no render-time collection.
-            std::ostringstream text;
-            text << std::fixed << std::setprecision(2)
-                << "BuildingCollector\nMode: " << (g_xyQuery?"XY/all-Z":"fallback-sphere")
-                << "\nCache complete: " << (snapshot && snapshot->Complete?"yes":"no")
-                << "\nPending: " << pending
-                << "\nCandidates: " << (snapshot?snapshot->Records.size():0)
-                << "\nIndexed: " << g_indexed
-                << "\nOff-grid cached: " << off
-                << "\nTagged splines: " << tagged;
-            if(snapshot) text << "\nSnapshot age (sampled): " << Seconds()-snapshot->PublishedAtSeconds << " s";
-            else text << "\nSnapshot: awaiting publication";
-            if(g_debugOracle.Valid)
-                text << "\nOracle (10s) expected/present: " << g_debugOracle.Expected << '/' << g_debugOracle.Present
-                    << "\nOracle missing/repeated: " << g_debugOracle.Missing << '/' << g_debugOracle.Repeated
-                    << "\nOracle stale/duplicate: " << g_debugOracle.Stale << '/' << g_debugOracle.Duplicate
-                    << "\nOracle unresolved cache/world: " << g_debugOracle.UnresolvedCached << '/' << g_debugOracle.UnresolvedWorldwide;
-            else text << "\nOracle: awaiting comparison";
-            text << "\nLast local query: " << g_debugLastGridMs << " ms"
-                << "\n\nGeometry"
-                << "\nOrdinary proxy: " << proxy
-                << "\nOrdinary fallback (50m): " << ordinary
-                << "\nSpline resident-width: " << meshWidth
-                << "\nSpline fallback-width: " << splines-meshWidth
-                << "\nSpline cap safety: " << splines
-                << "\nUnresolved spline geometry: " << unresolvedSpline
-                << "\nUnproven ordinary visual bounds: " << ordinary
-                << "\nOrigin-outside ordinary: " << ordinaryCross
-                << "\nOrigin-outside spline: " << splineCross;
-            text << MiniMapBuildingVisuals::GetDebugText();
-            MiniMapDebugText::Publish(text.str());
-#endif
-            ReportAudit(snapshot.get());
-            g_metrics={}; g_nextLog=now+kLogCadence;
+            std::unordered_set<const Definition*> attemptedDefinitions;
+            const auto localEpoch=generation;
+            for(auto key:localCandidates){Acquire(*n,key,attemptedDefinitions);if(localEpoch!=generation)return;}
+            // Publish local data before remote definition preparation. Remote
+            // work is serviced on the next callback after any local progress;
+            // there is no entity quota or permanent spatial admission limit.
+            if(dirty && !remoteTurn){Publish();remoteTurn=true;return;}
+            remoteTurn=false;
+            std::vector<uint64_t> pending;
+            for(const auto& [key,e]:entities)if(!e.Complete)pending.push_back(key);
+            const auto epoch=generation;
+            for(auto key:pending){Acquire(*n,key,attemptedDefinitions);if(epoch!=generation)return;}
+            Publish();
         }
-    }
-
-    // Independent worldwide-reference sink. None of this state feeds acquisition.
-    std::shared_ptr<const Snapshot> g_comparison;
-    std::unordered_set<uint64_t> g_remaining, g_previousMissing, g_missing;
-    size_t g_expected=0,g_missingCount=0,g_persistent=0,g_unresolved=0;
-    size_t g_interiorExcluded=0,g_eligibilityUnknown=0;
-    size_t g_missingOff=0,g_missingGrid=0,g_stale=0,g_unresolvedCached=0,g_snapshotDuplicates=0;
-    std::unordered_map<uint64_t,Definition> g_oracleDefinitions; // Copied metadata, independent of production cache.
-    uint64_t g_oraclePass=0;
-    Clock::time_point g_compareStart;
-    void ClearComparison()
-    {
-        g_comparison.reset(); g_remaining.clear(); g_previousMissing.clear(); g_missing.clear();
-        g_oracleDefinitions.clear();
-        g_oraclePass=0;
-        g_expected=g_missingCount=g_persistent=g_unresolved=0;
-        g_interiorExcluded=g_eligibilityUnknown=0;
-        g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
+        catch(const std::bad_alloc&){/* Keep membership/owned records; retry pending work. */}
     }
 }
 namespace MiniMapBuildingCollector
 {
     bool Initialize(IPluginSelf* self)
     {
-        if(g_initialized) return true;
-        if(!self || !self->hooks || !self->hooks->Engine) return false;
-#if !defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        if(!self->hooks->ObjectWalker || !self->hooks->ObjectWalker->IsReady ||
-            !self->hooks->ObjectWalker->FindObjectsByNameInto) return false;
-#endif
-        Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
+        if(initialized)return true;
+        if(!self || !self->hooks || !self->hooks->Engine)return false;
+        Reset();InitializeMetadata();self->hooks->Engine->RegisterOnTick(&OnTick);initialized=true;return true;
     }
-    void Reset()
+    void Reset(){ready=false;ClearSession();std::scoped_lock lock(publicationMutex);viewRadius=0;}
+    void OnExperienceLoadComplete()
     {
-        g_ready=false; Clear(); g_unavailableLogged=false;
-        g_comparison.reset(); g_remaining.clear(); g_previousMissing.clear(); g_missing.clear();
-        std::scoped_lock lock(g_mutex); g_viewRadius=0;
+        if(initialized)
+        {
+            ready=InitializeMetadata();
+            if(!ready)LOG_ERROR("MiniMap: building acquisition initialization metadata unavailable");
+        }
     }
-    void OnExperienceLoadComplete() { if(g_initialized) g_ready=true; }
     void SetViewport(const MiniMapMap::Transform& t)
     {
-        double radius=0;
-        if(t.Valid && t.Width>0 && t.Height>0 && std::isfinite(t.PixelsPerWorldUnit) && t.PixelsPerWorldUnit>0)
-            radius=0.5*std::hypot(t.Width,t.Height)/t.PixelsPerWorldUnit;
-        std::scoped_lock lock(g_mutex); g_viewRadius=std::isfinite(radius)?radius:0;
+        const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
+        std::scoped_lock lock(publicationMutex);viewRadius=std::isfinite(radius)?radius:0;
     }
-    std::shared_ptr<const Snapshot> GetSnapshot() { std::scoped_lock lock(g_mutex); return g_snapshot; }
-    void ObserveSplinePreparation(const Record& record,const MiniMapBuildingSplineEnvelope::Result& prepared)
-    {
-        if(g_ready && MiniMapMap::GameplayReady())SettlePrepared(record,prepared);
-        else {++g_audit.AckAttempts;g_audit.Acknowledgements.Add(MiniMapBuildingCollectorAudit::Ack::Inactive);}
-    }
+    std::shared_ptr<const Snapshot> GetSnapshot(){std::scoped_lock lock(publicationMutex);return snapshot;}
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record& r,bool(*visitor)(const SDK::UObject*,void*),void* context)
     {
-        const auto* n=MiniMapNative::Get();
-        if(!visitor||!n||!g_ready||!g_manager||!g_typesReady)return DiagnosticVisitStatus::CollectorUnavailable;
-        if(r.Generation!=g_generation||g_world!=MiniMapMap::GetWorld())return DiagnosticVisitStatus::WorldGenerationChanged;
-        if(!r.DefinitionValid)return DiagnosticVisitStatus::InvalidCopiedDefinition;
-        if(!Live(*n,{r.Index,r.Serial}))return DiagnosticVisitStatus::StaleEntity;
-        const auto* parameters=Parameters(*n,{r.Index,r.Serial});
-        if(!parameters)return DiagnosticVisitStatus::ParametersUnavailable;
-        // Identity/type/extent checks and strong acquisition happen in the
-        // synchronous diagnostic visitor before any placement fields are read.
-        return visitor(parameters->PlacementData,context)?DiagnosticVisitStatus::Visited:DiagnosticVisitStatus::VisitorRejected;
+        const auto* n=MiniMapNative::Get();if(!n || !ready || !manager || !visitor || !n->player.isGameThread())return DiagnosticVisitStatus::CollectorUnavailable;
+        if(r.Generation!=generation || world!=MiniMapMap::GetWorld())return DiagnosticVisitStatus::WorldGenerationChanged;
+        const Id id{r.Index,r.Serial};
+        if(!n->mass.isEntityValid(manager,id) || !n->mass.isEntityBuilt(manager,id))return DiagnosticVisitStatus::StaleEntity;
+        const auto* p=Parameters(*n,id);if(!p || !p->PlacementData)return DiagnosticVisitStatus::ParametersUnavailable;
+        return visitor(p->PlacementData,context)?DiagnosticVisitStatus::Visited:DiagnosticVisitStatus::VisitorRejected;
     }
 #endif
     void Shutdown()
     {
-        if(!g_initialized) return;
-        auto* self=GetSelf();
-        self->hooks->Engine->UnregisterOnTick(&OnTick);
-        Reset(); g_initialized=false;
-    }
-    bool BeginComparison(const SDK::UWorld* world,const void* manager)
-    {
-        const auto* n=MiniMapNative::Get();
-        if(!n || world!=g_world || manager!=g_manager) return false;
-        g_comparison=GetSnapshot();
-        if(!g_comparison || g_comparison->Generation!=g_generation) { g_comparison.reset(); return false; }
-        g_compareStart=Clock::now();
-        if(++g_oraclePass==0){g_oraclePass=1;for(auto& [key,d]:g_oracleDefinitions)d.IdentityObservation=0;}
-        g_remaining.clear(); g_missing.clear();
-        g_expected=g_missingCount=g_persistent=g_unresolved=0;
-        g_interiorExcluded=g_eligibilityUnknown=0;
-        g_missingOff=g_missingGrid=g_stale=g_unresolvedCached=g_snapshotDuplicates=0;
-        for(const auto& r:g_comparison->Records)
-        {
-            g_snapshotDuplicates+=!g_remaining.insert(Key(r.Index,r.Serial)).second;
-            if(!n->mass.isEntityValid(g_manager,{r.Index,r.Serial})) ++g_stale;
-        }
-        for(const auto& [key,e]:g_cache)
-            g_unresolvedCached+=!e.Read || !e.Data.Extent.Valid || !e.Data.TransformValid || (!e.Data.HasSpline && (!e.Data.InteriorKnown || (!e.Data.InteriorOnly && !e.Data.CanonicalBlueprint)));
-        return true;
-    }
-    void ObserveBaseline(const MiniMapBuildingInventory::Record& r)
-    {
-        if(!g_comparison) return;
-        if(!r.HasTransform) { ++g_unresolved; return; }
-        // Preserve the existing ordinary discovery envelope. This does not claim
-        // worldwide completeness for unproven visual footprints beyond it.
-        if(!r.HasSpline && !Contains(Pad(g_comparison->Region,g_ordinaryQueryPadding),Box(r.Position[0],r.Position[1],0)))
-            return;
-        const auto* n=MiniMapNative::Get(); const Id id{r.Index,r.SerialNumber};
-        if(!Live(*n,id)) { ++g_unresolved; return; }
-        const auto* spline=r.HasSpline?static_cast<const SDK::FAuSplineConnectionFragment*>(Fragment(*n,id,g_types.Spline)):nullptr;
-        if(r.HasSpline && !spline) { ++g_unresolved; return; }
-
-        // Re-read native geometry/definition data independently of production
-        // records. All worldwide splines are examined, including origin-outside crossings.
-        Record geometry; geometry.Position=r.Position; geometry.Rotation=r.Rotation; geometry.Scale=r.Scale;
-        geometry.TransformValid=true; geometry.HasSpline=r.HasSpline;
-        const auto* parameters=Parameters(*n,id);
-        const auto* placement=parameters?parameters->PlacementData:nullptr;
-        const auto object=reinterpret_cast<uintptr_t>(placement);
-        int32_t serial=0;
-        // Independent native definition/tag observation: never consult production
-        // InteriorOnly, g_definitions or g_cache to decide baseline eligibility.
-        if(!g_types.Placement || !g_types.BuildingData || (object&7)!=0 || !MiniMapResidentMetadata::Serial(object,serial) ||
-            !MiniMapResidentMetadata::Validate(object,sizeof(SDK::UAuActorPlacementData)) ||
-            !IsClass(placement,g_types.Placement))
-        { ++g_unresolved; ++g_eligibilityUnknown; return; }
-        const auto kind=ObserveClass(placement,g_types.BuildingData);
-        auto tagResult=kind==ClassObservation::Unavailable?InteriorTagResult::Unknown:InteriorTagResult::Absent;
-        if(kind==ClassObservation::Matches)
-            tagResult=MiniMapResidentMetadata::Validate(object,sizeof(SDK::UCrBuildingData))
-                ?ReadInteriorTag(static_cast<const SDK::UCrBuildingData*>(placement))
-                :InteriorTagResult::Unknown;
-        if(tagResult==InteriorTagResult::Unknown)
-        { ++g_unresolved; ++g_eligibilityUnknown; return; }
-        if(tagResult==InteriorTagResult::Present)
-        { ++g_interiorExcluded; return; }
-        {
-            const auto key=Key(placement->Index,int32_t(placement->BuildingID));
-            auto [entry,inserted]=g_oracleDefinitions.try_emplace(key,Definition{uint32_t(placement->BuildingID),0xFF,
-                placement->Name.ComparisonIndex,placement->Name.Number});
-            if(!inserted && (entry->second.NameIndex!=placement->Name.ComparisonIndex || entry->second.NameNumber!=placement->Name.Number ||
-                entry->second.ObjectSerial!=serial))
-                entry->second=Definition{uint32_t(placement->BuildingID),0xFF,placement->Name.ComparisonIndex,placement->Name.Number};
-            entry->second.ObjectSerial=serial;
-            // Independent canonical acquisition; no production identity cache or
-            // eligibility helper supplies the oracle's expected membership.
-            if(!r.HasSpline && !entry->second.CanonicalBlueprint && !entry->second.IdentityInterrupted &&
-                entry->second.IdentityObservation!=g_oraclePass)
-            {
-                entry->second.IdentityObservation=g_oraclePass;
-                const auto result=MiniMapBuildingBlueprintIdentity::Resolve(placement,g_types.Placement,
-                    {placement->Index,placement->Name.ComparisonIndex,placement->Name.Number,uint32_t(placement->BuildingID),serial});
-                entry->second.CanonicalBlueprint=result.Path;
-                entry->second.IdentityInterrupted=result.State==MiniMapBuildingBlueprintIdentity::Status::Interrupted;
-            }
-            if(!r.HasSpline && !entry->second.CanonicalBlueprint) {++g_unresolved;++g_eligibilityUnknown;return;}
-            geometry.DefinitionShape=DefinitionShape(entry->second,placement,r.HasSpline,false);
-        }
-        const auto* targeting=static_cast<const SDK::FCrBuildingAggroTargetDataFragment*>(Fragment(*n,id,g_types.TargetBox));
-        Geometry(geometry,spline,targeting?&targeting->BuildingBoundingBox:nullptr,false);
-        g_unresolved+=geometry.UnboundedGeometry;
-        if(!geometry.UnboundedGeometry && !MiniMapBuildingGeometry::Intersects(geometry.Extent,g_comparison->Region)) return;
-
-        ++g_expected;
-        const auto key=Key(id);
-        if(g_remaining.erase(key)) return;
-        ++g_missingCount; g_missing.insert(key); g_persistent+=g_previousMissing.contains(key);
-        alignas(8) std::array<std::byte,0x28> view={};
-        n->gridDiagnostic.viewConstruct(view.data(),g_manager,id);
-        if(n->gridDiagnostic.viewHasTag(view.data(),g_types.Grid)) ++g_missingGrid;
-        else ++g_missingOff;
-    }
-    void EndComparison(size_t matching,double queryMs,double referenceMs)
-    {
-        if(!g_comparison) return;
-#if MINIMAP_DEBUG_UI
-        g_debugOracle={true,g_missingCount,g_persistent,g_stale,g_snapshotDuplicates,
-            g_expected,g_expected-g_missingCount,g_unresolvedCached,g_unresolved};
-#endif
-        // Unknown eligibility contributes to unresolvedWorldwide, never to expected
-        // or missing. cacheComplete remains the unchanged production snapshot bit.
-        LOG_INFO("MiniMap: BuildingCollector: oracle independent reacquisition (excluded from production acquisition counters) cadence=10s matching=%zu expected=%zu present=%zu missing=%zu repeatedMissing=%zu missingPath(off/grid)=%zu/%zu unresolvedCached=%zu duplicateSnapshot=%zu stale=%zu unresolvedWorldwide=%zu cacheComplete=%d query=%.3fms reference=%.3fms validation=%.3fms interiorExcluded=%zu eligibilityUnknown=%zu",
-            matching,g_expected,g_expected-g_missingCount,g_missingCount,g_persistent,g_missingOff,g_missingGrid,
-            g_unresolvedCached,g_snapshotDuplicates,g_stale,g_unresolved,int(g_comparison->Complete),
-            queryMs,referenceMs,queryMs+Ms(g_compareStart),g_interiorExcluded,g_eligibilityUnknown);
-        g_previousMissing.swap(g_missing); g_comparison.reset();
+        if(!initialized)return;GetSelf()->hooks->Engine->UnregisterOnTick(&OnTick);Reset();
+        MiniMapBuildingBlueprintIdentity::Shutdown();
+        if(const auto* n=MiniMapNative::Get())for(auto* root:metadata)n->asset.releaseObject(root);
+        metadata.clear();types={};initialized=false;
     }
 }
 #endif

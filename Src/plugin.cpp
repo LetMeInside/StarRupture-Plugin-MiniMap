@@ -39,7 +39,6 @@ static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
-#include "Map/Buildings/BuildingInventory.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Buildings/BuildingVisuals.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
@@ -203,7 +202,6 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
-    MiniMapBuildingInventory::Reset();
     MiniMapBuildingCollector::Reset();
     MiniMapBuildingVisuals::Reset();
     MiniMapPointsOfInterest::Reset();
@@ -235,7 +233,6 @@ static void OnExperienceLoadComplete()
 
     MiniMapFoundables::OnExperienceLoadComplete();
     MiniMapAlienActors::OnExperienceLoadComplete();
-    MiniMapBuildingInventory::OnExperienceLoadComplete();
     MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
@@ -292,7 +289,6 @@ static void OnAfterWorldEndPlay(
 
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
-    MiniMapBuildingInventory::Reset();
     MiniMapBuildingCollector::Reset();
     MiniMapBuildingVisuals::Reset();
     MiniMapPointsOfInterest::Reset();
@@ -415,11 +411,6 @@ extern "C"
         if (!MiniMapAlienActors::Initialize(g_self))
         {
             LOG_ERROR("MiniMap: Alien Actors initialization failed");
-        }
-
-        if (!MiniMapBuildingInventory::Initialize(g_self))
-        {
-            LOG_ERROR("MiniMap: building validation oracle initialization failed");
         }
 
         if (!MiniMapBuildingCollector::Initialize(g_self))
@@ -613,7 +604,6 @@ extern "C"
         MiniMapAlienActors::Shutdown();
         MiniMapBuildingVisuals::Shutdown();
         MiniMapBuildingCollector::Shutdown();
-        MiniMapBuildingInventory::Shutdown();
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();

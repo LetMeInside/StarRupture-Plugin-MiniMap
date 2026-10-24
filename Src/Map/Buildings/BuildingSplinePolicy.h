@@ -89,22 +89,8 @@ namespace MiniMapBuildingSplinePolicy
         }
     }
 
-    // Preserve the established per-instance tint/alpha behavior while
-    // multiplying RGB by the selected representative color. ImGui packing is
-    // R in the low byte, followed by G, B, then alpha.
-    inline uint32_t ApplyTint(uint32_t rgb,const std::array<float,4>& tint,uint8_t alpha)
-    {
-        auto factor=[](float value)
-        {return std::clamp(std::isfinite(value)?value:1.0f,0.0f,1.0f);};
-        auto channel=[&](uint32_t value,float amount)
-        {return uint32_t(std::lround(float(value)*factor(amount)));};
-        const uint32_t red=channel((rgb>>16)&0xFF,tint[0]);
-        const uint32_t green=channel((rgb>>8)&0xFF,tint[1]);
-        const uint32_t blue=channel(rgb&0xFF,tint[2]);
-        const uint32_t outputAlpha=uint32_t(std::lround(double(alpha)*factor(tint[3])));
-        return red|(green<<8)|(blue<<16)|(outputAlpha<<24);
-    }
-
-
+    // ImGui packing: R in the low byte, then G, B, alpha.
+    inline uint32_t Color(uint32_t rgb,uint8_t alpha)
+    {return ((rgb>>16)&255)|(rgb&0xFF00)|((rgb&255)<<16)|(uint32_t(alpha)<<24);}
 }
 #endif

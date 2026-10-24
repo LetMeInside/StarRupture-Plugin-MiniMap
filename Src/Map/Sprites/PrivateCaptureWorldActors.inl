@@ -677,10 +677,10 @@ void OfferBlueprint(const Candidate& candidate, uintptr_t selectedClass, uint32_
     { BlueprintQuarantine("gameplay world identity or baseline changed"); return; }
     if (!PrivateState(true))
     { BlueprintQuarantine("private capture world lifecycle validation failed"); return; }
-    if (candidate.Identity.Spline || candidate.Identity.TintBits!=MiniMapSpriteDiscoveryCore::Key{}.TintBits)
+    if (candidate.Identity.Spline)
     {
         blueprint.VisualIncomplete=true;
-        BlueprintLog("visual customization","observed","candidate has spline or tint customization not reproduced by the reference capture");
+        BlueprintLog("visual customization","observed","candidate has spline geometry not reproduced by the reference capture");
     }
     if (!MiniMapReadbackNative::Preflight()) { BlueprintFail("native ABI","shared GPU readback backend is unavailable",true); return; }
     if (!BlueprintBindings()) { BlueprintFail("native ABI", "native Actor destruction entry is unavailable",true); return; }

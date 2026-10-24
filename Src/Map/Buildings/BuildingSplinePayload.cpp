@@ -92,7 +92,6 @@ namespace
         G::SplineGeometry owned;
         G::CurveHull(owned.CenterlineBounds, segment.Controls, 2);
         owned.CenterlineBounds = G::Inflate(owned.CenterlineBounds, 0.01);
-        owned.Reconstructed = true;
         owned.Segments.push_back(segment);
         output = std::move(owned);
         return Result::Complete;

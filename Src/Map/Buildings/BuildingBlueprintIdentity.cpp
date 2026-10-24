@@ -1,182 +1,56 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingBlueprintIdentity.h"
 #include "Native/NativeApi.h"
-#include "Native/ResidentMetadata.h"
 #include "plugin_helpers.h"
 #include <SDK/AuActorPlacement_classes.hpp>
 #include <SDK/Engine_parameters.hpp>
 #include <Windows.h>
-#include <array>
-#include <new>
-#include <string_view>
-#include <type_traits>
-#include <utility>
-
 namespace
 {
-    namespace N = MiniMapNative;
-    namespace R = MiniMapResidentMetadata;
-    using Params = SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString;
-    static_assert(sizeof(Params) == 0x38 && offsetof(Params, ReturnValue) == 0x28);
-    static_assert(std::is_trivially_copyable_v<decltype(Params::SoftClassReference)>);
-    bool g_interrupted = false;
-
-    MiniMapBuildingBlueprintIdentity::Result Rejected(MiniMapBuildingBlueprintIdentity::Issue issue,
-        const char* detail, MiniMapBuildingBlueprintIdentity::Status state = MiniMapBuildingBlueprintIdentity::Status::Unavailable)
-    { return {{}, state, issue, detail}; }
-
-    template<class T> bool Read(uintptr_t address, T& value) { return N::ReadMemory(address, &value, sizeof(value)); }
-    bool Invoke(IPluginObjectWalker* walker, uintptr_t cdo, uintptr_t function, Params* params) noexcept
-    {
-        __try { return walker->InvokeResolvedUFunction(reinterpret_cast<void*>(cdo), reinterpret_cast<void*>(function), params); }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-    }
-    bool Free(IPluginMemoryUtils* memory, void* value) noexcept
-    {
-        __try { memory->Free(value); return true; }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-    }
-    bool Allocator(IPluginMemoryUtils* memory) noexcept
-    {
-        __try { return memory && memory->Free && memory->IsAllocatorAvailable && memory->IsAllocatorAvailable(); }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-    }
-    bool FindFunction(uintptr_t address, uintptr_t type, uintptr_t library, uintptr_t& function) noexcept
-    {
-        using Find = SDK::UObject*(*)(SDK::UClass*, SDK::UObject*, const wchar_t*, bool);
-        __try
-        {
-            function = reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(address)(reinterpret_cast<SDK::UClass*>(type),
-                reinterpret_cast<SDK::UObject*>(library), L"Conv_SoftClassReferenceToString", true));
-            return true;
-        }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-    }
-    bool Matches(uintptr_t definition, uintptr_t placementClass, MiniMapBuildingBlueprintIdentity::DefinitionIdentity expected)
-    {
-        int32_t index{}, name{}, serial{}; uint32_t number{}, building{}; uintptr_t type{};
-        if (!R::Validate(definition, sizeof(SDK::UAuActorPlacementData)) || !R::Validate(placementClass, sizeof(SDK::UClass)) ||
-            !Read(definition + 0xc, index) || index != expected.ObjectIndex || !Read(definition + 0x18, name) || name != expected.NameIndex ||
-            !R::Serial(definition, serial) || serial != expected.ObjectSerial ||
-            !Read(definition + 0x1c, number) || number != expected.NameNumber ||
-            !Read(definition + offsetof(SDK::UAuActorPlacementData, BuildingID), building) || building != expected.BuildingId ||
-            !Read(definition + 0x10, type)) return false;
-        for (unsigned depth = 0; type && depth < 64; ++depth)
-        {
-            if (!R::Validate(type, sizeof(SDK::UClass))) return false;
-            if (type == placementClass) return true;
-            uintptr_t parent{};
-            if (!Read(type + offsetof(SDK::UStruct, SuperStruct), parent) || parent == type) return false;
-            type = parent;
-        }
-        return false;
-    }
-    bool HasClassname(std::string_view path)
-    {
-        // The typed authored reference and checked conversion supply identity.
-        // Capture/cache naming support is a separate representation concern.
-        return !path.empty() && path!="None";
-    }
-
+    SDK::UObject* library=nullptr;
+    SDK::UFunction* conversion=nullptr;
 }
-
 namespace MiniMapBuildingBlueprintIdentity
 {
-    Result Resolve(const SDK::UAuActorPlacementData* definition, const SDK::UClass* placementClass, DefinitionIdentity identity)
+    bool Initialize()
     {
-        if (g_interrupted) return Rejected(Issue::ConversionDisabled, "conversion disabled after uncertain native ownership");
-        if (!R::Available()) return {};
-        auto* hooks = GetHooks();
-        auto* memory = hooks ? hooks->Memory : nullptr;
-        auto* walker = hooks ? hooks->ObjectWalker : nullptr;
-        auto* engine = hooks ? hooks->Engine : nullptr;
-        const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
-        if (!Allocator(memory) || !walker || !walker->InvokeResolvedUFunction || !find)
-            return Rejected(Issue::InvocationPrerequisites, "allocator/invocation/find prerequisites unavailable");
-        const auto object = reinterpret_cast<uintptr_t>(definition), placement = reinterpret_cast<uintptr_t>(placementClass);
-        if (!Matches(object, placement, identity)) return Rejected(Issue::DefinitionIdentity, "definition identity observation/validation failed");
-        // Only synchronous temporary roots; no native destructor, cached pointer,
-        // audit context or identity registry. Unknown native ownership is leaked
-        // conservatively and disables conversion until restart, with a diagnostic.
-        std::array<uintptr_t, 6> roots{};
-        size_t count = 0;
-        Params params{};
-        bool interrupted = false;
-        const auto keep = [&](uintptr_t value, size_t extent)
-        { if (!R::Retain(value, extent)) return false; roots[count++] = value; return true; };
-        const auto metadata = [&](const wchar_t* path, size_t size)
-        { const auto value = R::Acquire(path, false, size); if (value) roots[count++] = value; return value; };
-        const auto convert = [&]() -> Result
-        {
-            if (!keep(placement, sizeof(SDK::UClass)) || !keep(object, sizeof(SDK::UAuActorPlacementData)) || !Matches(object, placement, identity))
-                return Rejected(Issue::RetainDefinition, "definition retention/identity validation failed");
-            // Borrowed shallow copy; the retained definition owns subpath storage.
-            if (!Read(object + offsetof(SDK::UAuActorPlacementData, ActorClass), params.SoftClassReference))
-                return Rejected(Issue::SoftClassRead, "ActorClass memory read failed");
-            const auto& path = params.SoftClassReference.ObjectID;
-            const auto* subpath = path.SubPathString.CStr();
-            const auto length = path.SubPathString.Num(), capacity = path.SubPathString.Max();
-            if (path.AssetPath.PackageName.ComparisonIndex < 0 || path.AssetPath.AssetName.ComparisonIndex < 0 ||
-                length < 0 || capacity < length || capacity > 1024 ||
-                (capacity && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(subpath), size_t(length ? length : 1) * sizeof(*subpath), alignof(decltype(*subpath))) ||
-                    (length && subpath[length - 1] != 0))))
-                return Rejected(Issue::SoftPath, "soft class path structure/subpath rejected", Status::Invalid);
-            const auto functionClass = metadata(L"/Script/CoreUObject.Function", sizeof(SDK::UFunction));
-            const auto library = metadata(L"/Script/Engine.KismetSystemLibrary", sizeof(SDK::UKismetSystemLibrary));
-            if (!functionClass || !library) return Rejected(Issue::ConversionMetadata, "conversion function/library metadata not resident");
-            uintptr_t function{}, type{}, outer{}, exec{}, cdo{}; uint32_t flags{}; uint8_t parameters{}; uint16_t bytes{};
-            if (!FindFunction(find, functionClass, library, function))
-            { interrupted = true; return Rejected(Issue::FunctionLookup, "conversion function lookup interrupted", Status::Interrupted); }
-            if (!function || !keep(function, sizeof(SDK::UFunction)) || !Read(function + 0x10, type) || type != functionClass ||
-                !Read(function + 0x20, outer) || outer != library ||
-                !Read(function + offsetof(SDK::UFunction, FunctionFlags), flags) || (flags & 0x2400) != 0x2400 ||
-                !Read(function + offsetof(SDK::UFunction, ExecFunction), exec) || !exec ||
-                !Read(function + 0xb4, parameters) || parameters != 2 || !Read(function + 0xb6, bytes) || bytes != sizeof(Params))
-                return Rejected(Issue::FunctionMetadata, "conversion function identity/signature observation rejected");
-            if (!Read(library + offsetof(SDK::UClass, ClassDefaultObject), cdo) || !keep(cdo, sizeof(SDK::UKismetSystemLibrary)) ||
-                !Read(cdo + 0x10, type) || type != library || !Read(cdo + 8, flags) || !(flags & 0x10) || !R::Available())
-                return Rejected(Issue::LibraryDefaultObject, "conversion library CDO/admission observation rejected");
-            if (!Invoke(walker, cdo, function, &params))
-            { interrupted = true; return Rejected(Issue::Invocation, "soft class string conversion interrupted", Status::Interrupted); }
-            const auto& value = params.ReturnValue;
-            const auto* text = value.CStr();
-            const auto num = value.Num(), max = value.Max();
-            // Validate only the actual returned allocation before reading its text.
-            // The established structural bound also bounds UTF-8 allocation.
-            if (num < 0 || max < num || max > 65536 || (max && !text) || (!max && text) ||
-                (num && (!N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(text), size_t(num) * sizeof(wchar_t), alignof(wchar_t)) || text[num - 1] != 0)))
-            { interrupted = true; return Rejected(Issue::ReturnedAllocation, "returned string allocation malformed/unreadable", Status::Interrupted); } // Cannot safely free a malformed returned allocation.
-            if (num <= 1) return Rejected(Issue::ReturnedLength, "returned classname is empty", Status::Invalid);
-            for (int32_t i = 0; i < num - 1; ++i) if (text[i] < 32 || text[i] == 127)
-                return Rejected(Issue::ReturnedCharacter, "returned classname contains control characters", Status::Invalid);
-            if (!Matches(object, placement, identity)) return Rejected(Issue::DefinitionChanged, "definition identity revalidation failed after conversion");
-            try
-            {
-                const auto size=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text,num-1,nullptr,0,nullptr,nullptr);
-                if(size<=0)return Rejected(Issue::CanonicalPath,"classname UTF-8 conversion rejected",Status::Invalid);
-                std::string utf8(size_t(size),'\0');
-                if(WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text,num-1,utf8.data(),size,nullptr,nullptr)!=size || !HasClassname(utf8))
-                    return Rejected(Issue::CanonicalPath,"classname unavailable/invalid UTF-8",Status::Invalid);
-                return {std::make_shared<const std::string>(std::move(utf8)),Status::Resolved};
-            }
-            catch(const std::bad_alloc&) {return Rejected(Issue::Allocation,"classname CPU allocation failed");}
-            // All CPU exits still follow the checked native string/root cleanup.
-
-        };
-        auto result = convert();
-        if (interrupted || (params.ReturnValue.CStr() && !Free(memory, params.ReturnValue.CStr())))
-        {
-            g_interrupted = true;
-            LOG_ERROR("MiniMap: authored Blueprint identity native invocation/result ownership uncertain; no speculative string release or retry, remaining native roots retained, conversion disabled until restart");
-            return result.State == Status::Interrupted ? result : Rejected(Issue::NativeCleanup, "returned string release interrupted", Status::Interrupted);
-        }
-        for (size_t i = count; i > 0; --i)
-            if (!R::Release(roots[i - 1])) return Rejected(Issue::NativeCleanup, "temporary native root release failed", Status::Interrupted);
-        return result;
+        if(library && conversion)return true;
+        const auto* n=MiniMapNative::Get();auto* hooks=GetHooks();
+        if(!n || !hooks || !hooks->Engine || !hooks->ObjectWalker || !hooks->Memory)return false;
+        const auto address=hooks->Engine->GetStaticFindObjectByNameAddress();
+        if(!address)return false;
+        using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
+        const auto find=reinterpret_cast<Find>(address);
+        auto* type=static_cast<SDK::UClass*>(find(nullptr,nullptr,L"/Script/Engine.KismetSystemLibrary",false));
+        auto* functionType=static_cast<SDK::UClass*>(find(nullptr,nullptr,L"/Script/CoreUObject.Function",false));
+        auto* function=type && functionType?static_cast<SDK::UFunction*>(find(functionType,type,L"Conv_SoftClassReferenceToString",true)):nullptr;
+        if(!type || !type->ClassDefaultObject || !function)return false;
+        n->asset.retainObject(type->ClassDefaultObject);n->asset.retainObject(function);
+        library=type->ClassDefaultObject;conversion=function;return true;
+    }
+    void Shutdown()
+    {
+        if(const auto* n=MiniMapNative::Get())
+        {if(conversion)n->asset.releaseObject(conversion);if(library)n->asset.releaseObject(library);}
+        conversion=nullptr;library=nullptr;
+    }
+    std::shared_ptr<const std::string> Copy(const SDK::UAuActorPlacementData& definition)
+    {
+        if(!library || !conversion)return {};
+        using Params=SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString;
+        Params params{};params.SoftClassReference=definition.ActorClass;
+        auto* hooks=GetHooks();
+        // The engine owns the input soft path; the returned FString owns a new
+        // allocation and must be freed even if UTF-8 allocation throws.
+        struct StringOwner {Params& P;IPluginMemoryUtils* Memory;~StringOwner(){if(P.ReturnValue.CStr())Memory->Free(P.ReturnValue.CStr());}} owner{params,hooks->Memory};
+        if(!hooks->ObjectWalker->InvokeResolvedUFunction(library,conversion,&params))return {};
+        const auto& value=params.ReturnValue;const auto count=value.Num();
+        if(count<=1 || value.Max()<count || !value.CStr() || value.CStr()[count-1]!=0)return {};
+        const int size=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,value.CStr(),count-1,nullptr,0,nullptr,nullptr);
+        if(size<=0)return {};
+        std::string path(size_t(size),'\0');
+        if(WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,value.CStr(),count-1,path.data(),size,nullptr,nullptr)!=size || path=="None")return {};
+        return std::make_shared<const std::string>(std::move(path));
     }
 }
 #endif

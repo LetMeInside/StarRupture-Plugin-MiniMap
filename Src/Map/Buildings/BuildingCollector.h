@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-namespace MiniMapBuildingInventory { struct Record; }
-namespace MiniMapBuildingSplineEnvelope { struct Result; }
 namespace SDK { class UObject; }
 namespace MiniMapBuildingCollector
 {
@@ -21,7 +19,6 @@ namespace MiniMapBuildingCollector
         double MinX = 0, MinY = 0, MaxX = 0, MaxY = 0;
         bool Valid = false;
     };
-    enum class Coverage : uint8_t { Unresolved, OriginPadding, SplineHull, OrdinaryProxy };
     enum class GeometryIssue : uint8_t
     {
         None, MissingSource, Uninitialized, Looped, InvalidArray, InvalidCurve,
@@ -34,23 +31,9 @@ namespace MiniMapBuildingCollector
         bool Valid = false;
         bool operator==(const LocalBounds&) const = default;
     };
-    // Definition-shared copied metadata. A gameplay targeting box is NOT proof
-    // of the complete visual footprint. Safety allowances remain explicit.
     struct DefinitionGeometry
     {
-        LocalBounds TargetingBox;
-        LocalBounds SplineMeshBounds;
-        double SplineMeshCrossSection = 0, RailEndpointExtension = 0;
-        // Legacy owned layout/fixture fields; no native acquisition or rendering
-        // consumer. Profile bindings use their separate authoritative identities.
-        int32_t VisualClassObjectIndex = 0;
-        int32_t SplineMeshObjectIndex = 0;
-        int32_t SplineMeshNameIndex = 0;
-        uint32_t SplineMeshNameNumber = 0;
-        bool HasSplineMesh = false, HasRailExtension = false;
-        GeometryIssue Issue = GeometryIssue::MissingSource;
         std::shared_ptr<const MiniMapBuildingSplineProfiles::Set> Profiles;
-        bool operator==(const DefinitionGeometry&) const = default;
     };
     struct CurveSegment
     {
@@ -65,9 +48,7 @@ namespace MiniMapBuildingCollector
         std::vector<CurveSegment> Segments;
         Bounds CenterlineBounds;
         GeometryIssue Issue = GeometryIssue::None;
-        bool Reconstructed = false;
     };
-    enum Source : uint8_t { Indexed = 1, OffGrid = 2, IndexedSpline = 4 };
     struct Record
     {
         uint64_t Generation = 0;
@@ -75,45 +56,17 @@ namespace MiniMapBuildingCollector
         uint32_t BuildingId = 0;
         int32_t DefinitionIndex = 0;
         uint32_t DefinitionNumber = 0;
-        int32_t DefinitionObjectSerial = 0; // Copied lifetime discriminator, never a native pointer.
-        int32_t DefinitionObjectIndex = 0; // World-scoped metadata identity; no UObject pointer.
-        uint8_t Category = 0xFF, Sources = 0;
-        bool TransformValid = false, DefinitionValid = false, HasSpline = false, InteriorKnown = false, InteriorOnly = false;
-        // Acquisition state is separate from render eligibility. Settlement is
-        // acknowledged only after initialized, authoritative numerical preparation.
-        bool AcquisitionAttempted = false, StaticAcquired = false, DynamicObserved = false;
-        bool StaticResolved() const noexcept { return StaticAcquired && !HasSpline && !DynamicObserved; }
-        bool SplineReady = false, SplineSettled = false, SplineTintKnown = false;
-        uint64_t RenderRevision = 0; // Exact render-input transitions, not observation time.
-        // Stage 41I: latest copied diagnostic evidence only. Never compared for
-        // rendering, used for eligibility, or used as a lifetime certificate.
-        struct AuditState
-        {
-            uint64_t PreparedRevision = 0;
-            uint8_t Acquisition = 0; // attempted/valid/built/fresh transform/fresh placement
-            uint8_t Preparation = 0; // observed/complete sampling/eligible
-            uint8_t Acknowledgement = 0;
-        } Audit;
+        // Copied definition names/index are used only by the existing private
+        // capture diagnostics, never as native lifetime certificates.
+        int32_t DefinitionObjectIndex = 0;
+        bool TransformValid = false, DefinitionValid = false, HasSpline = false;
+        bool InteriorKnown = false, InteriorOnly = false;
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
-        std::array<float, 4> Tint = { 1, 1, 1, 1 };
         Bounds Extent;
-        Bounds SourceFootprint; // Transformed targeting proxy, separate from admission fallback.
-        LocalBounds LocalFootprint;
-        // Owned copied facts. A failed refresh does not erase them; a positively
-        // observed identity change or entity/scope removal invalidates them.
-        // An ordinary instance is eligible with TransformValid, this canonical
-        // path and known non-Interior classification. Sprite availability is separate.
         std::shared_ptr<const std::string> CanonicalBlueprint;
         std::shared_ptr<const DefinitionGeometry> DefinitionShape;
         std::shared_ptr<const SplineGeometry> Curve;
-        double SplineInflation = 0; // Includes named width/cap fallback; not a measured half-width.
-        GeometryIssue GeometryStatus = GeometryIssue::MissingSource;
-        bool UsesSafetyAllowance = true;
-        bool InvalidFootprintSource = false;
-        bool UnboundedGeometry = false; // Unresolved spline: explicitly admit, never silently lose crossings.
-        Coverage BoundsKind = Coverage::Unresolved;
-        double RefreshedAtSeconds = 0; // steady_clock observation telemetry, not a render revision.
     };
     struct Snapshot
     {
@@ -128,9 +81,6 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
-    // Game-thread visual preparation acknowledgement. Uses copied inputs and
-    // current Mass lifetime only; never reopens placement or profile objects.
-    void ObserveSplinePreparation(const Record&, const MiniMapBuildingSplineEnvelope::Result&);
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Caller must be on the game thread. Borrowing ends when visitor returns.
     // Revalidates the Mass identity; does not resolve the copied UObject index.
@@ -138,9 +88,5 @@ namespace MiniMapBuildingCollector
     DiagnosticVisitStatus VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
 #endif
     void Shutdown();
-    // Diagnostic sink only. Never used to populate production records/caches.
-    bool BeginComparison(const SDK::UWorld* world, const void* manager);
-    void ObserveBaseline(const MiniMapBuildingInventory::Record& record);
-    void EndComparison(size_t matching, double queryMs, double referenceMs);
 }
 #endif

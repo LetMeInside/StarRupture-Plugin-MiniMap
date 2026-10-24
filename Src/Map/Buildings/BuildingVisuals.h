@@ -36,72 +36,15 @@ namespace MiniMapBuildingVisuals
             const double area=E::Area(profile.Vertices[a],profile.Vertices[b],profile.Vertices[c]);
             return std::isfinite(area) && area!=0;
         }
-        inline bool Eligible(const E::Profile& geometry,const P::Set& metadata)
-        {
-            if(!Drawable(geometry.Status) || geometry.SourceProfile>=metadata.Profiles.size() ||
-                geometry.Indices.empty() || geometry.Indices.size()%3)return false;
-            if(geometry.SyntheticThin)return false; // Never interpret as a native owner/seal.
-            const auto& source=metadata.Profiles[geometry.SourceProfile];
-            if(!source.Geometry || source.Geometry!=geometry.Geometry ||
-                source.Geometry->LocalBounds.Status!=P::Availability::Available ||
-                (source.Source==P::Selection::Candidate && !source.SplineTemplate) ||
-                source.Ownership!=geometry.Ownership ||
-                (P::Copied(source)?(!source.CopyObservation || source.CopyObservation!=geometry.CopyObservation):
-                    (source.VisualClass.Status!=P::Availability::Available || source.VisualClass.Value!=geometry.VisualClass)) ||
-                source.Provenance!=geometry.Provenance ||
-                source.HighResolution!=geometry.HighResolution)return false;
-            for(size_t first=0;first<geometry.Indices.size();first+=3)if(WorldTriangle(geometry,first))return true;
-            return false;
-        }
-        inline const E::Profile* SelectRepresentation(const E::Result& geometry,const P::Set& metadata,bool high,
-            P::Origin provenance=P::Origin::MassRepresentation)
-        {
-            auto key=[&](const E::Profile& profile)
-            {
-                const auto& source=metadata.Profiles[profile.SourceProfile];
-                // A copied observation is ordered only within its immutable
-                // snapshot, never by missing identities or native addresses.
-                if(P::Copied(source))return std::array<int64_t,12>{0,1,1,
-                    int64_t(source.Construction.Value),int64_t(profile.SourceProfile)};
-                return std::array<int64_t,12>{source.Source==P::Selection::NativeBuilderInput?0:1,
-                    source.ActiveUse==P::Availability::Available?0:1,0,
-                    source.VisualClass.Value.Index,source.VisualClass.Value.Serial,
-                    source.TemplateOwner.Value.Index,source.TemplateOwner.Value.Serial,
-                    source.Template.Value.Index,source.Template.Value.Serial,
-                    source.Defaults.Value.Index,source.Defaults.Value.Serial,int64_t(profile.SourceProfile)};
-            };
-            const E::Profile* selected=nullptr;
-            for(const auto& profile:geometry.Profiles)
-            {
-                if(profile.Provenance!=provenance || (provenance==P::Origin::MassRepresentation && profile.HighResolution!=high) ||
-                    !Eligible(profile,metadata))continue;
-                if(!selected || key(profile)<key(*selected))selected=&profile;
-            }
-            return selected;
-        }
         inline const E::Profile* SelectSpline(const C::Record& record,const E::Result& geometry)
         {
-            if(geometry.SyntheticThin)
-            {
-                if(!E::ThinIdentity(record) || !Drawable(geometry.Status) || geometry.Policy!=E::NumericalPolicy ||
-                    geometry.Generation!=record.Generation || geometry.Entity!=P::Identity{record.Index,record.Serial} ||
-                    geometry.Definition!=P::Identity{record.DefinitionObjectIndex,record.DefinitionObjectSerial} ||
-                    !E::NumericalEquivalent(record,geometry.Sampling.get(),geometry,true) || geometry.Profiles.size()!=1)return nullptr;
-                const auto& profile=geometry.Profiles[0];
-                if(!profile.SyntheticThin || profile.Geometry || profile.CopyObservation || !Drawable(profile.Status) ||
-                    profile.Indices.empty() || profile.Indices.size()%3)return nullptr;
-                for(size_t first=0;first<profile.Indices.size();first+=3)if(!WorldTriangle(profile,first))return nullptr;
-                return &profile;
-            }
-            const auto metadata=E::Metadata(record);
-            if(!record.HasSpline || !record.DefinitionValid || !Drawable(geometry.Status) || !metadata ||
-                geometry.Generation!=record.Generation || geometry.Entity!=P::Identity{record.Index,record.Serial} ||
-                geometry.Definition!=P::Identity{record.DefinitionObjectIndex,record.DefinitionObjectSerial} ||
-                metadata->Generation!=geometry.Generation || metadata->Definition.Status!=P::Availability::Available ||
-                metadata->Definition.Value!=geometry.Definition)return nullptr;
-            if(const auto* high=SelectRepresentation(geometry,*metadata,true))return high;
-            if(const auto* low=SelectRepresentation(geometry,*metadata,false))return low;
-            return SelectRepresentation(geometry,*metadata,false,P::Origin::PlacementActorClass);
+            if(!record.HasSpline || !Drawable(geometry.Status) ||
+                !E::NumericalEquivalent(record,geometry.Sampling.get(),geometry,geometry.SyntheticThin))return nullptr;
+            for(const auto& profile:geometry.Profiles)
+                if(Drawable(profile.Status) && !profile.Indices.empty() && profile.Indices.size()%3==0)
+                    for(size_t first=0;first<profile.Indices.size();first+=3)
+                        if(WorldTriangle(profile,first))return &profile;
+            return nullptr;
         }
         inline SplineSubmission SubmitSpline(IModLoaderImGui* ui,PluginDrawList list,const MiniMapMap::Transform& transform,
             const C::Record& record,const E::Result& geometry,const C::Bounds& viewport,uint32_t color,

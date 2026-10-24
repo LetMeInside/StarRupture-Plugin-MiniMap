@@ -6,10 +6,10 @@
 #include "BuildingScheduler.h"
 #include "BuildingAtlas.h"
 #include "BuildingVisualGeometry.h"
+#include "BuildingSpriteGeometry.h"
 #include "BuildingSplineGeometry.h"
 #include "BuildingSplinePolicy.h"
 #include "BuildingSplineEnvelope.h"
-#include "BuildingSplineDiagnostics.h"
 #include "BuildingSplineOcclusionRender.h"
 #include "BuildingGeometry.h"
 #include "BuildingVisibilityTrace.h"
@@ -44,7 +44,7 @@ namespace
         uint8_t(SDK::EInterpCurveMode::CIM_CurveAutoClamped)==5);
     using Clock = std::chrono::steady_clock;
     constexpr auto kDebugInterval = std::chrono::seconds(5);
-    constexpr uint8_t kSplineFillOpacity=255; // Color multiplies by clamped record alpha, preserving zero.
+    constexpr uint8_t kSplineFillOpacity=255; // Fixed category opacity; no instance customization.
     struct Instance
     {
         C::Record SpriteSource;
@@ -56,7 +56,6 @@ namespace
         std::shared_ptr<const S::PreparedCurve> PreparedSpline;
         std::shared_ptr<const MiniMapBuildingSplineEnvelope::Result> PreparedEnvelope;
         MiniMapBuildingSplinePolicy::SplineCategory SplineCategory=MiniMapBuildingSplinePolicy::SplineCategory::Other;
-        std::array<float,4> Tint={1,1,1,1};
         double Elevation=0;
         int32_t EntityIndex=0,EntitySerial=0;
         bool Spline=false, Unresolved=false;
@@ -136,7 +135,6 @@ namespace
         }
     }
     BuildingVisualsTimingTotals g_buildingVisualsTiming;
-    MiniMapBuildingSplineEnvelope::ReuseCounts g_envelopeReuse;
     bool g_initialized=false;
     uint64_t g_generation=0;
     std::shared_ptr<const C::Snapshot> g_lastInput;
@@ -197,7 +195,7 @@ namespace
             self->logger->Warn(self,"MiniMap: sprite visibility: generation=%llu entity=%d:%d building=%u definition=%d stage=%s state=%s canonical=%s tintAlpha=%.3f event=%zu/128",
                 static_cast<unsigned long long>(g_trace.Generation),id.Index,id.Serial,id.Building,id.Definition,
                 stages[unsigned(stage)],V::Name(state),record&&record->CanonicalBlueprint?record->CanonicalBlueprint->c_str():"unavailable",
-                record?double(record->Tint[3]):-1.0,g_trace.Events); }
+                record?1.0:-1.0,g_trace.Events); }
         catch(...) {} // Diagnostics cannot alter visibility/admission.
     }
     TraceTargets TraceFrame(const std::shared_ptr<const C::Snapshot>& current,
@@ -256,68 +254,13 @@ namespace
         g_generation=0; g_lastInput.reset(); g_nextDebug={};
         g_prepareMax=0; g_prepareCount=0;
         std::scoped_lock lock(g_mutex); g_published.reset(); g_render={};g_buildingVisualsTiming={};g_debugText.clear();
-        g_envelopeReuse={};
         g_nextSplineDebug={};
 #if MINIMAP_DEBUG_UI
         g_splineDebugText.clear();
 #endif
         g_renderMax=0; g_renderCount=0;g_planReuses=0;g_planRebuilds=0;
     }
-    uint32_t Color(const std::array<float,4>& tint,uint8_t alpha)
-    {
-        auto channel=[](float v)->uint32_t { return uint32_t(std::lround(std::clamp(std::isfinite(v)?v:1.0f,0.0f,1.0f)*255)); };
-        return channel(tint[0])|(channel(tint[1])<<8)|(channel(tint[2])<<16)|
-            (uint32_t(std::lround(double(alpha)*std::clamp(std::isfinite(tint[3])?tint[3]:1.0f,0.0f,1.0f)))<<24);
-    }
-    bool BuildWorldQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
-        std::array<G::XY,4>& corners)
-    {
-        if (!record.TransformValid) return false;
-        for (double value:entry.Region) if (!std::isfinite(value) || value<0 || value>1) return false;
-        if (!(entry.Region[2]>entry.Region[0] && entry.Region[3]>entry.Region[1])) return false;
-        double norm=0;
-        for (double q:record.Rotation) { if (!std::isfinite(q)) return false; norm+=q*q; }
-        if (!std::isfinite(norm) || !(norm>0)) return false;
-        const double inverse=1/std::sqrt(norm);
-        const double x=record.Rotation[0]*inverse,y=record.Rotation[1]*inverse,
-            z=record.Rotation[2]*inverse,w=record.Rotation[3]*inverse;
-        // Apply the copied transform, including tilt and signed scale. Only a
-        // nonfinite/degenerate projected quad is unrepresentable; these are not
-        // additional building-instance eligibility rules.
-        std::array<double,3> center{},extent{};
-        for (size_t axis=0;axis<3;++axis)
-        {
-            if (!std::isfinite(record.Position[axis]) || !std::isfinite(record.Scale[axis]) ||
-                !std::isfinite(entry.Min[axis]) || !std::isfinite(entry.Max[axis]) ||
-                entry.Max[axis]<entry.Min[axis]) return false;
-            center[axis]=entry.Min[axis]*0.5+entry.Max[axis]*0.5;
-            extent[axis]=entry.Max[axis]*0.5-entry.Min[axis]*0.5;
-        }
-        if (!(extent[0]>0 && extent[1]>0)) return false;
-        // Match the float OrthoWidth actually assigned by ConfigureSceneCapture.
-        const double halfWidth=double(float(2*(std::max)(extent[0],extent[1])*1.1))*0.5;
-        if (!std::isfinite(halfWidth) || !(halfWidth>0)) return false;
-        const auto& rect=entry.SourceRect;
-        for (double value:rect) if (!std::isfinite(value)) return false;
-        if (rect[0]<0 || rect[1]<0 || rect[0]>=256 || rect[1]>=256 || rect[2]<=rect[0] || rect[3]<=rect[1]) return false;
-        const double left=rect[0],top=rect[1],right=rect[2],bottom=rect[3];
-        const std::array<std::array<double,2>,4> source{{{left,top},{right,top},{right,bottom},{left,bottom}}};
-        for (size_t i=0;i<source.size();++i)
-        {
-            // Capture rotation (-90,-90,0): image right=+X, image down=+Y.
-            // Source pixel BOUNDARIES, not atlas UVs; keep asymmetric crop and
-            // Actor-origin offset. FTransform applies signed scale before rotation.
-            const std::array<double,3> v{{(center[0]+halfWidth*(2*source[i][0]/256-1))*record.Scale[0],
-                (center[1]+halfWidth*(2*source[i][1]/256-1))*record.Scale[1],center[2]*record.Scale[2]}};
-            for (double value:v) if (!std::isfinite(value)) return false;
-            const double tx=2*(y*v[2]-z*v[1]),ty=2*(z*v[0]-x*v[2]),tz=2*(x*v[1]-y*v[0]);
-            const std::array<double,3> world{{record.Position[0]+v[0]+w*tx+y*tz-z*ty,
-                record.Position[1]+v[1]+w*ty+z*tx-x*tz,record.Position[2]+v[2]+w*tz+x*ty-y*tx}};
-            for (double value:world) if (!std::isfinite(value)) return false;
-            corners[i]={world[0],world[1]};
-        }
-        return true;
-    }
+    using MiniMapBuildingSpriteGeometry::BuildWorldQuad;
     // Candidate A: copy the stable transform once per quad after its Valid guard.
     // Keep every dynamic numerical guard and both float rounding stages.
     struct PreparedTransform : MiniMapMap::Transform {
@@ -470,118 +413,11 @@ namespace
             quad.State=BuildWorldQuad(record,entry,quad.Corners)?WorldQuad::Status::Valid:WorldQuad::Status::Invalid;
         return quad.State==WorldQuad::Status::Valid && ProjectWorldQuad(quad.Corners,transform,points,bounds);
     }
-    void ReportSplineInputs()
-    {
-        const auto now=Clock::now();if(now<g_nextSplineDebug)return;
-        std::shared_ptr<const Snapshot> snapshot;
-        {std::scoped_lock lock(g_mutex);snapshot=g_published;}
-        if(!snapshot)return;
-        g_nextSplineDebug=now+kDebugInterval;
-        try
-        {
-            MiniMapBuildingSplineDiagnostics::Summary summary;
-            size_t currentSplines=0,currentSampled=0,currentComplete=0,currentEnvelopes=0,currentSelected=0;
-            for(const auto& instance:snapshot->Instances)if(instance.Spline)
-            {
-                ++currentSplines;currentSampled+=bool(instance.PreparedSpline);
-                currentComplete+=instance.PreparedSpline && instance.PreparedSpline->Complete();
-                currentEnvelopes+=bool(instance.PreparedEnvelope);
-                const bool selected=instance.PreparedEnvelope && MiniMapBuildingVisuals::Detail::SelectSpline(instance.SpriteSource,*instance.PreparedEnvelope);
-                currentSelected+=selected;
-                summary.Add(instance.SpriteSource,instance.PreparedSpline.get(),instance.PreparedEnvelope.get(),selected);
-            }
-            const auto text=summary.Text();
-            const auto acquisition=summary.AcquisitionText();
-            RenderStats rendered;size_t reuses=0,rebuilds=0;BuildingVisualsTimingTotals phases;
-            MiniMapBuildingSplineEnvelope::ReuseCounts envelopes;
-            {std::scoped_lock lock(g_mutex);rendered=g_render;reuses=g_planReuses;rebuilds=g_planRebuilds;
-                envelopes=g_envelopeReuse;g_envelopeReuse={};
-                g_planReuses=0;g_planRebuilds=0;phases=g_buildingVisualsTiming;g_buildingVisualsTiming={};}
-            LOG_INFO("MiniMap: spline envelope reuse: checks=%llu reused=%llu rebuilt=%llu noPrevious=%llu differentInputs=%llu currentSplineRecords=%zu currentSampled=%zu currentCompleteSampling=%zu currentEnvelopes=%zu currentSelected=%zu",
-                static_cast<unsigned long long>(envelopes.Checks),static_cast<unsigned long long>(envelopes.Reused),
-                static_cast<unsigned long long>(envelopes.Rebuilt),static_cast<unsigned long long>(envelopes.NoPrevious),
-                static_cast<unsigned long long>(envelopes.DifferentInputs),currentSplines,currentSampled,currentComplete,currentEnvelopes,currentSelected);
-            LOG_INFO("MiniMap: shared thin spline: identifiedDroneRails=%llu syntheticPreparations=%llu drawableWithoutNativeProfiles=%llu unknownTypeSplines=%llu rejectedRailGeometry=%llu submittedRailRecords=%zu railBodyTriangles(lastFrame/interval)=%zu/%llu",
-                static_cast<unsigned long long>(envelopes.IdentifiedRails),static_cast<unsigned long long>(envelopes.ThinPreparations),
-                static_cast<unsigned long long>(envelopes.ThinDrawable),static_cast<unsigned long long>(envelopes.UnknownSplineTypes),
-                static_cast<unsigned long long>(envelopes.ThinRejected),rendered.SplineRails,rendered.RailBodyTriangles,
-                static_cast<unsigned long long>(phases.RailBodyTriangles));
-            LOG_INFO("MiniMap: spline occlusion: submittedRecords=%zu fullyOccluded=%zu failedSections=%zu invalidSections=%zu plannerFailures=%zu allocationFailures=%zu stale=%zu invalidOccluders=%zu fragmentTriangles=%zu planReuse=%zu planRebuild=%zu",
-                rendered.Splines,rendered.FullyOccluded,rendered.FailedSections,rendered.InvalidSections,rendered.PlannerFailures,
-                rendered.AllocationFailures,rendered.StalePlans,rendered.InvalidOccluders,rendered.Triangles,reuses,rebuilds);
-            LOG_INFO("MiniMap: BuildingVisuals render phases: samples=%llu snapshotAcquireMs(total/mean/max)=%.3f/%.3f/%.3f lifecycleWaitMs=%.3f/%.3f/%.3f ordinaryMs=%.3f/%.3f/%.3f splinePlanMs=%.3f/%.3f/%.3f splineSubmitMs=%.3f/%.3f/%.3f baseCoreFinalizeMs=%.3f/%.3f/%.3f totalMs=%.3f/%.3f/%.3f unaccountedMs=%.3f/%.3f/%.3f",
-                static_cast<unsigned long long>(phases.RenderTotal.Samples),
-                phases.SnapshotAcquire.TotalMs,phases.SnapshotAcquire.MeanMs(),phases.SnapshotAcquire.MaxMs,
-                phases.LockWait.TotalMs,phases.LockWait.MeanMs(),phases.LockWait.MaxMs,
-                phases.Ordinary.TotalMs,phases.Ordinary.MeanMs(),phases.Ordinary.MaxMs,
-                phases.PlanPreparation.TotalMs,phases.PlanPreparation.MeanMs(),phases.PlanPreparation.MaxMs,
-                phases.SplineSubmission.TotalMs,phases.SplineSubmission.MeanMs(),phases.SplineSubmission.MaxMs,
-                phases.BaseCoreAndFinalize.TotalMs,phases.BaseCoreAndFinalize.MeanMs(),phases.BaseCoreAndFinalize.MaxMs,
-                phases.RenderTotal.TotalMs,phases.RenderTotal.MeanMs(),phases.RenderTotal.MaxMs,
-                phases.Unaccounted.TotalMs,phases.Unaccounted.MeanMs(),phases.Unaccounted.MaxMs);
-            LOG_INFO("MiniMap: BuildingVisuals render workload: samples=%llu preparedInstances=%llu ordinarySubmitted=%llu splineRequests=%llu planReuse=%llu planRebuild=%llu retainedPlanTriangles=%llu bodyTriangleSubmissions=%llu walkwayInsetTriangleSubmissions=%llu baseCoreSubmissions=%llu snapshotPreparationSamples=%llu snapshotPreparationMs(total/mean/max)=%.3f/%.3f/%.3f snapshotPreparationSkips=%llu",
-                static_cast<unsigned long long>(phases.RenderTotal.Samples),
-                static_cast<unsigned long long>(phases.PreparedInstances),static_cast<unsigned long long>(phases.OrdinarySubmitted),
-                static_cast<unsigned long long>(phases.SplineRecords),static_cast<unsigned long long>(phases.PlanReuses),
-                static_cast<unsigned long long>(phases.PlanRebuilds),static_cast<unsigned long long>(phases.RetainedPlanTriangles),
-                static_cast<unsigned long long>(phases.BodyTriangles),static_cast<unsigned long long>(phases.WalkwayInsetTriangles),
-                static_cast<unsigned long long>(phases.BaseCoreSubmissions),
-                static_cast<unsigned long long>(phases.SnapshotPreparation.Samples),
-                phases.SnapshotPreparation.TotalMs,phases.SnapshotPreparation.MeanMs(),phases.SnapshotPreparation.MaxMs,
-                static_cast<unsigned long long>(phases.SnapshotPreparationSkips));
-            const auto* coverage=rendered.CoverageOwner?&rendered.CoverageOwner->Coverage:nullptr;
-            LOG_INFO("MiniMap: spline visibility: occludedSections=%zu fullyRemovedSections=%zu removedPolygons=%zu removedWorldXYArea=%.6g coverageExamplesAllocationFailed=%u plannerExamplesAllocationFailed=%u outsideViewportRecords=%zu outsideViewportTriangles=%zu rejectedRecords=%zu projectionRejectedTriangles=%zu transparentRecords=%zu",
-                coverage?coverage->Sections:0,coverage?coverage->FullyRemovedSections:0,coverage?coverage->Polygons:0,
-                coverage?double(coverage->RemovedArea):0.0,unsigned(coverage && coverage->AllocationFailed),
-                unsigned(coverage && coverage->PlannerExamplesAllocationFailed),rendered.OutsideViewportRecords,rendered.OutsideViewportTriangles,
-                rendered.RejectedSplineRecords,rendered.ProjectionRejectedTriangles,rendered.TransparentSplineRecords);
-            if(coverage && rendered.CoverageOwner->Binding.Snapshot)
-            {
-                const auto& owner=*rendered.CoverageOwner;
-                const auto& records=owner.Binding.Snapshot->Records;
-                for(const auto& record:owner.Records)
-                {
-                    if(!OR::FullyOccluded(record) || record.RecordIndex>=records.size())continue;
-                    const auto& spline=records[record.RecordIndex];
-                    LOG_INFO("MiniMap: spline fully occluded: generation=%llu collectorRecord=%zu entity=%d:%d category=%u",
-                        static_cast<unsigned long long>(owner.Generation),record.RecordIndex,spline.Index,spline.Serial,unsigned(record.Category));
-                }
-            }
-            if(rendered.CoverageOwner)
-            {
-                const auto& diagnostic=rendered.CoverageOwner->Diagnostic;
-                LOG_INFO("MiniMap: spline occlusion diagnostic: failureExamples=%zu failureExamplesAllocationFailed=%u",
-                    diagnostic.Examples.size(),unsigned(diagnostic.AllocationFailed));
-                for(const auto& example:diagnostic.Examples)
-                    LOG_INFO("MiniMap: spline occlusion example: record=%zu section=%zu cause=%u planner=%u",
-                        example.Record,example.Section,unsigned(example.Cause),unsigned(example.Planner));
-            }
-            LOG_INFO("MiniMap: spline acquisition aggregate: %s",acquisition.c_str());
-            for(size_t i=0;i<summary.LookupExampleCount;++i)
-                LOG_INFO("MiniMap: spline resident lookup example: %s",summary.LookupExamples[i].c_str());
-#if MINIMAP_DEBUG_UI
-            {std::scoped_lock lock(g_mutex);g_splineDebugText=text;}
-#endif
-            if(summary.Records!=summary.Counts[size_t(MiniMapBuildingSplineDiagnostics::Cause::Drawable)])
-            {
-                LOG_ERROR("MiniMap: %s",text.c_str());
-            }
-#if MINIMAP_DEBUG_UI
-            else {LOG_INFO("MiniMap: %s",text.c_str());}
-#endif
-            for(size_t i=0;i<summary.ExampleCount;++i)
-            {
-                LOG_ERROR("MiniMap: spline envelope example: %s",summary.Examples[i].c_str());
-            }
-        }
-        catch(...){} // Diagnostics must not interrupt preparation or publication.
-    }
     void OnTick(float)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::VisualsTick,true);
         if(!MiniMapMap::GameplayReady())return;
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
-        ReportSplineInputs(); // Also runs when the immutable collector snapshot is unchanged.
         const auto input=C::GetSnapshot();
         if(!input) { if(g_lastInput) Clear(); return; }
         if(input->Generation!=g_generation) { Clear(); g_generation=input->Generation; }
@@ -596,7 +432,6 @@ namespace
                 if(instance.Spline)previousSplines.emplace(TraceKey(instance.EntityIndex,instance.EntitySerial),&instance);
         const auto start=Clock::now(),now=start;
         auto result=std::make_shared<Snapshot>(); result->Generation=input->Generation;result->Source=input;
-        MiniMapBuildingSplineEnvelope::ReuseCounts envelopeReuse;
         result->Instances.reserve(input->Records.size());
         // Borrow input-owned strings only during preparation; equality is string value, not shared_ptr identity.
         std::unordered_map<std::string_view,size_t> canonicalTypes;
@@ -605,7 +440,7 @@ namespace
         for(const auto& r:input->Records)
         {
             if(r.Generation!=input->Generation) continue;
-            Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]}; instance.Tint=r.Tint;
+            Instance instance; instance.Spline=r.HasSpline; instance.Origin={r.Position[0],r.Position[1]};
             instance.Elevation=r.Position[2];instance.EntityIndex=r.Index;instance.EntitySerial=r.Serial;
             instance.SpriteSource=r;
             instance.RecordIndex=size_t(&r-input->Records.data());
@@ -617,7 +452,6 @@ namespace
             }
             if(r.HasSpline)
             {
-                if(!r.DefinitionValid)++envelopeReuse.UnknownSplineTypes;
                 instance.SplineCategory=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
                 instance.Curve=r.Curve; instance.Bounds=r.Extent;
                 instance.Unresolved=!r.Curve || r.Curve->Issue!=C::GeometryIssue::None || r.Curve->Segments.empty();
@@ -636,7 +470,7 @@ namespace
                 const auto found=previousSplines.find(TraceKey(r.Index,r.Serial));
                 const auto* old=found==previousSplines.end()?nullptr:found->second;
                 instance.PreparedEnvelope=MiniMapBuildingSplineEnvelope::PrepareOwned(r,instance.PreparedSpline,
-                    old?&old->SpriteSource:nullptr,old?old->PreparedEnvelope:nullptr,&envelopeReuse,
+                    old?old->PreparedEnvelope:nullptr,
                     MiniMapBuildingSplinePolicy::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId));
                 // Surface submission consumes only PreparedEnvelope. Admission
                 // bounds do not establish visual widths.
@@ -656,13 +490,9 @@ namespace
                 {return DrawKey(result->Instances[a])<DrawKey(result->Instances[b]);});
         }
         const double prepareMs=Ms(start);
-        const auto prepared=result; // Keep the completed transaction for readiness acknowledgements.
         { std::scoped_lock lock(g_mutex); g_published=std::move(result);g_buildingVisualsTiming.SnapshotPreparation.Add(prepareMs);
-            g_envelopeReuse.Add(envelopeReuse); }
+        }
         g_lastInput=input;
-        for(const auto& instance:prepared->Instances)
-            if(instance.Spline && instance.PreparedEnvelope)
-                C::ObserveSplinePreparation(instance.SpriteSource,*instance.PreparedEnvelope);
 #if MINIMAP_DEBUG_UI
         g_prepareMax=(std::max)(g_prepareMax,Ms(start)); ++g_prepareCount;
         if(now>=g_nextDebug)
@@ -870,7 +700,7 @@ namespace MiniMapBuildingVisuals
                         if (!G::Intersects(spriteBounds,viewport))
                         {TraceRender(traceTargets,instance.SpriteSource,V::State::Culled);++stats.Culled;return;}
                         visibility=V::State::SubmitRejected;
-                        if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,Color(instance.Tint,255)))
+                        if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,0xFFFFFFFFu))
                         {
                             TraceRender(traceTargets,instance.SpriteSource,V::State::Submitted);++stats.Ordinary;++stats.OrdinaryAtlas;
                             if(collectOccluder)++workload.OrdinarySubmitted;
@@ -975,7 +805,7 @@ namespace MiniMapBuildingVisuals
                         OR::SubmissionDiagnostics visibility;
                         const auto baseRgb=P::RepresentativeRgb(source.DefinitionValid,source.BuildingId);
                         const auto submitted=OR::Submit(ui,dl,transform,record,viewport,
-                            P::ApplyTint(baseRgb,source.Tint,kSplineFillOpacity),&visibility);
+                            P::Color(baseRgb,kSplineFillOpacity),&visibility);
                         stats.OutsideViewportTriangles+=visibility.OutsideViewportTriangles;
                         stats.ProjectionRejectedTriangles+=visibility.ProjectionRejectedTriangles;
                         stats.RejectedSplineRecords+=visibility.Rejected || visibility.ProjectionRejectedTriangles!=0;
@@ -988,7 +818,7 @@ namespace MiniMapBuildingVisuals
                         if(walkway && sourceEnvelope && sourceEnvelope->Envelope && renderProfile)
                         {
                             const auto inset=OR::SubmitWalkwayInsets(ui,dl,transform,record,*renderProfile,
-                                viewport,P::ApplyTint(P::kWalkwayInsetRgb,source.Tint,kSplineFillOpacity),
+                                viewport,P::Color(P::kWalkwayInsetRgb,kSplineFillOpacity),
                                 P::kWalkwayInsetFractionPerSide,walkwayInsetScratch);
                             stats.Points+=inset.ProjectedVertices;stats.Triangles+=inset.Triangles;
                             workload.WalkwayInsetTriangles+=inset.Triangles;

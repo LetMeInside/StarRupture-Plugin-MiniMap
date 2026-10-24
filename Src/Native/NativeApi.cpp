@@ -235,11 +235,10 @@ namespace MiniMapNative
             return false;
         }
 
+        if (!addresses.retainObject || !addresses.releaseObject || !addresses.nameEqualsWide) return false;
+
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         if (!addresses.objectArray || !addresses.getSkeletalMeshAsset) return false;
-#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-        if (!addresses.nameEqualsWide) return false;
-#endif
         if (!addresses.activeGarbageCollection) return false;
         if (!addresses.engineStorage) return false;
         if (!addresses.exitPurge) return false;
@@ -276,8 +275,6 @@ namespace MiniMapNative
         if (!addresses.spawnObject) return false;
         if (!addresses.getTransientPackage) return false;
         if (!addresses.setObjectFlags) return false;
-        if (!addresses.retainObject) return false;
-        if (!addresses.releaseObject) return false;
         if (!addresses.registerComponent) return false;
         if (!addresses.unregisterComponent) return false;
         if (!addresses.destroyComponent) return false;
@@ -485,9 +482,6 @@ namespace MiniMapNative
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         g_nativeApi.asset.objectArray = reinterpret_cast<const void*>(addresses.objectArray);
         g_nativeApi.player.getSkeletalMeshAsset = reinterpret_cast<decltype(g_nativeApi.player.getSkeletalMeshAsset)>(addresses.getSkeletalMeshAsset);
-#if defined(MINIMAP_STAGE_R26B4_CLASSIFICATION)
-        g_nativeApi.asset.nameEqualsWide = reinterpret_cast<decltype(g_nativeApi.asset.nameEqualsWide)>(addresses.nameEqualsWide);
-#endif
         g_nativeApi.asset.fromValidEName = reinterpret_cast<decltype(g_nativeApi.asset.fromValidEName)>(addresses.readbackFromValidEName);
         g_nativeApi.texture.submitRenderCommand = reinterpret_cast<decltype(g_nativeApi.texture.submitRenderCommand)>(addresses.readbackSubmit);
         g_nativeApi.texture.immediateCommandList = reinterpret_cast<decltype(g_nativeApi.texture.immediateCommandList)>(addresses.readbackImmediate);
@@ -523,8 +517,6 @@ namespace MiniMapNative
         g_nativeApi.asset.spawnObject = reinterpret_cast<decltype(g_nativeApi.asset.spawnObject)>(addresses.spawnObject);
         g_nativeApi.asset.getTransientPackage = reinterpret_cast<decltype(g_nativeApi.asset.getTransientPackage)>(addresses.getTransientPackage);
         g_nativeApi.asset.setObjectFlags = reinterpret_cast<decltype(g_nativeApi.asset.setObjectFlags)>(addresses.setObjectFlags);
-        g_nativeApi.asset.retainObject = reinterpret_cast<decltype(g_nativeApi.asset.retainObject)>(addresses.retainObject);
-        g_nativeApi.asset.releaseObject = reinterpret_cast<decltype(g_nativeApi.asset.releaseObject)>(addresses.releaseObject);
         g_nativeApi.player.registerComponent = reinterpret_cast<decltype(g_nativeApi.player.registerComponent)>(addresses.registerComponent);
         g_nativeApi.player.unregisterComponent = reinterpret_cast<decltype(g_nativeApi.player.unregisterComponent)>(addresses.unregisterComponent);
         g_nativeApi.player.destroyComponent = reinterpret_cast<decltype(g_nativeApi.player.destroyComponent)>(addresses.destroyComponent);
@@ -537,6 +529,9 @@ namespace MiniMapNative
         g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
 #endif
 
+        g_nativeApi.asset.retainObject = reinterpret_cast<decltype(g_nativeApi.asset.retainObject)>(addresses.retainObject);
+        g_nativeApi.asset.releaseObject = reinterpret_cast<decltype(g_nativeApi.asset.releaseObject)>(addresses.releaseObject);
+        g_nativeApi.asset.nameEqualsWide = reinterpret_cast<decltype(g_nativeApi.asset.nameEqualsWide)>(addresses.nameEqualsWide);
         g_nativeApi.player.isGameThread = reinterpret_cast<PlayerApi::IsGameThreadFn>(addresses.isGameThread);
         g_nativeApi.splinePayload.get = reinterpret_cast<SplinePayloadApi::GetFn>(addresses.getSplineActorData);
         g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);

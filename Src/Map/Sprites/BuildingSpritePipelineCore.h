@@ -16,7 +16,7 @@ namespace MiniMapBuildingSpriteCore
             for(uint64_t v:{k.Generation,uint64_t(k.Building),uint64_t(k.DefinitionObject),uint64_t(k.NameIndex),uint64_t(k.NameNumber),
                 uint64_t(k.VisualClass),uint64_t(k.MeshObject),uint64_t(k.MeshName),uint64_t(k.MeshNumber),uint64_t(k.Representation),uint64_t(k.Spline)})
             {h^=v;h*=1099511628211ull;}
-            for(auto v:k.TintBits){h^=v;h*=1099511628211ull;}return size_t(h);
+            return size_t(h);
         }
     };
     inline bool HasCoverage(const std::vector<uint8_t>& rgba,size_t width=256,size_t height=256)

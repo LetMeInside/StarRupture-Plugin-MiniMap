@@ -3,6 +3,7 @@
 #include "BuildingCollector.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Mathematics in the collector's copied coordinate basis, in Unreal units.
 // No entity transform is applied. This does not certify the native fragment's
@@ -11,7 +12,7 @@
 namespace MiniMapBuildingSplineGeometry
 {
     namespace C = MiniMapBuildingCollector;
-    inline constexpr size_t MaximumSegments=255, MaximumSamples=4096;
+    inline constexpr size_t MaximumSamples=(std::numeric_limits<size_t>::max)();
     inline constexpr unsigned MaximumDepth=8;
     // Native copied EInterpCurveMode values; checked against SDK in the consumer.
     inline constexpr uint8_t Linear=0, Constant=2;
@@ -90,7 +91,6 @@ namespace MiniMapBuildingSplineGeometry
         C::GeometryIssue SourceIssue=C::GeometryIssue::None;
         C::GeometryIssue PreparationIssue=C::GeometryIssue::None;
         size_t LimitedLeaves=0;
-        bool Reconstructed=false;
         // Mathematical sampling completeness only, never visual renderability.
         bool Complete() const { return !Sections.empty() && SourceIssue==C::GeometryIssue::None && PreparationIssue==C::GeometryIssue::None && !LimitedLeaves; }
     };
@@ -98,8 +98,7 @@ namespace MiniMapBuildingSplineGeometry
     {
         inline void Append(PreparedCurve& out,const C::Point& p,double t)
         {
-            if(out.Samples.size()==out.Samples.capacity())
-                out.Samples.reserve((std::min)(MaximumSamples,(std::max)(size_t(64),out.Samples.capacity()*2)));
+            // Let vector grow within its allocator limit without manual size_t doubling.
             out.Samples.push_back({p,t});
         }
         inline bool Flat(const std::array<C::Point,4>& p,const SamplingPolicy& policy)
@@ -141,20 +140,19 @@ namespace MiniMapBuildingSplineGeometry
     // source controls are retained by SpriteSource, never replaced by samples.
     inline PreparedCurve Prepare(const C::SplineGeometry& source,SamplingPolicy policy)
     {
-        PreparedCurve out;out.SourceIssue=source.Issue;out.Reconstructed=source.Reconstructed;
+        PreparedCurve out;out.SourceIssue=source.Issue;
         if(source.Issue!=C::GeometryIssue::None)return out;
         if(source.Segments.empty()) {out.PreparationIssue=C::GeometryIssue::InvalidCurve;return out;}
-        if(source.Segments.size()>MaximumSegments) {out.PreparationIssue=C::GeometryIssue::Oversized;return out;}
         policy.Depth=(std::min)(policy.Depth,MaximumDepth);
         policy.SampleLimit=(std::min)(policy.SampleLimit,MaximumSamples);
         if(!std::isfinite(policy.PixelsPerUnit) || policy.PixelsPerUnit<=0 ||
             !std::isfinite(policy.XYErrorPixels) || policy.XYErrorPixels<=0 ||
             !std::isfinite(policy.HeightErrorUnits) || policy.HeightErrorUnits<=0 ||
-            policy.SampleLimit<2*source.Segments.size())
+            source.Segments.size()>policy.SampleLimit/2)
         {out.PreparationIssue=C::GeometryIssue::InvalidCurve;return out;}
         for(const auto& s:source.Segments)
             if(const auto issue=Validate(s);issue!=C::GeometryIssue::None) {out.PreparationIssue=issue;return out;}
-        // Small initial storage; explicit growth remains within MaximumSamples.
+        // Small initial storage; vector manages subsequent capacity growth.
         // No temporary copy of the source vector.
         out.Samples.reserve((std::min)(size_t(64),policy.SampleLimit));out.Sections.reserve(source.Segments.size());
         for(size_t i=0;i<source.Segments.size();++i)

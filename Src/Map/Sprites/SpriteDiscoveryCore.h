@@ -28,11 +28,10 @@ namespace MiniMapSpriteDiscoveryCore
         uint32_t Building{},NameNumber{};
         int32_t DefinitionObject{},NameIndex{},VisualClass{},MeshObject{},MeshName{};
         uint32_t MeshNumber{};
-        std::array<uint32_t,4> TintBits{0x3f800000,0x3f800000,0x3f800000,0x3f800000};
         Tier Representation=Tier::Unknown;
         bool Spline=false;
         auto Values()const{return std::tuple(Generation,Building,DefinitionObject,NameIndex,NameNumber,
-            VisualClass,MeshObject,MeshName,MeshNumber,TintBits,Representation,Spline);}
+            VisualClass,MeshObject,MeshName,MeshNumber,Representation,Spline);}
         bool operator==(const Key& b)const{return Values()==b.Values();}
     };
     struct Input
@@ -51,15 +50,6 @@ namespace MiniMapSpriteDiscoveryCore
             Known=true;Maximum=(std::max)({Maximum,scale[0],scale[1]});
         }
     };
-    inline bool CopyTint(Input& r,const std::array<float,4>& tint)
-    {
-        for(size_t i=0;i<4;++i)
-        {
-            if(!std::isfinite(tint[i])){r.VisualInputsValid=false;return false;}
-            r.Identity.TintBits[i]=std::bit_cast<uint32_t>(tint[i]==0?0.0f:tint[i]);
-        }
-        return true;
-    }
     struct Candidate
     {
         Key Identity;size_t Instances{};State Status=State::Discovered;
@@ -347,8 +337,7 @@ namespace MiniMapSpriteDiscoveryCore
         return "g"+std::to_string(k.Generation)+":b"+std::to_string(k.Building)+":d"+std::to_string(k.DefinitionObject)+
             ":n"+std::to_string(k.NameIndex)+"_"+std::to_string(k.NameNumber)+":c"+std::to_string(k.VisualClass)+
             ":m"+std::to_string(k.MeshObject)+"_"+std::to_string(k.MeshName)+"_"+std::to_string(k.MeshNumber)+
-            ":t"+std::to_string(int(k.Representation))+":s"+std::to_string(k.Spline)+
-            ":rgba"+std::to_string(k.TintBits[0])+"_"+std::to_string(k.TintBits[1])+"_"+std::to_string(k.TintBits[2])+"_"+std::to_string(k.TintBits[3]);
+            ":t"+std::to_string(int(k.Representation))+":s"+std::to_string(k.Spline);
     }
     inline std::string Json(const Registry& r,size_t limit=OutputLimit,bool invalidated=false)
     {
@@ -376,7 +365,6 @@ namespace MiniMapSpriteDiscoveryCore
                 {"definition_fname_index",std::to_string(k.NameIndex)},{"definition_fname_number",std::to_string(k.NameNumber)},
                 {"copied_visual_class_index",std::to_string(k.VisualClass)},
                 {"copied_class_provenance",J::Quote("collector_spline_width_proxy_not_a_selected_representation_tier")},
-                {"copied_customization_rgba_bits","["+std::to_string(k.TintBits[0])+","+std::to_string(k.TintBits[1])+","+std::to_string(k.TintBits[2])+","+std::to_string(k.TintBits[3])+"]"},
                 {"representation_tier",J::Quote(k.Representation==Tier::Unknown?"not_examined":k.Representation==Tier::High?"high":k.Representation==Tier::Low?"low":"mass")},
                 {"visual_identity_confidence",J::Quote("provisional_definition_group_variants_unobserved")},
                 {"instance_count",std::to_string(c.Instances)}, {"state",J::Quote(StateName(c.Status))},
