@@ -50,6 +50,9 @@ namespace
         ~Definition(){if(Root)if(const auto* n=MiniMapNative::Get())n->asset.releaseObject(Root);}
     };
     std::unordered_map<uint64_t,Entry> entities;
+    // Scheduling index only: complete index/serial keys of exactly the
+    // incomplete authoritative entries in this session; no entity data.
+    std::unordered_set<uint64_t> pending;
     std::unordered_map<const SDK::UAuActorPlacementData*,std::shared_ptr<Definition>> definitions;
     std::vector<SDK::UObject*> metadata;
     alignas(16) std::array<std::byte,0x350> query{};
@@ -146,7 +149,7 @@ namespace
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
         queryConstructed=false;manager=nullptr;world=nullptr;region={};atlasSession=atlasRevision=0;
-        entities.clear();definitions.clear();nextMembership={};dirty=true;remoteTurn=false;membershipComplete=false;
+        pending.clear();entities.clear();definitions.clear();nextMembership={};dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
     bool Ensure(const Native& n)
@@ -181,10 +184,17 @@ namespace
         for(auto key:members)
         {
             auto [it,added]=entities.try_emplace(key);
-            if(added){auto& r=it->second.Data;r.Generation=generation;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));dirty=true;++changes;}
+            if(added)
+            {
+                // Neither insertion calls native code. If indexing allocates
+                // unsuccessfully, roll back this entry before retrying later.
+                try {pending.insert(key);}
+                catch(...) {entities.erase(it);throw;}
+                auto& r=it->second.Data;r.Generation=generation;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));dirty=true;++changes;
+            }
         }
         for(auto it=entities.begin();it!=entities.end();)
-            if(!members.contains(it->first)){it=entities.erase(it);dirty=true;++changes;}else ++it;
+            if(!members.contains(it->first)){pending.erase(it->first);it=entities.erase(it);dirty=true;++changes;}else ++it;
         return true;
     }
     struct Candidate
@@ -395,7 +405,9 @@ namespace
         result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
         if(result.HasSpline)result.Extent=SplineBounds(result);
         else {std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);SpriteBounds(result);}
-        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;dirty=true;++measurements.DirtyAcquisition;return true;
+        // Owned Record move and key erasure do not allocate or call native
+        // code: completion and removal from scheduling commit together.
+        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;++measurements.DirtyAcquisition;return true;
     }
     void Publish()
     {
@@ -411,6 +423,9 @@ namespace
     {
         const auto now=Clock::now();
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=now;return;}
+        // Observe actual counts even on local-first exits, quiet callbacks,
+        // and allocation failures; no authoritative-map enumeration required.
+        measurements.PendingN=entities.size();measurements.PendingP=pending.size();
         if(measurementIntervalStart==Clock::time_point{}){measurementIntervalStart=now;return;}
         const double intervalMs=std::chrono::duration<double,std::milli>(now-measurementIntervalStart).count();
         if(intervalMs<double(std::chrono::duration_cast<std::chrono::milliseconds>(kMeasurementInterval).count()))return;
@@ -426,7 +441,12 @@ namespace
     struct MeasurementReporter {~MeasurementReporter(){MaybeReportMeasurements();}};
     struct GridVisitContext {std::unordered_set<uint64_t>* Keys=nullptr;uint64_t Visitors=0;};
     bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
-    {auto& visit=*static_cast<GridVisitContext*>(context);++visit.Visitors;visit.Keys->insert(Key(handle.Entity));return true;}
+    {
+        auto& visit=*static_cast<GridVisitContext*>(context);++visit.Visitors;
+        const auto key=Key(handle.Entity);
+        if(pending.contains(key))visit.Keys->insert(key);
+        return true;
+    }
     void OnTick(float)
     {
         MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
@@ -446,7 +466,7 @@ namespace
                 nextMembership=Clock::now()+std::chrono::seconds(1);
             }
             {const auto begin=Clock::now();UpdateAtlasBounds();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
-            const auto gridBegin=Clock::now();std::unordered_set<uint64_t> localCandidates;
+            const auto gridBegin=Clock::now();
             MiniMapMap::PlayerPose pose;double radius;
             {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
             const bool hasPose=radius>0 && MiniMapMap::TryGetPlayerPose(pose);
@@ -456,46 +476,50 @@ namespace
                 if(!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY)
                 {region=G::Inflate(requested,radius*0.5);dirty=true;++measurements.DirtyRegion;}
             }
-            GridVisitContext gridVisit{&localCandidates,0};bool gridEnumerated=false;
-            if(hasPose && n->gridDiagnostic.forEachCellInRadius)
-                if(auto* grid=n->gridDiagnostic.getSubsystem(world))
+            if(pending.empty()){++measurements.PendingZeroCallbacks;remoteTurn=false;}
+            else
+            {
+                std::unordered_set<uint64_t> localCandidates;
+                GridVisitContext gridVisit{&localCandidates,0};bool gridEnumerated=false;
+                if(hasPose && n->gridDiagnostic.forEachCellInRadius)
+                    if(auto* grid=n->gridDiagnostic.getSubsystem(world))
+                    {
+                        gridEnumerated=true;
+                        const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&Near,&gridVisit};
+                        const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
+                        n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
+                    }
+                if(gridEnumerated)measurements.LocalGrid.Add(std::chrono::duration<double,std::milli>(Clock::now()-gridBegin).count());
+                measurements.GridVisitors+=gridVisit.Visitors;measurements.UniqueLocalKeys+=localCandidates.size();
+                std::unordered_set<const Definition*> attemptedDefinitions;
+                const auto localEpoch=generation;
+                if(!localCandidates.empty())
                 {
-                    gridEnumerated=true;
-                    const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&Near,&gridVisit};
-                    const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
-                    n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
+                    const auto begin=Clock::now();
+                    for(auto key:localCandidates){if(!pending.contains(key))continue;++measurements.LocalAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(localEpoch!=generation)return;}
+                    measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
                 }
-            if(gridEnumerated)measurements.LocalGrid.Add(std::chrono::duration<double,std::milli>(Clock::now()-gridBegin).count());
-            measurements.GridVisitors+=gridVisit.Visitors;measurements.UniqueLocalKeys+=localCandidates.size();
-            std::unordered_set<const Definition*> attemptedDefinitions;
-            const auto localEpoch=generation;
-            if(!localCandidates.empty())
-            {
-                const auto begin=Clock::now();
-                for(auto key:localCandidates){++measurements.LocalAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(localEpoch!=generation)return;}
-                measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
-            }
-            // Publish local data before remote definition preparation. Remote
-            // work is serviced on the next callback after any local progress;
-            // there is no entity quota or permanent spatial admission limit.
-            if(dirty && !remoteTurn)
-            {
-                ++measurements.RemotePassesSkipped;const auto begin=Clock::now();Publish();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
-                remoteTurn=true;return;
-            }
-            remoteTurn=false;
-            const auto pendingBegin=Clock::now();std::vector<uint64_t> pending;
-            measurements.PendingN=entities.size();
-            for(const auto& [key,e]:entities)if(!e.Complete)pending.push_back(key);
-            measurements.PendingP=pending.size();
-            measurements.PendingEnumeration.Add(std::chrono::duration<double,std::milli>(Clock::now()-pendingBegin).count());
-            if(pending.empty())++measurements.PendingZeroCallbacks;
-            const auto epoch=generation;
-            if(!pending.empty())
-            {
-                const auto begin=Clock::now();
-                for(auto key:pending){++measurements.RemoteAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(epoch!=generation)return;}
-                measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+                // Publish local data before remote definition preparation. Remote
+                // work is serviced on the next callback after any local progress;
+                // there is no entity quota or permanent spatial admission limit.
+                if(dirty && !remoteTurn)
+                {
+                    ++measurements.RemotePassesSkipped;const auto begin=Clock::now();Publish();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+                    remoteTurn=true;return;
+                }
+                remoteTurn=false;
+                if(!pending.empty())
+                {
+                    // Acquire may erase pending keys or reenter session lifecycle
+                    // code. Keep only a P-sized key snapshot across native calls.
+                    const auto pendingBegin=Clock::now();
+                    const std::vector<uint64_t> pendingKeys(pending.begin(),pending.end());
+                    measurements.PendingEnumeration.Add(std::chrono::duration<double,std::milli>(Clock::now()-pendingBegin).count());
+                    const auto epoch=generation;
+                    const auto begin=Clock::now();
+                    for(auto key:pendingKeys){if(!pending.contains(key))continue;++measurements.RemoteAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(epoch!=generation)return;}
+                    measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+                }
             }
             {const auto begin=Clock::now();Publish();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
         }
