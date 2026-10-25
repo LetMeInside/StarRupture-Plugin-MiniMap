@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 
 namespace
@@ -22,6 +23,9 @@ namespace
 
     constexpr float kMarkerHalfWidth =
         6.5f;
+
+    constexpr float kCoordinateCompassGapPixels =
+        4.0f;
 
     constexpr uint32_t kMarkerFillColor =
         0xFFD4E500u;
@@ -169,6 +173,34 @@ namespace
             leftY,
             kMarkerOutlineColor,
             1.5f);
+    }
+
+
+    void DrawPlayerCoordinates(
+        IModLoaderImGui* ui,
+        PluginDrawList drawList,
+        const MiniMapMap::Transform& transform)
+    {
+        if (!MiniMapOverlays::g_showPlayerCoordinates) return;
+        char coordinateText[96] = {};
+        std::snprintf(coordinateText, sizeof(coordinateText),
+            "X: %.0f m   Y: %.0f m",
+            std::round(transform.PlayerWorldX / 100.0),
+            std::round(transform.PlayerWorldY / 100.0));
+
+        float textWidth = 0.0f;
+        float textHeight = 0.0f;
+        ui->CalcTextSize(coordinateText, &textWidth, &textHeight, false, 0.0f);
+
+        const float textX = transform.CenterX - textWidth * 0.5f;
+        const float textY = transform.CenterY + transform.Height * 0.5f -
+            kCompassInsetPixels - textHeight * 0.5f -
+            kCoordinateCompassGapPixels - textHeight;
+
+        ui->DL_AddText(drawList, textX + 1.0f, textY + 1.0f,
+            kCompassShadowColor, coordinateText);
+        ui->DL_AddText(drawList, textX, textY,
+            kCompassTextColor, coordinateText);
     }
 
 
@@ -321,6 +353,9 @@ namespace
 
 namespace MiniMapOverlays
 {
+    bool g_showPlayerCoordinates =
+        true;
+
     void Render(
         IModLoaderImGui* ui,
         const MiniMapMap::Transform& transform)
@@ -345,6 +380,11 @@ namespace MiniMapOverlays
         }
 
         DrawPlayerMarker(
+            ui,
+            drawList,
+            transform);
+
+        DrawPlayerCoordinates(
             ui,
             drawList,
             transform);

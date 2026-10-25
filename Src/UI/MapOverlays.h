@@ -11,6 +11,8 @@ namespace MiniMapMap
 
 namespace MiniMapOverlays
 {
+    extern bool g_showPlayerCoordinates;
+
     void Render(
         IModLoaderImGui* ui,
         const MiniMapMap::Transform& transform);
