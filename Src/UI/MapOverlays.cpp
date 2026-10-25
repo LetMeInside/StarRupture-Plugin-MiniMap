@@ -24,7 +24,7 @@ namespace
         6.5f;
 
     constexpr uint32_t kMarkerFillColor =
-        0xFFFFFFFFu;
+        0xFFD4E500u;
 
     constexpr uint32_t kMarkerOutlineColor =
         0xE0181818u;
