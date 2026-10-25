@@ -17,6 +17,7 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "SDK/Engine_classes.hpp"
+#include "SDK/AuItems_classes.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,19 +33,23 @@
 namespace
 {
     constexpr float kSnapshotIntervalSeconds = 0.5f;
+    constexpr float kContainerPollIntervalSeconds = 3.0f;
+    constexpr float kOrdinaryContainerDotRadiusPixels = 2.5f;
+    constexpr uint32_t kOrdinaryContainerDotColor = 0xFF00FFFFu; // Opaque yellow in ImGui ABGR.
+    constexpr float kBlueprintContainerDotRadiusPixels = 5.0f;
+    constexpr uint32_t kBlueprintContainerDotColor = 0xFFFF8626u; // Opaque #2686FF blue in ImGui ABGR.
 
-    constexpr uint8_t kDeadBodyType = 1;
-    constexpr uint8_t kDroneType = 2;
+    constexpr uint8_t kDeadBodyType = static_cast<uint8_t>(SDK::ECrFoundableType::DeadBody);
+    constexpr uint8_t kDroneType = static_cast<uint8_t>(SDK::ECrFoundableType::Drone);
+    constexpr uint8_t kUndefinedType = static_cast<uint8_t>(SDK::ECrFoundableType::Undefined);
 
     constexpr std::ptrdiff_t kMassSubsystemManagerOffset = 0x38;
 
     constexpr std::size_t kMassQuerySize = 0x350;
     constexpr std::size_t kMassQueryAlignment = 0x10;
-    constexpr int32_t kMaximumReasonableHandleCount = 1000000;
 
     struct FoundableRecord
     {
-        MiniMapNative::MassEntityHandle Id = {};
         uint8_t Type = 0;
         double WorldX = 0.0;
         double WorldY = 0.0;
@@ -62,6 +67,7 @@ namespace
     bool g_tickRegistered = false;
     bool g_experienceReady = false;
     float g_snapshotAccumulator = 0.0f;
+    float g_containerAccumulator = 0.0f;
 
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
 
@@ -76,7 +82,20 @@ namespace
 
     std::mutex g_snapshotMutex;
     std::vector<FoundableRecord> g_records;
+    enum class ContainerContents : uint8_t
+    {
+        Empty,
+        Ordinary,
+        Blueprint
+    };
 
+    struct ContainerDotRecord
+    {
+        double WorldX = 0.0;
+        double WorldY = 0.0;
+        ContainerContents Classification = ContainerContents::Empty;
+    };
+    std::vector<ContainerDotRecord> g_containerDots;
     // AlienX currently has no fence-aware texture retirement.
     std::unordered_map<uint8_t, PluginTextureHandle> g_iconCache;
 
@@ -364,19 +383,16 @@ namespace
         }
 
         const auto& inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment)->MainInventoryContainer.Items;
-        const SDK::FCrStorageItem* items = inventory.GetDataPtr();
         const int32_t count = inventory.Num();
 
-        if (items == nullptr ||
-            count <= 0 ||
-            count > 100000)
+        if (count <= 0)
         {
             return false;
         }
 
         for (int32_t index = 0; index < count; ++index)
         {
-            const int32_t itemCount = items[index].Item.Count;
+            const int32_t itemCount = inventory[index].Item.Count;
 
             if (itemCount > 0)
             {
@@ -385,6 +401,47 @@ namespace
         }
 
         return false;
+    }
+
+    ContainerContents ClassifyContainerContents(
+        const SDK::FCrInventoryFragment& inventory)
+    {
+        const SDK::FGuid zeroGuid = {};
+
+        bool hasOrdinaryItem = false;
+        const auto inspect = [&](const SDK::FCrItemsStorageContainer& container)
+        {
+            const int32_t count = container.Items.Num();
+            for (int32_t index = 0; index < count; ++index)
+            {
+                const auto& item = container.Items[index].Item;
+                if (item.ItemDataBase == nullptr ||
+                    std::memcmp(&item.ItemId.Handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
+                    item.Count <= 0)
+                {
+                    continue;
+                }
+
+                if (item.ItemDataBase->UIItemType == SDK::EUIItemType::BlueprintItem)
+                {
+                    return true;
+                }
+
+                hasOrdinaryItem = true;
+            }
+
+            return false;
+        };
+
+        if (inspect(inventory.InputInventoryContainer) ||
+            inspect(inventory.MainInventoryContainer))
+        {
+            return ContainerContents::Blueprint;
+        }
+
+        return hasOrdinaryItem
+            ? ContainerContents::Ordinary
+            : ContainerContents::Empty;
     }
 
     const SDK::FCrMassFoundableParameters* ResolveFoundableParametersData(
@@ -504,9 +561,10 @@ namespace
     {
         std::scoped_lock lock(g_snapshotMutex);
         g_records.clear();
+        g_containerDots.clear();
     }
 
-    void PollFoundables()
+    void PollFoundables(bool refreshContainers)
     {
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
         SDK::UWorld* world = MiniMapMap::GetWorld();
@@ -526,176 +584,87 @@ namespace
             return;
         }
 
-        SDK::UCrPlayerMapMenuDataComponent* mapData =
-            GetLocalMapDataComponent();
-
-        if (mapData == nullptr)
-        {
-            ClearSnapshot();
-            return;
-        }
-
-        if (g_devSettings == nullptr)
-        {
-            if(auto* self=GetSelf())g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
-
-            if (g_devSettings == nullptr)
-            {
-                ClearSnapshot();
-                return;
-            }
-        }
+        SDK::UCrPlayerMapMenuDataComponent* mapData = GetLocalMapDataComponent();
+        if (mapData != nullptr && g_devSettings == nullptr)
+            if (auto* self = GetSelf()) g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
 
         FoundableTypeState deadBody = {};
         FoundableTypeState drone = {};
-
         BuildTypeState(mapData, kDeadBodyType, deadBody);
         BuildTypeState(mapData, kDroneType, drone);
 
-        MiniMapNative::MassEntityHandleArray handles = {};
-
-        native->mass.getMatchingEntityHandles(
-            g_queryStorage.data(),
-            &handles);
-
-        std::vector<FoundableRecord> nextRecords;
-
-        const bool validHandleArray =
-            handles.Num >= 0 &&
-            handles.Max >= handles.Num &&
-            handles.Num <= kMaximumReasonableHandleCount &&
-            (handles.Num == 0 || handles.Data != nullptr);
-
-        if (validHandleArray)
-        {
-            nextRecords.reserve(
-                static_cast<std::size_t>(handles.Num));
-
-            SDK::UScriptStruct* transformStruct =
-                native->mass.transformFragmentStaticStruct();
-
-            SDK::UScriptStruct* inventoryStruct =
-                native->mass.inventoryFragmentStaticStruct();
-
-            SDK::UScriptStruct* parametersStruct =
-                native->mass.foundableParametersStaticStruct();
-
-            if (transformStruct != nullptr &&
-                inventoryStruct != nullptr &&
-                parametersStruct != nullptr)
-            {
-                for (int32_t index = 0;
-                    index < handles.Num;
-                    ++index)
-                {
-                    const MiniMapNative::MassEntityHandle id =
-                        handles.Data[index];
-
-                    const void* parametersWrapper =
-                        native->mass.getConstSharedFragmentPtr(
-                            g_massManager,
-                            id,
-                            parametersStruct);
-
-                    const SDK::FCrMassFoundableParameters* parameters =
-                        ResolveFoundableParametersData(
-                            parametersWrapper,
-                            parametersStruct);
-
-                    if (parameters == nullptr)
-                    {
-                        continue;
-                    }
-
-                    const uint8_t foundableType = static_cast<uint8_t>(parameters->FoundableType);
-
-                    const FoundableTypeState* typeState = nullptr;
-
-                    if (foundableType == kDeadBodyType)
-                    {
-                        typeState = &deadBody;
-                    }
-                    else if (foundableType == kDroneType)
-                    {
-                        typeState = &drone;
-                    }
-                    else
-                    {
-                        continue;
-                    }
-
-                    if (!typeState->Enabled ||
-                        typeState->Icon == nullptr)
-                    {
-                        continue;
-                    }
-
-                    const void* inventory =
-                        native->mass.getFragmentDataPtr(
-                            g_massManager,
-                            id,
-                            inventoryStruct);
-
-                    if (!InventoryHasItems(inventory))
-                    {
-                        continue;
-                    }
-
-                    const void* transform =
-                        native->mass.getFragmentDataPtr(
-                            g_massManager,
-                            id,
-                            transformStruct);
-
-                    double worldX = 0.0;
-                    double worldY = 0.0;
-
-                    if (!ReadWorldPosition(
-                        transform,
-                        worldX,
-                        worldY))
-                    {
-                        continue;
-                    }
-
-                    // Native CreateFoundableMarker forces FOW hiding on.
-                    if (!MiniMapFogOfWar::
-                        IsNativeWorldPositionRevealed(
-                            worldX,
-                            worldY))
-                    {
-                        continue;
-                    }
-
-                    FoundableRecord record = {};
-                    record.Id = id;
-                    record.Type = foundableType;
-                    record.WorldX = worldX;
-                    record.WorldY = worldY;
-                    record.Icon = typeState->Icon;
-
-                    nextRecords.push_back(record);
-                }
-            }
-        }
-
-        if (handles.Data != nullptr)
-        {
-            native->texture.memoryFree(handles.Data);
-        }
-
-        if (!validHandleArray)
+        auto* transformStruct = native->mass.transformFragmentStaticStruct();
+        auto* inventoryStruct = native->mass.inventoryFragmentStaticStruct();
+        auto* parametersStruct = native->mass.foundableParametersStaticStruct();
+        if (transformStruct == nullptr || inventoryStruct == nullptr || parametersStruct == nullptr)
         {
             ClearSnapshot();
             return;
         }
+
+        MiniMapNative::MassEntityHandleArray handles = {};
+        native->mass.getMatchingEntityHandles(g_queryStorage.data(), &handles);
+
+        std::vector<ContainerDotRecord> nextContainerDots;
+        std::vector<FoundableRecord> nextRecords;
+        nextRecords.reserve(static_cast<std::size_t>(handles.Num));
+        for (int32_t index = 0; index < handles.Num; ++index)
+        {
+            const auto id = handles.Data[index];
+            const auto* parameters = ResolveFoundableParametersData(
+                native->mass.getConstSharedFragmentPtr(g_massManager, id, parametersStruct),
+                parametersStruct);
+            if (parameters == nullptr) continue;
+
+            const auto foundableType = static_cast<uint8_t>(parameters->FoundableType);
+            const void* inventoryFragment = native->mass.getFragmentDataPtr(g_massManager, id, inventoryStruct);
+            const auto* inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment);
+            const void* transform = native->mass.getFragmentDataPtr(g_massManager, id, transformStruct);
+            double worldX = 0.0;
+            double worldY = 0.0;
+            if (!ReadWorldPosition(transform, worldX, worldY)) continue;
+
+            if (foundableType == kUndefinedType)
+            {
+                if (refreshContainers && inventory != nullptr)
+                {
+                    const ContainerContents contents = ClassifyContainerContents(*inventory);
+                    if (contents != ContainerContents::Empty)
+                    {
+                        nextContainerDots.push_back({worldX, worldY, contents});
+                    }
+                }
+                continue;
+            }
+
+            const FoundableTypeState* typeState = nullptr;
+            if (foundableType == kDeadBodyType) typeState = &deadBody;
+            else if (foundableType == kDroneType) typeState = &drone;
+            else continue;
+
+            if (!typeState->Enabled || typeState->Icon == nullptr ||
+                !InventoryHasItems(inventoryFragment))
+            {
+                continue;
+            }
+
+            FoundableRecord record = {};
+            record.Type = foundableType;
+            record.WorldX = worldX;
+            record.WorldY = worldY;
+            record.Icon = typeState->Icon;
+            nextRecords.push_back(record);
+        }
+
+        if (handles.Data != nullptr)
+            native->texture.memoryFree(handles.Data);
 
         {
             std::scoped_lock lock(g_snapshotMutex);
             g_records = std::move(nextRecords);
+            if (refreshContainers) g_containerDots = std::move(nextContainerDots);
         }
     }
-
     void OnTick(float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FoundablesTick,true);
@@ -708,6 +677,7 @@ namespace
         }
 
         g_snapshotAccumulator += deltaSeconds;
+        g_containerAccumulator += deltaSeconds;
 
         if (g_snapshotAccumulator < kSnapshotIntervalSeconds)
         {
@@ -715,7 +685,9 @@ namespace
         }
 
         g_snapshotAccumulator = 0.0f;
-        PollFoundables();
+        const bool refreshContainers = g_containerAccumulator >= kContainerPollIntervalSeconds;
+        if (refreshContainers) g_containerAccumulator = 0.0f;
+        PollFoundables(refreshContainers);
     }
 }
 
@@ -752,6 +724,7 @@ namespace MiniMapFoundables
         {
             std::scoped_lock lock(g_snapshotMutex);
             g_records.clear();
+            g_containerDots.clear();
         }
 
         DestroyQuery();
@@ -759,6 +732,7 @@ namespace MiniMapFoundables
         g_devSettings = nullptr;
         g_experienceReady = false;
         g_snapshotAccumulator = 0.0f;
+        g_containerAccumulator = 0.0f;
     }
 
     void OnExperienceLoadComplete()
@@ -785,15 +759,12 @@ namespace MiniMapFoundables
         }
 
         std::vector<FoundableRecord> records;
+        std::vector<ContainerDotRecord> containerDots;
 
         {
             std::scoped_lock lock(g_snapshotMutex);
             records = g_records;
-        }
-
-        if (records.empty())
-        {
-            return;
+            containerDots = g_containerDots;
         }
 
         PluginDrawList drawList = ui->GetWindowDrawList();
@@ -823,6 +794,8 @@ namespace MiniMapFoundables
             viewportY + transform.Height,
             true);
 
+        // MiniMapUI renders Foundables after terrain and Fog of War, then POIs.
+        // Submit the existing icon snapshot first; container dots follow below.
         for (const FoundableRecord& record : records)
         {
             if (record.Icon == nullptr)
@@ -848,6 +821,12 @@ namespace MiniMapFoundables
                 continue;
             }
 
+            if (!(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
+                record.WorldX, record.WorldY, transform) > 0.0f))
+            {
+                continue;
+            }
+
             ui->DL_AddImage(
                 drawList,
                 record.Icon,
@@ -861,6 +840,45 @@ namespace MiniMapFoundables
                 1.0f,
                 0xFFFFFFFFu);
         }
+
+        const auto renderContainerDots = [&](ContainerContents contents)
+        {
+            for (const ContainerDotRecord& dot : containerDots)
+            {
+                if (dot.Classification != contents)
+                {
+                    continue;
+                }
+
+                MiniMapMap::ScreenPoint point = {};
+                if (!transform.WorldToScreen(dot.WorldX, dot.WorldY, point) ||
+                    point.X < viewportX || point.X > viewportX + transform.Width ||
+                    point.Y < viewportY || point.Y > viewportY + transform.Height)
+                {
+                    continue;
+                }
+
+                // Exact existing renderer exposure (native edge + local awareness feather).
+                // Zero alone means fully black; partial exposure keeps the opaque dot.
+                if (!(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
+                    dot.WorldX, dot.WorldY, transform) > 0.0f))
+                {
+                    continue;
+                }
+
+                const bool isBlueprint = contents == ContainerContents::Blueprint;
+                ui->DL_AddCircleFilled(
+                    drawList,
+                    point.X,
+                    point.Y,
+                    isBlueprint ? kBlueprintContainerDotRadiusPixels : kOrdinaryContainerDotRadiusPixels,
+                    isBlueprint ? kBlueprintContainerDotColor : kOrdinaryContainerDotColor,
+                    12);
+            }
+        };
+
+        renderContainerDots(ContainerContents::Ordinary);
+        renderContainerDots(ContainerContents::Blueprint);
 
         ui->DL_PopClipRect(drawList);
     }
