@@ -16,130 +16,48 @@ namespace MiniMapBuildingSplineOcclusionRender
     inline bool FullyOccluded(const A::RecordPlan& record)
     {
         return !record.Sections.empty() && !record.FailedSections &&
-            std::all_of(record.Sections.begin(),record.Sections.end(),[](const auto& section){return section.Visible.empty();});
+            std::all_of(record.Sections.begin(),record.Sections.end(),[](const auto& section){return section->Geometry->Visible.empty();});
     }
-    struct WalkwayInsetScratch
-    {
-        A::O::Detail::Polygon Subject,Inside,Outside;
-        bool Prepare() noexcept
-        {
-            try
-            {
-                Subject.reserve(8);Inside.reserve(8);Outside.reserve(8);
-                Subject.clear();Inside.clear();Outside.clear();return true;
-            }
-            catch(...){Clear();return false;}
-        }
-        void Clear() noexcept {Subject.clear();Inside.clear();Outside.clear();}
-    };
-    inline bool WalkwayInsetBands(const MiniMapBuildingSplineEnvelope::Section& section,double fraction,
-        std::array<A::O::XY,4>& left,std::array<A::O::XY,4>& right)
-    {
-        if(!std::isfinite(fraction) || !(fraction>0.0) || !(fraction<0.5))return false;
-        const auto inset=[&](const A::O::XY& outer,const A::O::XY& opposite)
-        {return A::O::XY{outer[0]+(opposite[0]-outer[0])*fraction,outer[1]+(opposite[1]-outer[1])*fraction};};
-        const auto& start=section.Start.Edges;const auto& end=section.End.Edges;
-        const auto leftStart=inset(start[0],start[1]),leftEnd=inset(end[0],end[1]);
-        const auto rightStart=inset(start[1],start[0]),rightEnd=inset(end[1],end[0]);
-        left={start[0],end[0],leftEnd,leftStart};
-        right={rightStart,rightEnd,end[1],start[1]};
-        for(const auto* band:{&left,&right})
-        {
-            for(const auto& point:*band)if(!std::isfinite(point[0]) || !std::isfinite(point[1]))return false;
-            for(size_t i=0;i<4;++i)
-            {
-                const auto turn=A::O::Detail::Turn((*band)[i],(*band)[(i+1)%4],(*band)[(i+2)%4]);
-                if(!std::isfinite(turn) || !(turn>0.0L))return false;
-            }
-        }
-        return true;
-    }
-    inline MiniMapBuildingVisuals::Detail::SplineSubmission ClipAndSubmitWalkwayInsetTriangle(
-        IModLoaderImGui* ui,PluginDrawList list,const MiniMapMap::Transform& transform,
-        const A::O::Triangle& source,const std::array<A::O::XY,4>& band,
-        const MiniMapBuildingCollector::Bounds& viewport,uint32_t color,WalkwayInsetScratch& scratch)
-    {
-        namespace O=A::O;
-        MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
-        try
-        {
-            O::Triangle triangle=source;O::Detail::Canonical(triangle);
-            scratch.Subject.clear();scratch.Inside.clear();scratch.Outside.clear();
-            for(size_t i=0;i<3;++i)
-            {
-                O::Detail::Vertex vertex;vertex.P=triangle.Vertices[i];
-                vertex.Supports[0]=O::Detail::MakeEdge(triangle.Vertices[i],triangle.Vertices[(i+1)%3]);
-                vertex.Supports[1]=O::Detail::MakeEdge(triangle.Vertices[i],triangle.Vertices[(i+2)%3]);
-                vertex.Count=2;scratch.Subject.push_back(vertex);
-            }
-            for(size_t edge=0;edge<4;++edge)
-            {
-                O::Detail::Plane plane;plane.Height=false;plane.A=band[edge];plane.B=band[(edge+1)%4];
-                scratch.Inside.clear();scratch.Outside.clear();
-                O::Detail::Split(scratch.Subject,plane,scratch.Inside,scratch.Outside);
-                scratch.Subject.swap(scratch.Inside);scratch.Inside.clear();scratch.Outside.clear();
-                if(!O::Detail::HasArea(scratch.Subject)){scratch.Clear();return submitted;}
-            }
-            for(size_t i=1;i+1<scratch.Subject.size();++i)
-            {
-                const auto& a=scratch.Subject[0].P;const auto& b=scratch.Subject[i].P;const auto& c=scratch.Subject[i+1].P;
-                const auto worldArea=O::Detail::Area(a,b,c);
-                if(!std::isfinite(worldArea) || !(worldArea>0.0L))continue;
-                std::array<MiniMapMap::ScreenPoint,3> p{};
-                bool valid=true;
-                const std::array<const O::Point*,3> world{&a,&b,&c};
-                for(size_t vertex=0;vertex<3;++vertex)
-                    valid&=transform.WorldToScreen((*world[vertex])[0],(*world[vertex])[1],p[vertex]) &&
-                        std::isfinite(p[vertex].X) && std::isfinite(p[vertex].Y);
-                submitted.ProjectedVertices+=3;if(!valid)continue;
-                const double area=(double(p[1].X)-p[0].X)*(double(p[2].Y)-p[0].Y)-
-                    (double(p[1].Y)-p[0].Y)*(double(p[2].X)-p[0].X);
-                if(!std::isfinite(area) || area==0.0)continue;
-                if((std::max)({p[0].X,p[1].X,p[2].X})<viewport.MinX ||
-                    (std::min)({p[0].X,p[1].X,p[2].X})>viewport.MaxX ||
-                    (std::max)({p[0].Y,p[1].Y,p[2].Y})<viewport.MinY ||
-                    (std::min)({p[0].Y,p[1].Y,p[2].Y})>viewport.MaxY)continue;
-                if(area<0.0)std::swap(p[1],p[2]);
-                try{ui->DL_AddTriangleFilled(list,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,color);}
-                catch(...){scratch.Clear();return submitted;}
-                ++submitted.Triangles;
-            }
-        }
-        catch(...){scratch.Clear();return submitted;}
-        scratch.Clear();return submitted;
-    }
-    // Bands are intersected with each authoritative visible triangle. This
-    // render-only operation cannot fill occlusion cuts or join separate soup.
+    // Reproject final plan-owned inset triangles in section/visible/left/right/fan order.
     inline MiniMapBuildingVisuals::Detail::SplineSubmission SubmitWalkwayInsets(
         IModLoaderImGui* ui,PluginDrawList list,const MiniMapMap::Transform& transform,
-        const A::RecordPlan& record,const MiniMapBuildingSplineEnvelope::Profile& profile,
-        const MiniMapBuildingCollector::Bounds& viewport,
-        uint32_t color,double fraction,WalkwayInsetScratch& scratch)
+        const A::RecordPlan& record,const MiniMapBuildingCollector::Bounds& viewport,uint32_t color)
     {
         MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
-        if(!ui || !list || !ui->DL_AddTriangleFilled || !transform.Valid || !(color>>24) || !viewport.Valid || !scratch.Prepare())
-            return submitted;
+        if(!ui || !list || !ui->DL_AddTriangleFilled || !transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
         if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
             !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)return submitted;
-        try
+        namespace O=A::O;
+        for(const auto& section:record.Sections)for(size_t first=0;first<section->Geometry->WalkwayInsets.size();++first)
         {
-            for(const auto& plannedSection:record.Sections)
+            const auto& triangle=section->Geometry->WalkwayInsets[first];
+            const auto& a=triangle.Vertices[0];const auto& b=triangle.Vertices[1];const auto& c=triangle.Vertices[2];
+            std::array<MiniMapMap::ScreenPoint,3> p{};
+            bool valid=true;
+            const std::array<const O::Point*,3> world{&a,&b,&c};
+            for(size_t vertex=0;vertex<3;++vertex)
+                valid&=transform.WorldToScreen((*world[vertex])[0],(*world[vertex])[1],p[vertex]) &&
+                    std::isfinite(p[vertex].X) && std::isfinite(p[vertex].Y);
+            submitted.ProjectedVertices+=3;if(!valid)continue;
+            const double area=(double(p[1].X)-p[0].X)*(double(p[2].Y)-p[0].Y)-
+                (double(p[1].Y)-p[0].Y)*(double(p[2].X)-p[0].X);
+            if(!std::isfinite(area) || area==0.0)continue;
+            if((std::max)({p[0].X,p[1].X,p[2].X})<viewport.MinX ||
+                (std::min)({p[0].X,p[1].X,p[2].X})>viewport.MaxX ||
+                (std::max)({p[0].Y,p[1].Y,p[2].Y})<viewport.MinY ||
+                (std::min)({p[0].Y,p[1].Y,p[2].Y})>viewport.MaxY)continue;
+            if(area<0.0)std::swap(p[1],p[2]);
+            try{ui->DL_AddTriangleFilled(list,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,color);}
+            catch(...)
             {
-                if(plannedSection.SectionIndex>=profile.Sections.size())continue;
-                const auto& section=profile.Sections[plannedSection.SectionIndex];
-                std::array<A::O::XY,4> left{},right{};
-                if(!WalkwayInsetBands(section,fraction,left,right))continue;
-                for(const auto& triangle:plannedSection.Visible)
-                {
-                    auto part=ClipAndSubmitWalkwayInsetTriangle(ui,list,transform,triangle,left,viewport,color,scratch);
-                    submitted.Triangles+=part.Triangles;submitted.ProjectedVertices+=part.ProjectedVertices;
-                    part=ClipAndSubmitWalkwayInsetTriangle(ui,list,transform,triangle,right,viewport,color,scratch);
-                    submitted.Triangles+=part.Triangles;submitted.ProjectedVertices+=part.ProjectedVertices;
-                }
+                // The original helper stopped only this band after a possibly recorded call.
+                // Skip its remaining fan triangles, then continue with the next band.
+                while(first+1<section->Geometry->WalkwayInsets.size() && section->Geometry->WalkwayInsets[first+1].Key==triangle.Key)++first;
+                continue;
             }
+            ++submitted.Triangles;
         }
-        catch(...){scratch.Clear();return submitted;}
-        scratch.Clear();return submitted;
+        return submitted;
     }
     // Complete, owned section plans only. Reproject without allocation or native
     // reads. Rendering counters count calls that returned from ImGui successfully.
@@ -154,7 +72,7 @@ namespace MiniMapBuildingSplineOcclusionRender
         if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
             !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)
         {if(diagnostic)diagnostic->Rejected=true;return submitted;}
-        for(const auto& section:record.Sections)for(const auto& triangle:section.Visible)
+        for(const auto& section:record.Sections)for(const auto& triangle:section->Geometry->Visible)
         {
             std::array<MiniMapMap::ScreenPoint,3> points;
             bool valid=true;

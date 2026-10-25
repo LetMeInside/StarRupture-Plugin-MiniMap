@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
@@ -35,7 +36,7 @@ namespace
         SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
         SDK::UClass *BuildingData=nullptr,*Visual=nullptr,*Cosmetic=nullptr,*Walkway=nullptr,*Blueprint=nullptr,*SplineMesh=nullptr;
     } types;
-    struct Entry {Record Data;const SDK::UAuActorPlacementData* Definition=nullptr;bool Complete=false;};
+    struct Entry {Record Data;const SDK::UAuActorPlacementData* Definition=nullptr;bool Complete=false;uint64_t SeenScan=0;};
     struct Definition
     {
         // A strong engine reference makes this engine-facing lookup key stable
@@ -60,6 +61,7 @@ namespace
     const void* manager=nullptr;
     SDK::UWorld* world=nullptr;
     uint64_t generation=0;
+    uint64_t membershipScanEpoch=0;
     Clock::time_point nextMembership{};
     std::mutex publicationMutex;
     std::shared_ptr<const Snapshot> snapshot;
@@ -75,8 +77,13 @@ namespace
     };
     struct Measurements
     {
-        PhaseAggregate Membership,LocalGrid,PendingEnumeration,Acquisition,Maintenance;
+        PhaseAggregate Membership,MembershipNative,MembershipBookkeeping,MembershipSweep,MembershipRelease,LocalGrid,PendingEnumeration,Acquisition,Maintenance;
         uint64_t MembershipPolls=0,MembershipChanges=0,GridVisitors=0,UniqueLocalKeys=0;
+        uint64_t NativeHandles=0,MembershipAdded=0,MembershipRemoved=0,MembershipDuplicates=0,MembershipInvalid=0;
+        uint64_t FailedScans=0,MalformedScans=0,AuthoritativeN=0,PendingCount=0;
+        double WorstScanMs=0,WorstScanNativeMs=0,WorstScanBookkeepingMs=0,WorstScanSweepMs=0,WorstScanReleaseMs=0;
+        double WorstScanBeginMonoMs=0,WorstScanCallbackMs=0;
+        uint64_t WorstScanHandles=0,WorstScanN=0,WorstScanPending=0,WorstScanAdded=0,WorstScanRemoved=0,WorstScanGeneration=0,WorstScanSerial=0;
         uint64_t LocalAttempts=0,RemoteAttempts=0,NewlyCompleted=0;
         uint64_t DefinitionAttempts=0,DefinitionSuccesses=0,DefinitionFailures=0;
         uint64_t PendingN=0,PendingP=0,PendingZeroCallbacks=0,RemotePassesSkipped=0;
@@ -87,7 +94,19 @@ namespace
     } measurements;
     Clock::time_point measurementIntervalStart{};
     uint64_t measurementGeneration=0;
+    uint64_t membershipScanSerial=0,lastMembershipScanSerial=0;
     uint64_t Key(Id id){return uint64_t(uint32_t(id.Index))|(uint64_t(uint32_t(id.SerialNumber))<<32);}
+    uint64_t NextMembershipScanEpoch()
+    {
+        if(membershipScanEpoch==(std::numeric_limits<uint64_t>::max)())
+        {
+            // Epoch 1 is reused only after every old mark is deterministically cleared.
+            for(auto& item:entities)item.second.SeenScan=0;
+            membershipScanEpoch=1;
+        }
+        else ++membershipScanEpoch; // Starts at 1; zero is never an active scan.
+        return membershipScanEpoch;
+    }
     bool Is(const SDK::UObject* object,const SDK::UClass* base)
     {
         if(!object || !base)return false;
@@ -149,7 +168,7 @@ namespace
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
         queryConstructed=false;manager=nullptr;world=nullptr;region={};atlasSession=atlasRevision=0;
-        pending.clear();entities.clear();definitions.clear();nextMembership={};dirty=true;remoteTurn=false;membershipComplete=false;
+        pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
     bool Ensure(const Native& n)
@@ -167,34 +186,105 @@ namespace
         n.mass.addTransformRequirement(query.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
         return true;
     }
+    struct ReconcileTiming
+    {
+        Clock::time_point Started=Clock::now();
+        double NativeMs=0,BookkeepingMs=0,SweepMs=0,ReleaseMs=0;
+        uint64_t Handles=0,Added=0,Removed=0,Duplicates=0,Invalid=0,Epoch=0,Generation=0;
+        bool Complete=false,Malformed=false;
+        ~ReconcileTiming() noexcept
+        {
+            const double total=std::chrono::duration<double,std::milli>(Clock::now()-Started).count();
+            ++membershipScanSerial;
+            measurements.Membership.Add(total);measurements.MembershipNative.Add(NativeMs);
+            measurements.MembershipBookkeeping.Add(BookkeepingMs);measurements.MembershipSweep.Add(SweepMs);measurements.MembershipRelease.Add(ReleaseMs);
+            measurements.NativeHandles+=Handles;measurements.MembershipAdded+=Added;measurements.MembershipRemoved+=Removed;
+            measurements.MembershipDuplicates+=Duplicates;measurements.MembershipInvalid+=Invalid;
+            measurements.AuthoritativeN=entities.size();measurements.PendingCount=pending.size();
+            if(!Complete)++measurements.FailedScans;
+            if(Malformed)++measurements.MalformedScans;
+            if(total>=measurements.WorstScanMs)
+            {
+                measurements.WorstScanMs=total;measurements.WorstScanNativeMs=NativeMs;
+                measurements.WorstScanBookkeepingMs=BookkeepingMs;measurements.WorstScanSweepMs=SweepMs;
+                measurements.WorstScanReleaseMs=ReleaseMs;measurements.WorstScanHandles=Handles;
+                measurements.WorstScanN=entities.size();measurements.WorstScanPending=pending.size();
+                measurements.WorstScanAdded=Added;measurements.WorstScanRemoved=Removed;measurements.WorstScanGeneration=Generation;
+                measurements.WorstScanBeginMonoMs=std::chrono::duration<double,std::milli>(Started.time_since_epoch()).count();
+                measurements.WorstScanSerial=membershipScanSerial;
+            }
+            lastMembershipScanSerial=membershipScanSerial;
+        }
+    };
+    struct MembershipArrayOwner
+    {
+        const Native& N;MiniMapNative::MassEntityHandleArray& H;ReconcileTiming& Timing;
+        ~MembershipArrayOwner() noexcept
+        {
+            if(H.Data){const auto begin=Clock::now();N.texture.memoryFree(H.Data);Timing.ReleaseMs=std::chrono::duration<double,std::milli>(Clock::now()-begin).count();}
+        }
+    };
+    bool CurrentScanContext(const Native& n,uint64_t capturedGeneration,SDK::UWorld* capturedWorld,const void* capturedManager)
+    {
+        if(!queryConstructed || generation!=capturedGeneration || world!=capturedWorld || manager!=capturedManager ||
+            MiniMapMap::GetWorld()!=capturedWorld)return false;
+        auto* subsystem=capturedWorld?n.mass.getMassEntitySubsystem(capturedWorld):nullptr;
+        const void* currentManager=nullptr;
+        if(subsystem)std::memcpy(&currentManager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(currentManager));
+        return currentManager==capturedManager;
+    }
     bool Reconcile(const Native& n,uint64_t& changes)
     {
+        ReconcileTiming timing;timing.Generation=generation;timing.Epoch=NextMembershipScanEpoch();
         MiniMapNative::MassEntityHandleArray handles{};
-        struct Owner {const Native& N;MiniMapNative::MassEntityHandleArray& H;~Owner(){if(H.Data)N.texture.memoryFree(H.Data);}} owner{n,handles};
-        if(n.mass.getMatchingEntityHandles(query.data(),&handles)!=&handles)return false;
-        if(handles.Num<0 || handles.Max<handles.Num || (handles.Num && !handles.Data))return false;
-        // Build the complete membership set before changing it; an allocation
-        // failure or malformed query can never turn a partial set into removal.
-        std::unordered_set<uint64_t> members;members.reserve(size_t(handles.Num));
-        for(int i=0;i<handles.Num;++i)
+        MembershipArrayOwner owner{n,handles,timing};
+        const auto capturedGeneration=generation;auto* const capturedWorld=world;const void* const capturedManager=manager;
+        const auto nativeBegin=Clock::now();
+        MiniMapNative::MassEntityHandleArray* returned=nullptr;
+        try {returned=n.mass.getMatchingEntityHandles(query.data(),&handles);}
+        catch(...){timing.NativeMs=std::chrono::duration<double,std::milli>(Clock::now()-nativeBegin).count();throw;}
+        timing.NativeMs=std::chrono::duration<double,std::milli>(Clock::now()-nativeBegin).count();
+        if(returned!=&handles){timing.Malformed=true;return false;}
+        if(handles.Num>0)timing.Handles=uint64_t(handles.Num);
+        if(handles.Num<0 || handles.Max<handles.Num || (handles.Num && !handles.Data)){timing.Malformed=true;return false;}
+        if(!CurrentScanContext(n,capturedGeneration,capturedWorld,capturedManager))return false;
+
+        // A fresh epoch is consumed even when traversal later fails. Partial marks
+        // can therefore never certify a future complete scan.
+        const auto bookkeepingBegin=Clock::now();
+        try
         {
-            const auto id=handles.Data[i];if(id.Index<0 || !id.SerialNumber)continue;
-            members.insert(Key(id));
-        }
-        for(auto key:members)
-        {
-            auto [it,added]=entities.try_emplace(key);
-            if(added)
+            for(int i=0;i<handles.Num;++i)
             {
-                // Neither insertion calls native code. If indexing allocates
-                // unsuccessfully, roll back this entry before retrying later.
-                try {pending.insert(key);}
-                catch(...) {entities.erase(it);throw;}
-                auto& r=it->second.Data;r.Generation=generation;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));dirty=true;++changes;
+                const auto id=handles.Data[i];
+                if(id.Index<0 || !id.SerialNumber){++timing.Invalid;continue;}
+                const auto key=Key(id);
+                auto [it,added]=entities.try_emplace(key);
+                if(added)
+                {
+                    // Preserve the established rollback if pending-index insertion fails.
+                    try {pending.insert(key);}
+                    catch(...) {entities.erase(it);throw;}
+                    auto& r=it->second.Data;r.Generation=capturedGeneration;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));
+                    dirty=true;++timing.Added;++changes;
+                }
+                else if(it->second.SeenScan==timing.Epoch)++timing.Duplicates;
+                it->second.SeenScan=timing.Epoch;
             }
         }
+        catch(...){timing.BookkeepingMs=std::chrono::duration<double,std::milli>(Clock::now()-bookkeepingBegin).count();throw;}
+        timing.BookkeepingMs=std::chrono::duration<double,std::milli>(Clock::now()-bookkeepingBegin).count();
+        // Query execution may reenter lifecycle code; only the owning world,
+        // manager, query and generation may authorize the removal sweep.
+        if(!CurrentScanContext(n,capturedGeneration,capturedWorld,capturedManager))return false;
+
+        const auto sweepBegin=Clock::now();
         for(auto it=entities.begin();it!=entities.end();)
-            if(!members.contains(it->first)){pending.erase(it->first);it=entities.erase(it);dirty=true;++changes;}else ++it;
+            if(it->second.SeenScan!=timing.Epoch)
+            {pending.erase(it->first);it=entities.erase(it);dirty=true;++timing.Removed;++changes;}
+            else ++it;
+        timing.SweepMs=std::chrono::duration<double,std::milli>(Clock::now()-sweepBegin).count();
+        timing.Complete=true;
         return true;
     }
     struct Candidate
@@ -419,9 +509,12 @@ namespace
         std::sort(value->Records.begin(),value->Records.end(),[](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
         {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;++measurements.Publications;
     }
-    void MaybeReportMeasurements() noexcept
+    void MaybeReportMeasurements(Clock::time_point callbackBegin,uint64_t scanSerialAtEntry) noexcept
     {
         const auto now=Clock::now();
+        const double callbackMs=std::chrono::duration<double,std::milli>(now-callbackBegin).count();
+        if(lastMembershipScanSerial!=scanSerialAtEntry && measurements.WorstScanSerial==lastMembershipScanSerial)
+            measurements.WorstScanCallbackMs=callbackMs;
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=now;return;}
         // Observe actual counts even on local-first exits, quiet callbacks,
         // and allocation failures; no authoritative-map enumeration required.
@@ -437,8 +530,27 @@ namespace
             (unsigned long long)m.PendingEnumeration.Samples,m.PendingEnumeration.TotalMs,m.PendingEnumeration.MeanMs(),m.PendingEnumeration.MaxMs,(unsigned long long)m.PendingN,(unsigned long long)m.PendingP,(unsigned long long)m.PendingZeroCallbacks,(unsigned long long)m.RemotePassesSkipped,
             (unsigned long long)m.Acquisition.Samples,m.Acquisition.TotalMs,m.Acquisition.MeanMs(),m.Acquisition.MaxMs,(unsigned long long)m.LocalAttempts,(unsigned long long)m.RemoteAttempts,(unsigned long long)m.NewlyCompleted,(unsigned long long)m.DefinitionAttempts,(unsigned long long)m.DefinitionSuccesses,(unsigned long long)m.DefinitionFailures,
             (unsigned long long)m.Maintenance.Samples,m.Maintenance.TotalMs,m.Maintenance.MeanMs(),m.Maintenance.MaxMs,(unsigned long long)m.AtlasSessionChanges,(unsigned long long)m.AtlasRevisionChanges,(unsigned long long)m.AtlasBoundsRecalculations,(unsigned long long)m.PublicationAttempts,(unsigned long long)m.Publications,(unsigned long long)m.DirtyMembership,(unsigned long long)m.DirtyRegion,(unsigned long long)m.DirtyAtlas,(unsigned long long)m.DirtyAcquisition);
+        LOG_INFO("MiniMap: Stage42P generation=%llu intervalMs=%.1f native={n:%llu t:%.3f avg:%.3f max:%.3f} book={n:%llu t:%.3f avg:%.3f max:%.3f} sweep={n:%llu t:%.3f avg:%.3f max:%.3f} free={n:%llu t:%.3f avg:%.3f max:%.3f} total={n:%llu t:%.3f avg:%.3f max:%.3f} H:%llu N:%llu P:%llu added:%llu removed:%llu dup:%llu invalid:%llu failed:%llu malformed:%llu worst={ms:%.3f native:%.3f book:%.3f sweep:%.3f free:%.3f monoMs:%.3f tickMs:%.3f gen:%llu H:%llu N:%llu P:%llu add:%llu rem:%llu}",
+            (unsigned long long)generation,intervalMs,
+            (unsigned long long)m.MembershipNative.Samples,m.MembershipNative.TotalMs,m.MembershipNative.MeanMs(),m.MembershipNative.MaxMs,
+            (unsigned long long)m.MembershipBookkeeping.Samples,m.MembershipBookkeeping.TotalMs,m.MembershipBookkeeping.MeanMs(),m.MembershipBookkeeping.MaxMs,
+            (unsigned long long)m.MembershipSweep.Samples,m.MembershipSweep.TotalMs,m.MembershipSweep.MeanMs(),m.MembershipSweep.MaxMs,
+            (unsigned long long)m.MembershipRelease.Samples,m.MembershipRelease.TotalMs,m.MembershipRelease.MeanMs(),m.MembershipRelease.MaxMs,
+            (unsigned long long)m.Membership.Samples,m.Membership.TotalMs,m.Membership.MeanMs(),m.Membership.MaxMs,
+            (unsigned long long)m.NativeHandles,(unsigned long long)m.AuthoritativeN,(unsigned long long)m.PendingCount,
+            (unsigned long long)m.MembershipAdded,(unsigned long long)m.MembershipRemoved,(unsigned long long)m.MembershipDuplicates,(unsigned long long)m.MembershipInvalid,
+            (unsigned long long)m.FailedScans,(unsigned long long)m.MalformedScans,
+            m.WorstScanMs,m.WorstScanNativeMs,m.WorstScanBookkeepingMs,m.WorstScanSweepMs,m.WorstScanReleaseMs,
+            m.WorstScanBeginMonoMs,m.WorstScanCallbackMs,(unsigned long long)m.WorstScanGeneration,
+            (unsigned long long)m.WorstScanHandles,(unsigned long long)m.WorstScanN,(unsigned long long)m.WorstScanPending,
+            (unsigned long long)m.WorstScanAdded,(unsigned long long)m.WorstScanRemoved);
     }
-    struct MeasurementReporter {~MeasurementReporter(){MaybeReportMeasurements();}};
+    struct MeasurementReporter
+    {
+        Clock::time_point Started;uint64_t ScanSerial;
+        explicit MeasurementReporter(Clock::time_point started):Started(started),ScanSerial(membershipScanSerial){}
+        ~MeasurementReporter(){MaybeReportMeasurements(Started,ScanSerial);}
+    };
     struct GridVisitContext {std::unordered_set<uint64_t>* Keys=nullptr;uint64_t Visitors=0;};
     bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
     {
@@ -449,18 +561,18 @@ namespace
     }
     void OnTick(float)
     {
+        const auto callbackBegin=Clock::now();
         MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
         if(!ready || !MiniMapMap::GameplayReady())return;
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}
-        MeasurementReporter reportAtExit;
+        MeasurementReporter reportAtExit(callbackBegin);
         try
         {
             if(Clock::now()>=nextMembership)
             {
-                ++measurements.MembershipPolls;uint64_t changes=0;const auto begin=Clock::now();
+                ++measurements.MembershipPolls;uint64_t changes=0;
                 const bool complete=Reconcile(*n,changes);
-                measurements.Membership.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
                 measurements.MembershipChanges+=changes;measurements.DirtyMembership+=changes;
                 if(complete!=membershipComplete){membershipComplete=complete;dirty=true;++measurements.DirtyMembership;}
                 nextMembership=Clock::now()+std::chrono::seconds(1);

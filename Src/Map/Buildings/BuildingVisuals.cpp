@@ -106,7 +106,12 @@ namespace
     struct RenderWorkload
     {
         size_t PreparedInstances=0,OrdinarySubmitted=0,BaseCoreSubmissions=0,SplineRecords=0,
-            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,RailBodyTriangles=0;
+            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,RailBodyTriangles=0,
+            RetainedWalkwayInsetTriangles=0,PreparedWalkwayInsetTriangles=0;
+        A::PreparationWork Sections;
+        std::array<uint64_t,size_t(A::Invalidation::Count)> Reasons{}; // Nonexclusive callback flags, never per entity.
+        A::Invalidation Discarded=A::Invalidation::NoPrevious;
+        void Reason(A::Invalidation reason) noexcept {if(reason!=A::Invalidation::None)Reasons[size_t(reason)]=1;}
     };
     struct PhaseAggregate
     {
@@ -121,7 +126,11 @@ namespace
         PhaseAggregate SnapshotAcquire,LockWait,Ordinary,PlanPreparation,SplineSubmission,
             BaseCoreAndFinalize,RenderTotal,Unaccounted,SnapshotPreparation;
         uint64_t PreparedInstances=0,OrdinarySubmitted=0,SplineRecords=0,PlanReuses=0,PlanRebuilds=0,
-            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,BaseCoreSubmissions=0,RailBodyTriangles=0,SnapshotPreparationSkips=0;
+            RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,BaseCoreSubmissions=0,RailBodyTriangles=0,SnapshotPreparationSkips=0,
+            RetainedWalkwayInsetTriangles=0,PreparedWalkwayInsetTriangles=0;
+        A::PreparationWork Sections;
+        std::array<PhaseAggregate,size_t(A::PreparationPhase::Count)> SectionPhases;
+        std::array<uint64_t,size_t(A::Invalidation::Count)> Reasons{};
     };
     void CountSplineSubmission(RenderStats& stats,MiniMapBuildingSplinePolicy::SplineCategory category)
     {
@@ -557,14 +566,16 @@ namespace MiniMapBuildingVisuals
         if(!ui || !transform.Valid) return;
         static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
         static std::shared_ptr<const A::RenderPlan> occlusionPlan; // Same UI-thread lifetime as quad cache.
-        static thread_local OR::WalkwayInsetScratch walkwayInsetScratch;
         const auto elapsedMs=[](Clock::time_point begin,Clock::time_point end)
             {return std::chrono::duration<double,std::milli>(end-begin).count();};
         const auto measuredBegin=Clock::now();
         std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(g_mutex); snapshot=g_published; }
         const auto current=C::GetSnapshot();
         if(!snapshot || !current || snapshot->Generation!=current->Generation)
-        {worldQuads={};occlusionPlan.reset();TraceFrame(current,snapshot,false);return;}
+        {
+            if(occlusionPlan){std::scoped_lock lock(g_mutex);++g_buildingVisualsTiming.Reasons[size_t(A::Invalidation::Context)];}
+            worldQuads={};occlusionPlan.reset();TraceFrame(current,snapshot,false);return;
+        }
         const double snapshotAcquireMs=elapsedMs(measuredBegin,Clock::now());
         const auto dl=ui->GetWindowDrawList(); if(!dl) return;
         const auto start=Clock::now(); RenderStats stats;RenderWorkload workload;
@@ -605,9 +616,15 @@ namespace MiniMapBuildingVisuals
         const double acquired=MiniMapCaptureTiming::Now();
         uint64_t session=0,revision=0;
         MiniMapBuildingAtlas::ObservePublication(session,revision);
-        if(occlusionPlan && (occlusionPlan->Binding.Snapshot!=snapshot->Source ||
-            occlusionPlan->Generation!=snapshot->Generation || occlusionPlan->Binding.AtlasSession!=session ||
-            occlusionPlan->Binding.AtlasRevision!=revision))occlusionPlan.reset();
+        if(occlusionPlan)
+        {
+            auto reason=A::Invalidation::None;
+            if(occlusionPlan->Binding.Snapshot!=snapshot->Source || occlusionPlan->Generation!=snapshot->Generation)reason=A::Invalidation::Source;
+            else if(occlusionPlan->Binding.AtlasSession!=session)reason=A::Invalidation::AtlasSession;
+            else if(occlusionPlan->Binding.AtlasRevision!=revision)reason=A::Invalidation::AtlasRevision;
+            if(reason!=A::Invalidation::None)
+            {workload.Reason(reason);workload.Discarded=reason;occlusionPlan.reset();}
+        }
         static uint64_t lastSession=0,lastRevision=0;
         static unsigned transitions=0; // UI callback owns these diagnostics; session serial never repeats.
         if(session!=lastSession){lastSession=session;lastRevision=0;transitions=0;}
@@ -641,7 +658,8 @@ namespace MiniMapBuildingVisuals
             MiniMapBuildingScheduler::StartDraw();
         A::Request request;request.Snapshot=snapshot->Source;request.AtlasSession=session;request.AtlasRevision=revision;
         bool observationsComplete=true;
-        if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)occlusionPlan.reset();
+        if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)
+        {if(occlusionPlan)workload.Reason(A::Invalidation::Context);occlusionPlan.reset();}
         // Pass-local borrowed entries: destroyed before FinishDraw and LifecycleMutex unlock.
         // A positive Find proves Atlas status; discovery cannot replace/erase that status here.
         // Do not memoize misses: Current() also reads GameplayReady, which may close outside this mutex.
@@ -755,7 +773,7 @@ namespace MiniMapBuildingVisuals
                     observedSession==session && observedRevision==revision;
             };
             if(!observationsComplete || !currentPlanContext())
-            {occlusionPlan.reset();if(observationsComplete)++stats.StalePlans;}
+            {workload.Reason(observationsComplete?A::Invalidation::Context:A::Invalidation::Incomplete);occlusionPlan.reset();if(observationsComplete)++stats.StalePlans;}
             else try
             {
                 for(size_t index:snapshot->DrawOrder)
@@ -765,14 +783,29 @@ namespace MiniMapBuildingVisuals
                     {++stats.Unresolved;continue;}
                     request.Splines.push_back({instance.RecordIndex,instance.PreparedEnvelope,uint8_t(instance.SplineCategory)});
                 }
-                const bool reuse=occlusionPlan && A::Compatible(*occlusionPlan,request);
-                auto planned=A::Prepare(request,reuse?occlusionPlan:nullptr);
+                const auto mismatch=A::Mismatch(occlusionPlan.get(),request);
+                const bool reuse=mismatch==A::Invalidation::None;
+                if(!reuse)
+                {
+                    if(mismatch!=A::Invalidation::NoPrevious || workload.Discarded==A::Invalidation::NoPrevious)workload.Reason(mismatch);
+                    workload.Sections.Ms[size_t(A::PreparationPhase::Binding)]+=elapsedMs(splinePlanBegin,Clock::now());
+                }
+                auto planned=A::Prepare(request,occlusionPlan,&workload.Sections,workload.Discarded);
                 if(reuse)++stats.PlanReuses;else ++stats.PlanRebuilds;
-                if(!currentPlanContext()) {occlusionPlan.reset();++stats.StalePlans;}
+                bool planCurrent=false;
+                {
+                    A::PreparationTimer timer(reuse?nullptr:&workload.Sections,A::PreparationPhase::Assembly);
+                    planCurrent=currentPlanContext();
+                    if(planCurrent){occlusionPlan=planned;stats.CoverageOwner=planned;}
+                }
+                if(!planCurrent) {workload.Reason(A::Invalidation::Context);occlusionPlan.reset();++stats.StalePlans;}
                 else
                 {
-                    occlusionPlan=planned;stats.CoverageOwner=planned;
+                    // Existing retainedPlanTriangles is body-only, summed per admitted frame.
+                    // Prepared insets count committed output only on this callback's rebuild.
                     workload.RetainedPlanTriangles=planned->Triangles;
+                    workload.RetainedWalkwayInsetTriangles=planned->WalkwayInsetTriangles;
+                    if(!reuse)workload.PreparedWalkwayInsetTriangles=size_t(workload.Sections.PreparedInsets);
                     stats.InvalidSections=planned->Diagnostic.Counts[size_t(A::Failure::SectionData)]+planned->Diagnostic.PlannerInvalidInputs;
                     stats.InvalidOccluders=planned->Diagnostic.Counts[size_t(A::Failure::InvalidOccluder)];
                     stats.PlannerFailures=planned->Diagnostic.Counts[size_t(A::Failure::Planner)]-
@@ -780,7 +813,6 @@ namespace MiniMapBuildingVisuals
                     stats.AllocationFailures+=planned->Diagnostic.Counts[size_t(A::Failure::AllocationFailure)]+planned->Diagnostic.PlannerAllocationFailures;
                     stats.Unresolved+=planned->Diagnostic.Counts[size_t(A::Failure::Selection)];
                     if(planned->AllocationFailed && !stats.AllocationFailures)++stats.AllocationFailures;
-                    auto splineSource=request.Splines.begin();
                     struct SplineSubmissionBoundary
                     {
                         double& ElapsedMs;
@@ -792,16 +824,6 @@ namespace MiniMapBuildingVisuals
                     {
                         const auto& source=request.Snapshot->Records[record.RecordIndex];
                         const bool droneRail=P::IsDroneRailDefinition(source.DefinitionValid,source.BuildingId);
-                        const bool walkway=P::IsWalkwayDefinition(source.DefinitionValid,source.BuildingId);
-                        const A::SplineSource* sourceEnvelope=nullptr;
-                        if(walkway)
-                        {
-                            while(splineSource!=request.Splines.end() && splineSource->RecordIndex!=record.RecordIndex)++splineSource;
-                            if(splineSource!=request.Splines.end())sourceEnvelope=&*splineSource++;
-                        }
-                        const MiniMapBuildingSplineEnvelope::Profile* renderProfile=nullptr;
-                        if(sourceEnvelope && sourceEnvelope->Envelope && record.SourceProfile<sourceEnvelope->Envelope->Profiles.size())
-                            renderProfile=&sourceEnvelope->Envelope->Profiles[record.SourceProfile];
                         stats.FailedSections+=record.FailedSections;
                         if(OR::FullyOccluded(record)){++stats.FullyOccluded;continue;}
                         OR::SubmissionDiagnostics visibility;
@@ -817,11 +839,10 @@ namespace MiniMapBuildingVisuals
                         stats.Points+=submitted.ProjectedVertices;stats.Triangles+=submitted.Triangles;
                         workload.BodyTriangles+=submitted.Triangles;
                         if(droneRail){stats.RailBodyTriangles+=submitted.Triangles;workload.RailBodyTriangles+=submitted.Triangles;}
-                        if(walkway && sourceEnvelope && sourceEnvelope->Envelope && renderProfile)
+                        if(P::IsWalkwayDefinition(source.DefinitionValid,source.BuildingId))
                         {
-                            const auto inset=OR::SubmitWalkwayInsets(ui,dl,transform,record,*renderProfile,
-                                viewport,P::Color(P::kWalkwayInsetRgb,kSplineFillOpacity),
-                                P::kWalkwayInsetFractionPerSide,walkwayInsetScratch);
+                            const auto inset=OR::SubmitWalkwayInsets(ui,dl,transform,record,
+                                viewport,P::Color(P::kWalkwayInsetRgb,kSplineFillOpacity));
                             stats.Points+=inset.ProjectedVertices;stats.Triangles+=inset.Triangles;
                             workload.WalkwayInsetTriangles+=inset.Triangles;
                         }
@@ -831,8 +852,8 @@ namespace MiniMapBuildingVisuals
                     }
                 }
             }
-            catch(const std::bad_alloc&){occlusionPlan.reset();++stats.AllocationFailures;}
-            catch(const std::length_error&){occlusionPlan.reset();++stats.AllocationFailures;}
+            catch(const std::bad_alloc&){workload.Reason(A::Invalidation::Allocation);occlusionPlan.reset();++stats.AllocationFailures;}
+            catch(const std::length_error&){workload.Reason(A::Invalidation::Allocation);occlusionPlan.reset();++stats.AllocationFailures;}
         }
         workload.SplineRecords=request.Splines.size();
         splinePlanMs=(std::max)(0.0,elapsedMs(splinePlanBegin,Clock::now())-splineSubmissionMs);
@@ -864,6 +885,10 @@ namespace MiniMapBuildingVisuals
                 g_buildingVisualsTiming.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
                 g_buildingVisualsTiming.RenderTotal.Add(renderTotalMs);
                 g_buildingVisualsTiming.Unaccounted.Add(unaccountedMs);
+                g_buildingVisualsTiming.Sections.Add(workload.Sections);
+                for(size_t i=0;i<workload.Reasons.size();++i)g_buildingVisualsTiming.Reasons[i]+=workload.Reasons[i];
+                if(stats.PlanRebuilds)for(size_t i=0;i<workload.Sections.Ms.size();++i)
+                    g_buildingVisualsTiming.SectionPhases[i].Add(workload.Sections.Ms[i]);
                 g_buildingVisualsTiming.PreparedInstances+=workload.PreparedInstances;
                 g_buildingVisualsTiming.OrdinarySubmitted+=workload.OrdinarySubmitted;
                 g_buildingVisualsTiming.SplineRecords+=workload.SplineRecords;
@@ -872,6 +897,8 @@ namespace MiniMapBuildingVisuals
                 g_buildingVisualsTiming.BodyTriangles+=workload.BodyTriangles;
                 g_buildingVisualsTiming.RailBodyTriangles+=workload.RailBodyTriangles;
                 g_buildingVisualsTiming.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
+                g_buildingVisualsTiming.RetainedWalkwayInsetTriangles+=workload.RetainedWalkwayInsetTriangles;
+                g_buildingVisualsTiming.PreparedWalkwayInsetTriangles+=workload.PreparedWalkwayInsetTriangles;
                 g_buildingVisualsTiming.BaseCoreSubmissions+=workload.BaseCoreSubmissions;
                 if(g_timingIntervalStart==Clock::time_point{})g_timingIntervalStart=phaseEnd;
                 timingIntervalMs=elapsedMs(g_timingIntervalStart,phaseEnd);
@@ -896,14 +923,44 @@ namespace MiniMapBuildingVisuals
             phase("splineSubmission",timingReport.SplineSubmission);phase("baseCoreAndFinalize",timingReport.BaseCoreAndFinalize);
             phase("buildingRenderTotal",timingReport.RenderTotal);phase("unaccounted",timingReport.Unaccounted);
             phase("snapshotPreparation",timingReport.SnapshotPreparation);
-            LOG_INFO("MiniMap: Stage42J renderer_work generation=%llu intervalMs=%.1f preparedInstances=%llu ordinarySubmissions=%llu splineRecords=%llu planReuses=%llu planRebuilds=%llu retainedPlanTriangles=%llu bodyTriangles=%llu walkwayInsetTriangles=%llu railBodyTriangles=%llu baseCoreSubmissions=%llu snapshotPreparationSkips=%llu",
+            LOG_INFO("MiniMap: Stage42J renderer_work generation=%llu intervalMs=%.1f preparedInstances=%llu ordinarySubmissions=%llu splineRecords=%llu planReuses=%llu planRebuilds=%llu retainedPlanTriangles=%llu bodyTriangles=%llu walkwayInsetTriangles=%llu railBodyTriangles=%llu baseCoreSubmissions=%llu snapshotPreparationSkips=%llu retainedWalkwayInsetTriangles=%llu preparedWalkwayInsetTriangles=%llu",
                 (unsigned long long)snapshot->Generation,timingIntervalMs,
                 (unsigned long long)timingReport.PreparedInstances,(unsigned long long)timingReport.OrdinarySubmitted,
                 (unsigned long long)timingReport.SplineRecords,(unsigned long long)timingReport.PlanReuses,
                 (unsigned long long)timingReport.PlanRebuilds,(unsigned long long)timingReport.RetainedPlanTriangles,
                 (unsigned long long)timingReport.BodyTriangles,(unsigned long long)timingReport.WalkwayInsetTriangles,
                 (unsigned long long)timingReport.RailBodyTriangles,(unsigned long long)timingReport.BaseCoreSubmissions,
-                (unsigned long long)timingReport.SnapshotPreparationSkips);
+                (unsigned long long)timingReport.SnapshotPreparationSkips,
+                (unsigned long long)timingReport.RetainedWalkwayInsetTriangles,
+                (unsigned long long)timingReport.PreparedWalkwayInsetTriangles);
+            const auto& sections=timingReport.Sections;
+            LOG_INFO("MiniMap: Stage42M3 sections generation=%llu intervalMs=%.1f reused=%llu recomputed=%llu rejectedSource=%llu rejectedOccluders=%llu rejectedKeysEvidence=%llu rejectedLifecycleAtlas=%llu reusedBodyTriangles=%llu reusedInsetTriangles=%llu preparedInsetTriangles=%llu retainedBodyFrameSum=%llu retainedInsetFrameSum=%llu reusedMeaning=exactKeyOnly rejectedKeysEvidenceMeaning=legacyGateBeforeTranslation",
+                (unsigned long long)snapshot->Generation,timingIntervalMs,
+                (unsigned long long)sections.Reused,(unsigned long long)sections.Recomputed,
+                (unsigned long long)sections.RejectedSource,(unsigned long long)sections.RejectedOccluders,
+                (unsigned long long)sections.RejectedKeys,(unsigned long long)sections.RejectedLifecycle,
+                (unsigned long long)sections.ReusedBody,(unsigned long long)sections.ReusedInsets,
+                (unsigned long long)sections.PreparedInsets,(unsigned long long)timingReport.RetainedPlanTriangles,
+                (unsigned long long)timingReport.RetainedWalkwayInsetTriangles);
+            LOG_INFO("MiniMap: Stage42R sections generation=%llu intervalMs=%.1f exactKey=%llu remapped=%llu fresh=%llu identityMismatch=%llu geometryElevationMismatch=%llu orderMismatch=%llu incompleteEvidence=%llu nonReusable=%llu translationFailure=%llu sharedBodyTriangles=%llu sharedInsetTriangles=%llu freshBodyTriangles=%llu freshInsetTriangles=%llu translatedExamples=%llu operationCounts=1 freshMeaning=plannerAttempts sharedMeaning=committedOutputs",
+                (unsigned long long)snapshot->Generation,timingIntervalMs,
+                (unsigned long long)sections.Reused,(unsigned long long)sections.Remapped,(unsigned long long)sections.Recomputed,
+                (unsigned long long)sections.RejectedIdentity,(unsigned long long)sections.RejectedGeometry,
+                (unsigned long long)sections.RejectedOrder,(unsigned long long)sections.RejectedEvidence,
+                (unsigned long long)sections.RejectedNonReusable,(unsigned long long)sections.TranslationFailures,
+                (unsigned long long)(sections.ReusedBody+sections.RemappedBody),
+                (unsigned long long)(sections.ReusedInsets+sections.RemappedInsets),
+                (unsigned long long)sections.PreparedBody,(unsigned long long)sections.PreparedInsets,
+                (unsigned long long)sections.TranslatedExamples);
+            const char* reasons[]{"none","noPrevious","sourceSnapshotGeneration","atlasSession","atlasRevision","policy",
+                "splineInputs","ordinaryInputs","previousOrCurrentAllocation","incompleteOrdinaryObservations","contextReset"};
+            for(size_t i=1;i<timingReport.Reasons.size();++i)
+                LOG_INFO("MiniMap: Stage42M3 invalidation generation=%llu reason=%s callbacks=%llu nonexclusive=1",
+                    (unsigned long long)snapshot->Generation,reasons[i],(unsigned long long)timingReport.Reasons[i]);
+            const char* phases[]{"sectionRequestBinding","sectionOccluderBVH","sectionDependencies","sectionBodyClipping",
+                "sectionWalkwayInsets","sectionAssemblyPublication","sectionKeyTranslation","sectionEvidenceAssembly"};
+            for(size_t i=0;i<timingReport.SectionPhases.size();++i)phase(phases[i],timingReport.SectionPhases[i]);
+
         }
     }
 }
