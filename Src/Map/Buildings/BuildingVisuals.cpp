@@ -3,6 +3,7 @@
 #include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
+#include "UI/MiniMapUI.h"
 #include "BuildingScheduler.h"
 #include "BuildingAtlas.h"
 #include "BuildingVisualGeometry.h"
@@ -427,6 +428,7 @@ namespace
     void OnTick(float)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::VisualsTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         const auto input=C::GetSnapshot();

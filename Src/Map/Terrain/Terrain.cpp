@@ -978,6 +978,7 @@ namespace
         float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::TerrainTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!MiniMapMap::HasWorld())
         {
@@ -990,9 +991,6 @@ namespace
         if (MiniMapMap::TryIsPlayerInForgottenEngine(
             isInForgottenEngine))
         {
-            MiniMapUI::SetGameplaySuppressed(
-                isInForgottenEngine);
-
             if (isInForgottenEngine)
             {
                 MiniMapMouseWheel::ClearPendingZoom();

@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "AlienActors.h"
+#include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
@@ -330,6 +331,7 @@ namespace
     void OnTick(float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::AlienTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady || !MiniMapMap::HasWorld())
         {

@@ -12,9 +12,6 @@ namespace MiniMapUI
 
     void Hide();
 
-    void SetGameplaySuppressed(
-        bool suppressed);
-
     bool IsVisible();
-    void RefreshVisibility(); // Applies startup readiness without changing user preference.
+    void RefreshVisibility(); // Syncs the widget property from the authoritative visibility state.
 }

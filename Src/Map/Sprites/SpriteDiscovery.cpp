@@ -16,6 +16,7 @@
 #include "BuildingSpriteCapture.h"
 #include "BuildingSprites.h"
 #include "Map/Buildings/BuildingCollector.h"
+#include "UI/MiniMapUI.h"
 #include "Map/Terrain/TerrainCache.h"
 #include <chrono>
 #include <fstream>
@@ -196,6 +197,7 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
         MiniMapBuildingRepresentation::ServiceIdentityMaintenance();
 #endif
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())
         {
             if(owner){const auto start=Clock::now();owner->MaintainRetired(8,2.0);

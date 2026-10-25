@@ -18,15 +18,14 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
 
+#include <atomic>
 #include <cstdint>
 
 namespace
 {
     WidgetHandle g_widget = nullptr;
 
-    bool g_userVisible = false;
-    bool g_gameplaySuppressed = false;
-    bool g_actualVisible = false;
+    std::atomic<bool> g_userVisible{false};
     bool g_keybindRegistered = false;
 #if defined(MINIMAP_BUILDING_SPRITES)
     std::chrono::steady_clock::time_point g_lastSpriteWidget{};
@@ -101,17 +100,15 @@ namespace
         IModLoaderImGui* ui)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WidgetRender,true);
-        if(!MiniMapMap::GameplayReady())return;
-        MiniMapMouseWheel::SignalUiReady();
-
         if (ui == nullptr ||
-            !g_actualVisible)
+            !g_userVisible.load(std::memory_order_acquire))
         {
 #if defined(MINIMAP_BUILDING_SPRITES)
             g_lastSpriteWidget={};
 #endif
             return;
         }
+        MiniMapMouseWheel::SignalUiReady();
 
 #if defined(MINIMAP_BUILDING_SPRITES)
         // CPU callback time and callback cadence are separate. Neither measures
@@ -280,22 +277,10 @@ namespace
 
     void ApplyVisibility()
     {
-        const bool shouldBeVisible =
-            g_userVisible &&
-            MiniMapMap::GameplayReady() &&
-            !g_gameplaySuppressed;
-
-        if (g_actualVisible ==
-            shouldBeVisible)
-        {
-            return;
-        }
-
-        g_actualVisible =
-            shouldBeVisible;
+        const bool visible = g_userVisible.load(std::memory_order_acquire);
 
         MiniMapMouseWheel::SetZoomEnabled(
-            g_actualVisible);
+            visible);
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&
@@ -304,11 +289,11 @@ namespace
         {
             g_self->hooks->UI->SetWidgetVisible(
                 g_widget,
-                g_actualVisible);
+                visible);
         }
 
         LOG_INFO(
-            g_actualVisible
+            visible
             ? "MiniMap: widget shown"
             : "MiniMap: widget hidden");
     }
@@ -322,14 +307,12 @@ namespace
         (void)key;
         (void)event;
 
-        if (g_userVisible)
+        bool visible = g_userVisible.load(std::memory_order_acquire);
+        while (!g_userVisible.compare_exchange_weak(
+            visible, !visible, std::memory_order_acq_rel, std::memory_order_acquire))
         {
-            MiniMapUI::Hide();
         }
-        else
-        {
-            MiniMapUI::Show();
-        }
+        ApplyVisibility();
     }
 
     bool RegisterToggleKeybind()
@@ -408,9 +391,7 @@ namespace MiniMapUI
             return true;
         }
 
-        g_userVisible = false;
-        g_gameplaySuppressed = false;
-        g_actualVisible = false;
+        g_userVisible.store(false, std::memory_order_release);
 
         UpdateHints();
 
@@ -494,9 +475,7 @@ namespace MiniMapUI
         }
 
         g_widget = nullptr;
-        g_userVisible = false;
-        g_gameplaySuppressed = false;
-        g_actualVisible = false;
+        g_userVisible.store(false, std::memory_order_release);
         g_hints = {};
     }
 
@@ -510,41 +489,14 @@ namespace MiniMapUI
             return;
         }
 
-        if (g_userVisible)
-        {
-            return;
-        }
-
-        g_userVisible =
-            true;
+        g_userVisible.store(true, std::memory_order_release);
 
         ApplyVisibility();
     }
 
     void Hide()
     {
-        if (!g_userVisible)
-        {
-            return;
-        }
-
-        g_userVisible =
-            false;
-
-        ApplyVisibility();
-    }
-
-    void SetGameplaySuppressed(
-        bool suppressed)
-    {
-        if (g_gameplaySuppressed ==
-            suppressed)
-        {
-            return;
-        }
-
-        g_gameplaySuppressed =
-            suppressed;
+        g_userVisible.store(false, std::memory_order_release);
 
         ApplyVisibility();
     }
@@ -553,7 +505,7 @@ namespace MiniMapUI
 
     bool IsVisible()
     {
-        return g_actualVisible;
+        return g_userVisible.load(std::memory_order_acquire);
     }
 }
 

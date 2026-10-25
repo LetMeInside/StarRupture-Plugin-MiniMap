@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Foundables.h"
+#include "UI/MiniMapUI.h"
 
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Map.h"
@@ -701,6 +702,7 @@ namespace
     void OnTick(float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FoundablesTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady ||
             !MiniMapMap::HasWorld())

@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
+#include "UI/MiniMapUI.h"
 
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Map.h"
@@ -827,6 +828,7 @@ namespace
         float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PoiTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady ||
             !MiniMapMap::HasWorld())

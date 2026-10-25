@@ -171,11 +171,11 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     }
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
-    if (MiniMapMap::GameplayReady() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
+    if (MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
     MiniMapCaptureTiming::Flush(); // All lifecycle/backend locks have been released.
     // Observation only: Complete describes available scoped observation, not
     // worldwide discovery or capture completion. Never a service readiness gate.
-    if(MiniMapCallbackTiming::QueryInitialAcquisition.load(std::memory_order_relaxed))
+    if(MiniMapUI::IsVisible()&&MiniMapCallbackTiming::QueryInitialAcquisition.load(std::memory_order_relaxed))
     {
         const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
         if(snapshot && snapshot->Complete)

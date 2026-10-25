@@ -1,6 +1,7 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
+#include "UI/MiniMapUI.h"
 #include "BuildingBlueprintIdentity.h"
 #include "BuildingGeometry.h"
 #include "BuildingSplinePayload.h"
@@ -563,6 +564,7 @@ namespace
     {
         const auto callbackBegin=Clock::now();
         MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!ready || !MiniMapMap::GameplayReady())return;
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}

@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
+#include "UI/MiniMapUI.h"
 
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
@@ -1230,6 +1231,7 @@ namespace
         float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FogTick,true);
+        if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!MiniMapMap::HasWorld())
         {
