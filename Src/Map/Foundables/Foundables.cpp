@@ -6,6 +6,7 @@
 
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Map.h"
+#include "Map/MarkerIconSizing.h"
 
 #include "Native/NativeApi.h"
 #include "Native/TextureAccess.h"
@@ -31,10 +32,6 @@
 namespace
 {
     constexpr float kSnapshotIntervalSeconds = 0.5f;
-    constexpr float kDefaultIconSizePixels = 32.0f;
-    constexpr float kMinimumIconSizePixels = 16.0f;
-    constexpr float kMaximumIconSizePixels = 48.0f;
-    constexpr double kDefaultPixelsPerWorldUnit = 0.03;
 
     constexpr uint8_t kDeadBodyType = 1;
     constexpr uint8_t kDroneType = 2;
@@ -812,16 +809,9 @@ namespace MiniMapFoundables
         const float viewportY =
             transform.CenterY - transform.Height * 0.5f;
 
-        const double zoomScale =
-            transform.PixelsPerWorldUnit /
-            kDefaultPixelsPerWorldUnit;
-
         const float iconSize =
-            std::clamp(
-                static_cast<float>(
-                    kDefaultIconSizePixels * zoomScale),
-                kMinimumIconSizePixels,
-                kMaximumIconSizePixels);
+            MiniMapMap::CalculateMapMarkerIconSize(
+                transform.MetersPerPixel);
 
         const float halfIcon = iconSize * 0.5f;
 
