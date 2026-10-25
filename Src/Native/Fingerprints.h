@@ -9,6 +9,9 @@ namespace MiniMapFingerprints
 {
     struct ResolvedAddresses
     {
+        uintptr_t commonUIWidgetNativeOnActivated = 0;
+        uintptr_t commonUIWidgetNativeOnDeactivated = 0;
+
         uintptr_t softObjectLoadSynchronous = 0;
         uintptr_t getBrushResourceAsTexture2D = 0;
 

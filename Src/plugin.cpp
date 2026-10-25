@@ -8,6 +8,9 @@
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
+#include "UI/MiniMapUI.h"
+#include "SDK/CommonUI_classes.hpp"
+#include "SDK/ChimeraUI_classes.hpp"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Buildings/BuildingAtlas.h"
@@ -28,6 +31,174 @@ static void CapturePluginInitHookBaseline(IPluginSelf* self)
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 static MiniMapSpriteStatus::Dictionary g_buildingSpriteStatuses;
 static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
+static HookHandle g_commonUIActivatedHook = nullptr;
+static HookHandle g_commonUIDeactivatedHook = nullptr;
+static MiniMapNative::CommonUIApi::NativeOnActivatedFn g_commonUIActivatedOriginal = nullptr;
+static MiniMapNative::CommonUIApi::NativeOnDeactivatedFn g_commonUIDeactivatedOriginal = nullptr;
+
+static constexpr uint32_t kBlockingMenuMainMap = 1u << 0;
+static constexpr uint32_t kBlockingMenuInventory = 1u << 1;
+static constexpr uint32_t kBlockingMenuBuilding = 1u << 2;
+static constexpr uint32_t kBlockingMenuCorporateTerminal = 1u << 3;
+static constexpr uint32_t kBlockingMenuDevelopmentStation = 1u << 4;
+static constexpr uint32_t kBlockingMenuEquipmentUpgradeStation = 1u << 5;
+static constexpr uint32_t kBlockingMenuPauseMenu = 1u << 6;
+
+static uint32_t GetBlockingMenuBit(
+    SDK::UCommonActivatableWidget* widget,
+    const char*& menuName)
+{
+    if (widget->IsA(SDK::UCrUW_MapMenu::StaticClass()))
+    {
+        menuName = "main map";
+        return kBlockingMenuMainMap;
+    }
+    if (widget->IsA(SDK::UCrUW_InventoryScreen::StaticClass()))
+    {
+        menuName = "inventory";
+        return kBlockingMenuInventory;
+    }
+    if (widget->IsA(SDK::UCrUW_BuildingMenu::StaticClass()))
+    {
+        menuName = "building menu";
+        return kBlockingMenuBuilding;
+    }
+    if (widget->IsA(SDK::UCrUW_ResearchTerminalPanel::StaticClass()))
+    {
+        menuName = "corporate terminal";
+        return kBlockingMenuCorporateTerminal;
+    }
+    if (widget->IsA(SDK::UCrUW_UpgradeStationPanel::StaticClass()))
+    {
+        menuName = "development station";
+        return kBlockingMenuDevelopmentStation;
+    }
+    if (widget->IsA(SDK::UCrUW_ArmoryPanel::StaticClass()))
+    {
+        menuName = "equipment upgrade station";
+        return kBlockingMenuEquipmentUpgradeStation;
+    }
+    if (widget->IsA(SDK::UCrUW_PauseMenu::StaticClass()))
+    {
+        menuName = "pause menu";
+        return kBlockingMenuPauseMenu;
+    }
+
+    menuName = nullptr;
+    return 0;
+}
+
+static void LogCommonUITransition(
+    const char* transition,
+    const char* menuName,
+    uint32_t suppressionMask)
+{
+    LOG_INFO(
+        "MiniMap: %s blocking menu=%s suppressionMask=0x%X",
+        transition,
+        menuName,
+        suppressionMask);
+}
+
+static void __fastcall CommonUIActivatedDetour(
+    SDK::UCommonActivatableWidget* widget)
+{
+    g_commonUIActivatedOriginal(widget);
+
+    const char* menuName = nullptr;
+    const uint32_t menuBit = GetBlockingMenuBit(widget, menuName);
+    if (menuBit != 0)
+    {
+        const uint32_t suppressionMask = MiniMapUI::SetBlockingMenuActive(menuBit, true);
+        LogCommonUITransition("Activated", menuName, suppressionMask);
+    }
+}
+
+static void __fastcall CommonUIDeactivatedDetour(
+    SDK::UCommonActivatableWidget* widget)
+{
+    g_commonUIDeactivatedOriginal(widget);
+
+    const char* menuName = nullptr;
+    const uint32_t menuBit = GetBlockingMenuBit(widget, menuName);
+    if (menuBit != 0)
+    {
+        const uint32_t suppressionMask = MiniMapUI::SetBlockingMenuActive(menuBit, false);
+        LogCommonUITransition("Deactivated", menuName, suppressionMask);
+    }
+}
+
+static void RemoveCommonUIHooks()
+{
+    if (g_self != nullptr &&
+        g_self->hooks != nullptr &&
+        g_self->hooks->Hooks != nullptr &&
+        g_self->hooks->Hooks->Remove != nullptr)
+    {
+        if (g_commonUIActivatedHook != nullptr)
+        {
+            g_self->hooks->Hooks->Remove(g_commonUIActivatedHook);
+        }
+        if (g_commonUIDeactivatedHook != nullptr)
+        {
+            g_self->hooks->Hooks->Remove(g_commonUIDeactivatedHook);
+        }
+    }
+
+    g_commonUIActivatedHook = nullptr;
+    g_commonUIDeactivatedHook = nullptr;
+    g_commonUIActivatedOriginal = nullptr;
+    g_commonUIDeactivatedOriginal = nullptr;
+}
+
+static bool InstallCommonUIHooks()
+{
+    auto* hookUtils = g_self != nullptr && g_self->hooks != nullptr
+        ? g_self->hooks->Hooks
+        : nullptr;
+    const auto* nativeApi = MiniMapNative::Get();
+    if (hookUtils == nullptr || hookUtils->Install == nullptr ||
+        hookUtils->Remove == nullptr || nativeApi == nullptr ||
+        nativeApi->commonUI.nativeOnActivated == nullptr ||
+        nativeApi->commonUI.nativeOnDeactivated == nullptr)
+    {
+        LOG_ERROR("MiniMap: CommonUI lifecycle hook dependencies are unavailable");
+        return false;
+    }
+
+    void* activatedOriginal = nullptr;
+    g_commonUIActivatedHook = hookUtils->Install(
+        reinterpret_cast<uintptr_t>(nativeApi->commonUI.nativeOnActivated),
+        reinterpret_cast<void*>(&CommonUIActivatedDetour),
+        &activatedOriginal);
+    if (g_commonUIActivatedHook == nullptr || activatedOriginal == nullptr)
+    {
+        RemoveCommonUIHooks();
+        LOG_ERROR("MiniMap: CommonUI activation detour installation failed");
+        return false;
+    }
+    g_commonUIActivatedOriginal =
+        reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnActivatedFn>(
+            activatedOriginal);
+
+    void* deactivatedOriginal = nullptr;
+    g_commonUIDeactivatedHook = hookUtils->Install(
+        reinterpret_cast<uintptr_t>(nativeApi->commonUI.nativeOnDeactivated),
+        reinterpret_cast<void*>(&CommonUIDeactivatedDetour),
+        &deactivatedOriginal);
+    if (g_commonUIDeactivatedHook == nullptr || deactivatedOriginal == nullptr)
+    {
+        RemoveCommonUIHooks();
+        LOG_ERROR("MiniMap: CommonUI deactivation detour installation failed");
+        return false;
+    }
+    g_commonUIDeactivatedOriginal =
+        reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnDeactivatedFn>(
+            deactivatedOriginal);
+
+    LOG_INFO("MiniMap: installed both CommonUI activation/deactivation detours");
+    return true;
+}
 #endif
 
 #ifndef MODLOADER_BUILD_TAG
@@ -35,7 +206,6 @@ static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
 #endif
 
 #ifdef MODLOADER_CLIENT_BUILD
-#include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
@@ -268,6 +438,13 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     SetServicesAdmitted(false);
     EndBuildingSession();
     MiniMapUI::Hide();
+    const uint32_t blockingMenuMask = MiniMapUI::ClearBlockingMenuSuppression();
+    if (blockingMenuMask != 0)
+    {
+        LOG_INFO(
+            "MiniMap: cleared blocking menu mask at world end (0x%X)",
+            blockingMenuMask);
+    }
     MiniMapTerrain::CancelPendingDiagnostic();
 }
 
@@ -355,6 +532,12 @@ extern "C"
             return false;
         }
 
+        if (!InstallCommonUIHooks())
+        {
+            g_self = nullptr;
+            return false;
+        }
+
         std::filesystem::path terrainRoot;
         const char* cacheFailure = nullptr;
         if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
@@ -363,6 +546,7 @@ extern "C"
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
                 cacheFailure ? cacheFailure : "cache root unavailable");
+            RemoveCommonUIHooks();
             g_self = nullptr;
             return false;
         }
@@ -374,6 +558,7 @@ extern "C"
                 "MiniMap: UI initialization failed");
 
             MiniMapCacheIdentity::Reset();
+            RemoveCommonUIHooks();
 
             g_self = nullptr;
             return false;
@@ -387,6 +572,7 @@ extern "C"
         if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, g_self->hooks->ImGuiTextures))
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
+            RemoveCommonUIHooks();
             return false;
         }
         g_self->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
@@ -568,6 +754,7 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+        RemoveCommonUIHooks();
         g_worldEnding=true;
         SetServicesAdmitted(false);
         {
@@ -583,6 +770,12 @@ extern "C"
         if(g_self && g_self->hooks && g_self->hooks->Engine)
             g_self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
         MiniMapCacheIdentity::Reset();
+        const uint32_t blockingMenuMask = MiniMapUI::ClearBlockingMenuSuppression();
+        if (blockingMenuMask != 0)
+        {
+            LOG_INFO("MiniMap: cleared blocking menu mask during shutdown (0x%X)",
+                blockingMenuMask);
+        }
         MiniMapUI::Hide();
 
         if (g_self != nullptr &&

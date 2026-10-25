@@ -48,6 +48,42 @@ namespace MiniMapFingerprints
             return false;
         }
 
+        // UCommonActivatableWidget native lifecycle callbacks. These are the
+        // shared post-transition virtual implementations used by the three
+        // blocking game menus; reflected ActivateWidget/DeactivateWidget
+        // dispatch is not sufficient because CommonUI calls them natively.
+        PluginScanRequest commonUIActivatedRequest = PLUGIN_SCAN_REQUEST_INIT;
+        commonUIActivatedRequest.hookName =
+            "MiniMap::UCommonActivatableWidget::NativeOnActivated";
+        commonUIActivatedRequest.pattern =
+            "40 53 48 83 EC 50 80 B9 50 04 00 00 00 48 8B D9 75 17 "
+            "48 89 4C 24 60 48 8D 4C 24 60 E8 ?? ?? ?? ?? 84 C0 "
+            "0F 84 ?? ?? ?? ?? 80 BB 30 05 00 00 00 0F 84 ?? ?? ?? ?? "
+            "48 8B 03 48 8B CB 0F B6 93 31 05 00 00 FF 90 C0 02 00 00";
+        commonUIActivatedRequest.kind = PLUGIN_SCAN_FUNCTION_START;
+        addresses.commonUIWidgetNativeOnActivated = scanner->Resolve(
+            self, &commonUIActivatedRequest);
+        if (addresses.commonUIWidgetNativeOnActivated == 0)
+        {
+            return false;
+        }
+
+        PluginScanRequest commonUIDeactivatedRequest = PLUGIN_SCAN_REQUEST_INIT;
+        commonUIDeactivatedRequest.hookName =
+            "MiniMap::UCommonActivatableWidget::NativeOnDeactivated";
+        commonUIDeactivatedRequest.pattern =
+            "40 53 48 83 EC 50 80 B9 50 04 00 00 00 48 8B D9 74 37 "
+            "48 8D 05 ?? ?? ?? ?? 41 B9 2C 01 00 00 4C 8D 05 ?? ?? ?? ?? "
+            "48 89 44 24 20 33 D2 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? "
+            "84 C0 0F 84 ?? ?? ?? ??";
+        commonUIDeactivatedRequest.kind = PLUGIN_SCAN_FUNCTION_START;
+        addresses.commonUIWidgetNativeOnDeactivated = scanner->Resolve(
+            self, &commonUIDeactivatedRequest);
+        if (addresses.commonUIWidgetNativeOnDeactivated == 0)
+        {
+            return false;
+        }
+
 
 
         // -------------------------------------------------------------------

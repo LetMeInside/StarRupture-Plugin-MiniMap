@@ -185,6 +185,8 @@ namespace MiniMapNative
         Shutdown();
 
         if (addresses.softObjectLoadSynchronous == 0 ||
+            addresses.commonUIWidgetNativeOnActivated == 0 ||
+            addresses.commonUIWidgetNativeOnDeactivated == 0 ||
             addresses.getBrushResourceAsTexture2D == 0 ||
             addresses.setForceMipLevelsToBeResident == 0 ||
             addresses.waitForStreaming == 0 ||
@@ -290,6 +292,13 @@ namespace MiniMapNative
         g_nativeApi.asset.loadSynchronous =
             reinterpret_cast<AssetApi::LoadSynchronousFn>(
                 addresses.softObjectLoadSynchronous);
+
+        g_nativeApi.commonUI.nativeOnActivated =
+            reinterpret_cast<CommonUIApi::NativeOnActivatedFn>(
+                addresses.commonUIWidgetNativeOnActivated);
+        g_nativeApi.commonUI.nativeOnDeactivated =
+            reinterpret_cast<CommonUIApi::NativeOnDeactivatedFn>(
+                addresses.commonUIWidgetNativeOnDeactivated);
 
         g_nativeApi.player.getFirstPlayerController =
             reinterpret_cast<PlayerApi::GetFirstPlayerControllerFn>(

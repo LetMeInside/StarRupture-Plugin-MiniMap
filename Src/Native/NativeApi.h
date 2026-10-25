@@ -45,6 +45,7 @@ namespace SDK
     enum class EMassFragmentAccess : uint8_t;
     enum class EMassFragmentPresence : uint8_t;
     class UObject;
+    class UCommonActivatableWidget;
     template<typename ClassType> class TSubclassOf;
     class UTexture2D;
     class UStreamableRenderAsset;
@@ -79,6 +80,17 @@ namespace MiniMapFingerprints
 
 namespace MiniMapNative
 {
+    struct CommonUIApi
+    {
+        using NativeOnActivatedFn =
+            void (__fastcall*)(SDK::UCommonActivatableWidget* widget);
+        using NativeOnDeactivatedFn =
+            void (__fastcall*)(SDK::UCommonActivatableWidget* widget);
+
+        NativeOnActivatedFn nativeOnActivated = nullptr;
+        NativeOnDeactivatedFn nativeOnDeactivated = nullptr;
+    };
+
     struct AssetApi
     {
         const bool* activeGarbageCollection = nullptr;
@@ -560,6 +572,7 @@ namespace MiniMapNative
 
     struct NativeApi
     {
+        CommonUIApi commonUI;
         AssetApi asset;
         WorldApi world;
         PlayerApi player;

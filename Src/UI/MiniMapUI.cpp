@@ -26,6 +26,7 @@ namespace
     WidgetHandle g_widget = nullptr;
 
     std::atomic<bool> g_userVisible{false};
+    std::atomic<uint32_t> g_blockingMenuMask{0};
     bool g_keybindRegistered = false;
 #if defined(MINIMAP_BUILDING_SPRITES)
     std::chrono::steady_clock::time_point g_lastSpriteWidget{};
@@ -41,6 +42,12 @@ namespace
     constexpr float kMapViewportInset = 4.0f;
 
     constexpr const char* kToggleKey = "F4";
+
+    bool IsEffectivelyVisible()
+    {
+        return g_userVisible.load(std::memory_order_acquire) &&
+            g_blockingMenuMask.load(std::memory_order_acquire) == 0;
+    }
 
     void UpdateHints()
     {
@@ -100,8 +107,7 @@ namespace
         IModLoaderImGui* ui)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WidgetRender,true);
-        if (ui == nullptr ||
-            !g_userVisible.load(std::memory_order_acquire))
+        if (ui == nullptr || !IsEffectivelyVisible())
         {
 #if defined(MINIMAP_BUILDING_SPRITES)
             g_lastSpriteWidget={};
@@ -278,6 +284,8 @@ namespace
     void ApplyVisibility()
     {
         const bool visible = g_userVisible.load(std::memory_order_acquire);
+        const bool effectiveVisible = visible &&
+            g_blockingMenuMask.load(std::memory_order_acquire) == 0;
 
         MiniMapMouseWheel::SetZoomEnabled(
             visible);
@@ -289,11 +297,11 @@ namespace
         {
             g_self->hooks->UI->SetWidgetVisible(
                 g_widget,
-                visible);
+                effectiveVisible);
         }
 
         LOG_INFO(
-            visible
+            effectiveVisible
             ? "MiniMap: widget shown"
             : "MiniMap: widget hidden");
     }
@@ -503,9 +511,31 @@ namespace MiniMapUI
 
     void RefreshVisibility(){ApplyVisibility();}
 
+    uint32_t SetBlockingMenuActive(uint32_t menuBit, bool active)
+    {
+        const uint32_t previous = active
+            ? g_blockingMenuMask.fetch_or(menuBit, std::memory_order_acq_rel)
+            : g_blockingMenuMask.fetch_and(~menuBit, std::memory_order_acq_rel);
+        const uint32_t current = active
+            ? previous | menuBit
+            : previous & ~menuBit;
+
+        if (current != previous)
+        {
+            ApplyVisibility();
+        }
+
+        return current;
+    }
+
+    uint32_t ClearBlockingMenuSuppression()
+    {
+        return g_blockingMenuMask.exchange(0, std::memory_order_acq_rel);
+    }
+
     bool IsVisible()
     {
-        return g_userVisible.load(std::memory_order_acquire);
+        return IsEffectivelyVisible();
     }
 }
 
