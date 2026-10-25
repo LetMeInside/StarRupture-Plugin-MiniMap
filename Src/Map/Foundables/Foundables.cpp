@@ -32,8 +32,7 @@
 
 namespace
 {
-    constexpr float kSnapshotIntervalSeconds = 0.5f;
-    constexpr float kContainerPollIntervalSeconds = 3.0f;
+    constexpr float kPollIntervalSeconds = 3.0f;
     constexpr float kOrdinaryContainerDotRadiusPixels = 2.5f;
     constexpr uint32_t kOrdinaryContainerDotColor = 0xFF00FFFFu; // Opaque yellow in ImGui ABGR.
     constexpr float kBlueprintContainerDotRadiusPixels = 5.0f;
@@ -66,8 +65,7 @@ namespace
     bool g_pluginSelfAvailable = false;
     bool g_tickRegistered = false;
     bool g_experienceReady = false;
-    float g_snapshotAccumulator = 0.0f;
-    float g_containerAccumulator = 0.0f;
+    float g_pollAccumulator = kPollIntervalSeconds;
 
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
 
@@ -564,7 +562,7 @@ namespace
         g_containerDots.clear();
     }
 
-    void PollFoundables(bool refreshContainers)
+    bool PollFoundables()
     {
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
         SDK::UWorld* world = MiniMapMap::GetWorld();
@@ -581,7 +579,7 @@ namespace
             native->texture.memoryFree == nullptr)
         {
             ClearSnapshot();
-            return;
+            return false;
         }
 
         SDK::UCrPlayerMapMenuDataComponent* mapData = GetLocalMapDataComponent();
@@ -599,7 +597,7 @@ namespace
         if (transformStruct == nullptr || inventoryStruct == nullptr || parametersStruct == nullptr)
         {
             ClearSnapshot();
-            return;
+            return false;
         }
 
         MiniMapNative::MassEntityHandleArray handles = {};
@@ -626,7 +624,7 @@ namespace
 
             if (foundableType == kUndefinedType)
             {
-                if (refreshContainers && inventory != nullptr)
+                if (inventory != nullptr)
                 {
                     const ContainerContents contents = ClassifyContainerContents(*inventory);
                     if (contents != ContainerContents::Empty)
@@ -662,8 +660,10 @@ namespace
         {
             std::scoped_lock lock(g_snapshotMutex);
             g_records = std::move(nextRecords);
-            if (refreshContainers) g_containerDots = std::move(nextContainerDots);
+            g_containerDots = std::move(nextContainerDots);
         }
+
+        return true;
     }
     void OnTick(float deltaSeconds)
     {
@@ -676,18 +676,21 @@ namespace
             return;
         }
 
-        g_snapshotAccumulator += deltaSeconds;
-        g_containerAccumulator += deltaSeconds;
+        g_pollAccumulator += deltaSeconds;
 
-        if (g_snapshotAccumulator < kSnapshotIntervalSeconds)
+        if (g_pollAccumulator < kPollIntervalSeconds)
         {
             return;
         }
 
-        g_snapshotAccumulator = 0.0f;
-        const bool refreshContainers = g_containerAccumulator >= kContainerPollIntervalSeconds;
-        if (refreshContainers) g_containerAccumulator = 0.0f;
-        PollFoundables(refreshContainers);
+        if (PollFoundables())
+        {
+            g_pollAccumulator = 0.0f;
+        }
+        else
+        {
+            g_pollAccumulator = kPollIntervalSeconds;
+        }
     }
 }
 
@@ -731,8 +734,7 @@ namespace MiniMapFoundables
 
         g_devSettings = nullptr;
         g_experienceReady = false;
-        g_snapshotAccumulator = 0.0f;
-        g_containerAccumulator = 0.0f;
+        g_pollAccumulator = kPollIntervalSeconds;
     }
 
     void OnExperienceLoadComplete()
@@ -743,7 +745,7 @@ namespace MiniMapFoundables
         }
 
         g_experienceReady = true;
-        g_snapshotAccumulator = 0.0f;
+        g_pollAccumulator = kPollIntervalSeconds;
 
         LOG_INFO("MiniMap: Mass foundable acquisition enabled");
     }
