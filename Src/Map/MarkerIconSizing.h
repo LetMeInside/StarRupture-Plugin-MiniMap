@@ -6,11 +6,6 @@
 
 #include <cmath>
 
-namespace MiniMapPointsOfInterest
-{
-    extern float g_poiIconUserScale;
-}
-
 namespace MiniMapMap
 {
     inline constexpr float kBasePOIIconSizePixels =
@@ -23,7 +18,7 @@ namespace MiniMapMap
         0.75f;
 
     inline float CalculateMapMarkerIconSize(
-        double metersPerPixel)
+        double metersPerPixel, float userScale)
     {
         const double normalizedZoom =
             std::log(
@@ -43,7 +38,7 @@ namespace MiniMapMap
         return
             kBasePOIIconSizePixels *
             zoomScale *
-            MiniMapPointsOfInterest::g_poiIconUserScale;
+            userScale;
     }
 }
 

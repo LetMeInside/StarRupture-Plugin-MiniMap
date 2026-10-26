@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <limits>
 #include <string_view>
 
 namespace
@@ -48,7 +49,30 @@ namespace
         {"Zoom", "InitialZoom", ConfigValueType::Float, "0.3333333333333333",
          "Initial Zoom: meters per pixel for the next terrain session. Native Float editing rounds values; the default "
          "retains exact 100/300 zoom. Editor: 0.13-0.66; INI: 0.125 through 2/3 meters per pixel.",
-         0.13f, 0.66f}};
+         0.13f, 0.66f},
+        {"Buildings", "ShowLayer", ConfigValueType::Boolean, "true",
+         "Show Building Layer: display building sprites and splines; retain pending capture work while hidden."},
+        {"Buildings", "RenderDroneRails", ConfigValueType::Boolean, "true",
+         "Render Drone Rails: display drone rail splines when the building layer is shown."},
+        {"Fog Of War", "DisableFog", ConfigValueType::Boolean, "false",
+         "Disable Fog of War: bypass MiniMap visual fog and fog-based marker hiding; native exploration is unchanged."},
+        {"Fog Of War", "FeatherRange", ConfigValueType::Float, "55.0",
+         "Visibility Feather Range: outer radius in meters; must exceed the fixed 40 m clear radius.",
+         41.0f, 200.0f},
+        {"Alien Actors", "ShowLayer", ConfigValueType::Boolean, "true",
+         "Show Alien Actor Layer: display observed active enemies without changing observation."},
+        {"Foundables", "ShowLayer", ConfigValueType::Boolean, "true",
+         "Show Foundables Layer: display foundable icons and container loot indicators."},
+        {"Foundables", "ShowLootInBases", ConfigValueType::Boolean, "true",
+         "Show Loot in Abandoned Bases: display loot indicators for containers in abandoned bases."},
+        {"Foundables", "MarkerScale", ConfigValueType::Float, "1.0",
+         "Foundable Marker Scale: positive size multiplier for foundable icons and loot dots; positions stay fixed.",
+         0.25f, 3.0f},
+        {"Points Of Interest", "ShowLayer", ConfigValueType::Boolean, "true",
+         "Show POI Layer: display eligible POI markers without changing discovery."},
+        {"Points Of Interest", "MarkerScale", ConfigValueType::Float, "1.0",
+         "POI Marker Scale: positive icon-size multiplier; positions and discovery stay fixed.",
+         0.25f, 3.0f}};
     constexpr ConfigSchema kSchema = {kEntries, int(std::size(kEntries))};
     enum Field
     {
@@ -64,8 +88,20 @@ namespace
         ZoomIn,
         ZoomOut,
         Step,
-        Initial
+        Initial,
+        BuildingLayer,
+        DroneRails,
+        DisableFog,
+        Feather,
+        AlienLayer,
+        FoundableLayer,
+        LootInBases,
+        FoundableScale,
+        POILayer,
+        POIScale,
+        FieldCount
     };
+    static_assert(FieldCount == std::size(kEntries));
     std::mutex g_settingsMutex;
     Settings g_settings;
     bool g_listening = false;     // Lifecycle only.
@@ -170,6 +206,11 @@ constexpr const char* kKeys[] = {
             return "finite number in [1.01, 2.0]";
         case Initial:
             return "finite meters-per-pixel number in [0.125, 2/3]";
+        case Feather:
+            return "finite outer radius greater than 40 meters, within finite float range";
+        case FoundableScale:
+        case POIScale:
+            return "finite positive float-convertible scale with finite positive marker geometry";
         default:
             return "true/false, yes/no or 1/0";
         }
@@ -199,6 +240,9 @@ constexpr const char* kKeys[] = {
             return false;
         }
         case Step:
+        case Feather:
+        case FoundableScale:
+        case POIScale:
         case Initial: {
             const auto result = std::from_chars(text.data(), text.data() + text.size(), out.Number);
             if (text.empty() || result.ec != std::errc{} || result.ptr != text.data() + text.size() ||
@@ -206,6 +250,32 @@ constexpr const char* kKeys[] = {
                 return false;
             if (field == Step)
                 return out.Number >= 1.01 && out.Number <= 2.0;
+            if (field == Feather)
+            {
+                // Float editor compatibility; radius*100 and its square remain
+                // finite in the existing double-precision feather calculation.
+                return out.Number > 40.0 && out.Number <= double((std::numeric_limits<float>::max)());
+            }
+            if (field == FoundableScale || field == POIScale)
+            {
+                // Bound BEFORE conversion/multiplication: out-of-range float
+                // casts/products must not be used to detect overflow after it occurs.
+                // Supported zoom yields 16..24 px icons; Foundables dots use 2.5/5 px.
+                const double maximum = double((std::numeric_limits<float>::max)()) / 24.0;
+                if (!(out.Number > 0.0) || out.Number > maximum)
+                    return false;
+                const float scale = static_cast<float>(out.Number);
+                if (!(scale > 0.0f) || !std::isfinite(scale) ||
+                    double(scale) * 24.0 > double((std::numeric_limits<float>::max)()))
+                    return false;
+                const auto validGeometry = [scale](float base)
+                {
+                    const float size = base * scale;
+                    return std::isfinite(size) && size > 0.0f;
+                };
+                return validGeometry(16.0f) && validGeometry(24.0f) &&
+                    (field != FoundableScale || (validGeometry(2.5f) && validGeometry(5.0f)));
+            }
             // Schema formatter normalizes Float defaults to six decimal places.
             // Recognize that default and the Float representation of 100/300.
             if (out.Number == 0.333333 || out.Number == double(float(100.0 / 300.0)))
@@ -273,6 +343,36 @@ constexpr const char* kKeys[] = {
             break;
         case Initial:
             s.InitialZoom = v.Number;
+            break;
+        case BuildingLayer:
+            s.ShowBuildingLayer = v.Boolean;
+            break;
+        case DroneRails:
+            s.RenderDroneRails = v.Boolean;
+            break;
+        case DisableFog:
+            s.DisableFogOfWar = v.Boolean;
+            break;
+        case Feather:
+            s.VisibilityFeatherRange = v.Number;
+            break;
+        case AlienLayer:
+            s.ShowAlienActorLayer = v.Boolean;
+            break;
+        case FoundableLayer:
+            s.ShowFoundablesLayer = v.Boolean;
+            break;
+        case LootInBases:
+            s.ShowLootInBases = v.Boolean;
+            break;
+        case FoundableScale:
+            s.FoundableMarkerScale = v.Number;
+            break;
+        case POILayer:
+            s.ShowPOILayer = v.Boolean;
+            break;
+        case POIScale:
+            s.POIMarkerScale = v.Number;
             break;
         }
     }
@@ -353,7 +453,18 @@ namespace MiniMapConfig
     {
         std::lock_guard lock(g_settingsMutex);
         return {g_settings.RotatingMiniMap, g_settings.ShowCoordinates, g_settings.ShowCompass,
-                g_settings.TrackingRevision};
+                g_settings.TrackingRevision,
+                {g_settings.ShowBuildingLayer, g_settings.RenderDroneRails},
+                {g_settings.DisableFogOfWar, g_settings.VisibilityFeatherRange},
+                g_settings.ShowAlienActorLayer,
+                {g_settings.ShowFoundablesLayer, g_settings.ShowLootInBases,
+                 static_cast<float>(g_settings.FoundableMarkerScale)},
+                {g_settings.ShowPOILayer, static_cast<float>(g_settings.POIMarkerScale)}};
+    }
+    FogOfWarSettings GetFogOfWarSettings()
+    {
+        std::lock_guard lock(g_settingsMutex);
+        return {g_settings.DisableFogOfWar, g_settings.VisibilityFeatherRange};
     }
     MouseWheelSettings GetMouseWheelSettings()
     {

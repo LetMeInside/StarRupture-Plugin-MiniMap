@@ -12,6 +12,12 @@ namespace MiniMapMap
 
 struct IPluginSelf;
 
+namespace MiniMapConfig
+{
+    struct POIRenderSettings;
+    struct FogOfWarSettings;
+}
+
 namespace MiniMapPointsOfInterest
 {
     bool Initialize(IPluginSelf* self);
@@ -21,7 +27,9 @@ namespace MiniMapPointsOfInterest
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform);
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::POIRenderSettings& settings,
+        const MiniMapConfig::FogOfWarSettings& fog);
 
     void Shutdown();
 }

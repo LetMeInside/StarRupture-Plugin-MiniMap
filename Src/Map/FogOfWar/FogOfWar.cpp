@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
+#include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 
 #include "Map/Map.h"
@@ -72,9 +73,6 @@ namespace
      */
     constexpr double kLocalClearRadiusMeters =
         40.0;
-
-    constexpr double kLocalFeatherOuterRadiusMeters =
-        55.0;
 
     /*
      * Native exploration is a 7.8125 m mask grid. Only cells near a native
@@ -528,7 +526,8 @@ namespace
     bool CellIntersectsLocalFeather(
         int32_t maskX,
         int32_t maskY,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         const double worldX0 =
             kMapPivotX +
@@ -571,7 +570,7 @@ namespace
             transform.LocalVisibilityWorldY;
 
         const double outerRadiusWorld =
-            kLocalFeatherOuterRadiusMeters *
+            fog.FeatherOuterRadiusMeters *
             kWorldUnitsPerMeter;
 
         return
@@ -692,7 +691,8 @@ namespace
     double LocalFogFactor(
         double worldX,
         double worldY,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         const double dx =
             worldX -
@@ -712,7 +712,7 @@ namespace
 
         return SmoothStep(
             kLocalClearRadiusMeters,
-            kLocalFeatherOuterRadiusMeters,
+            fog.FeatherOuterRadiusMeters,
             distanceMeters);
     }
 
@@ -720,11 +720,12 @@ namespace
     double RenderedFogAlpha(
         double worldX,
         double worldY,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         const double nativeFog = BilinearNativeFogAlpha(worldX, worldY);
         return nativeFog <= 0.0 ? 0.0 :
-            nativeFog * LocalFogFactor(worldX, worldY, transform);
+            nativeFog * LocalFogFactor(worldX, worldY, transform, fog);
     }
 
 
@@ -866,6 +867,7 @@ namespace
         IModLoaderImGui* ui,
         PluginDrawList drawList,
         const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog,
         int32_t maskX,
         int32_t maskY,
         std::size_t& inOutQuadCount)
@@ -926,7 +928,7 @@ namespace
                     0.5;
 
                 const double finalAlpha =
-                    RenderedFogAlpha(centerX, centerY, transform);
+                    RenderedFogAlpha(centerX, centerY, transform, fog);
 
                 if (DrawWorldFogQuad(
                     ui,
@@ -1205,6 +1207,8 @@ namespace
             return;
         }
 
+        const auto fog = MiniMapConfig::GetFogOfWarSettings();
+        if (fog.Disabled) return;
         g_snapshotAccumulator +=
             deltaSeconds;
 
@@ -1313,8 +1317,10 @@ namespace MiniMapFogOfWar
     }
 
     bool IsWorldRectangleFullyObscured(double minX,double minY,double maxX,double maxY,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
+        if (fog.Disabled) return false;
         if(!g_snapshot.Valid||!g_blackFogTexture||!transform.Valid||
             !std::isfinite(transform.PixelsPerWorldUnit)||transform.PixelsPerWorldUnit<=0||
             !std::isfinite(transform.LocalVisibilityWorldX)||!std::isfinite(transform.LocalVisibilityWorldY))return false;
@@ -1323,30 +1329,36 @@ namespace MiniMapFogOfWar
         return MiniMapBuildingSpriteCore::FullyObscured(minX,minY,maxX,maxY,
             kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
             [&](int x,int y){return MiniMapBuildingSpriteCore::OpaqueFogCell(x,y,
-                CellIntersectsLocalFeather(x,y,transform),TryGetMaskByte);});
+                CellIntersectsLocalFeather(x,y,transform,fog),TryGetMaskByte);});
     }
 
     float GetRenderedVisibilityAtWorldPosition(
         double worldX,
         double worldY,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
-        if (!g_snapshot.Valid || !transform.Valid ||
+        if (!transform.Valid ||
             !std::isfinite(worldX) || !std::isfinite(worldY) ||
             !std::isfinite(transform.LocalVisibilityWorldX) ||
             !std::isfinite(transform.LocalVisibilityWorldY))
         {
             return 0.0f;
         }
+        if (fog.Disabled) return 1.0f;
+        if (!g_snapshot.Valid) return 0.0f;
         return static_cast<float>(std::clamp(
-            1.0 - RenderedFogAlpha(worldX, worldY, transform), 0.0, 1.0));
+            1.0 - RenderedFogAlpha(worldX, worldY, transform, fog), 0.0, 1.0));
     }
 
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
+        if (fog.Disabled) return;
+
         if (ui == nullptr ||
             !transform.Valid ||
             !g_snapshot.Valid ||
@@ -1518,7 +1530,7 @@ namespace MiniMapFogOfWar
                     CellIntersectsLocalFeather(
                         maskX,
                         maskY,
-                        transform);
+                        transform, fog);
 
                 const bool coarseOpaque =
                     maskByte ==
@@ -1537,6 +1549,7 @@ namespace MiniMapFogOfWar
                             ui,
                             drawList,
                             transform,
+                            fog,
                             maskX,
                             maskY,
                             refinedQuadCount);
@@ -1567,7 +1580,7 @@ namespace MiniMapFogOfWar
                         CellIntersectsLocalFeather(
                             maskX,
                             maskY,
-                            transform))
+                            transform, fog))
                     {
                         break;
                     }
@@ -1707,7 +1720,7 @@ namespace MiniMapFogOfWar
                 opaqueRectangleCount,
                 refinedQuadCount,
                 kLocalClearRadiusMeters,
-                kLocalFeatherOuterRadiusMeters);
+                fog.FeatherOuterRadiusMeters);
 
             g_renderReported =
                 true;

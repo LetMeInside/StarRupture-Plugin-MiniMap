@@ -73,6 +73,7 @@ namespace MiniMapBuildingCollector
         uint64_t Generation = 0;
         Bounds Region;
         bool Complete = false; // Observation completeness; never an atlas publication barrier.
+        bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
         double PublishedAtSeconds = 0;
         std::vector<Record> Records;
     };

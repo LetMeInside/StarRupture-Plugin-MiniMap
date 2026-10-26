@@ -5,6 +5,8 @@
 #include "plugin.h"
 #include "Map/MapTransform.h"
 
+namespace MiniMapConfig { struct FogOfWarSettings; }
+
 namespace MiniMapAlienActors
 {
     bool Initialize(IPluginSelf* self);
@@ -13,7 +15,8 @@ namespace MiniMapAlienActors
 
     // Copies viewport geometry only; acquisition remains on the engine tick.
     void SetViewport(const MiniMapMap::Transform& transform);
-    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform);
+    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog);
     void Shutdown();
 }
 

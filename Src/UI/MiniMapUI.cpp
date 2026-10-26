@@ -235,27 +235,36 @@ namespace
             transform,
             settings))
         {
-            MiniMapBuildingVisuals::Render(ui, transform);
+            MiniMapBuildingVisuals::Render(ui, transform, settings.Buildings);
             MiniMapFogOfWar::Render(
                 ui,
-                transform);
+                transform, settings.Fog);
 
             MiniMapAlienActors::SetViewport(transform);
             MiniMapBuildingCollector::SetViewport(transform);
 
-            MiniMapFoundables::Render(
-                ui,
-                transform);
+            if (settings.Foundables.ShowLayer)
+            {
+                MiniMapFoundables::Render(
+                    ui,
+                    transform, settings.Foundables, settings.Fog);
+            }
 
-            MiniMapPointsOfInterest::Render(
-                ui,
-                transform);
+            if (settings.POI.ShowLayer)
+            {
+                MiniMapPointsOfInterest::Render(
+                    ui,
+                    transform, settings.POI, settings.Fog);
+            }
 
-            MiniMapAlienActors::Render(ui, transform);
+            if (settings.ShowAlienActors)
+            {
+                MiniMapAlienActors::Render(ui, transform, settings.Fog);
+            }
 
             MiniMapOverlays::Render(
                 ui,
-                transform, settings.ShowCoordinates, settings.ShowCompass);
+                transform, settings.ShowCoordinates, settings.ShowCompass, settings.Fog);
         }
 
         ui->DL_AddRect(

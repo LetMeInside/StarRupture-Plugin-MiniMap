@@ -3,6 +3,7 @@
 
 #include "Foundables.h"
 #include "UI/MiniMapUI.h"
+#include "Config/Config.h"
 
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Map.h"
@@ -607,7 +608,7 @@ namespace
         g_containerDots.clear();
     }
 
-    bool PollFoundables()
+    bool PollFoundables(const MiniMapConfig::FoundableRenderSettings& settings)
     {
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
         SDK::UWorld* world = MiniMapMap::GetWorld();
@@ -660,6 +661,7 @@ namespace
             if (parameters == nullptr) continue;
 
             const auto foundableType = static_cast<uint8_t>(parameters->FoundableType);
+            if (foundableType == kUndefinedType && !settings.ShowLootInBases) continue;
             const void* inventoryFragment = native->mass.getFragmentDataPtr(g_massManager, id, inventoryStruct);
             const auto* inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment);
             const void* transform = native->mass.getFragmentDataPtr(g_massManager, id, transformStruct);
@@ -721,6 +723,8 @@ namespace
             return;
         }
 
+        const auto settings = MiniMapConfig::GetRenderSettings().Foundables;
+        if (!settings.ShowLayer) return;
         g_pollAccumulator += deltaSeconds;
 
         if (g_pollAccumulator < kPollIntervalSeconds)
@@ -728,7 +732,7 @@ namespace
             return;
         }
 
-        if (PollFoundables())
+        if (PollFoundables(settings))
         {
             g_pollAccumulator = 0.0f;
         }
@@ -797,7 +801,9 @@ namespace MiniMapFoundables
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FoundableRenderSettings& settings,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (ui == nullptr ||
             !transform.Valid)
@@ -829,7 +835,7 @@ namespace MiniMapFoundables
 
         const float iconSize =
             MiniMapMap::CalculateMapMarkerIconSize(
-                transform.MetersPerPixel);
+                transform.MetersPerPixel, settings.MarkerScale);
 
         const float halfIcon = iconSize * 0.5f;
 
@@ -869,7 +875,7 @@ namespace MiniMapFoundables
             }
 
             if (!(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, transform) > 0.0f))
+                record.WorldX, record.WorldY, transform, fog) > 0.0f))
             {
                 continue;
             }
@@ -908,7 +914,7 @@ namespace MiniMapFoundables
                 // Exact existing renderer exposure (native edge + local awareness feather).
                 // Zero alone means fully black; partial exposure keeps the opaque dot.
                 if (!(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                    dot.WorldX, dot.WorldY, transform) > 0.0f))
+                    dot.WorldX, dot.WorldY, transform, fog) > 0.0f))
                 {
                     continue;
                 }
@@ -918,14 +924,17 @@ namespace MiniMapFoundables
                     drawList,
                     point.X,
                     point.Y,
-                    isBlueprint ? kBlueprintContainerDotRadiusPixels : kOrdinaryContainerDotRadiusPixels,
+                    (isBlueprint ? kBlueprintContainerDotRadiusPixels : kOrdinaryContainerDotRadiusPixels) * settings.MarkerScale,
                     isBlueprint ? kBlueprintContainerDotColor : kOrdinaryContainerDotColor,
                     12);
             }
         };
 
-        renderContainerDots(ContainerContents::Ordinary);
-        renderContainerDots(ContainerContents::Blueprint);
+        if (settings.ShowLootInBases)
+        {
+            renderContainerDots(ContainerContents::Ordinary);
+            renderContainerDots(ContainerContents::Blueprint);
+        }
 
         ui->DL_PopClipRect(drawList);
     }

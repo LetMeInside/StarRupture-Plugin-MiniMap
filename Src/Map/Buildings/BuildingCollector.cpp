@@ -1,6 +1,7 @@
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
+#include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "BuildingBlueprintIdentity.h"
 #include "BuildingGeometry.h"
@@ -375,7 +376,7 @@ namespace
         auto recipe=std::make_shared<DefinitionGeometry>();recipe->Profiles=std::move(profiles);d.Recipe=std::move(recipe);d.Prepared=true;return true;
     }
     // This function never loads assets, yields, or retains a fragment/payload.
-    bool CopyInitial(const Native& n,Entry& entry)
+    bool CopyInitial(const Native& n,Entry& entry,const MiniMapConfig::BuildingRenderSettings& settings)
     {
         auto& r=entry.Data;
         if(r.DefinitionValid && r.TransformValid && (!r.HasSpline || r.Curve))return true;
@@ -384,6 +385,9 @@ namespace
         {
             const auto* parameters=Parameters(n,id);auto* placement=parameters?parameters->PlacementData:nullptr;
             if(!placement)return false;
+            // Exact validated definition admission precedes rooting, transform
+            // and spline/payload copying. Leave the identity pending on exclusion.
+            if(!settings.RenderDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID)))return false;
             auto it=definitions.find(placement);
             if(it==definitions.end())
             {
@@ -471,11 +475,12 @@ namespace
         for(auto& [key,e]:entities)if(e.Complete && !e.Data.HasSpline){SpriteBounds(e.Data);++measurements.AtlasBoundsRecalculations;}
         atlasSession=session;atlasRevision=revision;dirty=true;++measurements.DirtyAtlas;
     }
-    bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions)
+    bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,const MiniMapConfig::BuildingRenderSettings& settings)
     {
         auto it=entities.find(key);if(it==entities.end() || it->second.Complete)return false;
         auto& e=it->second;
-        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e))return false;
+        if(!settings.RenderDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId))return false;
+        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e,settings))return false;
         // CopyInitial has returned: no Mass borrow spans definition loading.
         // Loading may dispatch engine callbacks: keep the definition strongly
         // owned, and re-find the entity after returning instead of holding a
@@ -500,13 +505,16 @@ namespace
         // code: completion and removal from scheduling commit together.
         it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;++measurements.DirtyAcquisition;return true;
     }
-    void Publish()
+    void Publish(const MiniMapConfig::BuildingRenderSettings& settings)
     {
         ++measurements.PublicationAttempts;
         if(!dirty)return;
         auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
+        value->IncludedDroneRails=settings.RenderDroneRails;
         value->PublishedAtSeconds=std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
-        for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly && (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
+        for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly &&
+            (settings.RenderDroneRails || !MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId)) &&
+            (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
         std::sort(value->Records.begin(),value->Records.end(),[](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
         {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;++measurements.Publications;
     }
@@ -566,6 +574,14 @@ namespace
         MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!ready || !MiniMapMap::GameplayReady())return;
+        const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
+        if(!settings.ShowLayer)return;
+        // Provenance belongs to immutable output, not to mutable preferences.
+        // A policy change must republish even when membership is unchanged.
+        {
+            std::scoped_lock lock(publicationMutex);
+            if(snapshot && snapshot->Generation==generation && snapshot->IncludedDroneRails!=settings.RenderDroneRails)dirty=true;
+        }
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}
         MeasurementReporter reportAtExit(callbackBegin);
@@ -611,7 +627,7 @@ namespace
                 if(!localCandidates.empty())
                 {
                     const auto begin=Clock::now();
-                    for(auto key:localCandidates){if(!pending.contains(key))continue;++measurements.LocalAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(localEpoch!=generation)return;}
+                    for(auto key:localCandidates){if(!pending.contains(key))continue;++measurements.LocalAttempts;if(Acquire(*n,key,attemptedDefinitions,settings))++measurements.NewlyCompleted;if(localEpoch!=generation)return;}
                     measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
                 }
                 // Publish local data before remote definition preparation. Remote
@@ -619,7 +635,7 @@ namespace
                 // there is no entity quota or permanent spatial admission limit.
                 if(dirty && !remoteTurn)
                 {
-                    ++measurements.RemotePassesSkipped;const auto begin=Clock::now();Publish();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+                    ++measurements.RemotePassesSkipped;const auto begin=Clock::now();Publish(settings);measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
                     remoteTurn=true;return;
                 }
                 remoteTurn=false;
@@ -632,11 +648,11 @@ namespace
                     measurements.PendingEnumeration.Add(std::chrono::duration<double,std::milli>(Clock::now()-pendingBegin).count());
                     const auto epoch=generation;
                     const auto begin=Clock::now();
-                    for(auto key:pendingKeys){if(!pending.contains(key))continue;++measurements.RemoteAttempts;if(Acquire(*n,key,attemptedDefinitions))++measurements.NewlyCompleted;if(epoch!=generation)return;}
+                    for(auto key:pendingKeys){if(!pending.contains(key))continue;++measurements.RemoteAttempts;if(Acquire(*n,key,attemptedDefinitions,settings))++measurements.NewlyCompleted;if(epoch!=generation)return;}
                     measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
                 }
             }
-            {const auto begin=Clock::now();Publish();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
+            {const auto begin=Clock::now();Publish(settings);measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
         }
         catch(const std::bad_alloc&){/* Keep membership/owned records; retry pending work. */}
     }

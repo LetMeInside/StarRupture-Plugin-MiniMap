@@ -24,6 +24,16 @@ namespace MiniMapConfig
         Keybind ZoomOutKey = {};
         double ZoomStepFactor = 1.25;
         double InitialZoom = 100.0 / 300.0;
+        bool ShowBuildingLayer = true;
+        bool RenderDroneRails = true;
+        bool DisableFogOfWar = false;
+        double VisibilityFeatherRange = 55.0;
+        bool ShowAlienActorLayer = true;
+        bool ShowFoundablesLayer = true;
+        bool ShowLootInBases = true;
+        double FoundableMarkerScale = 1.0;
+        bool ShowPOILayer = true;
+        double POIMarkerScale = 1.0;
         uint64_t WheelRevision = 1;
         uint64_t TrackingRevision = 1;
     };
@@ -34,12 +44,38 @@ namespace MiniMapConfig
         bool FollowBuildDrone;
         uint64_t Revision;
     };
+    struct BuildingRenderSettings
+    {
+        bool ShowLayer;
+        bool RenderDroneRails;
+    };
+    struct FogOfWarSettings
+    {
+        bool Disabled;
+        double FeatherOuterRadiusMeters;
+    };
+    struct FoundableRenderSettings
+    {
+        bool ShowLayer;
+        bool ShowLootInBases;
+        float MarkerScale; // Validated float geometry multiplier.
+    };
+    struct POIRenderSettings
+    {
+        bool ShowLayer;
+        float MarkerScale;
+    };
     struct RenderSettings
     {
         bool RotatingMiniMap;
         bool ShowCoordinates;
         bool ShowCompass;
         uint64_t TrackingRevision;
+        BuildingRenderSettings Buildings;
+        FogOfWarSettings Fog;
+        bool ShowAlienActors;
+        FoundableRenderSettings Foundables;
+        POIRenderSettings POI;
     };
     struct MouseWheelSettings
     {
@@ -57,5 +93,6 @@ namespace MiniMapConfig
     double ZoomStepFactor();
     TrackingSettings GetTrackingSettings();
     RenderSettings GetRenderSettings();
+    FogOfWarSettings GetFogOfWarSettings();
     MouseWheelSettings GetMouseWheelSettings();
 } // namespace MiniMapConfig

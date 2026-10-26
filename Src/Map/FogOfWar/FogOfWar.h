@@ -9,6 +9,8 @@ namespace MiniMapMap
     struct Transform;
 }
 
+namespace MiniMapConfig { struct FogOfWarSettings; }
+
 struct IPluginSelf;
 
 namespace MiniMapFogOfWar
@@ -26,18 +28,22 @@ namespace MiniMapFogOfWar
 
     // Bounded sufficient opacity proof. Unknown data or budget exhaustion returns false.
     bool IsWorldRectangleFullyObscured(double minX,double minY,double maxX,double maxY,
-        const MiniMapMap::Transform& transform);
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog);
 
     // Effective visual exposure, including the temporary local feather.
-    // Reads the copied FOW snapshot; does not change persistent exploration.
+    // Disabled fog bypasses the copied snapshot after input validation.
+    // Enabled fog reads it; neither policy changes persistent exploration.
     float GetRenderedVisibilityAtWorldPosition(
         double worldX,
         double worldY,
-        const MiniMapMap::Transform& transform);
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog);
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform);
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog);
 
     void Shutdown();
 }

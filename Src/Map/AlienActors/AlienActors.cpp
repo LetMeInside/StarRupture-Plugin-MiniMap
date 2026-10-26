@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "AlienActors.h"
+#include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Native/NativeApi.h"
@@ -190,7 +191,7 @@ namespace
         return true;
     }
 
-    void Poll()
+    void Poll(const MiniMapConfig::FogOfWarSettings& fog)
     {
         PollMeasurement measurement;
         const auto* native = MiniMapNative::Get();
@@ -286,7 +287,7 @@ namespace
             }
             ++measurement.Nearby;
             if (MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, visibilityTransform) > 0.0f) ++measurement.Visible;
+                record.WorldX, record.WorldY, visibilityTransform, fog) > 0.0f) ++measurement.Visible;
             // Keep nearby candidates, including currently fogged ones. The
             // existing visible/nearest selection is evaluated against the SAME
             // transform as the rendered fog, so a moved feather has no stale
@@ -325,11 +326,13 @@ namespace
         {
             return;
         }
+        const auto settings = MiniMapConfig::GetRenderSettings();
+        if (!settings.ShowAlienActors) return;
         g_pollAccumulator += deltaSeconds;
         if (g_pollAccumulator >= kPollIntervalSeconds)
         {
             g_pollAccumulator = 0.0f;
-            Poll();
+            Poll(settings.Fog);
         }
     }
 }
@@ -390,7 +393,8 @@ namespace MiniMapAlienActors
         g_acquisitionRadius = std::isfinite(radius) ? radius : 0.0;
     }
 
-    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform)
+    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (ui == nullptr || !transform.Valid) return;
         const auto drawList = ui->GetWindowDrawList();
@@ -419,7 +423,7 @@ namespace MiniMapAlienActors
             const double distanceSquared = dx*dx + dy*dy;
             if (record.WorldGeneration != g_worldGeneration || distanceSquared > radiusSquared) continue;
             const float visibility = MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, transform);
+                record.WorldX, record.WorldY, transform, fog);
             if (visibility > 0.0f) visible.push_back({index, visibility, distanceSquared});
         }
         // Preserve the existing nearest-visible cap and selection-before-clip

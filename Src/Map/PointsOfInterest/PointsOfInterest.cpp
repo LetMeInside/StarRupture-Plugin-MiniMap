@@ -3,6 +3,7 @@
 
 #include "PointsOfInterest.h"
 #include "UI/MiniMapUI.h"
+#include "Config/Config.h"
 
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Map.h"
@@ -792,6 +793,8 @@ namespace
             return;
         }
 
+        const auto settings = MiniMapConfig::GetRenderSettings().POI;
+        if (!settings.ShowLayer) return;
         g_snapshotAccumulator +=
             deltaSeconds;
 
@@ -811,9 +814,6 @@ namespace
 
 namespace MiniMapPointsOfInterest
 {
-    float g_poiIconUserScale =
-        1.0f;
-
     bool Initialize(
         IPluginSelf* self)
     {
@@ -897,7 +897,9 @@ namespace MiniMapPointsOfInterest
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::POIRenderSettings& settings,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (ui == nullptr ||
             !transform.Valid)
@@ -941,7 +943,7 @@ namespace MiniMapPointsOfInterest
 
         const float iconSize =
             MiniMapMap::CalculateMapMarkerIconSize(
-                transform.MetersPerPixel);
+                transform.MetersPerPixel, settings.MarkerScale);
 
         const float halfIcon =
             iconSize *
@@ -995,7 +997,7 @@ namespace MiniMapPointsOfInterest
             }
 
             if (record.CanHideByFog && !(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, transform) > 0.0f)) continue;
+                record.WorldX, record.WorldY, transform, fog) > 0.0f)) continue;
 
             ui->DL_AddImage(
                 drawList,

@@ -3,6 +3,7 @@
 #include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
+#include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "BuildingScheduler.h"
 #include "BuildingAtlas.h"
@@ -431,6 +432,8 @@ namespace
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
+        const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
+        if(!settings.ShowLayer)return;
         const auto input=C::GetSnapshot();
         if(!input) { if(g_lastInput) Clear(); return; }
         if(input->Generation!=g_generation) { Clear(); g_generation=input->Generation; }
@@ -562,8 +565,12 @@ namespace MiniMapBuildingVisuals
         return "\nBuildingVisuals: ON\n"+g_debugText;
 #endif
     }
-    void Render(IModLoaderImGui* ui,const MiniMapMap::Transform& transform)
+    void Render(IModLoaderImGui* ui,const MiniMapMap::Transform& transform,
+        const MiniMapConfig::BuildingRenderSettings& settings)
     {
+        // Presentation only: leave draw-driven queues and the independent game-thread
+        // capture service untouched while this layer is hidden.
+        if(!settings.ShowLayer)return;
         if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         if(!ui || !transform.Valid) return;
         static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
@@ -826,6 +833,7 @@ namespace MiniMapBuildingVisuals
                     {
                         const auto& source=request.Snapshot->Records[record.RecordIndex];
                         const bool droneRail=P::IsDroneRailDefinition(source.DefinitionValid,source.BuildingId);
+                        if(droneRail && !settings.RenderDroneRails)continue;
                         stats.FailedSections+=record.FailedSections;
                         if(OR::FullyOccluded(record)){++stats.FullyOccluded;continue;}
                         OR::SubmissionDiagnostics visibility;

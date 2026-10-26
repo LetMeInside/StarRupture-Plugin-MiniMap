@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MapOverlays.h"
+#include "Config/Config.h"
 
 #include "Map/MapTransform.h"
 #include "Map/FogOfWar/FogOfWar.h"
@@ -369,7 +370,8 @@ namespace MiniMapOverlays
 {
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform, bool showCoordinates, bool showCompass)
+        const MiniMapMap::Transform& transform, bool showCoordinates, bool showCompass,
+        const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (ui == nullptr ||
             !transform.Valid)
@@ -395,7 +397,7 @@ namespace MiniMapOverlays
             MiniMapMap::ScreenPoint character{};
             if (transform.WorldToScreen(transform.PlayerWorldX, transform.PlayerWorldY, character) &&
                 MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                    transform.PlayerWorldX, transform.PlayerWorldY, transform) > 0.0f)
+                    transform.PlayerWorldX, transform.PlayerWorldY, transform, fog) > 0.0f)
             {
                 const float left = transform.CenterX - transform.Width * 0.5f;
                 const float top = transform.CenterY - transform.Height * 0.5f;

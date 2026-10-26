@@ -5,6 +5,12 @@
 #include "plugin.h"
 #include "Map/MapTransform.h"
 
+namespace MiniMapConfig
+{
+    struct FoundableRenderSettings;
+    struct FogOfWarSettings;
+}
+
 namespace MiniMapFoundables
 {
     bool Initialize(IPluginSelf* self);
@@ -13,7 +19,9 @@ namespace MiniMapFoundables
 
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform);
+        const MiniMapMap::Transform& transform,
+        const MiniMapConfig::FoundableRenderSettings& settings,
+        const MiniMapConfig::FogOfWarSettings& fog);
 
     void Shutdown();
 }
