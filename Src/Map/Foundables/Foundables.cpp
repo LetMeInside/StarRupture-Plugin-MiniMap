@@ -9,6 +9,7 @@
 #include "Map/MarkerIconSizing.h"
 
 #include "Native/NativeApi.h"
+#include "Native/ResidentMetadata.h"
 #include "Native/TextureAccess.h"
 #include "Native/BC3Decode.h"
 #include "plugin_helpers.h"
@@ -283,6 +284,57 @@ namespace
         g_massManager = nullptr;
     }
 
+    SDK::UScriptStruct* ResolveDroppedItemsTag()
+    {
+        if (!MiniMapResidentMetadata::Available())
+        {
+            return nullptr;
+        }
+
+        auto* self = GetSelf();
+        auto* engine = self != nullptr && self->hooks != nullptr
+            ? self->hooks->Engine
+            : nullptr;
+        if (engine == nullptr ||
+            engine->GetStaticFindObjectByNameAddress == nullptr)
+        {
+            return nullptr;
+        }
+
+        const uintptr_t findAddress =
+            engine->GetStaticFindObjectByNameAddress();
+        if (findAddress == 0)
+        {
+            return nullptr;
+        }
+
+        uintptr_t scriptStructClass = 0;
+        if (!MiniMapResidentMetadata::FindResident(
+                findAddress,
+                0,
+                L"/Script/CoreUObject.ScriptStruct",
+                false,
+                scriptStructClass) ||
+            scriptStructClass == 0)
+        {
+            return nullptr;
+        }
+
+        uintptr_t droppedItemsTag = 0;
+        if (!MiniMapResidentMetadata::FindResident(
+                findAddress,
+                scriptStructClass,
+                L"/Script/Chimera.CrMassDroppedItemsTag",
+                true,
+                droppedItemsTag) ||
+            droppedItemsTag == 0)
+        {
+            return nullptr;
+        }
+
+        return reinterpret_cast<SDK::UScriptStruct*>(droppedItemsTag);
+    }
+
     bool EnsureQuery()
     {
         SDK::UWorld* world = MiniMapMap::GetWorld();
@@ -295,7 +347,8 @@ namespace
             native->mass.addInventoryRequirement == nullptr ||
             native->mass.addTransformRequirement == nullptr ||
             native->mass.addFoundableParametersRequirement == nullptr ||
-            native->mass.addFoundableTagRequirement == nullptr)
+            native->mass.addFoundableTagRequirement == nullptr ||
+            native->mass.addTagRequirement == nullptr)
         {
             return false;
         }
@@ -328,6 +381,13 @@ namespace
             g_massManager == manager)
         {
             return true;
+        }
+
+        SDK::UScriptStruct* droppedItemsTag =
+            ResolveDroppedItemsTag();
+        if (droppedItemsTag == nullptr)
+        {
+            return false;
         }
 
         DestroyQuery();
@@ -364,6 +424,11 @@ namespace
         native->mass.addFoundableTagRequirement(
             g_queryStorage.data(),
             kPresenceAny);
+
+        native->mass.addTagRequirement(
+            g_queryStorage.data(),
+            droppedItemsTag,
+            SDK::EMassFragmentPresence::None);
 
         g_queryWorld = world;
         g_massSubsystem = subsystem;
