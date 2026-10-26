@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +35,21 @@ namespace MiniMapCacheIdentity
     };
 #pragma pack(pop)
     static_assert(sizeof(CacheInfo) == 44);
+
+    // A lease covers the complete file operation, including stream destruction,
+    // temporary cleanup and publication. Exit takes exclusive ownership to drain
+    // readers/writers and permanently close admission for this plugin session.
+    inline std::shared_mutex g_fileAccessMutex;
+    inline bool g_fileAccessClosed = false; // Protected by g_fileAccessMutex.
+    inline bool g_exitClearAttempted = false; // Same lock; startup clearing is separate.
+    class FileAccess
+    {
+        std::shared_lock<std::shared_mutex> Lock{g_fileAccessMutex};
+    public:
+        explicit operator bool() const { return !g_fileAccessClosed; }
+    };
+    // Implemented beside the existing persistent-cache clearing routine.
+    void ClearOnExit();
 
     inline std::atomic<bool> g_authorized{false};
     inline bool IsReady() { return g_authorized.load(); }
@@ -338,8 +354,11 @@ namespace MiniMapCacheIdentity
     // Called once by PluginInit before consumers. Only the supplied known cache
     // owner is cleared; unknown root contents and diagnostics are never enumerated.
     inline bool Initialize(const std::filesystem::path& root, bool (*clearTerrain)(),
-        const char*& failure)
+        const char*& failure, bool forceClear = false)
     {
+        std::unique_lock access(g_fileAccessMutex);
+        g_fileAccessClosed = false;
+        g_exitClearAttempted = false;
         Reset();
         failure = nullptr;
         Digest digest{};
@@ -365,7 +384,7 @@ namespace MiniMapCacheIdentity
         const auto current = MakeInfo(digest);
         const auto path = root / L"CacheInfo";
         CacheInfo stored{};
-        if (!ReadInfo(path, stored) || stored.ExecutableDigest != digest)
+        if (forceClear || !ReadInfo(path, stored) || stored.ExecutableDigest != digest)
         {
             if (!clearTerrain())
             {

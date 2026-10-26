@@ -36,6 +36,7 @@ namespace MiniMapMap
         PlayerPose Tracking = {};
         WorldPosition LocalVisibilityOrigin = {};
         uint64_t WorldGeneration = 0;
+        uint64_t TrackingRevision = 0;
         int32_t TrackingObjectIndex = -1; // Reconciliation identity, never an object pointer.
         bool DroneActive = false;
         bool InForgottenEngine = false;

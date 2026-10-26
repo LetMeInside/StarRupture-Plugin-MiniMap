@@ -350,6 +350,8 @@ namespace MiniMapTerrainCache
         int chunkY,
         std::vector<uint8_t>& compressedChunk)
     {
+        MiniMapCacheIdentity::FileAccess access;
+        if (!access) return false;
         MiniMapTerrainProfile::Scope cacheProfile(MiniMapTerrainProfile::Phase::Cache);
         MiniMapTerrainProfile::CacheResult cacheResult;
         MiniMapTerrainProfile::Scope pathProfile(MiniMapTerrainProfile::Phase::CachePath);
@@ -556,6 +558,8 @@ namespace MiniMapTerrainCache
         const uint8_t* sourceData,
         size_t sourceDataSize)
     {
+        MiniMapCacheIdentity::FileAccess access;
+        if (!access) return false;
         MiniMapTerrainProfile::Scope writeProfile(MiniMapTerrainProfile::Phase::CacheWrite);
         if (radiationLevel < 0 ||
             sourceData == nullptr ||

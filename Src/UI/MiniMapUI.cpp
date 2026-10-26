@@ -3,6 +3,8 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MiniMapUI.h"
+#include "Config/Config.h"
+#include <mutex>
 #include "MapOverlays.h"
 #include "DebugText.h"
 #include "Input/MouseWheel.h"
@@ -27,7 +29,10 @@ namespace
 
     std::atomic<bool> g_userVisible{false};
     std::atomic<uint32_t> g_blockingMenuMask{0};
-    bool g_keybindRegistered = false;
+    std::mutex g_bindingMutex;
+    bool g_bindingsActive = false; // Protected by g_bindingMutex.
+    std::atomic<bool> g_inputActive{false};
+    MiniMapConfig::Keybind g_toggleIdentity{}, g_zoomInIdentity{}, g_zoomOutIdentity{};
 #if defined(MINIMAP_BUILDING_SPRITES)
     std::chrono::steady_clock::time_point g_lastSpriteWidget{};
 #endif
@@ -41,7 +46,6 @@ namespace
     // strip is reserved for the current/future MiniMap frame.
     constexpr float kMapViewportInset = 4.0f;
 
-    constexpr const char* kToggleKey = "F4";
 
     bool IsEffectivelyVisible()
     {
@@ -219,6 +223,7 @@ namespace
             rounding,
             PluginDrawFlags_RoundCornersAll);
 
+        const auto settings = MiniMapConfig::GetRenderSettings();
         MiniMapMap::Transform transform = {};
 
         if (MiniMapTerrain::Render(
@@ -227,7 +232,8 @@ namespace
             viewportY,
             viewportWidth,
             viewportHeight,
-            transform))
+            transform,
+            settings))
         {
             MiniMapBuildingVisuals::Render(ui, transform);
             MiniMapFogOfWar::Render(
@@ -249,7 +255,7 @@ namespace
 
             MiniMapOverlays::Render(
                 ui,
-                transform);
+                transform, settings.ShowCoordinates, settings.ShowCompass);
         }
 
         ui->DL_AddRect(
@@ -282,15 +288,13 @@ namespace
 
     void ApplyVisibility()
     {
+        MiniMapMouseWheel::RefreshVisibility();
         // Reopening must wait for a fresh game-thread sample, even if no tick
         // occurred during a hidden interval. No native reads on this UI path.
         MiniMapTerrain::InvalidatePresentation();
         const bool visible = g_userVisible.load(std::memory_order_acquire);
         const bool effectiveVisible = visible &&
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
-
-        MiniMapMouseWheel::SetZoomEnabled(
-            effectiveVisible);
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&
@@ -317,6 +321,7 @@ namespace
         (void)key;
         (void)event;
 
+        if (!g_inputActive.load(std::memory_order_acquire)) return;
         bool visible = g_userVisible.load(std::memory_order_acquire);
         while (!g_userVisible.compare_exchange_weak(
             visible, !visible, std::memory_order_acq_rel, std::memory_order_acquire))
@@ -325,59 +330,32 @@ namespace
         ApplyVisibility();
     }
 
-    bool RegisterToggleKeybind()
+    void OnManualZoom(float delta)
     {
-        if (g_keybindRegistered)
+        const bool active = g_inputActive.load(std::memory_order_acquire);
+        const bool visible = IsEffectivelyVisible();
+        const bool ready = MiniMapMap::GameplayReady();
+        if (active && visible && ready)
         {
-            return true;
+            MiniMapTerrain::AdjustZoom(delta);
         }
-
-        if (g_self == nullptr ||
-            g_self->hooks == nullptr ||
-            g_self->hooks->Input == nullptr)
-        {
-            LOG_ERROR(
-                "MiniMap: toggle key registration failed: "
-                "input interface is unavailable");
-
-            return false;
-        }
-
-        g_self->hooks->Input->RegisterKeybindByName(
-            kToggleKey,
-            EModKeyEvent::Pressed,
-            &OnToggleKeyPressed);
-
-
-        g_keybindRegistered = true;
-
-        LOG_INFO(
-            "MiniMap: registered toggle key: %s",
-            kToggleKey);
-
-        return true;
+    }
+    void OnZoomIn(EModKey, EModKeyEvent)
+    {
+        OnManualZoom(1.0f);
+    }
+    void OnZoomOut(EModKey, EModKeyEvent)
+    {
+        OnManualZoom(-1.0f);
+    }
+    void RegisterAbsent(const MiniMapConfig::Keybind& binding,
+        MiniMapConfig::Keybind& identity, PluginKeybindCallback callback)
+    {
+        if (identity[0] || !binding[0]) return;
+        GetSelf()->hooks->Input->RegisterKeybindByName(binding.data(), EModKeyEvent::Pressed, callback);
+        identity = binding; // Loader retains this original identity across native rebinding.
     }
 
-    void UnregisterToggleKeybind()
-    {
-        if (!g_keybindRegistered)
-        {
-            return;
-        }
-
-        if (g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->Input != nullptr)
-        {
-            g_self->hooks->Input->UnregisterKeybindByName(
-                kToggleKey,
-                EModKeyEvent::Pressed,
-                &OnToggleKeyPressed);
-
-        }
-
-        g_keybindRegistered = false;
-    }
 }
 
 namespace MiniMapUI
@@ -433,7 +411,8 @@ namespace MiniMapUI
             g_widget,
             false);
 
-        if (!RegisterToggleKeybind())
+        if (!self->hooks->Input || !self->hooks->Input->RegisterKeybindByName ||
+            !self->hooks->Input->UnregisterKeybindByName)
         {
             self->hooks->UI->UnregisterWidget(
                 g_widget);
@@ -443,13 +422,20 @@ namespace MiniMapUI
             return false;
         }
 
+        {
+            std::lock_guard lock(g_bindingMutex);
+            g_bindingsActive = true;
+            g_inputActive.store(true, std::memory_order_release);
+        }
+        RefreshKeybinds();
+
         if (!MiniMapMouseWheel::Initialize(
             self))
         {
             LOG_ERROR(
                 "MiniMap: mouse-wheel input initialization failed");
 
-            UnregisterToggleKeybind();
+            StopInput();
 
             self->hooks->UI->UnregisterWidget(
                 g_widget);
@@ -465,11 +451,36 @@ namespace MiniMapUI
         return true;
     }
 
+    void RefreshKeybinds()
+    {
+        const auto settings = MiniMapConfig::Get(); // Before the registration lock.
+        std::lock_guard lock(g_bindingMutex);
+        if (!g_bindingsActive) return;
+        RegisterAbsent(settings.ToggleMiniMap, g_toggleIdentity, &OnToggleKeyPressed);
+        RegisterAbsent(settings.ZoomInKey, g_zoomInIdentity, &OnZoomIn);
+        RegisterAbsent(settings.ZoomOutKey, g_zoomOutIdentity, &OnZoomOut);
+    }
+
+    void StopInput()
+    {
+        g_inputActive.store(false, std::memory_order_release);
+        MiniMapMouseWheel::Shutdown();
+        std::lock_guard lock(g_bindingMutex);
+        g_bindingsActive = false;
+        auto unregister = [](MiniMapConfig::Keybind& identity, PluginKeybindCallback callback)
+        {
+            if (identity[0]) GetSelf()->hooks->Input->UnregisterKeybindByName(
+                identity.data(), EModKeyEvent::Pressed, callback);
+            identity = {};
+        };
+        unregister(g_toggleIdentity, &OnToggleKeyPressed);
+        unregister(g_zoomInIdentity, &OnZoomIn);
+        unregister(g_zoomOutIdentity, &OnZoomOut);
+    }
+
     void Shutdown()
     {
-        MiniMapMouseWheel::Shutdown();
-
-        UnregisterToggleKeybind();
+        StopInput();
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&

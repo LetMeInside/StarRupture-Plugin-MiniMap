@@ -225,7 +225,25 @@ static bool ClearPersistentCaches()
 {
     const bool terrainCleared = MiniMapTerrainCache::Clear();
     const bool buildingsCleared = MiniMapBuildingCache::Clear();
+    if (!terrainCleared || !buildingsCleared)
+        LOG_ERROR("MiniMap: persistent cache clearing failed (terrain=%d, buildings=%d)", terrainCleared, buildingsCleared);
     return terrainCleared && buildingsCleared;
+}
+
+void MiniMapCacheIdentity::ClearOnExit()
+{
+    // Never acquire Config while holding a cache/subsystem lock. No native
+    // services or subsystem teardown are needed to drain CPU file operations.
+    if (!MiniMapConfig::ClearCache()) return;
+    std::unique_lock access(g_fileAccessMutex);
+    if (g_exitClearAttempted) return;
+    g_fileAccessClosed = true;
+    Reset();
+    g_exitClearAttempted = true;
+    if (ClearPersistentCaches())
+        LOG_INFO("MiniMap: exit persistent caches cleared (file access closed and drained)");
+    else
+        LOG_ERROR("MiniMap: exit persistent cache clear failed; file access remains closed");
 }
 #endif
 
@@ -427,7 +445,8 @@ static void OnExperienceLoadComplete()
         return;
     }
     SetServicesAdmitted(true);
-    MiniMapUI::Show();
+    if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
+    else MiniMapUI::Hide();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
 }
 
@@ -513,6 +532,13 @@ extern "C"
             return false;
         }
 
+        // Unwind the listener on every later initialization failure while self is valid.
+        struct ConfigInitGuard
+        {
+            bool Keep = false;
+            ~ConfigInitGuard() { if (!Keep) { MiniMapConfig::Shutdown(); g_self = nullptr; } }
+        } configGuard;
+
 #ifdef MODLOADER_CLIENT_BUILD
 
         if (g_self->hooks->World == nullptr || g_self->hooks->Engine == nullptr ||
@@ -522,20 +548,17 @@ extern "C"
             LOG_ERROR(
                 "MiniMap: World hooks are unavailable");
 
-            g_self = nullptr;
             return false;
         }
 
         if(!MiniMapNative::IsInitialized())
         {
             LOG_ERROR("MiniMap: native API must be initialized before building capture services");
-            g_self=nullptr;
             return false;
         }
 
         if (!InstallCommonUIHooks())
         {
-            g_self = nullptr;
             return false;
         }
 
@@ -543,12 +566,11 @@ extern "C"
         const char* cacheFailure = nullptr;
         if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
             !MiniMapCacheIdentity::Initialize(terrainRoot.parent_path(),
-                &ClearPersistentCaches, cacheFailure))
+                &ClearPersistentCaches, cacheFailure, MiniMapConfig::ClearCache()))
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
                 cacheFailure ? cacheFailure : "cache root unavailable");
             RemoveCommonUIHooks();
-            g_self = nullptr;
             return false;
         }
 
@@ -561,7 +583,6 @@ extern "C"
             MiniMapCacheIdentity::Reset();
             RemoveCommonUIHooks();
 
-            g_self = nullptr;
             return false;
         }
 
@@ -731,19 +752,25 @@ extern "C"
                 "MiniMap: failed to register terrain diagnostics");
         }
 
-        // Registration can replay startup events: prepare every owner first,
-        // establish world identity before accepting experience completion.
+        // Registration replays events only during loader startup, never runtime reload.
+        // Prepare every owner first; establish world identity before experience completion.
         CapturePluginInitHookBaseline(g_self);
         g_self->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
         g_self->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
         g_self->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
         LOG_INFO("MiniMap: registered world lifecycle callbacks");
+        // Public v70 exposes no current-world experience-completion snapshot.
+        // A viewport world or CurrentExperience pointer cannot prove readiness.
+        // Do not synthesize callbacks or publish a generation on runtime reload.
+        if (!MiniMapMap::HasWorld())
+            LOG_INFO("MiniMap: no authoritative gameplay world received; public v70 cannot verify active-world experience readiness (runtime hot-load/reload attachment unavailable)");
 
 #endif
 
         LOG_INFO(
             "MiniMap: initialization complete");
 
+        configGuard.Keep = true;
         return true;
     }
 
@@ -756,7 +783,8 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-        MiniMapMouseWheel::Shutdown();
+        MiniMapUI::StopInput();
+        MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();
         g_worldEnding=true;
         SetServicesAdmitted(false);
@@ -807,11 +835,14 @@ extern "C"
         MiniMapMap::Shutdown();
         MiniMapUI::Shutdown();
 
+        MiniMapCacheIdentity::ClearOnExit();
+
         // NativeApi should be the last subsystem torn down.
         // Other subsystems depend on it for their own shutdown paths.
         MiniMapNative::Shutdown();
 #endif
 
+        MiniMapConfig::Shutdown();
         ResetPluginInitHookBaseline();
         g_self = nullptr;
     }

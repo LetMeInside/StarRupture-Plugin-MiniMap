@@ -196,7 +196,6 @@ namespace
         PluginDrawList drawList,
         const MiniMapMap::Transform& transform)
     {
-        if (!MiniMapOverlays::g_showPlayerCoordinates) return;
         char coordinateText[96] = {};
         std::snprintf(coordinateText, sizeof(coordinateText),
             "X: %.0f m   Y: %.0f m",
@@ -368,12 +367,9 @@ namespace
 
 namespace MiniMapOverlays
 {
-    bool g_showPlayerCoordinates =
-        true;
-
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform, bool showCoordinates, bool showCompass)
     {
         if (ui == nullptr ||
             !transform.Valid)
@@ -384,7 +380,7 @@ namespace MiniMapOverlays
         PluginDrawList drawList =
             ui->GetWindowDrawList();
 
-        for (const CompassDirection& cardinal :
+        if (showCompass) for (const CompassDirection& cardinal :
             kCompassDirections)
         {
             DrawCompassLabel(
@@ -412,7 +408,7 @@ namespace MiniMapOverlays
         DrawPlayerMarker(ui, drawList, transform.CenterX, transform.CenterY,
             transform.PlayerMarkerScreenAngleDegrees(), transform.DroneActive);
 
-        DrawPlayerCoordinates(
+        if (showCoordinates) DrawPlayerCoordinates(
             ui,
             drawList,
             transform);

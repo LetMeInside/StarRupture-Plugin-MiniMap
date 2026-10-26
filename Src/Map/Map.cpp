@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map.h"
+#include "../Config/Config.h"
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
@@ -123,6 +124,7 @@ namespace MiniMapMap
 
     bool TryGetPresentationSample(PresentationSample& outSample)
     {
+        const auto settings = MiniMapConfig::GetTrackingSettings();
         outSample = {};
         LocalPlayer player;
         PresentationSample sample{};
@@ -130,13 +132,22 @@ namespace MiniMapMap
         if (!ResolveLocalPlayer(player) || !native->player.isPlayerInForgottenEngine ||
             !ReadControlPose(player, sample.Character)) return false;
         sample.WorldGeneration = GetWorldGeneration();
+        sample.TrackingRevision = settings.Revision;
         sample.InForgottenEngine = native->player.isPlayerInForgottenEngine(player.Character);
         sample.Tracking = sample.Character;
         sample.TrackingObjectIndex = player.Character->Index;
+        if (!settings.FollowBuildDrone && (player.Pawn != player.Character ||
+            player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone))
+        {
+            // Drone control rotation belongs to its view. Keep physical tracking
+            // on the character's world heading, even during drone retirement.
+            if (!ReadWorldYaw(player.Character, sample.Character.ControlYawDegrees)) return false;
+            sample.Tracking = sample.Character;
+        }
         // Only a complete current association can select the drone. Missing or
         // retiring drone state uses the valid physical character, never history.
         auto* drone = player.Character->BuildingDrone;
-        if (player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone &&
+        if (settings.FollowBuildDrone && player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone &&
             IsObject<SDK::ACrCharacterDroneBase>(drone) && InWorld(drone) &&
             drone->OwnerPlayer == player.Character &&
             (player.Pawn == player.Character || player.Pawn == drone))

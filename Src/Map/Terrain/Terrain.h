@@ -6,6 +6,11 @@
 
 struct IPluginSelf;
 
+namespace MiniMapConfig
+{
+    struct RenderSettings;
+}
+
 namespace MiniMapTerrain
 {
     bool Initialize(IPluginSelf* self);
@@ -25,5 +30,6 @@ namespace MiniMapTerrain
         float windowY,
         float windowWidth,
         float windowHeight,
-        MiniMapMap::Transform& outTransform);
+        MiniMapMap::Transform& outTransform,
+        const MiniMapConfig::RenderSettings& settings);
 }

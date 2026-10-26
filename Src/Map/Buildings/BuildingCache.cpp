@@ -262,6 +262,8 @@ namespace MiniMapBuildingCache
     {
         try
         {
+            MiniMapCacheIdentity::FileAccess access;
+            if (!access) return {LoadStatus::Unavailable, "cache file access closed"};
             std::string name;
             if (!BlueprintFileName(canonicalBlueprintPath, name)) return {LoadStatus::Invalid, "canonical cache filename"};
             std::filesystem::path root;
@@ -277,6 +279,8 @@ namespace MiniMapBuildingCache
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
         uint32_t width, uint32_t height, const SpatialBounds& bounds, const ImageMapping& mapping)
     {
+        MiniMapCacheIdentity::FileAccess access;
+        if (!access) return false;
         MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Persistence);
         if (!rgba || !ValidSpatial(width, height, bounds, mapping) ||
             uint64_t(width) * height * 4 > kMaxRgbaBytes)
@@ -326,6 +330,8 @@ namespace MiniMapBuildingCache
         MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::SourcePng);
         try
         {
+            MiniMapCacheIdentity::FileAccess access;
+            if (!access) return false;
             if (!rgba || !width || !height || width > kMaxDimension || height > kMaxDimension ||
                 uint64_t(width) * height * 4 > kMaxRgbaBytes)
                 return DiagnosticPngRejected(canonicalBlueprintPath, "source dimensions/byte bound rejected");
@@ -354,13 +360,15 @@ namespace MiniMapBuildingCache
         std::string name;
         const char* stage = "diagnostic namespace";
         uint32_t code = 0;
-        struct Temporary
-        {
-            std::filesystem::path Path;
-            ~Temporary() { if (!Path.empty()) DeleteFileW(Path.c_str()); }
-        } temporary;
         try
         {
+            MiniMapCacheIdentity::FileAccess access;
+            if (!access) return false;
+            struct Temporary
+            {
+                std::filesystem::path Path;
+                ~Temporary() { if (!Path.empty()) DeleteFileW(Path.c_str()); }
+            } temporary;
             const auto attempt = [&]() -> bool
             {
                 std::filesystem::path directory;

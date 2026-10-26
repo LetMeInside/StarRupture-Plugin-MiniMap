@@ -9,6 +9,8 @@ namespace MiniMapUI
     bool Initialize(IPluginSelf* self);
 
     void Shutdown();
+    void StopInput();
+    void RefreshKeybinds();
 
     void Show();
 

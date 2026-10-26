@@ -596,6 +596,8 @@ std::filesystem::path BlueprintOutputPath(const wchar_t* suffix)
 }
 bool WriteBlueprintImage(const std::vector<uint8_t>& rgba, const wchar_t* suffix)
 {
+    MiniMapCacheIdentity::FileAccess access;
+    if (!access) return false;
     const auto path=BlueprintOutputPath(suffix);
     if (path.empty()) { BlueprintLog("image_output",false,"module_path_or_directory_unavailable"); return false; }
     const auto result=MiniMapCapturePng::Write(path,256,256,rgba,false);

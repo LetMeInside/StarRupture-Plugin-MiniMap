@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Terrain.h"
+#include "Config/Config.h"
 #include "TerrainProfile.h"
 #include "Input/MouseWheel.h"
 #include "UI/MiniMapUI.h"
@@ -58,6 +59,7 @@ namespace
 
 
     bool g_initialized = false;
+    uint64_t g_zoomWorldGeneration = 0; // Game-thread session boundary only.
     bool g_tickRegistered = false;
 
     float g_updateAccumulator = 0.0f;
@@ -78,9 +80,6 @@ namespace
 
     constexpr double kMaximumMetersPerPixel =
         MiniMapMap::MaximumMetersPerPixel;
-
-    constexpr double kZoomStep =
-        1.25;
 
     constexpr float kDefaultViewportPixelWidth =
         300.0f;
@@ -1162,11 +1161,26 @@ namespace MiniMapTerrain
     bool Initialize(
         IPluginSelf* self)
     {
+        const double initialZoom = MiniMapConfig::InitialZoom(); // Before the render mutex.
         if (g_initialized)
         {
+            // A replacement world can be admitted before the previous world's
+            // EndPlay. Reapply session zoom without restarting terrain acquisition.
+            const auto generation = MiniMapMap::GetWorldGeneration();
+            if (g_zoomWorldGeneration != generation)
+            {
+                std::lock_guard lock(g_renderMutex);
+                g_metersPerPixel = initialZoom;
+                g_presentation = {};
+                ++g_presentationRevision;
+                g_hasViewportAnchor = false;
+                g_zoomWorldGeneration = generation;
+                g_reconcileRequested.store(true, std::memory_order_release);
+            }
             return true;
         }
 
+        g_zoomWorldGeneration = MiniMapMap::GetWorldGeneration();
         MiniMapTerrainProfile::Reset();
         g_updateAccumulator =
             kUpdateIntervalSeconds;
@@ -1182,7 +1196,7 @@ namespace MiniMapTerrain
                 kDefaultViewportPixelHeight;
 
             g_metersPerPixel =
-                kDefaultMetersPerPixel;
+                initialZoom;
 
             g_hasViewportAnchor =
                 false;
@@ -1401,7 +1415,8 @@ namespace MiniMapTerrain
     void AdjustZoom(
         float wheelDelta)
     {
-        if (wheelDelta == 0.0f)
+        const double stepFactor = MiniMapConfig::ZoomStepFactor(); // Before the render mutex.
+        if (!std::isfinite(wheelDelta) || wheelDelta == 0.0f)
         {
             return;
         }
@@ -1412,7 +1427,7 @@ namespace MiniMapTerrain
 
             const double zoomMultiplier =
                 std::pow(
-                    kZoomStep,
+                    stepFactor,
                     static_cast<double>(
                         wheelDelta));
 
@@ -1447,8 +1462,11 @@ namespace MiniMapTerrain
         float windowY,
         float windowWidth,
         float windowHeight,
-        MiniMapMap::Transform& outTransform)
+        MiniMapMap::Transform& outTransform,
+        const MiniMapConfig::RenderSettings& settings)
     {
+        // The caller owns this coherent render snapshot, acquired before any
+        // subsystem locks. No Config access is needed under g_renderMutex.
         outTransform = {};
 
         if (ui == nullptr ||
@@ -1478,17 +1496,16 @@ namespace MiniMapTerrain
             windowHeight;
 
         if (!g_hasViewportAnchor || !MiniMapMap::GameplayReady() || !g_presentation.Valid ||
-            g_presentation.WorldGeneration != MiniMapMap::GetWorldGeneration())
+            g_presentation.WorldGeneration != MiniMapMap::GetWorldGeneration() ||
+            g_presentation.TrackingRevision != settings.TrackingRevision)
         {
             return false;
         }
 
-        // Current mode is heading-up. Keeping map rotation explicit here
-        // means a future source-map-up / North-up configuration only changes
-        // this policy, not terrain or overlay mathematics.
+        // Shared transform rotates every layer; source-map north is -Y.
         const double mapRotationDegrees =
-            MiniMapMap::HeadingUpMapRotationDegrees(
-                g_presentation.Tracking.ControlYawDegrees);
+            settings.RotatingMiniMap ? MiniMapMap::HeadingUpMapRotationDegrees(
+                g_presentation.Tracking.ControlYawDegrees) : 0.0;
 
         if (!MiniMapMap::BuildTransform(
             g_presentation,

@@ -17,6 +17,7 @@
 #include "Map/Sprites/BuildingRepresentation.h"
 #include "Map/Map.h"
 #include "plugin_helpers.h"
+#include "CacheIdentity.h"
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/MassEntity_classes.hpp>
 #include <SDK/MassReplication_classes.hpp>

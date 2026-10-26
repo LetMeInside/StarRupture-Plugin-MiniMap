@@ -18,6 +18,7 @@
 #include "Map/Buildings/BuildingCollector.h"
 #include "UI/MiniMapUI.h"
 #include "Map/Terrain/TerrainCache.h"
+#include "CacheIdentity.h"
 #include <chrono>
 #include <fstream>
 #include <atomic>
@@ -64,6 +65,8 @@ namespace MiniMapSpriteDiscovery
 #if defined(MINIMAP_BUILDING_SPRITES)
                         MiniMapBuildingSprites::TimingScope publicationTiming(MiniMapBuildingSprites::Timing::DiagnosticPublish);
 #endif
+                        MiniMapCacheIdentity::FileAccess access;
+                        if (!access) continue;
                         std::filesystem::path directory;
                         if(generation!=Generation.load()||!MiniMapMap::GameplayReady())continue;
                         if(!MiniMapTerrainCache::GetBuildingDiagnosticsDirectory(directory)){++Failures;continue;}
