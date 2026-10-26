@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainCache.h"
+#include "TerrainProfile.h"
 #include "TerrainChunks.h"
 #include "CacheIdentity.h"
 #include "PluginPaths.h"
@@ -77,9 +78,12 @@ namespace
         const char* failure = nullptr;
         if (!MiniMapPluginPaths::GetPluginDirectory(outDirectory, &failure))
         {
-            LOG_ERROR(
-                "MiniMap: TerrainCache: "
-                "plugin module directory resolution failed: %s", failure);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: TerrainCache: "
+                    "plugin module directory resolution failed: %s", failure);
+            }
 
             return false;
         }
@@ -142,9 +146,12 @@ namespace
 
         if (error)
         {
-            LOG_ERROR(
-                "MiniMap: TerrainCache: "
-                "failed to create cache directory");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: TerrainCache: "
+                    "failed to create cache directory");
+            }
 
             return false;
         }
@@ -343,6 +350,9 @@ namespace MiniMapTerrainCache
         int chunkY,
         std::vector<uint8_t>& compressedChunk)
     {
+        MiniMapTerrainProfile::Scope cacheProfile(MiniMapTerrainProfile::Phase::Cache);
+        MiniMapTerrainProfile::CacheResult cacheResult;
+        MiniMapTerrainProfile::Scope pathProfile(MiniMapTerrainProfile::Phase::CachePath);
         compressedChunk.clear();
 
         if (radiationLevel < 0)
@@ -373,6 +383,8 @@ namespace MiniMapTerrainCache
                 gridX,
                 gridY);
 
+        pathProfile.End();
+        MiniMapTerrainProfile::Scope headerProfile(MiniMapTerrainProfile::Phase::CacheHeader);
         std::error_code error;
 
         if (!std::filesystem::exists(
@@ -380,12 +392,16 @@ namespace MiniMapTerrainCache
             error) ||
             error)
         {
-            LOG_INFO(
-                "MiniMap: TerrainCache: "
-                "MISS R%d grid=(%d, %d)",
-                radiationLevel,
-                gridX,
-                gridY);
+            cacheResult.Result = error ? MiniMapTerrainProfile::Counter::Failure : MiniMapTerrainProfile::Counter::Miss;
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_INFO(
+                    "MiniMap: TerrainCache: "
+                    "MISS R%d grid=(%d, %d)",
+                    radiationLevel,
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
@@ -398,12 +414,15 @@ namespace MiniMapTerrainCache
         if (error ||
             fileSize != ExpectedCacheFileSize())
         {
-            LOG_WARN(
-                "MiniMap: TerrainCache: "
-                "invalid cache file size for R%d grid=(%d, %d)",
-                radiationLevel,
-                gridX,
-                gridY);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_WARN(
+                    "MiniMap: TerrainCache: "
+                    "invalid cache file size for R%d grid=(%d, %d)",
+                    radiationLevel,
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
@@ -414,12 +433,15 @@ namespace MiniMapTerrainCache
 
         if (!stream)
         {
-            LOG_WARN(
-                "MiniMap: TerrainCache: "
-                "failed to open cache file for R%d grid=(%d, %d)",
-                radiationLevel,
-                gridX,
-                gridY);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_WARN(
+                    "MiniMap: TerrainCache: "
+                    "failed to open cache file for R%d grid=(%d, %d)",
+                    radiationLevel,
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
@@ -442,16 +464,21 @@ namespace MiniMapTerrainCache
                 pixelFormat,
                 sRGB))
         {
-            LOG_WARN(
-                "MiniMap: TerrainCache: "
-                "cache header mismatch for R%d grid=(%d, %d)",
-                radiationLevel,
-                gridX,
-                gridY);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_WARN(
+                    "MiniMap: TerrainCache: "
+                    "cache header mismatch for R%d grid=(%d, %d)",
+                    radiationLevel,
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
 
+        headerProfile.End();
+        MiniMapTerrainProfile::Scope readProfile(MiniMapTerrainProfile::Phase::CacheRead);
         const uint32_t chunkIndex =
             static_cast<uint32_t>(
                 chunkY *
@@ -479,32 +506,40 @@ namespace MiniMapTerrainCache
             static_cast<std::streamsize>(
                 compressedChunk.size()));
 
+        readProfile.End();
         if (!stream)
         {
             compressedChunk.clear();
 
-            LOG_WARN(
-                "MiniMap: TerrainCache: "
-                "failed to read chunk=(%d, %d) "
-                "for R%d grid=(%d, %d)",
-                chunkX,
-                chunkY,
-                radiationLevel,
-                gridX,
-                gridY);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_WARN(
+                    "MiniMap: TerrainCache: "
+                    "failed to read chunk=(%d, %d) "
+                    "for R%d grid=(%d, %d)",
+                    chunkX,
+                    chunkY,
+                    radiationLevel,
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
 
-        LOG_INFO(
-            "MiniMap: TerrainCache: "
-            "HIT R%d grid=(%d, %d) chunk=(%d, %d) bytes=%u",
-            radiationLevel,
-            gridX,
-            gridY,
-            chunkX,
-            chunkY,
-            kChunkByteCount);
+        cacheResult.Result = MiniMapTerrainProfile::Counter::Hit;
+        {
+            MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+            LOG_INFO(
+                "MiniMap: TerrainCache: "
+                "HIT R%d grid=(%d, %d) chunk=(%d, %d) bytes=%u",
+                radiationLevel,
+                gridX,
+                gridY,
+                chunkX,
+                chunkY,
+                kChunkByteCount);
+        }
 
         return true;
     }
@@ -521,6 +556,7 @@ namespace MiniMapTerrainCache
         const uint8_t* sourceData,
         size_t sourceDataSize)
     {
+        MiniMapTerrainProfile::Scope writeProfile(MiniMapTerrainProfile::Phase::CacheWrite);
         if (radiationLevel < 0 ||
             sourceData == nullptr ||
             sourceWidth !=
@@ -603,13 +639,13 @@ namespace MiniMapTerrainCache
                 chunkX < MiniMapTerrainChunks::kChunksPerAxis;
                 ++chunkX)
             {
-                if (!MiniMapTerrainChunks::ExtractBC1Chunk(
+                if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::StoreExtraction, [&] { return MiniMapTerrainChunks::ExtractBC1Chunk(
                     sourceData,
                     sourceWidth,
                     sourceHeight,
                     chunkX,
                     chunkY,
-                    chunk))
+                    chunk); }))
                 {
                     stream.close();
 
@@ -685,15 +721,18 @@ namespace MiniMapTerrainCache
             return false;
         }
 
-        LOG_INFO(
-            "MiniMap: TerrainCache: "
-            "stored R%d grid=(%d, %d) chunks=%u bytes=%llu",
-            radiationLevel,
-            gridX,
-            gridY,
-            kChunkCount,
-            static_cast<unsigned long long>(
-                ExpectedCacheFileSize()));
+        {
+            MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+            LOG_INFO(
+                "MiniMap: TerrainCache: "
+                "stored R%d grid=(%d, %d) chunks=%u bytes=%llu",
+                radiationLevel,
+                gridX,
+                gridY,
+                kChunkCount,
+                static_cast<unsigned long long>(
+                    ExpectedCacheFileSize()));
+        }
 
         return true;
     }

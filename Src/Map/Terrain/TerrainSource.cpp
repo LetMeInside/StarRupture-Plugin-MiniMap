@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainSource.h"
+#include "TerrainProfile.h"
 #include "Map/Map.h"
 
 #include "SDK/Chimera_classes.hpp"
@@ -27,8 +28,11 @@ namespace
         if (native == nullptr ||
             native->asset.loadSynchronous == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: terrain source native API is unavailable");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: terrain source native API is unavailable");
+            }
 
             return nullptr;
         }
@@ -41,8 +45,11 @@ namespace
 
             if (g_devSettings == nullptr)
             {
-                LOG_ERROR(
-                    "MiniMap: CrMapMenuDevSettings CDO was not found");
+                {
+                    MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                    LOG_ERROR(
+                        "MiniMap: CrMapMenuDevSettings CDO was not found");
+                }
 
                 return nullptr;
             }
@@ -58,8 +65,11 @@ namespace
 
         if (loadedObject == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: TerrainData could not be loaded");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: TerrainData could not be loaded");
+            }
 
             return nullptr;
         }
@@ -79,9 +89,12 @@ namespace
 
         if (world == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: terrain source cannot read radiation level "
-                "because the active world is unavailable");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: terrain source cannot read radiation level "
+                    "because the active world is unavailable");
+            }
 
             return false;
         }
@@ -91,9 +104,12 @@ namespace
 
         if (baseGameState == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: terrain source cannot read radiation level "
-                "because GameState is unavailable");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: terrain source cannot read radiation level "
+                    "because GameState is unavailable");
+            }
 
             return false;
         }
@@ -107,9 +123,12 @@ namespace
 
         if (helper == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: terrain source cannot read radiation level "
-                "because MapMenuDataReplicationHelper is unavailable");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: terrain source cannot read radiation level "
+                    "because MapMenuDataReplicationHelper is unavailable");
+            }
 
             return false;
         }
@@ -171,6 +190,7 @@ namespace MiniMapTerrainSource
         SourceTile& outSourceTile,
         bool verbose)
     {
+        MiniMapTerrainProfile::Scope sourceProfile(MiniMapTerrainProfile::Phase::Source);
         outSourceTile = {};
 
         SDK::UCrMapMenuTerrainData* terrainData =
@@ -187,8 +207,11 @@ namespace MiniMapTerrainSource
         if (native == nullptr ||
             native->texture.getBrushTexture == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: terrain source texture API is unavailable");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: terrain source texture API is unavailable");
+            }
 
             return false;
         }
@@ -203,10 +226,13 @@ namespace MiniMapTerrainSource
 
         if (verbose)
         {
-            LOG_INFO(
-                "MiniMap: F8 diagnostic: "
-                "current radiation level=%d",
-                radiationLevel);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "current radiation level=%d",
+                    radiationLevel);
+            }
         }
 
         const auto& pivot =
@@ -220,18 +246,21 @@ namespace MiniMapTerrainSource
 
         if (verbose)
         {
-            LOG_INFO(
-                "MiniMap: F8 diagnostic: "
-                "TerrainData origin=(%.3f, %.3f, %.3f) "
-                "segment-size=(%.3f, %.3f, %.3f) "
-                "segments=%d",
-                pivot.X,
-                pivot.Y,
-                pivot.Z,
-                segmentSize.X,
-                segmentSize.Y,
-                segmentSize.Z,
-                segmentCount);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "TerrainData origin=(%.3f, %.3f, %.3f) "
+                    "segment-size=(%.3f, %.3f, %.3f) "
+                    "segments=%d",
+                    pivot.X,
+                    pivot.Y,
+                    pivot.Z,
+                    segmentSize.X,
+                    segmentSize.Y,
+                    segmentSize.Z,
+                    segmentCount);
+            }
         }
 
         const double worldTileWidth =
@@ -247,12 +276,15 @@ namespace MiniMapTerrainSource
         if (worldTileWidth <= 0.0 ||
             worldTileHeight <= 0.0)
         {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "invalid terrain world tile size "
-                "(%.3f x %.3f)",
-                worldTileWidth,
-                worldTileHeight);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: "
+                    "invalid terrain world tile size "
+                    "(%.3f x %.3f)",
+                    worldTileWidth,
+                    worldTileHeight);
+            }
 
             return false;
         }
@@ -291,14 +323,17 @@ namespace MiniMapTerrainSource
 
         if (verbose)
         {
-            LOG_INFO(
-                "MiniMap: F8 diagnostic: "
-                "player terrain grid=(%d, %d) "
-                "local-uv=(%.6f, %.6f)",
-                gridX,
-                gridY,
-                localU,
-                localV);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "player terrain grid=(%d, %d) "
+                    "local-uv=(%.6f, %.6f)",
+                    gridX,
+                    gridY,
+                    localU,
+                    localV);
+            }
         }
 
         const SDK::FCrTerrainSegmentData* sourceSegment =
@@ -324,12 +359,15 @@ namespace MiniMapTerrainSource
 
         if (sourceSegment == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "player position maps outside available terrain "
-                "or grid=(%d, %d) has no terrain record",
-                gridX,
-                gridY);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: "
+                    "player position maps outside available terrain "
+                    "or grid=(%d, %d) has no terrain record",
+                    gridX,
+                    gridY);
+            }
 
             return false;
         }
@@ -356,12 +394,15 @@ namespace MiniMapTerrainSource
             {
                 if (verbose)
                 {
-                    LOG_INFO(
-                        "MiniMap: F8 diagnostic: "
-                        "terrain grid=(%d, %d) has no usable "
-                        "Radiation2 texture; falling back to ordinary",
-                        gridX,
-                        gridY);
+                    {
+                        MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                        LOG_INFO(
+                            "MiniMap: F8 diagnostic: "
+                            "terrain grid=(%d, %d) has no usable "
+                            "Radiation2 texture; falling back to ordinary",
+                            gridX,
+                            gridY);
+                    }
                 }
             }
         }
@@ -379,24 +420,30 @@ namespace MiniMapTerrainSource
 
         if (verbose)
         {
-            LOG_INFO(
-                "MiniMap: F8 diagnostic: "
-                "selected terrain segment grid=(%d, %d) "
-                "radiation-level=%d variant=%s texture=%p",
-                gridX,
-                gridY,
-                radiationLevel,
-                GetVariantName(
-                    selectedVariant),
-                sourceTexture);
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_INFO(
+                    "MiniMap: F8 diagnostic: "
+                    "selected terrain segment grid=(%d, %d) "
+                    "radiation-level=%d variant=%s texture=%p",
+                    gridX,
+                    gridY,
+                    radiationLevel,
+                    GetVariantName(
+                        selectedVariant),
+                    sourceTexture);
+            }
         }
 
         if (sourceTexture == nullptr)
         {
-            LOG_ERROR(
-                "MiniMap: F8 diagnostic: "
-                "selected terrain brush did not provide "
-                "a UTexture2D");
+            {
+                MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: "
+                    "selected terrain brush did not provide "
+                    "a UTexture2D");
+            }
 
             return false;
         }
