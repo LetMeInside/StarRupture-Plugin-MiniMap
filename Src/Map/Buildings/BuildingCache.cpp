@@ -37,6 +37,7 @@ namespace
         catch (...) {}
         return false;
     }
+#if MINIMAP_BUILDING_CAPTURE_PNGS
     bool DiagnosticPngRejected(const std::string& blueprint, const char* reason, uint32_t code = 0, bool codeAvailable = false) noexcept
     {
         try
@@ -48,6 +49,7 @@ namespace
         catch (...) {}
         return false;
     }
+#endif
     constexpr char kMagic[8] = {'M','M','B','S','P','R','T','1'};
     constexpr uint32_t kVersion = 1;
     constexpr uint32_t kMaxDimension = 4096;
@@ -285,9 +287,9 @@ namespace MiniMapBuildingCache
         if (!rgba || !ValidSpatial(width, height, bounds, mapping) ||
             uint64_t(width) * height * 4 > kMaxRgbaBytes)
             return WriteRejected(canonicalBlueprintPath, "serialization input pointer/dimensions/byte bound rejected");
-        std::filesystem::path path, diagnostic;
+        std::filesystem::path path;
         const char* failure = nullptr;
-        if (!Paths(canonicalBlueprintPath, path, &diagnostic, &failure)) return WriteRejected(canonicalBlueprintPath, failure);
+        if (!Paths(canonicalBlueprintPath, path, nullptr, &failure)) return WriteRejected(canonicalBlueprintPath, failure);
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
         if (ec) return WriteRejected(canonicalBlueprintPath, "create cache directory failed", uint32_t(ec.value()), true);
@@ -323,6 +325,7 @@ namespace MiniMapBuildingCache
         return true;
     }
 
+#if MINIMAP_BUILDING_CAPTURE_PNGS
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height) noexcept
     {
@@ -351,6 +354,9 @@ namespace MiniMapBuildingCache
         catch (...) { return DiagnosticPngRejected(canonicalBlueprintPath, "PNG CPU/encoding exception"); }
     }
 
+#endif
+
+#if MINIMAP_ATLAS_PNGS
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
         uint32_t width, uint32_t height, uint64_t revision) noexcept
     {
@@ -473,6 +479,7 @@ namespace MiniMapBuildingCache
             name.empty()?"<unallocated>":name.c_str(), stage, unsigned(code));
         return false;
     }
+#endif
 }
 
 #endif

@@ -1,12 +1,16 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
+    <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == '' And '$(Configuration)' == 'Client Release'">false</MiniMapDebugUI>
     <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">true</MiniMapDebugUI>
-    <!-- Development source PNGs stay enabled in Client Release testing; independent of native capture. -->
-    <MiniMapBuildingCapturePngs Condition="'$(MiniMapBuildingCapturePngs)' == ''">true</MiniMapBuildingCapturePngs>
+    <!-- Optional file exports require explicit opt-in, independent of functional stages. -->
+    <MiniMapBuildingCapturePngs Condition="'$(MiniMapBuildingCapturePngs)' == ''">false</MiniMapBuildingCapturePngs>
+    <MiniMapAtlasPngs Condition="'$(MiniMapAtlasPngs)' == ''">false</MiniMapAtlasPngs>
+    <MiniMapPrivateCapturePngs Condition="'$(MiniMapPrivateCapturePngs)' == ''">false</MiniMapPrivateCapturePngs>
+    <MiniMapSpriteDiagnosticJson Condition="'$(MiniMapSpriteDiagnosticJson)' == ''">false</MiniMapSpriteDiagnosticJson>
     <!-- Independent development gate for unfinished Stage C visuals; safe default is OFF. -->
     <MiniMapStageCVisuals Condition="'$(MiniMapStageCVisuals)' == ''">false</MiniMapStageCVisuals>
-    <!-- R2 diagnostic capture/export is enabled in normal Client Release builds. -->
+    <!-- Functional R2 capture is enabled in normal Client Release builds. -->
     <MiniMapStageR2BuildingCapture Condition="'$(MiniMapStageR2BuildingCapture)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR2BuildingCapture>
     <MiniMapStageR2BuildingCapture Condition="'$(MiniMapStageR2BuildingCapture)' == ''">false</MiniMapStageR2BuildingCapture>
     <MiniMapStageR26aSpriteDiscovery Condition="'$(MiniMapStageR26aSpriteDiscovery)' == '' And '$(Configuration)' == 'Client Release'">true</MiniMapStageR26aSpriteDiscovery>
@@ -40,7 +44,28 @@
   <ItemDefinitionGroup Condition="'$(MiniMapBuildingCapturePngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
     <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_CAPTURE_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true' And '$(MiniMapStageCVisuals)' == 'true'">
+  <ItemDefinitionGroup Condition="'$(MiniMapBuildingCapturePngs)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_CAPTURE_PNGS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapAtlasPngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_ATLAS_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapAtlasPngs)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_ATLAS_PNGS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapPrivateCapturePngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_PRIVATE_CAPTURE_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapPrivateCapturePngs)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_PRIVATE_CAPTURE_PNGS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapSpriteDiagnosticJson)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_SPRITE_DIAGNOSTIC_JSON=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapSpriteDiagnosticJson)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_SPRITE_DIAGNOSTIC_JSON=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapStageCVisuals)' == 'true'">
     <ClCompile><PreprocessorDefinitions>MINIMAP_STAGE_C_VISUALS_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(MiniMapStageR2BuildingCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">

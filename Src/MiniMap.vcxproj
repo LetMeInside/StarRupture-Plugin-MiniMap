@@ -98,6 +98,7 @@
     <ClInclude Include="CaptureTiming.h" />
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
+    <ClInclude Include="DiagnosticExports.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusion.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />

@@ -583,6 +583,7 @@ void BlueprintCandidateException() noexcept
     }
     catch (...) { BlueprintQuarantine("candidate exception recovery could not establish safe ownership"); }
 }
+#if MINIMAP_PRIVATE_CAPTURE_PNGS
 std::filesystem::path BlueprintOutputPath(const wchar_t* suffix)
 {
     std::filesystem::path pluginDirectory;
@@ -609,6 +610,7 @@ bool WriteBlueprintImage(const std::vector<uint8_t>& rgba, const wchar_t* suffix
     }
     return result.Ok;
 }
+#endif
 void ExportBlueprintReadback()
 {
     const auto* pixels=MiniMapReadbackNative::FloatPixels(blueprint.Job);
@@ -627,7 +629,7 @@ void ExportBlueprintReadback()
     bounds.Max={blueprint.Center.X+blueprint.Extent.X,blueprint.Center.Y+blueprint.Extent.Y,blueprint.Center.Z+blueprint.Extent.Z};
     bounds.Initialized=true;
     MiniMapBuildingSprites::Complete(ownerLease,bounds,blueprint.PrivateImage);
-#if MINIMAP_DEBUG_UI
+#if MINIMAP_PRIVATE_CAPTURE_PNGS
     // Optional export is independent of production texture publication.
     try { WriteBlueprintImage(blueprint.PrivateImage,L"_blueprint.png"); }
     catch (...) { BlueprintLog("image output",false,"optional PNG output failed"); }

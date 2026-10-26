@@ -1,3 +1,4 @@
+#include "DiagnosticExports.h"
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE) && defined(MODLOADER_CLIENT_BUILD)
 #include "PrivateCaptureWorld.h"
 #include "SpriteCaptureCore.h"

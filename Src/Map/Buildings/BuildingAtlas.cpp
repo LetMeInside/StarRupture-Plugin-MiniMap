@@ -415,7 +415,7 @@ namespace MiniMapBuildingAtlas
                     commitTiming.Stop();
                     timing.Ok=true;timing.Published=batch->PublishedRevision;
                     // Freeze the actually published pixels, not Core.Current().
-                    // Exactly one diagnostic attempt for this successful swap.
+                    // Retain through retirement, commit reporting and timing finalization.
                     diagnosticPixels = batch->Published->Pixels;
                     candidate.reset(); // Current publication now owns the acquired reference.
                 }
@@ -443,9 +443,11 @@ namespace MiniMapBuildingAtlas
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::OldRetire,[&]{Release(batch,old);});
+#if MINIMAP_ATLAS_PNGS
         if (diagnosticPixels)
             MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,
                 diagnosticPixels->Width, diagnosticPixels->Height, diagnosticPixels->Revision);
+#endif
         preparation.Stop();publicationTiming.Stop();
         if(timed && (diagnosticPixels || batch->PackAttempts>=3 || batch->UploadAttempts>=3 || batch->Backend.UploadOwnershipUncertain()))
         {timing.End=MiniMapCaptureTiming::Now();timing.Finished=true;MiniMapCaptureTiming::Defer(timing,"atlas");}

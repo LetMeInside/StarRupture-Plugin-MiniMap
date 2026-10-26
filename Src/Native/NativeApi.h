@@ -106,8 +106,6 @@ namespace MiniMapNative
 
         using SpawnObjectFn = SDK::UObject* (*)(const SDK::TSubclassOf<SDK::UObject>*, SDK::UObject*);
         SpawnObjectFn spawnObject = nullptr;
-        using GetTransientPackageFn = SDK::UObject* (*)();
-        GetTransientPackageFn getTransientPackage = nullptr;
         using SetObjectFlagsFn = void (*)(SDK::UObject*, uint32_t);
         SetObjectFlagsFn setObjectFlags = nullptr;
         using RetainObjectFn = void (*)(SDK::UObject*);
@@ -142,10 +140,6 @@ namespace MiniMapNative
             SDK::APlayerController* (*)(
                 const SDK::UWorld*);
 
-        using GetPlayerPawnFn =
-            SDK::ACrCharacterPlayerBase* (*)(
-                const SDK::AController*);
-
         using GetControlRotationFn =
             SDK::FRotator* (__fastcall*)(
                 const SDK::AController* controller,
@@ -161,7 +155,6 @@ namespace MiniMapNative
                 SDK::FVector*);
 
         GetFirstPlayerControllerFn getFirstPlayerController = nullptr;
-        GetPlayerPawnFn getPlayerPawn = nullptr;
         GetControlRotationFn getControlRotation = nullptr;
         IsPlayerInForgottenEngineFn isPlayerInForgottenEngine = nullptr;
         GetComponentLocationFn getComponentLocation = nullptr;
@@ -292,7 +285,6 @@ namespace MiniMapNative
 
         AddFragmentRequirementFn addInventoryRequirement = nullptr;
         AddFragmentRequirementFn addTransformRequirement = nullptr;
-        AddFragmentRequirementFn addSplineRequirement = nullptr;
         using EntityCheckFn = bool (__fastcall*)(const void*, MassEntityHandle);
         EntityCheckFn isEntityValid = nullptr;
         EntityCheckFn isEntityBuilt = nullptr;
@@ -327,14 +319,6 @@ namespace MiniMapNative
     static_assert(offsetof(GridEntityHandle, Data) == 0x08);
     static_assert(offsetof(GridEntityHandle, ReferenceController) == 0x10);
 
-    struct GridResultArray
-    {
-        GridEntityHandle* Data = nullptr;
-        int32_t Num = 0;
-        int32_t Max = 0;
-    };
-    static_assert(sizeof(GridResultArray) == 0x10);
-
     struct GridDiagnosticApi
     {
         // Verified CL-127004 TFunctionRef: Callable +0, Storage.Object +8.
@@ -350,23 +334,8 @@ namespace MiniMapNative
         using ForEachCellInRadiusFn = void (__fastcall*)(void*, const SDK::FVector&,
             float, const VisitorRef&, bool testEntityRadius);
         using GetSubsystemFn = void* (__fastcall*)(const SDK::UWorld*);
-        using FindInBoxFn = void (__fastcall*)(void* subsystem, const SDK::FBox&,
-            GridResultArray&, const void* requiredTags, const void* excludedTags);
-        using DestructItemsFn = void (__fastcall*)(GridEntityHandle*, int32_t);
-        using ViewConstructFn = void* (__fastcall*)(void* view, const void* manager, MassEntityHandle);
-        using ViewHasTagFn = bool (__fastcall*)(const void* view, const SDK::UScriptStruct*);
-
         GetSubsystemFn getSubsystem = nullptr;
         ForEachCellInRadiusFn forEachCellInRadius = nullptr;
-        FindInBoxFn findInBox = nullptr;
-        DestructItemsFn destructItems = nullptr;
-        ViewConstructFn viewConstruct = nullptr;
-        ViewHasTagFn viewHasTag = nullptr;
-
-        bool IsAvailable() const
-        {
-            return getSubsystem && findInBox && destructItems && viewConstruct && viewHasTag;
-        }
     };
 
     struct TextureApi

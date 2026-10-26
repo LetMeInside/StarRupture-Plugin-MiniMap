@@ -566,56 +566,6 @@ namespace MiniMapFingerprints
             firstControllerAddress;
 
         // -------------------------------------------------------------------
-        // AController::GetPawn<ACrCharacterPlayerBase>
-        //
-        // Verified current-build RVA:
-        //
-        //   0x097D9CA0
-        //
-        // The native helper validates the object stored in controller pawn
-        // storage as an ACrCharacterPlayerBase before returning it.
-        // -------------------------------------------------------------------
-
-        PluginScanRequest playerPawnRequest =
-            PLUGIN_SCAN_REQUEST_INIT;
-
-        playerPawnRequest.hookName =
-            "MiniMap::AController::"
-            "GetPawn<ACrCharacterPlayerBase>";
-
-        playerPawnRequest.pattern =
-            "40 53 "
-            "48 83 EC ?? "
-            "48 8D 99 F8 02 00 00 "
-            "48 83 3B 00 "
-            "74 ?? "
-            "E8 ?? ?? ?? ?? "
-            "48 8B D0 "
-            "48 8B CB "
-            "E8 ?? ?? ?? ?? "
-            "84 C0 "
-            "74 ?? "
-            "48 8B 03";
-
-        playerPawnRequest.flags = 0;
-
-        playerPawnRequest.kind =
-            PLUGIN_SCAN_FUNCTION_START;
-
-        const uintptr_t playerPawnAddress =
-            scanner->Resolve(
-                self,
-                &playerPawnRequest);
-
-        if (playerPawnAddress == 0)
-        {
-            return false;
-        }
-
-        addresses.getPlayerPawn =
-            playerPawnAddress;
-
-        // -------------------------------------------------------------------
         // USceneComponent::K2_GetComponentLocation
         //
         // Verified current-build RVA:
@@ -1824,9 +1774,9 @@ namespace MiniMapFingerprints
                 static_cast<unsigned long long>(addresses.addTagRequirement));
         }
 
-        // Optional grid/collector functions. Each pattern is unique in CL-127004
+        // Mandatory grid/collector functions. Each pattern is unique in CL-127004
         // executable and its target ABI was checked against the matching PDB.
-        // These resolve functions, not hooks. Failure disables dependent stages.
+        // These resolve functions, not hooks. Scanner failures refuse plugin admission.
         const auto resolveGridDiagnostic = [&](const char* name, const char* pattern,
             int32_t followAt, uintptr_t& target)
         {
@@ -1842,13 +1792,6 @@ namespace MiniMapFingerprints
             LOG_DEBUG("MiniMap: building native: resolve %s = 0x%llX", name,
                 static_cast<unsigned long long>(target));
         };
-        // Stage B.1 optional function resolutions, not hooks. PDB/EXE checked:
-        // spline anchor unique at 074B9ABE -> 0748E400; built anchor unique at
-        // 044657F0, whose first call is IsEntityValid (044658A0).
-        resolveGridDiagnostic("MiniMap::AddRequirement<FAuSplineConnectionFragment>",
-            "45 33 C0 48 8D 8B E0 00 00 00 B2 01 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? "
-            "48 8D 8B 78 03 00 00 8B D0 E8 ?? ?? ?? ?? 80 8B 98 03 00 00 01",
-            12, addresses.addSplineRequirement);
         constexpr const char* entityBuiltPattern =
             "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 "
             "E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? "
@@ -1866,33 +1809,12 @@ namespace MiniMapFingerprints
             "48 81 EC B0 00 00 00 41 83 78 0C 00 49 8D 78 0C 0F 29 70 E8 "
             "48 8B F2 41 8B 50 08 48 8B E9 49 8B 08 4D 8B F1 0F 29 78 D8 "
             "49 8B D8 44 0F 29 40 C8 7C 0C E8 ?? ?? ?? ?? 33 C0";
-        resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::FindEntitiesInBox",
-            gridBoxPattern, -1, addresses.gridFindEntitiesInBox);
         // CL-127004: unique existing box anchor, call at +14D -> 07714720.
         // PDB: (const FVector&, float, const TFunctionRef<bool(const
         // FCrGridEntityHandle&)>&, bool). Final bool gates IsInRadius only;
         // cell selection is XY at both hierarchy levels regardless of Z.
         resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::ForEachCellInRadius",
             gridBoxPattern, 0x14D, addresses.gridForEachCellInRadius);
-        // The first call in FindEntitiesInBox destroys its previous results.
-        // Linker-folded symbol name may mention FCulture, but verified code
-        // destroys 24-byte elements and releases the controller at +0x10.
-        resolveGridDiagnostic("MiniMap::FCrGridEntityHandle::DestructItems",
-            gridBoxPattern, 0x47, addresses.gridDestructResultItems);
-        resolveGridDiagnostic("MiniMap::FMassEntityView::Construct(manager,handle)",
-            "4C 8B DC 49 89 5B 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 60 "
-            "45 33 F6 48 C7 41 18 FF FF FF FF 4C 89 71 08 BD FF FF FF FF 89 69 10 "
-            "49 8B D8 4C 89 71 20 48 8B F9 48 89 19 45 85 C0 0F 84 C6 00 00 00 "
-            "0F B6 42 60 48 8D 72 20 4C 8D 3D ?? ?? ?? ?? 45 88 73 08 48 8B D6",
-            -1, addresses.massEntityViewConstruct);
-        resolveGridDiagnostic("MiniMap::FMassEntityView::HasTag",
-            "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 8B FA 48 83 C1 08 "
-            "48 8B 53 20 E8 ?? ?? ?? ?? 84 C0 75 26 4C 8D 0D ?? ?? ?? ?? "
-            "41 B8 58 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? "
-            "E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 48 8B 5B 20 48 85 FF 75 26 "
-            "4C 8D 0D ?? ?? ?? ?? 41 B8 02 01 00 00 48 8D 15 ?? ?? ?? ??",
-            -1, addresses.massEntityViewHasTag);
-
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
@@ -1904,17 +1826,6 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
             addresses.spawnObject = scanner->Resolve(self, &request);
             if (!addresses.spawnObject) return false;
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::Transient";
-            request.pattern = "48 8B 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 4C 8B 11 33 C0 48 63 49 08 4D 8D 1C CA 4D 3B D3 0F 84 ?? ?? ?? ?? 66 66 0F 1F 84 00 00 00 00 00 49 8B 12 41 B9 B9 79 37 9E 48 C1 EA 04 49 83 C2 08 8B CA C1 E9 10 33 CA 69 D1 6B CA EB 85 8B CA C1 E9 0D 33 CA 69 D1 35 AE B2 C2 44 8B C2 41 C1 E8 10 44 33 C2 41 2B C0 41 8B C8 C1 E9 0D 33 C1 44 2B C8 8B D0 C1 E0 08 45 2B C8 44 33 C8 41 8B C0 41 2B C1 41 8B C9 2B C2 C1 E9 0D 33 C1 41 2B D1 2B D0 8B C8 C1 E9 0C 33 D1 44 2B CA 8B CA 44 2B C8 C1 E1 10 44 33 C9 41 2B C1 41 8B C9 2B C2 C1 E9 05 33 C1 41 2B D1 2B D0 8B C8 C1 E9 03 33 D1 44 2B CA 8B CA 44 2B C8 C1 E1 0A 44 33 C9 41 2B C1 41 C1 E9 0F 2B C2 41 33 C1 4D 3B D3 0F 85 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC CC CC CC 48 8B 49 20 48 85 C9 74 ?? 48 8B 01 48 FF A0 80 01 00 00 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA C0 0B 00 00 48 8B 04 C8 C6 04 02 00 33 C0 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8B C4 55 56 48 8D 68 A1 48 81 EC B8 00 00 00 48 89 58 E8 48 89 78 E0 48 8B F9 4C 89 68 D0 45 33 ED 4C 89 70 C8 44 89 6D 67 44 8B 05 ?? ?? ?? ?? 4C 89 78 C0 4C 8B FA 65 48 8B 04 25 58 00 00 00 41 BE C0 0B 00 00 4A 8B 1C C0 4C 03 F3 41 C6 06 01 48 8B 01 FF 90 80 01 00 00 48 8B F0 45 38 2E 0F 85 ?? ?? ?? ?? 4C 89 A4 24 A0 00 00 00 41 BC B0 17 00 00 41 8B 0C 1C 39 0D ?? ?? ?? ?? 0F 8F ?? ?? ?? ?? 41 8B 04 1C 39 05 ?? ?? ?? ?? 4C 8B A4 24 A0 00 00 00 0F 8F ?? ?? ?? ?? 48 8B 47 10 48 8D 0D ?? ?? ?? ?? 48 89 45 6F FF 15 ?? ?? ?? ?? 48 8B 5D 6F 48 8B CB 48 C1 E9 04 8B C1 C1 E8 10 33 C1 69 C8 6B CA EB 85 8B C1 C1 E8 0D 33 C1";
-            request.kind = PLUGIN_SCAN_CODE;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.getTransientPackage = scanner->Resolve(self, &request);
-            if (!addresses.getTransientPackage) return false;
         }
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;

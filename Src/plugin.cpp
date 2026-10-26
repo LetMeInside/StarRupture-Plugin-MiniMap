@@ -700,12 +700,6 @@ extern "C"
 
         LOG_INFO(
             "MiniMap: AController::"
-            "GetPawn<ACrCharacterPlayerBase> = 0x%llX",
-            static_cast<unsigned long long>(
-                g_resolvedAddresses.getPlayerPawn));
-
-        LOG_INFO(
-            "MiniMap: AController::"
             "GetControlRotation = 0x%llX",
             static_cast<unsigned long long>(
                 g_resolvedAddresses.getControlRotation));

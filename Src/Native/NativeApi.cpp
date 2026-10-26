@@ -196,7 +196,6 @@ namespace MiniMapNative
             addresses.streamIn == 0 ||
             addresses.waitForPendingInitOrStreaming == 0 ||
             addresses.getFirstPlayerController == 0 ||
-            addresses.getPlayerPawn == 0 ||
             addresses.getControlRotation == 0 ||
             addresses.isPlayerInForgottenEngine == 0 ||
             addresses.getComponentLocation == 0 ||
@@ -275,7 +274,6 @@ namespace MiniMapNative
         if (!addresses.readbackMultithreaded) return false;
         if (!addresses.readbackGpuCount) return false;
         if (!addresses.spawnObject) return false;
-        if (!addresses.getTransientPackage) return false;
         if (!addresses.setObjectFlags) return false;
         if (!addresses.registerComponent) return false;
         if (!addresses.unregisterComponent) return false;
@@ -303,10 +301,6 @@ namespace MiniMapNative
         g_nativeApi.player.getFirstPlayerController =
             reinterpret_cast<PlayerApi::GetFirstPlayerControllerFn>(
                 addresses.getFirstPlayerController);
-
-        g_nativeApi.player.getPlayerPawn =
-            reinterpret_cast<PlayerApi::GetPlayerPawnFn>(
-                addresses.getPlayerPawn);
 
         g_nativeApi.player.getControlRotation =
             reinterpret_cast<PlayerApi::GetControlRotationFn>(
@@ -480,13 +474,8 @@ namespace MiniMapNative
         // dependent stage without disabling Stage A or the established MiniMap.
         g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);
         g_nativeApi.gridDiagnostic.forEachCellInRadius = reinterpret_cast<GridDiagnosticApi::ForEachCellInRadiusFn>(addresses.gridForEachCellInRadius);
-        g_nativeApi.mass.addSplineRequirement = reinterpret_cast<MassApi::AddFragmentRequirementFn>(addresses.addSplineRequirement);
         g_nativeApi.mass.isEntityValid = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityValid);
         g_nativeApi.mass.isEntityBuilt = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityBuilt);
-        g_nativeApi.gridDiagnostic.findInBox = reinterpret_cast<GridDiagnosticApi::FindInBoxFn>(addresses.gridFindEntitiesInBox);
-        g_nativeApi.gridDiagnostic.destructItems = reinterpret_cast<GridDiagnosticApi::DestructItemsFn>(addresses.gridDestructResultItems);
-        g_nativeApi.gridDiagnostic.viewConstruct = reinterpret_cast<GridDiagnosticApi::ViewConstructFn>(addresses.massEntityViewConstruct);
-        g_nativeApi.gridDiagnostic.viewHasTag = reinterpret_cast<GridDiagnosticApi::ViewHasTagFn>(addresses.massEntityViewHasTag);
 
 #if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         g_nativeApi.asset.objectArray = reinterpret_cast<const void*>(addresses.objectArray);
@@ -524,7 +513,6 @@ namespace MiniMapNative
         g_nativeApi.world.isVisibilityRequestPending = reinterpret_cast<decltype(g_nativeApi.world.isVisibilityRequestPending)>(addresses.isVisibilityRequestPending);
         g_nativeApi.world.destroyActor = reinterpret_cast<decltype(g_nativeApi.world.destroyActor)>(addresses.destroyActor);
         g_nativeApi.asset.spawnObject = reinterpret_cast<decltype(g_nativeApi.asset.spawnObject)>(addresses.spawnObject);
-        g_nativeApi.asset.getTransientPackage = reinterpret_cast<decltype(g_nativeApi.asset.getTransientPackage)>(addresses.getTransientPackage);
         g_nativeApi.asset.setObjectFlags = reinterpret_cast<decltype(g_nativeApi.asset.setObjectFlags)>(addresses.setObjectFlags);
         g_nativeApi.player.registerComponent = reinterpret_cast<decltype(g_nativeApi.player.registerComponent)>(addresses.registerComponent);
         g_nativeApi.player.unregisterComponent = reinterpret_cast<decltype(g_nativeApi.player.unregisterComponent)>(addresses.unregisterComponent);

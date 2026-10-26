@@ -1,3 +1,4 @@
+#include "DiagnosticExports.h"
 #include "Map/Map.h"
 #include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R26A_SPRITE_DISCOVERY)
@@ -52,6 +53,7 @@ namespace MiniMapSpriteDiscovery
                     // Collector records own only copied CPU geometry and strings.
                     // Large vector/shared-metadata destruction never runs in Tick.
                     if(Sources->ServiceOne())continue;
+#if MINIMAP_SPRITE_DIAGNOSTIC_JSON
                     std::string json;size_t kind=0;uint64_t generation=0;
                     {std::unique_lock lock(Mutex);Wake.wait_for(lock,std::chrono::milliseconds(20),[&]{return Stopping||Any();});
                      // Conditional P2: this drain does not wait for outstanding
@@ -79,6 +81,11 @@ namespace MiniMapSpriteDiscovery
                         {if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING)){++Failures;std::filesystem::remove(temp,ec);}}
                         else {if(!file)++Failures;std::filesystem::remove(temp,ec);}
                     }catch(...){++Failures;} // Diagnostics cannot fail capture or gameplay.
+#else
+                    std::unique_lock lock(Mutex);
+                    Wake.wait_for(lock,std::chrono::milliseconds(20),[&]{return Stopping;});
+                    if(Stopping){lock.unlock();if(!Sources->DrainReleased())++Failures;return;}
+#endif
                 }
             }
             bool Any()const {for(const auto& s:Pending)if(!s.empty())return true;return false;}
@@ -93,6 +100,7 @@ namespace MiniMapSpriteDiscovery
             }
             void Invalidate(uint64_t generation)
             {std::scoped_lock lock(Mutex);Generation.store(generation);for(auto& s:Pending)s.clear();}
+#if MINIMAP_SPRITE_DIAGNOSTIC_JSON
             void Publish(std::string json,size_t kind,uint64_t generation)
             {
                 if(json.size()>C::OutputLimit||kind>=Pending.size())return;
@@ -100,6 +108,7 @@ namespace MiniMapSpriteDiscovery
                 if(!Worker.joinable())try{Worker=std::thread([this]{Run();});}catch(...){Stopping=true;++Failures;return;}
                 Pending[kind]=std::move(json);Generations[kind]=generation;Wake.notify_one();
             }
+#endif
             uint64_t ErrorCount()const noexcept{return Failures.load();}
             ~DiagnosticWriter()
             {{std::scoped_lock lock(Mutex);Stopping=true;for(auto& s:Pending)s.clear();}Wake.notify_one();if(Worker.joinable())Worker.join();}
@@ -120,10 +129,12 @@ namespace MiniMapSpriteDiscovery
 #endif
         };
         Owner* owner=nullptr; // Explicit runtime ownership, no static constructor.
+#if MINIMAP_SPRITE_DIAGNOSTIC_JSON
         void Publish(std::string json,bool validation=false,bool classification=false,bool pipeline=false)
         {
             if(owner)owner->Writer.Publish(std::move(json),pipeline?3:classification?2:validation?1:0,owner->WriterGeneration);
         }
+#endif
         void BeforeEndPlay(SDK::UWorld* world,const char*)
         {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::DiscoveryWorldEnd,false);
@@ -305,6 +316,7 @@ namespace MiniMapSpriteDiscovery
                 owner->NextValidationExport=now+2;
             }
 #endif
+#if MINIMAP_SPRITE_DIAGNOSTIC_JSON
             // Never combine a native audit and diagnostic serialization in one tick.
             // CPU-owned dirty documents resume on a later service invocation.
 #if defined(MINIMAP_STAGE_R26B_SPRITE_VALIDATION)
@@ -348,6 +360,7 @@ namespace MiniMapSpriteDiscovery
 #endif
 #if defined(MINIMAP_BUILDING_SPRITES)
             else if(owner->Dirty&8){Publish(MiniMapBuildingSprites::Diagnostics(),false,false,true);owner->Dirty&=~8u;}
+#endif
 #endif
         }
     }

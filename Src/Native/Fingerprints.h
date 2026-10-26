@@ -24,7 +24,6 @@ namespace MiniMapFingerprints
         uintptr_t streamIn = 0;
         uintptr_t waitForPendingInitOrStreaming = 0;
         uintptr_t getFirstPlayerController = 0;
-        uintptr_t getPlayerPawn = 0;
         uintptr_t getControlRotation = 0;
         uintptr_t isPlayerInForgottenEngine = 0;
         uintptr_t getComponentLocation = 0;
@@ -41,7 +40,6 @@ namespace MiniMapFingerprints
         uintptr_t massQueryDestruct = 0;
         uintptr_t addInventoryRequirement = 0;
         uintptr_t addTransformRequirement = 0;
-        uintptr_t addSplineRequirement = 0; // Optional Stage B.1.
         uintptr_t isMassEntityValid = 0;
         uintptr_t isMassEntityBuilt = 0;
         uintptr_t gridForEachCellInRadius = 0; // Optional XY collector traversal.
@@ -65,10 +63,6 @@ namespace MiniMapFingerprints
 
         // Optional Stage A.1 diagnostic; never a dependency of map rendering.
         uintptr_t getEntityGridSubsystem = 0;
-        uintptr_t gridFindEntitiesInBox = 0;
-        uintptr_t gridDestructResultItems = 0;
-        uintptr_t massEntityViewConstruct = 0;
-        uintptr_t massEntityViewHasTag = 0;
 
         uintptr_t getPlatformData = 0;
         uintptr_t getBulkDataSize = 0;
@@ -116,7 +110,6 @@ namespace MiniMapFingerprints
         uintptr_t readbackGpuCount = 0;
 
         uintptr_t spawnObject = 0;
-        uintptr_t getTransientPackage = 0;
         uintptr_t setObjectFlags = 0;
         uintptr_t retainObject = 0;
         uintptr_t releaseObject = 0;

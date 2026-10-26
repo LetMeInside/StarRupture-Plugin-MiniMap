@@ -1,4 +1,5 @@
 #pragma once
+#include "DiagnosticExports.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -70,14 +71,18 @@ namespace MiniMapBuildingCache
     LoadResult TryLoad(const std::string& canonicalBlueprintPath, Sprite& out) noexcept;
     bool Write(const std::string& canonicalBlueprintPath, const uint8_t* rgba,
         uint32_t width, uint32_t height, const SpatialBounds& bounds, const ImageMapping& mapping);
+#if MINIMAP_BUILDING_CAPTURE_PNGS
     // Full source canvas beside its .sprite; optional export cannot throw into
     // production publication. Enabled separately from native capture by MSBuild.
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height) noexcept;
+#endif
+#if MINIMAP_ATLAS_PNGS
     // Full published atlas only. Sequential, exclusive final-name publication;
     // logs its result and never changes GPU publication. Call outside lifecycle lock.
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
         uint32_t width, uint32_t height, uint64_t revision) noexcept;
+#endif
 }
 
 #endif
