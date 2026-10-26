@@ -1101,6 +1101,7 @@ namespace
         if (!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() || !MiniMapMap::HasWorld())
         {
             MiniMapTerrain::InvalidatePresentation();
+            MiniMapMouseWheel::ClearPendingZoom();
             return;
         }
 

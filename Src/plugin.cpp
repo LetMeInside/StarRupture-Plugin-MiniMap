@@ -9,6 +9,7 @@
 #include "Native/NativeApi.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "UI/MiniMapUI.h"
+#include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "Map/Buildings/BuildingCache.h"
@@ -572,6 +573,7 @@ extern "C"
         if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, g_self->hooks->ImGuiTextures))
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
+            MiniMapUI::Shutdown();
             RemoveCommonUIHooks();
             return false;
         }
@@ -754,6 +756,7 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+        MiniMapMouseWheel::Shutdown();
         RemoveCommonUIHooks();
         g_worldEnding=true;
         SetServicesAdmitted(false);

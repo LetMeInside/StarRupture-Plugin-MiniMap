@@ -7,11 +7,7 @@ namespace MiniMapMouseWheel
     bool Initialize(IPluginSelf* self);
     void Shutdown();
 
-    // Called from the MiniMap widget render callback after AlienX's
-    // render/UI backend is known to be active.
-    void SignalUiReady();
-
-    // Enables or disables Ctrl+wheel zoom acceptance.
+    // Enables or disables LeftCtrl+wheel zoom for effective gameplay visibility.
     // Disabling also discards any pending wheel input.
     void SetZoomEnabled(bool enabled);
 

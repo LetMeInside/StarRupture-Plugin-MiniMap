@@ -114,7 +114,6 @@ namespace
 #endif
             return;
         }
-        MiniMapMouseWheel::SignalUiReady();
 
 #if defined(MINIMAP_BUILDING_SPRITES)
         // CPU callback time and callback cadence are separate. Neither measures
@@ -291,7 +290,7 @@ namespace
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
 
         MiniMapMouseWheel::SetZoomEnabled(
-            visible);
+            effectiveVisible);
 
         if (g_self != nullptr &&
             g_self->hooks != nullptr &&
@@ -448,7 +447,7 @@ namespace MiniMapUI
             self))
         {
             LOG_ERROR(
-                "MiniMap: window subclass diagnostic initialization failed");
+                "MiniMap: mouse-wheel input initialization failed");
 
             UnregisterToggleKeybind();
 
