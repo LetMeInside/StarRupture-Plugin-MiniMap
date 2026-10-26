@@ -23,6 +23,13 @@ namespace MiniMapMap
         double PlayerWorldY = 0.0;
 
         double PlayerControlYawDegrees = 0.0;
+        double CharacterWorldYawDegrees = 0.0;
+        double TrackingWorldX = 0.0;
+        double TrackingWorldY = 0.0;
+        double TrackingYawDegrees = 0.0;
+        double LocalVisibilityWorldX = 0.0;
+        double LocalVisibilityWorldY = 0.0;
+        bool DroneActive = false;
         double MapRotationDegrees = 0.0;
 
         double SinMapRotation = 0.0;
@@ -100,11 +107,11 @@ namespace MiniMapMap
 
             const double dx =
                 worldX -
-                PlayerWorldX;
+                TrackingWorldX;
 
             const double dy =
                 worldY -
-                PlayerWorldY;
+                TrackingWorldY;
 
             ScreenPoint direction = {};
 
@@ -154,7 +161,7 @@ namespace MiniMapMap
             // Applying the map rotation produces the marker's final screen
             // angle. Heading-up therefore naturally yields zero degrees.
             return
-                PlayerControlYawDegrees +
+                TrackingYawDegrees +
                 90.0 +
                 MapRotationDegrees;
         }
@@ -171,7 +178,7 @@ namespace MiniMapMap
 
 
     inline bool BuildTransform(
-        const PlayerPose& pose,
+        const PresentationSample& sample,
         double mapRotationDegrees,
         double metersPerPixel,
         float viewportX,
@@ -182,7 +189,16 @@ namespace MiniMapMap
     {
         outTransform = {};
 
-        if (!std::isfinite(pose.WorldX) ||
+        const auto& pose = sample.Character;
+        if (!sample.Valid || sample.WorldGeneration != GetWorldGeneration() ||
+            !std::isfinite(sample.Tracking.WorldX) || !std::isfinite(sample.Tracking.WorldY) ||
+            !std::isfinite(sample.Tracking.WorldZ) || !std::isfinite(pose.WorldZ) ||
+            !std::isfinite(sample.LocalVisibilityOrigin.WorldZ) ||
+            !std::isfinite(sample.Tracking.ControlYawDegrees) ||
+            (sample.DroneActive && !std::isfinite(sample.CharacterWorldYawDegrees)) ||
+            !std::isfinite(sample.LocalVisibilityOrigin.WorldX) ||
+            !std::isfinite(sample.LocalVisibilityOrigin.WorldY) ||
+            !std::isfinite(pose.WorldX) ||
             !std::isfinite(pose.WorldY) ||
             !std::isfinite(pose.ControlYawDegrees) ||
             !std::isfinite(mapRotationDegrees) ||
@@ -214,6 +230,14 @@ namespace MiniMapMap
 
         outTransform.PlayerControlYawDegrees =
             pose.ControlYawDegrees;
+
+        outTransform.CharacterWorldYawDegrees = sample.CharacterWorldYawDegrees;
+        outTransform.TrackingWorldX = sample.Tracking.WorldX;
+        outTransform.TrackingWorldY = sample.Tracking.WorldY;
+        outTransform.TrackingYawDegrees = sample.Tracking.ControlYawDegrees;
+        outTransform.LocalVisibilityWorldX = sample.LocalVisibilityOrigin.WorldX;
+        outTransform.LocalVisibilityWorldY = sample.LocalVisibilityOrigin.WorldY;
+        outTransform.DroneActive = sample.DroneActive;
 
         outTransform.MapRotationDegrees =
             mapRotationDegrees;

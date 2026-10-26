@@ -10,6 +10,7 @@ namespace MiniMapTerrain
 {
     bool Initialize(IPluginSelf* self);
     void Shutdown();
+    void InvalidatePresentation(); // Values only; safe for visibility callbacks.
 
     bool RegisterDiagnostics(IPluginSelf* self);
     void UnregisterDiagnostics();

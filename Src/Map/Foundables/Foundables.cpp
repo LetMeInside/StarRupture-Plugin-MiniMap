@@ -100,35 +100,15 @@ namespace
 
     SDK::UCrPlayerMapMenuDataComponent* GetLocalMapDataComponent()
     {
-        const MiniMapNative::NativeApi* native = MiniMapNative::Get();
-        SDK::UWorld* world = MiniMapMap::GetWorld();
-
-        if (native == nullptr ||
-            world == nullptr ||
-            native->player.getFirstPlayerController == nullptr ||
-            native->player.getPlayerPawn == nullptr)
-        {
-            return nullptr;
-        }
-
-        SDK::APlayerController* controller =
-            native->player.getFirstPlayerController(world);
-
-        if (controller == nullptr)
-        {
-            return nullptr;
-        }
-
-        SDK::ACrCharacterPlayerBase* player =
-            native->player.getPlayerPawn(
-                static_cast<const SDK::AController*>(controller));
-
-        if (player == nullptr)
-        {
-            return nullptr;
-        }
-
-        return player->PlayerMapMenuDataComponent;
+        SDK::ACrCharacterPlayerBase* player = nullptr;
+        if (!MiniMapMap::TryGetPhysicalCharacter(player)) return nullptr;
+        auto* component = player->PlayerMapMenuDataComponent;
+        const auto* native = MiniMapNative::Get();
+        if (!native || !MiniMapNative::ValidateObjectIdentity(
+            reinterpret_cast<uintptr_t>(component),
+            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
+            component->Outer != player) return nullptr;
+        return component;
     }
 
     PluginTextureHandle LoadIconFromBulkData(

@@ -581,9 +581,10 @@ namespace
             }
             {const auto begin=Clock::now();UpdateAtlasBounds();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
             const auto gridBegin=Clock::now();
-            MiniMapMap::PlayerPose pose;double radius;
+            MiniMapMap::PresentationSample sample{};double radius;
             {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
-            const bool hasPose=radius>0 && MiniMapMap::TryGetPlayerPose(pose);
+            const bool hasPose=radius>0 && MiniMapMap::TryGetPresentationSample(sample);
+            const auto& pose=sample.Tracking;
             if(hasPose)
             {
                 const Bounds requested{pose.WorldX-radius,pose.WorldY-radius,pose.WorldX+radius,pose.WorldY+radius,true};

@@ -261,50 +261,17 @@ namespace
         outPlayer = nullptr;
         outComponent = nullptr;
 
-        SDK::UWorld* world =
-            MiniMapMap::GetWorld();
-
-        if (world == nullptr)
-        {
-            return false;
-        }
-
-        const MiniMapNative::NativeApi* native =
-            MiniMapNative::Get();
-
-        if (native == nullptr ||
-            native->player.getFirstPlayerController == nullptr ||
-            native->player.getPlayerPawn == nullptr)
-        {
-            return false;
-        }
-
-        SDK::APlayerController* controller =
-            native->player.getFirstPlayerController(
-                world);
-
-        if (controller == nullptr)
-        {
-            return false;
-        }
-
-        SDK::ACrCharacterPlayerBase* player =
-            native->player.getPlayerPawn(
-                static_cast<const SDK::AController*>(
-                    controller));
-
-        if (player == nullptr)
-        {
-            return false;
-        }
+        SDK::ACrCharacterPlayerBase* player = nullptr;
+        if (!MiniMapMap::TryGetPhysicalCharacter(player)) return false;
 
         SDK::UCrPlayerMapMenuDataComponent* component =
             player->PlayerMapMenuDataComponent;
 
-        if (component == nullptr)
-        {
-            return false;
-        }
+        const auto* native = MiniMapNative::Get();
+        if (!native || !MiniMapNative::ValidateObjectIdentity(
+            reinterpret_cast<uintptr_t>(component),
+            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
+            component->Outer != player) return false;
 
         outPlayer =
             player;
@@ -585,23 +552,23 @@ namespace
 
         const double nearestX =
             std::clamp(
-                transform.PlayerWorldX,
+                transform.LocalVisibilityWorldX,
                 worldX0,
                 worldX1);
 
         const double nearestY =
             std::clamp(
-                transform.PlayerWorldY,
+                transform.LocalVisibilityWorldY,
                 worldY0,
                 worldY1);
 
         const double dx =
             nearestX -
-            transform.PlayerWorldX;
+            transform.LocalVisibilityWorldX;
 
         const double dy =
             nearestY -
-            transform.PlayerWorldY;
+            transform.LocalVisibilityWorldY;
 
         const double outerRadiusWorld =
             kLocalFeatherOuterRadiusMeters *
@@ -729,11 +696,11 @@ namespace
     {
         const double dx =
             worldX -
-            transform.PlayerWorldX;
+            transform.LocalVisibilityWorldX;
 
         const double dy =
             worldY -
-            transform.PlayerWorldY;
+            transform.LocalVisibilityWorldY;
 
         const double distanceMeters =
             std::sqrt(
@@ -1350,7 +1317,7 @@ namespace MiniMapFogOfWar
     {
         if(!g_snapshot.Valid||!g_blackFogTexture||!transform.Valid||
             !std::isfinite(transform.PixelsPerWorldUnit)||transform.PixelsPerWorldUnit<=0||
-            !std::isfinite(transform.PlayerWorldX)||!std::isfinite(transform.PlayerWorldY))return false;
+            !std::isfinite(transform.LocalVisibilityWorldX)||!std::isfinite(transform.LocalVisibilityWorldY))return false;
         // At most 64 cells / 576 copied-mask reads. This stronger-than-necessary
         // test certifies coarse opaque overlay coverage without sampling sprite pixels.
         return MiniMapBuildingSpriteCore::FullyObscured(minX,minY,maxX,maxY,
@@ -1366,8 +1333,8 @@ namespace MiniMapFogOfWar
     {
         if (!g_snapshot.Valid || !transform.Valid ||
             !std::isfinite(worldX) || !std::isfinite(worldY) ||
-            !std::isfinite(transform.PlayerWorldX) ||
-            !std::isfinite(transform.PlayerWorldY))
+            !std::isfinite(transform.LocalVisibilityWorldX) ||
+            !std::isfinite(transform.LocalVisibilityWorldY))
         {
             return 0.0f;
         }
@@ -1427,22 +1394,22 @@ namespace MiniMapFogOfWar
             kMaskCellWorldUnits;
 
         const double minWorldX =
-            transform.PlayerWorldX -
+            transform.TrackingWorldX -
             viewportRadiusWorld -
             marginWorld;
 
         const double maxWorldX =
-            transform.PlayerWorldX +
+            transform.TrackingWorldX +
             viewportRadiusWorld +
             marginWorld;
 
         const double minWorldY =
-            transform.PlayerWorldY -
+            transform.TrackingWorldY -
             viewportRadiusWorld -
             marginWorld;
 
         const double maxWorldY =
-            transform.PlayerWorldY +
+            transform.TrackingWorldY +
             viewportRadiusWorld +
             marginWorld;
 

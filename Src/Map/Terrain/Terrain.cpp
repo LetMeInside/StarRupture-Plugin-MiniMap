@@ -128,7 +128,39 @@ namespace
     double g_playerGlobalChunkX = 0.0;
     double g_playerGlobalChunkY = 0.0;
 
-    MiniMapMap::PlayerPose g_playerPose = {};
+    MiniMapMap::PresentationSample g_presentation = {};
+    uint64_t g_presentationRevision = 0; // Reject acquisition interrupted by UI withdrawal.
+    uint64_t g_reconciliationSequence = 0; // A reentrant newer acquisition supersedes its caller.
+
+    struct ReconciliationContext
+    {
+        SDK::UWorld* World = nullptr; // Identity only, borrowed for this synchronous call.
+        MiniMapMap::PresentationSample Sample{};
+        uint64_t PresentationRevision = 0;
+        uint64_t Sequence = 0;
+        float ViewportWidth = 0.0f;
+        float ViewportHeight = 0.0f;
+        double MetersPerPixel = 0.0;
+    };
+
+    // Caller holds g_renderMutex. No native actor reads or lengthy acquisition.
+    bool ReconciliationCurrent(const ReconciliationContext& context)
+    {
+        return g_initialized && context.PresentationRevision == g_presentationRevision &&
+            context.Sequence == g_reconciliationSequence && g_presentation.Valid &&
+            context.World != nullptr && context.World == MiniMapMap::GetWorld() &&
+            context.Sample.WorldGeneration == MiniMapMap::GetWorldGeneration() &&
+            context.Sample.WorldGeneration == g_presentation.WorldGeneration &&
+            MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() &&
+            context.Sample.TrackingObjectIndex == g_presentation.TrackingObjectIndex &&
+            context.Sample.DroneActive == g_presentation.DroneActive &&
+            context.Sample.Tracking.WorldX == g_presentation.Tracking.WorldX &&
+            context.Sample.Tracking.WorldY == g_presentation.Tracking.WorldY &&
+            context.Sample.Tracking.WorldZ == g_presentation.Tracking.WorldZ &&
+            context.ViewportWidth == g_viewportPixelWidth &&
+            context.ViewportHeight == g_viewportPixelHeight &&
+            context.MetersPerPixel == g_metersPerPixel;
+    }
 
 
     bool SameIdentity(
@@ -558,9 +590,11 @@ namespace
 
 
     bool ReconcileViewport(
-        const MiniMapMap::PlayerPose& playerPose)
+        const MiniMapMap::PresentationSample& sample,
+        uint64_t revision)
     {
         MiniMapTerrainProfile::Batch terrainProfile;
+        const auto& playerPose = sample.Tracking;
         auto* self = GetSelf();
         SDK::FVector playerLocation = {};
         playerLocation.X = playerPose.WorldX;
@@ -574,6 +608,49 @@ namespace
         {
             return false;
         }
+
+        std::vector<LoadedChunk> residentChunks;
+
+        float viewportPixelWidth =
+            kDefaultViewportPixelWidth;
+
+        float viewportPixelHeight =
+            kDefaultViewportPixelHeight;
+
+        double metersPerPixel =
+            kDefaultMetersPerPixel;
+
+        ReconciliationContext context{};
+        {
+            MiniMapTerrainProfile::Scope profileWait(MiniMapTerrainProfile::Phase::SnapshotWait);
+            std::lock_guard<std::mutex> lock(
+                g_renderMutex);
+            profileWait.End();
+            MiniMapTerrainProfile::Scope profileHold(MiniMapTerrainProfile::Phase::SnapshotHold);
+
+            context.World = MiniMapMap::GetWorld();
+            context.Sample = sample;
+            context.PresentationRevision = revision;
+            context.Sequence = ++g_reconciliationSequence;
+            context.ViewportWidth = g_viewportPixelWidth;
+            context.ViewportHeight = g_viewportPixelHeight;
+            context.MetersPerPixel = g_metersPerPixel;
+            if (!sample.Valid || !ReconciliationCurrent(context)) return false;
+
+            residentChunks =
+                g_residentChunks;
+
+            viewportPixelWidth =
+                g_viewportPixelWidth;
+
+            viewportPixelHeight =
+                g_viewportPixelHeight;
+
+            metersPerPixel =
+                g_metersPerPixel;
+        }
+
+        const size_t borrowedResidentCount = residentChunks.size();
 
         MiniMapTerrainSource::SourceTile playerTile = {};
 
@@ -600,37 +677,6 @@ namespace
             playerTile.LocalV *
             static_cast<double>(
                 MiniMapTerrainChunks::kChunksPerAxis);
-
-        std::vector<LoadedChunk> residentChunks;
-
-        float viewportPixelWidth =
-            kDefaultViewportPixelWidth;
-
-        float viewportPixelHeight =
-            kDefaultViewportPixelHeight;
-
-        double metersPerPixel =
-            kDefaultMetersPerPixel;
-
-        {
-            MiniMapTerrainProfile::Scope profileWait(MiniMapTerrainProfile::Phase::SnapshotWait);
-            std::lock_guard<std::mutex> lock(
-                g_renderMutex);
-            profileWait.End();
-            MiniMapTerrainProfile::Scope profileHold(MiniMapTerrainProfile::Phase::SnapshotHold);
-
-            residentChunks =
-                g_residentChunks;
-
-            viewportPixelWidth =
-                g_viewportPixelWidth;
-
-            viewportPixelHeight =
-                g_viewportPixelHeight;
-
-            metersPerPixel =
-                g_metersPerPixel;
-        }
 
         const double viewportWidthMeters =
             static_cast<double>(
@@ -897,11 +943,22 @@ namespace
             profileWait.End();
             MiniMapTerrainProfile::Scope profileHold(MiniMapTerrainProfile::Phase::PublishHold);
 
+            // Transfer only NEW handles into the existing resident owner, even
+            // on rejection. Never restore a stale copy of borrowed residents or
+            // free rejected acquisitions: AlienX has no fence-aware retirement.
+            g_residentChunks.insert(g_residentChunks.end(),
+                residentChunks.begin() + borrowedResidentCount, residentChunks.end());
+            if (!ReconciliationCurrent(context))
+            {
+                g_reconcileRequested.store(true, std::memory_order_release);
+                return false;
+            }
+
             MiniMapTerrainProfile::Scope retirementProfile(MiniMapTerrainProfile::Phase::Retirement);
             // First update retirement state against the exact active set that
             // is about to become visible to the render thread.
             for (LoadedChunk& residentChunk :
-                residentChunks)
+                g_residentChunks)
             {
                 const bool isActive =
                     ContainsIdentity(
@@ -932,10 +989,10 @@ namespace
             // generations. Holding g_renderMutex prevents a concurrent render
             // callback from reintroducing the handle while it is being freed.
             auto residentIt =
-                residentChunks.begin();
+                g_residentChunks.begin();
 
             while (residentIt !=
-                residentChunks.end())
+                g_residentChunks.end())
             {
                 if (residentIt->
                     RetireAfterRenderGeneration !=
@@ -964,7 +1021,7 @@ namespace
                     MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Retired);
 
                     residentIt =
-                        residentChunks.erase(
+                        g_residentChunks.erase(
                             residentIt);
 
                     continue;
@@ -978,10 +1035,6 @@ namespace
             g_loadedChunks =
                 std::move(
                     nextChunks);
-
-            g_residentChunks =
-                std::move(
-                    residentChunks);
 
             g_viewportAnchorWorldPosition =
                 playerLocation;
@@ -998,9 +1051,6 @@ namespace
             g_playerGlobalChunkY =
                 playerGlobalChunkY;
 
-            g_playerPose =
-                playerPose;
-
             g_hasViewportAnchor =
                 true;
         }
@@ -1009,18 +1059,24 @@ namespace
     }
 
 
-    void UpdateFastViewportCenter(
-        const MiniMapMap::PlayerPose& playerPose)
+    bool UpdateFastViewportCenter(
+        const MiniMapMap::PresentationSample& sample,
+        uint64_t revision)
     {
         std::lock_guard<std::mutex> lock(
             g_renderMutex);
 
-        g_playerPose =
-            playerPose;
+        if (revision != g_presentationRevision || !MiniMapUI::IsVisible() ||
+            !MiniMapMap::GameplayReady() || sample.WorldGeneration != MiniMapMap::GetWorldGeneration()) return false;
+        if (!g_presentation.Valid || g_presentation.DroneActive != sample.DroneActive ||
+            g_presentation.TrackingObjectIndex != sample.TrackingObjectIndex)
+            g_reconcileRequested.store(true, std::memory_order_release);
+        g_presentation = sample;
+        const auto& playerPose = sample.Tracking;
 
         if (!g_hasViewportAnchor)
         {
-            return;
+            return true;
         }
 
         g_playerGlobalChunkX =
@@ -1034,6 +1090,7 @@ namespace
             (playerPose.WorldY -
                 g_viewportAnchorWorldPosition.Y) /
             kChunkWorldUnits;
+        return true;
     }
 
 
@@ -1041,31 +1098,19 @@ namespace
         float deltaSeconds)
     {
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::TerrainTick,true);
-        if(!MiniMapUI::IsVisible())return;
-        if(!MiniMapMap::GameplayReady())return;
-        if (!MiniMapMap::HasWorld())
+        if (!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() || !MiniMapMap::HasWorld())
         {
+            MiniMapTerrain::InvalidatePresentation();
             return;
         }
 
-        bool isInForgottenEngine =
-            false;
-
-        if (MiniMapMap::TryIsPlayerInForgottenEngine(
-            isInForgottenEngine))
+        uint64_t revision;
+        { std::lock_guard<std::mutex> lock(g_renderMutex); revision = g_presentationRevision; }
+        MiniMapMap::PresentationSample sample{};
+        if (!MiniMapMap::TryGetPresentationSample(sample) || sample.InForgottenEngine)
         {
-            if (isInForgottenEngine)
-            {
-                MiniMapMouseWheel::ClearPendingZoom();
-                return;
-            }
-        }
-
-        MiniMapMap::PlayerPose playerPose = {};
-
-        if (!MiniMapMap::TryGetPlayerPose(
-            playerPose))
-        {
+            MiniMapTerrain::InvalidatePresentation();
+            MiniMapMouseWheel::ClearPendingZoom();
             return;
         }
 
@@ -1078,8 +1123,7 @@ namespace
                 zoomDelta);
         }
 
-        UpdateFastViewportCenter(
-            playerPose);
+        if (!UpdateFastViewportCenter(sample, revision)) return;
 
         g_updateAccumulator +=
             deltaSeconds;
@@ -1100,13 +1144,20 @@ namespace
             0.0f;
 
         ReconcileViewport(
-            playerPose);
+            sample, revision);
     }
 }
 
 
 namespace MiniMapTerrain
 {
+    void InvalidatePresentation()
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        g_presentation = {};
+        ++g_presentationRevision;
+    }
+
     bool Initialize(
         IPluginSelf* self)
     {
@@ -1149,7 +1200,8 @@ namespace MiniMapTerrain
             g_playerGlobalChunkY =
                 0.0;
 
-            g_playerPose = {};
+            g_presentation = {};
+            ++g_presentationRevision;
         }
 
         g_reconcileRequested.store(
@@ -1259,6 +1311,8 @@ namespace MiniMapTerrain
             // because already-built ImGui draw data or submitted GPU work may
             // still reference those descriptors.
             g_loadedChunks.clear();
+            g_presentation = {};
+            ++g_presentationRevision;
 
             // A later gameplay world may reuse matching residents. Inactive
             // residents will be scheduled again by ReconcileViewport against
@@ -1314,7 +1368,8 @@ namespace MiniMapTerrain
             g_playerGlobalChunkY =
                 0.0;
 
-            g_playerPose = {};
+            g_presentation = {};
+            ++g_presentationRevision;
         }
 
         g_initialized =
@@ -1421,7 +1476,8 @@ namespace MiniMapTerrain
         g_viewportPixelHeight =
             windowHeight;
 
-        if (!g_hasViewportAnchor)
+        if (!g_hasViewportAnchor || !MiniMapMap::GameplayReady() || !g_presentation.Valid ||
+            g_presentation.WorldGeneration != MiniMapMap::GetWorldGeneration())
         {
             return false;
         }
@@ -1431,10 +1487,10 @@ namespace MiniMapTerrain
         // this policy, not terrain or overlay mathematics.
         const double mapRotationDegrees =
             MiniMapMap::HeadingUpMapRotationDegrees(
-                g_playerPose.ControlYawDegrees);
+                g_presentation.Tracking.ControlYawDegrees);
 
         if (!MiniMapMap::BuildTransform(
-            g_playerPose,
+            g_presentation,
             mapRotationDegrees,
             g_metersPerPixel,
             windowX,

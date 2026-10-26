@@ -283,6 +283,9 @@ namespace
 
     void ApplyVisibility()
     {
+        // Reopening must wait for a fresh game-thread sample, even if no tick
+        // occurred during a hidden interval. No native reads on this UI path.
+        MiniMapTerrain::InvalidatePresentation();
         const bool visible = g_userVisible.load(std::memory_order_acquire);
         const bool effectiveVisible = visible &&
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;

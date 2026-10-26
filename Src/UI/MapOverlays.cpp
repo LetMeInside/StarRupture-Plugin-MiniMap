@@ -3,6 +3,7 @@
 #include "MapOverlays.h"
 
 #include "Map/MapTransform.h"
+#include "Map/FogOfWar/FogOfWar.h"
 
 #include <algorithm>
 #include <cmath>
@@ -106,10 +107,24 @@ namespace
     void DrawPlayerMarker(
         IModLoaderImGui* ui,
         PluginDrawList drawList,
-        const MiniMapMap::Transform& transform)
+        float centerX,
+        float centerY,
+        double markerAngleDegrees,
+        bool wings = false)
     {
-        const double markerAngleDegrees =
-            transform.PlayerMarkerScreenAngleDegrees();
+        if (wings)
+        {
+            for (const float side : {-1.0f, 1.0f})
+            {
+                const auto a = RotateScreenOffset(side * 4.0f, 0.0f, markerAngleDegrees);
+                const auto b = RotateScreenOffset(side * 14.0f, 3.0f, markerAngleDegrees);
+                const auto c = RotateScreenOffset(side * 7.0f, 7.0f, markerAngleDegrees);
+                ui->DL_AddTriangleFilled(drawList, centerX+a.X, centerY+a.Y,
+                    centerX+b.X, centerY+b.Y, centerX+c.X, centerY+c.Y, kMarkerFillColor);
+                ui->DL_AddTriangle(drawList, centerX+a.X, centerY+a.Y,
+                    centerX+b.X, centerY+b.Y, centerX+c.X, centerY+c.Y, kMarkerOutlineColor, 1.5f);
+            }
+        }
 
         const MiniMapMap::ScreenPoint tip =
             RotateScreenOffset(
@@ -130,27 +145,27 @@ namespace
                 markerAngleDegrees);
 
         const float tipX =
-            transform.CenterX +
+            centerX +
             tip.X;
 
         const float tipY =
-            transform.CenterY +
+            centerY +
             tip.Y;
 
         const float rightX =
-            transform.CenterX +
+            centerX +
             rearRight.X;
 
         const float rightY =
-            transform.CenterY +
+            centerY +
             rearRight.Y;
 
         const float leftX =
-            transform.CenterX +
+            centerX +
             rearLeft.X;
 
         const float leftY =
-            transform.CenterY +
+            centerY +
             rearLeft.Y;
 
         ui->DL_AddTriangleFilled(
@@ -379,10 +394,23 @@ namespace MiniMapOverlays
                 cardinal);
         }
 
-        DrawPlayerMarker(
-            ui,
-            drawList,
-            transform);
+        if (transform.DroneActive)
+        {
+            MiniMapMap::ScreenPoint character{};
+            if (transform.WorldToScreen(transform.PlayerWorldX, transform.PlayerWorldY, character) &&
+                MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
+                    transform.PlayerWorldX, transform.PlayerWorldY, transform) > 0.0f)
+            {
+                const float left = transform.CenterX - transform.Width * 0.5f;
+                const float top = transform.CenterY - transform.Height * 0.5f;
+                ui->DL_PushClipRect(drawList, left, top, left+transform.Width, top+transform.Height, true);
+                DrawPlayerMarker(ui, drawList, character.X, character.Y,
+                    transform.CharacterWorldYawDegrees + 90.0 + transform.MapRotationDegrees);
+                ui->DL_PopClipRect(drawList);
+            }
+        }
+        DrawPlayerMarker(ui, drawList, transform.CenterX, transform.CenterY,
+            transform.PlayerMarkerScreenAngleDegrees(), transform.DroneActive);
 
         DrawPlayerCoordinates(
             ui,

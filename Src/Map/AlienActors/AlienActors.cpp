@@ -44,7 +44,6 @@ namespace
         MiniMapNative::MassEntityHandle Id = {};
         double WorldX = 0.0;
         double WorldY = 0.0;
-        float Visibility = 0.0f;
     };
 
     bool g_initialized = false;
@@ -214,13 +213,14 @@ namespace
             radius = g_acquisitionRadius;
             generation = g_worldGeneration;
         }
-        MiniMapMap::PlayerPose pose = {};
-        if (radius <= 0.0 || !MiniMapMap::TryGetPlayerPose(pose) ||
-            !std::isfinite(pose.WorldX) || !std::isfinite(pose.WorldY))
+        MiniMapMap::PresentationSample sample{};
+        if (radius <= 0.0 || !MiniMapMap::TryGetPresentationSample(sample) ||
+            !std::isfinite(sample.Tracking.WorldX) || !std::isfinite(sample.Tracking.WorldY))
         {
             ClearSnapshot();
             return;
         }
+        const auto& pose = sample.Tracking;
         auto* transformType = native->mass.transformFragmentStaticStruct();
         auto* stateType = native->mass.enemyStateFragmentStaticStruct();
         if (transformType == nullptr || stateType == nullptr)
@@ -250,8 +250,8 @@ namespace
 
         const double radiusSquared = radius * radius;
         MiniMapMap::Transform visibilityTransform = {};
-        visibilityTransform.PlayerWorldX = pose.WorldX;
-        visibilityTransform.PlayerWorldY = pose.WorldY;
+        visibilityTransform.LocalVisibilityWorldX = sample.LocalVisibilityOrigin.WorldX;
+        visibilityTransform.LocalVisibilityWorldY = sample.LocalVisibilityOrigin.WorldY;
         visibilityTransform.Valid = true;
         std::vector<AlienRecord> next;
         next.reserve((std::min)(static_cast<std::size_t>(handles.Num), kMaximumRecords));
@@ -285,36 +285,24 @@ namespace
                 continue;
             }
             ++measurement.Nearby;
-            record.Visibility = MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, visibilityTransform);
-            if (record.Visibility <= 0.0f)
-            {
-                continue;
-            }
-            ++measurement.Visible;
+            if (MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
+                record.WorldX, record.WorldY, visibilityTransform) > 0.0f) ++measurement.Visible;
+            // Keep nearby candidates, including currently fogged ones. The
+            // existing visible/nearest selection is evaluated against the SAME
+            // transform as the rendered fog, so a moved feather has no stale
+            // poll-time exclusions or character-based visibility exceptions.
             next.push_back(record);
         }
-        const std::size_t eligible = next.size();
+        const std::size_t eligible = measurement.Visible;
         const bool truncated = eligible > kMaximumRecords;
         measurement.Capped = truncated;
         const bool diagnosticDue = DiagnosticClock::now() >= g_nextDiagnostic;
         if (truncated)
         {
-            // No ordering work for the usual <=512 case.
-            std::nth_element(next.begin(), next.begin() + kMaximumRecords, next.end(),
-                [&pose](const AlienRecord& a, const AlienRecord& b)
-                {
-                    const double ax = a.WorldX - pose.WorldX;
-                    const double ay = a.WorldY - pose.WorldY;
-                    const double bx = b.WorldX - pose.WorldX;
-                    const double by = b.WorldY - pose.WorldY;
-                    return ax * ax + ay * ay < bx * bx + by * by;
-                });
-            next.resize(kMaximumRecords);
             if (!g_wasTruncated || diagnosticDue)
             {
                 LOG_WARN("MiniMap: Alien Actors cap hit: eligible=%zu retained=%zu (nearest)",
-                    eligible, next.size());
+                    eligible, kMaximumRecords);
             }
         }
         g_wasTruncated = truncated;
@@ -323,7 +311,7 @@ namespace
             if (generation == g_worldGeneration)
             {
                 g_records = std::move(next);
-                measurement.Retained = g_records.size();
+                measurement.Retained = (std::min)(eligible, kMaximumRecords);
             }
         }
     }
@@ -416,24 +404,55 @@ namespace MiniMapAlienActors
         // a copied old-world snapshot between the generation check and draw.
         std::scoped_lock lock(g_snapshotMutex);
         if (g_records.empty()) return;
-        ui->DL_PushClipRect(drawList, left, top, right, bottom, true);
-        for (const auto& record : g_records)
+        struct VisibleRecord { size_t RecordIndex; float Visibility; double DistanceSquared; };
+        // UI-callback-owned scratch capacity only. Membership and visibility are
+        // rebuilt every frame; no actor pointers or prior-frame decisions survive.
+        static std::vector<VisibleRecord> visible;
+        visible.clear();
+        visible.reserve(g_records.size());
+        const double radiusSquared = g_acquisitionRadius * g_acquisitionRadius;
+        for (size_t index = 0; index < g_records.size(); ++index)
         {
+            const auto& record = g_records[index];
+            const double dx = record.WorldX - transform.TrackingWorldX;
+            const double dy = record.WorldY - transform.TrackingWorldY;
+            const double distanceSquared = dx*dx + dy*dy;
+            if (record.WorldGeneration != g_worldGeneration || distanceSquared > radiusSquared) continue;
+            const float visibility = MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
+                record.WorldX, record.WorldY, transform);
+            if (visibility > 0.0f) visible.push_back({index, visibility, distanceSquared});
+        }
+        // Preserve the existing nearest-visible cap and selection-before-clip
+        // policy; only presentation visibility must be current on every draw.
+        if (visible.size() > kMaximumRecords)
+        {
+            std::nth_element(visible.begin(), visible.begin()+kMaximumRecords, visible.end(),
+                [](const VisibleRecord& a, const VisibleRecord& b)
+                {
+                    return a.DistanceSquared < b.DistanceSquared;
+                });
+            visible.resize(kMaximumRecords);
+        }
+        ui->DL_PushClipRect(drawList, left, top, right, bottom, true);
+        for (const auto& candidate : visible)
+        {
+            const auto& record = g_records[candidate.RecordIndex];
             MiniMapMap::ScreenPoint point = {};
-            if (record.WorldGeneration != g_worldGeneration ||
-                !transform.WorldToScreen(record.WorldX, record.WorldY, point) ||
+            if (!transform.WorldToScreen(record.WorldX, record.WorldY, point) ||
                 point.X + kDotRadiusPixels < left || point.X - kDotRadiusPixels > right ||
                 point.Y + kDotRadiusPixels < top || point.Y - kDotRadiusPixels > bottom)
             {
                 continue;
             }
             const uint32_t alpha = static_cast<uint32_t>(std::lround(
-                static_cast<float>(kHostileColor >> 24) * record.Visibility));
+                static_cast<float>(kHostileColor >> 24) *
+                candidate.Visibility));
             if (alpha == 0) continue;
             const uint32_t color = (kHostileColor & 0x00FFFFFFu) | (alpha << 24);
             ui->DL_AddCircleFilled(drawList, point.X, point.Y, kDotRadiusPixels, color, 12);
         }
         ui->DL_PopClipRect(drawList);
+        visible.clear();
     }
 
     void Shutdown()

@@ -336,11 +336,11 @@ namespace
 
                 const double dx =
                     worldX -
-                    PlayerWorldX;
+                    TrackingWorldX;
 
                 const double dy =
                     worldY -
-                    PlayerWorldY;
+                    TrackingWorldY;
 
                 ScreenPoint direction = {};
 
