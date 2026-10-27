@@ -793,11 +793,16 @@ extern "C"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered world lifecycle callbacks");
 #endif
-        // Public v70 exposes no current-world experience-completion snapshot.
-        // A viewport world or CurrentExperience pointer cannot prove readiness.
-        // Do not synthesize callbacks or publish a generation on runtime reload.
-        if (!MiniMapMap::HasWorld())
-            LOG_INFO("MiniMap: no authoritative gameplay world received; public v70 cannot verify active-world experience readiness (runtime hot-load/reload attachment unavailable)");
+        // Runtime reload does not replay lifecycle events. Attach through the same
+        // guarded handlers, accepting the existing loading-screen edge case.
+        SDK::UWorld* currentWorld = SDK::UWorld::GetWorld();
+        if (currentWorld && currentWorld->GetName() == "ChimeraMain")
+        {
+            OnWorldBeginPlay(currentWorld);
+            OnExperienceLoadComplete();
+            if (MiniMapMap::GameplayReady())
+                LOG_INFO("MiniMap: active ChimeraMain attachment ready: %p", currentWorld);
+        }
 
 #endif
 
