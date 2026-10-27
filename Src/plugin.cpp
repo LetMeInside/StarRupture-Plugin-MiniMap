@@ -173,18 +173,19 @@ static void __fastcall CommonUIDeactivatedDetour(
 
 static void RemoveCommonUIHooks()
 {
-    if (g_self != nullptr &&
-        g_self->hooks != nullptr &&
-        g_self->hooks->Hooks != nullptr &&
-        g_self->hooks->Hooks->Remove != nullptr)
+    auto* self = GetSelf();
+    if (self != nullptr &&
+        self->hooks != nullptr &&
+        self->hooks->Hooks != nullptr &&
+        self->hooks->Hooks->Remove != nullptr)
     {
         if (g_commonUIActivatedHook != nullptr)
         {
-            g_self->hooks->Hooks->Remove(g_commonUIActivatedHook);
+            self->hooks->Hooks->Remove(g_commonUIActivatedHook);
         }
         if (g_commonUIDeactivatedHook != nullptr)
         {
-            g_self->hooks->Hooks->Remove(g_commonUIDeactivatedHook);
+            self->hooks->Hooks->Remove(g_commonUIDeactivatedHook);
         }
     }
 
@@ -196,8 +197,9 @@ static void RemoveCommonUIHooks()
 
 static bool InstallCommonUIHooks()
 {
-    auto* hookUtils = g_self != nullptr && g_self->hooks != nullptr
-        ? g_self->hooks->Hooks
+    auto* self = GetSelf();
+    auto* hookUtils = self != nullptr && self->hooks != nullptr
+        ? self->hooks->Hooks
         : nullptr;
     const auto* nativeApi = MiniMapNative::Get();
     if (hookUtils == nullptr || hookUtils->Install == nullptr ||
@@ -439,7 +441,7 @@ static void OnExperienceLoadComplete()
 
     // Preparation only registers the terrain service and resets CPU state.
     // Player/asset/Mass/capture prerequisites remain local to scheduled services.
-    if(!MiniMapTerrain::Initialize(g_self))
+    if(!MiniMapTerrain::Initialize(GetSelf()))
     {
         LOG_ERROR("MiniMap: terrain service preparation failed; generation remains unadmitted");
         SetServicesAdmitted(false);
@@ -544,16 +546,17 @@ extern "C"
         MiniMapCacheIdentity::Reset();
 #endif
         g_self = self;
+        auto* pluginSelf = GetSelf();
 
-        if (g_self == nullptr ||
-            g_self->hooks == nullptr)
+        if (pluginSelf == nullptr ||
+            pluginSelf->hooks == nullptr)
         {
             g_self = nullptr;
             return false;
         }
 
         if (!MiniMapConfig::Initialize(
-            g_self))
+            pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: configuration initialization failed");
@@ -571,9 +574,9 @@ extern "C"
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-        if (g_self->hooks->World == nullptr || g_self->hooks->Engine == nullptr ||
-            !g_self->hooks->Engine->RegisterOnTick || !g_self->hooks->Engine->UnregisterOnTick ||
-            !g_self->hooks->World->RegisterOnBeforeWorldEndPlay || !g_self->hooks->World->UnregisterOnBeforeWorldEndPlay)
+        if (pluginSelf->hooks->World == nullptr || pluginSelf->hooks->Engine == nullptr ||
+            !pluginSelf->hooks->Engine->RegisterOnTick || !pluginSelf->hooks->Engine->UnregisterOnTick ||
+            !pluginSelf->hooks->World->RegisterOnBeforeWorldEndPlay || !pluginSelf->hooks->World->UnregisterOnBeforeWorldEndPlay)
         {
             LOG_ERROR(
                 "MiniMap: World hooks are unavailable");
@@ -606,7 +609,7 @@ extern "C"
         }
 
         if (!MiniMapUI::Initialize(
-            g_self))
+            pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: UI initialization failed");
@@ -622,49 +625,49 @@ extern "C"
             MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
             MiniMapBuildingSpriteRenderer::Initialize(g_buildingSpriteFifo, MiniMapBuildingScheduler::FeedbackQueue());
         }
-        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, g_self->hooks->ImGuiTextures))
+        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, pluginSelf->hooks->ImGuiTextures))
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
             MiniMapUI::Shutdown();
             RemoveCommonUIHooks();
             return false;
         }
-        g_self->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
+        pluginSelf->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
 
         // Close admission before module-specific native EndPlay cancellation.
-        g_self->hooks->World->RegisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
+        pluginSelf->hooks->World->RegisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
 
         if (!MiniMapFogOfWar::Initialize(
-            g_self))
+            pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: FOW diagnostic initialization failed");
         }
 
         if (!MiniMapPointsOfInterest::Initialize(
-            g_self))
+            pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: landmark POI initialization failed");
         }
 
-        if (!MiniMapAlienActors::Initialize(g_self))
+        if (!MiniMapAlienActors::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: Alien Actors initialization failed");
         }
 
-        if (!MiniMapBuildingCollector::Initialize(g_self))
+        if (!MiniMapBuildingCollector::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
         }
 
-        if (!MiniMapBuildingVisuals::Initialize(g_self))
+        if (!MiniMapBuildingVisuals::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: building visuals initialization failed");
         }
 
         if (!MiniMapFoundables::Initialize(
-            g_self))
+            pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: Mass foundable initialization failed");
@@ -774,7 +777,7 @@ extern "C"
 #endif
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        if (!MiniMapTerrain::RegisterDiagnostics(g_self))
+        if (!MiniMapTerrain::RegisterDiagnostics(pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: failed to register terrain diagnostics");
@@ -783,10 +786,10 @@ extern "C"
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
-        CapturePluginInitHookBaseline(g_self);
-        g_self->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
-        g_self->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
-        g_self->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
+        CapturePluginInitHookBaseline(self);
+        pluginSelf->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
+        pluginSelf->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
+        pluginSelf->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered world lifecycle callbacks");
 #endif
@@ -828,8 +831,9 @@ extern "C"
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             MiniMapBuildingScheduler::Shutdown();
         }
-        if(g_self && g_self->hooks && g_self->hooks->Engine)
-            g_self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
+        auto* self = GetSelf();
+        if(self && self->hooks && self->hooks->Engine)
+            self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const uint32_t blockingMenuMask =
@@ -844,18 +848,18 @@ extern "C"
 #endif
         MiniMapUI::Hide();
 
-        if (g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->World != nullptr)
+        if (self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->World != nullptr)
         {
-            g_self->hooks->World->UnregisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
-            g_self->hooks->World->UnregisterOnExperienceLoadComplete(
+            self->hooks->World->UnregisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
+            self->hooks->World->UnregisterOnExperienceLoadComplete(
                 &OnExperienceLoadComplete);
 
-            g_self->hooks->World->UnregisterOnWorldBeginPlay(
+            self->hooks->World->UnregisterOnWorldBeginPlay(
                 &OnWorldBeginPlay);
 
-            g_self->hooks->World->UnregisterOnAfterWorldEndPlay(
+            self->hooks->World->UnregisterOnAfterWorldEndPlay(
                 &OnAfterWorldEndPlay);
         }
 

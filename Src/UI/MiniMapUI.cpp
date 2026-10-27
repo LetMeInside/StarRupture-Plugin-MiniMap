@@ -285,13 +285,14 @@ namespace
         const bool visible = g_userVisible.load(std::memory_order_acquire);
         const bool effectiveVisible = visible &&
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
+        auto* self = GetSelf();
 
-        if (g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->UI != nullptr &&
+        if (self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->UI != nullptr &&
             g_widget != nullptr)
         {
-            g_self->hooks->UI->SetWidgetVisible(
+            self->hooks->UI->SetWidgetVisible(
                 g_widget,
                 effectiveVisible);
         }
@@ -474,17 +475,18 @@ namespace MiniMapUI
     void Shutdown()
     {
         StopInput();
+        auto* self = GetSelf();
 
-        if (g_self != nullptr &&
-            g_self->hooks != nullptr &&
-            g_self->hooks->UI != nullptr &&
+        if (self != nullptr &&
+            self->hooks != nullptr &&
+            self->hooks->UI != nullptr &&
             g_widget != nullptr)
         {
-            g_self->hooks->UI->SetWidgetVisible(
+            self->hooks->UI->SetWidgetVisible(
                 g_widget,
                 false);
 
-            g_self->hooks->UI->UnregisterWidget(
+            self->hooks->UI->UnregisterWidget(
                 g_widget);
         }
 
@@ -495,9 +497,10 @@ namespace MiniMapUI
 
     void Show()
     {
-        if (g_self == nullptr ||
-            g_self->hooks == nullptr ||
-            g_self->hooks->UI == nullptr ||
+        auto* self = GetSelf();
+        if (self == nullptr ||
+            self->hooks == nullptr ||
+            self->hooks->UI == nullptr ||
             g_widget == nullptr)
         {
             return;
