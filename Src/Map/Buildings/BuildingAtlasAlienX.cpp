@@ -1,4 +1,3 @@
-#include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlasAlienX.h"
@@ -89,17 +88,15 @@ namespace MiniMapBuildingAtlasAlienX
             number >>= 4;
         }
         PluginTextureHandle handle{};
-        try { handle = MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Upload,[&]{return Textures->LoadFromRGBA(rgba.data(), int(width), int(height), name.data());}); }
-        catch (const std::out_of_range&) { MiniMapCaptureTiming::UploadOutcome(3);return TransferResult::Rejected; } // Verified pre-acquisition slot failure.
+        try { handle = Textures->LoadFromRGBA(rgba.data(), int(width), int(height), name.data()); }
+        catch (const std::out_of_range&) { return TransferResult::Rejected; } // Verified pre-acquisition slot failure.
         catch (...)
         {
             // No handle was returned, so no reference can safely be identified or
             // freed. Preserve uncertainty and stop uploads, rather than retrying.
-            MiniMapCaptureTiming::UploadOutcome(3);
             UploadUncertain = true;
             return TransferResult::OwnershipUncertain;
         }
-        MiniMapCaptureTiming::UploadOutcome(handle?2:1);
         if (!handle) return TransferResult::Unavailable; // API cannot distinguish not-ready from upload failure.
         // Record the successful-load obligation BEFORE any validation call.
         output.Handle = handle;
@@ -131,7 +128,7 @@ namespace MiniMapBuildingAtlasAlienX
         // decrementing a shared reference, repeating it could release another owner.
         texture.State = Texture::Ownership::ReleaseUncertain;
         if (!texture.Handle || !texture.Free) return ReleaseResult::OwnershipUncertain;
-        try { MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Free,[&]{return texture.Free(texture.Handle);}); }
+        try { texture.Free(texture.Handle); }
         catch (...) { return ReleaseResult::OwnershipUncertain; }
         texture.Handle = nullptr;
         texture.Free = nullptr;

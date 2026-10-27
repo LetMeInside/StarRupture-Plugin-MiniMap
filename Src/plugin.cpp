@@ -1,4 +1,3 @@
-#include "CaptureTiming.h"
 #include "CallbackTiming.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -337,7 +336,6 @@ static void EndBuildingSession()
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingScheduler::EndSession();
     }
-    MiniMapCaptureTiming::Flush();
 }
 static bool BuildingServiceGameThread() noexcept
 {
@@ -359,7 +357,6 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
     if (MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
-    MiniMapCaptureTiming::Flush(); // All lifecycle/backend locks have been released.
     // Observation only: Complete describes available scoped observation, not
     // worldwide discovery or capture completion. Never a service readiness gate.
     if(MiniMapUI::IsVisible()&&MiniMapCallbackTiming::QueryInitialAcquisition.load(std::memory_order_relaxed))

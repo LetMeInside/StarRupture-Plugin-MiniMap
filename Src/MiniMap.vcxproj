@@ -100,7 +100,6 @@
     <ClInclude Include="Map\Buildings\CapturePng.h" />
     <ClInclude Include="Map\Buildings\SceneCaptureConfiguration.h" />
     <ClInclude Include="Map\FogOfWar\FogCoverage.h" />
-    <ClInclude Include="CaptureTiming.h" />
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
     <ClInclude Include="DiagnosticExports.h" />

@@ -77,7 +77,6 @@ namespace MiniMapBuildingAtlasAlienX
         bool SubmitPreparedQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
             const std::array<Point, 4>& positions, const MiniMapSpriteStatus::PreparedAtlasUV& uvs,
             std::uint32_t packedColor) const noexcept;
-        bool UploadOwnershipUncertain() const noexcept { return UploadUncertain; }
 
     private:
         bool Available() const noexcept;

@@ -1,5 +1,4 @@
 #pragma once
-#include "CaptureTiming.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 #include <cstdint>
@@ -30,9 +29,6 @@ namespace MiniMapReadbackNative
         bool NativeEnqueueEverInvoked = false;
         const char* Failure = nullptr;
         int Pitch = 0, BufferHeight = 0;
-        uint64_t CompletionFrames = 0;
-        double CompletionMs = 0;
-        MiniMapCaptureTiming::Record Timing; // Copied only after all native callbacks retire.
     };
     // One job; native objects remain private to this TU's render commands.
     // Resource is GC-protected by the game-thread capture owner through retirement.
@@ -46,7 +42,7 @@ namespace MiniMapReadbackNative
     const MiniMapFloatPixels::Stats* FloatStats(const Job*);
     // Immutable packed CPU pixels; valid only until DestroyIfRetired. No GPU access.
     const std::vector<uint8_t>* FloatPixels(const Job*);
-    void Service(Job*, uint64_t frame); // game thread; submits at most one command
+    void Service(Job*);                // game thread; submits at most one command
     void Cancel(Job*);                 // invalidates publication, not resources
     Report Inspect(const Job*);
     bool DestroyIfRetired(Job*&);      // only after callback destruction + cleanup

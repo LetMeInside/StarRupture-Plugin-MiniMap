@@ -1,4 +1,3 @@
-#include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map/Buildings/BuildingSpriteRenderer.h"
@@ -1215,12 +1214,12 @@ namespace
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
 
-    bool ServiceReadback(MiniMapReadbackNative::Job* job, uint64_t tick)
+    bool ServiceReadback(MiniMapReadbackNative::Job* job)
     {
         // The adapter catches enqueue C++ exceptions and preserves its evidence.
         // Catch native access faults here; other C++ exceptions reach Service's
         // conservative quarantine boundary without unwinding any native owner.
-        __try { MiniMapReadbackNative::Service(job, tick); return true; }
+        __try { MiniMapReadbackNative::Service(job); return true; }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
@@ -1319,8 +1318,9 @@ namespace
 
     struct ActiveRequest
     {
-        MiniMapCaptureTiming::Record Timing;
-        uint8_t TimedReadbacks=0;
+        // Functional provenance captured at FIFO admission; the scheduler owns
+        // session transitions.
+        uint64_t Session = 0;
         ActiveRequest() = default;
         ActiveRequest(const ActiveRequest&) = delete;
         ActiveRequest& operator=(const ActiveRequest&) = delete;
@@ -1457,11 +1457,7 @@ namespace
         bool Call(ResourceOperation operation, uintptr_t object, uintptr_t argument = 0, uintptr_t* result = nullptr)
         {
             const bool admitted = Ready();
-            const auto timedStage=operation==ResourceOperation::CaptureScene
-                ?(FinalColorPass?MiniMapCaptureTiming::Stage::Final:Phase==RequestPhase::Prepared?MiniMapCaptureTiming::Stage::C0:MiniMapCaptureTiming::Stage::C10)
-                :operation==ResourceOperation::PollFence?MiniMapCaptureTiming::Stage::FencePoll
-                :(operation==ResourceOperation::DestroyActor || operation==ResourceOperation::DestroyComponent?MiniMapCaptureTiming::Stage::Destroy:MiniMapCaptureTiming::Stage::Setup);
-            if (admitted && MiniMapCaptureTiming::Measure(timedStage,[&]{return ResourceCall(operation,object,argument,result);}))
+            if (admitted && ResourceCall(operation,object,argument,result))
             {
                 if (operation == ResourceOperation::CaptureScene) ++SceneSubmissions;
                 return true;
@@ -1480,14 +1476,12 @@ namespace
         }
         bool DropMetadata()
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Ownership);
             for (size_t i = Metadata.size(); i > 0; --i)
                 if (!g_nativeWorld.Drop(Metadata[i - 1])) return false;
             return true;
         }
         uintptr_t Lookup(const wchar_t* path, uintptr_t filter, bool exact)
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Metadata);
             auto* hooks = GetHooks();
             auto* engine = hooks ? hooks->Engine : nullptr;
             const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
@@ -1499,13 +1493,11 @@ namespace
         }
         bool Keep(uintptr_t object, NativeReference& ref)
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Ownership);
             if (Ready() && g_nativeWorld.Hold(object, ref)) return true;
             Quarantine("request native reference acquisition uncertain"); return false;
         }
         bool ClassMetadata(const wchar_t* path, MetadataId id, size_t expectedSize)
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Metadata);
             const auto object = Lookup(path, g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits, true);
             if (Phase == RequestPhase::Quarantined || !object)
             {
@@ -1652,8 +1644,8 @@ namespace
                             try
                             {
                                 if (auto* self = GetSelf(); self && self->logger && self->logger->Info)
-                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s timingSession=%llu timingRequest=%llu payload=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR output=%zux%zu sourceOrigin=%zu,%zu sourceStep=%.9g targetPixelsPerMeter=%.9g",
-                                        BlueprintPath.c_str(), Timing.Session, Timing.Id, CompletedSprite ? "owned" : "disk", SceneSubmissions, Processed.Width, Processed.Height,
+                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s session=%llu payload=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR output=%zux%zu sourceOrigin=%zu,%zu sourceStep=%.9g targetPixelsPerMeter=%.9g",
+                                        BlueprintPath.c_str(), Session, CompletedSprite ? "owned" : "disk", SceneSubmissions, Processed.Width, Processed.Height,
                                         Processed.X0, Processed.Y0, Processed.SourceStep, 1 / MiniMapMap::MinimumMetersPerPixel);
                             }
                             catch (...) {}
@@ -1668,7 +1660,7 @@ namespace
             }
             try
             {
-                feedback.Add({BlueprintPath, *FinalResult, Timing.Session, CompletedSprite});
+                feedback.Add({BlueprintPath, *FinalResult, Session, CompletedSprite});
                 FeedbackSubmitted = true;
             }
             catch (...) { Wait(WaitReason::Feedback, "feedback delivery allocation/queue exception; result retained without another write"); return false; }
@@ -1689,7 +1681,6 @@ namespace
         }
         bool RetireObjects()
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Destroy);
             const auto fence = Fence.GetState();
             if (!Ready() || (fence != MiniMapCaptureRetirement::FenceState::Empty && fence != MiniMapCaptureRetirement::FenceState::Destroyed))
             { Quarantine("object retirement attempted before fence release or with invalid world"); return false; }
@@ -1760,7 +1751,6 @@ namespace
         }
         bool Retire(bool* gcDeferred = nullptr)
         {
-            MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::Retire);
             if (gcDeferred) *gcDeferred = false;
             if (Phase == RequestPhase::Quarantined) return false;
             if (!HasNativeOwnership())
@@ -1831,9 +1821,9 @@ namespace
             if (rejected) { Rejected(rejected); return; }
             if (FinalColorPass)
             {
-                if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Rgb,[&]{return MiniMapCapturePng::FinalColorRgb(*pixels, 256, 256, FinalRgb);}))
+                if (!MiniMapCapturePng::FinalColorRgb(*pixels, 256, 256, FinalRgb))
                     Rejected("final-color RGBA16F display RGB conversion failed");
-                else if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Compose,[&]{return MiniMapCapturePng::CombineFinalColorCoverage(FinalRgb, Coverage, 256, 256, Rgba);}))
+                else if (!MiniMapCapturePng::CombineFinalColorCoverage(FinalRgb, Coverage, 256, 256, Rgba))
                     Rejected("final RGB/HDR coverage dimensions or pixel conversion failed");
                 else
                 {
@@ -1841,11 +1831,11 @@ namespace
                     // per-instance scale registry or resolution-upgrade policy.
                     const double orthoWidth = double(float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1));
                     const double density = 1 / (100 * MiniMapMap::MinimumMetersPerPixel);
-                    Processed = MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Process,[&]{return MiniMapCapturePng::Process(Rgba, 256, 256, orthoWidth, density);});
+                    Processed = MiniMapCapturePng::Process(Rgba, 256, 256, orthoWidth, density);
                     if (!Processed.Ok) Rejected(Processed.Reason);
                 }
             }
-            else if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Coverage,[&]{return MiniMapCapturePng::HdrCoverage(*pixels, 256, 256, Coverage);}))
+            else if (!MiniMapCapturePng::HdrCoverage(*pixels, 256, 256, Coverage))
                 Rejected("HDR inverse-opacity coverage conversion failed");
             // Only the combined canvas may persist, after native retirement.
         }
@@ -1859,8 +1849,8 @@ namespace
                 Fence.GetState() != MiniMapCaptureRetirement::FenceState::Constructed)
             { Quarantine("final-color preparation ownership or HDR readback retirement invalid"); return; }
             FinalColorPass = true; // A failed/interrupted reconfiguration is never replayed.
-            if (!Ready() || !MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Setup,[&]{return ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
-                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, true);}))
+            if (!Ready() || !ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, true))
             { Quarantine("final-color configuration interrupted"); return; }
             uintptr_t resource{};
             if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
@@ -1905,13 +1895,13 @@ namespace
                     Committed = true;
                     if (!Call(ResourceOperation::CaptureScene, Capture.Object.Bits)) return;
                     Phase = RequestPhase::Readback;
-                    if (!ServiceReadback(Job, g_captureServiceTick)) Quarantine("capture readback submission interrupted");
+                    if (!ServiceReadback(Job)) Quarantine("capture readback submission interrupted");
                     return;
                 }
                 if (Phase == RequestPhase::Readback)
                 {
                     if (!Committed || !Job) { Quarantine("readback request commitment invalid"); return; }
-                    if (!ServiceReadback(Job, g_captureServiceTick)) { Quarantine("readback service interrupted"); return; }
+                    if (!ServiceReadback(Job)) { Quarantine("readback service interrupted"); return; }
                     const auto report = MiniMapReadbackNative::Inspect(Job);
                     if (report.Quarantined || report.Enqueue == MiniMapCaptureRetirement::EnqueueState::Uncertain)
                     {
@@ -1924,16 +1914,6 @@ namespace
                     { Wait(WaitReason::ReadbackCompletion, "readback cleanup/callables/native work still outstanding"); return; }
                     if (report.Result == MiniMapReadbackNative::Outcome::Pending)
                     { Quarantine("readback cleanup completed without a terminal outcome"); return; }
-                    const uint8_t timingBit=FinalColorPass?2:1;
-                    if(!(TimedReadbacks&timingBit))
-                    {
-                        MiniMapCaptureTiming::Merge(Timing,report.Timing);
-                        const double latency=report.Timing.End>=report.Timing.Begin && report.Timing.Begin
-                            ?report.Timing.End-report.Timing.Begin:report.CompletionMs;
-                        Timing.ReadbackLatency+=latency;
-                        (FinalColorPass?Timing.FinalLatency:Timing.HdrLatency)=latency;
-                        Timing.ReadbackBytes+=report.HasPixels?uint64_t(256)*256*8:0;TimedReadbacks|=timingBit;
-                    }
                     if (report.Result == MiniMapReadbackNative::Outcome::Verified)
                     {
                         // Allocation/conversion failure is a CPU result failure,
@@ -2035,7 +2015,7 @@ namespace
             if (!Level(0, false, &before, &countBefore) || !Ready()) { Quarantine("private level invalid before spawn"); return; }
             SDK::FTransform transform{};
             transform.Rotation.W = 1; transform.Scale3D = SDK::FVector(1, 1, 1);
-            if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Spawn,[&]{return SpawnActor(g_nativeWorld.Private.Object.Bits, object, &transform, &Actor.Object.Bits);}))
+            if (!SpawnActor(g_nativeWorld.Private.Object.Bits, object, &transform, &Actor.Object.Bits))
             { Quarantine("deferred Actor spawn interrupted"); return; }
             if (!Actor.Object.Bits)
             {
@@ -2045,9 +2025,9 @@ namespace
             }
             if (!Keep(Actor.Object.Bits, Actor) || !ActorState(false)) { Quarantine("deferred Actor ownership invalid"); return; }
             uintptr_t finished{};
-            if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Construct,[&]{return FinishActor(Actor.Object.Bits, &transform, &finished);}) || finished != Actor.Object.Bits || !ActorState(true))
+            if (!FinishActor(Actor.Object.Bits, &transform, &finished) || finished != Actor.Object.Bits || !ActorState(true))
             { Quarantine("Blueprint construction interrupted or ownership invalid"); return; }
-            if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Setup,[&]{return ActorBounds(Actor.Object.Bits, &Center, &Extent);})) { Quarantine("Actor bounds call interrupted"); return; }
+            if (!ActorBounds(Actor.Object.Bits, &Center, &Extent)) { Quarantine("Actor bounds call interrupted"); return; }
             const float width = float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1);
             if (!std::isfinite(Center.X) || !std::isfinite(Center.Y) || !std::isfinite(Center.Z) ||
                 !std::isfinite(Extent.X) || !std::isfinite(Extent.Y) || !std::isfinite(Extent.Z) ||
@@ -2057,12 +2037,12 @@ namespace
             if (!Ready() || !ActorState(true)) { Quarantine("world changed after construction"); return; }
             if (!NewResource(CaptureType, Capture, sizeof(SDK::USceneCaptureComponent2D)) ||
                 !NewResource(TargetType, Target, sizeof(SDK::UTextureRenderTarget2D))) return;
-            if (!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Setup,[&]{return ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
-                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, false);}))
+            if (!ConfigureResources(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Extent, false))
             { Quarantine("capture configuration interrupted"); return; }
             if (!Call(ResourceOperation::InitializeTarget, Target.Object.Bits)) return;
-            if (!Ready() || !MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::Setup,[&]{return PositionCapture(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
-                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Center, &Extent);}))
+            if (!Ready() || !PositionCapture(reinterpret_cast<SDK::USceneCaptureComponent2D*>(Capture.Object.Bits),
+                reinterpret_cast<SDK::UTextureRenderTarget2D*>(Target.Object.Bits), &Center, &Extent))
             { Quarantine("capture camera preparation interrupted"); return; }
             if (!Call(ResourceOperation::Register, Capture.Object.Bits, g_nativeWorld.Private.Object.Bits)) return;
             uint8_t registered{}; uintptr_t world{}, resource{};
@@ -2086,7 +2066,6 @@ namespace
     constexpr unsigned kWorldCreationAttempts = 3;
     constexpr unsigned kWorldRetryTicks = 120;
     unsigned g_worldCreationAttempts = 0, g_worldRetryTicks = 0;
-    uint64_t g_timingRequest=0; // Monotonic IDs never reused by world resets.
 
     // Caller holds LifecycleMutex; only this game-thread path can write cache
     // files or submit feedback. Session end closes publication under that lock.
@@ -2095,21 +2074,12 @@ namespace
         if (!g_sessionActive || !g_feedback || !g_activeRequest || !GameThread() ||
             g_nativeWorld.Phase == WorldPhase::Quarantined) return;
         auto& request = *g_activeRequest;
-        MiniMapCaptureTiming::Context timingContext(request.Timing);
-        MiniMapCaptureTiming::Span serviceTiming(MiniMapCaptureTiming::Stage::Service);
         if (request.Phase == RequestPhase::Failed && request.HasNativeOwnership())
             request.Retire();
         else
             request.Service();
-        if(request.Phase==RequestPhase::Quarantined && !request.Timing.Finished)
-        {serviceTiming.Stop();request.Timing.End=MiniMapCaptureTiming::Now();request.Timing.Finished=true;MiniMapCaptureTiming::Defer(request.Timing,"capture-quarantined");}
         if (g_sessionActive && request.Complete(*g_feedback))
         {
-            serviceTiming.Stop();request.Timing.End=MiniMapCaptureTiming::Now();
-            request.Timing.Ok=request.FinalResult.value_or(false);request.Timing.Finished=true;
-            if(!request.Timing.Width){request.Timing.Width=uint32_t(request.Processed.Width);request.Timing.Height=uint32_t(request.Processed.Height);}
-            request.Timing.Bytes=uint64_t(request.Timing.Width)*request.Timing.Height*4;
-            MiniMapCaptureTiming::Defer(request.Timing,"capture");
             g_activeRequest.reset(); // World remains owned and ready for the next request.
         }
     }
@@ -2210,7 +2180,6 @@ namespace MiniMapBuildingSpriteRenderer
             if (!g_nativeWorld.ServiceLighting()) return; // Registration fence completes before FIFO admission.
         }
         catch (...) { g_nativeWorld.LightFailure("shared lighting initialization/service exception"); return; }
-        const double timingAdmissionBegin=MiniMapCaptureTiming::Now();
         try
         {
             static_assert(std::is_nothrow_move_assignable_v<std::string>);
@@ -2226,17 +2195,12 @@ namespace MiniMapBuildingSpriteRenderer
             LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");
             return;
         }
-        auto& timing=g_activeRequest->Timing;
-        timing.Session=MiniMapBuildingSchedulerInternal::ActiveSession();timing.Id=++g_timingRequest;
-        timing.Key=MiniMapCaptureTiming::Key(g_activeRequest->BlueprintPath.c_str());timing.Begin=timingAdmissionBegin;timing.Thread=MiniMapCaptureTiming::Thread();timing.InputWidth=timing.InputHeight=256;
-        MiniMapCaptureTiming::Add(timing.Samples[size_t(MiniMapCaptureTiming::Stage::Admission)],timingAdmissionBegin,MiniMapCaptureTiming::Now(),timing.Thread);
+        g_activeRequest->Session=MiniMapBuildingSchedulerInternal::ActiveSession();
         ServiceActiveRequest();
     }
 
     void EndSession()
     {
-        if(g_activeRequest && !g_activeRequest->Timing.Finished)
-        {auto& timing=g_activeRequest->Timing;timing.End=MiniMapCaptureTiming::Now();timing.Finished=true;MiniMapCaptureTiming::Defer(timing,"capture-cancelled");}
         g_sessionActive = false; // Cancel CPU publication too: no late cache write or feedback.
         bool gcDeferred = false;
         if (g_activeRequest && !g_activeRequest->Retire(&gcDeferred))

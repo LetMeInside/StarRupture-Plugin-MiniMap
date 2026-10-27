@@ -1,6 +1,5 @@
 #include "Map/Map.h"
 #include "CallbackTiming.h"
-#include "CaptureTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
 #include "Config/Config.h"
@@ -607,25 +606,6 @@ namespace MiniMapBuildingVisuals
         const auto dl=ui->GetWindowDrawList(); if(!dl) return;
         const auto start=Clock::now(); RenderStats stats;RenderWorkload workload;
         workload.PreparedInstances=snapshot->Instances.size();
-        MiniMapCaptureTiming::Record transition;
-        const double renderBegin=MiniMapCaptureTiming::Now();
-        struct FinishTransition
-        {
-            MiniMapCaptureTiming::Record& Data;
-            ~FinishTransition()
-            {
-                if(!Data.Published)return;
-                Data.End=MiniMapCaptureTiming::Now();
-                MiniMapCaptureTiming::Add(Data.Samples[size_t(MiniMapCaptureTiming::Stage::Service)],Data.Begin,Data.End,Data.Thread);
-                static uint64_t session=0;static unsigned outliers=0;
-                if(session!=Data.Session){session=Data.Session;outliers=0;}
-                if(Data.End-Data.Begin>16 && outliers<8)
-                {
-                    ++outliers;
-                    MiniMapCaptureTiming::Defer(Data,"atlas-render-outlier"); // After lifecycle lock destruction.
-                }
-            }
-        } finishTransition{transition};
         const C::Bounds viewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
             transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2,true};
         ui->DL_PushClipRect(dl,float(viewport.MinX),float(viewport.MinY),float(viewport.MaxX),float(viewport.MaxY),true);
@@ -636,11 +616,9 @@ namespace MiniMapBuildingVisuals
         {
         // Snapshot locks are already released; keep lifecycle reset out of this pass.
         const auto phaseLockBegin=Clock::now();
-        const double lockBegin=MiniMapCaptureTiming::Now();
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         const auto phaseLockAcquired=Clock::now();
         lifecycleWaitMs=elapsedMs(phaseLockBegin,phaseLockAcquired);
-        const double acquired=MiniMapCaptureTiming::Now();
         uint64_t session=0,revision=0;
         MiniMapBuildingAtlas::ObservePublication(session,revision);
         if(occlusionPlan)
@@ -651,20 +629,6 @@ namespace MiniMapBuildingVisuals
             else if(occlusionPlan->Binding.AtlasRevision!=revision)reason=A::Invalidation::AtlasRevision;
             if(reason!=A::Invalidation::None)
             {workload.Reason(reason);workload.Discarded=reason;occlusionPlan.reset();}
-        }
-        static uint64_t lastSession=0,lastRevision=0;
-        static unsigned transitions=0; // UI callback owns these diagnostics; session serial never repeats.
-        if(session!=lastSession){lastSession=session;lastRevision=0;transitions=0;}
-        if(revision && revision!=lastRevision)
-        {
-            lastRevision=revision;
-            if(transitions++<64)
-            {
-                transition.Session=session;transition.Published=revision;transition.Id=revision;
-                transition.Thread=MiniMapCaptureTiming::Thread();transition.Begin=renderBegin;transition.Ok=true;
-                if(ui->GetFrameCount)transition.Frame=uint64_t(ui->GetFrameCount());
-                MiniMapCaptureTiming::Add(transition.Samples[size_t(MiniMapCaptureTiming::Stage::CommitWait)],lockBegin,acquired,transition.Thread);
-            }
         }
         const auto currentSession = C::GetSnapshot();
         const bool schedulerValid =

@@ -1,6 +1,5 @@
 #pragma once
 #include "DiagnosticExports.h"
-#include "CaptureTiming.h"
 #include "Native/FloatReadbackPixels.h"
 #include "PluginPaths.h"
 #include <windows.h>
@@ -154,12 +153,10 @@ namespace MiniMapCapturePng
     inline WriteResult EncodeOrWrite(const std::filesystem::path* path,UINT w,UINT h,
         const std::vector<uint8_t>& pixels,bool gray,std::vector<uint8_t>* memory)
     {
-        MiniMapCaptureTiming::Span timing(MiniMapCaptureTiming::Stage::PngTotal);
         WriteResult r;
         const size_t channels=gray?1:4;
         if(!w||!h||w>4096||h>4096||pixels.size()!=size_t(w)*h*channels)
             return {false,0,E_INVALIDARG,"dimensions/byte count"};
-        MiniMapCaptureTiming::Span prep(MiniMapCaptureTiming::Stage::PngPrep);
         const HRESULT init=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
         if(FAILED(init)&&init!=RPC_E_CHANGED_MODE)return {false,0,init,"COM initialization"};
         struct ComScope {bool Own;~ComScope(){if(Own)CoUninitialize();}} scope{SUCCEEDED(init)};
@@ -185,8 +182,6 @@ namespace MiniMapCapturePng
             if(file.Value==INVALID_HANDLE_VALUE)return {false,0,HRESULT_FROM_WIN32(GetLastError()),"open output"};
         }
 #endif
-        prep.Stop();
-        MiniMapCaptureTiming::Span encodeSetup(MiniMapCaptureTiming::Stage::PngEncode);
         if(!step(CreateStreamOnHGlobal(nullptr,TRUE,&stream),"PNG memory stream")||
             !step(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder),"PNG encoder")||
             !step(encoder->Initialize(stream.Get(),WICBitmapEncoderNoCache),"encoder initialization")||
@@ -195,11 +190,9 @@ namespace MiniMapCapturePng
             !step(frame->SetSize(w,h),"frame size"))return r;
         // Windows PNG encoder accepts BGRA; keep the pipeline RGBA and swap
         // only its bounded encoder input buffer. PNG itself retains RGBA alpha.
-        encodeSetup.Stop();
         std::vector<uint8_t> bgra;
-        if(!gray){MiniMapCaptureTiming::Span bgraTiming(MiniMapCaptureTiming::Stage::PngBgra);bgra=pixels;for(size_t i=0;i<bgra.size();i+=4)std::swap(bgra[i],bgra[i+2]);}
+        if(!gray){bgra=pixels;for(size_t i=0;i<bgra.size();i+=4)std::swap(bgra[i],bgra[i+2]);}
         const auto& encoded=gray?pixels:bgra;
-        MiniMapCaptureTiming::Span encodePixels(MiniMapCaptureTiming::Stage::PngEncode);
         WICPixelFormatGUID format=gray?GUID_WICPixelFormat8bppGray:GUID_WICPixelFormat32bppBGRA;
         const auto requested=format;
         if(!step(frame->SetPixelFormat(&format),"pixel format"))return r;
@@ -207,7 +200,6 @@ namespace MiniMapCapturePng
         if(!step(frame->WritePixels(h,w*UINT(channels),UINT(encoded.size()),const_cast<BYTE*>(encoded.data())),"pixels")||
             !step(frame->Commit(),"frame commit")||!step(encoder->Commit(),"PNG commit"))return r;
         frame.Reset();encoder.Reset();
-        encodePixels.Stop();
         STATSTG encodedInfo{};
         if(!step(stream->Stat(&encodedInfo,STATFLAG_NONAME),"encoded PNG size"))return r;
         LARGE_INTEGER beginning{};
@@ -220,7 +212,6 @@ namespace MiniMapCapturePng
             // on failure. Read copies bytes, independent of stream/HGLOBAL lifetime.
             if(!memory || !encodedInfo.cbSize.QuadPart || encodedInfo.cbSize.QuadPart>128u*1024u*1024u)
                 return {false,0,E_INVALIDARG,"encoded PNG length"};
-            MiniMapCaptureTiming::Span transfer(MiniMapCaptureTiming::Stage::PngTransfer);
             std::vector<uint8_t> bytes(static_cast<size_t>(encodedInfo.cbSize.QuadPart));
             ULONG read=0;
             if(!step(stream->Read(bytes.data(),ULONG(bytes.size()),&read),"read encoded PNG"))return r;
@@ -236,10 +227,10 @@ namespace MiniMapCapturePng
             {
                 const auto count=ULONG((std::min)(remaining,static_cast<ULONGLONG>(buffer.size())));
                 ULONG read=0;
-                if(!step(MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::PngTransfer,[&]{return stream->Read(buffer.data(),count,&read);}),"read encoded PNG"))return r;
+                if(!step(stream->Read(buffer.data(),count,&read),"read encoded PNG"))return r;
                 if(read!=count)return {false,0,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF),"read encoded PNG length"};
                 DWORD written=0;
-                if(!MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::PngWrite,[&]{return WriteFile(file.Value,buffer.data(),read,&written,nullptr);}))
+                if(!WriteFile(file.Value,buffer.data(),read,&written,nullptr))
                     return {false,0,HRESULT_FROM_WIN32(GetLastError()),"write output"};
                 if(written!=read)return {false,0,HRESULT_FROM_WIN32(ERROR_WRITE_FAULT),"write output length"};
                 remaining-=read;
@@ -254,7 +245,6 @@ namespace MiniMapCapturePng
         }
 #endif
         r.Bytes=uintmax_t(encodedInfo.cbSize.QuadPart);
-        if(MiniMapCaptureTiming::Current)MiniMapCaptureTiming::Current->Encoded[MiniMapCaptureTiming::PngRole]+=r.Bytes;
         r.Ok=true;return r;
     }
     inline WriteResult Encode(UINT w,UINT h,const std::vector<uint8_t>& pixels,bool gray,std::vector<uint8_t>& bytes)
