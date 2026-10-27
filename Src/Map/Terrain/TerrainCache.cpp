@@ -409,12 +409,26 @@ namespace MiniMapTerrainCache
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 LOG_INFO(
                     "MiniMap: TerrainCache: "
                     "MISS R%d grid=(%d, %d)",
                     radiationLevel,
                     gridX,
                     gridY);
+#else
+                if (error)
+                {
+                    LOG_WARN(
+                        "MiniMap: TerrainCache: "
+                        "cache existence query failed for R%d grid=(%d, %d) error=%d category=%s",
+                        radiationLevel,
+                        gridX,
+                        gridY,
+                        error.value(),
+                        error.category().name());
+                }
+#endif
             }
 
             return false;
@@ -560,6 +574,7 @@ namespace MiniMapTerrainCache
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: TerrainCache: "
                 "HIT R%d grid=(%d, %d) chunk=(%d, %d) bytes=%u",
@@ -569,6 +584,7 @@ namespace MiniMapTerrainCache
                 chunkX,
                 chunkY,
                 kChunkByteCount);
+#endif
         }
 
         return true;
@@ -769,6 +785,7 @@ namespace MiniMapTerrainCache
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: TerrainCache: "
                 "stored R%d grid=(%d, %d) chunks=%u bytes=%llu",
@@ -778,6 +795,7 @@ namespace MiniMapTerrainCache
                 kChunkCount,
                 static_cast<unsigned long long>(
                     ExpectedCacheFileSize()));
+#endif
         }
 
         return true;

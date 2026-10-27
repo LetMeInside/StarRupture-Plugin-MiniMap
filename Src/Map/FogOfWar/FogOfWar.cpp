@@ -209,8 +209,10 @@ namespace
             return false;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: static FOW black texture ready");
+#endif
 
         return true;
     }
@@ -1279,8 +1281,10 @@ namespace MiniMapFogOfWar
         g_initialized =
             true;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: FOW diagnostic initialized");
+#endif
 
         return true;
     }
@@ -1795,8 +1799,10 @@ namespace MiniMapFogOfWar
         g_pluginSelfAvailable =
             false;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: FOW diagnostic shut down");
+#endif
     }
 }
 

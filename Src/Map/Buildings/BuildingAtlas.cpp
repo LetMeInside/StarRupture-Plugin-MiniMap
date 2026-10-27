@@ -265,16 +265,19 @@ namespace MiniMapBuildingAtlas
     void EndBatch(const Batch& batch, uint64_t tick) noexcept
     {
         if (!batch) return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const bool sourceAdmission = batch->Dirty;
+#endif
         std::shared_ptr<Revision> candidate, old;
         std::shared_ptr<const C::Layout> previousPixels;
-        // Keep the existing commit message without retaining pixels for reporting.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         struct CommitReport
         {
             bool Committed = false;
             size_t Sources = 0;
             uint16_t Width = 0, Height = 0;
         } commitReport;
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         std::shared_ptr<const C::Layout> diagnosticPixels;
 #endif
@@ -302,9 +305,11 @@ namespace MiniMapBuildingAtlas
                         if (result == C::Result::Capacity)
                             SpriteDiagnostic("MiniMap: atlas physical packing capacity exhausted: retained=%zu supported=512/1024 max=1024 gutter=2 stable allocations; complete candidate not published, previous atlas and FileCache sources preserved", batch->Core.Sources().size());
                         SpriteDiagnostic("MiniMap: atlas complete-set repack unavailable (%u, attempt %u/3)", unsigned(result), batch->PackAttempts);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         for (const auto& source : batch->Core.Sources())
                             SpriteDiagnostic("MiniMap: atlas repack candidate includes canonical=%s result=%u attempt=%u/3; previous representation preserved",
                                 source.Identifier.c_str(), unsigned(result), batch->PackAttempts);
+#endif
                         return;
                     }
                     batch->Dirty = false;
@@ -322,8 +327,10 @@ namespace MiniMapBuildingAtlas
                         batch->CapacityWaitReported = true;
                         SpriteDiagnostic("MiniMap: atlas publication waiting: candidateRevision=%llu reason=backend HasCapacity returned false (slot capacity, prerequisites or observation unavailable); candidate retained, no upload attempt consumed",
                             static_cast<unsigned long long>(batch->CandidateRevision));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         for (const auto& image : batch->Core.Current().Images)
                             SpriteDiagnostic("MiniMap: atlas waiting candidate includes canonical=%s", image.Identifier.c_str());
+#endif
                     }
                     return; // Keep the candidate; do not reread or repack.
                 }
@@ -365,9 +372,11 @@ namespace MiniMapBuildingAtlas
                 {
                     SpriteDiagnostic("MiniMap: atlas transfer unavailable (%u, attempt %u/3); previous GPU revision preserved",
                         unsigned(result), batch->UploadAttempts);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     for (const auto& image : layout.Images)
                         SpriteDiagnostic("MiniMap: atlas transfer candidate not published: canonical=%s result=%u attempt=%u/3; previous representation preserved",
                             image.Identifier.c_str(), unsigned(result), batch->UploadAttempts);
+#endif
                     return;
                 }
                 {
@@ -396,8 +405,10 @@ namespace MiniMapBuildingAtlas
                     }
                     batch->PublishedRevision = candidate->Pixels->Revision;
                     batch->UploadPending = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     commitReport = {true, batch->Published->Pixels->Images.size(),
                         batch->Published->Pixels->Width, batch->Published->Pixels->Height};
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     // Freeze the actually published pixels, not Core.Current().
                     // Retain for synchronous PNG export through candidate/old retirement.
@@ -414,10 +425,13 @@ namespace MiniMapBuildingAtlas
                 batch->BatchExceptionReported = true;
                 SpriteDiagnostic("MiniMap: atlas batch allocation/service exception: candidateRevision=%llu packAttempt=%u uploadAttempt=%u; previous GPU publication preserved; further exception diagnostics suppressed for session",
                     static_cast<unsigned long long>(batch->CandidateRevision), batch->PackAttempts, batch->UploadAttempts);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 for (const auto& bounds : batch->Bounds)
                     SpriteDiagnostic("MiniMap: atlas exception affected batch includes canonical=%s", bounds.Identifier.c_str());
+#endif
             }
         }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(commitReport.Committed)
         {
                     SpriteDiagnostic("MiniMap: atlas committed: revision=%llu sources=%zu size=%ux%u candidateRevision=%llu kind=%s reason=%s",
@@ -426,6 +440,7 @@ namespace MiniMapBuildingAtlas
                         batch->PublishedRevision==1?"initial-available-batch":"incremental",
                         sourceAdmission?"source-admission":"pending-upload-retry");
         }
+#endif
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         Release(batch,old);

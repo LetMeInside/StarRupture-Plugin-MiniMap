@@ -658,6 +658,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: terrain: "
                 "loaded R%d grid=(%d, %d) "
@@ -670,6 +671,7 @@ namespace
                 outLoadedFromCache
                 ? "cache"
                 : "mip0");
+#endif
         }
 
         return texture;
@@ -1110,6 +1112,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         LOG_INFO(
                             "MiniMap: terrain: retired R%d grid=(%d, %d) "
                             "chunk=(%d, %d) at render generation %llu",
@@ -1120,6 +1123,7 @@ namespace
                             residentIt->Identity.ChunkY,
                             static_cast<unsigned long long>(
                                 g_renderGeneration));
+#endif
                     }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1394,8 +1398,10 @@ namespace MiniMapTerrain
             g_tickRegistered =
                 true;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: registered terrain update tick");
+#endif
         }
 
         g_initialized =
@@ -1429,8 +1435,10 @@ namespace MiniMapTerrain
                 UnregisterOnTick(
                     &OnTerrainTick);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: unregistered terrain update tick");
+#endif
         }
 
         g_tickRegistered =

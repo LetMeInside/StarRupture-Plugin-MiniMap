@@ -149,7 +149,9 @@ namespace
                 native->mass.queryDestruct(g_queryStorage.data());
             }
             g_queryStorage.fill(std::byte{ 0 });
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_DEBUG("MiniMap: Alien Actors query destroyed");
+#endif
         }
         g_queryConstructed = false;
         g_queryWorld = nullptr;
@@ -210,7 +212,9 @@ namespace
         g_queryWorld = world;
         g_subsystem = subsystem;
         g_manager = manager;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_DEBUG("MiniMap: Alien Actors query constructed");
+#endif
         return true;
     }
 
@@ -405,7 +409,9 @@ namespace MiniMapAlienActors
         g_pollAccumulator = 0.0f;
         g_queryFailureLogged = false;
         g_wasTruncated = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_DEBUG("MiniMap: Alien Actors reset");
+#endif
     }
 
     void OnExperienceLoadComplete()

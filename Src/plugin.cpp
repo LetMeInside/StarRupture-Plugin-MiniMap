@@ -1,5 +1,6 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
+#include "DiagnosticExports.h"
 #include "Config/Config.h"
 
 #ifdef MODLOADER_CLIENT_BUILD
@@ -44,49 +45,69 @@ static constexpr uint32_t kBlockingMenuEquipmentUpgradeStation = 1u << 5;
 static constexpr uint32_t kBlockingMenuPauseMenu = 1u << 6;
 
 static uint32_t GetBlockingMenuBit(
-    SDK::UCommonActivatableWidget* widget,
-    const char*& menuName)
+    SDK::UCommonActivatableWidget* widget
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    , const char*& menuName
+#endif
+    )
 {
     if (widget->IsA(SDK::UCrUW_MapMenu::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "main map";
+#endif
         return kBlockingMenuMainMap;
     }
     if (widget->IsA(SDK::UCrUW_InventoryScreen::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "inventory";
+#endif
         return kBlockingMenuInventory;
     }
     if (widget->IsA(SDK::UCrUW_BuildingMenu::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "building menu";
+#endif
         return kBlockingMenuBuilding;
     }
     if (widget->IsA(SDK::UCrUW_ResearchTerminalPanel::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "corporate terminal";
+#endif
         return kBlockingMenuCorporateTerminal;
     }
     if (widget->IsA(SDK::UCrUW_UpgradeStationPanel::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "development station";
+#endif
         return kBlockingMenuDevelopmentStation;
     }
     if (widget->IsA(SDK::UCrUW_ArmoryPanel::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "equipment upgrade station";
+#endif
         return kBlockingMenuEquipmentUpgradeStation;
     }
     if (widget->IsA(SDK::UCrUW_PauseMenu::StaticClass()))
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         menuName = "pause menu";
+#endif
         return kBlockingMenuPauseMenu;
     }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     menuName = nullptr;
+#endif
     return 0;
 }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 static void LogCommonUITransition(
     const char* transition,
     const char* menuName,
@@ -98,18 +119,30 @@ static void LogCommonUITransition(
         menuName,
         suppressionMask);
 }
+#endif
 
 static void __fastcall CommonUIActivatedDetour(
     SDK::UCommonActivatableWidget* widget)
 {
     g_commonUIActivatedOriginal(widget);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     const char* menuName = nullptr;
-    const uint32_t menuBit = GetBlockingMenuBit(widget, menuName);
+#endif
+    const uint32_t menuBit = GetBlockingMenuBit(widget
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        , menuName
+#endif
+        );
     if (menuBit != 0)
     {
-        const uint32_t suppressionMask = MiniMapUI::SetBlockingMenuActive(menuBit, true);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const uint32_t suppressionMask =
+#endif
+        MiniMapUI::SetBlockingMenuActive(menuBit, true);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LogCommonUITransition("Activated", menuName, suppressionMask);
+#endif
     }
 }
 
@@ -118,12 +151,23 @@ static void __fastcall CommonUIDeactivatedDetour(
 {
     g_commonUIDeactivatedOriginal(widget);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     const char* menuName = nullptr;
-    const uint32_t menuBit = GetBlockingMenuBit(widget, menuName);
+#endif
+    const uint32_t menuBit = GetBlockingMenuBit(widget
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        , menuName
+#endif
+        );
     if (menuBit != 0)
     {
-        const uint32_t suppressionMask = MiniMapUI::SetBlockingMenuActive(menuBit, false);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const uint32_t suppressionMask =
+#endif
+        MiniMapUI::SetBlockingMenuActive(menuBit, false);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LogCommonUITransition("Deactivated", menuName, suppressionMask);
+#endif
     }
 }
 
@@ -195,7 +239,9 @@ static bool InstallCommonUIHooks()
         reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnDeactivatedFn>(
             deactivatedOriginal);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     LOG_INFO("MiniMap: installed both CommonUI activation/deactivation detours");
+#endif
     return true;
 }
 #endif
@@ -293,8 +339,10 @@ void OnPluginLoadHooks(
         return;
     }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     LOG_INFO(
         "MiniMap: native API initialized");
+#endif
 
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
@@ -385,7 +433,9 @@ static void OnExperienceLoadComplete()
     if(!MiniMapMap::HasWorld()||g_worldEnding||g_preparedGeneration==g_worldGeneration)return;
     // Mark the attempt before preparation so duplicate events cannot repeat it.
     g_preparedGeneration=g_worldGeneration;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     LOG_INFO("MiniMap: preparing gameplay services for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
+#endif
 
     // Preparation only registers the terrain service and resets CPU state.
     // Player/asset/Mass/capture prerequisites remain local to scheduled services.
@@ -434,13 +484,18 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     SetServicesAdmitted(false);
     EndBuildingSession();
     MiniMapUI::Hide();
-    const uint32_t blockingMenuMask = MiniMapUI::ClearBlockingMenuSuppression();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    const uint32_t blockingMenuMask =
+#endif
+    MiniMapUI::ClearBlockingMenuSuppression();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     if (blockingMenuMask != 0)
     {
         LOG_INFO(
             "MiniMap: cleared blocking menu mask at world end (0x%X)",
             blockingMenuMask);
     }
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     MiniMapTerrain::CancelPendingDiagnostic();
 #endif
@@ -615,6 +670,7 @@ extern "C"
                 "MiniMap: Mass foundable initialization failed");
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: FSoftObjectPtr::LoadSynchronous = 0x%llX",
             static_cast<unsigned long long>(
@@ -715,6 +771,7 @@ extern "C"
             "Free = 0x%llX",
             static_cast<unsigned long long>(
                 g_resolvedAddresses.memoryFree));
+#endif
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
@@ -730,7 +787,9 @@ extern "C"
         g_self->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
         g_self->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
         g_self->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered world lifecycle callbacks");
+#endif
         // Public v70 exposes no current-world experience-completion snapshot.
         // A viewport world or CurrentExperience pointer cannot prove readiness.
         // Do not synthesize callbacks or publish a generation on runtime reload.
@@ -772,12 +831,17 @@ extern "C"
         if(g_self && g_self->hooks && g_self->hooks->Engine)
             g_self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
         MiniMapCacheIdentity::Reset();
-        const uint32_t blockingMenuMask = MiniMapUI::ClearBlockingMenuSuppression();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const uint32_t blockingMenuMask =
+#endif
+        MiniMapUI::ClearBlockingMenuSuppression();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (blockingMenuMask != 0)
         {
             LOG_INFO("MiniMap: cleared blocking menu mask during shutdown (0x%X)",
                 blockingMenuMask);
         }
+#endif
         MiniMapUI::Hide();
 
         if (g_self != nullptr &&

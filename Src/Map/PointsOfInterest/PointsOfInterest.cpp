@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
+#include "DiagnosticExports.h"
 #include "UI/MiniMapUI.h"
 #include "Config/Config.h"
 
@@ -263,6 +264,7 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: cached POI icon "
             "name=%s size=%ux%u source=CPU-BC3",
@@ -271,6 +273,7 @@ namespace
                 mipData.SizeX),
             static_cast<unsigned int>(
                 mipData.SizeY));
+#endif
 
         return handle;
     }
@@ -842,8 +845,10 @@ namespace MiniMapPointsOfInterest
         g_initialized =
             true;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: landmark POI subsystem initialized");
+#endif
 
         return true;
     }
@@ -888,8 +893,10 @@ namespace MiniMapPointsOfInterest
         g_snapshotAccumulator =
             0.0f;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: landmark POI acquisition enabled");
+#endif
     }
 
 
@@ -1055,8 +1062,10 @@ namespace MiniMapPointsOfInterest
         g_initialized =
             false;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: landmark POI subsystem shut down");
+#endif
     }
 }
 

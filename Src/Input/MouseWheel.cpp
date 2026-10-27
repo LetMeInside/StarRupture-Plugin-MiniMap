@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MouseWheel.h"
+#include "../DiagnosticExports.h"
 #include "../plugin_helpers.h"
 #include "../Config/Config.h"
 #include "../UI/MiniMapUI.h"
@@ -95,7 +96,9 @@ namespace MiniMapMouseWheel
         self->hooks->Input->RegisterMouseWheel(&OnMouseWheel, nullptr);
         self->hooks->Engine->RegisterOnShutdown(&OnEngineShutdown);
         g_registered = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered ModLoader mouse-wheel callback");
+#endif
         return true;
     }
 
@@ -118,7 +121,9 @@ namespace MiniMapMouseWheel
         self->hooks->Input->UnregisterMouseWheel(&OnMouseWheel, nullptr);
         self->hooks->Engine->UnregisterOnShutdown(&OnEngineShutdown);
         g_registered = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: unregistered ModLoader mouse-wheel callback");
+#endif
     }
 
     void Configure(bool enabled, uint32_t modifier, uint64_t revision)

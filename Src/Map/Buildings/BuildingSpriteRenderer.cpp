@@ -1335,7 +1335,9 @@ namespace
         bool CaptureSubmitted = false; // Monotonic scene-work history across both passes, including retirement.
         bool Committed = false; // Current Job's readback commitment; reset only after that Job is destroyed.
         bool FinalColorPass = false; // HDR first; switch only after its Job is fully retired.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         uint32_t SceneSubmissions = 0; // Successful native calls, reported once after successful publication.
+#endif
         std::vector<uint8_t> Coverage; // HDR alpha survives destruction of its readback Job.
         std::vector<uint8_t> FinalRgb;
         std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
@@ -1459,7 +1461,9 @@ namespace
             const bool admitted = Ready();
             if (admitted && ResourceCall(operation,object,argument,result))
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (operation == ResourceOperation::CaptureScene) ++SceneSubmissions;
+#endif
                 return true;
             }
             Diagnostic("MiniMap: sprite native operation failed: canonical=%s requestPhase=%u operation=%u captureEverSubmitted=%u readbackCommitted=%u reason=%s",
@@ -1639,6 +1643,7 @@ namespace
                                 CompletedSprite = std::move(payload); // No mutable alias escapes.
                             }
                             catch (...) {} // Already persisted; success is not rolled back.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             // FinalResult is committed before logging/feedback: one message
                             // per successful publication, even if feedback delivery retries.
                             try
@@ -1649,6 +1654,7 @@ namespace
                                         Processed.X0, Processed.Y0, Processed.SourceStep, 1 / MiniMapMap::MinimumMetersPerPixel);
                             }
                             catch (...) {}
+#endif
                         }
                     }
                     else if (!FailureReported)
@@ -2007,8 +2013,10 @@ namespace
             { Fail("Blueprint CDO read/identity/type validation failed"); return; }
             if (!Keep(cdo, Metadata[DefaultObject])) return;
             Phase = RequestPhase::Preparing;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (ReportedWaits & (uint32_t(1) << unsigned(WaitReason::GeneratedClass)))
                 Diagnostic("MiniMap: sprite residency wait cleared: canonical=%s; generated class and CDO validated, preparation resumed", BlueprintPath.c_str());
+#endif
             FenceOperations operations{*this};
             if (!Fence.Prepare(operations)) { Quarantine("capture retirement fence preparation uncertain"); return; }
             uint64_t before{}, after{}; int32_t countBefore{}, countAfter{};

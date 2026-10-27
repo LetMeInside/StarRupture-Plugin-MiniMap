@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Foundables.h"
+#include "DiagnosticExports.h"
 #include "UI/MiniMapUI.h"
 #include "Config/Config.h"
 
@@ -187,12 +188,14 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: cached foundable icon "
             "name=%s size=%ux%u source=CPU-BC3",
             name,
             static_cast<unsigned int>(mipData.SizeX),
             static_cast<unsigned int>(mipData.SizeY));
+#endif
 
         return handle;
     }
@@ -414,7 +417,9 @@ namespace
         g_massSubsystem = subsystem;
         g_massManager = manager;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: Mass foundable query constructed");
+#endif
         return true;
     }
 
@@ -765,7 +770,9 @@ namespace MiniMapFoundables
         g_tickRegistered = true;
         g_initialized = true;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: Mass foundable subsystem initialized");
+#endif
         return true;
     }
 
@@ -794,7 +801,9 @@ namespace MiniMapFoundables
         g_experienceReady = true;
         g_pollAccumulator = kPollIntervalSeconds;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: Mass foundable acquisition enabled");
+#endif
     }
 
     void Render(
@@ -960,7 +969,9 @@ namespace MiniMapFoundables
         g_pluginSelfAvailable = false;
         g_initialized = false;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: Mass foundable subsystem shut down");
+#endif
     }
 }
 

@@ -7,6 +7,7 @@
 #include "SDK/Engine_parameters.hpp"
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
+#include "../DiagnosticExports.h"
 #include <cmath>
 #include <atomic>
 
@@ -114,7 +115,9 @@ namespace MiniMapMap
         g_gameplayReady.store(false, std::memory_order_release);
         g_world = world;
         g_worldGeneration.fetch_add(1, std::memory_order_acq_rel);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: active gameplay world = %p", g_world);
+#endif
     }
     SDK::UWorld* GetWorld() { return g_world; }
     bool HasWorld() { return g_world != nullptr; }

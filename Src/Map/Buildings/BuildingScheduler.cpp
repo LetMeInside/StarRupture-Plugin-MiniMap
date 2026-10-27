@@ -288,7 +288,10 @@ namespace MiniMapBuildingScheduler
             }
             RetainDecoded(batch, retry->Path, retry->Sprite, serial, tick, retry->Attempts + 1, std::move(retry->Payload));
         }
-        size_t servicedNames = 0, loadedSprites = 0, missingSprites = 0, directSprites = 0;
+        size_t servicedNames = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        size_t loadedSprites = 0, missingSprites = 0, directSprites = 0;
+#endif
         for (;;)
         {
             servicedNames += names.Count;
@@ -330,7 +333,9 @@ namespace MiniMapBuildingScheduler
                     }
                     if (result.Status == C::LoadStatus::Missing)
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++missingSprites;
+#endif
                         try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
                         catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
                         continue;
@@ -345,8 +350,10 @@ namespace MiniMapBuildingScheduler
                     }
                     it->second.Where = S::Location::FileCache;
                 }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++loadedSprites;
                 if (payload) ++directSprites;
+#endif
                 RetainDecoded(batch, path, sprite, serial, tick, 1, payload);
             }
             // EndDraw may have closed more discoveries while TryLoad ran unlocked.
@@ -369,9 +376,11 @@ namespace MiniMapBuildingScheduler
                 g_completed.Payloads[i] = std::move(g_completed.Payloads[i + names.Count]);
             }
         }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (servicedNames)
             SpriteDiagnostic("MiniMap: sprite cache batch closed: session=%llu names=%zu loaded=%zu missing=%zu direct=%zu scope=available-handoffs; at most one atlas publication attempt follows",
                 static_cast<unsigned long long>(serial), servicedNames, loadedSprites, missingSprites, directSprites);
+#endif
         // Finish performs one layout/transfer at most for the entire available
         // batch, or services a pending retry without any cache reread. No disk
         // access, layout construction or GPU call occurs in EndDraw/UI rendering.

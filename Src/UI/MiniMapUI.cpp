@@ -296,10 +296,12 @@ namespace
                 effectiveVisible);
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             effectiveVisible
             ? "MiniMap: widget shown"
             : "MiniMap: widget hidden");
+#endif
     }
 
 
@@ -434,8 +436,10 @@ namespace MiniMapUI
             return false;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
             "MiniMap: UI initialized");
+#endif
 
         return true;
     }
