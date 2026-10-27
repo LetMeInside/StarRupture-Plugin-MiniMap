@@ -392,7 +392,9 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapBuildingCollector::Reset();
     MiniMapBuildingVisuals::Reset();
     MiniMapPointsOfInterest::Reset();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     MiniMapTerrain::CancelPendingDiagnostic();
+#endif
 
     LOG_INFO(
         "MiniMap: game world began: %p",
@@ -463,7 +465,9 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
             "MiniMap: cleared blocking menu mask at world end (0x%X)",
             blockingMenuMask);
     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     MiniMapTerrain::CancelPendingDiagnostic();
+#endif
 }
 
 static void OnAfterWorldEndPlay(
@@ -739,11 +743,13 @@ extern "C"
             static_cast<unsigned long long>(
                 g_resolvedAddresses.memoryFree));
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrain::RegisterDiagnostics(g_self))
         {
             LOG_ERROR(
                 "MiniMap: failed to register terrain diagnostics");
         }
+#endif
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
@@ -817,7 +823,9 @@ extern "C"
                 &OnAfterWorldEndPlay);
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrain::UnregisterDiagnostics();
+#endif
         MiniMapAlienActors::Shutdown();
         MiniMapBuildingVisuals::Shutdown();
         MiniMapBuildingCollector::Shutdown();

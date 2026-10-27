@@ -1,4 +1,5 @@
 #pragma once
+#include "DiagnosticExports.h"
 #include "CaptureTiming.h"
 #include "Native/FloatReadbackPixels.h"
 #include "PluginPaths.h"
@@ -169,6 +170,7 @@ namespace MiniMapCapturePng
         if(!step(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)),"WIC factory"))return r;
         // The HGLOBAL stream owns its allocation (delete-on-release). Nothing
         // borrowed from it escapes: memory output is copied before COM teardown.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         struct FileScope
         {
             HANDLE Value=INVALID_HANDLE_VALUE;
@@ -182,6 +184,7 @@ namespace MiniMapCapturePng
             file.Value=CreateFileW(outputPath.c_str(),GENERIC_WRITE|FILE_READ_ATTRIBUTES,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
             if(file.Value==INVALID_HANDLE_VALUE)return {false,0,HRESULT_FROM_WIN32(GetLastError()),"open output"};
         }
+#endif
         prep.Stop();
         MiniMapCaptureTiming::Span encodeSetup(MiniMapCaptureTiming::Stage::PngEncode);
         if(!step(CreateStreamOnHGlobal(nullptr,TRUE,&stream),"PNG memory stream")||
@@ -209,7 +212,9 @@ namespace MiniMapCapturePng
         if(!step(stream->Stat(&encodedInfo,STATFLAG_NONAME),"encoded PNG size"))return r;
         LARGE_INTEGER beginning{};
         if(!step(stream->Seek(beginning,STREAM_SEEK_SET,nullptr),"encoded PNG rewind"))return r;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(!path)
+#endif
         {
             // Match the cache payload bound before allocating; output is unchanged
             // on failure. Read copies bytes, independent of stream/HGLOBAL lifetime.
@@ -222,6 +227,7 @@ namespace MiniMapCapturePng
             if(read!=bytes.size())return {false,0,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF),"read encoded PNG length"};
             memory->swap(bytes);
         }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         else
         {
             std::array<BYTE,16384> buffer;
@@ -246,12 +252,15 @@ namespace MiniMapCapturePng
                 return {false,0,HRESULT_FROM_WIN32(ERROR_INVALID_DATA),"file size mismatch"};
             if(!file.Close())return {false,0,HRESULT_FROM_WIN32(GetLastError()),"close output"};
         }
+#endif
         r.Bytes=uintmax_t(encodedInfo.cbSize.QuadPart);
         if(MiniMapCaptureTiming::Current)MiniMapCaptureTiming::Current->Encoded[MiniMapCaptureTiming::PngRole]+=r.Bytes;
         r.Ok=true;return r;
     }
     inline WriteResult Encode(UINT w,UINT h,const std::vector<uint8_t>& pixels,bool gray,std::vector<uint8_t>& bytes)
     {return EncodeOrWrite(nullptr,w,h,pixels,gray,&bytes);}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     inline WriteResult Write(const std::filesystem::path& path,UINT w,UINT h,const std::vector<uint8_t>& pixels,bool gray)
     {return EncodeOrWrite(&path,w,h,pixels,gray,nullptr);}
+#endif
 }

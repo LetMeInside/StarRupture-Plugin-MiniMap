@@ -261,7 +261,7 @@ namespace
             PluginDrawFlags_RoundCornersAll,
             1.0f);
 
-#if MINIMAP_DEBUG_UI
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto debugText = MiniMapDebugText::GetDebugText();
         if (debugText && !debugText->empty())
         {

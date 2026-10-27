@@ -79,7 +79,9 @@ namespace
         if (!MiniMapPluginPaths::GetPluginDirectory(outDirectory, &failure))
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: TerrainCache: "
                     "plugin module directory resolution failed: %s", failure);
@@ -147,7 +149,9 @@ namespace
         if (error)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: TerrainCache: "
                     "failed to create cache directory");
@@ -352,9 +356,11 @@ namespace MiniMapTerrainCache
     {
         MiniMapCacheIdentity::FileAccess access;
         if (!access) return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Scope cacheProfile(MiniMapTerrainProfile::Phase::Cache);
         MiniMapTerrainProfile::CacheResult cacheResult;
         MiniMapTerrainProfile::Scope pathProfile(MiniMapTerrainProfile::Phase::CachePath);
+#endif
         compressedChunk.clear();
 
         if (radiationLevel < 0)
@@ -385,8 +391,10 @@ namespace MiniMapTerrainCache
                 gridX,
                 gridY);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         pathProfile.End();
         MiniMapTerrainProfile::Scope headerProfile(MiniMapTerrainProfile::Phase::CacheHeader);
+#endif
         std::error_code error;
 
         if (!std::filesystem::exists(
@@ -394,9 +402,13 @@ namespace MiniMapTerrainCache
             error) ||
             error)
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             cacheResult.Result = error ? MiniMapTerrainProfile::Counter::Failure : MiniMapTerrainProfile::Counter::Miss;
+#endif
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_INFO(
                     "MiniMap: TerrainCache: "
                     "MISS R%d grid=(%d, %d)",
@@ -417,7 +429,9 @@ namespace MiniMapTerrainCache
             fileSize != ExpectedCacheFileSize())
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_WARN(
                     "MiniMap: TerrainCache: "
                     "invalid cache file size for R%d grid=(%d, %d)",
@@ -436,7 +450,9 @@ namespace MiniMapTerrainCache
         if (!stream)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_WARN(
                     "MiniMap: TerrainCache: "
                     "failed to open cache file for R%d grid=(%d, %d)",
@@ -467,7 +483,9 @@ namespace MiniMapTerrainCache
                 sRGB))
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_WARN(
                     "MiniMap: TerrainCache: "
                     "cache header mismatch for R%d grid=(%d, %d)",
@@ -479,8 +497,10 @@ namespace MiniMapTerrainCache
             return false;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         headerProfile.End();
         MiniMapTerrainProfile::Scope readProfile(MiniMapTerrainProfile::Phase::CacheRead);
+#endif
         const uint32_t chunkIndex =
             static_cast<uint32_t>(
                 chunkY *
@@ -508,13 +528,17 @@ namespace MiniMapTerrainCache
             static_cast<std::streamsize>(
                 compressedChunk.size()));
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         readProfile.End();
+#endif
         if (!stream)
         {
             compressedChunk.clear();
 
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_WARN(
                     "MiniMap: TerrainCache: "
                     "failed to read chunk=(%d, %d) "
@@ -529,9 +553,13 @@ namespace MiniMapTerrainCache
             return false;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         cacheResult.Result = MiniMapTerrainProfile::Counter::Hit;
+#endif
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
             LOG_INFO(
                 "MiniMap: TerrainCache: "
                 "HIT R%d grid=(%d, %d) chunk=(%d, %d) bytes=%u",
@@ -560,7 +588,9 @@ namespace MiniMapTerrainCache
     {
         MiniMapCacheIdentity::FileAccess access;
         if (!access) return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Scope writeProfile(MiniMapTerrainProfile::Phase::CacheWrite);
+#endif
         if (radiationLevel < 0 ||
             sourceData == nullptr ||
             sourceWidth !=
@@ -643,6 +673,7 @@ namespace MiniMapTerrainCache
                 chunkX < MiniMapTerrainChunks::kChunksPerAxis;
                 ++chunkX)
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::StoreExtraction, [&] { return MiniMapTerrainChunks::ExtractBC1Chunk(
                     sourceData,
                     sourceWidth,
@@ -650,6 +681,15 @@ namespace MiniMapTerrainCache
                     chunkX,
                     chunkY,
                     chunk); }))
+#else
+                if (!MiniMapTerrainChunks::ExtractBC1Chunk(
+                    sourceData,
+                    sourceWidth,
+                    sourceHeight,
+                    chunkX,
+                    chunkY,
+                    chunk))
+#endif
                 {
                     stream.close();
 
@@ -726,7 +766,9 @@ namespace MiniMapTerrainCache
         }
 
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
             LOG_INFO(
                 "MiniMap: TerrainCache: "
                 "stored R%d grid=(%d, %d) chunks=%u bytes=%llu",

@@ -1,11 +1,10 @@
 #pragma once
 
-// Optional terrain timing instrumentation; independent of functional terrain work.
-#ifndef MINIMAP_TERRAIN_PROFILE
-#define MINIMAP_TERRAIN_PROFILE 0
-#endif
+#include "DiagnosticExports.h"
 
-#if defined(MODLOADER_CLIENT_BUILD)
+// All timing storage and implementation are development-only.
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 #include "plugin_helpers.h"
 #include <algorithm>
 #include <array>
@@ -19,7 +18,6 @@ namespace MiniMapTerrainProfile
 {
     using Clock = std::chrono::steady_clock;
     static_assert(Clock::is_steady);
-    inline constexpr bool Enabled = MINIMAP_TERRAIN_PROFILE != 0;
     enum class Phase : size_t
     {
         Source, Readiness, PlatformQuery, PlatformValidation, MipQuery, MipValidation,
@@ -87,8 +85,7 @@ namespace MiniMapTerrainProfile
     public:
         explicit Scope(Phase phase) noexcept : Kind(phase)
         {
-            if constexpr (Enabled)
-                if (Current) { Target = Current; Parent = Top; Top = this; Start = Clock::now(); }
+            if (Current) { Target = Current; Parent = Top; Top = this; Start = Clock::now(); }
         }
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
@@ -108,7 +105,7 @@ namespace MiniMapTerrainProfile
         return std::forward<F>(function)();
     }
     inline void Count(Counter c) noexcept
-    { if constexpr (Enabled) if (Current) ++Current->Counts[size_t(c)]; }
+    { if (Current) ++Current->Counts[size_t(c)]; }
     struct CacheResult
     {
         Counter Result = Counter::Failure;
@@ -121,15 +118,12 @@ namespace MiniMapTerrainProfile
     };
     inline void Reset() noexcept
     {
-        if constexpr (Enabled)
-        {
-            const auto epoch = StateData.Epoch + 1;
-            StateData = {}; StateData.Epoch = epoch;
-            StateData.Running = true; StateData.Since = Clock::now();
-        }
+        const auto epoch = StateData.Epoch + 1;
+        StateData = {}; StateData.Epoch = epoch;
+        StateData.Running = true; StateData.Since = Clock::now();
     }
     inline void Stop() noexcept
-    { if constexpr (Enabled) { StateData.Running = false; ++StateData.Epoch; } }
+    { StateData.Running = false; ++StateData.Epoch; }
 
     // Formatting uses bounded stack storage, only at the reporting boundary.
     struct Text
@@ -215,14 +209,13 @@ namespace MiniMapTerrainProfile
     public:
         Batch() noexcept
         {
-            if constexpr (Enabled)
-                if (StateData.Running)
-                {
-                    Active = true; Epoch = StateData.Epoch;
-                    Exceptions = std::uncaught_exceptions();
-                    Previous = Current; PreviousTop = Top; Current = &Data; Top = nullptr;
-                    Start = Clock::now();
-                }
+            if (StateData.Running)
+            {
+                Active = true; Epoch = StateData.Epoch;
+                Exceptions = std::uncaught_exceptions();
+                Previous = Current; PreviousTop = Top; Current = &Data; Top = nullptr;
+                Start = Clock::now();
+            }
         }
         Batch(const Batch&) = delete;
         Batch& operator=(const Batch&) = delete;

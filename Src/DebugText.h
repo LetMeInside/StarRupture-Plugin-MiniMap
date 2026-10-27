@@ -1,10 +1,8 @@
 #pragma once
 
-#ifndef MINIMAP_DEBUG_UI
-#define MINIMAP_DEBUG_UI 0
-#endif
+#include "DiagnosticExports.h"
 
-#if MINIMAP_DEBUG_UI && defined(MODLOADER_CLIENT_BUILD)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 #include <memory>
 #include <mutex>
 #include <string>

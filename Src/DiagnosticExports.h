@@ -1,9 +1,7 @@
 #pragma once
 
-// Optional file exports are independent of functional capture and rendering.
-#ifndef MINIMAP_BUILDING_CAPTURE_PNGS
-#define MINIMAP_BUILDING_CAPTURE_PNGS 0
-#endif
-#ifndef MINIMAP_ATLAS_PNGS
-#define MINIMAP_ATLAS_PNGS 0
+// Project-wide development diagnostics policy; functional operations stay independent.
+// Non-project translation units conservatively exclude diagnostic implementations.
+#ifndef MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#define MINIMAP_DEVELOPMENT_DIAGNOSTICS 0
 #endif

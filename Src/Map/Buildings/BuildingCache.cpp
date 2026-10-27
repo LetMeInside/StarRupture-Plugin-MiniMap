@@ -37,7 +37,7 @@ namespace
         catch (...) {}
         return false;
     }
-#if MINIMAP_BUILDING_CAPTURE_PNGS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool DiagnosticPngRejected(const std::string& blueprint, const char* reason, uint32_t code = 0, bool codeAvailable = false) noexcept
     {
         try
@@ -325,7 +325,7 @@ namespace MiniMapBuildingCache
         return true;
     }
 
-#if MINIMAP_BUILDING_CAPTURE_PNGS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool WriteDiagnosticPng(const std::string& canonicalBlueprintPath,
         const uint8_t* rgba, uint32_t width, uint32_t height) noexcept
     {
@@ -356,7 +356,7 @@ namespace MiniMapBuildingCache
 
 #endif
 
-#if MINIMAP_ATLAS_PNGS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool WriteAtlasDiagnosticPng(const std::vector<uint8_t>& rgba,
         uint32_t width, uint32_t height, uint64_t revision) noexcept
     {

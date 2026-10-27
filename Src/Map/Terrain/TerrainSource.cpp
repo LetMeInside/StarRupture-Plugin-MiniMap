@@ -29,7 +29,9 @@ namespace
             native->asset.loadSynchronous == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain source native API is unavailable");
             }
@@ -46,7 +48,9 @@ namespace
             if (g_devSettings == nullptr)
             {
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                     LOG_ERROR(
                         "MiniMap: CrMapMenuDevSettings CDO was not found");
                 }
@@ -66,7 +70,9 @@ namespace
         if (loadedObject == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: TerrainData could not be loaded");
             }
@@ -90,7 +96,9 @@ namespace
         if (world == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain source cannot read radiation level "
                     "because the active world is unavailable");
@@ -105,7 +113,9 @@ namespace
         if (baseGameState == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain source cannot read radiation level "
                     "because GameState is unavailable");
@@ -124,7 +134,9 @@ namespace
         if (helper == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain source cannot read radiation level "
                     "because MapMenuDataReplicationHelper is unavailable");
@@ -190,7 +202,9 @@ namespace MiniMapTerrainSource
         SourceTile& outSourceTile,
         bool verbose)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Scope sourceProfile(MiniMapTerrainProfile::Phase::Source);
+#endif
         outSourceTile = {};
 
         SDK::UCrMapMenuTerrainData* terrainData =
@@ -208,7 +222,9 @@ namespace MiniMapTerrainSource
             native->texture.getBrushTexture == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain source texture API is unavailable");
             }
@@ -227,7 +243,9 @@ namespace MiniMapTerrainSource
         if (verbose)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_INFO(
                     "MiniMap: F8 diagnostic: "
                     "current radiation level=%d",
@@ -247,7 +265,9 @@ namespace MiniMapTerrainSource
         if (verbose)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_INFO(
                     "MiniMap: F8 diagnostic: "
                     "TerrainData origin=(%.3f, %.3f, %.3f) "
@@ -277,7 +297,9 @@ namespace MiniMapTerrainSource
             worldTileHeight <= 0.0)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: F8 diagnostic: "
                     "invalid terrain world tile size "
@@ -324,7 +346,9 @@ namespace MiniMapTerrainSource
         if (verbose)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_INFO(
                     "MiniMap: F8 diagnostic: "
                     "player terrain grid=(%d, %d) "
@@ -360,7 +384,9 @@ namespace MiniMapTerrainSource
         if (sourceSegment == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: F8 diagnostic: "
                     "player position maps outside available terrain "
@@ -395,7 +421,9 @@ namespace MiniMapTerrainSource
                 if (verbose)
                 {
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                         LOG_INFO(
                             "MiniMap: F8 diagnostic: "
                             "terrain grid=(%d, %d) has no usable "
@@ -421,7 +449,9 @@ namespace MiniMapTerrainSource
         if (verbose)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_INFO(
                     "MiniMap: F8 diagnostic: "
                     "selected terrain segment grid=(%d, %d) "
@@ -438,7 +468,9 @@ namespace MiniMapTerrainSource
         if (sourceTexture == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: F8 diagnostic: "
                     "selected terrain brush did not provide "

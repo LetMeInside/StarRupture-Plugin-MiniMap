@@ -443,7 +443,7 @@ namespace MiniMapBuildingAtlas
         // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         MiniMapCaptureTiming::Measure(MiniMapCaptureTiming::Stage::OldRetire,[&]{Release(batch,old);});
-#if MINIMAP_ATLAS_PNGS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (diagnosticPixels)
             MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,
                 diagnosticPixels->Width, diagnosticPixels->Height, diagnosticPixels->Revision);

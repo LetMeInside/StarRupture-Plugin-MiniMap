@@ -1630,7 +1630,7 @@ namespace
                             uint32_t(Processed.Width), uint32_t(Processed.Height), bounds, mapping);
                         if (*FinalResult)
                         {
-#if MINIMAP_BUILDING_CAPTURE_PNGS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             // Keep the original source PNG; all native owners have retired.
                             // Optional export failure cannot invalidate processed persistence.
                             (void)MiniMapBuildingCache::WriteDiagnosticPng(BlueprintPath, Rgba.data(), 256, 256);

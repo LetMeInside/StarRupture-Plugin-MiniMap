@@ -1,6 +1,7 @@
 #pragma once
+#include "DiagnosticExports.h"
 
-#if defined(MODLOADER_CLIENT_BUILD)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 
 struct IPluginSelf;
 typedef void* PluginTextureHandle;

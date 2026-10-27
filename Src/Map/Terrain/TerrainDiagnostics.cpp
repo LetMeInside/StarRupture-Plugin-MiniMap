@@ -1,5 +1,6 @@
+#include "DiagnosticExports.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 #include "CallbackTiming.h"
-#if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainDiagnostics.h"
 #include "Map/Map.h"

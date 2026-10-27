@@ -1,4 +1,5 @@
 #pragma once
+#include "DiagnosticExports.h"
 
 #include "plugin_interface.h"
 
@@ -17,10 +18,12 @@ namespace MiniMapTerrain
     void Shutdown();
     void InvalidatePresentation(); // Values only; safe for visibility callbacks.
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool RegisterDiagnostics(IPluginSelf* self);
     void UnregisterDiagnostics();
 
     void CancelPendingDiagnostic();
+#endif
 
     void AdjustZoom(float wheelDelta);
 

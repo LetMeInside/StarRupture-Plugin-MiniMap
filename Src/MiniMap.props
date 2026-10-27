@@ -1,11 +1,6 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <MiniMapDebugUI Condition="'$(MiniMapDebugUI)' == ''">false</MiniMapDebugUI>
-    <MiniMapTerrainProfile Condition="'$(MiniMapTerrainProfile)' == ''">false</MiniMapTerrainProfile>
-    <!-- Optional file exports require explicit opt-in, independent of functional stages. -->
-    <MiniMapBuildingCapturePngs Condition="'$(MiniMapBuildingCapturePngs)' == ''">false</MiniMapBuildingCapturePngs>
-    <MiniMapAtlasPngs Condition="'$(MiniMapAtlasPngs)' == ''">false</MiniMapAtlasPngs>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
   </PropertyGroup>
@@ -26,26 +21,5 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapDebugUI)' == 'true'">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_DEBUG_UI=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapBuildingCapturePngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_CAPTURE_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapBuildingCapturePngs)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_BUILDING_CAPTURE_PNGS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapAtlasPngs)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_ATLAS_PNGS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapAtlasPngs)' == 'false' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_ATLAS_PNGS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapTerrainProfile)' == 'true'">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_TERRAIN_PROFILE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(MiniMapTerrainProfile)' == 'false'">
-    <ClCompile><PreprocessorDefinitions>MINIMAP_TERRAIN_PROFILE=0;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
 </Project>

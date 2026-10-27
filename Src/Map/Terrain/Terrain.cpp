@@ -315,6 +315,7 @@ namespace
             static_cast<SDK::UStreamableRenderAsset*>(
                 sourceTexture);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::Readiness, [&] {
         native->
             texture.
@@ -323,15 +324,31 @@ namespace
                 true,
                 true);
         });
+#else
+        native->
+            texture.
+            waitForPendingInitOrStreaming(
+                streamableTexture,
+                true,
+                true);
+#endif
 
         MiniMapNative::TextureAccess::PlatformData platformData = {};
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::PlatformQuery, [&] { return MiniMapNative::TextureAccess::QueryPlatformData(
             sourceTexture,
             platformData); }))
+#else
+        if (!MiniMapNative::TextureAccess::QueryPlatformData(
+            sourceTexture,
+            platformData))
+#endif
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "failed to query source platform data");
@@ -340,7 +357,9 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Scope platformValidation(MiniMapTerrainProfile::Phase::PlatformValidation);
+#endif
         if (platformData.PixelFormat != 5 ||
             platformData.VTData != nullptr ||
             platformData.SizeX !=
@@ -353,7 +372,9 @@ namespace
             !platformData.HasMipPointers)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: unsupported terrain source "
                     "size=%dx%d format=%u VTData=%p mips=%d",
@@ -368,16 +389,27 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         platformValidation.End();
+#endif
         MiniMapNative::TextureAccess::MipData mipZero = {};
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::MipQuery, [&] { return MiniMapNative::TextureAccess::QueryMipData(
             platformData,
             0,
             mipZero); }))
+#else
+        if (!MiniMapNative::TextureAccess::QueryMipData(
+            platformData,
+            0,
+            mipZero))
+#endif
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "failed to query source mip zero");
@@ -386,7 +418,9 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Scope mipValidation(MiniMapTerrainProfile::Phase::MipValidation);
+#endif
         const int sourceWidth =
             static_cast<int>(
                 mipZero.SizeX);
@@ -414,7 +448,9 @@ namespace
             expectedBC1ByteCount)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "invalid source mip zero metadata");
@@ -423,7 +459,9 @@ namespace
             return nullptr;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         mipValidation.End();
+#endif
         std::vector<uint8_t> compressedChunk;
 
         outLoadedFromCache =
@@ -444,15 +482,24 @@ namespace
             void* ownedMipZero =
                 nullptr;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::BulkCopy, [&] { return MiniMapNative::TextureAccess::CopyBulkData(
                 mipZero,
                 &ownedMipZero,
                 false); }) ||
+#else
+            if (!MiniMapNative::TextureAccess::CopyBulkData(
+                mipZero,
+                &ownedMipZero,
+                false) ||
+#endif
                 ownedMipZero ==
                 nullptr)
             {
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                     LOG_ERROR(
                         "MiniMap: terrain: "
                         "failed to copy terrain mip zero");
@@ -478,7 +525,9 @@ namespace
             if (!cacheWritten)
             {
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                     LOG_WARN(
                         "MiniMap: terrain: "
                         "cache write failed for R%d grid=(%d, %d)",
@@ -489,6 +538,7 @@ namespace
             }
 
             const bool extracted =
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::RequestedExtraction, [&] { return
                 MiniMapTerrainChunks::ExtractBC1Chunk(
                     static_cast<const uint8_t*>(
@@ -498,6 +548,16 @@ namespace
                     chunkX,
                     chunkY,
                     compressedChunk); });
+#else
+                MiniMapTerrainChunks::ExtractBC1Chunk(
+                    static_cast<const uint8_t*>(
+                        ownedMipZero),
+                    sourceWidth,
+                    sourceHeight,
+                    chunkX,
+                    chunkY,
+                    compressedChunk);
+#endif
 
             MiniMapNative::TextureAccess::FreeBulkDataCopy(
                 ownedMipZero);
@@ -505,7 +565,9 @@ namespace
             if (!extracted)
             {
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                     LOG_ERROR(
                         "MiniMap: terrain: "
                         "failed to extract BC1 chunk");
@@ -517,12 +579,20 @@ namespace
 
         std::vector<uint8_t> rgbaChunk;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::Decode, [&] { return MiniMapTerrainChunks::DecodeBC1Chunk(
             compressedChunk,
             rgbaChunk); }))
+#else
+        if (!MiniMapTerrainChunks::DecodeBC1Chunk(
+            compressedChunk,
+            rgbaChunk))
+#endif
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "failed to decode BC1 chunk");
@@ -543,8 +613,11 @@ namespace
             chunkX,
             chunkY);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::UploadResult uploadResult;
+#endif
         PluginTextureHandle texture =
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::Upload, [&] { return
             self->
             hooks->
@@ -554,12 +627,26 @@ namespace
                 MiniMapTerrainChunks::kChunkSizePixels,
                 MiniMapTerrainChunks::kChunkSizePixels,
                 textureName); });
+#else
+            self->
+            hooks->
+            ImGuiTextures->
+            LoadFromRGBA(
+                rgbaChunk.data(),
+                MiniMapTerrainChunks::kChunkSizePixels,
+                MiniMapTerrainChunks::kChunkSizePixels,
+                textureName);
+#endif
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         uploadResult.Success = texture != nullptr;
+#endif
         if (texture == nullptr)
         {
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                 LOG_ERROR(
                     "MiniMap: terrain: "
                     "failed to upload terrain chunk");
@@ -569,7 +656,9 @@ namespace
         }
 
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
             LOG_INFO(
                 "MiniMap: terrain: "
                 "loaded R%d grid=(%d, %d) "
@@ -592,7 +681,9 @@ namespace
         const MiniMapMap::PresentationSample& sample,
         uint64_t revision)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Batch terrainProfile;
+#endif
         const auto& playerPose = sample.Tracking;
         auto* self = GetSelf();
         SDK::FVector playerLocation = {};
@@ -621,11 +712,15 @@ namespace
 
         ReconciliationContext context{};
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope profileWait(MiniMapTerrainProfile::Phase::SnapshotWait);
+#endif
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             profileWait.End();
             MiniMapTerrainProfile::Scope profileHold(MiniMapTerrainProfile::Phase::SnapshotHold);
+#endif
 
             context.World = MiniMapMap::GetWorld();
             context.Sample = sample;
@@ -873,7 +968,9 @@ namespace
 
                 if (texture == nullptr)
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Attempts);
+#endif
                     bool loadedFromCache =
                         false;
 
@@ -886,7 +983,9 @@ namespace
 
                     if (texture != nullptr)
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::New);
+#endif
                         LoadedChunk residentChunk = {};
 
                         residentChunk.Identity =
@@ -908,7 +1007,9 @@ namespace
 
                 else
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Reuse);
+#endif
                 }
 
                 if (texture == nullptr)
@@ -936,11 +1037,15 @@ namespace
         }
 
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope profileWait(MiniMapTerrainProfile::Phase::PublishWait);
+#endif
             std::lock_guard<std::mutex> lock(
                 g_renderMutex);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             profileWait.End();
             MiniMapTerrainProfile::Scope profileHold(MiniMapTerrainProfile::Phase::PublishHold);
+#endif
 
             // Transfer only NEW handles into the existing resident owner, even
             // on rejection. Never restore a stale copy of borrowed residents or
@@ -953,7 +1058,9 @@ namespace
                 return false;
             }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope retirementProfile(MiniMapTerrainProfile::Phase::Retirement);
+#endif
             // First update retirement state against the exact active set that
             // is about to become visible to the render thread.
             for (LoadedChunk& residentChunk :
@@ -1001,7 +1108,9 @@ namespace
                     RetireAfterRenderGeneration)
                 {
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         MiniMapTerrainProfile::Scope existingLog(MiniMapTerrainProfile::Phase::ExistingLog);
+#endif
                         LOG_INFO(
                             "MiniMap: terrain: retired R%d grid=(%d, %d) "
                             "chunk=(%d, %d) at render generation %llu",
@@ -1014,10 +1123,14 @@ namespace
                                 g_renderGeneration));
                     }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     MiniMapTerrainProfile::Measure(MiniMapTerrainProfile::Phase::Free, [&] {
                         FreeTexture(residentIt->Texture);
                     });
                     MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Retired);
+#else
+                    FreeTexture(residentIt->Texture);
+#endif
 
                     residentIt =
                         g_residentChunks.erase(
@@ -1029,8 +1142,10 @@ namespace
                 ++residentIt;
             }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             retirementProfile.End();
             MiniMapTerrainProfile::Scope publicationProfile(MiniMapTerrainProfile::Phase::Publication);
+#endif
             g_loadedChunks =
                 std::move(
                     nextChunks);
@@ -1181,7 +1296,9 @@ namespace MiniMapTerrain
         }
 
         g_zoomWorldGeneration = MiniMapMap::GetWorldGeneration();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Reset();
+#endif
         g_updateAccumulator =
             kUpdateIntervalSeconds;
 
@@ -1258,6 +1375,7 @@ namespace MiniMapTerrain
             return false;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!MiniMapTerrainDiagnostics::Initialize(
             self))
         {
@@ -1265,6 +1383,7 @@ namespace MiniMapTerrain
 
             return false;
         }
+#endif
 
         if (!g_tickRegistered)
         {
@@ -1295,7 +1414,9 @@ namespace MiniMapTerrain
             return;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainProfile::Stop();
+#endif
         MiniMapMouseWheel::ClearPendingZoom();
 
         auto* self = GetSelf();
@@ -1343,7 +1464,9 @@ namespace MiniMapTerrain
                 0;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrainDiagnostics::Shutdown();
+#endif
         MiniMapTerrainSource::Shutdown();
 
         g_updateAccumulator =
@@ -1392,6 +1515,7 @@ namespace MiniMapTerrain
     }
 
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool RegisterDiagnostics(
         IPluginSelf* self)
     {
@@ -1411,6 +1535,8 @@ namespace MiniMapTerrain
         MiniMapTerrainDiagnostics::CancelPendingDiagnostic();
     }
 
+
+#endif
 
     void AdjustZoom(
         float wheelDelta)

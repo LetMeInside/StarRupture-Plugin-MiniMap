@@ -19,8 +19,10 @@
 #include "plugin_helpers.h"
 #include <chrono>
 #include <mutex>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <sstream>
 #include <iomanip>
+#endif
 #include <numeric>
 #include <string_view>
 #include <unordered_map>
@@ -43,7 +45,9 @@ namespace
         uint8_t(SDK::EInterpCurveMode::CIM_CurveBreak)==4 &&
         uint8_t(SDK::EInterpCurveMode::CIM_CurveAutoClamped)==5);
     using Clock = std::chrono::steady_clock;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     constexpr auto kDebugInterval = std::chrono::seconds(5);
+#endif
     constexpr uint8_t kSplineFillOpacity=255; // Fixed category opacity; no instance customization.
     struct Instance
     {
@@ -153,14 +157,16 @@ namespace
     std::shared_ptr<const Snapshot> g_published;
     RenderStats g_render;
     size_t g_planReuses=0,g_planRebuilds=0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     std::string g_debugText;
     Clock::time_point g_nextDebug={};
-    Clock::time_point g_nextSplineDebug={};
-#if MINIMAP_DEBUG_UI
-    std::string g_splineDebugText;
 #endif
+    Clock::time_point g_nextSplineDebug={};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    std::string g_splineDebugText;
     double g_prepareMax=0, g_renderMax=0;
     size_t g_prepareCount=0, g_renderCount=0;
+#endif
 
     namespace V = MiniMapBuildingVisibilityTrace;
     std::mutex g_traceMutex;
@@ -265,15 +271,21 @@ namespace
     void Clear()
     {
         {std::lock_guard<std::mutex> lock(g_traceMutex);g_trace.Reset(0);g_traceInput.reset();}
-        g_generation=0; g_lastInput.reset(); g_nextDebug={};
-        g_prepareMax=0; g_prepareCount=0;
-        std::scoped_lock lock(g_mutex); g_published.reset(); g_render={};g_buildingVisualsTiming={};g_debugText.clear();
+        g_generation=0; g_lastInput.reset();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        g_nextDebug={}; g_prepareMax=0; g_prepareCount=0;
+#endif
+        std::scoped_lock lock(g_mutex); g_published.reset(); g_render={};g_buildingVisualsTiming={};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        g_debugText.clear();
+#endif
         g_timingIntervalStart=Clock::now();
         g_nextSplineDebug={};
-#if MINIMAP_DEBUG_UI
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         g_splineDebugText.clear();
+        g_renderMax=0; g_renderCount=0;
 #endif
-        g_renderMax=0; g_renderCount=0;g_planReuses=0;g_planRebuilds=0;
+        g_planReuses=0;g_planRebuilds=0;
     }
     using MiniMapBuildingSpriteGeometry::BuildWorldQuad;
     // Candidate A: copy the stable transform once per quad after its Valid guard.
@@ -520,7 +532,7 @@ namespace
         { std::scoped_lock lock(g_mutex); g_published=std::move(result);g_buildingVisualsTiming.SnapshotPreparation.Add(prepareMs);
         }
         g_lastInput=input;
-#if MINIMAP_DEBUG_UI
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         g_prepareMax=(std::max)(g_prepareMax,Ms(start)); ++g_prepareCount;
         if(now>=g_nextDebug)
         {
@@ -565,15 +577,13 @@ namespace MiniMapBuildingVisuals
         self->hooks->Engine->UnregisterOnTick(&OnTick);
         Reset(); g_initialized=false;
     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     std::string GetDebugText()
     {
         std::scoped_lock lock(g_mutex);
-#if MINIMAP_DEBUG_UI
         return "\nBuildingVisuals: ON\n"+g_debugText+"\n"+g_splineDebugText;
-#else
-        return "\nBuildingVisuals: ON\n"+g_debugText;
-#endif
     }
+#endif
     void Render(IModLoaderImGui* ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
     {
@@ -889,7 +899,9 @@ namespace MiniMapBuildingVisuals
             if(g_published==snapshot)
             {
                 g_render=stats;g_planReuses+=stats.PlanReuses;g_planRebuilds+=stats.PlanRebuilds;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 g_renderMax=(std::max)(g_renderMax,stats.Ms); ++g_renderCount;
+#endif
                 const auto phaseEnd=Clock::now();
                 const double renderTotalMs=elapsedMs(measuredBegin,phaseEnd);
                 const double baseCoreFinalizeMs=elapsedMs(baseCoreFinalizeBegin,phaseEnd);
