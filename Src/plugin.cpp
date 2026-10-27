@@ -564,7 +564,8 @@ extern "C"
         const char* cacheFailure = nullptr;
         if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
             !MiniMapCacheIdentity::Initialize(terrainRoot.parent_path(),
-                &ClearPersistentCaches, cacheFailure, MiniMapConfig::ClearCache()))
+                &ClearPersistentCaches, &MiniMapBuildingCache::Clear,
+                cacheFailure, MiniMapConfig::ClearCache()))
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
                 cacheFailure ? cacheFailure : "cache root unavailable");

@@ -26,15 +26,18 @@ namespace MiniMapCacheIdentity
 {
     using Digest = std::array<uint8_t, 32>;
     inline constexpr char kMagic[8] = {'M','M','C','A','C','H','E','1'};
+    // Manually revise when building sprite rendering semantics change.
+    inline constexpr uint32_t MiniMapGraphicsRevision = 1;
 #pragma pack(push, 1)
     struct CacheInfo
     {
         char Magic[8];
         uint32_t FormatVersion;
         Digest ExecutableDigest;
+        uint32_t GraphicsRevision;
     };
 #pragma pack(pop)
-    static_assert(sizeof(CacheInfo) == 44);
+    static_assert(sizeof(CacheInfo) == 48);
 
     // A lease covers the complete file operation, including stream destruction,
     // temporary cleanup and publication. Exit takes exclusive ownership to drain
@@ -315,6 +318,7 @@ namespace MiniMapCacheIdentity
         std::memcpy(info.Magic, kMagic, sizeof(kMagic));
         info.FormatVersion = 1;
         info.ExecutableDigest = digest;
+        info.GraphicsRevision = MiniMapGraphicsRevision;
         return info;
     }
 
@@ -351,10 +355,10 @@ namespace MiniMapCacheIdentity
         return false;
     }
 
-    // Called once by PluginInit before consumers. Only the supplied known cache
-    // owner is cleared; unknown root contents and diagnostics are never enumerated.
-    inline bool Initialize(const std::filesystem::path& root, bool (*clearTerrain)(),
-        const char*& failure, bool forceClear = false)
+    // Called once by PluginInit before consumers. Callbacks clear only their
+    // known cache owners; unrelated root contents are never enumerated.
+    inline bool Initialize(const std::filesystem::path& root, bool (*clearCaches)(),
+        bool (*clearBuildings)(), const char*& failure, bool forceClear = false)
     {
         std::unique_lock access(g_fileAccessMutex);
         g_fileAccessClosed = false;
@@ -366,7 +370,7 @@ namespace MiniMapCacheIdentity
         {
             // No identity is fabricated. Start a fresh usable cache for this run;
             // leave no root record that could bless these entries on a later run.
-            if (!clearTerrain())
+            if (!clearCaches())
             {
                 failure = "terrain cache invalidation failed";
                 return false;
@@ -384,11 +388,16 @@ namespace MiniMapCacheIdentity
         const auto current = MakeInfo(digest);
         const auto path = root / L"CacheInfo";
         CacheInfo stored{};
-        if (forceClear || !ReadInfo(path, stored) || stored.ExecutableDigest != digest)
+        const bool incompatible = forceClear || !ReadInfo(path, stored) ||
+            stored.ExecutableDigest != digest;
+        if (incompatible || stored.GraphicsRevision != MiniMapGraphicsRevision)
         {
-            if (!clearTerrain())
+            // A graphics-only mismatch leaves terrain intact. Do not publish the
+            // new revision or authorize file access until stale sprites are gone.
+            if (!(incompatible ? clearCaches() : clearBuildings()))
             {
-                failure = "terrain cache invalidation failed";
+                failure = incompatible ? "terrain cache invalidation failed" :
+                    "building cache invalidation failed";
                 return false;
             }
             std::error_code error;
