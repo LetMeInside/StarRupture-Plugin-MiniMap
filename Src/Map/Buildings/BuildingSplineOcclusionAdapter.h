@@ -1,12 +1,15 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "DiagnosticExports.h"
 #include "BuildingSplineOcclusion.h"
 #include "BuildingVisuals.h" // Reuse the actual SelectSpline policy; never submit draws here.
 #include "BuildingSplinePolicy.h"
 #include <memory>
 #include <limits>
 #include <optional>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
+#endif
 #include <bit>
 
 namespace MiniMapBuildingSplineOcclusionAdapter
@@ -130,6 +133,7 @@ namespace MiniMapBuildingSplineOcclusionAdapter
         uint64_t Remapped=0,RemappedBody=0,RemappedInsets=0,PreparedBody=0,TranslatedExamples=0,
             RejectedIdentity=0,RejectedGeometry=0,RejectedOrder=0,RejectedEvidence=0,RejectedNonReusable=0,TranslationFailures=0;
         std::array<double,size_t(PreparationPhase::Count)> Ms{};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         void Add(const PreparationWork& b) noexcept
         {
             Reused+=b.Reused;Recomputed+=b.Recomputed;RejectedSource+=b.RejectedSource;
@@ -141,7 +145,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
             RejectedEvidence+=b.RejectedEvidence;RejectedNonReusable+=b.RejectedNonReusable;TranslationFailures+=b.TranslationFailures;
             for(size_t i=0;i<Ms.size();++i)Ms[i]+=b.Ms[i];
         }
+#endif
     };
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct PreparationTimer
     {
         using Clock=std::chrono::steady_clock;
@@ -152,6 +158,7 @@ namespace MiniMapBuildingSplineOcclusionAdapter
         ~PreparationTimer()
         {if(Work)Work->Ms[size_t(Phase)]+=std::chrono::duration<double,std::milli>(Clock::now()-Begin).count();}
     };
+#endif
 
     inline Invalidation Mismatch(const RenderPlan* cached,const Request& request)
     {
@@ -209,19 +216,26 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                 // allocation failure prevent normal fresh numerical preparation.
                 try
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     std::vector<size_t> a,b;a.reserve(candidates.size());b.reserve(candidates.size());
                     for(const auto& dependency:old.Dependencies)a.push_back(dependency.RecordIndex);
+#endif
                     for(size_t candidate:candidates)
                     {
                         const auto key=prepared.Items()[candidate].Value.Key;
                         if(key>=request.Ordinary.size())return SectionMatch::Translation;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         b.push_back(request.Ordinary[size_t(key)].RecordIndex);
+#endif
                     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     std::sort(a.begin(),a.end());std::sort(b.begin(),b.end());
                     return a==b?SectionMatch::Order:SectionMatch::Identity;
+#endif
                 }
                 catch(const std::bad_alloc&){return SectionMatch::Identity;}
                 catch(const std::length_error&){return SectionMatch::Identity;}
+                return SectionMatch::Identity;
             }
             if(!SameGeometry(previous.Value,current)){keysChanged=false;return SectionMatch::Geometry;}
             keysChanged|=previous.Value.Key!=current.Key;
@@ -436,7 +450,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
         // Whole-plan semantics unchanged. Partial reuse is ONLY within the same
         // complete source/atlas/policy/envelope binding, with ordinary observations differing.
         const bool reuseSections=previous && mismatch==Invalidation::Ordinary;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto rejected=previous?mismatch:discarded;
+#endif
         auto result=std::make_shared<RenderPlan>();
         auto retainCommitted=[&]
         {
@@ -456,13 +472,17 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                 std::any_of(request.Ordinary.begin(),request.Ordinary.end(),[](const auto& o){return o.Submitted;})))
             {result->Diagnostic.Add(0,0,Failure::Context);return result;}
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 PreparationTimer timer(work,PreparationPhase::Binding);
+#endif
                 result->Binding=request;result->Generation=request.Snapshot->Generation;
             }
             const auto& records=request.Snapshot->Records;
             O::PreparedOccluders prepared;
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 PreparationTimer timer(work,PreparationPhase::Occluders);
+#endif
                 std::vector<O::Occluder> occluders;
                 for(size_t i=0;i<request.Ordinary.size();++i)
                 {
@@ -516,7 +536,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                         SectionMatch match=SectionMatch::NonReusable;
                         O::Input input;O::AABB bounds;
                         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             PreparationTimer timer(work,PreparationPhase::Dependencies);
+#endif
                             if(oldRecord)
                             {
                                 while(previousSection<oldRecord->Sections.size() && oldRecord->Sections[previousSection]->SectionIndex<section)++previousSection;
@@ -534,10 +556,13 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                             prepared.Candidates(bounds,candidates); // Includes non-removing and newly present candidates.
                             bool keysChanged=false;
                             match=old?MatchDependencies(*old,prepared,candidates,previous->Binding,request,keysChanged):SectionMatch::NonReusable;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             // Preserve the Stage42M3 gate count, including sections now remappable.
                             // The report explicitly labels this legacy pre-translation meaning.
                             if(work && old && (keysChanged || !old->Reusable))++work->RejectedKeys;
+#endif
                             if(old && match==SectionMatch::Exact)completed=old;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             else if(work && match!=SectionMatch::Remap)
                             {
                                 if(old)
@@ -555,24 +580,45 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                                 else if(oldRecord || rejected==Invalidation::Source || rejected==Invalidation::Policy || rejected==Invalidation::Splines)
                                     ++work->RejectedSource;
                             }
+#endif
                         }
                         if(old && match==SectionMatch::Remap)
                         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             PreparationTimer translation(work,PreparationPhase::Translation);
+#endif
                             try{completed=RemapSection(*old,prepared,candidates,request);}
-                            catch(const std::bad_alloc&){if(work)++work->TranslationFailures;throw;}
-                            catch(const std::length_error&){if(work)++work->TranslationFailures;throw;}
+                            catch(const std::bad_alloc&)
+                            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                                if(work)++work->TranslationFailures;
+#endif
+                                throw;
+                            }
+                            catch(const std::length_error&)
+                            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                                if(work)++work->TranslationFailures;
+#endif
+                                throw;
+                            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             if(!completed && work)++work->TranslationFailures;
+#endif
                         }
                         if(!completed)
                         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             if(work)++work->Recomputed;
+#endif
                             // No input reconstruction/copy on a reused section. On a changed
                             // dependency, saved original XYZ is read directly by the unchanged planner.
                             const auto& triangles=old && old->Reusable && old->Geometry?old->Geometry->SourceTriangles:input.Triangles;
                             O::Result plan;
                             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                 PreparationTimer timer(work,PreparationPhase::Body);
+#endif
                                 plan=O::Plan(triangles,prepared);
                             }
                             if(plan.State!=O::Status::Complete)
@@ -581,7 +627,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                             std::shared_ptr<SectionPlan> built;
                             std::shared_ptr<SectionGeometry> geometry;
                             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                 PreparationTimer timer(work,PreparationPhase::Assembly);
+#endif
                                 built=std::make_shared<SectionPlan>();built->SectionIndex=section;
                                 geometry=std::make_shared<SectionGeometry>();
                                 geometry->Visible=std::move(plan.Visible);built->Removed=std::move(plan.Removed);geometry->SourceBounds=bounds;
@@ -589,7 +637,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                                 result->AllocationFailed|=built->Removed.AllocationFailed;
                             }
                             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                 PreparationTimer timer(work,PreparationPhase::Insets);
+#endif
                                 if(insetProfile && section<insetProfile->Sections.size())
                                 {
                                     if(!insetScratch)insetScratch.emplace();
@@ -597,7 +647,9 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                                 }
                             }
                             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                 PreparationTimer timer(work,PreparationPhase::Dependencies);
+#endif
                                 if(old && old->Reusable && old->Geometry)geometry->SourceTriangles=old->Geometry->SourceTriangles;
                                 else geometry->SourceTriangles=std::move(input.Triangles);
                                 for(size_t candidate:candidates)
@@ -609,12 +661,16 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                             built->Geometry=std::move(geometry);completed=std::move(built);
                         }
                         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             PreparationTimer timer(work,PreparationPhase::Assembly);
+#endif
                             const auto total=O::AddSize(result->Triangles,completed->Geometry->Visible.size());
                             const auto insetTotal=O::AddSize(result->WalkwayInsetTriangles,completed->Geometry->WalkwayInsets.size());
                             planned.Sections.push_back(completed);
                             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                 PreparationTimer evidence(work,PreparationPhase::Evidence);
+#endif
                                 auto& c=result->Coverage;
                                 const auto sections=c.Sections,fully=c.FullyRemovedSections,polygons=c.Polygons,examples=c.Examples.size();
                                 const auto area=c.RemovedArea;const bool plannerFailed=c.PlannerExamplesAllocationFailed;
@@ -625,11 +681,14 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                                     c.Sections=sections;c.FullyRemovedSections=fully;c.Polygons=polygons;c.RemovedArea=area;
                                     c.Examples.resize(examples);c.PlannerExamplesAllocationFailed=plannerFailed;
                                     planned.Sections.pop_back();++planned.FailedSections;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                                     if(work && match==SectionMatch::Remap)++work->TranslationFailures;
+#endif
                                     throw CoverageAllocationFailure{};
                                 }
                             }
                             result->Triangles=total;result->WalkwayInsetTriangles=insetTotal;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             if(work)
                             {
                                 if(completed==old){++work->Reused;work->ReusedBody+=completed->Geometry->Visible.size();work->ReusedInsets+=completed->Geometry->WalkwayInsets.size();}
@@ -640,6 +699,7 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                                 }
                                 else {work->PreparedBody+=completed->Geometry->Visible.size();work->PreparedInsets+=completed->Geometry->WalkwayInsets.size();}
                             }
+#endif
                         }
                     }
                     catch(const std::bad_alloc&){++planned.FailedSections;result->AllocationFailed=true;result->Diagnostic.Add(index,section,Failure::AllocationFailure,O::Status::AllocationFailure);}

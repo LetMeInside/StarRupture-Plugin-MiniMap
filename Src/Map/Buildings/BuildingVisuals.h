@@ -5,7 +5,6 @@
 #include "Config/Config.h"
 #include "Map/MapTransform.h"
 #include "BuildingSplineEnvelope.h"
-#include <string>
 
 namespace MiniMapBuildingVisuals
 {
@@ -16,10 +15,6 @@ namespace MiniMapBuildingVisuals
     void Shutdown();
     void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    // Already formatted by this subsystem; appended by the collector producer.
-    std::string GetDebugText();
-#endif
 
     // Shared with narrow submission fixtures. Called only from the existing UI
     // draw pass, under its lifecycle contract and intersecting draw-list clip.

@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
+#include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "BuildingBlueprintIdentity.h"
@@ -29,7 +30,9 @@ namespace
     using Native=MiniMapNative::NativeApi;
     using Id=MiniMapNative::MassEntityHandle;
     using Clock=std::chrono::steady_clock;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     constexpr auto kMeasurementInterval=std::chrono::seconds(10);
+#endif
     namespace P=MiniMapBuildingSplineProfiles;
     namespace G=MiniMapBuildingGeometry;
     struct Types
@@ -69,6 +72,7 @@ namespace
     double viewRadius=0;
     Bounds region;
     uint64_t atlasSession=0,atlasRevision=0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct PhaseAggregate
     {
         uint64_t Samples=0;
@@ -96,6 +100,7 @@ namespace
     Clock::time_point measurementIntervalStart{};
     uint64_t measurementGeneration=0;
     uint64_t membershipScanSerial=0,lastMembershipScanSerial=0;
+#endif
     uint64_t Key(Id id){return uint64_t(uint32_t(id.Index))|(uint64_t(uint32_t(id.SerialNumber))<<32);}
     uint64_t NextMembershipScanEpoch()
     {
@@ -187,11 +192,12 @@ namespace
         n.mass.addTransformRequirement(query.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
         return true;
     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct ReconcileTiming
     {
         Clock::time_point Started=Clock::now();
         double NativeMs=0,BookkeepingMs=0,SweepMs=0,ReleaseMs=0;
-        uint64_t Handles=0,Added=0,Removed=0,Duplicates=0,Invalid=0,Epoch=0,Generation=0;
+        uint64_t Handles=0,Added=0,Removed=0,Duplicates=0,Invalid=0,Generation=0;
         bool Complete=false,Malformed=false;
         ~ReconcileTiming() noexcept
         {
@@ -217,12 +223,25 @@ namespace
             lastMembershipScanSerial=membershipScanSerial;
         }
     };
+#endif
     struct MembershipArrayOwner
     {
-        const Native& N;MiniMapNative::MassEntityHandleArray& H;ReconcileTiming& Timing;
+        const Native& N;MiniMapNative::MassEntityHandleArray& H;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        double& ReleaseMs;
+#endif
         ~MembershipArrayOwner() noexcept
         {
-            if(H.Data){const auto begin=Clock::now();N.texture.memoryFree(H.Data);Timing.ReleaseMs=std::chrono::duration<double,std::milli>(Clock::now()-begin).count();}
+            if(H.Data)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                const auto begin=Clock::now();
+#endif
+                N.texture.memoryFree(H.Data);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ReleaseMs=std::chrono::duration<double,std::milli>(Clock::now()-begin).count();
+#endif
+            }
         }
     };
     bool CurrentScanContext(const Native& n,uint64_t capturedGeneration,SDK::UWorld* capturedWorld,const void* capturedManager)
@@ -234,31 +253,74 @@ namespace
         if(subsystem)std::memcpy(&currentManager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(currentManager));
         return currentManager==capturedManager;
     }
-    bool Reconcile(const Native& n,uint64_t& changes)
+    bool Reconcile(const Native& n
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ,uint64_t& changes
+#endif
+    )
     {
-        ReconcileTiming timing;timing.Generation=generation;timing.Epoch=NextMembershipScanEpoch();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReconcileTiming timing;timing.Generation=generation;
+#endif
+        const auto scanEpoch=NextMembershipScanEpoch();
         MiniMapNative::MassEntityHandleArray handles{};
-        MembershipArrayOwner owner{n,handles,timing};
+        MembershipArrayOwner owner{n,handles
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ,timing.ReleaseMs
+#endif
+        };
         const auto capturedGeneration=generation;auto* const capturedWorld=world;const void* const capturedManager=manager;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto nativeBegin=Clock::now();
+#endif
         MiniMapNative::MassEntityHandleArray* returned=nullptr;
         try {returned=n.mass.getMatchingEntityHandles(query.data(),&handles);}
-        catch(...){timing.NativeMs=std::chrono::duration<double,std::milli>(Clock::now()-nativeBegin).count();throw;}
+        catch(...)
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.NativeMs=std::chrono::duration<double,std::milli>(Clock::now()-nativeBegin).count();
+#endif
+            throw;
+        }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         timing.NativeMs=std::chrono::duration<double,std::milli>(Clock::now()-nativeBegin).count();
-        if(returned!=&handles){timing.Malformed=true;return false;}
+#endif
+        if(returned!=&handles)
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.Malformed=true;
+#endif
+            return false;
+        }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(handles.Num>0)timing.Handles=uint64_t(handles.Num);
-        if(handles.Num<0 || handles.Max<handles.Num || (handles.Num && !handles.Data)){timing.Malformed=true;return false;}
+#endif
+        if(handles.Num<0 || handles.Max<handles.Num || (handles.Num && !handles.Data))
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.Malformed=true;
+#endif
+            return false;
+        }
         if(!CurrentScanContext(n,capturedGeneration,capturedWorld,capturedManager))return false;
 
         // A fresh epoch is consumed even when traversal later fails. Partial marks
         // can therefore never certify a future complete scan.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto bookkeepingBegin=Clock::now();
+#endif
         try
         {
             for(int i=0;i<handles.Num;++i)
             {
                 const auto id=handles.Data[i];
-                if(id.Index<0 || !id.SerialNumber){++timing.Invalid;continue;}
+                if(id.Index<0 || !id.SerialNumber)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing.Invalid;
+#endif
+                    continue;
+                }
                 const auto key=Key(id);
                 auto [it,added]=entities.try_emplace(key);
                 if(added)
@@ -267,25 +329,50 @@ namespace
                     try {pending.insert(key);}
                     catch(...) {entities.erase(it);throw;}
                     auto& r=it->second.Data;r.Generation=capturedGeneration;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));
-                    dirty=true;++timing.Added;++changes;
+                    dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing.Added;++changes;
+#endif
                 }
-                else if(it->second.SeenScan==timing.Epoch)++timing.Duplicates;
-                it->second.SeenScan=timing.Epoch;
+                else if(it->second.SeenScan==scanEpoch)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing.Duplicates;
+#endif
+                }
+                it->second.SeenScan=scanEpoch;
             }
         }
-        catch(...){timing.BookkeepingMs=std::chrono::duration<double,std::milli>(Clock::now()-bookkeepingBegin).count();throw;}
+        catch(...)
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.BookkeepingMs=std::chrono::duration<double,std::milli>(Clock::now()-bookkeepingBegin).count();
+#endif
+            throw;
+        }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         timing.BookkeepingMs=std::chrono::duration<double,std::milli>(Clock::now()-bookkeepingBegin).count();
+#endif
         // Query execution may reenter lifecycle code; only the owning world,
         // manager, query and generation may authorize the removal sweep.
         if(!CurrentScanContext(n,capturedGeneration,capturedWorld,capturedManager))return false;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto sweepBegin=Clock::now();
+#endif
         for(auto it=entities.begin();it!=entities.end();)
-            if(it->second.SeenScan!=timing.Epoch)
-            {pending.erase(it->first);it=entities.erase(it);dirty=true;++timing.Removed;++changes;}
+            if(it->second.SeenScan!=scanEpoch)
+            {
+                pending.erase(it->first);it=entities.erase(it);dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++timing.Removed;++changes;
+#endif
+            }
             else ++it;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         timing.SweepMs=std::chrono::duration<double,std::milli>(Clock::now()-sweepBegin).count();
         timing.Complete=true;
+#endif
         return true;
     }
     struct Candidate
@@ -469,10 +556,21 @@ namespace
         std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         uint64_t session=0,revision=0;MiniMapBuildingAtlas::ObservePublication(session,revision);
         if(session==atlasSession && revision==atlasRevision)return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(session!=atlasSession)++measurements.AtlasSessionChanges;
         if(revision!=atlasRevision)++measurements.AtlasRevisionChanges;
-        for(auto& [key,e]:entities)if(e.Complete && !e.Data.HasSpline){SpriteBounds(e.Data);++measurements.AtlasBoundsRecalculations;}
-        atlasSession=session;atlasRevision=revision;dirty=true;++measurements.DirtyAtlas;
+#endif
+        for(auto& [key,e]:entities)if(e.Complete && !e.Data.HasSpline)
+        {
+            SpriteBounds(e.Data);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++measurements.AtlasBoundsRecalculations;
+#endif
+        }
+        atlasSession=session;atlasRevision=revision;dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++measurements.DirtyAtlas;
+#endif
     }
     bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,const MiniMapConfig::BuildingRenderSettings& settings)
     {
@@ -488,9 +586,13 @@ namespace
         auto result=e.Data;const auto epoch=generation;
         const bool definitionAttempted=!definition->Prepared;
         if(definitionAttempted && !attemptedDefinitions.insert(definition.get()).second)return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(definitionAttempted)++measurements.DefinitionAttempts;
+#endif
         const bool definitionReady=PrepareDefinition(n,*definition,result.HasSpline,result.BuildingId);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(definitionAttempted){if(definitionReady)++measurements.DefinitionSuccesses;else ++measurements.DefinitionFailures;}
+#endif
         if(!definitionReady)return false;
         if(epoch!=generation || world!=MiniMapMap::GetWorld())return false;
         it=entities.find(key);
@@ -502,21 +604,30 @@ namespace
         else {std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);SpriteBounds(result);}
         // Owned Record move and key erasure do not allocate or call native
         // code: completion and removal from scheduling commit together.
-        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;++measurements.DirtyAcquisition;return true;
+        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++measurements.DirtyAcquisition;
+#endif
+        return true;
     }
     void Publish(const MiniMapConfig::BuildingRenderSettings& settings)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.PublicationAttempts;
+#endif
         if(!dirty)return;
         auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
         value->IncludedDroneRails=settings.RenderDroneRails;
-        value->PublishedAtSeconds=std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
         for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly &&
             (settings.RenderDroneRails || !MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId)) &&
             (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
         std::sort(value->Records.begin(),value->Records.end(),[](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
-        {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;++measurements.Publications;
+        {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++measurements.Publications;
+#endif
     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     void MaybeReportMeasurements(Clock::time_point callbackBegin,uint64_t scanSerialAtEntry) noexcept
     {
         const auto now=Clock::now();
@@ -559,17 +670,29 @@ namespace
         explicit MeasurementReporter(Clock::time_point started):Started(started),ScanSerial(membershipScanSerial){}
         ~MeasurementReporter(){MaybeReportMeasurements(Started,ScanSerial);}
     };
-    struct GridVisitContext {std::unordered_set<uint64_t>* Keys=nullptr;uint64_t Visitors=0;};
+#endif
+    struct GridVisitContext
+    {
+        std::unordered_set<uint64_t>* Keys=nullptr;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        uint64_t Visitors=0;
+#endif
+    };
     bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
     {
-        auto& visit=*static_cast<GridVisitContext*>(context);++visit.Visitors;
+        auto& visit=*static_cast<GridVisitContext*>(context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++visit.Visitors;
+#endif
         const auto key=Key(handle.Entity);
         if(pending.contains(key))visit.Keys->insert(key);
         return true;
     }
     void OnTick(float)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto callbackBegin=Clock::now();
+#endif
         if(!MiniMapUI::IsVisible())return;
         if(!ready || !MiniMapMap::GameplayReady())return;
         const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
@@ -581,20 +704,46 @@ namespace
             if(snapshot && snapshot->Generation==generation && snapshot->IncludedDroneRails!=settings.RenderDroneRails)dirty=true;
         }
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}
         MeasurementReporter reportAtExit(callbackBegin);
+#endif
         try
         {
             if(Clock::now()>=nextMembership)
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++measurements.MembershipPolls;uint64_t changes=0;
-                const bool complete=Reconcile(*n,changes);
+#endif
+                const bool complete=Reconcile(*n
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ,changes
+#endif
+                );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 measurements.MembershipChanges+=changes;measurements.DirtyMembership+=changes;
-                if(complete!=membershipComplete){membershipComplete=complete;dirty=true;++measurements.DirtyMembership;}
+#endif
+                if(complete!=membershipComplete)
+                {
+                    membershipComplete=complete;dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++measurements.DirtyMembership;
+#endif
+                }
                 nextMembership=Clock::now()+std::chrono::seconds(1);
             }
-            {const auto begin=Clock::now();UpdateAtlasBounds();measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                const auto begin=Clock::now();
+#endif
+                UpdateAtlasBounds();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#endif
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             const auto gridBegin=Clock::now();
+#endif
             MiniMapMap::PresentationSample sample{};double radius;
             {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
             const bool hasPose=radius>0 && MiniMapMap::TryGetPresentationSample(sample);
@@ -603,37 +752,78 @@ namespace
             {
                 const Bounds requested{pose.WorldX-radius,pose.WorldY-radius,pose.WorldX+radius,pose.WorldY+radius,true};
                 if(!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY)
-                {region=G::Inflate(requested,radius*0.5);dirty=true;++measurements.DirtyRegion;}
+                {
+                    region=G::Inflate(requested,radius*0.5);dirty=true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++measurements.DirtyRegion;
+#endif
+                }
             }
-            if(pending.empty()){++measurements.PendingZeroCallbacks;remoteTurn=false;}
+            if(pending.empty())
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++measurements.PendingZeroCallbacks;
+#endif
+                remoteTurn=false;
+            }
             else
             {
                 std::unordered_set<uint64_t> localCandidates;
-                GridVisitContext gridVisit{&localCandidates,0};bool gridEnumerated=false;
+                GridVisitContext gridVisit{&localCandidates};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                bool gridEnumerated=false;
+#endif
                 if(hasPose && n->gridDiagnostic.forEachCellInRadius)
                     if(auto* grid=n->gridDiagnostic.getSubsystem(world))
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         gridEnumerated=true;
+#endif
                         const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&Near,&gridVisit};
                         const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
                         n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
                     }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if(gridEnumerated)measurements.LocalGrid.Add(std::chrono::duration<double,std::milli>(Clock::now()-gridBegin).count());
                 measurements.GridVisitors+=gridVisit.Visitors;measurements.UniqueLocalKeys+=localCandidates.size();
+#endif
                 std::unordered_set<const Definition*> attemptedDefinitions;
                 const auto localEpoch=generation;
                 if(!localCandidates.empty())
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     const auto begin=Clock::now();
-                    for(auto key:localCandidates){if(!pending.contains(key))continue;++measurements.LocalAttempts;if(Acquire(*n,key,attemptedDefinitions,settings))++measurements.NewlyCompleted;if(localEpoch!=generation)return;}
+#endif
+                    for(auto key:localCandidates)
+                    {
+                        if(!pending.contains(key))continue;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                        ++measurements.LocalAttempts;
+#endif
+                        if(Acquire(*n,key,attemptedDefinitions,settings))
+                        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                            ++measurements.NewlyCompleted;
+#endif
+                        }
+                        if(localEpoch!=generation)return;
+                    }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#endif
                 }
                 // Publish local data before remote definition preparation. Remote
                 // work is serviced on the next callback after any local progress;
                 // there is no entity quota or permanent spatial admission limit.
                 if(dirty && !remoteTurn)
                 {
-                    ++measurements.RemotePassesSkipped;const auto begin=Clock::now();Publish(settings);measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++measurements.RemotePassesSkipped;const auto begin=Clock::now();
+#endif
+                    Publish(settings);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#endif
                     remoteTurn=true;return;
                 }
                 remoteTurn=false;
@@ -641,16 +831,45 @@ namespace
                 {
                     // Acquire may erase pending keys or reenter session lifecycle
                     // code. Keep only a P-sized key snapshot across native calls.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     const auto pendingBegin=Clock::now();
+#endif
                     const std::vector<uint64_t> pendingKeys(pending.begin(),pending.end());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     measurements.PendingEnumeration.Add(std::chrono::duration<double,std::milli>(Clock::now()-pendingBegin).count());
+#endif
                     const auto epoch=generation;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     const auto begin=Clock::now();
-                    for(auto key:pendingKeys){if(!pending.contains(key))continue;++measurements.RemoteAttempts;if(Acquire(*n,key,attemptedDefinitions,settings))++measurements.NewlyCompleted;if(epoch!=generation)return;}
+#endif
+                    for(auto key:pendingKeys)
+                    {
+                        if(!pending.contains(key))continue;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                        ++measurements.RemoteAttempts;
+#endif
+                        if(Acquire(*n,key,attemptedDefinitions,settings))
+                        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                            ++measurements.NewlyCompleted;
+#endif
+                        }
+                        if(epoch!=generation)return;
+                    }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     measurements.Acquisition.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#endif
                 }
             }
-            {const auto begin=Clock::now();Publish(settings);measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());}
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                const auto begin=Clock::now();
+#endif
+                Publish(settings);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
+#endif
+            }
         }
         catch(const std::bad_alloc&){/* Keep membership/owned records; retry pending work. */}
     }
