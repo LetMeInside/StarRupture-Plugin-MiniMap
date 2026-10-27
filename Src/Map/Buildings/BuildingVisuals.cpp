@@ -1,5 +1,4 @@
 #include "Map/Map.h"
-#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
 #include "Config/Config.h"
@@ -441,7 +440,6 @@ namespace
     }
     void OnTick(float)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::VisualsTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         const auto settings=MiniMapConfig::GetRenderSettings().Buildings;

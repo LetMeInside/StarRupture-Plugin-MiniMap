@@ -1,6 +1,5 @@
 #include "DiagnosticExports.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
-#include "CallbackTiming.h"
 
 #include "TerrainDiagnostics.h"
 #include "Map/Map.h"
@@ -1006,7 +1005,6 @@ namespace
         EModKey key,
         EModKeyEvent event)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::TerrainDiagnosticKey,false);
         (void)key;
         (void)event;
 
@@ -1022,7 +1020,6 @@ namespace
     void OnTick(
         float deltaSeconds)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::TerrainDiagnosticTick,true);
         if(!MiniMapMap::GameplayReady())return;
         (void)deltaSeconds;
 

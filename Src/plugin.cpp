@@ -1,4 +1,3 @@
-#include "CallbackTiming.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "Config/Config.h"
@@ -267,7 +266,6 @@ void OnPluginLoadHooks(
     IPluginSelf* self,
     IPluginHookScanner* scanner)
 {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginLoadHooks,false,self);
 #ifdef MODLOADER_CLIENT_BUILD
 
     g_resolvedAddresses = {};
@@ -276,8 +274,6 @@ void OnPluginLoadHooks(
         self,
         scanner,
         g_resolvedAddresses);
-    MiniMapCallbackTiming::ReportDirectQueries(self,fingerprintsResolved?
-        "mandatory-fingerprint-resolution-complete":"mandatory-fingerprint-resolution-refused");
     if (!fingerprintsResolved)
     {
         LOG_ERROR(
@@ -324,7 +320,6 @@ static void SetServicesAdmitted(bool ready)
 }
 static void EndBuildingSession()
 {
-    MiniMapNative::ScopedQueryPhase queryPhase(MiniMapNative::QueryPhase::WorldCleanup);
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingSchedulerInternal::StopSession();
@@ -346,7 +341,6 @@ static bool BuildingServiceGameThread() noexcept
 }
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
-    MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::BuildingCaptureService,true);
     if(!MiniMapMap::GameplayReady())return;
     // Integration lock is outermost; FIFO/feedback locks are acquired only inside
     // it. Renderer functions never reacquire it or invoke scheduler transitions.
@@ -357,23 +351,10 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
     if (MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
-    // Observation only: Complete describes available scoped observation, not
-    // worldwide discovery or capture completion. Never a service readiness gate.
-    if(MiniMapUI::IsVisible()&&MiniMapCallbackTiming::QueryInitialAcquisition.load(std::memory_order_relaxed))
-    {
-        const auto snapshot=MiniMapBuildingCollector::GetSnapshot();
-        if(snapshot && snapshot->Complete)
-        {
-            MiniMapCallbackTiming::QueryInitialAcquisition.store(false,std::memory_order_relaxed);
-            MiniMapCallbackTiming::ReportDirectQueries(GetSelf(),"first-observed-complete-collector-publication-not-capture-completion");
-        }
-    }
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBegin,false);
     if(!world||(world==MiniMapMap::GetWorld()&&!g_worldEnding))return;
-    MiniMapCallbackTiming::StartWorldTrace();
     ++g_worldGeneration;
     g_preparedGeneration=0;
     g_worldEnding=false;
@@ -401,7 +382,6 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
 
 static void OnExperienceLoadComplete()
 {
-    MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ExperienceComplete,false);
     if(!MiniMapMap::HasWorld()||g_worldEnding||g_preparedGeneration==g_worldGeneration)return;
     // Mark the attempt before preparation so duplicate events cannot repeat it.
     g_preparedGeneration=g_worldGeneration;
@@ -449,7 +429,6 @@ static void OnExperienceLoadComplete()
 
 static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 {
-    MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldBeforeEnd,false);
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
@@ -471,7 +450,6 @@ static void OnAfterWorldEndPlay(
     SDK::UWorld* world,
     const char* worldName)
 {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WorldEnd,false);
     if(!world||world!=MiniMapMap::GetWorld())return;
     LOG_INFO(
         "MiniMap: world ended: %s",
@@ -500,14 +478,12 @@ extern "C"
     __declspec(dllexport)
         PluginInfo* GetPluginInfo()
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInfo,false);
         return &s_pluginInfo;
     }
 
     __declspec(dllexport)
         bool PluginInit(IPluginSelf* self)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginInit,false,self);
         ResetPluginInitHookBaseline();
 #ifdef MODLOADER_CLIENT_BUILD
         MiniMapCacheIdentity::Reset();
@@ -773,7 +749,6 @@ extern "C"
     __declspec(dllexport)
         void PluginShutdown()
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::PluginShutdown,false);
         LOG_INFO(
             "MiniMap: shutting down");
 

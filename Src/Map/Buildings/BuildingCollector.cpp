@@ -1,4 +1,3 @@
-#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
 #include "Config/Config.h"
@@ -571,7 +570,6 @@ namespace
     void OnTick(float)
     {
         const auto callbackBegin=Clock::now();
-        MiniMapCallbackTiming::Scope timing(MiniMapCallbackTiming::Id::CollectorTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!ready || !MiniMapMap::GameplayReady())return;
         const auto settings=MiniMapConfig::GetRenderSettings().Buildings;

@@ -1,4 +1,3 @@
-#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
@@ -1199,7 +1198,6 @@ namespace
     void OnTick(
         float deltaSeconds)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::FogTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!MiniMapMap::HasWorld())

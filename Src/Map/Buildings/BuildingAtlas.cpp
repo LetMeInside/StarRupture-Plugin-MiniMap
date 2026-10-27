@@ -1,7 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlas.h"
-#include "CallbackTiming.h"
 #include "BuildingAtlasAlienX.h"
 #include "BuildingScheduler.h"
 #include "Map/Map.h"
@@ -265,7 +264,6 @@ namespace MiniMapBuildingAtlas
     }
     void EndBatch(const Batch& batch, uint64_t tick) noexcept
     {
-        MiniMapCallbackTiming::Phase callbackTiming(MiniMapCallbackTiming::Id::AtlasPublication);
         if (!batch) return;
         const bool sourceAdmission = batch->Dirty;
         std::shared_ptr<Revision> candidate, old;

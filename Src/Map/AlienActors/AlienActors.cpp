@@ -1,5 +1,4 @@
 #include "Map/Map.h"
-#include "CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "AlienActors.h"
@@ -319,7 +318,6 @@ namespace
 
     void OnTick(float deltaSeconds)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::AlienTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady || !MiniMapMap::HasWorld())

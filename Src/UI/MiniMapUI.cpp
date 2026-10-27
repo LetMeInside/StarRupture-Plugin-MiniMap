@@ -1,5 +1,4 @@
 #include "../Map/Map.h"
-#include "../CallbackTiming.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MiniMapUI.h"
@@ -106,7 +105,6 @@ namespace
     void Render(
         IModLoaderImGui* ui)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WidgetRender,true);
         if (ui == nullptr || !IsEffectivelyVisible())
         {
             return;
@@ -309,7 +307,6 @@ namespace
         EModKey key,
         EModKeyEvent event)
     {
-        MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::ToggleKey,false);
         (void)key;
         (void)event;
 
