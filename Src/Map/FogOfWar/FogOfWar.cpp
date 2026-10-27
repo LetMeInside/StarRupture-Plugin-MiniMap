@@ -10,7 +10,7 @@
 
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
-#include "Map/Sprites/BuildingSpritePipelineCore.h"
+#include "Map/FogOfWar/FogCoverage.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -1312,7 +1312,7 @@ namespace MiniMapFogOfWar
 
     bool IsNativeWorldRectangleRevealed(double minX,double minY,double maxX,double maxY)
     {
-        return g_snapshot.Valid&&MiniMapBuildingSpriteCore::Revealed(minX,minY,maxX,maxY,kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
+        return g_snapshot.Valid&&MiniMapFogCoverage::Revealed(minX,minY,maxX,maxY,kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
             [](int x,int y){uint8_t value=0;return TryGetMaskByte(x,y,value)&&value==255;});
     }
 
@@ -1326,9 +1326,9 @@ namespace MiniMapFogOfWar
             !std::isfinite(transform.LocalVisibilityWorldX)||!std::isfinite(transform.LocalVisibilityWorldY))return false;
         // At most 64 cells / 576 copied-mask reads. This stronger-than-necessary
         // test certifies coarse opaque overlay coverage without sampling sprite pixels.
-        return MiniMapBuildingSpriteCore::FullyObscured(minX,minY,maxX,maxY,
+        return MiniMapFogCoverage::FullyObscured(minX,minY,maxX,maxY,
             kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
-            [&](int x,int y){return MiniMapBuildingSpriteCore::OpaqueFogCell(x,y,
+            [&](int x,int y){return MiniMapFogCoverage::OpaqueFogCell(x,y,
                 CellIntersectsLocalFeather(x,y,transform,fog),TryGetMaskByte);});
     }
 

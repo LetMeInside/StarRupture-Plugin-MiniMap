@@ -26,9 +26,6 @@
 #include <unordered_map>
 #include <tuple>
 #include <algorithm>
-#ifndef MINIMAP_STAGE_C_VISUALS_ENABLED
-#define MINIMAP_STAGE_C_VISUALS_ENABLED 0
-#endif
 
 namespace
 {
@@ -431,7 +428,6 @@ namespace
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::VisualsTick,true);
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
-        if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
         if(!settings.ShowLayer)return;
         const auto input=C::GetSnapshot();
@@ -542,7 +538,6 @@ namespace MiniMapBuildingVisuals
 {
     bool Initialize(IPluginSelf* self)
     {
-        if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return true;
         if(g_initialized) return true;
         if(!self || !self->hooks || !self->hooks->Engine) return false;
         Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
@@ -557,7 +552,6 @@ namespace MiniMapBuildingVisuals
     }
     std::string GetDebugText()
     {
-        if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return "\nBuildingVisuals: OFF (isolation build)\n";
         std::scoped_lock lock(g_mutex);
 #if MINIMAP_DEBUG_UI
         return "\nBuildingVisuals: ON\n"+g_debugText+"\n"+g_splineDebugText;
@@ -571,7 +565,6 @@ namespace MiniMapBuildingVisuals
         // Presentation only: leave draw-driven queues and the independent game-thread
         // capture service untouched while this layer is hidden.
         if(!settings.ShowLayer)return;
-        if(!MINIMAP_STAGE_C_VISUALS_ENABLED) return;
         if(!ui || !transform.Valid) return;
         static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
         static std::shared_ptr<const A::RenderPlan> occlusionPlan; // Same UI-thread lifetime as quad cache.

@@ -2,7 +2,7 @@
 #include <Engine_classes.hpp>
 #include <algorithm>
 
-namespace MiniMapSpriteCapture
+namespace MiniMapBuildingCaptureConfiguration
 {
     // Private-world camera/render configuration.
     inline void ConfigureSceneCapture(SDK::USceneCaptureComponent2D* capture, const SDK::FVector& extent)

@@ -1,7 +1,7 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisualGeometry.h"
-#include "Map/Sprites/SpriteStatus.h"
+#include "Map/Buildings/SpriteStatus.h"
 namespace MiniMapBuildingSpriteGeometry
 {
     namespace C=MiniMapBuildingCollector;

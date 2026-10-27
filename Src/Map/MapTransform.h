@@ -21,6 +21,7 @@ namespace MiniMapMap
     {
         double PlayerWorldX = 0.0;
         double PlayerWorldY = 0.0;
+        double PlayerWorldZ = 0.0; // Display-only copy of the same authoritative character sample.
 
         double PlayerControlYawDegrees = 0.0;
         double CharacterWorldYawDegrees = 0.0;
@@ -227,6 +228,8 @@ namespace MiniMapMap
 
         outTransform.PlayerWorldY =
             pose.WorldY;
+
+        outTransform.PlayerWorldZ = pose.WorldZ;
 
         outTransform.PlayerControlYawDegrees =
             pose.ControlYawDegrees;

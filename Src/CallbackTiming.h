@@ -17,8 +17,8 @@
 namespace MiniMapCallbackTiming
 {
     using Clock=std::chrono::steady_clock;
-    enum class Id { PluginLoadHooks,PluginInfo,PluginInit,PluginShutdown,WorldBegin,ExperienceComplete,WorldEnd,FogTick,FoundablesTick,AlienTick,CollectorTick,VisualsTick,PoiTick,TerrainTick,TerrainDiagnosticTick,TerrainDiagnosticKey,WidgetRender,ToggleKey,MouseTick,MouseShutdown,CaptureTick,CaptureShutdown,CaptureWorldEnd,RepresentationStop,RepresentationWorldEnd,DiscoveryTick,DiscoveryWorldEnd,WorldBeforeEnd,ResidentMetadata,DiscoveryRegistry,DiscoveryClasses,DiscoveryCandidate,DiscoveryDiagnostics,CaptureSetup,CaptureSubmit,CaptureReadback,CaptureExport,CaptureRetire,ActorIdentity,ResidentAuthoredClass,BuildingCaptureService,AtlasPublication,Count };
-    inline constexpr const char* Names[]={"OnPluginLoadHooks [plugin.cpp]","GetPluginInfo [plugin.cpp]","PluginInit [plugin.cpp]","PluginShutdown [plugin.cpp]","OnWorldBeginPlay [plugin.cpp]","OnExperienceLoadComplete [plugin.cpp]","OnAfterWorldEndPlay [plugin.cpp]","OnTick [Map/FogOfWar.cpp]","OnTick [Map/Foundables.cpp]","OnTick [Map/AlienActors.cpp]","OnTick [Map/BuildingCollector.cpp]","OnTick [Map/BuildingVisuals.cpp]","OnTick [Map/PointsOfInterest.cpp]","OnTerrainTick [Map/Terrain.cpp]","OnTick [Map/TerrainDiagnostics.cpp]","OnDiagnosticKeyPressed [Map/TerrainDiagnostics.cpp]","Render [UI/MiniMapUI.cpp]","OnToggleKeyPressed [UI/MiniMapUI.cpp]","OnTick [Input/MouseWheel.cpp]","OnEngineShutdown [Input/MouseWheel.cpp]","Tick [Map/BuildingSpriteCapture.cpp]","BeginShutdown [Map/BuildingSpriteCapture.cpp]","BeforeEndPlay [Map/BuildingSpriteCapture.cpp]","Stop [Map/BuildingRepresentation.cpp]","BeforeEndPlay [Map/BuildingRepresentation.cpp]","Tick [Map/SpriteDiscovery.cpp]","BeforeEndPlay [Map/SpriteDiscovery.cpp]","OnBeforeWorldEndPlay [plugin.cpp]","resident metadata lookup","discovery registry/snapshot","discovery native class preparation","discovery candidate processing","discovery diagnostic construction","capture component setup","public CaptureScene dispatch","capture readback service","capture image export/publication","capture retirement","authored ActorClass identity","resident authored class lookup","building capture game-thread service","atlas publication"};
+    enum class Id { PluginLoadHooks,PluginInfo,PluginInit,PluginShutdown,WorldBegin,ExperienceComplete,WorldEnd,FogTick,FoundablesTick,AlienTick,CollectorTick,VisualsTick,PoiTick,TerrainTick,TerrainDiagnosticTick,TerrainDiagnosticKey,WidgetRender,ToggleKey,MouseTick,MouseShutdown,WorldBeforeEnd,ResidentMetadata,BuildingCaptureService,AtlasPublication,Count };
+    inline constexpr const char* Names[]={"OnPluginLoadHooks [plugin.cpp]","GetPluginInfo [plugin.cpp]","PluginInit [plugin.cpp]","PluginShutdown [plugin.cpp]","OnWorldBeginPlay [plugin.cpp]","OnExperienceLoadComplete [plugin.cpp]","OnAfterWorldEndPlay [plugin.cpp]","OnTick [Map/FogOfWar.cpp]","OnTick [Map/Foundables.cpp]","OnTick [Map/AlienActors.cpp]","OnTick [Map/BuildingCollector.cpp]","OnTick [Map/BuildingVisuals.cpp]","OnTick [Map/PointsOfInterest.cpp]","OnTerrainTick [Map/Terrain.cpp]","OnTick [Map/TerrainDiagnostics.cpp]","OnDiagnosticKeyPressed [Map/TerrainDiagnostics.cpp]","Render [UI/MiniMapUI.cpp]","OnToggleKeyPressed [UI/MiniMapUI.cpp]","OnTick [Input/MouseWheel.cpp]","OnEngineShutdown [Input/MouseWheel.cpp]","OnBeforeWorldEndPlay [plugin.cpp]","resident metadata lookup","building capture game-thread service","atlas publication"};
 
     static_assert(std::size(Names)==size_t(Id::Count));
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -32,14 +32,12 @@ namespace MiniMapCallbackTiming
         {
         case Id::PluginLoadHooks:return P::HookResolution;
         case Id::PluginInit:return P::PluginInitialization;
-        case Id::PluginShutdown:case Id::CaptureShutdown:case Id::MouseShutdown:return P::Shutdown;
+        case Id::PluginShutdown:case Id::MouseShutdown:return P::Shutdown;
         case Id::WorldBegin:case Id::ExperienceComplete:return P::WorldSetup;
-        case Id::WorldBeforeEnd:case Id::WorldEnd:case Id::CaptureWorldEnd:
-        case Id::RepresentationWorldEnd:case Id::DiscoveryWorldEnd:return P::WorldCleanup;
+        case Id::WorldBeforeEnd:case Id::WorldEnd:return P::WorldCleanup;
         case Id::CollectorTick:
             return QueryInitialAcquisition.load(std::memory_order_relaxed)?P::InitialCollector:P::OtherCollector;
-        case Id::CaptureTick:case Id::CaptureSetup:case Id::CaptureSubmit:case Id::CaptureReadback:
-        case Id::CaptureExport:case Id::CaptureRetire:case Id::BuildingCaptureService:return P::SpriteCapture;
+        case Id::BuildingCaptureService:return P::SpriteCapture;
         default:return P::Unclassified; // Inherit a classified enclosing scope, otherwise explicit unknown.
         }
     }
@@ -169,7 +167,7 @@ namespace MiniMapCallbackTiming
             if(kind==Id::WidgetRender)
                 MiniMapNative::SetQueryThreadIdentity(MiniMapNative::QueryThread::UI,Thread);
             if(kind==Id::CollectorTick)QueryCollectorCallbacks.fetch_add(1,std::memory_order_relaxed);
-            if(kind==Id::CaptureTick||kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_add(1,std::memory_order_relaxed);
+            if(kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_add(1,std::memory_order_relaxed);
             NativeProfile.MeasureTime=false;NativeScope.emplace(NativeProfile);
 #endif
         }
@@ -180,7 +178,7 @@ namespace MiniMapCallbackTiming
 #if defined(MODLOADER_CLIENT_BUILD)
             NativeScope.reset(); // Merge nested counters before sampling parent.
             if(Kind==Id::CollectorTick)QueryCollectorCallbacks.fetch_sub(1,std::memory_order_relaxed);
-            if(Kind==Id::CaptureTick||Kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_sub(1,std::memory_order_relaxed);
+            if(Kind==Id::BuildingCaptureService)QueryCaptureCallbacks.fetch_sub(1,std::memory_order_relaxed);
             if(Kind==Id::PluginLoadHooks||Kind==Id::PluginInit||Kind==Id::WorldBegin||
                 Kind==Id::ExperienceComplete||Kind==Id::WorldBeforeEnd||Kind==Id::WorldEnd||Kind==Id::PluginShutdown)
                 ReportDirectQueries(Self,Names[size_t(Kind)]); // Scope exit includes early failure returns.

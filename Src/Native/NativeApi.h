@@ -31,15 +31,9 @@ template<typename ReferencedType> class TRefCountPtr;
 namespace SDK
 {
     class FName;
-    class USkeletalMesh;
-    class USkeletalMeshComponent;
     class UActorComponent;
     class UTextureRenderTarget2D;
-    class UStaticMeshComponent;
     class UStaticMesh;
-    class UPrimitiveComponent;
-    class UMeshComponent;
-    class UMaterialInterface;
     class USceneCaptureComponent2D;
     struct FTransform;
     enum class EMassFragmentAccess : uint8_t;
@@ -68,7 +62,6 @@ namespace SDK
     struct FVector;
     struct FRotator;
     struct FSlateBrush;
-    struct FBox;
     struct FAuAPPayloadDataHandle;
     struct FAuAPSplineActorPayloadData;
 }
@@ -124,8 +117,6 @@ namespace MiniMapNative
     struct PlayerApi
     {
         SDK::UEngine* const* engineStorage = nullptr;
-        using GetSkeletalMeshAssetFn = SDK::USkeletalMesh* (*)(const SDK::USkeletalMeshComponent*);
-        GetSkeletalMeshAssetFn getSkeletalMeshAsset = nullptr;
 
         using RegisterComponentFn = void (*)(SDK::UActorComponent*, SDK::UWorld*, void*);
         RegisterComponentFn registerComponent = nullptr;

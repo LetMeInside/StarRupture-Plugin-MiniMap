@@ -2,7 +2,7 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "Map/Sprites/SpriteQueues.h"
+#include "Map/Buildings/SpriteQueues.h"
 
 namespace MiniMapBuildingSpriteRenderer
 {

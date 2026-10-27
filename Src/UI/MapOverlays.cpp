@@ -195,21 +195,33 @@ namespace
     void DrawPlayerCoordinates(
         IModLoaderImGui* ui,
         PluginDrawList drawList,
-        const MiniMapMap::Transform& transform)
+        const MiniMapMap::Transform& transform, bool coordsInUEUnits)
     {
-        char coordinateText[96] = {};
-        std::snprintf(coordinateText, sizeof(coordinateText),
-            "X: %.0f m   Y: %.0f m",
-            std::round(transform.PlayerWorldX / 100.0),
-            std::round(transform.PlayerWorldY / 100.0));
+        char coordinateText[192] = {};
+        if (coordsInUEUnits)
+            std::snprintf(coordinateText, sizeof(coordinateText),
+                "X: %.6f\nY: %.6f\nZ: %.6f",
+                transform.PlayerWorldX, transform.PlayerWorldY, transform.PlayerWorldZ);
+        else
+            std::snprintf(coordinateText, sizeof(coordinateText),
+                "X: %.0f m   Y: %.0f m",
+                std::round(transform.PlayerWorldX / 100.0),
+                std::round(transform.PlayerWorldY / 100.0));
 
         float textWidth = 0.0f;
         float textHeight = 0.0f;
         ui->CalcTextSize(coordinateText, &textWidth, &textHeight, false, 0.0f);
 
+        float compassLineHeight = textHeight;
+        if (coordsInUEUnits)
+        {
+            float unusedWidth = 0.0f;
+            ui->CalcTextSize("X", &unusedWidth, &compassLineHeight, false, 0.0f);
+        }
+
         const float textX = transform.CenterX - textWidth * 0.5f;
         const float textY = transform.CenterY + transform.Height * 0.5f -
-            kCompassInsetPixels - textHeight * 0.5f -
+            kCompassInsetPixels - compassLineHeight * 0.5f -
             kCoordinateCompassGapPixels - textHeight;
 
         ui->DL_AddText(drawList, textX + 1.0f, textY + 1.0f,
@@ -370,7 +382,7 @@ namespace MiniMapOverlays
 {
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform, bool showCoordinates, bool showCompass,
+        const MiniMapMap::Transform& transform, bool showCoordinates, bool coordsInUEUnits, bool showCompass,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (ui == nullptr ||
@@ -413,7 +425,7 @@ namespace MiniMapOverlays
         if (showCoordinates) DrawPlayerCoordinates(
             ui,
             drawList,
-            transform);
+            transform, coordsInUEUnits);
     }
 }
 

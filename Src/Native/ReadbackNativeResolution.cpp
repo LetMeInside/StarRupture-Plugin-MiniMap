@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
 #include "ReadbackNativeAdapter.h"
 #include "NativeApi.h"
 namespace MiniMapReadbackNative

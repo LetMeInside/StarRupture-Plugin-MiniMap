@@ -15,7 +15,7 @@ namespace MiniMapOverlays
 {
     void Render(
         IModLoaderImGui* ui,
-        const MiniMapMap::Transform& transform, bool showCoordinates, bool showCompass,
+        const MiniMapMap::Transform& transform, bool showCoordinates, bool coordsInUEUnits, bool showCompass,
         const MiniMapConfig::FogOfWarSettings& fog);
 }
 

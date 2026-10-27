@@ -11,8 +11,8 @@
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Native/CaptureRetirementCore.h"
-#include "Map/Sprites/CapturePng.h"
-#include "Map/Sprites/SceneCaptureConfiguration.h"
+#include "Map/Buildings/CapturePng.h"
+#include "Map/Buildings/SceneCaptureConfiguration.h"
 #include "plugin_helpers.h"
 
 #include <Engine_classes.hpp>
@@ -1172,7 +1172,6 @@ namespace
 
     bool ReadbackAvailable(bool initialize, bool& available) noexcept
     {
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         __try
         {
             available = initialize ? MiniMapReadbackNative::Preflight() : MiniMapReadbackNative::CaptureRetirementRendererAvailable();
@@ -1180,11 +1179,6 @@ namespace
         }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
-#else
-        (void)initialize;
-        available = false; // The independent adapter is compiled out.
-        return true;
-#endif
     }
 
     // Leaf boundaries mirror the supported native calls. An interrupted
@@ -1221,7 +1215,6 @@ namespace
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     bool ServiceReadback(MiniMapReadbackNative::Job* job, uint64_t tick)
     {
         // The adapter catches enqueue C++ exceptions and preserves its evidence.
@@ -1231,7 +1224,6 @@ namespace
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
     }
-#endif
 
     bool SpawnActor(uintptr_t world, uintptr_t type, const SDK::FTransform* transform, uintptr_t* result) noexcept
     {
@@ -1280,7 +1272,7 @@ namespace
         static_assert(std::is_trivially_destructible_v<SDK::FEngineShowFlagsSetting>);
         __try
         {
-            MiniMapSpriteCapture::ConfigureSceneCapture(capture, *extent);
+            MiniMapBuildingCaptureConfiguration::ConfigureSceneCapture(capture, *extent);
             capture->CaptureSource = finalColor ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR;
             SDK::FEngineShowFlagsSetting flags[16]{};
             const wchar_t* names[] = {L"Fog", L"Atmosphere", L"VolumetricFog", L"Cloud", L"MotionBlur", L"TemporalAA",
@@ -1379,9 +1371,7 @@ namespace
             Diagnostic("MiniMap: sprite request rejected: canonical=%s requestPhase=%u source=%s reason=%s; terminal publication failure, native retirement still required",
                 BlueprintPath.c_str(), unsigned(Phase), FinalColorPass ? "FinalColorLDR" : "SceneColorHDR", reason);
         }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         MiniMapReadbackNative::Job* Job{};
-#endif
         MiniMapCaptureRetirement::FenceOwner Fence; // Sole fence; no automatic native destruction.
 
         struct FenceReleaseInterrupted {};
@@ -1606,9 +1596,7 @@ namespace
             bool owned = (fence != MiniMapCaptureRetirement::FenceState::Empty && fence != MiniMapCaptureRetirement::FenceState::Destroyed) ||
                 held(Actor) || held(Capture) || held(Target);
             for (const auto& ref : Metadata) owned |= held(ref);
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             owned |= Job != nullptr;
-#endif
             return owned;
         }
         // CPU-only completion. Retired/Failed alone never proves native retirement.
@@ -1705,9 +1693,7 @@ namespace
             const auto fence = Fence.GetState();
             if (!Ready() || (fence != MiniMapCaptureRetirement::FenceState::Empty && fence != MiniMapCaptureRetirement::FenceState::Destroyed))
             { Quarantine("object retirement attempted before fence release or with invalid world"); return false; }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (Job) { Quarantine("object retirement attempted with a live readback Job"); return false; }
-#endif
             if (Actor.State != Ownership::Empty)
             {
                 uint8_t a{}, b{}; uintptr_t destroyed{};
@@ -1744,7 +1730,6 @@ namespace
                 if (Phase != RequestPhase::Quarantined) Wait(WaitReason::Fence, "retirement fence not complete");
                 return false; // Nonblocking; faults quarantine through operations.
             }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (Job)
             {
                 if (!Committed)
@@ -1771,7 +1756,6 @@ namespace
                     { Quarantine("readback native owners not retired"); return false; }
                 }
             }
-#endif
             return ReleaseFence() && RetireObjects();
         }
         bool Retire(bool* gcDeferred = nullptr)
@@ -1799,10 +1783,8 @@ namespace
                 return FinishRetirement();
             }
             // Never-captured preparation retains the established disposal path.
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (!MiniMapReadbackNative::DiscardExternalBeforeCapture(Job))
             { Quarantine("unsubmitted readback Job could not be discarded"); return false; }
-#endif
             return ReleaseFence() && RetireObjects();
         }
         void Fail(const char* reason)
@@ -1822,17 +1804,12 @@ namespace
                 source != (FinalColorPass ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR) ||
                 !Read(Target.Object.Bits + offsetof(SDK::UTextureRenderTarget, TargetGamma), gamma) || gamma != (FinalColorPass ? 2.2f : 1.f))
             { Rejected("capture source/target display gamma mismatch"); return false; }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             if (!Job) return false;
             const auto report = MiniMapReadbackNative::Inspect(Job);
             return report.Current == MiniMapReadbackNative::Phase::ReadyToSubmit && !report.Quarantined &&
                 !report.Callables && !report.Outstanding && !report.NativeEnqueueEverInvoked &&
                 report.Result == MiniMapReadbackNative::Outcome::Pending;
-#else
-            return false;
-#endif
         }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         void ConvertReadback(const MiniMapReadbackNative::Report& report)
         {
             using ReadbackPhase = MiniMapReadbackNative::Phase;
@@ -1894,7 +1871,6 @@ namespace
             PreparedTick = g_captureServiceTick;
             Phase = RequestPhase::Prepared;
         }
-#endif
         // HDR C0 warms the scene; HDR C10 waits at least ten admitted service
         // ticks. After HDR Job retirement, final color submits once on the tick
         // after reconfiguration, without another warm-up or ten-tick delay.
@@ -1911,7 +1887,6 @@ namespace
                 ++g_captureServiceTick;
                 if (Phase == RequestPhase::Waiting) { Prepare(); return; }
                 if (Phase == RequestPhase::Retiring) { Retire(); return; }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
                 if (Phase == RequestPhase::FinalColorPreparing) { PrepareFinalColor(); return; }
                 if (Phase == RequestPhase::Prepared || Phase == RequestPhase::C0)
                 {
@@ -1980,7 +1955,6 @@ namespace
                     Retire(); // Rgba stays owned until every native dependency retires.
                     return;
                 }
-#endif
                 Quarantine("capture service request phase invalid");
             }
             catch (...) { Quarantine("capture service exception with retained native ownership"); }
@@ -2097,10 +2071,8 @@ namespace
             { Quarantine("capture registration postconditions invalid"); return; }
             if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
             if (!resource) { Fail("render-target resource getter returned null"); return; }
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
             Job = MiniMapReadbackNative::CreateExternalJob(reinterpret_cast<void*>(resource), 256, 256);
             if (!Job) { Fail("external readback Job creation returned null"); return; }
-#endif
             if (!Ready() || !ActorState(true)) { Quarantine("prepared request ownership invalid"); return; }
             PreparedTick = g_captureServiceTick;
             Phase = RequestPhase::Prepared;

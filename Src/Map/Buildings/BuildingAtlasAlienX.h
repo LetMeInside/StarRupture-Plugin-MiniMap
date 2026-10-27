@@ -3,7 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "plugin_interface.h"
-#include "Map/Sprites/SpriteStatus.h"
+#include "Map/Buildings/SpriteStatus.h"
 #include <array>
 #include <cstdint>
 #include <span>

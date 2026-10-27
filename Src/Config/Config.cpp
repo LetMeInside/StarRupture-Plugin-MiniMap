@@ -27,7 +27,9 @@ namespace
         {"General", "RotatingMiniMap", ConfigValueType::Boolean, "true",
          "Rotating MiniMap: heading up when enabled; source-map north up otherwise."},
         {"General", "ShowCoordinates", ConfigValueType::Boolean, "true",
-         "Show Coordinates: physical character X/Y in meters."},
+         "Show Coordinates: display the physical character's coordinates in the selected units."},
+        {"General", "CoordsInUEUnits", ConfigValueType::Boolean, "false",
+         "Coordinates in UE Units: show physical character X/Y/Z in Unreal Engine units (centimeters); otherwise show X/Y in meters."},
         {"General", "ShowCompass", ConfigValueType::Boolean, "true",
          "Show Compass: draw cardinal labels independently of coordinates."},
         {"General", "ClearCache", ConfigValueType::Boolean, "false",
@@ -81,6 +83,7 @@ namespace
         Follow,
         Rotating,
         Coordinates,
+        CoordinateUnits,
         Compass,
         ClearCache,
         WheelEnabled,
@@ -102,6 +105,8 @@ namespace
         FieldCount
     };
     static_assert(FieldCount == std::size(kEntries));
+    static_assert(FieldCount == 24);
+    static_assert(ClearCache + 1 == 8); // General entries precede Zoom.
     std::mutex g_settingsMutex;
     Settings g_settings;
     bool g_listening = false;     // Lifecycle only.
@@ -317,6 +322,9 @@ constexpr const char* kKeys[] = {
         case Coordinates:
             s.ShowCoordinates = v.Boolean;
             break;
+        case CoordinateUnits:
+            s.CoordsInUEUnits = v.Boolean;
+            break;
         case Compass:
             s.ShowCompass = v.Boolean;
             break;
@@ -452,7 +460,7 @@ namespace MiniMapConfig
     RenderSettings GetRenderSettings()
     {
         std::lock_guard lock(g_settingsMutex);
-        return {g_settings.RotatingMiniMap, g_settings.ShowCoordinates, g_settings.ShowCompass,
+        return {g_settings.RotatingMiniMap, g_settings.ShowCoordinates, g_settings.CoordsInUEUnits, g_settings.ShowCompass,
                 g_settings.TrackingRevision,
                 {g_settings.ShowBuildingLayer, g_settings.RenderDroneRails},
                 {g_settings.DisableFogOfWar, g_settings.VisibilityFeatherRange},

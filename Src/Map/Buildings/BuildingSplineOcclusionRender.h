@@ -90,7 +90,8 @@ namespace MiniMapBuildingSplineOcclusionRender
             {if(diagnostic)++diagnostic->OutsideViewportTriangles;continue;}
             if(area<0)std::swap(q,r);
             try{ui->DL_AddTriangleFilled(list,p.X,p.Y,q.X,q.Y,r.X,r.Y,color);}
-            catch(...){if(diagnostic)diagnostic->Rejected=true;return submitted;} // Never retry a possibly recorded call.
+            catch(...){
+                if(diagnostic)diagnostic->Rejected=true;return submitted;} // Never retry a possibly recorded call.
             ++submitted.Triangles;
         }
         return submitted;

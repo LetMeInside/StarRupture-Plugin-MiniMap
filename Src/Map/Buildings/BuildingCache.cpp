@@ -3,7 +3,7 @@
 
 #include "BuildingCache.h"
 
-#include "../Sprites/CapturePng.h"
+#include "CapturePng.h"
 #include "CacheIdentity.h"
 #include "PluginPaths.h"
 #include "plugin_helpers.h"

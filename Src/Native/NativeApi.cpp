@@ -238,8 +238,7 @@ namespace MiniMapNative
 
         if (!addresses.retainObject || !addresses.releaseObject || !addresses.nameEqualsWide) return false;
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-        if (!addresses.objectArray || !addresses.getSkeletalMeshAsset) return false;
+        if (!addresses.objectArray) return false;
         if (!addresses.activeGarbageCollection) return false;
         if (!addresses.engineStorage) return false;
         if (!addresses.exitPurge) return false;
@@ -285,7 +284,6 @@ namespace MiniMapNative
         if (!addresses.renderFenceDestroy) return false;
         if (!addresses.renderFenceBegin) return false;
         if (!addresses.renderFencePoll) return false;
-#endif
 
         g_nativeApi.asset.loadSynchronous =
             reinterpret_cast<AssetApi::LoadSynchronousFn>(
@@ -464,22 +462,15 @@ namespace MiniMapNative
 
         g_nativeApi.texture.memoryFree =
             reinterpret_cast<TextureApi::MemoryFreeFn>(
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
                 addresses.readbackFree);
-#else
-                addresses.memoryFree);
-#endif
 
-        // Optional grid/collector addresses: missing resolutions disable the
-        // dependent stage without disabling Stage A or the established MiniMap.
+        // Mandatory collector addresses resolved by the plugin hook admission phase.
         g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);
         g_nativeApi.gridDiagnostic.forEachCellInRadius = reinterpret_cast<GridDiagnosticApi::ForEachCellInRadiusFn>(addresses.gridForEachCellInRadius);
         g_nativeApi.mass.isEntityValid = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityValid);
         g_nativeApi.mass.isEntityBuilt = reinterpret_cast<MassApi::EntityCheckFn>(addresses.isMassEntityBuilt);
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         g_nativeApi.asset.objectArray = reinterpret_cast<const void*>(addresses.objectArray);
-        g_nativeApi.player.getSkeletalMeshAsset = reinterpret_cast<decltype(g_nativeApi.player.getSkeletalMeshAsset)>(addresses.getSkeletalMeshAsset);
         g_nativeApi.asset.fromValidEName = reinterpret_cast<decltype(g_nativeApi.asset.fromValidEName)>(addresses.readbackFromValidEName);
         g_nativeApi.texture.submitRenderCommand = reinterpret_cast<decltype(g_nativeApi.texture.submitRenderCommand)>(addresses.readbackSubmit);
         g_nativeApi.texture.immediateCommandList = reinterpret_cast<decltype(g_nativeApi.texture.immediateCommandList)>(addresses.readbackImmediate);
@@ -524,7 +515,6 @@ namespace MiniMapNative
         g_nativeApi.texture.renderFenceDestroy = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceDestroy)>(addresses.renderFenceDestroy);
         g_nativeApi.texture.renderFenceBegin = reinterpret_cast<decltype(g_nativeApi.texture.renderFenceBegin)>(addresses.renderFenceBegin);
         g_nativeApi.texture.renderFencePoll = reinterpret_cast<decltype(g_nativeApi.texture.renderFencePoll)>(addresses.renderFencePoll);
-#endif
 
         g_nativeApi.asset.retainObject = reinterpret_cast<decltype(g_nativeApi.asset.retainObject)>(addresses.retainObject);
         g_nativeApi.asset.releaseObject = reinterpret_cast<decltype(g_nativeApi.asset.releaseObject)>(addresses.releaseObject);

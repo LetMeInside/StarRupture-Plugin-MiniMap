@@ -5,7 +5,7 @@
 #include "BuildingAtlasCore.h"
 #include "BuildingAtlasAlienX.h"
 #include "BuildingCache.h"
-#include "Map/Sprites/SpriteStatus.h"
+#include "Map/Buildings/SpriteStatus.h"
 #include "plugin_interface.h"
 #include <memory>
 

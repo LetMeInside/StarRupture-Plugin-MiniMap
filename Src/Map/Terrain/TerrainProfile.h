@@ -1,8 +1,8 @@
 #pragma once
 
-// Temporary Stage 45C instrumentation. Set to 0 at compile time to disable.
+// Optional terrain timing instrumentation; independent of functional terrain work.
 #ifndef MINIMAP_TERRAIN_PROFILE
-#define MINIMAP_TERRAIN_PROFILE 1
+#define MINIMAP_TERRAIN_PROFILE 0
 #endif
 
 #if defined(MODLOADER_CLIENT_BUILD)

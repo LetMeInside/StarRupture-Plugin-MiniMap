@@ -397,7 +397,7 @@ namespace
             }
             entry.Definition=placement;
             r.BuildingId=uint32_t(placement->BuildingID);r.DefinitionObjectIndex=placement->Index;
-            r.DefinitionIndex=placement->Name.ComparisonIndex;r.DefinitionNumber=placement->Name.Number;r.DefinitionValid=true;
+            r.DefinitionValid=true;
         }
         if(!r.TransformValid)
         {
@@ -680,17 +680,6 @@ namespace MiniMapBuildingCollector
         std::scoped_lock lock(publicationMutex);viewRadius=std::isfinite(radius)?radius:0;
     }
     std::shared_ptr<const Snapshot> GetSnapshot(){std::scoped_lock lock(publicationMutex);return snapshot;}
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-    DiagnosticVisitStatus VisitDiagnosticDefinition(const Record& r,bool(*visitor)(const SDK::UObject*,void*),void* context)
-    {
-        const auto* n=MiniMapNative::Get();if(!n || !ready || !manager || !visitor || !n->player.isGameThread())return DiagnosticVisitStatus::CollectorUnavailable;
-        if(r.Generation!=generation || world!=MiniMapMap::GetWorld())return DiagnosticVisitStatus::WorldGenerationChanged;
-        const Id id{r.Index,r.Serial};
-        if(!n->mass.isEntityValid(manager,id) || !n->mass.isEntityBuilt(manager,id))return DiagnosticVisitStatus::StaleEntity;
-        const auto* p=Parameters(*n,id);if(!p || !p->PlacementData)return DiagnosticVisitStatus::ParametersUnavailable;
-        return visitor(p->PlacementData,context)?DiagnosticVisitStatus::Visited:DiagnosticVisitStatus::VisitorRejected;
-    }
-#endif
     void Shutdown()
     {
         if(!initialized)return;GetSelf()->hooks->Engine->UnregisterOnTick(&OnTick);Reset();

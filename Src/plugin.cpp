@@ -301,10 +301,8 @@ void OnPluginLoadHooks(
     LOG_INFO(
         "MiniMap: native API initialized");
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
-#endif
 
 #else
 

@@ -13,7 +13,6 @@
 #include "Map/AlienActors/AlienActors.h"
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Buildings/BuildingVisuals.h"
-#include "Map/Sprites/BuildingSprites.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
 
@@ -33,9 +32,6 @@ namespace
     bool g_bindingsActive = false; // Protected by g_bindingMutex.
     std::atomic<bool> g_inputActive{false};
     MiniMapConfig::Keybind g_toggleIdentity{}, g_zoomInIdentity{}, g_zoomOutIdentity{};
-#if defined(MINIMAP_BUILDING_SPRITES)
-    std::chrono::steady_clock::time_point g_lastSpriteWidget{};
-#endif
 
     PluginWindowHints g_hints = {};
 
@@ -113,22 +109,9 @@ namespace
         MiniMapCallbackTiming::Scope callbackTiming(MiniMapCallbackTiming::Id::WidgetRender,true);
         if (ui == nullptr || !IsEffectivelyVisible())
         {
-#if defined(MINIMAP_BUILDING_SPRITES)
-            g_lastSpriteWidget={};
-#endif
             return;
         }
 
-#if defined(MINIMAP_BUILDING_SPRITES)
-        // CPU callback time and callback cadence are separate. Neither measures
-        // GPU execution or attributes time spent outside this widget to MiniMap.
-        MiniMapBuildingSprites::TimingScope widgetTiming(MiniMapBuildingSprites::Timing::WidgetCpu);
-        const auto widgetNow=std::chrono::steady_clock::now();
-        if(g_lastSpriteWidget.time_since_epoch().count())
-            MiniMapBuildingSprites::RecordTiming(MiniMapBuildingSprites::Timing::WidgetInterval,
-                std::chrono::duration<double,std::milli>(widgetNow-g_lastSpriteWidget).count());
-        g_lastSpriteWidget=widgetNow;
-#endif
 
         float windowX = 0.0f;
         float windowY = 0.0f;
@@ -264,7 +247,7 @@ namespace
 
             MiniMapOverlays::Render(
                 ui,
-                transform, settings.ShowCoordinates, settings.ShowCompass, settings.Fog);
+                transform, settings.ShowCoordinates, settings.CoordsInUEUnits, settings.ShowCompass, settings.Fog);
         }
 
         ui->DL_AddRect(

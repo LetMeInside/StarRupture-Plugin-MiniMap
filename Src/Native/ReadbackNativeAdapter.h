@@ -1,12 +1,10 @@
 #pragma once
 #include "CaptureTiming.h"
 
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
 #include <cstdint>
 #include "CaptureRetirementCore.h"
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "FloatReadbackPixels.h"
-#endif
 namespace MiniMapReadbackNative
 {
     bool ResolvePrerequisites();
@@ -37,7 +35,6 @@ namespace MiniMapReadbackNative
         MiniMapCaptureTiming::Record Timing; // Copied only after all native callbacks retire.
     };
     // One job; native objects remain private to this TU's render commands.
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     // Resource is GC-protected by the game-thread capture owner through retirement.
     Job* CreateExternalJob(void* resource, uint32_t width, uint32_t height);
     // Owner may call ONLY before builder Execute; no capture may reference it yet.
@@ -49,7 +46,6 @@ namespace MiniMapReadbackNative
     const MiniMapFloatPixels::Stats* FloatStats(const Job*);
     // Immutable packed CPU pixels; valid only until DestroyIfRetired. No GPU access.
     const std::vector<uint8_t>* FloatPixels(const Job*);
-#endif
     void Service(Job*, uint64_t frame); // game thread; submits at most one command
     void Cancel(Job*);                 // invalidates publication, not resources
     Report Inspect(const Job*);

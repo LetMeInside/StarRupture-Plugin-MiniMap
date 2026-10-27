@@ -42,7 +42,7 @@ namespace MiniMapFingerprints
         uintptr_t addTransformRequirement = 0;
         uintptr_t isMassEntityValid = 0;
         uintptr_t isMassEntityBuilt = 0;
-        uintptr_t gridForEachCellInRadius = 0; // Optional XY collector traversal.
+        uintptr_t gridForEachCellInRadius = 0; // XY collector traversal.
         uintptr_t addEnemyStateRequirement = 0;
         uintptr_t enemyStateFragmentStaticStruct = 0;
         uintptr_t enemyTagStaticStruct = 0;
@@ -61,7 +61,7 @@ namespace MiniMapFingerprints
         uintptr_t destroySplineActorPayloadData = 0;
         uintptr_t splineActorPayloadStaticStruct = 0;
 
-        // Optional Stage A.1 diagnostic; never a dependency of map rendering.
+        // Mandatory collector grid subsystem resolution.
         uintptr_t getEntityGridSubsystem = 0;
 
         uintptr_t getPlatformData = 0;
@@ -87,7 +87,6 @@ namespace MiniMapFingerprints
         uintptr_t destroyActor = 0;
 
         uintptr_t objectArray = 0;
-        uintptr_t getSkeletalMeshAsset = 0;
         uintptr_t nameEqualsWide = 0;
 
         uintptr_t readbackFromValidEName = 0;

@@ -14,37 +14,7 @@
 
 namespace MiniMapCapturePng
 {
-    struct Image { std::vector<uint8_t> Rgba, Mask; size_t Sanitized = 0; };
     inline uint8_t Byte(float v) { return uint8_t(std::lround(std::clamp(v,0.f,1.f)*255.f)); }
-    inline uint8_t Display(float linear)
-    {
-        linear=(std::max)(0.f,linear);
-        const float mapped=linear/(1.f+linear); // Reinhard; fixed unit exposure.
-        return Byte(mapped<=0.0031308f ? 12.92f*mapped : 1.055f*std::pow(mapped,1.f/2.4f)-0.055f);
-    }
-    inline bool Convert(const uint8_t* data,size_t length,size_t w,size_t h,size_t pitch,size_t bufferHeight,Image& out)
-    {
-        size_t row,total,source;
-        if(w>4096 || h>4096 || !MiniMapFloatPixels::Size(w,h,pitch,bufferHeight,row,total,source) ||
-            !data || length<source || total>128*1024*1024) return false;
-        out={};out.Rgba.resize(w*h*4);out.Mask.resize(w*h);
-        for(size_t y=0;y<h;++y) for(size_t x=0;x<w;++x)
-        {
-            float c[4];
-            for(size_t k=0;k<4;++k)
-            {
-                const size_t i=(y*pitch+x)*8+k*2;
-                c[k]=MiniMapFloatPixels::Half(uint16_t(data[i])|(uint16_t(data[i+1])<<8));
-                if(!std::isfinite(c[k])) {++out.Sanitized;c[k]=k==3?1.f:0.f;}
-            }
-            const size_t i=y*w+x;const uint8_t alpha=Byte(1.f-std::clamp(c[3],0.f,1.f));
-            out.Mask[i]=alpha;out.Rgba[i*4+3]=alpha;
-            // RGB association is unverified for partial coverage. Do not divide
-            // by alpha; binary-alpha runtime evidence requires no unpremultiply.
-            for(size_t k=0;k<3;++k)out.Rgba[i*4+k]=alpha?Display(c[k]):0;
-        }
-        return true;
-    }
     // FinalColorLDR in a non-sRGB PF_FloatRGBA target with TargetGamma=2.2:
     // Unreal has already applied its tone curve and output transfer function.
     // These are RGBA half-floats in channel order, not BGRA8 or scene-linear RGB.

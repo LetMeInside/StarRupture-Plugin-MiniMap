@@ -1,4 +1,4 @@
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
 #include "ReadbackUEConfiguration.h"
 #define RHI_API
 #define RENDERCORE_API
@@ -15,11 +15,9 @@
 #include <atomic>
 #include <chrono>
 #include <new>
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
 #include "RHITransition.h"
 #include <vector>
 class FRHIComputeCommandList;
-#endif
 
 class FRHICommandList;
 class FRHICommandListImmediate;
@@ -199,14 +197,12 @@ namespace MiniMapReadbackNative
         // Render-thread-only: no UObject/world/component references.
         FTextureRHIRef Texture;
         FRHIGPUTextureReadback* Readback = nullptr;
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
         bool External = false;
         bool CaptureCommitted = false; // game-thread only
         void* TargetResource = nullptr;
         uint32 Width = 0, ImageHeight = 0;
         std::vector<uint8_t> FloatCpu;
         MiniMapFloatPixels::Stats FloatStatistics;
-#endif
     };
 
     namespace
@@ -365,7 +361,6 @@ namespace MiniMapReadbackNative
         static_assert(sizeof(UE::Core::Private::Function::TFunction_OwnedObject<Command, true, false>) <= 24);
     }
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
     Job* CreateExternalJob(void* resource,uint32_t width,uint32_t height)
     {
         if (!resource || !width || !height || width>4096 || height>4096) return nullptr;
@@ -422,7 +417,6 @@ namespace MiniMapReadbackNative
     { return job && job->External && job->DataReady.load(std::memory_order_acquire) && job->HasPixels ? &job->FloatStatistics : nullptr; }
     const std::vector<uint8_t>* FloatPixels(const Job* job)
     { return FloatStats(job) ? &job->FloatCpu : nullptr; }
-#endif
     void Service(Job* job, uint64_t frame)
     {
         if (!job) return;

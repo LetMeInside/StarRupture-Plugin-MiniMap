@@ -3,8 +3,8 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map/Buildings/BuildingCollector.h"
-#include "Map/Sprites/SpriteStatus.h"
-#include "Map/Sprites/SpriteQueues.h"
+#include "Map/Buildings/SpriteStatus.h"
+#include "Map/Buildings/SpriteQueues.h"
 #include <mutex>
 
 // Integration callers serialize drawing and lifecycle transitions with this lock.

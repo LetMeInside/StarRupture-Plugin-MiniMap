@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-namespace SDK { class UObject; }
 namespace MiniMapBuildingCollector
 {
     struct Bounds
@@ -54,10 +53,7 @@ namespace MiniMapBuildingCollector
         uint64_t Generation = 0;
         int32_t Index = 0, Serial = 0;
         uint32_t BuildingId = 0;
-        int32_t DefinitionIndex = 0;
-        uint32_t DefinitionNumber = 0;
-        // Copied definition names/index are used only by the existing private
-        // capture diagnostics, never as native lifetime certificates.
+        // Copied object index for render tracing, never a native lifetime certificate.
         int32_t DefinitionObjectIndex = 0;
         bool TransformValid = false, DefinitionValid = false, HasSpline = false;
         bool InteriorKnown = false, InteriorOnly = false;
@@ -82,12 +78,6 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
-    // Caller must be on the game thread. Borrowing ends when visitor returns.
-    // Revalidates the Mass identity; does not resolve the copied UObject index.
-    enum class DiagnosticVisitStatus { Visited,VisitorRejected,CollectorUnavailable,WorldGenerationChanged,InvalidCopiedDefinition,StaleEntity,ParametersUnavailable };
-    DiagnosticVisitStatus VisitDiagnosticDefinition(const Record&,bool(*visitor)(const SDK::UObject*,void*),void*);
-#endif
     void Shutdown();
 }
 #endif

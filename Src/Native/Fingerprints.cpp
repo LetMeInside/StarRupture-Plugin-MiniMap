@@ -12,23 +12,6 @@
 // Resolved native addresses remain valid after this callback; the scanner
 // itself must not be retained.
 //
-// Fourteen native functions are currently resolved:
-//
-//   1.  FSoftObjectPtr::LoadSynchronous
-//   2.  UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D
-//   3.  UStreamableRenderAsset::SetForceMipLevelsToBeResident
-//   4.  UStreamableRenderAsset::WaitForStreaming
-//   5.  UTexture2D::GetNumResidentMips
-//   6.  UTexture2D::GetNumMipsAllowed
-//   7.  UTexture2D::GetNumMips
-//   8.  UTexture2D::StreamIn
-//   9.  UStreamableRenderAsset::WaitForPendingInitOrStreaming
-//   10. UWorld::GetFirstPlayerController
-//   11. AController::GetPawn<ACrCharacterPlayerBase>
-//   12. USceneComponent::K2_GetComponentLocation
-//   13. ACrCharacterPlayerBase::IsPlayerInForgottenEngine
-//   14. AController::GetControlRotation
-//
 // Each fingerprint is intentionally tied to native behavior MiniMap depends on.
 // If StarRupture changes an incompatible implementation or layout, resolution
 // should fail rather than allowing MiniMap to continue with stale assumptions.
@@ -1815,7 +1798,7 @@ namespace MiniMapFingerprints
         // cell selection is XY at both hierarchy levels regardless of Z.
         resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::ForEachCellInRadius",
             gridBoxPattern, 0x14D, addresses.gridForEachCellInRadius);
-#if defined(MODLOADER_CLIENT_BUILD) && defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
             request.hookName = "MiniMap::Spawn";
@@ -1952,7 +1935,7 @@ namespace MiniMapFingerprints
         }
 #endif
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
             request.hookName = "MiniMap::Readback::FromValidEName";
@@ -2195,7 +2178,7 @@ namespace MiniMapFingerprints
             "8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00 48 8B 05 ?? ?? ?? ??", 2, 6, {0x8b,0x0d,0}, addresses.readbackGpuCount)) return false;
 #endif
 
-#if defined(MINIMAP_STAGE_R2_BUILDING_CAPTURE)
+#if defined(MODLOADER_CLIENT_BUILD)
         {
             PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
             request.hookName = "MiniMap::GUObjectArray";
@@ -2223,17 +2206,6 @@ namespace MiniMapFingerprints
             const uintptr_t target = displacement<0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
             if (!MiniMapNative::IsMemoryRangeReadable(target,0x30,8)) return invalid();
             addresses.objectArray = target; // Enclosing UObject array; no extra indirection.
-        }
-        {
-            PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-            request.hookName = "MiniMap::USkeletalMeshComponent::GetSkeletalMeshAsset";
-            request.pattern = "40 53 48 83 EC 20 48 8B 99 88 05 00 00 48 85 DB 75 2A 80 3D ?? ?? ?? ?? 00 48 8B 99 90 05 00 00 74 0D 48 85 DB 74 0D 48 8B CB E8 ?? ?? ?? ?? 48 85 DB";
-            request.kind = PLUGIN_SCAN_FUNCTION_START;
-            request.flags = PLUGIN_SCAN_FLAG_NONE;
-            request.module = nullptr;
-            request.resultOffset = 0;
-            addresses.getSkeletalMeshAsset = scanner->Resolve(self, &request);
-            if (!addresses.getSkeletalMeshAsset) return false;
         }
 #if defined(MODLOADER_CLIENT_BUILD)
         // Private-world native entry points. Leaf functions use CODE; unwind-covered

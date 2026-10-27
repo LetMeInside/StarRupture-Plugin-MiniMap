@@ -15,6 +15,7 @@ namespace MiniMapConfig
         bool FollowBuildDrone = true;
         bool RotatingMiniMap = true;
         bool ShowCoordinates = true;
+        bool CoordsInUEUnits = false;
         bool ShowCompass = true;
         bool ClearCache = false;
         bool ZoomWithMouseWheel = true;
@@ -69,6 +70,7 @@ namespace MiniMapConfig
     {
         bool RotatingMiniMap;
         bool ShowCoordinates;
+        bool CoordsInUEUnits;
         bool ShowCompass;
         uint64_t TrackingRevision;
         BuildingRenderSettings Buildings;

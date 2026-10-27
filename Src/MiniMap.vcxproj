@@ -95,6 +95,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CacheIdentity.h" />
+    <ClInclude Include="Map\Buildings\SpriteQueues.h" />
+    <ClInclude Include="Map\Buildings\SpriteStatus.h" />
+    <ClInclude Include="Map\Buildings\CapturePng.h" />
+    <ClInclude Include="Map\Buildings\SceneCaptureConfiguration.h" />
+    <ClInclude Include="Map\FogOfWar\FogCoverage.h" />
     <ClInclude Include="CaptureTiming.h" />
     <ClInclude Include="Config\Config.h" />
     <ClInclude Include="DebugText.h" />
@@ -103,21 +108,12 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
-    <ClInclude Include="Map\Sprites\BlueprintIdentityCacheCore.h" />
-    <ClInclude Include="Map\Sprites\CaptureDispatchCore.h" />
-    <ClInclude Include="Map\Sprites\CaptureFifoRuntimeCore.h" />
-    <ClInclude Include="Map\Sprites\CaptureLeaseCore.h" />
-    <ClInclude Include="Map\Sprites\CaptureWorkLedgerCore.h" />
-    <ClInclude Include="Map\Sprites\SessionSpritePublicationCore.h" />
-    <ClInclude Include="Map\Sprites\SessionTextureAccountingCore.h" />
+    <ClInclude Include="Map\MarkerIconSizing.h" />
+    <ClInclude Include="Map\Terrain\TerrainProfile.h" />
     <ClInclude Include="Native\BC3Decode.h" />
     <ClInclude Include="Native\DefinitionAcquisitionCore.h" />
-    <ClInclude Include="Native\DefinitionDiagnosticCore.h" />
     <ClInclude Include="Native\MapMenuDevSettingsLookup.h" />
     <ClInclude Include="PluginPaths.h" />
-    <ClInclude Include="Map\Sprites\CapturePng.h" />
-    <ClInclude Include="Map\Sprites\SpriteQueues.h" />
-    <ClInclude Include="Map\Sprites\SpriteStatus.h" />
     <ClInclude Include="Map\Buildings\BuildingCache.h" />
     <ClInclude Include="Map\Buildings\BuildingAtlasCore.h" />
     <ClInclude Include="Map\Buildings\BuildingAtlasAlienX.h" />
@@ -125,23 +121,6 @@
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
-    <ClInclude Include="Map\Sprites\BuildingSpriteCapture.h" />
-    <ClInclude Include="Map\Sprites\BuildingRepresentation.h" />
-    <ClInclude Include="Map\Sprites\SpriteDiscovery.h" />
-    <ClInclude Include="Map\Sprites\RepresentationMetadataCore.h" />
-    <ClInclude Include="Map\Sprites\RepresentationSelectionCore.h" />
-    <ClInclude Include="Map\Sprites\AssemblyRecipeCore.h" />
-    <ClInclude Include="Map\Sprites\StaticAssemblyCaptureCore.h" />
-    <ClInclude Include="Map\Sprites\SpriteDiscoveryCore.h" />
-    <ClInclude Include="Map\Sprites\SpriteClassificationCore.h" />
-    <ClInclude Include="Map\Sprites\SpriteValidationCore.h" />
-    <ClInclude Include="Map\Sprites\SpriteCandidateIdentity.h" />
-    <ClInclude Include="Map\Sprites\SpriteCaptureCore.h" />
-    <ClInclude Include="Map\Sprites\BuildingSpritePipelineCore.h" />
-    <ClInclude Include="Map\Sprites\BuildingSprites.h" />
-    <ClInclude Include="Map\Sprites\AssemblyRecipeAudit.inl" />
-    <ClInclude Include="Map\Sprites\GenericRepresentationAudit.inl" />
-    <ClInclude Include="Map\Sprites\SpriteClassificationAudit.inl" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
@@ -166,9 +145,6 @@
     <ClInclude Include="Native\NativeApi.h" />
     <ClInclude Include="Native\ResidentMetadata.h" />
     <ClInclude Include="Map\Buildings\BuildingBlueprintIdentity.h" />
-    <ClInclude Include="Map\Sprites\PrivateCaptureWorld.h" />
-    <ClInclude Include="Map\Sprites\PrivateCaptureWorldActors.inl" />
-    <ClInclude Include="Map\Sprites\SceneCaptureConfiguration.h" />
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain\Terrain.h" />
     <ClInclude Include="Native\TextureAccess.h" />
@@ -194,9 +170,6 @@
     <ClCompile Include="Native\ReadbackNativeResolution.cpp">
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
-    <ClCompile Include="Map\Sprites\BuildingSpriteCapture.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
     <ClCompile Include="Map\Buildings\BuildingCache.cpp" />
     <ClCompile Include="Map\Buildings\BuildingAtlasCore.cpp" />
     <ClCompile Include="Map\Buildings\BuildingAtlasAlienX.cpp" />
@@ -204,7 +177,7 @@
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
-      <AdditionalIncludeDirectories Condition="'$(MiniMapStageR2BuildingCapture)' == 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
@@ -216,25 +189,11 @@
     <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />
     <ClCompile Include="Map\Buildings\BuildingSpriteRenderer.cpp" />
-    <ClCompile Include="Map\Sprites\BuildingRepresentation.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
-    <ClCompile Include="Map\Sprites\SpriteDiscovery.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
     <ClCompile Include="Map\Buildings\BuildingVisuals.cpp" />
-    <ClCompile Include="Map\Sprites\BuildingSprites.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-    </ClCompile>
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
     <ClCompile Include="Input\MouseWheel.cpp" />
     <ClCompile Include="Native\NativeApi.cpp" />
     <ClCompile Include="Map\Buildings\BuildingSplinePayload.cpp" />
-    <ClCompile Include="Map\Sprites\PrivateCaptureWorld.cpp">
-      <WholeProgramOptimization>false</WholeProgramOptimization>
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">false</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="Native\Fingerprints.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
