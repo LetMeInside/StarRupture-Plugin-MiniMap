@@ -268,7 +268,16 @@ namespace MiniMapBuildingAtlas
         const bool sourceAdmission = batch->Dirty;
         std::shared_ptr<Revision> candidate, old;
         std::shared_ptr<const C::Layout> previousPixels;
+        // Keep the existing commit message without retaining pixels for reporting.
+        struct CommitReport
+        {
+            bool Committed = false;
+            size_t Sources = 0;
+            uint16_t Width = 0, Height = 0;
+        } commitReport;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         std::shared_ptr<const C::Layout> diagnosticPixels;
+#endif
         try
         {
             {
@@ -387,9 +396,13 @@ namespace MiniMapBuildingAtlas
                     }
                     batch->PublishedRevision = candidate->Pixels->Revision;
                     batch->UploadPending = false;
+                    commitReport = {true, batch->Published->Pixels->Images.size(),
+                        batch->Published->Pixels->Width, batch->Published->Pixels->Height};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     // Freeze the actually published pixels, not Core.Current().
-                    // Retain through retirement, commit reporting and optional PNG export.
+                    // Retain for synchronous PNG export through candidate/old retirement.
                     diagnosticPixels = batch->Published->Pixels;
+#endif
                     candidate.reset(); // Current publication now owns the acquired reference.
                 }
             }();
@@ -405,11 +418,11 @@ namespace MiniMapBuildingAtlas
                     SpriteDiagnostic("MiniMap: atlas exception affected batch includes canonical=%s", bounds.Identifier.c_str());
             }
         }
-        if(diagnosticPixels)
+        if(commitReport.Committed)
         {
                     SpriteDiagnostic("MiniMap: atlas committed: revision=%llu sources=%zu size=%ux%u candidateRevision=%llu kind=%s reason=%s",
-                        static_cast<unsigned long long>(batch->PublishedRevision), diagnosticPixels->Images.size(),
-                        unsigned(diagnosticPixels->Width), unsigned(diagnosticPixels->Height), static_cast<unsigned long long>(batch->CandidateRevision),
+                        static_cast<unsigned long long>(batch->PublishedRevision), commitReport.Sources,
+                        unsigned(commitReport.Width), unsigned(commitReport.Height), static_cast<unsigned long long>(batch->CandidateRevision),
                         batch->PublishedRevision==1?"initial-available-batch":"incremental",
                         sourceAdmission?"source-admission":"pending-upload-retry");
         }

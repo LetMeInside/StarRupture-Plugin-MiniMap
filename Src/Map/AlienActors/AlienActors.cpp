@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "AlienActors.h"
+#include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
@@ -24,10 +25,13 @@
 namespace
 {
     constexpr float kPollIntervalSeconds = 0.2f;
+    using PollClock = std::chrono::steady_clock;
+    constexpr auto kCapWarningInterval = std::chrono::seconds(5);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     constexpr auto kDiagnosticInterval = std::chrono::seconds(5);
     constexpr auto kSlowPollCooldown = std::chrono::seconds(5);
     constexpr double kSlowPollMilliseconds = 20.0;
-    using DiagnosticClock = std::chrono::steady_clock;
+#endif
     constexpr double kMovementMarginWorldUnits = 500.0; // 5 meters
     constexpr float kDotRadiusPixels = 2.5f;
     constexpr uint32_t kHostileColor = 0xF04040FFu; // ImGui ABGR
@@ -52,9 +56,12 @@ namespace
     bool g_queryFailureLogged = false;
     bool g_wasTruncated = false;
     float g_pollAccumulator = 0.0f;
-    DiagnosticClock::time_point g_nextDiagnostic = {};
-    DiagnosticClock::time_point g_nextSlowPollWarning = {};
+    PollClock::time_point g_nextCapWarning = {};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    PollClock::time_point g_nextDiagnostic = {};
+    PollClock::time_point g_nextSlowPollWarning = {};
     double g_maxPollMilliseconds = 0.0;
+#endif
     SDK::UWorld* g_queryWorld = nullptr;
     SDK::UMassEntitySubsystem* g_subsystem = nullptr;
     const void* g_manager = nullptr;
@@ -65,17 +72,33 @@ namespace
     double g_acquisitionRadius = 0.0;
     std::vector<AlienRecord> g_records;
 
-    void ResetDiagnostics()
+    void ResetPollReporting()
     {
-        g_nextDiagnostic = DiagnosticClock::now() + kDiagnosticInterval;
+        g_nextCapWarning = PollClock::now() + kCapWarningInterval;
+        g_wasTruncated = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        g_nextDiagnostic = PollClock::now() + kDiagnosticInterval;
         g_nextSlowPollWarning = {};
         g_maxPollMilliseconds = 0.0;
-        g_wasTruncated = false;
+#endif
     }
 
+    // Production warning cadence only: preserve the old poll-exit advancement,
+    // including early returns, without depending on performance measurements.
+    struct PollCapacityCadence
+    {
+        ~PollCapacityCadence()
+        {
+            const auto finished = PollClock::now();
+            if (finished >= g_nextCapWarning)
+                g_nextCapWarning = finished + kCapWarningInterval;
+        }
+    };
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct PollMeasurement
     {
-        DiagnosticClock::time_point Started = DiagnosticClock::now();
+        PollClock::time_point Started = PollClock::now();
         int32_t Matching = -1; // No native handle query completed yet.
         std::size_t Active = 0;
         std::size_t Nearby = 0;
@@ -85,9 +108,9 @@ namespace
 
         ~PollMeasurement()
         {
-            // Declared first in Poll, so timing includes publication, native
+            // Declared before functional Poll locals, so timing includes publication, native
             // result-array freeing, and temporary snapshot cleanup on all exits.
-            const auto finished = DiagnosticClock::now();
+            const auto finished = PollClock::now();
             const double milliseconds =
                 std::chrono::duration<double, std::milli>(finished - Started).count();
             g_maxPollMilliseconds = (std::max)(g_maxPollMilliseconds, milliseconds);
@@ -107,6 +130,7 @@ namespace
             }
         }
     };
+#endif
 
     void ClearSnapshot()
     {
@@ -116,7 +140,7 @@ namespace
 
     void DestroyQuery()
     {
-        ResetDiagnostics();
+        ResetPollReporting();
         if (g_queryConstructed)
         {
             const auto* native = MiniMapNative::Get();
@@ -192,7 +216,10 @@ namespace
 
     void Poll(const MiniMapConfig::FogOfWarSettings& fog)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         PollMeasurement measurement;
+#endif
+        PollCapacityCadence capacityCadence;
         const auto* native = MiniMapNative::Get();
         if (native == nullptr || !EnsureQuery(*native))
         {
@@ -231,7 +258,9 @@ namespace
 
         MiniMapNative::MassEntityHandleArray handles = {};
         native->mass.getMatchingEntityHandles(g_queryStorage.data(), &handles);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         measurement.Matching = handles.Num;
+#endif
         // The native TArray allocation must always be freed with the native allocator.
         struct HandleArrayOwner
         {
@@ -255,6 +284,7 @@ namespace
         visibilityTransform.Valid = true;
         std::vector<AlienRecord> next;
         next.reserve((std::min)(static_cast<std::size_t>(handles.Num), kMaximumRecords));
+        std::size_t eligibleVisible = 0; // Production cap evidence, not admission.
         for (int32_t i = 0; i < handles.Num; ++i)
         {
             const auto id = handles.Data[i];
@@ -265,7 +295,9 @@ namespace
             {
                 continue;
             }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             ++measurement.Active;
+#endif
             const auto* transform = static_cast<const uint8_t*>(
                 native->mass.getFragmentDataPtr(g_manager, id, transformType));
             if (transform == nullptr)
@@ -284,22 +316,29 @@ namespace
             {
                 continue;
             }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             ++measurement.Nearby;
+#endif
             if (MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
-                record.WorldX, record.WorldY, visibilityTransform, fog) > 0.0f) ++measurement.Visible;
+                record.WorldX, record.WorldY, visibilityTransform, fog) > 0.0f) ++eligibleVisible;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            measurement.Visible = eligibleVisible;
+#endif
             // Keep nearby candidates, including currently fogged ones. The
             // existing visible/nearest selection is evaluated against the SAME
             // transform as the rendered fog, so a moved feather has no stale
             // poll-time exclusions or character-based visibility exceptions.
             next.push_back(record);
         }
-        const std::size_t eligible = measurement.Visible;
+        const std::size_t eligible = eligibleVisible;
         const bool truncated = eligible > kMaximumRecords;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         measurement.Capped = truncated;
-        const bool diagnosticDue = DiagnosticClock::now() >= g_nextDiagnostic;
+#endif
+        const bool capWarningDue = PollClock::now() >= g_nextCapWarning;
         if (truncated)
         {
-            if (!g_wasTruncated || diagnosticDue)
+            if (!g_wasTruncated || capWarningDue)
             {
                 LOG_WARN("MiniMap: Alien Actors cap hit: eligible=%zu retained=%zu (nearest)",
                     eligible, kMaximumRecords);
@@ -311,7 +350,9 @@ namespace
             if (generation == g_worldGeneration)
             {
                 g_records = std::move(next);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 measurement.Retained = (std::min)(eligible, kMaximumRecords);
+#endif
             }
         }
     }

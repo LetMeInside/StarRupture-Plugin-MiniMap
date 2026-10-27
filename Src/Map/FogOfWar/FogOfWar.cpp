@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "FogOfWar.h"
+#include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 
@@ -140,8 +141,10 @@ namespace
     bool g_invalidStateReported =
         false;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool g_renderReported =
         false;
+#endif
 
     float g_snapshotAccumulator =
         0.0f;
@@ -246,8 +249,10 @@ namespace
         g_snapshot = {};
         g_invalidStateReported =
             false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         g_renderReported =
             false;
+#endif
     }
 
 
@@ -868,8 +873,11 @@ namespace
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FogOfWarSettings& fog,
         int32_t maskX,
-        int32_t maskY,
-        std::size_t& inOutQuadCount)
+        int32_t maskY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        , std::size_t& inOutQuadCount
+#endif
+        )
     {
         const double cellWorldX0 =
             kMapPivotX +
@@ -939,13 +947,16 @@ namespace
                     worldY1,
                     finalAlpha))
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++inOutQuadCount;
+#endif
                 }
             }
         }
     }
 
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool TrySamplePlayerMask(
         uint8_t& outValue,
         int32_t& outMaskX,
@@ -1062,6 +1073,8 @@ namespace
     }
 
 
+#endif
+
     void PollFogOfWar()
     {
         SDK::ACrCharacterPlayerBase* player =
@@ -1114,6 +1127,7 @@ namespace
                 std::move(
                     nextSnapshot);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: FOW diagnostic: "
                 "snapshot ready component=%p "
@@ -1126,10 +1140,12 @@ namespace
 
             LogPlayerSample(
                 "initial");
+#endif
 
             return;
         }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         std::size_t changedSegments =
             0;
 
@@ -1176,10 +1192,12 @@ namespace
             }
         }
 
+#endif
         g_snapshot =
             std::move(
                 nextSnapshot);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (changedSegments >
             0)
         {
@@ -1192,6 +1210,7 @@ namespace
             LogPlayerSample(
                 "after update");
         }
+#endif
     }
 
 
@@ -1496,11 +1515,13 @@ namespace MiniMapFogOfWar
             true);
 
         std::vector<FogRectangle> activeRectangles;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         std::size_t opaqueRectangleCount =
             0;
 
         std::size_t refinedQuadCount =
             0;
+#endif
 
         for (int32_t maskY = minMaskY;
             maskY <= maxMaskY;
@@ -1549,8 +1570,11 @@ namespace MiniMapFogOfWar
                             transform,
                             fog,
                             maskX,
-                            maskY,
-                            refinedQuadCount);
+                            maskY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                            , refinedQuadCount
+#endif
+                            );
                     }
 
                     ++maskX;
@@ -1679,7 +1703,9 @@ namespace MiniMapFogOfWar
                     activeRectangles[
                         activeIndex]))
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++opaqueRectangleCount;
+#endif
                 }
             }
 
@@ -1697,13 +1723,16 @@ namespace MiniMapFogOfWar
                 transform,
                 rectangle))
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++opaqueRectangleCount;
+#endif
             }
         }
 
         ui->DL_PopClipRect(
             drawList);
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (!g_renderReported)
         {
             LOG_INFO(
@@ -1723,6 +1752,7 @@ namespace MiniMapFogOfWar
             g_renderReported =
                 true;
         }
+#endif
     }
 
 
