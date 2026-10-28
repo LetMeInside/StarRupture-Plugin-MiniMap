@@ -23,12 +23,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -68,6 +72,8 @@ namespace
     bool g_tickRegistered = false;
     bool g_experienceReady = false;
     float g_pollAccumulator = kPollIntervalSeconds;
+    float g_storyPollAccumulator = kPollIntervalSeconds;
+    uint64_t g_storyPollGeneration = 0;
 
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
 
@@ -81,6 +87,7 @@ namespace
     bool g_queryConstructed = false;
 
     std::mutex g_snapshotMutex;
+    uint64_t g_snapshotWorldGeneration = 0;
     std::vector<FoundableRecord> g_records;
     enum class ContainerContents : uint8_t
     {
@@ -95,6 +102,8 @@ namespace
         double WorldY = 0.0;
         ContainerContents Classification = ContainerContents::Empty;
     };
+    std::vector<ContainerDotRecord> g_massContainerDots;
+    std::vector<ContainerDotRecord> g_storyDots;
     std::vector<ContainerDotRecord> g_containerDots;
     // AlienX currently has no fence-aware texture retirement.
     std::unordered_map<uint8_t, PluginTextureHandle> g_iconCache;
@@ -605,14 +614,365 @@ namespace
         return true;
     }
 
+    namespace StoryItems
+    {
+        using Guid = std::array<uint32_t, 4>;
+
+        struct GuidHash
+        {
+            size_t operator()(const Guid& guid) const noexcept
+            {
+                size_t hash = 0;
+                for (auto word : guid) hash ^= size_t(word) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+
+        Guid CopyGuid(const SDK::FGuid& guid)
+        {
+            return {uint32_t(guid.A), uint32_t(guid.B), uint32_t(guid.C), uint32_t(guid.D)};
+        }
+
+        bool ValidGuid(const Guid& guid)
+        {
+            return (guid[0] | guid[1] | guid[2] | guid[3]) != 0;
+        }
+
+        template<class T>
+        bool ValidSpan(const T* data, int32_t count, int32_t capacity)
+        {
+            return count >= 0 && capacity >= count &&
+                (count == 0 || (data != nullptr && size_t(count) <= (std::numeric_limits<size_t>::max)() / sizeof(T)));
+        }
+
+        template<class T>
+        bool ReadArray(const SDK::TArray<T>& array, const T*& data, int32_t& count)
+        {
+            data = array.GetDataPtr();
+            count = array.Num();
+            return ValidSpan(data, count, array.Max());
+        }
+
+        // All metadata and actor pointers below are borrowed only inside one
+        // quiet, synchronous game-thread poll. Nothing is cached or rendered.
+        struct Types
+        {
+            const MiniMapNative::NativeApi& Native;
+            uintptr_t FindAddress = 0;
+            SDK::UClass* Core = nullptr;
+            SDK::UClass* World = nullptr;
+            SDK::UClass* Level = nullptr;
+            SDK::UClass* Scene = nullptr;
+            SDK::UClass* GameState = nullptr;
+            SDK::UClass* Replicator = nullptr;
+            SDK::UClass* POI = nullptr;
+            SDK::UClass* Blueprint = nullptr;
+            SDK::UClass* Datapad = nullptr;
+            SDK::UClass* Audiolog = nullptr;
+
+            bool IsClass(const SDK::UClass* type) const
+            {
+                if (!type) return false;
+                auto* meta = type->Class;
+                for (int depth = 0; meta && depth < 64; ++depth)
+                {
+                    if (!meta->Class || meta->Class != Core) return false;
+                    if (meta == Core) return true;
+                    meta = static_cast<SDK::UClass*>(meta->SuperStruct);
+                }
+                return false;
+            }
+
+            bool Derives(const SDK::UClass* type, const SDK::UClass* base) const
+            {
+                if (!base || !IsClass(type)) return false;
+                for (int depth = 0; type && depth < 128; ++depth)
+                {
+                    if (depth != 0 && (!type->Class || type->Class->Class != Core)) return false;
+                    if (type == base) return true;
+                    type = static_cast<const SDK::UClass*>(type->SuperStruct);
+                }
+                return false;
+            }
+
+            SDK::UClass* FindClass(const wchar_t* path, size_t minimumSize) const
+            {
+                uintptr_t result = 0;
+                if (!MiniMapResidentMetadata::FindResident(FindAddress, reinterpret_cast<uintptr_t>(Core),
+                        path, false, result)) return nullptr;
+                auto* type = reinterpret_cast<SDK::UClass*>(result);
+                if (!IsClass(type) || type->Size < 0 || size_t(type->Size) < minimumSize) return nullptr;
+                const std::wstring fullPath(path);
+                const auto separator = fullPath.rfind(L'.');
+                if (separator == std::wstring::npos || !type->Outer ||
+                    type->Outer->Outer != nullptr ||
+                    !Native.asset.nameEqualsWide(type->Name, fullPath.c_str() + separator + 1) ||
+                    !Native.asset.nameEqualsWide(type->Outer->Name, fullPath.substr(0, separator).c_str()))
+                    return nullptr;
+                return type;
+            }
+
+            SDK::UClass* FindNative(const wchar_t* path, size_t size) const
+            {
+                auto* type = FindClass(path, size);
+                return type && type->Class == Core && size_t(type->Size) == size ? type : nullptr;
+            }
+
+            bool Initialize()
+            {
+                if (!MiniMapResidentMetadata::Available() || !Native.asset.nameEqualsWide) return false;
+                auto* self = GetSelf();
+                auto* engine = self && self->hooks ? self->hooks->Engine : nullptr;
+                FindAddress = engine && engine->GetStaticFindObjectByNameAddress
+                    ? engine->GetStaticFindObjectByNameAddress() : 0;
+                uintptr_t core = 0;
+                if (!FindAddress || !MiniMapResidentMetadata::FindResident(FindAddress, 0,
+                        L"/Script/CoreUObject.Class", false, core)) return false;
+                Core = reinterpret_cast<SDK::UClass*>(core);
+                if (!Core || Core->Class != Core) return false;
+                World = FindNative(L"/Script/Engine.World", sizeof(SDK::UWorld));
+                Level = FindNative(L"/Script/Engine.Level", sizeof(SDK::ULevel));
+                Scene = FindNative(L"/Script/Engine.SceneComponent", sizeof(SDK::USceneComponent));
+                GameState = FindNative(L"/Script/Chimera.CrGameStateBase", sizeof(SDK::ACrGameStateBase));
+                Replicator = FindNative(L"/Script/Chimera.CrAbandonBaseInfoReplicator", sizeof(SDK::ACrAbandonBaseInfoReplicator));
+                POI = FindNative(L"/Script/Chimera.CrPointOfInterestMarkerActor", sizeof(SDK::ACrPointOfInterestMarkerActor));
+                Blueprint = FindNative(L"/Script/Engine.BlueprintGeneratedClass", sizeof(SDK::UBlueprintGeneratedClass));
+                Datapad = FindNative(L"/Script/Chimera.CrDatapadBase", sizeof(SDK::ACrDatapadBase));
+                Audiolog = FindNative(L"/Script/Chimera.CrAudiologBase", sizeof(SDK::ACrAudiologBase));
+                return World && Level && Scene && GameState && Replicator && POI && Blueprint;
+            }
+
+            SDK::UClass* FindFamily(const wchar_t* path, SDK::UClass* nativeBase, size_t size) const
+            {
+                if (!nativeBase) return nullptr;
+                auto* type = FindClass(path, size);
+                return type && Derives(type, nativeBase) && Derives(type->Class, Blueprint) ? type : nullptr;
+            }
+
+            bool Actor(const SDK::AActor* actor, const SDK::UClass* base, size_t,
+                const SDK::UWorld* world) const
+            {
+                if (!actor || actor->bActorIsBeingDestroyed ||
+                    (uint32_t(actor->Flags) & (uint32_t(SDK::EObjectFlags::ClassDefaultObject) |
+                        uint32_t(SDK::EObjectFlags::ArchetypeObject))) || !Derives(actor->Class, base)) return false;
+                auto* level = actor->Outer;
+                return level && Derives(level->Class, Level) &&
+                    static_cast<const SDK::ULevel*>(level)->OwningWorld == world;
+            }
+        };
+
+        struct NativeActorArray
+        {
+            SDK::AActor** Data = nullptr;
+            int32_t Num = 0;
+            int32_t Max = 0;
+        };
+        static_assert(sizeof(NativeActorArray) == 0x10);
+
+        struct ActorArray
+        {
+            NativeActorArray Values;
+            void (*Free)(void*);
+            explicit ActorArray(const MiniMapNative::NativeApi& native) : Free(native.texture.memoryFree) {}
+            ActorArray(const ActorArray&) = delete;
+            ActorArray& operator=(const ActorArray&) = delete;
+            ~ActorArray() { if (Values.Data) Free(Values.Data); }
+
+            bool Collect(const MiniMapNative::NativeApi& native, SDK::UWorld* world, SDK::UClass* type)
+            {
+                // Existing TSubclassOf ABI: one UClass* of caller-owned storage.
+                native.pointsOfInterest.getAllActorsOfClass(world, &type, &Values);
+                return ValidSpan(Values.Data, Values.Num, Values.Max);
+            }
+        };
+
+        struct Progress
+        {
+            Guid Base = {};
+            bool Ambiguous = false;
+            uint8_t Status = 2; // UNKNOWN, never interpreted as uncollected.
+            uint32_t Records = 0;
+        };
+        using ProgressMap = std::unordered_map<Guid, Progress, GuidHash>;
+
+        struct ProgressScope
+        {
+            SDK::UWorld* World = nullptr;
+            SDK::ACrGameStateBase* GameState = nullptr;
+            SDK::ACrAbandonBaseInfoReplicator* Replicator = nullptr;
+
+            bool Matches(const SDK::UWorld* world) const
+            {
+                return world && World && GameState && Replicator && world == World &&
+                    world->GameState == GameState && GameState->AbandonBaseInfoReplicator == Replicator;
+            }
+        };
+
+        bool ReadProgress(const Types& types, SDK::UWorld* world, ProgressMap& progress, ProgressScope& scope)
+        {
+            if (!world || !types.Derives(world->Class, types.World)) return false;
+            scope.World = world;
+            auto* baseGameState = world->GameState;
+            if (!types.Actor(baseGameState, types.GameState, sizeof(SDK::ACrGameStateBase), world)) return false;
+            auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
+            scope.GameState = gameState;
+            auto* replicator = gameState->AbandonBaseInfoReplicator;
+            if (!types.Actor(replicator, types.Replicator, sizeof(*replicator), world)) return false;
+            scope.Replicator = replicator;
+
+            ActorArray actors(types.Native);
+            if (!actors.Collect(types.Native, world, types.POI)) return false;
+            std::unordered_set<Guid, GuidHash> assignedBases;
+            std::unordered_set<Guid, GuidHash> ambiguousAssignedBases;
+            for (int32_t index = 0; index < actors.Values.Num; ++index)
+            {
+                auto* actor = actors.Values.Data[index];
+                if (!types.Actor(actor, types.POI, sizeof(SDK::ACrPointOfInterestMarkerActor), world)) continue;
+                auto* poi = static_cast<SDK::ACrPointOfInterestMarkerActor*>(actor);
+                if (poi->PointOfInterestType != SDK::ECrPointOfInterestType::AbandonedBase) continue;
+                const auto base = CopyGuid(poi->Guid);
+                if (!ValidGuid(base)) continue;
+                if (!assignedBases.insert(base).second)
+                {
+                    ambiguousAssignedBases.insert(base);
+                    for (auto& entry : progress)
+                        if (entry.second.Base == base) entry.second.Ambiguous = true;
+                    continue;
+                }
+                const SDK::FGuid* assignments = nullptr;
+                int32_t count = 0;
+                if (!ReadArray(poi->AbandonBaseStoryItemsAssigned, assignments, count)) continue;
+                for (int32_t item = 0; item < count; ++item)
+                {
+                    const auto guid = CopyGuid(assignments[item]);
+                    if (!ValidGuid(guid)) continue;
+                    const auto inserted = progress.emplace(guid, Progress{base});
+                    if (!inserted.second) inserted.first->second.Ambiguous = true;
+                }
+            }
+
+            const SDK::FCrAbandonBaseData* bases = nullptr;
+            int32_t baseCount = 0;
+            if (!ReadArray(replicator->AbandonBaseDataContainer.AbandonBaseData, bases, baseCount)) return false;
+            std::unordered_set<Guid, GuidHash> replicatedBases;
+            std::unordered_set<Guid, GuidHash> ambiguousReplicatedBases;
+            for (int32_t index = 0; index < baseCount; ++index)
+            {
+                const auto base = CopyGuid(bases[index].AbandonBasePOIId);
+                if (!ValidGuid(base)) continue;
+                if (!replicatedBases.insert(base).second)
+                {
+                    ambiguousReplicatedBases.insert(base);
+                    continue;
+                }
+                const SDK::FCrAbandonBaseDataCollectedStatus* statuses = nullptr;
+                int32_t count = 0;
+                if (!ReadArray(bases[index].StoryItemsCollectedStatus, statuses, count)) continue;
+                for (int32_t item = 0; item < count; ++item)
+                {
+                    const auto guid = CopyGuid(statuses[item].Item);
+                    if (!ValidGuid(guid)) continue;
+                    const auto found = progress.find(guid);
+                    if (found == progress.end() || found->second.Base != base) continue;
+                    // Read the representation first; malformed bool bytes are UNKNOWN.
+                    uint8_t status = 2;
+                    std::memcpy(&status, &statuses[item].Status, sizeof(status));
+                    auto& entry = found->second;
+                    ++entry.Records;
+                    entry.Status = entry.Records == 1 && status <= 1 ? status : 2;
+                }
+            }
+            for (auto& entry : progress)
+                if (ambiguousAssignedBases.count(entry.second.Base) ||
+                    ambiguousReplicatedBases.count(entry.second.Base)) entry.second.Ambiguous = true;
+            return scope.Matches(world);
+        }
+
+        bool ReadPosition(const Types& types, SDK::AActor* actor, SDK::UWorld* world,
+            SDK::UClass* family, size_t extent, SDK::FVector& location)
+        {
+            if (!actor) return false;
+            auto* root = actor->RootComponent;
+            if (!root || root->Outer != actor ||
+                !types.Derives(root->Class, types.Scene)) return false;
+            types.Native.player.getComponentLocation(root, &location);
+            return types.Actor(actor, family, extent, world) &&
+                actor->RootComponent == root && root->Outer == actor &&
+                std::isfinite(location.X) && std::isfinite(location.Y) && std::isfinite(location.Z);
+        }
+
+        bool Poll(const MiniMapNative::NativeApi& native, SDK::UWorld* world,
+            std::vector<ContainerDotRecord>& dots)
+        {
+            if (!MiniMapResidentMetadata::Available() ||
+                !native.pointsOfInterest.getAllActorsOfClass || !native.player.getComponentLocation ||
+                !native.texture.memoryFree) return false;
+            Types types{native};
+            if (!types.Initialize()) return false;
+            const uint64_t generation = MiniMapMap::GetWorldGeneration();
+            ProgressMap progress;
+            ProgressScope scope;
+            if (!ReadProgress(types, world, progress, scope)) return false;
+
+            struct Family { const wchar_t* Path; SDK::UClass* Base; size_t Extent; bool Audio; };
+            const Family families[] = {
+                {L"/Game/Chimera/Environment/Datapads/BP_DatapadComputer.BP_DatapadComputer_C",
+                    types.Datapad, sizeof(SDK::ACrDatapadBase), false},
+                {L"/Game/Chimera/Environment/Datapads/BP_DatapadPersonal.BP_DatapadPersonal_C",
+                    types.Datapad, sizeof(SDK::ACrDatapadBase), false},
+                {L"/Game/Chimera/Environment/Audiologs/BP_Audiolog.BP_Audiolog_C",
+                    types.Audiolog, sizeof(SDK::ACrAudiologBase), true}
+            };
+            struct Candidate { ContainerDotRecord Dot; bool Ambiguous = false; };
+            std::unordered_map<Guid, Candidate, GuidHash> candidates;
+            for (const auto& family : families)
+            {
+                auto* type = types.FindFamily(family.Path, family.Base, family.Extent);
+                if (!type) continue; // Unresolved resident family is UNKNOWN; retry next poll.
+                ActorArray actors(native);
+                if (!actors.Collect(native, world, type)) continue;
+                for (int32_t index = 0; index < actors.Values.Num; ++index)
+                {
+                    auto* actor = actors.Values.Data[index];
+                    if (!types.Actor(actor, type, family.Extent, world)) continue;
+                    const auto guid = CopyGuid(family.Audio
+                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
+                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    const auto found = progress.find(guid);
+                    if (!ValidGuid(guid) || found == progress.end() || found->second.Ambiguous ||
+                        found->second.Records != 1 || found->second.Status != 0) continue;
+                    SDK::FVector location{};
+                    if (!ReadPosition(types, actor, world, type, family.Extent, location)) continue;
+                    const auto currentGuid = CopyGuid(family.Audio
+                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
+                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    if (guid != currentGuid) continue;
+                    Candidate candidate{{location.X, location.Y, ContainerContents::Ordinary}};
+                    const auto inserted = candidates.emplace(guid, candidate);
+                    // Conflicting actor ownership of one story is UNKNOWN, not a guessed position.
+                    if (!inserted.second) inserted.first->second.Ambiguous = true;
+                }
+            }
+            if (!MiniMapResidentMetadata::Available() || !scope.Matches(world) ||
+                world != MiniMapMap::GetWorld() || generation != MiniMapMap::GetWorldGeneration()) return false;
+            for (const auto& candidate : candidates)
+                if (!candidate.second.Ambiguous) dots.push_back(candidate.second.Dot);
+            return true;
+        }
+    }
+
     void ClearSnapshot()
     {
         std::scoped_lock lock(g_snapshotMutex);
         g_records.clear();
+        g_massContainerDots.clear();
+        g_storyDots.clear();
         g_containerDots.clear();
+        g_snapshotWorldGeneration = 0;
     }
 
-    bool PollFoundables(const MiniMapConfig::FoundableRenderSettings& settings)
+    bool PollMassFoundables(const MiniMapConfig::FoundableRenderSettings& settings,
+        std::vector<FoundableRecord>& nextRecords, std::vector<ContainerDotRecord>& nextContainerDots)
     {
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
         SDK::UWorld* world = MiniMapMap::GetWorld();
@@ -628,7 +988,6 @@ namespace
             native->mass.foundableParametersStaticStruct == nullptr ||
             native->texture.memoryFree == nullptr)
         {
-            ClearSnapshot();
             return false;
         }
 
@@ -646,15 +1005,18 @@ namespace
         auto* parametersStruct = native->mass.foundableParametersStaticStruct();
         if (transformStruct == nullptr || inventoryStruct == nullptr || parametersStruct == nullptr)
         {
-            ClearSnapshot();
             return false;
         }
 
         MiniMapNative::MassEntityHandleArray handles = {};
         native->mass.getMatchingEntityHandles(g_queryStorage.data(), &handles);
+        struct HandleArrayOwner
+        {
+            MiniMapNative::MassEntityHandleArray& Handles;
+            const MiniMapNative::NativeApi& Native;
+            ~HandleArrayOwner() { if (Handles.Data) Native.texture.memoryFree(Handles.Data); }
+        } handleOwner{handles, *native};
 
-        std::vector<ContainerDotRecord> nextContainerDots;
-        std::vector<FoundableRecord> nextRecords;
         nextRecords.reserve(static_cast<std::size_t>(handles.Num));
         for (int32_t index = 0; index < handles.Num; ++index)
         {
@@ -705,19 +1067,71 @@ namespace
             nextRecords.push_back(record);
         }
 
-        if (handles.Data != nullptr)
-            native->texture.memoryFree(handles.Data);
+        return true;
+    }
+
+    bool PollFoundables(const MiniMapConfig::FoundableRenderSettings& settings,
+        bool pollMass, bool pollStory, bool& massSucceeded)
+    {
+        const auto* native = MiniMapNative::Get();
+        auto* world = MiniMapMap::GetWorld();
+        const auto generation = MiniMapMap::GetWorldGeneration();
+        massSucceeded = !pollMass;
+        if (!native || !world)
+        {
+            ClearSnapshot();
+            return false;
+        }
+
+        std::vector<FoundableRecord> records;
+        std::vector<ContainerDotRecord> massDots;
+        std::vector<ContainerDotRecord> storyDots;
+        const bool storySucceeded = pollStory && settings.ShowLootInBases &&
+            StoryItems::Poll(*native, world, storyDots);
+        if (pollMass)
+        {
+            massSucceeded = PollMassFoundables(settings, records, massDots);
+            if (!massSucceeded)
+            {
+                records.clear();
+                massDots.clear();
+            }
+        }
+        // Neither source's failure can erase the other source's completed data.
+        if (!g_experienceReady || !MiniMapMap::GameplayReady() ||
+            world != MiniMapMap::GetWorld() || generation != MiniMapMap::GetWorldGeneration())
+        {
+            ClearSnapshot();
+            massSucceeded = false;
+            return false;
+        }
 
         {
             std::scoped_lock lock(g_snapshotMutex);
-            g_records = std::move(nextRecords);
-            g_containerDots = std::move(nextContainerDots);
-        }
+            if (pollMass)
+            {
+                g_records = std::move(records);
+                g_massContainerDots = std::move(massDots);
+            }
+            if (storySucceeded) g_storyDots = std::move(storyDots);
 
+            // No actor-to-Mass semantic link is established. Never collapse nearby loot.
+            g_containerDots = g_massContainerDots;
+            g_containerDots.insert(g_containerDots.end(), g_storyDots.begin(), g_storyDots.end());
+            g_snapshotWorldGeneration = generation;
+        }
         return true;
     }
     void OnTick(float deltaSeconds)
     {
+        const uint64_t generation = MiniMapMap::GetWorldGeneration();
+        if (generation != g_storyPollGeneration)
+        {
+            ClearSnapshot();
+            g_storyPollGeneration = generation;
+            g_storyPollAccumulator = kPollIntervalSeconds;
+        }
+
         if(!MiniMapUI::IsVisible())return;
         if(!MiniMapMap::GameplayReady())return;
         if (!g_experienceReady ||
@@ -729,20 +1143,24 @@ namespace
         const auto settings = MiniMapConfig::GetRenderSettings().Foundables;
         if (!settings.ShowLayer) return;
         g_pollAccumulator += deltaSeconds;
+        if (settings.ShowLootInBases) g_storyPollAccumulator += deltaSeconds;
 
-        if (g_pollAccumulator < kPollIntervalSeconds)
-        {
-            return;
-        }
+        const bool pollMass = g_pollAccumulator >= kPollIntervalSeconds;
+        const bool pollStory = settings.ShowLootInBases &&
+            g_storyPollAccumulator >= kPollIntervalSeconds;
+        if (!pollMass && !pollStory) return;
 
-        if (PollFoundables(settings))
+        bool massSucceeded = true;
+        const bool snapshotValid = PollFoundables(settings, pollMass, pollStory, massSucceeded);
+        if (pollMass && snapshotValid && massSucceeded)
         {
             g_pollAccumulator = 0.0f;
         }
-        else
+        else if (pollMass)
         {
             g_pollAccumulator = kPollIntervalSeconds;
         }
+        if (pollStory) g_storyPollAccumulator = 0.0f;
     }
 }
 
@@ -781,7 +1199,10 @@ namespace MiniMapFoundables
         {
             std::scoped_lock lock(g_snapshotMutex);
             g_records.clear();
+            g_massContainerDots.clear();
+            g_storyDots.clear();
             g_containerDots.clear();
+            g_snapshotWorldGeneration = 0;
         }
 
         DestroyQuery();
@@ -789,6 +1210,8 @@ namespace MiniMapFoundables
         g_devSettings = nullptr;
         g_experienceReady = false;
         g_pollAccumulator = kPollIntervalSeconds;
+        g_storyPollAccumulator = kPollIntervalSeconds;
+        g_storyPollGeneration = 0;
     }
 
     void OnExperienceLoadComplete()
@@ -800,6 +1223,7 @@ namespace MiniMapFoundables
 
         g_experienceReady = true;
         g_pollAccumulator = kPollIntervalSeconds;
+        g_storyPollAccumulator = kPollIntervalSeconds;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: Mass foundable acquisition enabled");
@@ -823,6 +1247,7 @@ namespace MiniMapFoundables
 
         {
             std::scoped_lock lock(g_snapshotMutex);
+            if (g_snapshotWorldGeneration != MiniMapMap::GetWorldGeneration()) return;
             records = g_records;
             containerDots = g_containerDots;
         }
