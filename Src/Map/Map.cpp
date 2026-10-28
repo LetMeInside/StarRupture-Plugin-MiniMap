@@ -158,8 +158,9 @@ namespace MiniMapMap
             PlayerPose dronePose{};
             if (ReadPosition(drone, dronePose))
             {
-                if (!ReadWorldYaw(drone, dronePose.ControlYawDegrees) ||
-                    !ReadWorldYaw(player.Character, sample.CharacterWorldYawDegrees)) return false;
+                // Reuse the validated controller yaw sampled before drone selection.
+                dronePose.ControlYawDegrees = sample.Character.ControlYawDegrees;
+                if (!ReadWorldYaw(player.Character, sample.CharacterWorldYawDegrees)) return false;
                 sample.Tracking = dronePose;
                 sample.TrackingObjectIndex = drone->Index;
                 sample.DroneActive = true;
