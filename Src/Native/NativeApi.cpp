@@ -24,6 +24,11 @@ namespace MiniMapNative
 {
     bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
     {
+        // EXPENSIVE: Calls VirtualQuery directly.
+        // Initialization/diagnostics only.
+        // Do not call from gameplay ticks, render paths,
+        // recurring polling, or per-object loops.
+
         if(!p||!alignment||(alignment&(alignment-1))||(p&(alignment-1))||p>UINTPTR_MAX-bytes)return false;
         const auto end=p+bytes;
         while(p<end)
@@ -44,6 +49,11 @@ namespace MiniMapNative
 
     bool ReadMemory(uintptr_t address,void* output,size_t bytes)
     {
+        // EXPENSIVE: Calls VirtualQuery indirectly.
+        // Initialization/diagnostics only.
+        // Do not call from gameplay ticks, render paths,
+        // recurring polling, or per-object loops.
+
         if(!output||!IsMemoryRangeReadable(address,bytes))return false;
         std::memcpy(output,reinterpret_cast<const void*>(address),bytes);
         return true;
@@ -52,6 +62,11 @@ namespace MiniMapNative
 
     bool ValidateObjectIdentity(uintptr_t p,uintptr_t objectArray,size_t extent)
     {
+        // EXPENSIVE: Calls VirtualQuery indirectly.
+        // Initialization/diagnostics only.
+        // Do not call from gameplay ticks, render paths,
+        // recurring polling, or per-object loops.
+
         if(!IsMemoryRangeReadable(p,(std::max)(extent,size_t(0x10)),8)||!IsMemoryRangeReadable(objectArray,0x30,8))return false;
         // Copy only from the ranges just validated above. Re-querying each field
         // in those same ranges adds no identity evidence. No range/identity cache
