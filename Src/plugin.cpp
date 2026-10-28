@@ -249,7 +249,7 @@ static bool InstallCommonUIHooks()
 #endif
 
 #ifndef MODLOADER_BUILD_TAG
-#define MODLOADER_BUILD_TAG "0.1.0"
+#define MODLOADER_BUILD_TAG "1.2.0"
 #endif
 
 #ifdef MODLOADER_CLIENT_BUILD
