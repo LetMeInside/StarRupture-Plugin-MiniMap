@@ -436,3 +436,20 @@ jobs:
           gh release create $env:VERSION_TAG @assets `
             --title "$env:PLUGIN_NAME $env:VERSION_TAG" `
             --generate-notes
+
+      # --------------------------------------------------------
+      # Upload Client package to Nexus Mods
+      # --------------------------------------------------------
+      - name: Upload Client build to Nexus Mods
+        if: ${{ inputs.publish }}
+        uses: Nexus-Mods/upload-action@main
+        with:
+          api_key: ${{ secrets.NEXUS_APIKEY }}
+          file_id: ${{ secrets.NEXUS_CLIENT_GROUP_ID }}
+          filename: ${{ github.workspace }}\${{ env.PLUGIN_NAME }}-Client-v${{ env.VERSION }}.zip
+          archive_existing_version: true
+          allow_mod_manager_download: false
+          update_mod_version: true
+          display_name: "${{ env.PLUGIN_NAME }} Client v${{ env.VERSION }}"
+          description: "Changelog: https://github.com/${{ github.repository }}/releases/tag/v${{ env.VERSION }}"
+          version: ${{ env.VERSION }}
