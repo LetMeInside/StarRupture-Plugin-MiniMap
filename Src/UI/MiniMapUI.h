@@ -10,7 +10,7 @@ namespace MiniMapUI
 
     void Shutdown();
     void StopInput();
-    void RefreshKeybinds();
+    bool RefreshKeybinds(); // Existing live-edit callers may ignore a failed absent-action request.
 
     void Show();
 

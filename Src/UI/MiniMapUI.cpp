@@ -17,12 +17,15 @@
 
 #include "plugin.h"
 #include "plugin_helpers.h"
+#include "Services/Input.h"
+#include "Services/Runtime.h"
 
 #include <atomic>
 #include <cstdint>
 
 namespace
 {
+    namespace S = MiniMap::Services;
     WidgetHandle g_widget = nullptr;
 
     std::atomic<bool> g_userVisible{false};
@@ -30,7 +33,7 @@ namespace
     std::mutex g_bindingMutex;
     bool g_bindingsActive = false; // Protected by g_bindingMutex.
     std::atomic<bool> g_inputActive{false};
-    MiniMapConfig::Keybind g_toggleIdentity{}, g_zoomInIdentity{}, g_zoomOutIdentity{};
+    S::Registration g_toggleBinding{}, g_zoomInBinding{}, g_zoomOutBinding{};
 
     PluginWindowHints g_hints = {};
 
@@ -306,13 +309,8 @@ namespace
     }
 
 
-    void OnToggleKeyPressed(
-        EModKey key,
-        EModKeyEvent event)
+    void OnToggleKeyPressed(void*)
     {
-        (void)key;
-        (void)event;
-
         if (!g_inputActive.load(std::memory_order_acquire)) return;
         bool visible = g_userVisible.load(std::memory_order_acquire);
         while (!g_userVisible.compare_exchange_weak(
@@ -332,20 +330,24 @@ namespace
             MiniMapTerrain::AdjustZoom(delta);
         }
     }
-    void OnZoomIn(EModKey, EModKeyEvent)
+    void OnZoomIn(void*)
     {
         OnManualZoom(1.0f);
     }
-    void OnZoomOut(EModKey, EModKeyEvent)
+    void OnZoomOut(void*)
     {
         OnManualZoom(-1.0f);
     }
-    void RegisterAbsent(const MiniMapConfig::Keybind& binding,
-        MiniMapConfig::Keybind& identity, PluginKeybindCallback callback)
+    bool RegisterAbsent(const MiniMapConfig::Keybind& binding,
+        S::Registration& token, S::SettingName preference, S::ActionFn callback)
     {
-        if (identity[0] || !binding[0]) return;
-        GetSelf()->hooks->Input->RegisterKeybindByName(binding.data(), EModKeyEvent::Pressed, callback);
-        identity = binding; // Loader retains this original identity across native rebinding.
+        if (token.id || !binding[0]) return true;
+        auto* input = S::TryInput();
+        if (!input) return false;
+        const auto receipt = input->BindAction({preference, binding.data()}, callback, nullptr);
+        token = receipt.token; // Retain cancellation identity even on ambiguous submission.
+        return receipt.acceptance == S::Acceptance::AcceptedUnverified ||
+            receipt.acceptance == S::Acceptance::VerifiedOperational;
     }
 
 }
@@ -403,8 +405,7 @@ namespace MiniMapUI
             g_widget,
             false);
 
-        if (!self->hooks->Input || !self->hooks->Input->RegisterKeybindByName ||
-            !self->hooks->Input->UnregisterKeybindByName)
+        if (!S::TryInput() || !MiniMap::Adapters::AlienX::KeyInputAvailable())
         {
             self->hooks->UI->UnregisterWidget(
                 g_widget);
@@ -419,7 +420,13 @@ namespace MiniMapUI
             g_bindingsActive = true;
             g_inputActive.store(true, std::memory_order_release);
         }
-        RefreshKeybinds();
+        if (!RefreshKeybinds())
+        {
+            StopInput();
+            self->hooks->UI->UnregisterWidget(g_widget);
+            g_widget = nullptr;
+            return false;
+        }
 
         if (!MiniMapMouseWheel::Initialize(
             self))
@@ -445,14 +452,15 @@ namespace MiniMapUI
         return true;
     }
 
-    void RefreshKeybinds()
+    bool RefreshKeybinds()
     {
         const auto settings = MiniMapConfig::Get(); // Before the registration lock.
         std::lock_guard lock(g_bindingMutex);
-        if (!g_bindingsActive) return;
-        RegisterAbsent(settings.ToggleMiniMap, g_toggleIdentity, &OnToggleKeyPressed);
-        RegisterAbsent(settings.ZoomInKey, g_zoomInIdentity, &OnZoomIn);
-        RegisterAbsent(settings.ZoomOutKey, g_zoomOutIdentity, &OnZoomOut);
+        if (!g_bindingsActive) return true;
+        const bool toggle = RegisterAbsent(settings.ToggleMiniMap, g_toggleBinding, {"General", "ToggleMiniMap"}, &OnToggleKeyPressed);
+        const bool zoomIn = RegisterAbsent(settings.ZoomInKey, g_zoomInBinding, {"Zoom", "ZoomInKey"}, &OnZoomIn);
+        const bool zoomOut = RegisterAbsent(settings.ZoomOutKey, g_zoomOutBinding, {"Zoom", "ZoomOutKey"}, &OnZoomOut);
+        return toggle && zoomIn && zoomOut;
     }
 
     void StopInput()
@@ -461,15 +469,14 @@ namespace MiniMapUI
         MiniMapMouseWheel::Shutdown();
         std::lock_guard lock(g_bindingMutex);
         g_bindingsActive = false;
-        auto unregister = [](MiniMapConfig::Keybind& identity, PluginKeybindCallback callback)
+        auto unregister = [](S::Registration& token)
         {
-            if (identity[0]) GetSelf()->hooks->Input->UnregisterKeybindByName(
-                identity.data(), EModKeyEvent::Pressed, callback);
-            identity = {};
+            if (token.id) if (auto* input = S::TryInput()) input->Remove(token);
+            token = {};
         };
-        unregister(g_toggleIdentity, &OnToggleKeyPressed);
-        unregister(g_zoomInIdentity, &OnZoomIn);
-        unregister(g_zoomOutIdentity, &OnZoomOut);
+        unregister(g_toggleBinding);
+        unregister(g_zoomInBinding);
+        unregister(g_zoomOutBinding);
     }
 
     void Shutdown()

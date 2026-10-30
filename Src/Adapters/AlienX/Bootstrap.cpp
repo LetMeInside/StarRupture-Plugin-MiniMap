@@ -1,6 +1,7 @@
 #include "Bootstrap.h"
 #include "Log.h"
 #include "Configuration.h"
+#include "Input.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -17,7 +18,12 @@ namespace
     IPluginSelf* g_self = nullptr;
     MiniMap::Adapters::AlienX::Log g_log;
     MiniMap::Adapters::AlienX::Configuration g_configuration;
+    MiniMap::Adapters::AlienX::Input g_input;
+#if defined(MODLOADER_CLIENT_BUILD)
+    const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration, nullptr, &g_input};
+#else
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration};
+#endif
     std::optional<MiniMap::Services::Detail::RuntimeBinding> g_binding;
 
     struct HookBaseline
@@ -67,6 +73,7 @@ namespace MiniMap::Adapters::AlienX
 {
     IPluginSelf* GetSelf() noexcept { return g_self; }
     Configuration& GetConfiguration() noexcept { return g_configuration; }
+    Input& GetInput() noexcept { return g_input; }
 
     void CapturePluginInitHookBaseline(IPluginSelf* self) noexcept
     {

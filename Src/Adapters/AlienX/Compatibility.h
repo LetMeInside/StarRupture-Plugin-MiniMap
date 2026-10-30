@@ -8,6 +8,8 @@ namespace MiniMap::Adapters::AlienX
     // Borrowed access for subsystems awaiting their own migration stage.
     // The bootstrap is the sole owner of the retained loader identity.
     IPluginSelf* GetSelf() noexcept;
+    bool KeyInputAvailable() noexcept;
+    bool WheelInputAvailable() noexcept;
     void CapturePluginInitHookBaseline(IPluginSelf* self) noexcept;
     void LogTerrainHookAvailability(IPluginSelf* self) noexcept;
 

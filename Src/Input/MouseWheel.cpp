@@ -7,18 +7,16 @@
 #include "../UI/MiniMapUI.h"
 #include "../Map/Map.h"
 #include "../CacheIdentity.h"
+#include "../Services/Input.h"
+#include "../Services/Runtime.h"
 
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 
-// PluginInfo advertises the mandatory SDK version; the loader rejects unsupported
-// tables before PluginInit. Pointer checks below are availability checks, not an
-// older-interface compatibility probe.
-static_assert(PLUGIN_INTERFACE_VERSION == 70, "Review the wheel ABI when updating the SDK");
-
 namespace
 {
+    namespace S = MiniMap::Services;
     // Serialize acceptance with disable/clear/drain: an in-flight callback must
     // not refill the queue after a visibility transition or shutdown clears it.
     // No loader or native gameplay calls are made while holding this mutex.
@@ -29,6 +27,7 @@ namespace
     uint64_t g_configRevision = 0;
     std::atomic<int32_t> g_pendingRawWheelDelta = 0;
     bool g_registered = false;
+    S::Registration g_wheelRegistration{};
 
     // Called only with g_inputMutex. These accessors read atomics, not Config.
     bool AcceptingZoom()
@@ -37,24 +36,19 @@ namespace
             MiniMapUI::IsVisible() && MiniMapMap::GameplayReady();
     }
 
-    bool OnMouseWheel(const PluginMouseWheelEvent* event, void* userData)
+    bool OnMouseWheel(void* userData, const S::WheelEvent& event)
     {
         (void)userData;
-        if (event == nullptr || event->size < sizeof(PluginMouseWheelEvent))
-        {
-            return false;
-        }
-
         std::lock_guard<std::mutex> lock(g_inputMutex);
-        if (!AcceptingZoom() || event->uiCapturing || event->rawDelta == 0 ||
-            event->rawDeltaH != 0 || (event->modifiers & g_modifier) == 0)
+        if (!AcceptingZoom() || event.exclusiveUiCapture || event.verticalRaw == 0 ||
+            event.horizontalRaw != 0 || (event.sidedModifiers & g_modifier) == 0)
         {
             return false;
         }
 
         // Ignore horizontal delta. Keep signed precision-wheel fractions until
         // drain, including cancellation of opposite directions.
-        g_pendingRawWheelDelta.fetch_add(event->rawDelta, std::memory_order_relaxed);
+        g_pendingRawWheelDelta.fetch_add(event.verticalRaw, std::memory_order_relaxed);
         return true;
     }
 
@@ -74,9 +68,7 @@ namespace MiniMapMouseWheel
             return true;
         }
         if (self == nullptr || self->hooks == nullptr ||
-            self->hooks->Input == nullptr ||
-            self->hooks->Input->RegisterMouseWheel == nullptr ||
-            self->hooks->Input->UnregisterMouseWheel == nullptr ||
+            S::TryInput() == nullptr || !MiniMap::Adapters::AlienX::WheelInputAvailable() ||
             self->hooks->Engine == nullptr ||
             self->hooks->Engine->RegisterOnShutdown == nullptr ||
             self->hooks->Engine->UnregisterOnShutdown == nullptr)
@@ -92,9 +84,15 @@ namespace MiniMapMouseWheel
             g_pendingRawWheelDelta.store(0, std::memory_order_relaxed);
         }
         Configure(settings.Enabled, settings.Modifier, settings.Revision);
-        // The public registration API returns void; no success status is exposed.
-        self->hooks->Input->RegisterMouseWheel(&OnMouseWheel, nullptr);
-        self->hooks->Engine->RegisterOnShutdown(&OnEngineShutdown);
+        const auto receipt = S::TryInput()->OnWheel(&OnMouseWheel, nullptr);
+        g_wheelRegistration = receipt.token;
+        if (receipt.acceptance == S::Acceptance::Rejected || receipt.acceptance == S::Acceptance::BackendUnknown)
+        {
+            Shutdown();
+            return false;
+        }
+        try { self->hooks->Engine->RegisterOnShutdown(&OnEngineShutdown); }
+        catch (...) { Shutdown(); throw; }
         g_registered = true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered ModLoader mouse-wheel callback");
@@ -111,14 +109,20 @@ namespace MiniMapMouseWheel
         }
         if (!g_registered)
         {
+            if (g_wheelRegistration.id)
+            {
+                if (auto* input = S::TryInput()) input->Remove(g_wheelRegistration);
+                g_wheelRegistration = {};
+            }
             return;
         }
 
         // Plugin/engine lifecycle teardown runs while the existing self is valid.
-        // Static callback state and null userData also survive registry snapshots;
+        // The adapter retains closed wheel records for registry snapshots;
         // unregister is not an in-flight callback barrier or a DLL-unload fix.
         auto* self = GetSelf();
-        self->hooks->Input->UnregisterMouseWheel(&OnMouseWheel, nullptr);
+        if (auto* input = S::TryInput()) input->Remove(g_wheelRegistration);
+        g_wheelRegistration = {};
         self->hooks->Engine->UnregisterOnShutdown(&OnEngineShutdown);
         g_registered = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

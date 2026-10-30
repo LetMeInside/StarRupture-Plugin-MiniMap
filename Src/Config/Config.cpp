@@ -2,6 +2,7 @@
 #include "plugin_helpers.h"
 #include "Services/Configuration.h"
 #include "Services/Runtime.h"
+#include "Services/Input.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "Input/MouseWheel.h"
 #include "UI/MiniMapUI.h"
@@ -159,7 +160,7 @@ constexpr const char* kKeys[] = {
     "Add","Subtract","Multiply","Divide","Decimal","LeftMouseButton","RightMouseButton","MiddleMouseButton","ThumbMouseButton","ThumbMouseButton2"
 };
     // clang-format on
-    static_assert(std::size(kKeys) == size_t(EModKey::Unknown));
+    static_assert(std::size(kKeys) == 101); // Reviewed vocabulary; native enum check is adapter-owned.
     bool SidedModifier(std::string_view token)
     {
         return Equal(token, "LeftControl") || Equal(token, "RightControl") || Equal(token, "LeftShift") ||
@@ -237,8 +238,9 @@ constexpr const char* kKeys[] = {
         case WheelKey: {
             constexpr const char* names[] = {"LeftControl", "RightControl", "LeftShift",
                                              "RightShift",  "LeftAlt",      "RightAlt"};
-            constexpr uint32_t bits[] = {PluginWheelMod_LeftCtrl,   PluginWheelMod_RightCtrl, PluginWheelMod_LeftShift,
-                                         PluginWheelMod_RightShift, PluginWheelMod_LeftAlt,   PluginWheelMod_RightAlt};
+            constexpr uint32_t bits[] = {uint32_t(S::WheelModifier::LeftControl), uint32_t(S::WheelModifier::RightControl),
+                uint32_t(S::WheelModifier::LeftShift), uint32_t(S::WheelModifier::RightShift),
+                uint32_t(S::WheelModifier::LeftAlt), uint32_t(S::WheelModifier::RightAlt)};
             for (size_t i = 0; i < std::size(names); ++i)
                 if (Equal(owned.data(), names[i]))
                 {

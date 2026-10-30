@@ -15,6 +15,8 @@
 
 #include "plugin.h"
 #include "plugin_helpers.h"
+#include "Services/Input.h"
+#include "Services/Runtime.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 
 #include <atomic>
@@ -33,6 +35,7 @@ namespace
     std::atomic<bool> g_diagnosticPending = false;
 
     bool g_diagnosticKeyRegistered = false;
+    MiniMap::Services::Registration g_diagnosticBinding{};
     bool g_tickRegistered = false;
 
     constexpr const char* kDiagnosticTextureName =
@@ -1001,13 +1004,8 @@ namespace
     }
 
 
-    void OnDiagnosticKeyPressed(
-        EModKey key,
-        EModKeyEvent event)
+    void OnDiagnosticKeyPressed(void*)
     {
-        (void)key;
-        (void)event;
-
         g_diagnosticPending.store(
             true,
             std::memory_order_release);
@@ -1082,7 +1080,7 @@ namespace MiniMapTerrainDiagnostics
             return false;
         }
 
-        if (self->hooks->Input == nullptr)
+        if (!MiniMap::Services::TryInput() || !MiniMap::Adapters::AlienX::KeyInputAvailable())
         {
             LOG_ERROR(
                 "MiniMap: cannot register terrain diagnostic key "
@@ -1111,10 +1109,17 @@ namespace MiniMapTerrainDiagnostics
 
         g_tickRegistered = true;
 
-        self->hooks->Input->RegisterKeybindByName(
-            kDiagnosticKey,
-            EModKeyEvent::Pressed,
-            &OnDiagnosticKeyPressed);
+        const auto receipt = MiniMap::Services::TryInput()->BindDiagnostic(kDiagnosticKey, &OnDiagnosticKeyPressed, nullptr);
+        g_diagnosticBinding = receipt.token;
+        if (receipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            receipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            if (g_diagnosticBinding.id) MiniMap::Services::TryInput()->Remove(g_diagnosticBinding);
+            g_diagnosticBinding = {};
+            self->hooks->Engine->UnregisterOnTick(&OnTick);
+            g_tickRegistered = false;
+            return false;
+        }
 
         g_diagnosticKeyRegistered = true;
 
@@ -1141,15 +1146,9 @@ namespace MiniMapTerrainDiagnostics
             self->hooks != nullptr)
         {
             if (g_diagnosticKeyRegistered &&
-                self->hooks->Input != nullptr)
+                MiniMap::Services::TryInput() != nullptr)
             {
-                self->
-                    hooks->
-                    Input->
-                    UnregisterKeybindByName(
-                        kDiagnosticKey,
-                        EModKeyEvent::Pressed,
-                        &OnDiagnosticKeyPressed);
+                MiniMap::Services::TryInput()->Remove(g_diagnosticBinding);
 
                 LOG_INFO(
                     "MiniMap: unregistered terrain diagnostic key: %s",
@@ -1172,6 +1171,7 @@ namespace MiniMapTerrainDiagnostics
         }
 
         g_diagnosticKeyRegistered = false;
+        g_diagnosticBinding = {};
         g_tickRegistered = false;
     }
 

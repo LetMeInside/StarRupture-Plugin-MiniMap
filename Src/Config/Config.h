@@ -18,7 +18,7 @@ namespace MiniMapConfig
         bool ClearCache = false;
         bool ZoomWithMouseWheel = true;
         Keybind MouseWheelKey = {'L', 'e', 'f', 't', 'C', 'o', 'n', 't', 'r', 'o', 'l', '\0'};
-        uint32_t WheelModifier = 1; // PluginWheelMod_LeftCtrl, validated with descriptor.
+        uint32_t WheelModifier = 1; // Services::WheelModifier::LeftControl; unchanged default bit.
         Keybind ZoomInKey = {};
         Keybind ZoomOutKey = {};
         double ZoomStepFactor = 1.25;
