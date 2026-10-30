@@ -16,6 +16,7 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
+#include "Services/Textures.h"
 #include "Services/RuntimeEvents.h"
 #include "Services/Input.h"
 #include "Native/MapMenuDevSettingsLookup.h"
@@ -23,6 +24,8 @@
 #include <atomic>
 #include <cstdint>
 #include <chrono>
+#include <optional>
+#include <span>
 #include <vector>
 
 namespace
@@ -31,8 +34,17 @@ namespace
     bool g_pluginSelfAvailable = false;
     SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
 
-    PluginTextureHandle g_terrainTexture = nullptr;
-    PluginTextureHandle g_referenceTerrainTexture = nullptr;
+    enum class DiagnosticTextureState
+    {
+        Empty,
+        Ready,
+        Latched
+    };
+
+    MiniMap::Services::OwnedTexture g_terrainTexture;
+    MiniMap::Services::OwnedTexture g_referenceTerrainTexture;
+    DiagnosticTextureState g_terrainTextureState = DiagnosticTextureState::Empty;
+    DiagnosticTextureState g_referenceTerrainTextureState = DiagnosticTextureState::Empty;
 
     std::atomic<bool> g_diagnosticPending = false;
 
@@ -108,17 +120,19 @@ namespace
             return;
         }
 
-        if (g_terrainTexture != nullptr)
+        if (g_terrainTextureState == DiagnosticTextureState::Ready)
         {
+            const auto texture = g_terrainTexture.View();
             LOG_INFO(
                 "MiniMap: F8 diagnostic: "
-                "terrain texture is already loaded: %p",
-                g_terrainTexture);
+                "terrain texture is already loaded: id=%llu",
+                static_cast<unsigned long long>(texture.id));
 
             return;
         }
 
-        if (self->hooks->ImGuiTextures == nullptr)
+        auto* textures = MiniMap::Services::TryTextures();
+        if (textures == nullptr || !textures->Available())
         {
             LOG_ERROR(
                 "MiniMap: F8 diagnostic: "
@@ -899,9 +913,9 @@ namespace
         }
 
         // ---------------------------------------------------------------------
-        // Keep the existing whole-tile AlienX copy as a reference, then upload
-        // the independently decoded 256x256 MiniMap chunk. The public UI getter
-        // returns the chunk handle so the viewport displays the new CPU path.
+        // Keep the existing whole-tile engine copy as a reference, then upload
+        // the independently decoded 256x256 MiniMap chunk. The public getter
+        // returns the neutral chunk identity for the existing CPU path.
         // ---------------------------------------------------------------------
 
         LOG_INFO(
@@ -911,79 +925,128 @@ namespace
             gridX,
             gridY);
 
-        g_referenceTerrainTexture =
-            self->
-            hooks->
-            ImGuiTextures->
-            LoadFromUTexture2D(
-                sourceTexture,
-                kDiagnosticTextureName);
-
-        if (g_referenceTerrainTexture == nullptr)
+        if (g_referenceTerrainTextureState == DiagnosticTextureState::Empty)
         {
-            LOG_WARN(
-                "MiniMap: F8 diagnostic: "
-                "AlienX reference terrain texture load returned null");
+            MiniMap::Services::UploadState result = MiniMap::Services::UploadState::Unavailable;
+            try
+            {
+                const MiniMap::Services::TextureRequest request{
+                    kDiagnosticTextureName, std::nullopt };
+                result = textures->CopyTexture2D(*sourceTexture, request, g_referenceTerrainTexture);
+            }
+            catch (...)
+            {
+                if (g_referenceTerrainTexture.HasRecord())
+                {
+                    g_referenceTerrainTextureState = DiagnosticTextureState::Latched;
+                    LOG_ERROR("MiniMap: F8 diagnostic: reference texture acquisition threw after retaining ownership; name latched");
+                }
+                return;
+            }
 
-            return;
+            const auto referenceView = g_referenceTerrainTexture.View();
+            const auto referenceSize = g_referenceTerrainTexture.Size();
+            const bool validComplete = result == MiniMap::Services::UploadState::Complete &&
+                g_referenceTerrainTexture.HasRecord() && g_referenceTerrainTexture.IsValidated() &&
+                referenceView.id != 0 && referenceSize && referenceSize->width != 0 && referenceSize->height != 0;
+            if (validComplete)
+            {
+                g_referenceTerrainTextureState = DiagnosticTextureState::Ready;
+            }
+            else if (result == MiniMap::Services::UploadState::OwnershipUncertain ||
+                g_referenceTerrainTexture.HasRecord() || result == MiniMap::Services::UploadState::Complete)
+            {
+                g_referenceTerrainTextureState = DiagnosticTextureState::Latched;
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: reference terrain texture acquisition is uncertain or malformed; name latched");
+            }
+            else
+            {
+                LOG_WARN(
+                    "MiniMap: F8 diagnostic: "
+                    "AlienX reference terrain texture load returned null");
+                return;
+            }
+
+            if (g_referenceTerrainTextureState != DiagnosticTextureState::Ready)
+                return;
         }
 
-        int referenceWidth = 0;
-        int referenceHeight = 0;
+        if (g_referenceTerrainTextureState != DiagnosticTextureState::Ready)
+            return;
 
-        self->
-            hooks->
-            ImGuiTextures->
-            GetSize(
-                g_referenceTerrainTexture,
-                &referenceWidth,
-                &referenceHeight);
+        const auto referenceView = g_referenceTerrainTexture.View();
+        const auto referenceSize = g_referenceTerrainTexture.Size();
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
             "AlienX reference terrain texture loaded: "
-            "grid=(%d, %d) handle=%p size=%dx%d",
+            "grid=(%d, %d) id=%llu size=%ux%u",
             gridX,
             gridY,
-            g_referenceTerrainTexture,
-            referenceWidth,
-            referenceHeight);
+            static_cast<unsigned long long>(referenceView.id),
+            referenceSize->width,
+            referenceSize->height);
 
         const auto uploadStart =
             std::chrono::steady_clock::now();
 
-        g_terrainTexture =
-            self->
-            hooks->
-            ImGuiTextures->
-            LoadFromRGBA(
-                rgbaChunk.data(),
-                256,
-                256,
-                kDiagnosticChunkTextureName);
+        MiniMap::Services::UploadState chunkResult = MiniMap::Services::UploadState::Unavailable;
+        if (g_terrainTextureState == DiagnosticTextureState::Empty)
+        {
+            try
+            {
+                const MiniMap::Services::TextureRequest request{
+                    kDiagnosticChunkTextureName, std::nullopt };
+                chunkResult = textures->UploadRGBA(
+                    std::span<const std::uint8_t>(rgbaChunk.data(), rgbaChunk.size()),
+                    { 256, 256 },
+                    request,
+                    g_terrainTexture);
+            }
+            catch (...)
+            {
+                if (g_terrainTexture.HasRecord())
+                {
+                    g_terrainTextureState = DiagnosticTextureState::Latched;
+                    LOG_ERROR("MiniMap: F8 diagnostic: decoded chunk texture acquisition threw after retaining ownership; name latched");
+                }
+                return;
+            }
+
+            const auto chunkView = g_terrainTexture.View();
+            const auto chunkSize = g_terrainTexture.Size();
+            const bool validComplete = chunkResult == MiniMap::Services::UploadState::Complete &&
+                g_terrainTexture.HasRecord() && g_terrainTexture.IsValidated() &&
+                chunkView.id != 0 && chunkSize && chunkSize->width == 256 && chunkSize->height == 256;
+            if (validComplete)
+            {
+                g_terrainTextureState = DiagnosticTextureState::Ready;
+            }
+            else if (chunkResult == MiniMap::Services::UploadState::OwnershipUncertain ||
+                g_terrainTexture.HasRecord() || chunkResult == MiniMap::Services::UploadState::Complete)
+            {
+                g_terrainTextureState = DiagnosticTextureState::Latched;
+                LOG_ERROR(
+                    "MiniMap: F8 diagnostic: decoded chunk texture acquisition is uncertain or malformed; name latched");
+            }
+            else
+            {
+                LOG_WARN(
+                    "MiniMap: F8 diagnostic: "
+                    "AlienX decoded chunk texture load returned null");
+                return;
+            }
+        }
 
         const auto uploadEnd =
             std::chrono::steady_clock::now();
 
-        if (g_terrainTexture == nullptr)
-        {
-            LOG_WARN(
-                "MiniMap: F8 diagnostic: "
-                "AlienX decoded chunk texture load returned null");
-
+        if (g_terrainTextureState != DiagnosticTextureState::Ready)
             return;
-        }
 
-        int textureWidth = 0;
-        int textureHeight = 0;
-
-        self->
-            hooks->
-            ImGuiTextures->
-            GetSize(
-                g_terrainTexture,
-                &textureWidth,
-                &textureHeight);
+        const auto chunkView = g_terrainTexture.View();
+        const auto chunkSize = g_terrainTexture.Size();
 
         const double uploadMilliseconds =
             std::chrono::duration<double, std::milli>(
@@ -993,14 +1056,14 @@ namespace
             "MiniMap: F8 diagnostic: "
             "AlienX decoded chunk loaded: "
             "terrain-grid=(%d, %d) chunk=(%d, %d) "
-            "handle=%p size=%dx%d upload=%.3f ms",
+            "id=%llu size=%ux%u upload=%.3f ms",
             gridX,
             gridY,
             chunkX,
             chunkY,
-            g_terrainTexture,
-            textureWidth,
-            textureHeight,
+            static_cast<unsigned long long>(chunkView.id),
+            chunkSize->width,
+            chunkSize->height,
             uploadMilliseconds);
     }
 
@@ -1204,9 +1267,12 @@ namespace MiniMapTerrainDiagnostics
     }
 
 
-    PluginTextureHandle GetTerrainTexture()
+    MiniMap::Services::Texture GetTerrainTexture()
     {
-        return g_terrainTexture;
+        if (g_terrainTextureState != DiagnosticTextureState::Ready)
+            return {};
+
+        return g_terrainTexture.View();
     }
 }
 

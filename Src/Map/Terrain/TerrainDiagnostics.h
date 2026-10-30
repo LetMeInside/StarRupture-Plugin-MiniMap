@@ -3,8 +3,9 @@
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 
+#include "Services/Textures.h"
+
 struct IPluginSelf;
-typedef void* PluginTextureHandle;
 
 namespace MiniMapTerrainDiagnostics
 {
@@ -16,7 +17,7 @@ namespace MiniMapTerrainDiagnostics
 
     void CancelPendingDiagnostic();
 
-    PluginTextureHandle GetTerrainTexture();
+    MiniMap::Services::Texture GetTerrainTexture();
 }
 
 #endif
