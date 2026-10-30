@@ -40,20 +40,5 @@ namespace MiniMap::Adapters::AlienX
         Services::Removal Remove(Services::Widget) override;
     };
     Viewport& GetViewport() noexcept;
-
-    // Stage 2.7 only: existing legacy texture owners borrow one binding for an
-    // immediate Image/ImageQuad call. No acquisition, release, registry or cache.
-    // Neither this guard nor its token may outlive that call/current frame.
-    class BorrowedTexture final
-    {
-        Services::ICanvas& Frame;
-        Services::Texture Token;
-    public:
-        BorrowedTexture(Services::ICanvas&, PluginTextureHandle);
-        ~BorrowedTexture();
-        BorrowedTexture(const BorrowedTexture&) = delete;
-        BorrowedTexture& operator=(const BorrowedTexture&) = delete;
-        Services::Texture Value() const noexcept { return Token; }
-    };
 }
 #endif

@@ -13,17 +13,9 @@ namespace
     class Canvas final : public S::ICanvas
     {
         IModLoaderImGui& Ui;
-        S::Texture Borrow{};
-        PluginTextureHandle Binding = nullptr;
         std::array<std::size_t, 2> Clips{};
         PluginDrawList List(S::DrawLayer layer) const
         { return layer == S::DrawLayer::Window ? Ui.GetWindowDrawList() : Ui.GetForegroundDrawList(); }
-        PluginTextureHandle Resolve(S::Texture token) const
-        {
-            if (!token.id || token.id != Borrow.id || !Binding)
-                throw std::invalid_argument("MiniMap: image token is outside its borrowed submission");
-            return Binding;
-        }
     public:
         explicit Canvas(IModLoaderImGui& ui) : Ui(ui)
         {
@@ -48,17 +40,6 @@ namespace
                     catch (...) { break; }
                 }
         }
-        S::Texture BeginBorrow(PluginTextureHandle binding)
-        {
-            if (Borrow.id || !binding) throw std::invalid_argument("MiniMap: invalid/nested texture borrow");
-            // No pointer encoding and no persistent mapping. The single slot is
-            // usable only until the immediate submission guard is destroyed.
-            const auto id = MiniMap::Adapters::AlienX::GetTextures().IssueIdentity();
-            if (!id) throw std::overflow_error("MiniMap: borrowed texture identity exhausted");
-            Borrow = {id}; Binding = binding; return Borrow;
-        }
-        void EndBorrow(S::Texture token) noexcept
-        { if (Borrow.id == token.id) { Borrow = {}; Binding = nullptr; } }
         S::Vec2 WindowPosition() const override
         { S::Vec2 v{}; Ui.GetWindowPos(&v.x, &v.y); return v; }
         S::Vec2 WindowSize() const override
@@ -75,16 +56,11 @@ namespace
         void Image(S::DrawLayer l, S::Texture t, S::Vec2 a, S::Vec2 b,
             S::Vec2 u, S::Vec2 v, S::Color c) override
         {
-            if (t.id && t.id == Borrow.id)
-                Ui.DL_AddImage(List(l), Resolve(t), a.x, a.y, b.x, b.y, u.x, u.y, v.x, v.y, c);
-            else MiniMap::Adapters::AlienX::GetTextures().Image(Ui, List(l), t, a, b, u, v, c);
+            MiniMap::Adapters::AlienX::GetTextures().Image(Ui, List(l), t, a, b, u, v, c);
         }
         void ImageQuad(S::DrawLayer l, S::Texture t, const S::Quad& p, const S::Quad& u, S::Color c) override
         {
-            if (t.id && t.id == Borrow.id)
-                Ui.DL_AddImageQuad(List(l), Resolve(t), p[0].x,p[0].y,p[1].x,p[1].y,p[2].x,p[2].y,p[3].x,p[3].y,
-                    u[0].x,u[0].y,u[1].x,u[1].y,u[2].x,u[2].y,u[3].x,u[3].y,c);
-            else MiniMap::Adapters::AlienX::GetTextures().ImageQuad(Ui, List(l), t, p, u, c);
+            MiniMap::Adapters::AlienX::GetTextures().ImageQuad(Ui, List(l), t, p, u, c);
         }
         void FilledRect(S::DrawLayer l, S::Vec2 a, S::Vec2 b, S::Color c, float r) override
         { Ui.DL_AddRectFilled(List(l), a.x,a.y,b.x,b.y,c,r,PluginDrawFlags_RoundCornersAll); }
@@ -103,10 +79,6 @@ namespace
 
 namespace MiniMap::Adapters::AlienX
 {
-    BorrowedTexture::BorrowedTexture(S::ICanvas& frame, PluginTextureHandle binding)
-        : Frame(frame), Token(dynamic_cast<Canvas&>(frame).BeginBorrow(binding)) {}
-    BorrowedTexture::~BorrowedTexture() { static_cast<Canvas&>(Frame).EndBorrow(Token); }
-
     S::RegistrationReceipt<S::Widget> Viewport::CreateOverlay(const S::OverlaySpec& spec,
         S::RenderFn render, void* user)
     {

@@ -81,12 +81,12 @@ namespace MiniMap::Adapters::AlienX
         Services::UploadState Acquire(std::span<const std::uint8_t>, Services::TextureSize,
             SDK::UTexture2D*, const Services::TextureRequest&, Services::OwnedTexture&) noexcept;
         Services::ReleaseState ReturnRecord(Record&, Services::OwnedTexture&) noexcept;
+        std::uint64_t IssueIdentity() noexcept;
     public:
         // Bootstrap-only lifetime. Initialization never uploads or frees.
         void Initialize(IPluginSelf*) noexcept;
         bool CloseAcquisitions() noexcept; // False on same-operation teardown.
         bool Stop() noexcept; // No sweep; false means retain adapter/runtime.
-        std::uint64_t IssueIdentity() noexcept; // Also used by the transitional bridge.
         bool Available() const noexcept override;
         Services::FreeSlots ObserveFreeSlots() noexcept override;
         Services::UploadState UploadRGBA(std::span<const std::uint8_t>, Services::TextureSize,
