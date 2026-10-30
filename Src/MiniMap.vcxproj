@@ -103,6 +103,7 @@
     <ClInclude Include="Services\RuntimeEvents.h" />
     <ClInclude Include="Services\NativeHooks.h" />
     <ClInclude Include="Services\Viewport.h" />
+    <ClInclude Include="Services\Textures.h" />
     <ClInclude Include="Services\Runtime.h" />
     <ClInclude Include="Services\RuntimeBinding.h" />
     <ClInclude Include="Adapters\AlienX\Bootstrap.h" />
@@ -115,6 +116,7 @@
     <ClInclude Include="Adapters\AlienX\RuntimeEvents.h" />
     <ClInclude Include="Adapters\AlienX\NativeHooks.h" />
     <ClInclude Include="Adapters\AlienX\Viewport.h" />
+    <ClInclude Include="Adapters\AlienX\Textures.h" />
     <ClInclude Include="CacheIdentity.h" />
     <ClInclude Include="Map\Buildings\SpriteQueues.h" />
     <ClInclude Include="Map\Buildings\SpriteStatus.h" />
@@ -189,6 +191,9 @@
     <ClCompile Include="Adapters\AlienX\RuntimeEvents.cpp" />
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
+    <ClCompile Include="Adapters\AlienX\Textures.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)Basic.cpp">
     </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)CoreUObject_functions.cpp">

@@ -7,6 +7,7 @@
 #include "RuntimeEvents.h"
 #include "NativeHooks.h"
 #include "Viewport.h"
+#include "Textures.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -32,8 +33,9 @@ namespace
     MiniMap::Adapters::AlienX::RuntimeEvents g_events;
     MiniMap::Adapters::AlienX::NativeHooks g_hooks;
     MiniMap::Adapters::AlienX::Viewport g_viewport;
+    MiniMap::Adapters::AlienX::Textures g_textures;
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration, nullptr, &g_input,
-        &MiniMap::Adapters::AlienX::GetObjects(), &g_events, &g_hooks, &g_viewport};
+        &MiniMap::Adapters::AlienX::GetObjects(), &g_events, &g_hooks, &g_viewport, &g_textures};
 #else
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration};
 #endif
@@ -66,6 +68,13 @@ namespace
     void ReleaseRuntime() noexcept
     {
         // Called only after the existing core cleanup/rollback has returned.
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (!g_textures.Stop())
+        {
+            LOG_ERROR("MiniMap: texture drain incomplete; runtime retained");
+            return;
+        }
+#endif
         g_baseline = {};
         g_binding.reset();
         g_self = nullptr;
@@ -90,6 +99,7 @@ namespace MiniMap::Adapters::AlienX
 #if defined(MODLOADER_CLIENT_BUILD)
     RuntimeEvents& GetRuntimeEvents() noexcept { return g_events; }
     Viewport& GetViewport() noexcept { return g_viewport; }
+    Textures& GetTextures() noexcept { return g_textures; }
 #endif
 
     void CapturePluginInitHookBaseline(IPluginSelf* self) noexcept
@@ -181,6 +191,9 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     }
     try
     {
+#if defined(MODLOADER_CLIENT_BUILD)
+        g_textures.Initialize(self); // No native texture acquisitions/releases.
+#endif
         if (MiniMap::Initialize()) return true;
         // Existing initialization guards/explicit rollback finish while bound.
         ReleaseRuntime();
@@ -188,6 +201,13 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     catch (...)
     {
         LOG_ERROR("MiniMap: exception during core initialization");
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (!g_textures.CloseAcquisitions())
+        {
+            LOG_ERROR("MiniMap: reentrant texture operation during initialization cleanup; runtime retained");
+            return false;
+        }
+#endif
         try
         {
             // Exceptional rollback uses the existing core shutdown order, with
@@ -207,6 +227,13 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 
 extern "C" __declspec(dllexport) void PluginShutdown()
 {
+#if defined(MODLOADER_CLIENT_BUILD)
+    if (!g_textures.CloseAcquisitions())
+    {
+        LOG_ERROR("MiniMap: reentrant texture operation during shutdown; runtime retained");
+        return;
+    }
+#endif
     try
     {
         MiniMap::Shutdown();

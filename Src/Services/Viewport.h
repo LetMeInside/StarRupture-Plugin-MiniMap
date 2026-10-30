@@ -1,12 +1,12 @@
 #pragma once
 #include "ServiceTypes.h"
+#include "Textures.h"
 #include <array>
 #include <string_view>
 
 namespace MiniMap::Services
 {
     struct Widget { std::uint64_t id = 0; };
-    struct Texture { std::uint64_t id = 0; };
     struct Vec2 { float x, y; };
     using Quad = std::array<Vec2, 4>;
     using Color = std::uint32_t; // 0xAABBGGRR

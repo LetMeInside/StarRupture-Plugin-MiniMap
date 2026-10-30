@@ -1,16 +1,14 @@
 #include "Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "Bootstrap.h"
+#include "Textures.h"
 #include "Services/Log.h"
-#include <atomic>
-#include <limits>
 #include <stdexcept>
 
 namespace
 {
     namespace S = MiniMap::Services;
     thread_local const void* g_renderingEntry = nullptr;
-    std::atomic<std::uint64_t> g_nextBorrow{1};
 
     class Canvas final : public S::ICanvas
     {
@@ -55,13 +53,8 @@ namespace
             if (Borrow.id || !binding) throw std::invalid_argument("MiniMap: invalid/nested texture borrow");
             // No pointer encoding and no persistent mapping. The single slot is
             // usable only until the immediate submission guard is destroyed.
-            auto id = g_nextBorrow.load(std::memory_order_relaxed);
-            do
-            {
-                if (!id) throw std::overflow_error("MiniMap: borrowed texture identity exhausted");
-            } while (!g_nextBorrow.compare_exchange_weak(id,
-                id == (std::numeric_limits<std::uint64_t>::max)() ? 0 : id + 1,
-                std::memory_order_relaxed));
+            const auto id = MiniMap::Adapters::AlienX::GetTextures().IssueIdentity();
+            if (!id) throw std::overflow_error("MiniMap: borrowed texture identity exhausted");
             Borrow = {id}; Binding = binding; return Borrow;
         }
         void EndBorrow(S::Texture token) noexcept
@@ -81,10 +74,18 @@ namespace
         { Ui.DL_PopClipRect(List(l)); auto& count = Clips[l == S::DrawLayer::Window ? 0 : 1]; if (count) --count; }
         void Image(S::DrawLayer l, S::Texture t, S::Vec2 a, S::Vec2 b,
             S::Vec2 u, S::Vec2 v, S::Color c) override
-        { Ui.DL_AddImage(List(l), Resolve(t), a.x, a.y, b.x, b.y, u.x, u.y, v.x, v.y, c); }
+        {
+            if (t.id && t.id == Borrow.id)
+                Ui.DL_AddImage(List(l), Resolve(t), a.x, a.y, b.x, b.y, u.x, u.y, v.x, v.y, c);
+            else MiniMap::Adapters::AlienX::GetTextures().Image(Ui, List(l), t, a, b, u, v, c);
+        }
         void ImageQuad(S::DrawLayer l, S::Texture t, const S::Quad& p, const S::Quad& u, S::Color c) override
-        { Ui.DL_AddImageQuad(List(l), Resolve(t), p[0].x,p[0].y,p[1].x,p[1].y,p[2].x,p[2].y,p[3].x,p[3].y,
-            u[0].x,u[0].y,u[1].x,u[1].y,u[2].x,u[2].y,u[3].x,u[3].y,c); }
+        {
+            if (t.id && t.id == Borrow.id)
+                Ui.DL_AddImageQuad(List(l), Resolve(t), p[0].x,p[0].y,p[1].x,p[1].y,p[2].x,p[2].y,p[3].x,p[3].y,
+                    u[0].x,u[0].y,u[1].x,u[1].y,u[2].x,u[2].y,u[3].x,u[3].y,c);
+            else MiniMap::Adapters::AlienX::GetTextures().ImageQuad(Ui, List(l), t, p, u, c);
+        }
         void FilledRect(S::DrawLayer l, S::Vec2 a, S::Vec2 b, S::Color c, float r) override
         { Ui.DL_AddRectFilled(List(l), a.x,a.y,b.x,b.y,c,r,PluginDrawFlags_RoundCornersAll); }
         void Rect(S::DrawLayer l, S::Vec2 a, S::Vec2 b, S::Color c, float r, float thickness) override
@@ -212,7 +213,7 @@ namespace MiniMap::Adapters::AlienX
             ++entry->InFlight;
         }
         const auto* previous = g_renderingEntry; g_renderingEntry = entry;
-        try { Canvas frame(*ui); entry->Render(entry->User,frame); }
+        try { TextureRenderScope rendering; Canvas frame(*ui); entry->Render(entry->User,frame); }
         catch (...)
         {
             if (auto* log = S::TryLog())
