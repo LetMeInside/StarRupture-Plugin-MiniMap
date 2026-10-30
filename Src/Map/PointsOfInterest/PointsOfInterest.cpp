@@ -1,4 +1,3 @@
-#include "Adapters/AlienX/Viewport.h"
 #include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -15,10 +14,10 @@
 #include "Native/NativeApi.h"
 #include "Native/TextureAccess.h"
 #include "Native/BC3Decode.h"
-#include "plugin_helpers.h"
 #include "Services/Runtime.h"
 #include "Services/RuntimeEvents.h"
 #include "Native/MapMenuDevSettingsLookup.h"
+#include "plugin_interface.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
@@ -29,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -113,7 +113,7 @@ namespace
         POIGuid Guid = {};
         double WorldX = 0.0;
         double WorldY = 0.0;
-        PluginTextureHandle Icon = nullptr;
+        MiniMap::Services::Texture Icon{};
         bool CanHideByFog = false;
     };
 
@@ -127,9 +127,6 @@ namespace
 
 
     bool g_initialized =
-        false;
-
-    bool g_pluginSelfAvailable =
         false;
 
     bool g_tickRegistered =
@@ -148,13 +145,16 @@ namespace
 
     std::vector<POIRecord> g_records;
 
-    /*
-     * POI icon handles are intentionally retained for plugin/process lifetime.
-     *
-     * AlienX currently has no fence-aware texture retirement. The landmark
-     * icon set is tiny, immutable after upload, and safe to retain.
-     */
-    std::unordered_map<uint32_t, PluginTextureHandle>
+    struct CachedPOIIcon
+    {
+        MiniMap::Services::OwnedTexture Owner;
+        MiniMap::Services::Texture View{};
+        bool OwnershipUncertain = false;
+    };
+
+    // The persistent cache is the sole owner of each immutable POI acquisition.
+    // Records and render snapshots copy only the non-owning neutral view.
+    std::unordered_map<uint32_t, CachedPOIIcon>
         g_iconCache;
 
 
@@ -174,19 +174,23 @@ namespace
     }
 
 
-    PluginTextureHandle LoadIconFromBulkData(
+    bool LoadIconFromBulkData(
         SDK::UTexture2D* texture,
-        const char* name)
+        const char* name,
+        MiniMap::Services::OwnedTexture& owner,
+        MiniMap::Services::Texture& view,
+        bool& ownershipUncertain)
     {
-        auto* self = GetSelf();
+        view = {};
+        ownershipUncertain = false;
+
+        auto* textures = MiniMap::Services::TryTextures();
         if (texture == nullptr ||
             name == nullptr ||
-            !g_pluginSelfAvailable ||
-            self == nullptr ||
-            self->hooks == nullptr ||
-            self->hooks->ImGuiTextures == nullptr)
+            textures == nullptr ||
+            !textures->Available())
         {
-            return nullptr;
+            return false;
         }
 
         MiniMapNative::TextureAccess::PlatformData
@@ -196,7 +200,7 @@ namespace
             texture,
             platformData))
         {
-            return nullptr;
+            return false;
         }
 
         MiniMapNative::TextureAccess::MipData
@@ -207,7 +211,7 @@ namespace
             0,
             mipData))
         {
-            return nullptr;
+            return false;
         }
 
         void* bulkCopy =
@@ -218,7 +222,7 @@ namespace
             &bulkCopy,
             false))
         {
-            return nullptr;
+            return false;
         }
 
         std::vector<uint8_t> rgba;
@@ -240,47 +244,67 @@ namespace
 
         if (!decoded)
         {
-            return nullptr;
+            return false;
         }
 
-        auto* textures =
-            self->
-                hooks->
-                ImGuiTextures;
-
-        if (textures->GetFreeSlotCount() <=
-            0)
+        const auto freeSlots = textures->ObserveFreeSlots();
+        if (freeSlots.status.error != MiniMap::Services::Error::None ||
+            freeSlots.count == 0)
         {
-            return nullptr;
+            return false;
         }
 
-        PluginTextureHandle handle =
-            textures->LoadFromRGBA(
-                rgba.data(),
-                static_cast<int>(
-                    mipData.SizeX),
-                static_cast<int>(
-                    mipData.SizeY),
-                name);
+        const MiniMap::Services::TextureSize size{
+            static_cast<uint32_t>(mipData.SizeX),
+            static_cast<uint32_t>(mipData.SizeY)};
+        const MiniMap::Services::TextureRequest request{name, size};
+        const auto upload = textures->UploadRGBA(
+            std::span<const uint8_t>(rgba.data(), rgba.size()),
+            size,
+            request,
+            owner);
 
-        if (handle ==
-            nullptr)
+        switch (upload)
         {
-            return nullptr;
-        }
+        case MiniMap::Services::UploadState::Complete:
+        {
+            const auto candidateView = owner.View();
+            const auto validatedSize = owner.Size();
+            if (!owner.IsValidated() ||
+                candidateView.id == 0 ||
+                !validatedSize ||
+                validatedSize->width != size.width ||
+                validatedSize->height != size.height)
+            {
+                // A malformed completion retains its receipt but never becomes drawable.
+                ownershipUncertain = true;
+                return false;
+            }
 
+            view = candidateView;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        LOG_INFO(
-            "MiniMap: cached POI icon "
-            "name=%s size=%ux%u source=CPU-BC3",
-            name,
-            static_cast<unsigned int>(
-                mipData.SizeX),
-            static_cast<unsigned int>(
-                mipData.SizeY));
+            LOG_INFO(
+                "MiniMap: cached POI icon "
+                "name=%s size=%ux%u source=CPU-BC3",
+                name,
+                static_cast<unsigned int>(mipData.SizeX),
+                static_cast<unsigned int>(mipData.SizeY));
 #endif
+            return true;
+        }
 
-        return handle;
+        case MiniMap::Services::UploadState::Unavailable:
+        case MiniMap::Services::UploadState::Rejected:
+            // A failed result with a receipt is not an ordinary retryable failure.
+            ownershipUncertain = owner.HasRecord();
+            return false;
+
+        case MiniMap::Services::UploadState::OwnershipUncertain:
+            ownershipUncertain = true;
+            return false;
+        }
+
+        return false;
     }
 
 
@@ -404,14 +428,14 @@ namespace
                     data);
     }
 
-    PluginTextureHandle ResolveIcon(
+    MiniMap::Services::Texture ResolveIcon(
         const SDK::UCrMapMenuPOIData* category,
         uint8_t poiType,
         IconVariant variant)
     {
         if (category == nullptr)
         {
-            return nullptr;
+            return {};
         }
 
         const uint32_t cacheKey =
@@ -428,7 +452,9 @@ namespace
         if (existing !=
             g_iconCache.end())
         {
-            return existing->second;
+            return existing->second.OwnershipUncertain
+                ? MiniMap::Services::Texture{}
+                : existing->second.View;
         }
 
         const MiniMapNative::NativeApi* native =
@@ -437,7 +463,7 @@ namespace
         if (native == nullptr ||
             native->texture.getBrushTexture == nullptr)
         {
-            return nullptr;
+            return {};
         }
 
         const SDK::FSlateBrush* brush = &category->Icon;
@@ -460,7 +486,7 @@ namespace
         if (texture ==
             nullptr)
         {
-            return nullptr;
+            return {};
         }
 
         char name[64] = {};
@@ -489,22 +515,72 @@ namespace
                 poiType),
             variantName);
 
-        PluginTextureHandle handle =
-            LoadIconFromBulkData(
-                texture,
-                name);
-
-        if (handle ==
-            nullptr)
+        // Allocate the final owner node before decoding reaches UploadRGBA.
+        auto entry = g_iconCache.end();
+        try
         {
-            return nullptr;
+            const auto prepared = g_iconCache.try_emplace(cacheKey);
+            entry = prepared.first;
+            if (!prepared.second)
+            {
+                return entry->second.OwnershipUncertain
+                    ? MiniMap::Services::Texture{}
+                    : entry->second.View;
+            }
+        }
+        catch (...)
+        {
+            // No backend acquisition has started, so the next eligible poll may retry.
+            return {};
         }
 
-        g_iconCache.emplace(
-            cacheKey,
-            handle);
+        bool ownershipUncertain = false;
+        try
+        {
+            const bool loaded = LoadIconFromBulkData(
+                texture,
+                name,
+                entry->second.Owner,
+                entry->second.View,
+                ownershipUncertain);
+            if (loaded)
+            {
+                return entry->second.View;
+            }
+        }
+        catch (...)
+        {
+            if (entry->second.Owner.HasRecord())
+            {
+                // Any exception after service receipt acquisition is fail-closed.
+                entry->second.View = {};
+                entry->second.OwnershipUncertain = true;
+                LOG_ERROR(
+                    "MiniMap: POI icon ownership uncertain; "
+                    "cache key latched name=%s",
+                    name);
+                return {};
+            }
 
-        return handle;
+            g_iconCache.erase(entry);
+            return {};
+        }
+
+        if (ownershipUncertain || entry->second.Owner.HasRecord())
+        {
+            entry->second.View = {};
+            entry->second.OwnershipUncertain = true;
+            LOG_ERROR(
+                "MiniMap: POI icon ownership/result uncertain; "
+                "cache key latched name=%s",
+                name);
+            return {};
+        }
+
+        // Unavailable/rejected with no receipt remains eligible for the normal poll retry.
+        g_iconCache.erase(entry);
+
+        return {};
     }
 
 
@@ -610,7 +686,7 @@ namespace
             }
         }
 
-        PluginTextureHandle icon =
+        MiniMap::Services::Texture icon =
             ResolveIcon(
                 category,
                 poiType,
@@ -621,7 +697,7 @@ namespace
          * discovered marker for this poll and retry the completed variant on
          * the next poll.
          */
-        if (icon == nullptr &&
+        if (icon.id == 0 &&
             iconVariant ==
                 IconVariant::Completed)
         {
@@ -632,8 +708,7 @@ namespace
                     IconVariant::Discovered);
         }
 
-        if (icon ==
-            nullptr)
+        if (icon.id == 0)
         {
             return false;
         }
@@ -834,7 +909,6 @@ namespace MiniMapPointsOfInterest
             return false;
         }
 
-        g_pluginSelfAvailable = true;
         Reset();
 
         const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
@@ -960,8 +1034,7 @@ namespace MiniMapPointsOfInterest
         for (const POIRecord& record :
             records)
         {
-            if (record.Icon ==
-                nullptr)
+            if (record.Icon.id == 0)
             {
                 continue;
             }
@@ -997,8 +1070,7 @@ namespace MiniMapPointsOfInterest
             if (record.CanHideByFog && !(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
                 record.WorldX, record.WorldY, transform, fog) > 0.0f)) continue;
 
-            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, record.Icon);
-            ui.Image(drawList, borrowedImage.Value(),
+            ui.Image(drawList, record.Icon,
                 {point.X - halfIcon, point.Y - halfIcon}, {point.X + halfIcon, point.Y + halfIcon},
                 {0.0f, 0.0f}, {1.0f, 1.0f}, 0xFFFFFFFFu);
         }
@@ -1029,13 +1101,7 @@ namespace MiniMapPointsOfInterest
 
         Reset();
 
-        /*
-         * Deliberately retain cached immutable icon textures. AlienX does not
-         * currently provide fence-aware texture retirement.
-         */
-        g_pluginSelfAvailable =
-            false;
-
+        // Deliberately retain cached immutable texture receipts across shutdown.
         g_initialized =
             false;
 

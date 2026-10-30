@@ -4,7 +4,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Map/MarkerIconSizing.h"
-#include "plugin_interface.h"
 
 namespace MiniMapMap
 {
