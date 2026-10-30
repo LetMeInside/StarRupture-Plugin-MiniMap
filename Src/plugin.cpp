@@ -279,17 +279,15 @@ void MiniMapCacheIdentity::ClearOnExit()
 }
 #endif
 
-// Transitional AlienX scan entry: preserve the exact mandatory resolution chain.
+// Preserve the centralized mandatory resolution chain through a borrowed service.
 void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
-    IPluginSelf* self,
-    IPluginHookScanner* scanner)
+    MiniMap::Services::IRequiredScanner& scanner)
 {
 #ifdef MODLOADER_CLIENT_BUILD
 
     g_resolvedAddresses = {};
 
     const bool fingerprintsResolved=MiniMapFingerprints::Resolve(
-        self,
         scanner,
         g_resolvedAddresses);
     if (!fingerprintsResolved)
@@ -308,6 +306,7 @@ void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
             "MiniMap: native API initialization failed");
 
         MiniMapNative::Shutdown();
+        scanner.Fail("MiniMap::NativeDependencies", "native API initialization failed");
         return;
     }
 
@@ -321,7 +320,6 @@ void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
 
 #else
 
-    (void)self;
     (void)scanner;
 
 #endif

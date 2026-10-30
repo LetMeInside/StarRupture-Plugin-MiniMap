@@ -1,7 +1,6 @@
 #pragma once
 
-#include "../plugin.h"
-#include "plugin_interface.h"
+#include "../Services/RequiredScanner.h"
 
 #include <cstdint>
 
@@ -126,7 +125,6 @@ namespace MiniMapFingerprints
     };
 
     bool Resolve(
-        IPluginSelf* self,
-        IPluginHookScanner* scanner,
+        MiniMap::Services::IRequiredScanner& scanner,
         ResolvedAddresses& addresses);
 }

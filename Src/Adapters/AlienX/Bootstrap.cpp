@@ -3,11 +3,16 @@
 #include "Configuration.h"
 #include "Input.h"
 #include "Objects.h"
+#include "RequiredScanner.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 
 #include <optional>
+
+#if defined(MODLOADER_CLIENT_BUILD)
+#include "Native/NativeApi.h"
+#endif
 
 #ifndef MODLOADER_BUILD_TAG
 #define MODLOADER_BUILD_TAG "1.2.0"
@@ -112,17 +117,38 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     IPluginSelf* self, IPluginHookScanner* scanner)
 {
     // The loader calls this before PluginInit. Borrow self only for this scope;
-    // the scanner and its session are never retained in Runtime or the adapter.
+    // the scanner adapter and its borrowed session exist only inside this call.
     if (g_binding) return;
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
     try
     {
-        MiniMap::Adapters::AlienX::ResolveNativeDependencies(self, scanner);
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (!self || !scanner || !scanner->Resolve ||
+            !scanner->ReportFailure || !scanner->HasFailures)
+        {
+            LOG_ERROR("MiniMap: native fingerprint resolution failed: invalid required scanner callback arguments");
+            MiniMapNative::Shutdown();
+            // A malformed callback can only be reported when the loader supplied
+            // its identity and reporting operation. No alternative failure API.
+            if (self && scanner && scanner->ReportFailure)
+                scanner->ReportFailure(self, "MiniMap::NativeDependencies", "invalid required scanner callback arguments");
+            return;
+        }
+        MiniMap::Adapters::AlienX::RequiredScanner requiredScanner(*self, *scanner);
+        MiniMap::Adapters::AlienX::ResolveNativeDependencies(requiredScanner);
+        if (requiredScanner.HasFailures() && MiniMapNative::IsInitialized())
+            MiniMapNative::Shutdown();
+#else
+        (void)scanner; // Existing server/generic callback performs no native scans.
+#endif
     }
     catch (...)
     {
         LOG_ERROR("MiniMap: exception during native dependency initialization");
+#if defined(MODLOADER_CLIENT_BUILD)
+        MiniMapNative::Shutdown();
+#endif
         try
         {
             if (self && scanner && scanner->ReportFailure)

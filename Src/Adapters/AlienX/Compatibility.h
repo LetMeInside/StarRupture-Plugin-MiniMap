@@ -3,6 +3,8 @@
 #include <windows.h>
 #include "plugin_interface.h"
 
+namespace MiniMap::Services { class IRequiredScanner; }
+
 namespace MiniMap::Adapters::AlienX
 {
     // Borrowed access for subsystems awaiting their own migration stage.
@@ -13,6 +15,6 @@ namespace MiniMap::Adapters::AlienX
     void CapturePluginInitHookBaseline(IPluginSelf* self) noexcept;
     void LogTerrainHookAvailability(IPluginSelf* self) noexcept;
 
-    // Existing scan chain remains in plugin.cpp until the scanner stage.
-    void ResolveNativeDependencies(IPluginSelf* self, IPluginHookScanner* scanner);
+    // Transitional orchestration in plugin.cpp; the scan session stays borrowed.
+    void ResolveNativeDependencies(Services::IRequiredScanner& scanner);
 }
