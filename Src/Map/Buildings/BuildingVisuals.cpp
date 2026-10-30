@@ -16,6 +16,8 @@
 #include "BuildingVisibilityTrace.h"
 #endif
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
 #endif
@@ -29,6 +31,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     namespace G = MiniMapBuildingVisualGeometry;
     namespace C = MiniMapBuildingCollector;
     namespace S = MiniMapBuildingSplineGeometry;
@@ -515,15 +518,29 @@ namespace MiniMapBuildingVisuals
     bool Initialize(IPluginSelf* self)
     {
         if(g_initialized) return true;
-        if(!self || !self->hooks || !self->hooks->Engine) return false;
-        Reset(); self->hooks->Engine->RegisterOnTick(&OnTick); g_initialized=true; return true;
+        if(!self || !self->hooks || !MiniMap::Services::TryRuntimeEvents()) return false;
+        Reset();
+        const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+            [](void*, float delta) { OnTick(delta); }, nullptr);
+        if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+        if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            if (g_tickRegistration.id) MiniMap::Services::TryRuntimeEvents()->Remove(g_tickRegistration);
+            return false;
+        }
+        g_initialized=true; return true;
     }
     void Reset() { Clear(); }
     void Shutdown()
     {
         if(!g_initialized) return;
-        auto* self=GetSelf();
-        self->hooks->Engine->UnregisterOnTick(&OnTick);
+        if (auto* events = MiniMap::Services::TryRuntimeEvents())
+        {
+            const auto removal = events->Remove(g_tickRegistration);
+            if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+        }
         Reset(); g_initialized=false;
     }
     void Render(IModLoaderImGui* ui,const MiniMapMap::Transform& transform,

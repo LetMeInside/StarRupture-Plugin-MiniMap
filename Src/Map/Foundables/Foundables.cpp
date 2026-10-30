@@ -14,6 +14,8 @@
 #include "Native/TextureAccess.h"
 #include "Native/BC3Decode.h"
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 
 #include "SDK/Chimera_classes.hpp"
@@ -38,6 +40,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     constexpr float kPollIntervalSeconds = 3.0f;
     constexpr float kOrdinaryContainerDotRadiusPixels = 2.5f;
     constexpr uint32_t kOrdinaryContainerDotColor = 0xFF00FFFFu; // Opaque yellow in ImGui ABGR.
@@ -1151,7 +1154,7 @@ namespace MiniMapFoundables
 
         if (self == nullptr ||
             self->hooks == nullptr ||
-            self->hooks->Engine == nullptr)
+            MiniMap::Services::TryRuntimeEvents() == nullptr)
         {
             return false;
         }
@@ -1159,7 +1162,15 @@ namespace MiniMapFoundables
         g_pluginSelfAvailable = true;
         Reset();
 
-        self->hooks->Engine->RegisterOnTick(&OnTick);
+        const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+            [](void*, float delta) { OnTick(delta); }, nullptr);
+        if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+        if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            if (g_tickRegistration.id) MiniMap::Services::TryRuntimeEvents()->Remove(g_tickRegistration);
+            return false;
+        }
 
         g_tickRegistered = true;
         g_initialized = true;
@@ -1354,13 +1365,14 @@ namespace MiniMapFoundables
             return;
         }
 
-        auto* self=GetSelf();
-        if (g_tickRegistered &&
-            self != nullptr &&
-            self->hooks != nullptr &&
-            self->hooks->Engine != nullptr)
+        if (g_tickRegistered)
         {
-            self->hooks->Engine->UnregisterOnTick(&OnTick);
+            if (auto* events = MiniMap::Services::TryRuntimeEvents())
+            {
+                const auto removal = events->Remove(g_tickRegistration);
+                if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                    removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+            }
         }
 
         g_tickRegistered = false;

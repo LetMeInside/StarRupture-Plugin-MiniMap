@@ -15,8 +15,9 @@
 
 #include "plugin.h"
 #include "plugin_helpers.h"
-#include "Services/Input.h"
 #include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
+#include "Services/Input.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 
 #include <atomic>
@@ -26,6 +27,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     bool g_pluginSelfAvailable = false;
     SDK::UCrMapMenuTerrainData* g_terrainData = nullptr;
 
@@ -1088,7 +1090,7 @@ namespace MiniMapTerrainDiagnostics
             return false;
         }
 
-        if (self->hooks->Engine == nullptr)
+        if (MiniMap::Services::TryRuntimeEvents() == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: cannot register terrain diagnostic tick "
@@ -1103,8 +1105,15 @@ namespace MiniMapTerrainDiagnostics
             false,
             std::memory_order_release);
 
-        self->hooks->Engine->RegisterOnTick(
-            &OnTick);
+        const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+            [](void*, float delta) { OnTick(delta); }, nullptr);
+        if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+        if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            if (g_tickRegistration.id) MiniMap::Services::TryRuntimeEvents()->Remove(g_tickRegistration);
+            return false;
+        }
 
         g_tickRegistered = true;
 
@@ -1115,7 +1124,12 @@ namespace MiniMapTerrainDiagnostics
         {
             if (g_diagnosticBinding.id) MiniMap::Services::TryInput()->Remove(g_diagnosticBinding);
             g_diagnosticBinding = {};
-            self->hooks->Engine->UnregisterOnTick(&OnTick);
+            if (auto* events = MiniMap::Services::TryRuntimeEvents())
+            {
+                const auto removal = events->Remove(g_tickRegistration);
+                if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                    removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+            }
             g_tickRegistered = false;
             return false;
         }
@@ -1139,10 +1153,7 @@ namespace MiniMapTerrainDiagnostics
             false,
             std::memory_order_release);
 
-        auto* self = GetSelf();
-        if (g_pluginSelfAvailable &&
-            self != nullptr &&
-            self->hooks != nullptr)
+        if (g_pluginSelfAvailable)
         {
             if (g_diagnosticKeyRegistered &&
                 MiniMap::Services::TryInput() != nullptr)
@@ -1155,13 +1166,14 @@ namespace MiniMapTerrainDiagnostics
             }
 
             if (g_tickRegistered &&
-                self->hooks->Engine != nullptr)
+                MiniMap::Services::TryRuntimeEvents() != nullptr)
             {
-                self->
-                    hooks->
-                    Engine->
-                    UnregisterOnTick(
-                        &OnTick);
+                if (auto* events = MiniMap::Services::TryRuntimeEvents())
+                {
+                    const auto removal = events->Remove(g_tickRegistration);
+                    if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                        removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+                }
 
                 LOG_INFO(
                     "MiniMap: unregistered terrain diagnostic "

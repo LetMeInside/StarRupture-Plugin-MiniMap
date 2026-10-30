@@ -17,6 +17,8 @@
 #include "Native/TextureAccess.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -31,6 +33,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     struct ChunkIdentity
     {
         int RadiationLevel = 0;
@@ -1345,9 +1348,8 @@ namespace MiniMapTerrain
         const bool terrainSelfAvailable=self!=nullptr;
         auto* terrainHooks=terrainSelfAvailable?self->hooks:nullptr;
         const bool terrainHooksAvailable=terrainHooks!=nullptr;
-        auto* terrainEngine=terrainHooksAvailable?terrainHooks->Engine:nullptr;
         auto* terrainTextures=terrainHooksAvailable?terrainHooks->ImGuiTextures:nullptr;
-        const bool terrainEngineAvailable=terrainEngine!=nullptr;
+        const bool terrainEngineAvailable=MiniMap::Services::TryRuntimeEvents()!=nullptr;
         const bool terrainImGuiTexturesAvailable=terrainTextures!=nullptr;
         if (!terrainSelfAvailable || !terrainHooksAvailable ||
             !terrainEngineAvailable || !terrainImGuiTexturesAvailable)
@@ -1378,11 +1380,19 @@ namespace MiniMapTerrain
 
         if (!g_tickRegistered)
         {
-            self->
-                hooks->
-                Engine->
-                RegisterOnTick(
-                    &OnTerrainTick);
+            const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+                [](void*, float delta) { OnTerrainTick(delta); }, nullptr);
+            if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+            if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+                tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+            {
+                if (g_tickRegistration.id) MiniMap::Services::TryRuntimeEvents()->Remove(g_tickRegistration);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                MiniMapTerrainDiagnostics::Shutdown();
+#endif
+                MiniMapTerrainSource::Shutdown();
+                return false;
+            }
 
             g_tickRegistered =
                 true;
@@ -1412,17 +1422,14 @@ namespace MiniMapTerrain
 #endif
         MiniMapMouseWheel::ClearPendingZoom();
 
-        auto* self = GetSelf();
-        if (g_tickRegistered &&
-            self != nullptr &&
-            self->hooks != nullptr &&
-            self->hooks->Engine != nullptr)
+        if (g_tickRegistered)
         {
-            self->
-                hooks->
-                Engine->
-                UnregisterOnTick(
-                    &OnTerrainTick);
+            if (auto* events = MiniMap::Services::TryRuntimeEvents())
+            {
+                const auto removal = events->Remove(g_tickRegistration);
+                if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                    removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+            }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(

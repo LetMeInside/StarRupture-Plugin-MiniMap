@@ -36,16 +36,31 @@ namespace MiniMap::Services
         // Stage 2.4 partial client binding; client remains null until the full
         // immutable ClientServices composition is populated.
         IObjects* const objects;
+        // Stage 2.6 partial client binding, fixed before any callback submission.
+        IRuntimeEvents* const events;
+        INativeHooks* const hooks;
 
         explicit Runtime(ILog& logService, IConfiguration* configuration = nullptr,
             const ClientServices* clientServices = nullptr, IInput* inputService = nullptr,
-            IObjects* objectsService = nullptr) noexcept
-            : log(logService), config(configuration), client(clientServices), input(inputService), objects(objectsService) {}
+            IObjects* objectsService = nullptr, IRuntimeEvents* eventService = nullptr,
+            INativeHooks* hookService = nullptr) noexcept
+            : log(logService), config(configuration), client(clientServices), input(inputService), objects(objectsService),
+              events(eventService), hooks(hookService) {}
         Runtime(const Runtime&) = delete;
         Runtime& operator=(const Runtime&) = delete;
     };
 
     const Runtime* TryRuntime() noexcept;
+    inline IRuntimeEvents* TryRuntimeEvents() noexcept
+    {
+        const auto* runtime = TryRuntime();
+        return runtime ? runtime->events : nullptr;
+    }
+    inline INativeHooks* TryNativeHooks() noexcept
+    {
+        const auto* runtime = TryRuntime();
+        return runtime ? runtime->hooks : nullptr;
+    }
     inline IInput* TryInput() noexcept
     {
         const auto* runtime = TryRuntime();

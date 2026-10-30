@@ -100,6 +100,8 @@
     <ClInclude Include="Services\Input.h" />
     <ClInclude Include="Services\Objects.h" />
     <ClInclude Include="Services\RequiredScanner.h" />
+    <ClInclude Include="Services\RuntimeEvents.h" />
+    <ClInclude Include="Services\NativeHooks.h" />
     <ClInclude Include="Services\Runtime.h" />
     <ClInclude Include="Services\RuntimeBinding.h" />
     <ClInclude Include="Adapters\AlienX\Bootstrap.h" />
@@ -109,6 +111,8 @@
     <ClInclude Include="Adapters\AlienX\Input.h" />
     <ClInclude Include="Adapters\AlienX\Objects.h" />
     <ClInclude Include="Adapters\AlienX\RequiredScanner.h" />
+    <ClInclude Include="Adapters\AlienX\RuntimeEvents.h" />
+    <ClInclude Include="Adapters\AlienX\NativeHooks.h" />
     <ClInclude Include="CacheIdentity.h" />
     <ClInclude Include="Map\Buildings\SpriteQueues.h" />
     <ClInclude Include="Map\Buildings\SpriteStatus.h" />
@@ -180,6 +184,8 @@
     <ClCompile Include="Adapters\AlienX\Input.cpp" />
     <ClCompile Include="Adapters\AlienX\Objects.cpp" />
     <ClCompile Include="Adapters\AlienX\RequiredScanner.cpp" />
+    <ClCompile Include="Adapters\AlienX\RuntimeEvents.cpp" />
+    <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="$(StarRuptureSDKSourceDir)Basic.cpp">
     </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)CoreUObject_functions.cpp">

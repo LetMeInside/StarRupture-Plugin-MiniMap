@@ -4,6 +4,8 @@
 #include "Input.h"
 #include "Objects.h"
 #include "RequiredScanner.h"
+#include "RuntimeEvents.h"
+#include "NativeHooks.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -26,8 +28,10 @@ namespace
     MiniMap::Adapters::AlienX::Configuration g_configuration;
     MiniMap::Adapters::AlienX::Input g_input;
 #if defined(MODLOADER_CLIENT_BUILD)
+    MiniMap::Adapters::AlienX::RuntimeEvents g_events;
+    MiniMap::Adapters::AlienX::NativeHooks g_hooks;
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration, nullptr, &g_input,
-        &MiniMap::Adapters::AlienX::GetObjects()};
+        &MiniMap::Adapters::AlienX::GetObjects(), &g_events, &g_hooks};
 #else
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration};
 #endif
@@ -81,6 +85,9 @@ namespace MiniMap::Adapters::AlienX
     IPluginSelf* GetSelf() noexcept { return g_self; }
     Configuration& GetConfiguration() noexcept { return g_configuration; }
     Input& GetInput() noexcept { return g_input; }
+#if defined(MODLOADER_CLIENT_BUILD)
+    RuntimeEvents& GetRuntimeEvents() noexcept { return g_events; }
+#endif
 
     void CapturePluginInitHookBaseline(IPluginSelf* self) noexcept
     {

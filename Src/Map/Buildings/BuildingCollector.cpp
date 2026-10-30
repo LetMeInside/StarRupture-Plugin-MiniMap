@@ -16,6 +16,8 @@
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
 #include <chrono>
@@ -28,6 +30,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     using namespace MiniMapBuildingCollector;
     using Native=MiniMapNative::NativeApi;
     using Id=MiniMapNative::MassEntityHandle;
@@ -879,8 +882,21 @@ namespace MiniMapBuildingCollector
     bool Initialize(IPluginSelf* self)
     {
         if(initialized)return true;
-        if(!self || !self->hooks || !self->hooks->Engine)return false;
-        Reset();InitializeMetadata();self->hooks->Engine->RegisterOnTick(&OnTick);initialized=true;return true;
+        if(!self || !self->hooks || !MiniMap::Services::TryRuntimeEvents())return false;
+        Reset();InitializeMetadata();
+        const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+            [](void*, float delta) { OnTick(delta); }, nullptr);
+        if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+        if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            // Metadata was prepared before submission. Use this owner's existing
+            // teardown to release it when the new receipt cannot be accepted.
+            initialized = true;
+            Shutdown();
+            return false;
+        }
+        initialized=true;return true;
     }
     void Reset(){ready=false;ClearSession();std::scoped_lock lock(publicationMutex);viewRadius=0;}
     void OnExperienceLoadComplete()
@@ -899,7 +915,14 @@ namespace MiniMapBuildingCollector
     std::shared_ptr<const Snapshot> GetSnapshot(){std::scoped_lock lock(publicationMutex);return snapshot;}
     void Shutdown()
     {
-        if(!initialized)return;GetSelf()->hooks->Engine->UnregisterOnTick(&OnTick);Reset();
+        if(!initialized)return;
+        if (auto* events = MiniMap::Services::TryRuntimeEvents())
+        {
+            const auto removal = events->Remove(g_tickRegistration);
+            if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+        }
+        Reset();
         MiniMapBuildingBlueprintIdentity::Shutdown();
         if(const auto* n=MiniMapNative::Get())for(auto* root:metadata)n->asset.releaseObject(root);
         metadata.clear();types={};initialized=false;

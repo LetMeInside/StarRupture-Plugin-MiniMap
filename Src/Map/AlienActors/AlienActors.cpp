@@ -8,6 +8,8 @@
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
 #include "SDK/MassEntity_structs.hpp"
 #include "SDK/MassAIPrototypeEnemyRuntime_structs.hpp"
 
@@ -24,6 +26,7 @@
 
 namespace
 {
+    MiniMap::Services::Registration g_tickRegistration{};
     constexpr float kPollIntervalSeconds = 0.2f;
     using PollClock = std::chrono::steady_clock;
     constexpr auto kCapWarningInterval = std::chrono::seconds(5);
@@ -385,13 +388,21 @@ namespace MiniMapAlienActors
     bool Initialize(IPluginSelf* self)
     {
         if (g_initialized) return true;
-        if (self == nullptr || self->hooks == nullptr || self->hooks->Engine == nullptr)
+        if (self == nullptr || self->hooks == nullptr || MiniMap::Services::TryRuntimeEvents() == nullptr)
         {
             return false;
         }
         Reset();
         // AlienX dispatches these callbacks after the original engine tick.
-        self->hooks->Engine->RegisterOnTick(&OnTick);
+        const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
+            [](void*, float delta) { OnTick(delta); }, nullptr);
+        if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
+        if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
+            tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
+        {
+            if (g_tickRegistration.id) MiniMap::Services::TryRuntimeEvents()->Remove(g_tickRegistration);
+            return false;
+        }
         g_initialized = true;
         return true;
     }
@@ -508,8 +519,12 @@ namespace MiniMapAlienActors
     {
         if (!g_initialized) return;
         g_experienceReady = false;
-        auto* self=GetSelf();
-        self->hooks->Engine->UnregisterOnTick(&OnTick);
+        if (auto* events = MiniMap::Services::TryRuntimeEvents())
+        {
+            const auto removal = events->Remove(g_tickRegistration);
+            if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+        }
         Reset(); // Destruct while NativeApi is still available.
         g_initialized = false;
     }

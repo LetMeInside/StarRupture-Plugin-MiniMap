@@ -2,6 +2,9 @@
 #include "plugin_helpers.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"
+#include "Services/Runtime.h"
+#include "Services/RuntimeEvents.h"
+#include "Services/NativeHooks.h"
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
@@ -21,8 +24,32 @@
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 static MiniMapSpriteStatus::Dictionary g_buildingSpriteStatuses;
 static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
-static HookHandle g_commonUIActivatedHook = nullptr;
-static HookHandle g_commonUIDeactivatedHook = nullptr;
+namespace S = MiniMap::Services;
+static S::Hook g_commonUIActivatedHook{};
+static S::Hook g_commonUIDeactivatedHook{};
+static S::Registration g_rendererTick{}, g_beforeEnd{}, g_afterEnd{}, g_gameplayBegan{}, g_experienceReady{};
+static bool AcceptEventRegistration(S::Registration& token, const S::RegistrationReceipt<S::Registration>& receipt)
+{
+    if (receipt.token.id) token = receipt.token;
+    if (receipt.acceptance == S::Acceptance::Rejected || receipt.acceptance == S::Acceptance::BackendUnknown)
+    {
+        LOG_ERROR("MiniMap: required runtime-event registration failed (acceptance=%d)", int(receipt.acceptance));
+        return false;
+    }
+    return true; // AcceptedUnverified preserves normal AlienX initialization.
+}
+static void RemoveEventRegistration(S::Registration& token)
+{
+    if (!token.id) return;
+    if (auto* events = S::TryRuntimeEvents())
+    {
+        const auto removal = events->Remove(token);
+        if (removal.registry == S::RegistryRemoval::RequestReturned && removal.core == S::CoreDrain::Quiescent)
+            token = {};
+        else LOG_ERROR("MiniMap: runtime-event removal retains pending/unknown evidence (token=%llu)",
+            static_cast<unsigned long long>(token.id));
+    }
+}
 static MiniMapNative::CommonUIApi::NativeOnActivatedFn g_commonUIActivatedOriginal = nullptr;
 static MiniMapNative::CommonUIApi::NativeOnDeactivatedFn g_commonUIDeactivatedOriginal = nullptr;
 
@@ -163,37 +190,35 @@ static void __fastcall CommonUIDeactivatedDetour(
 
 static void RemoveCommonUIHooks()
 {
-    auto* self = GetSelf();
-    if (self != nullptr &&
-        self->hooks != nullptr &&
-        self->hooks->Hooks != nullptr &&
-        self->hooks->Hooks->Remove != nullptr)
+    if (auto* hooks = S::TryNativeHooks())
     {
-        if (g_commonUIActivatedHook != nullptr)
+        if (g_commonUIActivatedHook.id)
         {
-            self->hooks->Hooks->Remove(g_commonUIActivatedHook);
+            const auto removal = hooks->Remove(g_commonUIActivatedHook);
+            if (removal.registry != S::RegistryRemoval::RequestReturned)
+                LOG_ERROR("MiniMap: CommonUI activation removal remains uncertain");
         }
-        if (g_commonUIDeactivatedHook != nullptr)
+        if (g_commonUIDeactivatedHook.id)
         {
-            self->hooks->Hooks->Remove(g_commonUIDeactivatedHook);
+            const auto removal = hooks->Remove(g_commonUIDeactivatedHook);
+            if (removal.registry != S::RegistryRemoval::RequestReturned)
+                LOG_ERROR("MiniMap: CommonUI deactivation removal remains uncertain");
         }
     }
 
-    g_commonUIActivatedHook = nullptr;
-    g_commonUIDeactivatedHook = nullptr;
+    // Existing game-owned slot clearing follows removal requests. The adapter
+    // retains backend identity/evidence; clearing is not a drain certificate.
+    g_commonUIActivatedHook = {};
+    g_commonUIDeactivatedHook = {};
     g_commonUIActivatedOriginal = nullptr;
     g_commonUIDeactivatedOriginal = nullptr;
 }
 
 static bool InstallCommonUIHooks()
 {
-    auto* self = GetSelf();
-    auto* hookUtils = self != nullptr && self->hooks != nullptr
-        ? self->hooks->Hooks
-        : nullptr;
+    auto* hookUtils = S::TryNativeHooks();
     const auto* nativeApi = MiniMapNative::Get();
-    if (hookUtils == nullptr || hookUtils->Install == nullptr ||
-        hookUtils->Remove == nullptr || nativeApi == nullptr ||
+    if (hookUtils == nullptr || nativeApi == nullptr ||
         nativeApi->commonUI.nativeOnActivated == nullptr ||
         nativeApi->commonUI.nativeOnDeactivated == nullptr)
     {
@@ -201,35 +226,39 @@ static bool InstallCommonUIHooks()
         return false;
     }
 
-    void* activatedOriginal = nullptr;
-    g_commonUIActivatedHook = hookUtils->Install(
+    const auto activated = hookUtils->Install({
         reinterpret_cast<uintptr_t>(nativeApi->commonUI.nativeOnActivated),
         reinterpret_cast<void*>(&CommonUIActivatedDetour),
-        &activatedOriginal);
-    if (g_commonUIActivatedHook == nullptr || activatedOriginal == nullptr)
+        [](void* owner, void* original) noexcept {
+            *static_cast<MiniMapNative::CommonUIApi::NativeOnActivatedFn*>(owner) =
+                reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnActivatedFn>(original);
+        }, &g_commonUIActivatedOriginal});
+    g_commonUIActivatedHook = activated.handle;
+    if (activated.state != S::HookInstallState::Active)
     {
         RemoveCommonUIHooks();
         LOG_ERROR("MiniMap: CommonUI activation detour installation failed");
+        if (activated.state == S::HookInstallState::BackendUnknown)
+            LOG_ERROR("MiniMap: CommonUI activation backend state is unknown; rollback request does not establish restoration");
         return false;
     }
-    g_commonUIActivatedOriginal =
-        reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnActivatedFn>(
-            activatedOriginal);
 
-    void* deactivatedOriginal = nullptr;
-    g_commonUIDeactivatedHook = hookUtils->Install(
+    const auto deactivated = hookUtils->Install({
         reinterpret_cast<uintptr_t>(nativeApi->commonUI.nativeOnDeactivated),
         reinterpret_cast<void*>(&CommonUIDeactivatedDetour),
-        &deactivatedOriginal);
-    if (g_commonUIDeactivatedHook == nullptr || deactivatedOriginal == nullptr)
+        [](void* owner, void* original) noexcept {
+            *static_cast<MiniMapNative::CommonUIApi::NativeOnDeactivatedFn*>(owner) =
+                reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnDeactivatedFn>(original);
+        }, &g_commonUIDeactivatedOriginal});
+    g_commonUIDeactivatedHook = deactivated.handle;
+    if (deactivated.state != S::HookInstallState::Active)
     {
         RemoveCommonUIHooks();
         LOG_ERROR("MiniMap: CommonUI deactivation detour installation failed");
+        if (deactivated.state == S::HookInstallState::BackendUnknown)
+            LOG_ERROR("MiniMap: CommonUI deactivation backend state is unknown; rollback request does not establish restoration");
         return false;
     }
-    g_commonUIDeactivatedOriginal =
-        reinterpret_cast<MiniMapNative::CommonUIApi::NativeOnDeactivatedFn>(
-            deactivatedOriginal);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     LOG_INFO("MiniMap: installed both CommonUI activation/deactivation detours");
@@ -473,12 +502,13 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 
 static void OnAfterWorldEndPlay(
     SDK::UWorld* world,
-    const char* worldName)
+    std::string_view worldName)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
     LOG_INFO(
-        "MiniMap: world ended: %s",
-        worldName != nullptr ? worldName : "<null>");
+        "MiniMap: world ended: %.*s",
+        int(worldName.data() ? worldName.size() : 6),
+        worldName.data() ? worldName.data() : "<null>");
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
@@ -530,9 +560,8 @@ namespace MiniMap
 
 #ifdef MODLOADER_CLIENT_BUILD
 
-        if (pluginSelf->hooks->World == nullptr || pluginSelf->hooks->Engine == nullptr ||
-            !pluginSelf->hooks->Engine->RegisterOnTick || !pluginSelf->hooks->Engine->UnregisterOnTick ||
-            !pluginSelf->hooks->World->RegisterOnBeforeWorldEndPlay || !pluginSelf->hooks->World->UnregisterOnBeforeWorldEndPlay)
+        auto* events = S::TryRuntimeEvents();
+        if (events == nullptr)
         {
             LOG_ERROR(
                 "MiniMap: World hooks are unavailable");
@@ -588,10 +617,20 @@ namespace MiniMap
             RemoveCommonUIHooks();
             return false;
         }
-        pluginSelf->hooks->Engine->RegisterOnTick(&OnBuildingSpriteRendererTick);
+        if (!AcceptEventRegistration(g_rendererTick, events->OnTick(
+            [](void*, float delta) { OnBuildingSpriteRendererTick(delta); }, nullptr)))
+        {
+            Shutdown();
+            return false;
+        }
 
         // Close admission before module-specific native EndPlay cancellation.
-        pluginSelf->hooks->World->RegisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
+        if (!AcceptEventRegistration(g_beforeEnd, events->OnWorld(S::WorldPhase::BeforeEnd,
+            [](void*, const S::WorldEvent& event) { OnBeforeWorldEndPlay(event.world, event.displayName.data()); }, nullptr)))
+        {
+            Shutdown();
+            return false;
+        }
 
         if (!MiniMapFogOfWar::Initialize(
             pluginSelf))
@@ -743,9 +782,16 @@ namespace MiniMap
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
         Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);
-        pluginSelf->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
-        pluginSelf->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
-        pluginSelf->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
+        if (!AcceptEventRegistration(g_afterEnd, events->OnWorld(S::WorldPhase::AfterEnd,
+            [](void*, const S::WorldEvent& event) { OnAfterWorldEndPlay(event.world, event.displayName); }, nullptr)) ||
+            !AcceptEventRegistration(g_gameplayBegan, events->OnWorld(S::WorldPhase::GameplayBegan,
+            [](void*, const S::WorldEvent& event) { OnWorldBeginPlay(event.world); }, nullptr)) ||
+            !AcceptEventRegistration(g_experienceReady, events->OnWorld(S::WorldPhase::ExperienceReady,
+            [](void*, const S::WorldEvent&) { OnExperienceLoadComplete(); }, nullptr)))
+        {
+            Shutdown();
+            return false;
+        }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: registered world lifecycle callbacks");
 #endif
@@ -791,9 +837,7 @@ namespace MiniMap
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             MiniMapBuildingScheduler::Shutdown();
         }
-        auto* self = GetSelf();
-        if(self && self->hooks && self->hooks->Engine)
-            self->hooks->Engine->UnregisterOnTick(&OnBuildingSpriteRendererTick);
+        RemoveEventRegistration(g_rendererTick);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const uint32_t blockingMenuMask =
@@ -808,20 +852,10 @@ namespace MiniMap
 #endif
         MiniMapUI::Hide();
 
-        if (self != nullptr &&
-            self->hooks != nullptr &&
-            self->hooks->World != nullptr)
-        {
-            self->hooks->World->UnregisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
-            self->hooks->World->UnregisterOnExperienceLoadComplete(
-                &OnExperienceLoadComplete);
-
-            self->hooks->World->UnregisterOnWorldBeginPlay(
-                &OnWorldBeginPlay);
-
-            self->hooks->World->UnregisterOnAfterWorldEndPlay(
-                &OnAfterWorldEndPlay);
-        }
+        RemoveEventRegistration(g_beforeEnd);
+        RemoveEventRegistration(g_experienceReady);
+        RemoveEventRegistration(g_gameplayBegan);
+        RemoveEventRegistration(g_afterEnd);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         MiniMapTerrain::UnregisterDiagnostics();
