@@ -3,8 +3,6 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "plugin_interface.h"
-
 namespace MiniMapMap
 {
     struct Transform;
