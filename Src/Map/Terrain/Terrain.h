@@ -2,8 +2,6 @@
 #include "Services/Viewport.h"
 #include "DiagnosticExports.h"
 
-#include "plugin_interface.h"
-
 #include "Map/MapTransform.h"
 
 struct IPluginSelf;
