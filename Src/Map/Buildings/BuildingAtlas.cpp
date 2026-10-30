@@ -2,10 +2,10 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlas.h"
-#include "BuildingAtlasAlienX.h"
 #include "BuildingScheduler.h"
 #include "Map/Map.h"
 #include "plugin_helpers.h"
+#include "Services/Runtime.h"
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -16,14 +16,16 @@
 namespace MiniMapBuildingAtlas
 {
     namespace C = MiniMapBuildingAtlasCore;
-    namespace X = MiniMapBuildingAtlasAlienX;
     namespace S = MiniMapSpriteStatus;
 
     struct Revision
     {
-        X::Texture Texture;
+        MiniMap::Services::OwnedTexture Owner;
+        MiniMap::Services::Texture Texture{};
         std::shared_ptr<const C::Layout> Pixels;
-        std::shared_ptr<Revision> NextRetained; // Explicit uncertain-release ownership only.
+        uint64_t LayoutRevision{};
+        bool UncertaintyReported = false;
+        std::shared_ptr<Revision> NextRetained; // Explicit retained ownership debt only.
     };
     struct SourceBounds
     {
@@ -41,7 +43,6 @@ namespace MiniMapBuildingAtlas
         uint32_t DrawDiagnostics = 0; // Once per invalid published-entry category per session.
         uint64_t NextAttempt = 0, CandidateRevision = 0, PublishedRevision = 0;
         C::Atlas Core;
-        X::Backend Backend;
         std::vector<SourceBounds> Bounds; // Representation metadata, never class-status truth.
         std::shared_ptr<Revision> Published, RetainedTextures;
         std::shared_ptr<Session> NextRetained;
@@ -57,35 +58,38 @@ namespace
     }
     namespace A = MiniMapBuildingAtlas;
     namespace C = MiniMapBuildingAtlasCore;
-    namespace X = MiniMapBuildingAtlasAlienX;
     namespace S = MiniMapSpriteStatus;
     S::Dictionary* g_statuses = nullptr;
-    IPluginImGuiTextures* g_textures = nullptr;
+    MiniMap::Services::ITextures* g_textures = nullptr;
     bool g_interfacesAlive = false;
     // Uses the existing LifecycleMutex. Teardown waits with that mutex released;
-    // Busy covers the entire batch, including backend calls, releases and PNG export.
+    // Busy covers the entire batch, including service calls, releases and PNG export.
     std::condition_variable g_serviceFinished;
     bool g_stopping = false;
     std::shared_ptr<A::Session> g_session, g_uncertain;
 
     bool Current(const A::Batch& batch)
     {
-        // Caller holds LifecycleMutex. Neither Core nor mutable Backend state is
+        // Caller holds LifecycleMutex. Neither Core nor mutable service work is
         // inspected here while its game-thread service runs unlocked.
-        return batch && batch == g_session && batch->Active && !g_uncertain &&
+        return batch && batch == g_session && batch->Active &&
             g_interfacesAlive && !g_stopping && MiniMapMap::GameplayReady() &&
             MiniMapBuildingSchedulerInternal::ActiveSession() == batch->Serial;
     }
     bool Admitted(const A::Batch& batch)
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        return Current(batch);
+        return !g_uncertain && Current(batch);
     }
     void Retain(const A::Batch& batch, std::shared_ptr<A::Revision>& revision)
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        const bool reportUncertainty = revision ? !revision->UncertaintyReported : !batch->Retained;
+        const auto reportedRevision = revision ? revision->LayoutRevision : batch->CandidateRevision;
+        const auto reportedToken = revision ? revision->Texture.id : 0;
         if (revision)
         {
+            revision->UncertaintyReported = true;
             revision->NextRetained = std::move(batch->RetainedTextures);
             batch->RetainedTextures = std::move(revision);
         }
@@ -97,19 +101,25 @@ namespace
         }
         // These records survive session reset/shutdown. No blind Free retry and
         // no native call from destruction, even when no handle was returned.
-        LOG_ERROR("MiniMap: atlas ownership uncertain; further atlas uploads/session admission blocked");
+        if (reportUncertainty)
+            LOG_ERROR("MiniMap: atlas ownership uncertain; candidateRevision=%llu token=%llu; further atlas uploads/session admission blocked",
+                static_cast<unsigned long long>(reportedRevision), static_cast<unsigned long long>(reportedToken));
     }
     void Release(const A::Batch& batch, std::shared_ptr<A::Revision>& revision)
     {
         if (!revision) return;
-        if (revision->Texture.HasOwnership())
+        if (revision->Owner.HasRecord())
         {
             bool available;
             {
                 std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-                available = g_interfacesAlive;
+                available = g_interfacesAlive && g_textures;
             }
-            if (!available || batch->Backend.Release(revision->Texture) == X::ReleaseResult::OwnershipUncertain)
+            if (!available)
+            { Retain(batch, revision); return; }
+            const auto result = g_textures->Release(revision->Owner);
+            if ((result != MiniMap::Services::ReleaseState::Returned &&
+                 result != MiniMap::Services::ReleaseState::Empty) || revision->Owner.HasRecord())
             { Retain(batch, revision); return; }
         }
         revision.reset();
@@ -138,15 +148,15 @@ namespace
         std::shared_ptr<A::Revision> old;
         std::unique_lock<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         // Serialize EndSession with Shutdown, including their unlocked releases.
-        // Otherwise a concurrent Shutdown could close the borrowed API while an
+            // Otherwise a concurrent Shutdown could close the texture service while an
         // earlier EndSession was still using it to release the published texture.
         g_serviceFinished.wait(lock, [] { return !g_stopping; });
         g_stopping = true;
         session = g_session;
         if (session) session->Active = false; // Deny publication/new batches first.
         g_serviceFinished.wait(lock, [&] { return !session || !session->Busy; });
-        // EndBatch has now returned from Create/GetSize AND all candidate/old
-        // releases. No batch can cross another backend boundary during teardown.
+        // EndBatch has now returned from upload/validation AND all candidate/old
+        // releases. No batch can cross another service boundary during teardown.
         g_session.reset();
         if (session) old = std::move(session->Published);
         if (g_statuses)
@@ -168,11 +178,12 @@ namespace
 
 namespace MiniMapBuildingAtlas
 {
-    bool Initialize(S::Dictionary& statuses, IPluginImGuiTextures* textures)
+    bool Initialize(S::Dictionary& statuses, IPluginImGuiTextures*)
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         if (g_session || g_uncertain || g_stopping) return false;
-        if (!textures || !textures->LoadFromRGBA || !textures->FreeTexture || !textures->GetSize || !textures->GetFreeSlotCount) return false;
+        auto* textures = MiniMap::Services::TryTextures();
+        if (!textures || !textures->Available()) return false;
         g_statuses = &statuses; g_textures = textures; g_interfacesAlive = true;
         return true;
     }
@@ -183,9 +194,7 @@ namespace MiniMapBuildingAtlas
     }
     bool InitializeSession(uint64_t serial)
     {
-        // Backend.Initialize only validates function pointers and makes a GUID;
-        // it performs no GPU call. Keep that borrowed-interface access within
-        // the lifecycle scope, so Shutdown cannot overtake initialization either.
+        // The neutral service pointer is stable for the Runtime lifetime.
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         if (!serial || !g_interfacesAlive || !g_statuses || g_uncertain || g_stopping ||
             MiniMapBuildingSchedulerInternal::ActiveSession() != serial) return false;
@@ -195,7 +204,7 @@ namespace MiniMapBuildingAtlas
         {
             session = std::make_shared<Session>();
             session->Serial = serial;
-            if (!session->Backend.Initialize(g_textures)) return false; // No GPU operation.
+            if (!g_textures || !g_textures->Available()) return false;
         }
         catch (...) { return false; }
         g_session = std::move(session);
@@ -204,7 +213,7 @@ namespace MiniMapBuildingAtlas
     Batch BeginBatch(uint64_t serial)
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        if (!Current(g_session) || g_session->Serial != serial || g_session->Busy) return {};
+        if (g_uncertain || !Current(g_session) || g_session->Serial != serial || g_session->Busy) return {};
         g_session->Busy = true;
         return g_session;
     }
@@ -321,7 +330,8 @@ namespace MiniMapBuildingAtlas
                 }
                 if (!batch->UploadPending || batch->UploadAttempts >= 3 || !Admitted(batch)) return;
                 batch->NextAttempt = Later(tick);
-                if (!batch->Backend.HasCapacity())
+                const auto slots = g_textures ? g_textures->ObserveFreeSlots() : MiniMap::Services::FreeSlots{};
+                if (slots.status.error != MiniMap::Services::Error::None || slots.count == 0)
                 {
                     if (!batch->CapacityWaitReported)
                     {
@@ -346,6 +356,7 @@ namespace MiniMapBuildingAtlas
                 // only committed GPU generations, including after failed uploads.
                 pixels->Revision = batch->PublishedRevision + 1;
                 candidate->Pixels = std::move(pixels);
+                candidate->LayoutRevision = layout.Revision;
                 std::vector<std::pair<std::string, S::AtlasEntry>> entries;
                 entries.reserve(layout.Images.size());
                 for (const auto& image : layout.Images)
@@ -362,14 +373,23 @@ namespace MiniMapBuildingAtlas
                     entries.emplace_back(image.Identifier, entry);
                 }
                 if (!Admitted(batch)) return; // Session may have ended during CPU preparation.
-                const auto result = batch->Backend.Create(layout.Rgba, layout.Width, layout.Height, candidate->Texture);
-                if (result == X::TransferResult::OwnershipUncertain)
+                const MiniMap::Services::TextureRequest request{"", MiniMap::Services::TextureSize{layout.Width, layout.Height}};
+                const auto result = g_textures->UploadRGBA(
+                    std::span<const std::uint8_t>(layout.Rgba.data(), layout.Rgba.size()),
+                    {layout.Width, layout.Height}, request, candidate->Owner);
+                const auto ownerView = candidate->Owner.View();
+                const auto ownerSize = candidate->Owner.Size();
+                const bool completeValid = result == MiniMap::Services::UploadState::Complete &&
+                    candidate->Owner.HasRecord() && candidate->Owner.IsValidated() && ownerView.id != 0 &&
+                    ownerSize && ownerSize->width == layout.Width && ownerSize->height == layout.Height &&
+                    candidate->LayoutRevision == batch->CandidateRevision &&
+                    candidate->Pixels->Revision == batch->PublishedRevision + 1;
+                if (result == MiniMap::Services::UploadState::OwnershipUncertain ||
+                    (result != MiniMap::Services::UploadState::Complete && candidate->Owner.HasRecord()))
                 {
-                    for (const auto& image : layout.Images)
-                        SpriteDiagnostic("MiniMap: atlas publication ownership uncertain: candidate includes canonical=%s; existing ownership retention applies", image.Identifier.c_str());
                     Retain(batch, candidate); return;
                 }
-                if (result != X::TransferResult::Complete)
+                if (result != MiniMap::Services::UploadState::Complete)
                 {
                     SpriteDiagnostic("MiniMap: atlas transfer unavailable (%u, attempt %u/3); previous GPU revision preserved",
                         unsigned(result), batch->UploadAttempts);
@@ -380,10 +400,16 @@ namespace MiniMapBuildingAtlas
 #endif
                     return;
                 }
+                if (!completeValid)
+                {
+                    Retain(batch, candidate); return;
+                }
+                candidate->Texture = ownerView;
                 {
                     std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
                     if (!Current(batch) || MiniMapBuildingSchedulerInternal::ActiveSession() != batch->Serial ||
-                        layout.Revision != batch->CandidateRevision) return;
+                        layout.Revision != batch->CandidateRevision || candidate->LayoutRevision != layout.Revision ||
+                        candidate->Pixels->Revision != batch->PublishedRevision + 1 || !candidate->Texture.id) return;
                     // Validate all dictionary entries before changing any publication.
                     for (const auto& entry : entries)
                     {
@@ -401,7 +427,7 @@ namespace MiniMapBuildingAtlas
                     {
                         auto& status = g_statuses->find(entry.first)->second;
                         status.Atlas = entry.second;
-                        status.Atlas.Texture = candidate->Texture.Binding();
+                        status.Atlas.Texture = candidate->Texture;
                         status.Where = S::Location::Atlas;
                     }
                     batch->PublishedRevision = candidate->Pixels->Revision;
@@ -421,6 +447,8 @@ namespace MiniMapBuildingAtlas
         }
         catch (...)
         {
+            if (candidate && candidate->Owner.HasRecord())
+                Retain(batch, candidate);
             if (!batch->BatchExceptionReported)
             {
                 batch->BatchExceptionReported = true;
@@ -442,7 +470,7 @@ namespace MiniMapBuildingAtlas
                         sourceAdmission?"source-admission":"pending-upload-retry");
         }
 #endif
-        // Never invoke the loader inside LifecycleMutex, including rejected/stale uploads.
+        // Never invoke the texture service inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         Release(batch,old);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -450,7 +478,7 @@ namespace MiniMapBuildingAtlas
             MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,
                 diagnosticPixels->Width, diagnosticPixels->Height, diagnosticPixels->Revision);
 #endif
-        // Keep synchronous export inside Busy as well as backend operations.
+        // Keep synchronous export inside Busy as well as service operations.
         {
             std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
             batch->Busy = false;
@@ -471,7 +499,7 @@ namespace MiniMapBuildingAtlas
         if (!Current(g_session) || !g_statuses || !g_session->Published) return nullptr;
         const auto it = g_statuses->find(name);
         if (it == g_statuses->end() || it->second.Where != S::Location::Atlas) return nullptr;
-        if (!it->second.Atlas.Texture || it->second.Atlas.Texture != g_session->Published->Texture.Binding())
+        if (!it->second.Atlas.Texture.id || it->second.Atlas.Texture.id != g_session->Published->Texture.id)
         {
             if (!(g_session->DrawDiagnostics & 1))
             {
@@ -485,8 +513,8 @@ namespace MiniMapBuildingAtlas
     bool SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const S::AtlasEntry& entry,
         const MiniMap::Services::Quad& positions, uint32_t color) noexcept
     {
-        if (!Current(g_session) || !g_session->Published || !entry.Texture ||
-            entry.Texture != g_session->Published->Texture.Binding()) return false;
+        if (!Current(g_session) || !g_session->Published || !entry.Texture.id ||
+            entry.Texture.id != g_session->Published->Texture.id) return false;
         // Default/compatibility entries retain submission-time preparation.
         // Published entries never take this branch; Region is immutable there.
         std::optional<S::PreparedAtlasUV> local;
@@ -511,7 +539,18 @@ namespace MiniMapBuildingAtlas
             }
             return false;
         }
-        return g_session->Backend.SubmitPreparedQuad(ui, list, g_session->Published->Texture, positions, *uv, color);
+        for (const auto& point : positions)
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) return false;
+        const auto& corners = uv->Corners();
+        const MiniMap::Services::Quad uvQuad{{
+            {corners[0].U, corners[0].V}, {corners[1].U, corners[1].V},
+            {corners[2].U, corners[2].V}, {corners[3].U, corners[3].V}}};
+        try
+        {
+            ui.ImageQuad(list, g_session->Published->Texture, positions, uvQuad, color);
+            return true;
+        }
+        catch (...) { return false; } // Never retry a possibly recorded draw.
     }
     std::shared_ptr<const C::Layout> PublishedImage()
     {

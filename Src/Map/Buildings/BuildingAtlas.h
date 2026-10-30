@@ -4,10 +4,10 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlasCore.h"
-#include "BuildingAtlasAlienX.h"
 #include "BuildingCache.h"
 #include "Map/Buildings/SpriteStatus.h"
 #include "plugin_interface.h"
+#include "Services/Textures.h"
 #include <memory>
 
 namespace MiniMapBuildingAtlas
@@ -16,8 +16,9 @@ namespace MiniMapBuildingAtlas
     using Batch = std::shared_ptr<Session>;
     enum class AddResult { Retained, Invalid, Unavailable };
 
-    // Borrow the plugin dictionary and v70 API until Shutdown. Lifecycle methods
-    // take their own brief LifecycleMutex scopes: do not call under that mutex.
+    // The second argument is retained for the existing PluginInit call boundary;
+    // texture operations use the bound neutral service from Runtime.
+    // Lifecycle methods take brief LifecycleMutex scopes: do not call under it.
     bool Initialize(MiniMapSpriteStatus::Dictionary&, IPluginImGuiTextures*);
     bool InitializeSession(uint64_t sessionSerial);
     // Game-thread service only. One batch at a time; no caller-held lifecycle lock.
@@ -28,14 +29,14 @@ namespace MiniMapBuildingAtlas
     AddResult Add(const Batch&, const std::string& canonicalBlueprint,
         const MiniMapBuildingCache::Sprite&) noexcept;
     void EndBatch(const Batch&, uint64_t serviceTick) noexcept;
-    // Close admission, then wait for the paired EndBatch and all backend calls
+    // Close admission, then wait for the paired EndBatch and all service calls
     // before release/interface shutdown. The wait releases LifecycleMutex.
     // Lifecycle callers must be outside the batch they are ending (no reentry).
     void EndSession();
     void Shutdown();
 
     // UI callback only; caller holds LifecycleMutex from lookup through submit.
-    // Borrowed metadata/texture: never release or retain the binding separately.
+    // Borrowed metadata/texture: never release or retain the identity separately.
     const MiniMapSpriteStatus::AtlasEntry* Find(const std::string& canonicalBlueprint) noexcept;
     // Diagnostic values only, under the SAME caller-held lifecycle lock as Find.
     void ObservePublication(uint64_t& session, uint64_t& revision) noexcept;

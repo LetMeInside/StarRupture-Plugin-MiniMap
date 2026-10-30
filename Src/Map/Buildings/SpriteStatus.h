@@ -5,6 +5,7 @@
 #include <cmath>
 #include <string>
 #include <unordered_map>
+#include "Services/Textures.h"
 
 namespace MiniMapSpriteStatus
 {
@@ -45,8 +46,8 @@ namespace MiniMapSpriteStatus
 
     struct AtlasEntry
     {
-        // Non-owning GPU texture handle.
-        void* Texture = nullptr;
+        // Non-owning neutral identity for the published atlas acquisition.
+        MiniMap::Services::Texture Texture{};
 
         // Normalized region within the texture.
         std::array<double, 4> Region{0.0, 0.0, 1.0, 1.0};
