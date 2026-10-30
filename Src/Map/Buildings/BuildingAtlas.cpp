@@ -178,7 +178,7 @@ namespace
 
 namespace MiniMapBuildingAtlas
 {
-    bool Initialize(S::Dictionary& statuses, IPluginImGuiTextures*)
+    bool Initialize(S::Dictionary& statuses)
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         if (g_session || g_uncertain || g_stopping) return false;

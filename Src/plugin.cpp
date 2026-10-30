@@ -610,7 +610,7 @@ namespace MiniMap
             MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
             MiniMapBuildingSpriteRenderer::Initialize(g_buildingSpriteFifo, MiniMapBuildingScheduler::FeedbackQueue());
         }
-        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses, pluginSelf->hooks->ImGuiTextures))
+        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses))
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
             MiniMapUI::Shutdown();

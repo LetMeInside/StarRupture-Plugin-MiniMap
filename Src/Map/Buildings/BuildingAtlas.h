@@ -6,7 +6,6 @@
 #include "BuildingAtlasCore.h"
 #include "BuildingCache.h"
 #include "Map/Buildings/SpriteStatus.h"
-#include "plugin_interface.h"
 #include "Services/Textures.h"
 #include <memory>
 
@@ -16,10 +15,8 @@ namespace MiniMapBuildingAtlas
     using Batch = std::shared_ptr<Session>;
     enum class AddResult { Retained, Invalid, Unavailable };
 
-    // The second argument is retained for the existing PluginInit call boundary;
-    // texture operations use the bound neutral service from Runtime.
     // Lifecycle methods take brief LifecycleMutex scopes: do not call under it.
-    bool Initialize(MiniMapSpriteStatus::Dictionary&, IPluginImGuiTextures*);
+    bool Initialize(MiniMapSpriteStatus::Dictionary&);
     bool InitializeSession(uint64_t sessionSerial);
     // Game-thread service only. One batch at a time; no caller-held lifecycle lock.
     // EndBatch also services a pending upload retry when no sources were added.

@@ -138,7 +138,6 @@
     <ClInclude Include="PluginPaths.h" />
     <ClInclude Include="Map\Buildings\BuildingCache.h" />
     <ClInclude Include="Map\Buildings\BuildingAtlasCore.h" />
-    <ClInclude Include="Map\Buildings\BuildingAtlasAlienX.h" />
     <ClInclude Include="Map\Buildings\BuildingAtlas.h" />
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
@@ -206,7 +205,6 @@
     </ClCompile>
     <ClCompile Include="Map\Buildings\BuildingCache.cpp" />
     <ClCompile Include="Map\Buildings\BuildingAtlasCore.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingAtlasAlienX.cpp" />
     <ClCompile Include="Map\Buildings\BuildingAtlas.cpp" />
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
