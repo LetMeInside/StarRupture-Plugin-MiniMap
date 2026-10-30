@@ -184,8 +184,7 @@ namespace
         // Load UCrMapMenuTerrainData.
         // ---------------------------------------------------------------------
 
-        auto* devSettings =
-            MiniMapNative::FindMapMenuDevSettingsCDO(self, true);
+        auto* devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(true);
 
         if (devSettings == nullptr)
         {

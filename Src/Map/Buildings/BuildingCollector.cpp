@@ -13,6 +13,8 @@
 #include "BuildingScheduler.h"
 #include "Native/NativeApi.h"
 #include "Map/Map.h"
+#include "Services/Objects.h"
+#include "Services/Runtime.h"
 #include "plugin_helpers.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
@@ -124,11 +126,8 @@ namespace
     bool InitializeMetadata()
     {
         if(types.Building)return true;
-        auto* hooks=GetHooks();const auto* n=MiniMapNative::Get();
-        if(!hooks || !hooks->Engine || !n)return false;
-        const auto address=hooks->Engine->GetStaticFindObjectByNameAddress();if(!address)return false;
-        using Find=SDK::UObject*(*)(SDK::UClass*,SDK::UObject*,const wchar_t*,bool);
-        auto find=reinterpret_cast<Find>(address);
+        auto* objects=MiniMap::Services::TryObjects();const auto* n=MiniMapNative::Get();
+        if(!objects || !objects->Ready() || !n)return false;
         // Roll back partial initialization without duplicating roots on retry.
         struct Roots
         {
@@ -137,7 +136,8 @@ namespace
         } roots{*n,{}};
         auto lookup=[&](const wchar_t* path)
         {
-            auto* value=find(nullptr,nullptr,path,false);
+            const auto result=objects->FindResident(nullptr,nullptr,path,false);
+            auto* value=result.value?*result.value:nullptr;
             if(value){roots.Values.push_back(value);n->asset.retainObject(value);}return value;
         };
         Types candidate;

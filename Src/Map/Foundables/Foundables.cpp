@@ -283,27 +283,9 @@ namespace
             return nullptr;
         }
 
-        auto* self = GetSelf();
-        auto* engine = self != nullptr && self->hooks != nullptr
-            ? self->hooks->Engine
-            : nullptr;
-        if (engine == nullptr ||
-            engine->GetStaticFindObjectByNameAddress == nullptr)
-        {
-            return nullptr;
-        }
-
-        const uintptr_t findAddress =
-            engine->GetStaticFindObjectByNameAddress();
-        if (findAddress == 0)
-        {
-            return nullptr;
-        }
-
         uintptr_t scriptStructClass = 0;
         if (!MiniMapResidentMetadata::FindResident(
-                findAddress,
-                0,
+                nullptr,
                 L"/Script/CoreUObject.ScriptStruct",
                 false,
                 scriptStructClass) ||
@@ -314,8 +296,7 @@ namespace
 
         uintptr_t droppedItemsTag = 0;
         if (!MiniMapResidentMetadata::FindResident(
-                findAddress,
-                scriptStructClass,
+                reinterpret_cast<SDK::UClass*>(scriptStructClass),
                 L"/Script/Chimera.CrMassDroppedItemsTag",
                 true,
                 droppedItemsTag) ||
@@ -658,7 +639,6 @@ namespace
         struct Types
         {
             const MiniMapNative::NativeApi& Native;
-            uintptr_t FindAddress = 0;
             SDK::UClass* Core = nullptr;
             SDK::UClass* World = nullptr;
             SDK::UClass* Level = nullptr;
@@ -698,7 +678,7 @@ namespace
             SDK::UClass* FindClass(const wchar_t* path, size_t minimumSize) const
             {
                 uintptr_t result = 0;
-                if (!MiniMapResidentMetadata::FindResident(FindAddress, reinterpret_cast<uintptr_t>(Core),
+                if (!MiniMapResidentMetadata::FindResident(Core,
                         path, false, result)) return nullptr;
                 auto* type = reinterpret_cast<SDK::UClass*>(result);
                 if (!IsClass(type) || type->Size < 0 || size_t(type->Size) < minimumSize) return nullptr;
@@ -721,12 +701,8 @@ namespace
             bool Initialize()
             {
                 if (!MiniMapResidentMetadata::Available() || !Native.asset.nameEqualsWide) return false;
-                auto* self = GetSelf();
-                auto* engine = self && self->hooks ? self->hooks->Engine : nullptr;
-                FindAddress = engine && engine->GetStaticFindObjectByNameAddress
-                    ? engine->GetStaticFindObjectByNameAddress() : 0;
                 uintptr_t core = 0;
-                if (!FindAddress || !MiniMapResidentMetadata::FindResident(FindAddress, 0,
+                if (!MiniMapResidentMetadata::FindResident(nullptr,
                         L"/Script/CoreUObject.Class", false, core)) return false;
                 Core = reinterpret_cast<SDK::UClass*>(core);
                 if (!Core || Core->Class != Core) return false;
@@ -993,7 +969,7 @@ namespace
 
         SDK::UCrPlayerMapMenuDataComponent* mapData = GetLocalMapDataComponent();
         if (mapData != nullptr && g_devSettings == nullptr)
-            if (auto* self = GetSelf()) g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
+            g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(false);
 
         FoundableTypeState deadBody = {};
         FoundableTypeState drone = {};

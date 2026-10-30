@@ -3,6 +3,8 @@
 #include "NativeApi.h"
 #include "DefinitionAcquisitionCore.h"
 #include "Map/Map.h"
+#include "Services/Objects.h"
+#include "Services/Runtime.h"
 #include "plugin_helpers.h"
 #include <Engine_classes.hpp>
 #include <Windows.h>
@@ -58,16 +60,18 @@ namespace
 }
 namespace MiniMapResidentMetadata
 {
-    bool FindResident(uintptr_t address, uintptr_t type, const wchar_t* path, bool exact, uintptr_t& result) noexcept
+    bool FindResident(SDK::UClass* type, const wchar_t* path, bool exact, uintptr_t& result) noexcept
     {
-        using Find = SDK::UObject*(*)(SDK::UClass*, SDK::UObject*, const wchar_t*, bool);
-        __try
+        auto* objects = MiniMap::Services::TryObjects();
+        if (!objects || !path) return false;
+        try
         {
-            result = reinterpret_cast<uintptr_t>(reinterpret_cast<Find>(address)(reinterpret_cast<SDK::UClass*>(type), nullptr, path, exact));
+            auto found = objects->FindResident(type, nullptr, path, exact);
+            if (!found.value) return false;
+            result = reinterpret_cast<uintptr_t>(*found.value);
             return true;
         }
-        __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
-            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+        catch (...) { return false; }
     }
     bool Available() { return !g_uncertain && QuietGameThread(); }
     bool Validate(uintptr_t object, size_t extent)
@@ -101,15 +105,13 @@ namespace MiniMapResidentMetadata
     {
         if (!path || std::wcsncmp(path, L"/Script/", 8) || !instanceSize ||
             instanceSize > size_t((std::numeric_limits<int32_t>::max)()) || !MiniMapMap::GameplayReady() || !Available()) return 0;
-        auto* hooks = GetHooks();
-        auto* engine = hooks ? hooks->Engine : nullptr;
-        const auto address = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
-        if (!address) return 0;
+        auto* objects = MiniMap::Services::TryObjects();
+        if (!objects || !objects->Ready()) return 0;
         uintptr_t core{}, expected{}, object{}, actual{};
         bool coreHeld = false, expectedHeld = false;
         auto lookup = [&](uintptr_t type, const wchar_t* name, bool exact, uintptr_t& result)
         {
-            if (FindResident(address, type, name, exact, result)) return true;
+            if (FindResident(reinterpret_cast<SDK::UClass*>(type), name, exact, result)) return true;
             Uncertain("resident lookup interrupted"); return false;
         };
         const auto read = [](uintptr_t object, uintptr_t& type) { return N::ReadMemory(object + 0x10, &type, sizeof(type)); };

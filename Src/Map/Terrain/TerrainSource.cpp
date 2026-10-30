@@ -43,7 +43,7 @@ namespace
         {
             auto* self = g_pluginSelfAvailable ? GetSelf() : nullptr;
             g_devSettings =
-                MiniMapNative::FindMapMenuDevSettingsCDO(self, true);
+                self ? MiniMapNative::FindMapMenuDevSettingsCDO(true) : nullptr;
 
             if (g_devSettings == nullptr)
             {

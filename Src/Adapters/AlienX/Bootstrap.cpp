@@ -2,6 +2,7 @@
 #include "Log.h"
 #include "Configuration.h"
 #include "Input.h"
+#include "Objects.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -20,7 +21,8 @@ namespace
     MiniMap::Adapters::AlienX::Configuration g_configuration;
     MiniMap::Adapters::AlienX::Input g_input;
 #if defined(MODLOADER_CLIENT_BUILD)
-    const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration, nullptr, &g_input};
+    const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration, nullptr, &g_input,
+        &MiniMap::Adapters::AlienX::GetObjects()};
 #else
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration};
 #endif

@@ -7,6 +7,8 @@
 #include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
+#include "Services/Objects.h"
+#include "Services/Runtime.h"
 #include "Native/DefinitionAcquisitionCore.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "Native/CaptureRetirementCore.h"
@@ -483,17 +485,15 @@ namespace
         }
         bool AcquireMetadata()
         {
-            auto* hooks = GetHooks();
-            auto* engine = hooks ? hooks->Engine : nullptr;
-            const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
-            if (!find) return false;
+            auto* objects = MiniMap::Services::TryObjects();
+            if (!objects || !objects->Ready()) return false;
             for (size_t i = 0; i < MetadataClasses.size(); ++i)
             {
                 auto& metadata = MetadataClasses[i];
                 const auto filter = i ? MetadataClasses[Class].Ref.Object.Bits : 0;
                 uintptr_t object{}, type{}; int32_t size{}; ObjectIdentity identity;
                 if (!QuietGC() || (i && !CheckOwned(MetadataClasses[Class].Ref))) return false;
-                if (!FindResident(find, filter, metadata.Path, i != 0, object))
+                if (!FindResident(reinterpret_cast<SDK::UClass*>(filter), metadata.Path, i != 0, object))
                 { Quarantine("resident metadata lookup interrupted"); return false; }
                 if (!object || !Identify(object, identity, sizeof(SDK::UClass)) ||
                     !Read(object + 0x10, type) || type != (i ? filter : object) ||
@@ -1484,12 +1484,11 @@ namespace
         }
         uintptr_t Lookup(const wchar_t* path, uintptr_t filter, bool exact)
         {
-            auto* hooks = GetHooks();
-            auto* engine = hooks ? hooks->Engine : nullptr;
-            const auto find = engine && engine->GetStaticFindObjectByNameAddress ? engine->GetStaticFindObjectByNameAddress() : 0;
             uintptr_t object{};
-            if (!find) { Wait(WaitReason::FindPrerequisite, "resident object lookup address unavailable"); return 0; }
-            if (!Ready() || !FindResident(find, filter, path, exact, object))
+            auto* objects = MiniMap::Services::TryObjects();
+            if (!objects || !objects->Ready())
+            { Wait(WaitReason::FindPrerequisite, "resident object lookup unavailable"); return 0; }
+            if (!Ready() || !FindResident(reinterpret_cast<SDK::UClass*>(filter), path, exact, object))
                 Quarantine("request resident lookup interrupted or world changed");
             return object;
         }

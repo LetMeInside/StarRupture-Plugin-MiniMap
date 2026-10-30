@@ -699,8 +699,7 @@ namespace
         if (g_devSettings ==
             nullptr)
         {
-            if (auto* self = GetSelf())
-                g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(self, false);
+            g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(false);
 
             if (g_devSettings ==
                 nullptr)
