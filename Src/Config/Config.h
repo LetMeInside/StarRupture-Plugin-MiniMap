@@ -2,8 +2,6 @@
 #include <array>
 #include <cstdint>
 
-struct IPluginSelf;
-
 namespace MiniMapConfig
 {
     using Keybind = std::array<char, 128>;
@@ -86,7 +84,7 @@ namespace MiniMapConfig
         uint64_t Revision;
     };
 
-    bool Initialize(IPluginSelf* self);
+    bool Initialize();
     void Shutdown();
     Settings Get(); // Infrequent input registration only; returns owned bindings.
     bool VisibleAtStartup();

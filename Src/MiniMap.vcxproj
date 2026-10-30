@@ -95,11 +95,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Services\Log.h" />
+    <ClInclude Include="Services\ServiceTypes.h" />
+    <ClInclude Include="Services\Configuration.h" />
     <ClInclude Include="Services\Runtime.h" />
     <ClInclude Include="Services\RuntimeBinding.h" />
     <ClInclude Include="Adapters\AlienX\Bootstrap.h" />
     <ClInclude Include="Adapters\AlienX\Compatibility.h" />
     <ClInclude Include="Adapters\AlienX\Log.h" />
+    <ClInclude Include="Adapters\AlienX\Configuration.h" />
     <ClInclude Include="CacheIdentity.h" />
     <ClInclude Include="Map\Buildings\SpriteQueues.h" />
     <ClInclude Include="Map\Buildings\SpriteStatus.h" />
@@ -167,6 +170,7 @@
     <ClCompile Include="Services\Runtime.cpp" />
     <ClCompile Include="Adapters\AlienX\Bootstrap.cpp" />
     <ClCompile Include="Adapters\AlienX\Log.cpp" />
+    <ClCompile Include="Adapters\AlienX\Configuration.cpp" />
     <ClCompile Include="$(StarRuptureSDKSourceDir)Basic.cpp">
     </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)CoreUObject_functions.cpp">

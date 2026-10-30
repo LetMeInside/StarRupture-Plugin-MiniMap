@@ -26,8 +26,8 @@ namespace MiniMap::Services
     struct Runtime
     {
         ILog& log;
-        // Truthful partial composition: configuration/client adapters are later
-        // stages, including in client builds. Null never denotes a usable service.
+        // The selected adapter supplies configuration before core initialization.
+        // Client services remain unbound until their migration stages.
         IConfiguration* const config;
         const ClientServices* const client;
 

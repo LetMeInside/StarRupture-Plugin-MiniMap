@@ -515,8 +515,7 @@ namespace MiniMap
             return false;
         }
 
-        if (!MiniMapConfig::Initialize(
-            pluginSelf))
+        if (!MiniMapConfig::Initialize())
         {
             LOG_ERROR(
                 "MiniMap: configuration initialization failed");
