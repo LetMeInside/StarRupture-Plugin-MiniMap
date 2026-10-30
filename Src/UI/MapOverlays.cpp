@@ -1,3 +1,4 @@
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "MapOverlays.h"
@@ -106,8 +107,8 @@ namespace
 
 
     void DrawPlayerMarker(
-        IModLoaderImGui* ui,
-        PluginDrawList drawList,
+        MiniMap::Services::ICanvas& ui,
+        MiniMap::Services::DrawLayer drawList,
         float centerX,
         float centerY,
         double markerAngleDegrees,
@@ -120,10 +121,8 @@ namespace
                 const auto a = RotateScreenOffset(side * 4.0f, 0.0f, markerAngleDegrees);
                 const auto b = RotateScreenOffset(side * 14.0f, 3.0f, markerAngleDegrees);
                 const auto c = RotateScreenOffset(side * 7.0f, 7.0f, markerAngleDegrees);
-                ui->DL_AddTriangleFilled(drawList, centerX+a.X, centerY+a.Y,
-                    centerX+b.X, centerY+b.Y, centerX+c.X, centerY+c.Y, kMarkerFillColor);
-                ui->DL_AddTriangle(drawList, centerX+a.X, centerY+a.Y,
-                    centerX+b.X, centerY+b.Y, centerX+c.X, centerY+c.Y, kMarkerOutlineColor, 1.5f);
+                ui.FilledTriangle(drawList, {{{centerX+a.X, centerY+a.Y}, {centerX+b.X, centerY+b.Y}, {centerX+c.X, centerY+c.Y}}}, kMarkerFillColor);
+                ui.Triangle(drawList, {{{centerX+a.X, centerY+a.Y}, {centerX+b.X, centerY+b.Y}, {centerX+c.X, centerY+c.Y}}}, kMarkerOutlineColor, 1.5f);
             }
         }
 
@@ -169,32 +168,15 @@ namespace
             centerY +
             rearLeft.Y;
 
-        ui->DL_AddTriangleFilled(
-            drawList,
-            tipX,
-            tipY,
-            rightX,
-            rightY,
-            leftX,
-            leftY,
-            kMarkerFillColor);
+        ui.FilledTriangle(drawList, {{{tipX, tipY}, {rightX, rightY}, {leftX, leftY}}}, kMarkerFillColor);
 
-        ui->DL_AddTriangle(
-            drawList,
-            tipX,
-            tipY,
-            rightX,
-            rightY,
-            leftX,
-            leftY,
-            kMarkerOutlineColor,
-            1.5f);
+        ui.Triangle(drawList, {{{tipX, tipY}, {rightX, rightY}, {leftX, leftY}}}, kMarkerOutlineColor, 1.5f);
     }
 
 
     void DrawPlayerCoordinates(
-        IModLoaderImGui* ui,
-        PluginDrawList drawList,
+        MiniMap::Services::ICanvas& ui,
+        MiniMap::Services::DrawLayer drawList,
         const MiniMapMap::Transform& transform, bool coordsInUEUnits)
     {
         char coordinateText[192] = {};
@@ -210,13 +192,13 @@ namespace
 
         float textWidth = 0.0f;
         float textHeight = 0.0f;
-        ui->CalcTextSize(coordinateText, &textWidth, &textHeight, false, 0.0f);
+        { const auto measured = ui.MeasureText(coordinateText, false, 0.0f); textWidth = measured.x; textHeight = measured.y; };
 
         float compassLineHeight = textHeight;
         if (coordsInUEUnits)
         {
             float unusedWidth = 0.0f;
-            ui->CalcTextSize("X", &unusedWidth, &compassLineHeight, false, 0.0f);
+            { const auto measured = ui.MeasureText("X", false, 0.0f); unusedWidth = measured.x; compassLineHeight = measured.y; };
         }
 
         const float textX = transform.CenterX - textWidth * 0.5f;
@@ -224,16 +206,14 @@ namespace
             kCompassInsetPixels - compassLineHeight * 0.5f -
             kCoordinateCompassGapPixels - textHeight;
 
-        ui->DL_AddText(drawList, textX + 1.0f, textY + 1.0f,
-            kCompassShadowColor, coordinateText);
-        ui->DL_AddText(drawList, textX, textY,
-            kCompassTextColor, coordinateText);
+        ui.Text(drawList, {textX + 1.0f, textY + 1.0f}, kCompassShadowColor, coordinateText);
+        ui.Text(drawList, {textX, textY}, kCompassTextColor, coordinateText);
     }
 
 
     void DrawCompassLabel(
-        IModLoaderImGui* ui,
-        PluginDrawList drawList,
+        MiniMap::Services::ICanvas& ui,
+        MiniMap::Services::DrawLayer drawList,
         const MiniMapMap::Transform& transform,
         const CompassDirection& cardinal)
     {
@@ -267,12 +247,7 @@ namespace
         float textWidth = 0.0f;
         float textHeight = 0.0f;
 
-        ui->CalcTextSize(
-            cardinal.Label,
-            &textWidth,
-            &textHeight,
-            false,
-            0.0f);
+        { const auto measured = ui.MeasureText(cardinal.Label, false, 0.0f); textWidth = measured.x; textHeight = measured.y; };
 
         const double halfWidth =
             static_cast<double>(
@@ -361,19 +336,9 @@ namespace
             textHeight *
             0.5f;
 
-        ui->DL_AddText(
-            drawList,
-            textX + 1.0f,
-            textY + 1.0f,
-            kCompassShadowColor,
-            cardinal.Label);
+        ui.Text(drawList, {textX + 1.0f, textY + 1.0f}, kCompassShadowColor, cardinal.Label);
 
-        ui->DL_AddText(
-            drawList,
-            textX,
-            textY,
-            kCompassTextColor,
-            cardinal.Label);
+        ui.Text(drawList, {textX, textY}, kCompassTextColor, cardinal.Label);
     }
 }
 
@@ -381,18 +346,17 @@ namespace
 namespace MiniMapOverlays
 {
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform, bool showCoordinates, bool coordsInUEUnits, bool showCompass,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
-        if (ui == nullptr ||
-            !transform.Valid)
+        if (!transform.Valid)
         {
             return;
         }
 
-        PluginDrawList drawList =
-            ui->GetWindowDrawList();
+        MiniMap::Services::DrawLayer drawList =
+            MiniMap::Services::DrawLayer::Window;
 
         if (showCompass) for (const CompassDirection& cardinal :
             kCompassDirections)
@@ -413,10 +377,10 @@ namespace MiniMapOverlays
             {
                 const float left = transform.CenterX - transform.Width * 0.5f;
                 const float top = transform.CenterY - transform.Height * 0.5f;
-                ui->DL_PushClipRect(drawList, left, top, left+transform.Width, top+transform.Height, true);
+                ui.PushClip(drawList, {left, top}, {left+transform.Width, top+transform.Height}, true);
                 DrawPlayerMarker(ui, drawList, character.X, character.Y,
                     transform.CharacterWorldYawDegrees + 90.0 + transform.MapRotationDegrees);
-                ui->DL_PopClipRect(drawList);
+                ui.PopClip(drawList);
             }
         }
         DrawPlayerMarker(ui, drawList, transform.CenterX, transform.CenterY,

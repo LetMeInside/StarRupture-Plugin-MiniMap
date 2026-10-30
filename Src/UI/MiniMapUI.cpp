@@ -1,3 +1,4 @@
+#include "Services/Viewport.h"
 #include "../Map/Map.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -26,7 +27,8 @@
 namespace
 {
     namespace S = MiniMap::Services;
-    WidgetHandle g_widget = nullptr;
+    S::Widget g_widget{};
+    S::Acceptance g_widgetAcceptance = S::Acceptance::Rejected;
 
     std::atomic<bool> g_userVisible{false};
     std::atomic<uint32_t> g_blockingMenuMask{0};
@@ -35,7 +37,6 @@ namespace
     std::atomic<bool> g_inputActive{false};
     S::Registration g_toggleBinding{}, g_zoomInBinding{}, g_zoomOutBinding{};
 
-    PluginWindowHints g_hints = {};
 
     constexpr float kWindowWidth = 300.0f;
     constexpr float kWindowHeight = 300.0f;
@@ -51,81 +52,34 @@ namespace
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
     }
 
-    void UpdateHints()
+    void RemoveWidget()
     {
-        /*
-         * The MiniMap draws its own background and border.
-         *
-         * Deliberately do not use:
-         *
-         *   NoMove
-         *   NoResize
-         *   NoSavedSettings
-         *
-         * This allows the player to move and resize the MiniMap while the
-         * ModLoader UI/cursor is available, while ImGui persists the chosen
-         * size and position between game sessions.
-         */
-        g_hints.extra_window_flags =
-            PluginWindowFlags_NoTitleBar |
-            PluginWindowFlags_NoScrollbar |
-            PluginWindowFlags_NoBackground;
-
-        /*
-         * Default MiniMap dimensions.
-         *
-         * AlienX passes size_cond directly to ImGui as ImGuiCond.
-         * ImGuiCond_FirstUseEver is 1 << 2, i.e. 4.
-         *
-         * Note: the current AlienX SDK comment incorrectly documents
-         * FirstUseEver as 1. A value of 1 is actually ImGuiCond_Always,
-         * which would force the MiniMap back to this size every frame.
-         */
-        g_hints.width = kWindowWidth;
-        g_hints.height = kWindowHeight;
-        g_hints.size_cond = 4; // ImGuiCond_FirstUseEver
-
-        /*
-         * Do not specify an initial window position yet.
-         *
-         * AlienX skips SetNextWindowPos() whenever either coordinate is
-         * negative.
-         */
-        g_hints.pos_x = -1.0f;
-        g_hints.pos_y = -1.0f;
-
-        g_hints.pivot_x = 0.0f;
-        g_hints.pivot_y = 0.0f;
-
-        /*
-         * Currently unused because positioning is skipped.
-         * Keep the correct ImGui FirstUseEver value for when we implement
-         * initial positioning later.
-         */
-        g_hints.pos_cond = 4; // ImGuiCond_FirstUseEver
+        if (g_widget.id) if (auto* viewport = S::TryViewport())
+        {
+            const auto removal = viewport->Remove(g_widget);
+            if (removal.registry == S::RegistryRemoval::RequestReturned &&
+                removal.core == S::CoreDrain::Quiescent)
+            {
+                g_widget = {};
+                g_widgetAcceptance = S::Acceptance::Rejected;
+            }
+        }
     }
 
-    void Render(
-        IModLoaderImGui* ui)
+    void Render(void*, S::ICanvas& ui)
     {
-        if (ui == nullptr || !IsEffectivelyVisible())
+        if (!IsEffectivelyVisible())
         {
             return;
         }
 
 
-        float windowX = 0.0f;
-        float windowY = 0.0f;
-        float windowWidth = 0.0f;
-        float windowHeight = 0.0f;
-
-        ui->GetWindowPos(
-            &windowX,
-            &windowY);
-
-        ui->GetWindowSize(
-            &windowWidth,
-            &windowHeight);
+        const auto position = ui.WindowPosition();
+        const auto size = ui.WindowSize();
+        const float windowX = position.x;
+        const float windowY = position.y;
+        const float windowWidth = size.x;
+        const float windowHeight = size.y;
 
         if (windowWidth <= 1.0f ||
             windowHeight <= 1.0f)
@@ -164,24 +118,12 @@ namespace
          * ImGui still needs an item covering the window so that the
          * window behaves as a normal draggable widget.
          */
-        float availableWidth = 0.0f;
-        float availableHeight = 0.0f;
+        const auto available = ui.ContentAvailable();
+        if (available.x > 0.0f && available.y > 0.0f)
+            ui.ReserveContent(available);
 
-        ui->GetContentRegionAvail(
-            &availableWidth,
-            &availableHeight);
-
-        if (availableWidth > 0.0f &&
-            availableHeight > 0.0f)
-        {
-            ui->Dummy(
-                availableWidth,
-                availableHeight);
-        }
-
-
-        PluginDrawList drawList =
-            ui->GetWindowDrawList();
+        MiniMap::Services::DrawLayer drawList =
+            MiniMap::Services::DrawLayer::Window;
 
         /*
          * Stage 1 placeholder.
@@ -197,15 +139,7 @@ namespace
 
         constexpr float rounding = 8.0f;
 
-        ui->DL_AddRectFilled(
-            drawList,
-            windowX,
-            windowY,
-            windowX + windowWidth,
-            windowY + windowHeight,
-            backgroundColor,
-            rounding,
-            PluginDrawFlags_RoundCornersAll);
+        ui.FilledRect(drawList, {windowX, windowY}, {windowX + windowWidth, windowY + windowHeight}, backgroundColor, rounding);
 
         const auto settings = MiniMapConfig::GetRenderSettings();
         MiniMapMap::Transform transform = {};
@@ -251,30 +185,19 @@ namespace
                 transform, settings.ShowCoordinates, settings.CoordsInUEUnits, settings.ShowCompass, settings.Fog);
         }
 
-        ui->DL_AddRect(
-            drawList,
-            windowX,
-            windowY,
-            windowX + windowWidth,
-            windowY + windowHeight,
-            borderColor,
-            rounding,
-            PluginDrawFlags_RoundCornersAll,
-            1.0f);
+        ui.Rect(drawList, {windowX, windowY}, {windowX + windowWidth, windowY + windowHeight}, borderColor, rounding, 1.0f);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto debugText = MiniMapDebugText::GetDebugText();
         if (debugText && !debugText->empty())
         {
             float textWidth = 0.0f, textHeight = 0.0f;
-            ui->CalcTextSize(debugText->c_str(), &textWidth, &textHeight, false, -1.0f);
+            { const auto measured = ui.MeasureText(debugText->c_str(), false, -1.0f); textWidth = measured.x; textHeight = measured.y; };
             const float x = windowX + kMapViewportInset;
             const float y = windowY + windowHeight + kMapViewportInset;
-            const auto debugDrawList = ui->GetForegroundDrawList();
-            ui->DL_AddRectFilled(debugDrawList, x - 4.0f, y - 4.0f,
-                x + textWidth + 4.0f, y + textHeight + 4.0f,
-                0xC0202020, 3.0f, PluginDrawFlags_RoundCornersAll);
-            ui->DL_AddText(debugDrawList, x, y, 0xFFE0E0E0, debugText->c_str());
+            const auto debugDrawList = MiniMap::Services::DrawLayer::Foreground;
+            ui.FilledRect(debugDrawList, {x - 4.0f, y - 4.0f}, {x + textWidth + 4.0f, y + textHeight + 4.0f}, 0xC0202020, 3.0f);
+            ui.Text(debugDrawList, {x, y}, 0xFFE0E0E0, debugText->c_str());
         }
 #endif
     }
@@ -288,17 +211,8 @@ namespace
         const bool visible = g_userVisible.load(std::memory_order_acquire);
         const bool effectiveVisible = visible &&
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
-        auto* self = GetSelf();
-
-        if (self != nullptr &&
-            self->hooks != nullptr &&
-            self->hooks->UI != nullptr &&
-            g_widget != nullptr)
-        {
-            self->hooks->UI->SetWidgetVisible(
-                g_widget,
-                effectiveVisible);
-        }
+        if (g_widget.id) if (auto* viewport = S::TryViewport())
+            viewport->SetVisible(g_widget, effectiveVisible);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO(
@@ -357,60 +271,33 @@ namespace MiniMapUI
     bool Initialize(
         IPluginSelf* self)
     {
-        if (self == nullptr ||
-            self->hooks == nullptr ||
-            self->hooks->UI == nullptr)
+        auto* viewport = S::TryViewport();
+        if (!viewport)
         {
-            LOG_ERROR(
-                "MiniMap: UI initialization failed: "
-                "UI interface is unavailable");
-
+            LOG_ERROR("MiniMap: UI initialization failed: viewport service unavailable");
             return false;
         }
-
-        if (g_widget != nullptr)
-        {
-            return true;
-        }
-
+        if (g_widget.id)
+            return g_widgetAcceptance == S::Acceptance::AcceptedUnverified ||
+                g_widgetAcceptance == S::Acceptance::VerifiedOperational;
         g_userVisible.store(false, std::memory_order_release);
-
-        UpdateHints();
-
-        static PluginWidgetDesc widgetDesc = {
-            "MiniMap",
-            &Render,
-            &g_hints
-        };
-
-        g_widget =
-            self->hooks->UI->RegisterWidget(
-                &widgetDesc);
-
-        if (g_widget == nullptr)
+        const auto receipt = viewport->CreateOverlay(
+            {"MiniMap", {kWindowWidth, kWindowHeight}, std::nullopt}, &Render, nullptr);
+        g_widget = receipt.token; // Also retain cancellation identity on ambiguity.
+        g_widgetAcceptance = receipt.acceptance;
+        if (receipt.acceptance != S::Acceptance::AcceptedUnverified &&
+            receipt.acceptance != S::Acceptance::VerifiedOperational)
         {
-            LOG_ERROR(
-                "MiniMap: failed to register widget");
-
+            LOG_ERROR("MiniMap: failed to register widget");
+            RemoveWidget();
             return false;
         }
-
-        /*
-         * Registration and gameplay visibility are separate.
-         *
-         * The plugin lifecycle will explicitly Show() the widget when
-         * the game world begins.
-         */
-        self->hooks->UI->SetWidgetVisible(
-            g_widget,
-            false);
+        // Registration is separate from gameplay visibility, exactly as before.
+        viewport->SetVisible(g_widget, false);
 
         if (!S::TryInput() || !MiniMap::Adapters::AlienX::KeyInputAvailable())
         {
-            self->hooks->UI->UnregisterWidget(
-                g_widget);
-
-            g_widget = nullptr;
+            RemoveWidget();
 
             return false;
         }
@@ -423,8 +310,7 @@ namespace MiniMapUI
         if (!RefreshKeybinds())
         {
             StopInput();
-            self->hooks->UI->UnregisterWidget(g_widget);
-            g_widget = nullptr;
+            RemoveWidget();
             return false;
         }
 
@@ -436,10 +322,7 @@ namespace MiniMapUI
 
             StopInput();
 
-            self->hooks->UI->UnregisterWidget(
-                g_widget);
-
-            g_widget = nullptr;
+            RemoveWidget();
 
             return false;
         }
@@ -482,36 +365,15 @@ namespace MiniMapUI
     void Shutdown()
     {
         StopInput();
-        auto* self = GetSelf();
-
-        if (self != nullptr &&
-            self->hooks != nullptr &&
-            self->hooks->UI != nullptr &&
-            g_widget != nullptr)
-        {
-            self->hooks->UI->SetWidgetVisible(
-                g_widget,
-                false);
-
-            self->hooks->UI->UnregisterWidget(
-                g_widget);
-        }
-
-        g_widget = nullptr;
+        if (g_widget.id) if (auto* viewport = S::TryViewport())
+            viewport->SetVisible(g_widget, false);
+        RemoveWidget();
         g_userVisible.store(false, std::memory_order_release);
-        g_hints = {};
     }
 
     void Show()
     {
-        auto* self = GetSelf();
-        if (self == nullptr ||
-            self->hooks == nullptr ||
-            self->hooks->UI == nullptr ||
-            g_widget == nullptr)
-        {
-            return;
-        }
+        if (!S::TryViewport() || !g_widget.id) return;
 
         g_userVisible.store(true, std::memory_order_release);
 

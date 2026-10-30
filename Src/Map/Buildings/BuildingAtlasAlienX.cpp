@@ -1,3 +1,5 @@
+#include "Adapters/AlienX/Viewport.h"
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlasAlienX.h"
@@ -138,41 +140,41 @@ namespace MiniMapBuildingAtlasAlienX
         return ReleaseResult::Released;
     }
 
-    bool Backend::SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
-        const std::array<Point, 4>& p, const std::array<UV, 4>& uv, std::uint32_t color) const noexcept
+    bool Backend::SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const Texture& texture,
+        const MiniMap::Services::Quad& p, const std::array<UV, 4>& uv, std::uint32_t color) const noexcept
     {
-        if (!ui || !list || !ui->DL_AddImageQuad || !texture.IsValid() || !texture.Handle ||
+        if (!texture.IsValid() || !texture.Handle ||
             !texture.ImageWidth || !texture.ImageHeight) return false;
         for (std::size_t i = 0; i < 4; ++i)
-            if (!std::isfinite(p[i].X) || !std::isfinite(p[i].Y) || !std::isfinite(uv[i].U) || !std::isfinite(uv[i].V)) return false;
+            if (!std::isfinite(p[i].x) || !std::isfinite(p[i].y) || !std::isfinite(uv[i].U) || !std::isfinite(uv[i].V)) return false;
         try
         {
             // Create already validated dimensions. The caller protects this
             // owned Texture from Release throughout submission; do not query
             // the texture-management API inside the lifecycle-locked draw pass.
-            ui->DL_AddImageQuad(list, texture.Handle,
-                p[0].X, p[0].Y, p[1].X, p[1].Y, p[2].X, p[2].Y, p[3].X, p[3].Y,
-                uv[0].U, uv[0].V, uv[1].U, uv[1].V, uv[2].U, uv[2].V, uv[3].U, uv[3].V, color);
+            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, texture.Handle);
+            ui.ImageQuad(list, borrowedImage.Value(), p,
+                {{{uv[0].U, uv[0].V}, {uv[1].U, uv[1].V}, {uv[2].U, uv[2].V}, {uv[3].U, uv[3].V}}}, color);
             return true; // Submission only, not GPU completion or visibility proof.
         }
         catch (...) { return false; } // No ownership change; never retry a possibly recorded draw here.
     }
-    bool Backend::SubmitPreparedQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
-        const std::array<Point, 4>& p, const MiniMapSpriteStatus::PreparedAtlasUV& prepared, std::uint32_t color) const noexcept
+    bool Backend::SubmitPreparedQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const Texture& texture,
+        const MiniMap::Services::Quad& p, const MiniMapSpriteStatus::PreparedAtlasUV& prepared, std::uint32_t color) const noexcept
     {
         if (prepared.Status() != MiniMapSpriteStatus::PreparedAtlasUV::State::Valid) return false;
         const auto& uv = prepared.Corners();
-        if (!ui || !list || !ui->DL_AddImageQuad || !texture.IsValid() || !texture.Handle ||
+        if (!texture.IsValid() || !texture.Handle ||
             !texture.ImageWidth || !texture.ImageHeight) return false;
         for (std::size_t i = 0; i < 4; ++i)
-            if (!std::isfinite(p[i].X) || !std::isfinite(p[i].Y)) return false;
+            if (!std::isfinite(p[i].x) || !std::isfinite(p[i].y)) return false;
         try
         {
             // Same live texture/position guards and void API semantics as SubmitQuad.
             // FromRegion proves all UV floats finite; do not revalidate them per sprite.
-            ui->DL_AddImageQuad(list, texture.Handle,
-                p[0].X, p[0].Y, p[1].X, p[1].Y, p[2].X, p[2].Y, p[3].X, p[3].Y,
-                uv[0].U, uv[0].V, uv[1].U, uv[1].V, uv[2].U, uv[2].V, uv[3].U, uv[3].V, color);
+            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, texture.Handle);
+            ui.ImageQuad(list, borrowedImage.Value(), p,
+                {{{uv[0].U, uv[0].V}, {uv[1].U, uv[1].V}, {uv[2].U, uv[2].V}, {uv[3].U, uv[3].V}}}, color);
             return true; // Submission only, not GPU completion or visibility proof.
         }
         catch (...) { return false; } // Never retry a possibly recorded draw.

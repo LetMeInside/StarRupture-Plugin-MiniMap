@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -70,12 +71,12 @@ namespace MiniMapBuildingAtlasAlienX
         ReleaseResult Release(Texture& texture) const noexcept;
         // Active UI callback only. Caller keeps the binding valid for submission.
         // Corners/UVs are forwarded in supplied order; no clipping-state changes.
-        bool SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
-            const std::array<Point, 4>& positions, const std::array<UV, 4>& uvs,
+        bool SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const Texture& texture,
+            const MiniMap::Services::Quad& positions, const std::array<UV, 4>& uvs,
             std::uint32_t packedColor) const noexcept;
         // Publication-validated UVs only. All dynamic/position guards remain live.
-        bool SubmitPreparedQuad(IModLoaderImGui* ui, PluginDrawList list, const Texture& texture,
-            const std::array<Point, 4>& positions, const MiniMapSpriteStatus::PreparedAtlasUV& uvs,
+        bool SubmitPreparedQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const Texture& texture,
+            const MiniMap::Services::Quad& positions, const MiniMapSpriteStatus::PreparedAtlasUV& uvs,
             std::uint32_t packedColor) const noexcept;
 
     private:

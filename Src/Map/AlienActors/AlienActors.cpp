@@ -1,3 +1,4 @@
+#include "Services/Viewport.h"
 #include "Map/Map.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -449,12 +450,11 @@ namespace MiniMapAlienActors
         g_acquisitionRadius = std::isfinite(radius) ? radius : 0.0;
     }
 
-    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
+    void Render(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
-        if (ui == nullptr || !transform.Valid) return;
-        const auto drawList = ui->GetWindowDrawList();
-        if (drawList == nullptr) return;
+        if (!transform.Valid) return;
+        const auto drawList = MiniMap::Services::DrawLayer::Window;
         const float left = transform.CenterX - transform.Width * 0.5f;
         const float top = transform.CenterY - transform.Height * 0.5f;
         const float right = left + transform.Width;
@@ -493,7 +493,7 @@ namespace MiniMapAlienActors
                 });
             visible.resize(kMaximumRecords);
         }
-        ui->DL_PushClipRect(drawList, left, top, right, bottom, true);
+        ui.PushClip(drawList, {left, top}, {right, bottom}, true);
         for (const auto& candidate : visible)
         {
             const auto& record = g_records[candidate.RecordIndex];
@@ -509,9 +509,9 @@ namespace MiniMapAlienActors
                 candidate.Visibility));
             if (alpha == 0) continue;
             const uint32_t color = (kHostileColor & 0x00FFFFFFu) | (alpha << 24);
-            ui->DL_AddCircleFilled(drawList, point.X, point.Y, kDotRadiusPixels, color, 12);
+            ui.FilledCircle(drawList, {point.X, point.Y}, kDotRadiusPixels, color, 12);
         }
-        ui->DL_PopClipRect(drawList);
+        ui.PopClip(drawList);
         visible.clear();
     }
 

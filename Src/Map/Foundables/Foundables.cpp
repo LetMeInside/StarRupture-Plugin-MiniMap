@@ -1,3 +1,5 @@
+#include "Adapters/AlienX/Viewport.h"
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Foundables.h"
@@ -1218,13 +1220,12 @@ namespace MiniMapFoundables
     }
 
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FoundableRenderSettings& settings,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
-        if (ui == nullptr ||
-            !transform.Valid)
+        if (!transform.Valid)
         {
             return;
         }
@@ -1239,12 +1240,7 @@ namespace MiniMapFoundables
             containerDots = g_containerDots;
         }
 
-        PluginDrawList drawList = ui->GetWindowDrawList();
-
-        if (drawList == nullptr)
-        {
-            return;
-        }
+        MiniMap::Services::DrawLayer drawList = MiniMap::Services::DrawLayer::Window;
 
         const float viewportX =
             transform.CenterX - transform.Width * 0.5f;
@@ -1258,13 +1254,7 @@ namespace MiniMapFoundables
 
         const float halfIcon = iconSize * 0.5f;
 
-        ui->DL_PushClipRect(
-            drawList,
-            viewportX,
-            viewportY,
-            viewportX + transform.Width,
-            viewportY + transform.Height,
-            true);
+        ui.PushClip(drawList, {viewportX, viewportY}, {viewportX + transform.Width, viewportY + transform.Height}, true);
 
         // MiniMapUI renders Foundables after terrain and Fog of War, then POIs.
         // Submit the existing icon snapshot first; container dots follow below.
@@ -1299,18 +1289,10 @@ namespace MiniMapFoundables
                 continue;
             }
 
-            ui->DL_AddImage(
-                drawList,
-                record.Icon,
-                point.X - halfIcon,
-                point.Y - halfIcon,
-                point.X + halfIcon,
-                point.Y + halfIcon,
-                0.0f,
-                0.0f,
-                1.0f,
-                1.0f,
-                0xFFFFFFFFu);
+            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, record.Icon);
+            ui.Image(drawList, borrowedImage.Value(),
+                {point.X - halfIcon, point.Y - halfIcon}, {point.X + halfIcon, point.Y + halfIcon},
+                {0.0f, 0.0f}, {1.0f, 1.0f}, 0xFFFFFFFFu);
         }
 
         const auto renderContainerDots = [&](ContainerContents contents)
@@ -1339,13 +1321,7 @@ namespace MiniMapFoundables
                 }
 
                 const bool isBlueprint = contents == ContainerContents::Blueprint;
-                ui->DL_AddCircleFilled(
-                    drawList,
-                    point.X,
-                    point.Y,
-                    (isBlueprint ? kBlueprintContainerDotRadiusPixels : kOrdinaryContainerDotRadiusPixels) * settings.MarkerScale,
-                    isBlueprint ? kBlueprintContainerDotColor : kOrdinaryContainerDotColor,
-                    12);
+                ui.FilledCircle(drawList, {point.X, point.Y}, (isBlueprint ? kBlueprintContainerDotRadiusPixels : kOrdinaryContainerDotRadiusPixels) * settings.MarkerScale, isBlueprint ? kBlueprintContainerDotColor : kOrdinaryContainerDotColor, 12);
             }
         };
 
@@ -1355,7 +1331,7 @@ namespace MiniMapFoundables
             renderContainerDots(ContainerContents::Blueprint);
         }
 
-        ui->DL_PopClipRect(drawList);
+        ui.PopClip(drawList);
     }
 
     void Shutdown()

@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -14,7 +15,7 @@ namespace MiniMapMap
 namespace MiniMapOverlays
 {
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform, bool showCoordinates, bool coordsInUEUnits, bool showCompass,
         const MiniMapConfig::FogOfWarSettings& fog);
 }

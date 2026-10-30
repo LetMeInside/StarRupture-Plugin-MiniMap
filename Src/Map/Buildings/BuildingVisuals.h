@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 #include "DiagnosticExports.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
@@ -13,7 +14,7 @@ namespace MiniMapBuildingVisuals
     bool Initialize(IPluginSelf* self);
     void Reset();
     void Shutdown();
-    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
+    void Render(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings);
 
     // Shared with narrow submission fixtures. Called only from the existing UI
@@ -46,12 +47,12 @@ namespace MiniMapBuildingVisuals
                         if(WorldTriangle(profile,first))return &profile;
             return nullptr;
         }
-        inline SplineSubmission SubmitSpline(IModLoaderImGui* ui,PluginDrawList list,const MiniMapMap::Transform& transform,
+        inline SplineSubmission SubmitSpline(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,const MiniMapMap::Transform& transform,
             const C::Record& record,const E::Result& geometry,const C::Bounds& viewport,uint32_t color,
             std::vector<ProjectedVertex>& scratch)
         {
             SplineSubmission submitted;
-            if(!ui || !list || !ui->DL_AddTriangleFilled || !transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
+            if(!transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
             if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
                 !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)return submitted;
             const auto* profile=SelectSpline(record,geometry);if(!profile)return submitted;
@@ -78,7 +79,7 @@ namespace MiniMapBuildingVisuals
                 if((std::max)({p.X,q.X,r.X})<viewport.MinX || (std::min)({p.X,q.X,r.X})>viewport.MaxX ||
                     (std::max)({p.Y,q.Y,r.Y})<viewport.MinY || (std::min)({p.Y,q.Y,r.Y})>viewport.MaxY)continue;
                 if(area<0)std::swap(q,r);
-                try{ui->DL_AddTriangleFilled(list,p.X,p.Y,q.X,q.Y,r.X,r.Y,color);}
+                try{ui.FilledTriangle(list, {{{p.X, p.Y}, {q.X, q.Y}, {r.X, r.Y}}}, color);}
                 catch(...){return submitted;} // Preserve normal outer clip/lifecycle retirement; never retry this call.
                 ++submitted.Triangles;
             }

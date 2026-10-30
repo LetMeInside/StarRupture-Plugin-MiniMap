@@ -1,3 +1,5 @@
+#include "Adapters/AlienX/Viewport.h"
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
@@ -907,13 +909,12 @@ namespace MiniMapPointsOfInterest
 
 
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::POIRenderSettings& settings,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
-        if (ui == nullptr ||
-            !transform.Valid)
+        if (!transform.Valid)
         {
             return;
         }
@@ -933,14 +934,8 @@ namespace MiniMapPointsOfInterest
             return;
         }
 
-        PluginDrawList drawList =
-            ui->GetWindowDrawList();
-
-        if (drawList ==
-            nullptr)
-        {
-            return;
-        }
+        MiniMap::Services::DrawLayer drawList =
+            MiniMap::Services::DrawLayer::Window;
 
         const float viewportX =
             transform.CenterX -
@@ -960,15 +955,7 @@ namespace MiniMapPointsOfInterest
             iconSize *
             0.5f;
 
-        ui->DL_PushClipRect(
-            drawList,
-            viewportX,
-            viewportY,
-            viewportX +
-                transform.Width,
-            viewportY +
-                transform.Height,
-            true);
+        ui.PushClip(drawList, {viewportX, viewportY}, {viewportX + transform.Width, viewportY + transform.Height}, true);
 
         for (const POIRecord& record :
             records)
@@ -1010,26 +997,13 @@ namespace MiniMapPointsOfInterest
             if (record.CanHideByFog && !(MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
                 record.WorldX, record.WorldY, transform, fog) > 0.0f)) continue;
 
-            ui->DL_AddImage(
-                drawList,
-                record.Icon,
-                point.X -
-                    halfIcon,
-                point.Y -
-                    halfIcon,
-                point.X +
-                    halfIcon,
-                point.Y +
-                    halfIcon,
-                0.0f,
-                0.0f,
-                1.0f,
-                1.0f,
-                0xFFFFFFFFu);
+            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, record.Icon);
+            ui.Image(drawList, borrowedImage.Value(),
+                {point.X - halfIcon, point.Y - halfIcon}, {point.X + halfIcon, point.Y + halfIcon},
+                {0.0f, 0.0f}, {1.0f, 1.0f}, 0xFFFFFFFFu);
         }
 
-        ui->DL_PopClipRect(
-            drawList);
+        ui.PopClip(drawList);
     }
 
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 #include "DiagnosticExports.h"
 
 #include "plugin_interface.h"
@@ -28,7 +29,7 @@ namespace MiniMapTerrain
     void AdjustZoom(float wheelDelta);
 
     bool Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         float windowX,
         float windowY,
         float windowWidth,

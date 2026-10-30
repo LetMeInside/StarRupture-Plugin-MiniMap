@@ -1,3 +1,4 @@
+#include "Services/Viewport.h"
 #include "Map/Map.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
@@ -364,7 +365,7 @@ namespace
             }
     };
     bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapMap::Transform& transform,
-        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds)
+        MiniMap::Services::Quad& points, C::Bounds& bounds)
     {
         if (!transform.Valid) return false;
         PreparedTransform prepared(transform);
@@ -384,7 +385,7 @@ namespace
         for (size_t i=0;i<points.size();++i)
         {
             const auto& a=points[i]; const auto& b=points[(i+1)%4]; const auto& c=points[(i+2)%4];
-            const double cross=(double(b.X)-a.X)*(double(c.Y)-b.Y)-(double(b.Y)-a.Y)*(double(c.X)-b.X);
+            const double cross=(double(b.x)-a.x)*(double(c.y)-b.y)-(double(b.y)-a.y)*(double(c.x)-b.x);
             if (!std::isfinite(cross) || cross==0 || (i && (cross>0)!=(winding>0))) return false;
             winding=cross;
         }
@@ -392,7 +393,7 @@ namespace
     }
     bool AtlasQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
         const MiniMapMap::Transform& transform,
-        std::array<MiniMapBuildingAtlasAlienX::Point,4>& points, C::Bounds& bounds, WorldQuad* cached)
+        MiniMap::Services::Quad& points, C::Bounds& bounds, WorldQuad* cached)
     {
         if (!transform.Valid) return false;
         if (!cached)
@@ -543,13 +544,13 @@ namespace MiniMapBuildingVisuals
         }
         Reset(); g_initialized=false;
     }
-    void Render(IModLoaderImGui* ui,const MiniMapMap::Transform& transform,
+    void Render(MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
     {
         // Presentation only: leave draw-driven queues and the independent game-thread
         // capture service untouched while this layer is hidden.
         if(!settings.ShowLayer)return;
-        if(!ui || !transform.Valid) return;
+        if(!transform.Valid) return;
         static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
         static std::shared_ptr<const A::RenderPlan> occlusionPlan; // Same UI-thread lifetime as quad cache.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -573,7 +574,7 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const double snapshotAcquireMs=elapsedMs(measuredBegin,Clock::now());
 #endif
-        const auto dl=ui->GetWindowDrawList(); if(!dl) return;
+        const auto dl=MiniMap::Services::DrawLayer::Window;
         std::shared_ptr<const A::RenderPlan> framePlanOwner; // Former frame-local stats.CoverageOwner lifetime.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         RenderWorkload workload;
@@ -582,7 +583,7 @@ namespace MiniMapBuildingVisuals
         A::Invalidation discarded=A::Invalidation::NoPrevious;
         const C::Bounds viewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
             transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2,true};
-        ui->DL_PushClipRect(dl,float(viewport.MinX),float(viewport.MinY),float(viewport.MaxX),float(viewport.MaxY),true);
+        ui.PushClip(dl, {float(viewport.MinX), float(viewport.MinY)}, {float(viewport.MaxX), float(viewport.MaxY)}, true);
         // Ordinary occluders, clipped splines, then Base Core overlays share
         // the same draw-list clip, scheduler pass and lifecycle admission.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -675,10 +676,10 @@ namespace MiniMapBuildingVisuals
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             auto visibility=instance.SpriteSource.CanonicalBlueprint?V::State::AtlasMissing:V::State::CanonicalUnavailable;
-            if(!ui->DL_AddImageQuad)visibility=V::State::SubmitRejected;
+
             if(!schedulerValid)visibility=V::State::SessionUnavailable;
 #endif
-            if(!spline && schedulerValid && ui->DL_AddImageQuad && instance.SpriteSource.CanonicalBlueprint)
+            if(!spline && schedulerValid && instance.SpriteSource.CanonicalBlueprint)
             {
                 const MiniMapSpriteStatus::AtlasEntry* entry;
                 if(resolution && *resolution)
@@ -696,7 +697,7 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     visibility=V::State::QuadRejected;
 #endif
-                    std::array<MiniMapBuildingAtlasAlienX::Point,4> points;
+                    MiniMap::Services::Quad points;
                     C::Bounds spriteBounds;
                     WorldQuad fallbackQuad;
                     auto* worldQuad=index<worldQuads.Slots.size()?&worldQuads.Slots[index]:&fallbackQuad;
@@ -892,7 +893,7 @@ namespace MiniMapBuildingVisuals
         for(size_t index:snapshot->DrawOrder)
             if(baseCore(snapshot->Instances[index]))submitOrdinary(index,false);
         }
-        ui->DL_PopClipRect(dl);
+        ui.PopClip(dl);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         BuildingVisualsTimingTotals timingReport;double timingIntervalMs=0;bool emitTimingReport=false;
 #endif

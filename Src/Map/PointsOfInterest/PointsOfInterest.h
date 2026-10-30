@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -26,7 +27,7 @@ namespace MiniMapPointsOfInterest
     void OnExperienceLoadComplete();
 
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::POIRenderSettings& settings,
         const MiniMapConfig::FogOfWarSettings& fog);

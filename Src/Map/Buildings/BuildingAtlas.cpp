@@ -1,3 +1,4 @@
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlas.h"
@@ -481,8 +482,8 @@ namespace MiniMapBuildingAtlas
         }
         return &it->second.Atlas;
     }
-    bool SubmitQuad(IModLoaderImGui* ui, PluginDrawList list, const S::AtlasEntry& entry,
-        const std::array<X::Point, 4>& positions, uint32_t color) noexcept
+    bool SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const S::AtlasEntry& entry,
+        const MiniMap::Services::Quad& positions, uint32_t color) noexcept
     {
         if (!Current(g_session) || !g_session->Published || !entry.Texture ||
             entry.Texture != g_session->Published->Texture.Binding()) return false;

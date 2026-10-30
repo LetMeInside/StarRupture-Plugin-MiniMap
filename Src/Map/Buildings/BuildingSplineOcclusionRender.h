@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSplineOcclusionAdapter.h"
 #include <algorithm>
@@ -20,11 +21,11 @@ namespace MiniMapBuildingSplineOcclusionRender
     }
     // Reproject final plan-owned inset triangles in section/visible/left/right/fan order.
     inline MiniMapBuildingVisuals::Detail::SplineSubmission SubmitWalkwayInsets(
-        IModLoaderImGui* ui,PluginDrawList list,const MiniMapMap::Transform& transform,
+        MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,const MiniMapMap::Transform& transform,
         const A::RecordPlan& record,const MiniMapBuildingCollector::Bounds& viewport,uint32_t color)
     {
         MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
-        if(!ui || !list || !ui->DL_AddTriangleFilled || !transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
+        if(!transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
         if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
             !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)return submitted;
         namespace O=A::O;
@@ -47,7 +48,7 @@ namespace MiniMapBuildingSplineOcclusionRender
                 (std::max)({p[0].Y,p[1].Y,p[2].Y})<viewport.MinY ||
                 (std::min)({p[0].Y,p[1].Y,p[2].Y})>viewport.MaxY)continue;
             if(area<0.0)std::swap(p[1],p[2]);
-            try{ui->DL_AddTriangleFilled(list,p[0].X,p[0].Y,p[1].X,p[1].Y,p[2].X,p[2].Y,color);}
+            try{ui.FilledTriangle(list, {{{p[0].X, p[0].Y}, {p[1].X, p[1].Y}, {p[2].X, p[2].Y}}}, color);}
             catch(...)
             {
                 // The original helper stopped only this band after a possibly recorded call.
@@ -61,13 +62,13 @@ namespace MiniMapBuildingSplineOcclusionRender
     }
     // Complete, owned section plans only. Reproject without allocation or native
     // reads. Rendering counters count calls that returned from ImGui successfully.
-    inline MiniMapBuildingVisuals::Detail::SplineSubmission Submit(IModLoaderImGui* ui,PluginDrawList list,
+    inline MiniMapBuildingVisuals::Detail::SplineSubmission Submit(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,
         const MiniMapMap::Transform& transform,const A::RecordPlan& record,
         const MiniMapBuildingCollector::Bounds& viewport,uint32_t color,SubmissionDiagnostics* diagnostic=nullptr)
     {
         MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
         if(diagnostic)*diagnostic={};
-        if(!ui || !list || !ui->DL_AddTriangleFilled || !transform.Valid || !(color>>24) || !viewport.Valid)
+        if(!transform.Valid || !(color>>24) || !viewport.Valid)
         {if(diagnostic){diagnostic->Transparent=!(color>>24);diagnostic->Rejected=!diagnostic->Transparent;}return submitted;}
         if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
             !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)
@@ -89,7 +90,7 @@ namespace MiniMapBuildingSplineOcclusionRender
                 (std::max)({p.Y,q.Y,r.Y})<viewport.MinY || (std::min)({p.Y,q.Y,r.Y})>viewport.MaxY)
             {if(diagnostic)++diagnostic->OutsideViewportTriangles;continue;}
             if(area<0)std::swap(q,r);
-            try{ui->DL_AddTriangleFilled(list,p.X,p.Y,q.X,q.Y,r.X,r.Y,color);}
+            try{ui.FilledTriangle(list, {{{p.X, p.Y}, {q.X, q.Y}, {r.X, r.Y}}}, color);}
             catch(...){
                 if(diagnostic)diagnostic->Rejected=true;return submitted;} // Never retry a possibly recorded call.
             ++submitted.Triangles;

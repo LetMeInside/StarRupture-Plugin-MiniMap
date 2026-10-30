@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -15,7 +16,7 @@ namespace MiniMapAlienActors
 
     // Copies viewport geometry only; acquisition remains on the engine tick.
     void SetViewport(const MiniMapMap::Transform& transform);
-    void Render(IModLoaderImGui* ui, const MiniMapMap::Transform& transform,
+    void Render(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
         const MiniMapConfig::FogOfWarSettings& fog);
     void Shutdown();
 }

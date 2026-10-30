@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -41,7 +42,7 @@ namespace MiniMapFogOfWar
         const MiniMapConfig::FogOfWarSettings& fog);
 
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FogOfWarSettings& fog);
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -18,7 +19,7 @@ namespace MiniMapFoundables
     void OnExperienceLoadComplete();
 
     void Render(
-        IModLoaderImGui* ui,
+        MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FoundableRenderSettings& settings,
         const MiniMapConfig::FogOfWarSettings& fog);
