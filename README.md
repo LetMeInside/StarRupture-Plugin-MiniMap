@@ -96,6 +96,12 @@ https://github.com/LetMeInside/StarRupture-Plugin-MiniMap
 
 MiniMap is developed against the AlienX StarRupture Plugin SDK and uses a mixture of generated SDK access and narrowly resolved native functions where the generated SDK does not expose the required runtime behaviour.
 
+## Technical Documentation
+
+Technical references covering StarRupture engine interfaces, MiniMap rendering and resource lifetimes, lifecycle behavior, terrain acquisition, and AlienX integration.
+
+[Technical Documentation](Docs/README.md)
+
 ## Reporting Issues
 
 When reporting a problem, please include:
