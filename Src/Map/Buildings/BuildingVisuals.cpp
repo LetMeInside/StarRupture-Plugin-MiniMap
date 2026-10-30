@@ -175,8 +175,7 @@ namespace
         if(!g_trace.Observe(sample,stage,state))return;
         const auto& id=g_trace.Samples[sample];
         const char* stages[]{"collector","prepared","render"};
-        try { if(auto* self=GetSelf();self&&self->logger&&self->logger->Warn)
-            self->logger->Warn(self,"MiniMap: sprite visibility: generation=%llu entity=%d:%d building=%u definition=%d stage=%s state=%s canonical=%s tintAlpha=%.3f event=%zu/128",
+        try { LOG_WARN("MiniMap: sprite visibility: generation=%llu entity=%d:%d building=%u definition=%d stage=%s state=%s canonical=%s tintAlpha=%.3f event=%zu/128",
                 static_cast<unsigned long long>(g_trace.Generation),id.Index,id.Serial,id.Building,id.Definition,
                 stages[unsigned(stage)],V::Name(state),record&&record->CanonicalBlueprint?record->CanonicalBlueprint->c_str():"unavailable",
                 record?1.0:-1.0,g_trace.Events); }

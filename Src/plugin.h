@@ -1,27 +1,11 @@
 ﻿#pragma once
 
-#include <windows.h>
-#include "plugin_interface.h"
+// Transitional include for existing loader-specific subsystem declarations.
+// Services headers remain neutral; migrate these signatures in their own stages.
+#include "Adapters/AlienX/Compatibility.h"
 
-extern IPluginSelf* g_self;
-
-struct MiniMapPluginInitHookBaseline
+namespace MiniMap
 {
-    bool Captured = false;
-    const void* Self = nullptr;
-    const void* Hooks = nullptr;
-    const void* Engine = nullptr;
-    const void* ImGuiTextures = nullptr;
-};
-
-MiniMapPluginInitHookBaseline GetPluginInitHookBaseline();
-
-extern "C"
-{
-    __declspec(dllexport) PluginInfo* GetPluginInfo();
-    __declspec(dllexport) bool PluginInit(IPluginSelf* self);
-    __declspec(dllexport) void PluginShutdown();
-    __declspec(dllexport) void OnPluginLoadHooks(
-        IPluginSelf* self,
-        IPluginHookScanner* scanner);
+    bool Initialize();
+    void Shutdown();
 }

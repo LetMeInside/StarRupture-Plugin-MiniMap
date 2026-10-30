@@ -24,13 +24,12 @@
 
 namespace
 {
-    // Write has one attempt per retired request. No diagnostic allocations or retries.
+    // Write has one attempt per retired request. Logging failure never retries it.
     bool WriteRejected(const std::string& blueprint, const char* reason, uint32_t code = 0, bool codeAvailable = false) noexcept
     {
         try
         {
-            if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
-                self->logger->Warn(self, "MiniMap: sprite persistence rejected: canonical=%s reason=%s codeAvailable=%u code=0x%08X; one-time write failed",
+            LOG_WARN("MiniMap: sprite persistence rejected: canonical=%s reason=%s codeAvailable=%u code=0x%08X; one-time write failed",
                     blueprint.c_str(), reason, unsigned(codeAvailable), code);
         }
         catch (...) {}
@@ -41,8 +40,7 @@ namespace
     {
         try
         {
-            if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
-                self->logger->Warn(self, "MiniMap: sprite PNG export failed: canonical=%s reason=%s codeAvailable=%u code=0x%08X; successful .sprite persistence unchanged",
+            LOG_WARN("MiniMap: sprite PNG export failed: canonical=%s reason=%s codeAvailable=%u code=0x%08X; successful .sprite persistence unchanged",
                     blueprint.c_str(), reason, unsigned(codeAvailable), code);
         }
         catch (...) {}

@@ -20,7 +20,7 @@ namespace
 {
     template<class... Args> void SpriteDiagnostic(const char* format, Args... args) noexcept
     {
-        try { if (auto* self = GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self, format, args...); }
+        try { LOG_WARN(format, args...); }
         catch (...) {} // Diagnostic failures must not change dictionary/FIFO transitions.
     }
     namespace S = MiniMapSpriteStatus;

@@ -17,16 +17,6 @@
 #include "Map/Buildings/BuildingSpriteRenderer.h"
 #endif
 
-IPluginSelf* g_self = nullptr;
-static MiniMapPluginInitHookBaseline g_pluginInitHookBaseline;
-MiniMapPluginInitHookBaseline GetPluginInitHookBaseline() { return g_pluginInitHookBaseline; }
-static void ResetPluginInitHookBaseline() { g_pluginInitHookBaseline = {}; }
-static void CapturePluginInitHookBaseline(IPluginSelf* self)
-{
-    auto* hooks=self?self->hooks:nullptr;
-    g_pluginInitHookBaseline={true,self,hooks,hooks?hooks->Engine:nullptr,hooks?hooks->ImGuiTextures:nullptr};
-}
-
 #ifdef MODLOADER_CLIENT_BUILD
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 static MiniMapSpriteStatus::Dictionary g_buildingSpriteStatuses;
@@ -248,10 +238,6 @@ static bool InstallCommonUIHooks()
 }
 #endif
 
-#ifndef MODLOADER_BUILD_TAG
-#define MODLOADER_BUILD_TAG "1.2.0"
-#endif
-
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
@@ -293,24 +279,8 @@ void MiniMapCacheIdentity::ClearOnExit()
 }
 #endif
 
-#ifdef MODLOADER_SERVER_BUILD
-#define MINIMAP_EXPORTS_TARGET PLUGIN_TARGET_SERVER
-#else
-#define MINIMAP_EXPORTS_TARGET PLUGIN_TARGET_CLIENT
-#endif
-
-
-static PluginInfo s_pluginInfo = {
-    "MiniMap",
-    MODLOADER_BUILD_TAG,
-    "Kian369",
-    "A configurable on-screen minimap for StarRupture",
-    PLUGIN_INTERFACE_VERSION,
-    MINIMAP_EXPORTS_TARGET
-};
-
-extern "C" __declspec(dllexport)
-void OnPluginLoadHooks(
+// Transitional AlienX scan entry: preserve the exact mandatory resolution chain.
+void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
     IPluginSelf* self,
     IPluginHookScanner* scanner)
 {
@@ -530,28 +500,18 @@ static void OnAfterWorldEndPlay(
 
 #endif
 
-extern "C"
+namespace MiniMap
 {
-    __declspec(dllexport)
-        PluginInfo* GetPluginInfo()
+    bool Initialize()
     {
-        return &s_pluginInfo;
-    }
-
-    __declspec(dllexport)
-        bool PluginInit(IPluginSelf* self)
-    {
-        ResetPluginInitHookBaseline();
 #ifdef MODLOADER_CLIENT_BUILD
         MiniMapCacheIdentity::Reset();
 #endif
-        g_self = self;
         auto* pluginSelf = GetSelf();
 
         if (pluginSelf == nullptr ||
             pluginSelf->hooks == nullptr)
         {
-            g_self = nullptr;
             return false;
         }
 
@@ -561,7 +521,6 @@ extern "C"
             LOG_ERROR(
                 "MiniMap: configuration initialization failed");
 
-            g_self = nullptr;
             return false;
         }
 
@@ -569,7 +528,7 @@ extern "C"
         struct ConfigInitGuard
         {
             bool Keep = false;
-            ~ConfigInitGuard() { if (!Keep) { MiniMapConfig::Shutdown(); g_self = nullptr; } }
+            ~ConfigInitGuard() { if (!Keep) MiniMapConfig::Shutdown(); }
         } configGuard;
 
 #ifdef MODLOADER_CLIENT_BUILD
@@ -786,7 +745,7 @@ extern "C"
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
-        CapturePluginInitHookBaseline(self);
+        Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);
         pluginSelf->hooks->World->RegisterOnAfterWorldEndPlay(&OnAfterWorldEndPlay);
         pluginSelf->hooks->World->RegisterOnWorldBeginPlay(&OnWorldBeginPlay);
         pluginSelf->hooks->World->RegisterOnExperienceLoadComplete(&OnExperienceLoadComplete);
@@ -813,8 +772,7 @@ extern "C"
         return true;
     }
 
-    __declspec(dllexport)
-        void PluginShutdown()
+    void Shutdown()
     {
         LOG_INFO(
             "MiniMap: shutting down");
@@ -889,7 +847,5 @@ extern "C"
 #endif
 
         MiniMapConfig::Shutdown();
-        ResetPluginInitHookBaseline();
-        g_self = nullptr;
     }
 }

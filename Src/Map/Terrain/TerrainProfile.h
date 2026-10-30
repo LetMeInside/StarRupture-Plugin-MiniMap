@@ -128,7 +128,7 @@ namespace MiniMapTerrainProfile
     // Formatting uses bounded stack storage, only at the reporting boundary.
     struct Text
     {
-        // Raw IPluginLogger::Log avoids the formatted logger's 1024-byte buffer.
+        // Raw ILog::Write preserves the complete preformatted profile line.
         // Stay below its downstream 4096-byte line buffer, including plugin prefix.
         char Buffer[3960]{};
         size_t Used = 0;
@@ -166,8 +166,7 @@ namespace MiniMapTerrainProfile
                 const size_t offset = sizeof(Buffer) - sizeof(suffix);
                 for (size_t i = 0; i < sizeof(suffix); ++i) Buffer[offset + i] = suffix[i];
             }
-            if (auto* self = GetSelf(); self && self->logger && self->logger->Log)
-                self->logger->Log(PluginLogLevel::Info, self, Buffer);
+            MiniMap::Services::LogMessage(MiniMap::Services::Level::Info, Buffer);
         }
     };
     inline void Report(Clock::time_point now) noexcept

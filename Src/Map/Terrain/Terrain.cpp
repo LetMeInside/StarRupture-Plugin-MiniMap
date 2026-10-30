@@ -1352,18 +1352,7 @@ namespace MiniMapTerrain
         if (!terrainSelfAvailable || !terrainHooksAvailable ||
             !terrainEngineAvailable || !terrainImGuiTexturesAvailable)
         {
-            const auto baseline=GetPluginInitHookBaseline();
-            LOG_ERROR(
-                "MiniMap: terrain initialization failed: required hooks are unavailable; "
-                "available self=%d hooks=%d engine=%d imguiTextures=%d; "
-                "matches PluginInit baseline captured=%d self=%d hooks=%d engine=%d imguiTextures=%d",
-                int(terrainSelfAvailable),int(terrainHooksAvailable),int(terrainEngineAvailable),
-                int(terrainImGuiTexturesAvailable),int(baseline.Captured),
-                int(baseline.Captured && self && baseline.Self && static_cast<const void*>(self)==baseline.Self),
-                int(baseline.Captured && terrainHooks && baseline.Hooks && static_cast<const void*>(terrainHooks)==baseline.Hooks),
-                int(baseline.Captured && terrainEngine && baseline.Engine && static_cast<const void*>(terrainEngine)==baseline.Engine),
-                int(baseline.Captured && terrainTextures && baseline.ImGuiTextures &&
-                    static_cast<const void*>(terrainTextures)==baseline.ImGuiTextures));
+            MiniMap::Adapters::AlienX::LogTerrainHookAvailability(self);
 
             return false;
         }

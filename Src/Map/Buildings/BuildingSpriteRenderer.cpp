@@ -748,8 +748,7 @@ namespace
             const auto object = index >= 0 && size_t(index) < Lights.size() ? Lights[size_t(index)].Object.Bits : 0;
             try
             {
-                if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
-                    self->logger->Warn(self,
+                LOG_WARN(
                         "MiniMap: shared lighting failure: rig=%s(%u) worldPhase=%u fence=%u light=%d object=0x%llX operation=%s predicate=%s detail=%s outcome=%s valuesAvailable=%u expected=0x%llX current=0x%llX address=0x%llX",
                         RigName(Rig), unsigned(Rig), unsigned(Phase), unsigned(LightFence.GetState()), index,
                         static_cast<unsigned long long>(object), operation, diagnostic.Predicate, diagnostic.Detail, diagnostic.Outcome,
@@ -764,8 +763,7 @@ namespace
             LightCleanupWaits |= bit;
             try
             {
-                if (auto* self = GetSelf(); self && self->logger && self->logger->Warn)
-                    self->logger->Warn(self,
+                LOG_WARN(
                         "MiniMap: shared lighting cleanup deferred: rig=%s(%u) worldPhase=%u fence=%u reason=%s; world/light ownership retained, CleanupWorld not invoked; no independent cleanup service",
                         RigName(Rig), unsigned(Rig), unsigned(Phase), unsigned(LightFence.GetState()), reason);
             }
@@ -1363,7 +1361,7 @@ namespace
         }
         template<class... Args> static void Diagnostic(const char* format, Args... args) noexcept
         {
-            try { if (auto* self = GetSelf(); self && self->logger && self->logger->Warn) self->logger->Warn(self, format, args...); }
+            try { LOG_WARN(format, args...); }
             catch (...) {} // Reporting cannot affect native request progression.
         }
         void Rejected(const char* reason) noexcept
@@ -1648,8 +1646,7 @@ namespace
                             // per successful publication, even if feedback delivery retries.
                             try
                             {
-                                if (auto* self = GetSelf(); self && self->logger && self->logger->Info)
-                                    self->logger->Info(self, "MiniMap: sprite capture completed: canonical=%s session=%llu payload=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR output=%zux%zu sourceOrigin=%zu,%zu sourceStep=%.9g targetPixelsPerMeter=%.9g",
+                                LOG_INFO("MiniMap: sprite capture completed: canonical=%s session=%llu payload=%s sceneSubmissions=%u sequence=HDR-C0,HDR-C10,FinalColorLDR output=%zux%zu sourceOrigin=%zu,%zu sourceStep=%.9g targetPixelsPerMeter=%.9g",
                                         BlueprintPath.c_str(), Session, CompletedSprite ? "owned" : "disk", SceneSubmissions, Processed.Width, Processed.Height,
                                         Processed.X0, Processed.Y0, Processed.SourceStep, 1 / MiniMapMap::MinimumMetersPerPixel);
                             }
