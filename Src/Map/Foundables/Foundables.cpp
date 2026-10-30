@@ -1,8 +1,8 @@
-#include "Adapters/AlienX/Viewport.h"
 #include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Foundables.h"
+#include "plugin.h"
 #include "DiagnosticExports.h"
 #include "UI/MiniMapUI.h"
 #include "Config/Config.h"
@@ -34,6 +34,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -63,17 +64,23 @@ namespace
         uint8_t Type = 0;
         double WorldX = 0.0;
         double WorldY = 0.0;
-        PluginTextureHandle Icon = nullptr;
+        MiniMap::Services::Texture Icon{};
     };
 
     struct FoundableTypeState
     {
-        PluginTextureHandle Icon = nullptr;
+        MiniMap::Services::Texture Icon{};
         bool Enabled = false;
     };
 
+    struct CachedFoundableIcon
+    {
+        MiniMap::Services::OwnedTexture Owner;
+        MiniMap::Services::Texture View{};
+        bool OwnershipUncertain = false;
+    };
+
     bool g_initialized = false;
-    bool g_pluginSelfAvailable = false;
     bool g_tickRegistered = false;
     bool g_experienceReady = false;
     float g_pollAccumulator = kPollIntervalSeconds;
@@ -110,8 +117,9 @@ namespace
     std::vector<ContainerDotRecord> g_massContainerDots;
     std::vector<ContainerDotRecord> g_storyDots;
     std::vector<ContainerDotRecord> g_containerDots;
-    // AlienX currently has no fence-aware texture retirement.
-    std::unordered_map<uint8_t, PluginTextureHandle> g_iconCache;
+    // The cache is the sole owner of each immutable acquisition. Records and
+    // render snapshots copy only the non-owning neutral identity.
+    std::unordered_map<uint8_t, CachedFoundableIcon> g_iconCache;
 
     SDK::UCrPlayerMapMenuDataComponent* GetLocalMapDataComponent()
     {
@@ -126,19 +134,21 @@ namespace
         return component;
     }
 
-    PluginTextureHandle LoadIconFromBulkData(
+    bool LoadIconFromBulkData(
         SDK::UTexture2D* texture,
-        const char* name)
+        const char* name,
+        MiniMap::Services::OwnedTexture& owner,
+        MiniMap::Services::Texture& view,
+        bool& ownershipUncertain)
     {
-        auto* self=GetSelf();
+        ownershipUncertain = false;
+        auto* textures = MiniMap::Services::TryTextures();
         if (texture == nullptr ||
             name == nullptr ||
-            !g_pluginSelfAvailable ||
-            self == nullptr ||
-            self->hooks == nullptr ||
-            self->hooks->ImGuiTextures == nullptr)
+            textures == nullptr ||
+            !textures->Available())
         {
-            return nullptr;
+            return false;
         }
 
         MiniMapNative::TextureAccess::PlatformData platformData = {};
@@ -146,7 +156,7 @@ namespace
             texture,
             platformData))
         {
-            return nullptr;
+            return false;
         }
 
         MiniMapNative::TextureAccess::MipData mipData = {};
@@ -155,7 +165,7 @@ namespace
             0,
             mipData))
         {
-            return nullptr;
+            return false;
         }
 
         void* bulkCopy = nullptr;
@@ -164,7 +174,7 @@ namespace
             &bulkCopy,
             false))
         {
-            return nullptr;
+            return false;
         }
 
         std::vector<uint8_t> rgba;
@@ -180,48 +190,65 @@ namespace
 
         if (!decoded)
         {
-            return nullptr;
+            return false;
         }
 
-        auto* textures = self->hooks->ImGuiTextures;
-
-        if (textures->GetFreeSlotCount() <= 0)
+        const auto freeSlots = textures->ObserveFreeSlots();
+        if (freeSlots.status.error != MiniMap::Services::Error::None ||
+            freeSlots.count == 0)
         {
-            return nullptr;
+            return false;
         }
 
-        PluginTextureHandle handle =
-            textures->LoadFromRGBA(
-                rgba.data(),
-                static_cast<int>(mipData.SizeX),
-                static_cast<int>(mipData.SizeY),
-                name);
+        const MiniMap::Services::TextureSize size{
+            static_cast<uint32_t>(mipData.SizeX),
+            static_cast<uint32_t>(mipData.SizeY)};
+        const MiniMap::Services::TextureRequest request{name, size};
+        const auto upload = textures->UploadRGBA(
+            std::span<const uint8_t>(rgba.data(), rgba.size()), size, request, owner);
 
-        if (handle == nullptr)
+        if (upload == MiniMap::Services::UploadState::OwnershipUncertain)
         {
-            return nullptr;
+            ownershipUncertain = true;
+            return false;
         }
 
+        if (upload == MiniMap::Services::UploadState::Complete)
+        {
+            view = owner.View();
+            const auto validatedSize = owner.Size();
+            if (owner.IsValidated() && view.id != 0 && validatedSize &&
+                validatedSize->width == size.width && validatedSize->height == size.height)
+            {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        LOG_INFO(
-            "MiniMap: cached foundable icon "
-            "name=%s size=%ux%u source=CPU-BC3",
-            name,
-            static_cast<unsigned int>(mipData.SizeX),
-            static_cast<unsigned int>(mipData.SizeY));
+                LOG_INFO(
+                    "MiniMap: cached foundable icon "
+                    "name=%s size=%ux%u source=CPU-BC3",
+                    name,
+                    static_cast<unsigned int>(mipData.SizeX),
+                    static_cast<unsigned int>(mipData.SizeY));
 #endif
+                return true;
+            }
 
-        return handle;
+            // Complete must include a validated token and matching dimensions.
+            // Retain the receipt and fail closed if that contract is violated.
+            ownershipUncertain = true;
+        }
+
+        return false;
     }
 
-    PluginTextureHandle ResolveFoundableIcon(
+    MiniMap::Services::Texture ResolveFoundableIcon(
         const SDK::UCrMapMenuCategoryData* category,
         uint8_t foundableType)
     {
         const auto existing = g_iconCache.find(foundableType);
         if (existing != g_iconCache.end())
         {
-            return existing->second;
+            return existing->second.OwnershipUncertain
+                ? MiniMap::Services::Texture{}
+                : existing->second.View;
         }
 
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
@@ -230,7 +257,7 @@ namespace
             native == nullptr ||
             native->texture.getBrushTexture == nullptr)
         {
-            return nullptr;
+            return {};
         }
 
         SDK::UTexture2D* texture =
@@ -238,7 +265,7 @@ namespace
 
         if (texture == nullptr)
         {
-            return nullptr;
+            return {};
         }
 
         char name[64] = {};
@@ -248,16 +275,73 @@ namespace
             "MiniMap_Foundable_%u",
             static_cast<unsigned int>(foundableType));
 
-        PluginTextureHandle handle =
-            LoadIconFromBulkData(texture, name);
-
-        if (handle == nullptr)
+        // Allocate the final cache node before any backend acquisition. The
+        // upload writes its move-only receipt directly into this owner slot.
+        auto entry = g_iconCache.end();
+        try
         {
-            return nullptr;
+            const auto prepared = g_iconCache.try_emplace(foundableType);
+            entry = prepared.first;
+            if (!prepared.second)
+            {
+                return entry->second.OwnershipUncertain
+                    ? MiniMap::Services::Texture{}
+                    : entry->second.View;
+            }
+        }
+        catch (...)
+        {
+            // Cache allocation failed before any acquisition; retry on the
+            // next ordinary foundable poll.
+            return {};
         }
 
-        g_iconCache.emplace(foundableType, handle);
-        return handle;
+        bool acquired = false;
+        bool ownershipUncertain = false;
+        try
+        {
+            acquired = LoadIconFromBulkData(
+                texture, name, entry->second.Owner, entry->second.View,
+                ownershipUncertain);
+        }
+        catch (...)
+        {
+            if (entry->second.Owner.HasRecord())
+            {
+                // Preserve acquisition debt and prevent publication
+                // or retry after an interrupted acquisition.
+                entry->second.OwnershipUncertain = true;
+                entry->second.View = {};
+
+                LOG_ERROR(
+                    "MiniMap: foundable icon acquisition interrupted "
+                    "for name=%s; receipt retained and retry disabled",
+                    name);
+            }
+            else
+            {
+                // No acquisition debt: ordinary polling may retry.
+                g_iconCache.erase(entry);
+            }
+
+            return {};
+        }
+
+        if (acquired)
+        {
+            return entry->second.View;
+        }
+
+        if (ownershipUncertain || entry->second.Owner.HasRecord())
+        {
+            entry->second.OwnershipUncertain = true;
+            entry->second.View = {};
+            LOG_ERROR("MiniMap: foundable icon ownership uncertain for name=%s; acquisition retained and retry disabled for this type", name);
+            return {};
+        }
+
+        g_iconCache.erase(entry);
+        return {};
     }
 
     void DestroyQuery()
@@ -587,10 +671,10 @@ namespace
             return false;
         }
 
-        PluginTextureHandle icon =
+        const MiniMap::Services::Texture icon =
             ResolveFoundableIcon(category, foundableType);
 
-        if (icon == nullptr)
+        if (icon.id == 0)
         {
             return false;
         }
@@ -1034,7 +1118,7 @@ namespace
             else if (foundableType == kDroneType) typeState = &drone;
             else continue;
 
-            if (!typeState->Enabled || typeState->Icon == nullptr ||
+            if (!typeState->Enabled || typeState->Icon.id == 0 ||
                 !InventoryHasItems(inventoryFragment))
             {
                 continue;
@@ -1161,7 +1245,6 @@ namespace MiniMapFoundables
             return false;
         }
 
-        g_pluginSelfAvailable = true;
         Reset();
 
         const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
@@ -1260,7 +1343,7 @@ namespace MiniMapFoundables
         // Submit the existing icon snapshot first; container dots follow below.
         for (const FoundableRecord& record : records)
         {
-            if (record.Icon == nullptr)
+            if (record.Icon.id == 0)
             {
                 continue;
             }
@@ -1289,8 +1372,7 @@ namespace MiniMapFoundables
                 continue;
             }
 
-            const MiniMap::Adapters::AlienX::BorrowedTexture borrowedImage(ui, record.Icon);
-            ui.Image(drawList, borrowedImage.Value(),
+            ui.Image(drawList, record.Icon,
                 {point.X - halfIcon, point.Y - halfIcon}, {point.X + halfIcon, point.Y + halfIcon},
                 {0.0f, 0.0f}, {1.0f, 1.0f}, 0xFFFFFFFFu);
         }
@@ -1355,7 +1437,6 @@ namespace MiniMapFoundables
 
         Reset();
 
-        g_pluginSelfAvailable = false;
         g_initialized = false;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

@@ -3,8 +3,9 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "plugin.h"
 #include "Map/MapTransform.h"
+
+struct IPluginSelf;
 
 namespace MiniMapConfig
 {
