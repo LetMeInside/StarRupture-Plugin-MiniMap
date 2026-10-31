@@ -149,6 +149,8 @@
     <ClInclude Include="Map\Foundables\Foundables.h" />
     <ClInclude Include="Map\AlienActors\AlienActors.h" />
     <ClInclude Include="Map\Buildings\BuildingCollector.h" />
+    <ClInclude Include="Map\Buildings\ExternalMapBuildingSession.h" />
+    <ClInclude Include="Map\Buildings\ExternalMapBuildingSessionAbi.h" />
     <ClInclude Include="Map\Buildings\BuildingScheduler.h" />
     <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
     <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
@@ -217,6 +219,8 @@
     <ClCompile Include="Map\Foundables\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
+    <ClCompile Include="Map\Buildings\ExternalMapBuildingSession.cpp" />
+    <ClCompile Include="Map\Buildings\ExternalMapBuildingSessionAbi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
     <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />

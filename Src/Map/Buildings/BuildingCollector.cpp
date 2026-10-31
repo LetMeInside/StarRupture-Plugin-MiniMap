@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
+#include "ExternalMapBuildingSession.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
@@ -83,6 +84,8 @@ namespace MiniMapBuildingCollector
     bool renderDroneRails=true;
     bool regionOverride=false;
     Bounds region;
+    enum class DiscoveryInput : uint8_t { MiniMapPresentation, ExplicitRegion };
+    DiscoveryInput discoveryInput=DiscoveryInput::MiniMapPresentation;
     uint64_t atlasSession=0,atlasRevision=0;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct PhaseAggregate
@@ -183,7 +186,7 @@ namespace MiniMapBuildingCollector
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
-        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;atlasSession=atlasRevision=0;
+        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;atlasSession=atlasRevision=0;
         pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
@@ -756,19 +759,34 @@ namespace MiniMapBuildingCollector
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             const auto gridBegin=Clock::now();
 #endif
-            MiniMapMap::PresentationSample sample{};double radius;
-            {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
-            const bool hasPose=radius>0 && MiniMapMap::TryGetPresentationSample(sample);
-            const auto& pose=sample.Tracking;
-            if(hasPose)
+            double radius=0,centerX=0,centerY=0,centerZ=0;
+            bool hasLocalCenter=false;
+            if(discoveryInput==DiscoveryInput::ExplicitRegion)
             {
-                const Bounds requested{pose.WorldX-radius,pose.WorldY-radius,pose.WorldX+radius,pose.WorldY+radius,true};
-                if(!regionOverride && (!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY))
+                if(region.Valid)
                 {
-                    region=G::Inflate(requested,radius*0.5);dirty=true;
+                    centerX=region.MinX*0.5+region.MaxX*0.5;
+                    centerY=region.MinY*0.5+region.MaxY*0.5;
+                    radius=std::hypot(region.MaxX-region.MinX,region.MaxY-region.MinY)*0.5;
+                    hasLocalCenter=radius>0 && std::isfinite(radius) && std::isfinite(centerX) && std::isfinite(centerY);
+                }
+            }
+            else
+            {
+                MiniMapMap::PresentationSample sample{};
+                {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
+                hasLocalCenter=radius>0 && MiniMapMap::TryGetPresentationSample(sample);
+                if(hasLocalCenter)
+                {
+                    centerX=sample.Tracking.WorldX;centerY=sample.Tracking.WorldY;centerZ=sample.Tracking.WorldZ;
+                    const Bounds requested{centerX-radius,centerY-radius,centerX+radius,centerY+radius,true};
+                    if(!regionOverride && (!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY))
+                    {
+                        region=G::Inflate(requested,radius*0.5);dirty=true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    ++measurements.DirtyRegion;
+                        ++measurements.DirtyRegion;
 #endif
+                    }
                 }
             }
             if(pending.empty())
@@ -785,14 +803,14 @@ namespace MiniMapBuildingCollector
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 bool gridEnumerated=false;
 #endif
-                if(hasPose && n->gridDiagnostic.forEachCellInRadius)
+                if(hasLocalCenter && n->gridDiagnostic.forEachCellInRadius)
                     if(auto* grid=n->gridDiagnostic.getSubsystem(world))
                     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         gridEnumerated=true;
 #endif
                         const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&State::Near,&gridVisit};
-                        const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
+                        const SDK::FVector center{centerX,centerY,centerZ};
                         n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
                     }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -898,6 +916,13 @@ namespace MiniMapBuildingCollector
         state_->ready=state_->InitializeMetadata();
         if(!state_->ready)LOG_ERROR("MiniMap: building acquisition initialization metadata unavailable");
     }
+    bool BuildingCollector::BeginExplicitSession()
+    {
+        const auto* n=MiniMapNative::Get();
+        if(!MiniMapMap::GameplayReady() || !MiniMapMap::GetWorld() || !n || !n->player.isGameThread())return false;
+        state_->ready=state_->InitializeMetadata();
+        return state_->ready;
+    }
     void BuildingCollector::SetViewport(const MiniMapMap::Transform& t)
     {
         const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
@@ -905,6 +930,7 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::SetRegion(const Bounds& region)
     {
+        state_->discoveryInput=State::DiscoveryInput::ExplicitRegion;
         const auto& current=state_->region;
         if(current.MinX!=region.MinX || current.MinY!=region.MinY || current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid)
         {state_->region=region;state_->regionOverride=true;state_->dirty=true;}
@@ -912,6 +938,24 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::SetRenderDroneRails(bool enabled){state_->renderDroneRails=enabled;}
     std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}
+    CollectorDiagnostics BuildingCollector::GetDiagnostics() const
+    {
+        CollectorDiagnostics result{};
+        result.Ready=state_->ready;
+        result.MembershipComplete=state_->membershipComplete;
+        result.AuthoritativeBuildingCount=state_->entities.size();
+        result.PendingAcquisitionCount=state_->pending.size();
+        result.CompletedBuildingCount=result.AuthoritativeBuildingCount>=result.PendingAcquisitionCount ?
+            result.AuthoritativeBuildingCount-result.PendingAcquisitionCount : 0;
+        std::scoped_lock lock(state_->publicationMutex);
+        if(state_->snapshot)
+        {
+            result.PublicationGeneration=state_->snapshot->Generation;
+            result.PublishedInRegionCount=state_->snapshot->Records.size();
+            result.MembershipComplete=state_->snapshot->Complete;
+        }
+        return result;
+    }
     void BuildingCollector::OnTick(float delta){state_->OnTick(delta);}
     void BuildingCollector::ShutdownResources()
     {
@@ -962,6 +1006,7 @@ namespace MiniMapBuildingCollector
     void Shutdown()
     {
         if(!g_initialized)return;
+        ShutdownExternalMapBuildingSessionAbi();
         if (auto* events = MiniMap::Services::TryRuntimeEvents())
         {
             const auto removal = events->Remove(g_tickRegistration);

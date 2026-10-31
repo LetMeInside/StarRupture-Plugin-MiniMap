@@ -72,6 +72,16 @@ namespace MiniMapBuildingCollector
         bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
         std::vector<Record> Records;
     };
+    struct CollectorDiagnostics
+    {
+        uint64_t PublicationGeneration = 0;
+        uint64_t AuthoritativeBuildingCount = 0;
+        uint64_t CompletedBuildingCount = 0;
+        uint64_t PublishedInRegionCount = 0;
+        uint64_t PendingAcquisitionCount = 0;
+        bool Ready = false;
+        bool MembershipComplete = false;
+    };
 
     // Reusable, caller-scheduled collector. Each object owns its collection,
     // world session, region and publication state. MiniMap's current events
@@ -89,10 +99,12 @@ namespace MiniMapBuildingCollector
         bool InitializeResources();
         void Reset();
         void OnExperienceLoadComplete();
+        bool BeginExplicitSession();
         void SetViewport(const MiniMapMap::Transform& transform);
         void SetRegion(const Bounds& region);
         void SetRenderDroneRails(bool enabled);
         std::shared_ptr<const Snapshot> GetSnapshot();
+        CollectorDiagnostics GetDiagnostics() const;
         void OnTick(float delta);
         void ShutdownResources();
         void ShutdownMetadataResources();
