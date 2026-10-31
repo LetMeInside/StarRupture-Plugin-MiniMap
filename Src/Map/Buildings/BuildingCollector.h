@@ -72,7 +72,40 @@ namespace MiniMapBuildingCollector
         bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
         std::vector<Record> Records;
     };
+
+    // Reusable, caller-scheduled collector. Each object owns its collection,
+    // world session, region and publication state. MiniMap's current events
+    // continue to use the namespace facade below.
+    class BuildingCollector
+    {
+    public:
+        BuildingCollector();
+        ~BuildingCollector();
+        BuildingCollector(const BuildingCollector&) = delete;
+        BuildingCollector& operator=(const BuildingCollector&) = delete;
+        BuildingCollector(BuildingCollector&&) noexcept;
+        BuildingCollector& operator=(BuildingCollector&&) noexcept;
+
+        bool InitializeResources();
+        void Reset();
+        void OnExperienceLoadComplete();
+        void SetViewport(const MiniMapMap::Transform& transform);
+        void SetRegion(const Bounds& region);
+        void SetRenderDroneRails(bool enabled);
+        std::shared_ptr<const Snapshot> GetSnapshot();
+        void OnTick(float delta);
+        void ShutdownResources();
+        void ShutdownMetadataResources();
+
+    private:
+        struct State;
+        std::unique_ptr<State> state_;
+    };
+
+    // Existing MiniMap compatibility facade; it forwards to one persistent
+    // MiniMap-owned BuildingCollector instance.
     bool Initialize(IPluginSelf* self);
+    void OnTick(float delta);
     void Reset();
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);

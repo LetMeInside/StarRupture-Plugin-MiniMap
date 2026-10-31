@@ -31,7 +31,10 @@
 namespace
 {
     MiniMap::Services::Registration g_tickRegistration{};
-    using namespace MiniMapBuildingCollector;
+    bool g_initialized=false;
+}
+namespace MiniMapBuildingCollector
+{
     using Native=MiniMapNative::NativeApi;
     using Id=MiniMapNative::MassEntityHandle;
     using Clock=std::chrono::steady_clock;
@@ -40,6 +43,8 @@ namespace
 #endif
     namespace P=MiniMapBuildingSplineProfiles;
     namespace G=MiniMapBuildingGeometry;
+    struct BuildingCollector::State
+    {
     struct Types
     {
         SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
@@ -66,7 +71,7 @@ namespace
     std::unordered_map<const SDK::UAuActorPlacementData*,std::shared_ptr<Definition>> definitions;
     std::vector<SDK::UObject*> metadata;
     alignas(16) std::array<std::byte,0x350> query{};
-    bool queryConstructed=false,initialized=false,ready=false,dirty=false,remoteTurn=false,membershipComplete=false;
+    bool queryConstructed=false,ready=false,dirty=false,remoteTurn=false,membershipComplete=false;
     const void* manager=nullptr;
     SDK::UWorld* world=nullptr;
     uint64_t generation=0;
@@ -75,6 +80,8 @@ namespace
     std::mutex publicationMutex;
     std::shared_ptr<const Snapshot> snapshot;
     double viewRadius=0;
+    bool renderDroneRails=true;
+    bool regionOverride=false;
     Bounds region;
     uint64_t atlasSession=0,atlasRevision=0;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -176,7 +183,7 @@ namespace
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
-        queryConstructed=false;manager=nullptr;world=nullptr;region={};atlasSession=atlasRevision=0;
+        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;atlasSession=atlasRevision=0;
         pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
@@ -198,32 +205,34 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct ReconcileTiming
     {
+        State& Owner;
         Clock::time_point Started=Clock::now();
         double NativeMs=0,BookkeepingMs=0,SweepMs=0,ReleaseMs=0;
         uint64_t Handles=0,Added=0,Removed=0,Duplicates=0,Invalid=0,Generation=0;
         bool Complete=false,Malformed=false;
+        explicit ReconcileTiming(State& owner):Owner(owner){}
         ~ReconcileTiming() noexcept
         {
             const double total=std::chrono::duration<double,std::milli>(Clock::now()-Started).count();
-            ++membershipScanSerial;
-            measurements.Membership.Add(total);measurements.MembershipNative.Add(NativeMs);
-            measurements.MembershipBookkeeping.Add(BookkeepingMs);measurements.MembershipSweep.Add(SweepMs);measurements.MembershipRelease.Add(ReleaseMs);
-            measurements.NativeHandles+=Handles;measurements.MembershipAdded+=Added;measurements.MembershipRemoved+=Removed;
-            measurements.MembershipDuplicates+=Duplicates;measurements.MembershipInvalid+=Invalid;
-            measurements.AuthoritativeN=entities.size();measurements.PendingCount=pending.size();
-            if(!Complete)++measurements.FailedScans;
-            if(Malformed)++measurements.MalformedScans;
-            if(total>=measurements.WorstScanMs)
+            ++Owner.membershipScanSerial;
+            Owner.measurements.Membership.Add(total);Owner.measurements.MembershipNative.Add(NativeMs);
+            Owner.measurements.MembershipBookkeeping.Add(BookkeepingMs);Owner.measurements.MembershipSweep.Add(SweepMs);Owner.measurements.MembershipRelease.Add(ReleaseMs);
+            Owner.measurements.NativeHandles+=Handles;Owner.measurements.MembershipAdded+=Added;Owner.measurements.MembershipRemoved+=Removed;
+            Owner.measurements.MembershipDuplicates+=Duplicates;Owner.measurements.MembershipInvalid+=Invalid;
+            Owner.measurements.AuthoritativeN=Owner.entities.size();Owner.measurements.PendingCount=Owner.pending.size();
+            if(!Complete)++Owner.measurements.FailedScans;
+            if(Malformed)++Owner.measurements.MalformedScans;
+            if(total>=Owner.measurements.WorstScanMs)
             {
-                measurements.WorstScanMs=total;measurements.WorstScanNativeMs=NativeMs;
-                measurements.WorstScanBookkeepingMs=BookkeepingMs;measurements.WorstScanSweepMs=SweepMs;
-                measurements.WorstScanReleaseMs=ReleaseMs;measurements.WorstScanHandles=Handles;
-                measurements.WorstScanN=entities.size();measurements.WorstScanPending=pending.size();
-                measurements.WorstScanAdded=Added;measurements.WorstScanRemoved=Removed;measurements.WorstScanGeneration=Generation;
-                measurements.WorstScanBeginMonoMs=std::chrono::duration<double,std::milli>(Started.time_since_epoch()).count();
-                measurements.WorstScanSerial=membershipScanSerial;
+                Owner.measurements.WorstScanMs=total;Owner.measurements.WorstScanNativeMs=NativeMs;
+                Owner.measurements.WorstScanBookkeepingMs=BookkeepingMs;Owner.measurements.WorstScanSweepMs=SweepMs;
+                Owner.measurements.WorstScanReleaseMs=ReleaseMs;Owner.measurements.WorstScanHandles=Handles;
+                Owner.measurements.WorstScanN=Owner.entities.size();Owner.measurements.WorstScanPending=Owner.pending.size();
+                Owner.measurements.WorstScanAdded=Added;Owner.measurements.WorstScanRemoved=Removed;Owner.measurements.WorstScanGeneration=Generation;
+                Owner.measurements.WorstScanBeginMonoMs=std::chrono::duration<double,std::milli>(Started.time_since_epoch()).count();
+                Owner.measurements.WorstScanSerial=Owner.membershipScanSerial;
             }
-            lastMembershipScanSerial=membershipScanSerial;
+            Owner.lastMembershipScanSerial=Owner.membershipScanSerial;
         }
     };
 #endif
@@ -263,7 +272,7 @@ namespace
     )
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        ReconcileTiming timing;timing.Generation=generation;
+        ReconcileTiming timing{*this};timing.Generation=generation;
 #endif
         const auto scanEpoch=NextMembershipScanEpoch();
         MiniMapNative::MassEntityHandleArray handles{};
@@ -465,7 +474,7 @@ namespace
         auto recipe=std::make_shared<DefinitionGeometry>();recipe->Profiles=std::move(profiles);d.Recipe=std::move(recipe);d.Prepared=true;return true;
     }
     // This function never loads assets, yields, or retains a fragment/payload.
-    bool CopyInitial(const Native& n,Entry& entry,const MiniMapConfig::BuildingRenderSettings& settings)
+    bool CopyInitial(const Native& n,Entry& entry,bool includeDroneRails)
     {
         auto& r=entry.Data;
         if(r.DefinitionValid && r.TransformValid && (!r.HasSpline || r.Curve))return true;
@@ -476,7 +485,7 @@ namespace
             if(!placement)return false;
             // Exact validated definition admission precedes rooting, transform
             // and spline/payload copying. Leave the identity pending on exclusion.
-            if(!settings.RenderDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID)))return false;
+            if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID)))return false;
             auto it=definitions.find(placement);
             if(it==definitions.end())
             {
@@ -575,12 +584,12 @@ namespace
         ++measurements.DirtyAtlas;
 #endif
     }
-    bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,const MiniMapConfig::BuildingRenderSettings& settings)
+    bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,bool includeDroneRails)
     {
         auto it=entities.find(key);if(it==entities.end() || it->second.Complete)return false;
         auto& e=it->second;
-        if(!settings.RenderDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId))return false;
-        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e,settings))return false;
+        if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId))return false;
+        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e,includeDroneRails))return false;
         // CopyInitial has returned: no Mass borrow spans definition loading.
         // Loading may dispatch engine callbacks: keep the definition strongly
         // owned, and re-find the entity after returning instead of holding a
@@ -613,18 +622,18 @@ namespace
 #endif
         return true;
     }
-    void Publish(const MiniMapConfig::BuildingRenderSettings& settings)
+    void Publish(bool includeDroneRails)
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.PublicationAttempts;
 #endif
         if(!dirty)return;
         auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
-        value->IncludedDroneRails=settings.RenderDroneRails;
+        value->IncludedDroneRails=includeDroneRails;
         for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly &&
-            (settings.RenderDroneRails || !MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId)) &&
+            (includeDroneRails || !MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId)) &&
             (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
-        std::sort(value->Records.begin(),value->Records.end(),[](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
+        std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
         {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.Publications;
@@ -669,26 +678,28 @@ namespace
     }
     struct MeasurementReporter
     {
+        State& Owner;
         Clock::time_point Started;uint64_t ScanSerial;
-        explicit MeasurementReporter(Clock::time_point started):Started(started),ScanSerial(membershipScanSerial){}
-        ~MeasurementReporter(){MaybeReportMeasurements(Started,ScanSerial);}
+        MeasurementReporter(State& owner,Clock::time_point started):Owner(owner),Started(started),ScanSerial(owner.membershipScanSerial){}
+        ~MeasurementReporter(){Owner.MaybeReportMeasurements(Started,ScanSerial);}
     };
 #endif
     struct GridVisitContext
     {
+        State* Owner=nullptr;
         std::unordered_set<uint64_t>* Keys=nullptr;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         uint64_t Visitors=0;
 #endif
     };
-    bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
+    static bool Near(void* context,const MiniMapNative::GridEntityHandle& handle)
     {
         auto& visit=*static_cast<GridVisitContext*>(context);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++visit.Visitors;
 #endif
-        const auto key=Key(handle.Entity);
-        if(pending.contains(key))visit.Keys->insert(key);
+        const auto key=visit.Owner->Key(handle.Entity);
+        if(visit.Owner->pending.contains(key))visit.Keys->insert(key);
         return true;
     }
     void OnTick(float)
@@ -696,20 +707,18 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto callbackBegin=Clock::now();
 #endif
-        if(!MiniMapUI::IsVisible())return;
-        if(!ready || !MiniMapMap::GameplayReady())return;
-        const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
-        if(!settings.ShowLayer)return;
+        if(!ready)return;
+        const bool includeDroneRails=renderDroneRails;
         // Provenance belongs to immutable output, not to mutable preferences.
         // A policy change must republish even when membership is unchanged.
         {
             std::scoped_lock lock(publicationMutex);
-            if(snapshot && snapshot->Generation==generation && snapshot->IncludedDroneRails!=settings.RenderDroneRails)dirty=true;
+            if(snapshot && snapshot->Generation==generation && snapshot->IncludedDroneRails!=includeDroneRails)dirty=true;
         }
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}
-        MeasurementReporter reportAtExit(callbackBegin);
+        MeasurementReporter reportAtExit(*this,callbackBegin);
 #endif
         try
         {
@@ -754,7 +763,7 @@ namespace
             if(hasPose)
             {
                 const Bounds requested{pose.WorldX-radius,pose.WorldY-radius,pose.WorldX+radius,pose.WorldY+radius,true};
-                if(!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY)
+                if(!regionOverride && (!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY))
                 {
                     region=G::Inflate(requested,radius*0.5);dirty=true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -772,7 +781,7 @@ namespace
             else
             {
                 std::unordered_set<uint64_t> localCandidates;
-                GridVisitContext gridVisit{&localCandidates};
+                GridVisitContext gridVisit{this,&localCandidates};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 bool gridEnumerated=false;
 #endif
@@ -782,7 +791,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         gridEnumerated=true;
 #endif
-                        const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&Near,&gridVisit};
+                        const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&State::Near,&gridVisit};
                         const SDK::FVector center{pose.WorldX,pose.WorldY,pose.WorldZ};
                         n->gridDiagnostic.forEachCellInRadius(grid,center,std::nextafter(float(radius),INFINITY),visitor,false);
                     }
@@ -803,7 +812,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++measurements.LocalAttempts;
 #endif
-                        if(Acquire(*n,key,attemptedDefinitions,settings))
+                        if(Acquire(*n,key,attemptedDefinitions,includeDroneRails))
                         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             ++measurements.NewlyCompleted;
@@ -823,7 +832,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++measurements.RemotePassesSkipped;const auto begin=Clock::now();
 #endif
-                    Publish(settings);
+                    Publish(includeDroneRails);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
 #endif
@@ -851,7 +860,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++measurements.RemoteAttempts;
 #endif
-                        if(Acquire(*n,key,attemptedDefinitions,settings))
+                        if(Acquire(*n,key,attemptedDefinitions,includeDroneRails))
                         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             ++measurements.NewlyCompleted;
@@ -868,7 +877,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 const auto begin=Clock::now();
 #endif
-                Publish(settings);
+                Publish(includeDroneRails);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
 #endif
@@ -876,56 +885,93 @@ namespace
         }
         catch(const std::bad_alloc&){/* Keep membership/owned records; retry pending work. */}
     }
-}
-namespace MiniMapBuildingCollector
-{
+    };
+
+    BuildingCollector::BuildingCollector():state_(std::make_unique<State>()){}
+    BuildingCollector::~BuildingCollector()=default;
+    BuildingCollector::BuildingCollector(BuildingCollector&&) noexcept=default;
+    BuildingCollector& BuildingCollector::operator=(BuildingCollector&&) noexcept=default;
+    bool BuildingCollector::InitializeResources(){return state_->InitializeMetadata();}
+    void BuildingCollector::Reset(){state_->ready=false;state_->ClearSession();std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=0;}
+    void BuildingCollector::OnExperienceLoadComplete()
+    {
+        state_->ready=state_->InitializeMetadata();
+        if(!state_->ready)LOG_ERROR("MiniMap: building acquisition initialization metadata unavailable");
+    }
+    void BuildingCollector::SetViewport(const MiniMapMap::Transform& t)
+    {
+        const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
+        std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=std::isfinite(radius)?radius:0;
+    }
+    void BuildingCollector::SetRegion(const Bounds& region)
+    {
+        const auto& current=state_->region;
+        if(current.MinX!=region.MinX || current.MinY!=region.MinY || current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid)
+        {state_->region=region;state_->regionOverride=true;state_->dirty=true;}
+        else state_->regionOverride=true;
+    }
+    void BuildingCollector::SetRenderDroneRails(bool enabled){state_->renderDroneRails=enabled;}
+    std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}
+    void BuildingCollector::OnTick(float delta){state_->OnTick(delta);}
+    void BuildingCollector::ShutdownResources()
+    {
+        Reset();
+        ShutdownMetadataResources();
+    }
+    void BuildingCollector::ShutdownMetadataResources()
+    {
+        if(const auto* n=MiniMapNative::Get())for(auto* root:state_->metadata)n->asset.releaseObject(root);
+        state_->metadata.clear();state_->types={};
+    }
+
+    namespace
+    {
+        BuildingCollector& MiniMapInstance(){static BuildingCollector instance;return instance;}
+    }
+
     bool Initialize(IPluginSelf* self)
     {
-        if(initialized)return true;
+        if(g_initialized)return true;
         if(!self || !self->hooks || !MiniMap::Services::TryRuntimeEvents())return false;
-        Reset();InitializeMetadata();
+        auto& collector=MiniMapInstance();collector.Reset();collector.InitializeResources();
         const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
-            [](void*, float delta) { OnTick(delta); }, nullptr);
+            [](void*, float delta) { MiniMapBuildingCollector::OnTick(delta); }, nullptr);
         if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
         if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
             tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
         {
-            // Metadata was prepared before submission. Use this owner's existing
-            // teardown to release it when the new receipt cannot be accepted.
-            initialized = true;
+            // Preserve the existing registration rejection teardown order.
+            g_initialized = true;
             Shutdown();
             return false;
         }
-        initialized=true;return true;
+        g_initialized=true;return true;
     }
-    void Reset(){ready=false;ClearSession();std::scoped_lock lock(publicationMutex);viewRadius=0;}
-    void OnExperienceLoadComplete()
+    void Reset(){MiniMapInstance().Reset();}
+    void OnExperienceLoadComplete(){if(g_initialized)MiniMapInstance().OnExperienceLoadComplete();}
+    void SetViewport(const MiniMapMap::Transform& t){MiniMapInstance().SetViewport(t);}
+    std::shared_ptr<const Snapshot> GetSnapshot(){return MiniMapInstance().GetSnapshot();}
+    void OnTick(float delta)
     {
-        if(initialized)
-        {
-            ready=InitializeMetadata();
-            if(!ready)LOG_ERROR("MiniMap: building acquisition initialization metadata unavailable");
-        }
+        if(!MiniMapUI::IsVisible())return;
+        if(!MiniMapMap::GameplayReady())return;
+        const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
+        if(!settings.ShowLayer)return;
+        auto& collector=MiniMapInstance();collector.SetRenderDroneRails(settings.RenderDroneRails);collector.OnTick(delta);
     }
-    void SetViewport(const MiniMapMap::Transform& t)
-    {
-        const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
-        std::scoped_lock lock(publicationMutex);viewRadius=std::isfinite(radius)?radius:0;
-    }
-    std::shared_ptr<const Snapshot> GetSnapshot(){std::scoped_lock lock(publicationMutex);return snapshot;}
     void Shutdown()
     {
-        if(!initialized)return;
+        if(!g_initialized)return;
         if (auto* events = MiniMap::Services::TryRuntimeEvents())
         {
             const auto removal = events->Remove(g_tickRegistration);
             if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
                 removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
         }
-        Reset();
+        MiniMapInstance().Reset();
         MiniMapBuildingBlueprintIdentity::Shutdown();
-        if(const auto* n=MiniMapNative::Get())for(auto* root:metadata)n->asset.releaseObject(root);
-        metadata.clear();types={};initialized=false;
+        MiniMapInstance().ShutdownMetadataResources();
+        g_initialized=false;
     }
 }
 #endif
