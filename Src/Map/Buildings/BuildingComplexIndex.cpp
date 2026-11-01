@@ -120,12 +120,155 @@ namespace MiniMapBuildingComplexIndex
         return true;
     }
 
+    void Index::AdvanceSafetyLocked() const noexcept
+    {
+        // Never wrap a certificate generation. Exhaustion permanently disables
+        // this foundation; the legacy conservative paths remain operational.
+        if (safetyGeneration_ == (std::numeric_limits<uint64_t>::max)())
+            localValidityAvailable_ = false;
+        else ++safetyGeneration_;
+        localEpochs_.clear();
+        localEpochSequence_ = 0;
+    }
+
+    CellValidity Index::SnapshotValidityLocked(CellKey key) const noexcept
+    {
+        if (!localValidityAvailable_ || !worldGeneration_ || !origin_.Valid) return {};
+        try
+        {
+            auto found = localEpochs_.find(key);
+            if (found == localEpochs_.end())
+            {
+                if (localEpochSequence_ == (std::numeric_limits<uint64_t>::max)())
+                    AdvanceSafetyLocked();
+                if (!localValidityAvailable_) return {};
+                found = localEpochs_.emplace(key, ++localEpochSequence_).first;
+            }
+            return {safetyGeneration_, found->second};
+        }
+        catch (...)
+        {
+            // A bookkeeping failure revokes old local certificates, but must
+            // not change legacy snapshot success/completeness or source state.
+            AdvanceSafetyLocked();
+            return {};
+        }
+    }
+
+    void Index::PrepareLocalChangeLocked(ChangeSet& changes, const std::set<CellKey>& oldCells,
+        const std::set<CellKey>& newCells, const std::vector<SectionKey>& affectedSections,
+        const std::map<SectionKey, std::set<CellKey>>* newSections) const noexcept
+    {
+        try
+        {
+            changes.OldGraphicalCells.assign(oldCells.begin(), oldCells.end());
+            changes.NewGraphicalCells.assign(newCells.begin(), newCells.end());
+            std::set<CellKey> dependencies;
+            for (const auto& section : affectedSections)
+            {
+                // Spatial query coverage includes newly entering candidates;
+                // reverse edges alone cover only previously observed ones.
+                const auto existing = sectionCells_.find(section);
+                if (existing != sectionCells_.end())
+                    dependencies.insert(existing->second.begin(), existing->second.end());
+                if (newSections)
+                {
+                    const auto next = newSections->find(section);
+                    if (next != newSections->end())
+                        dependencies.insert(next->second.begin(), next->second.end());
+                }
+                // Current payload readiness is aggregate across the spline,
+                // so invalidating one section can alter every owner cell.
+                const auto owner = records_.find(section.Building);
+                if (owner != records_.end())
+                    dependencies.insert(owner->second.Cells.begin(), owner->second.Cells.end());
+            }
+            changes.DependencyOutputCells.assign(dependencies.begin(), dependencies.end());
+            dependencies.insert(oldCells.begin(), oldCells.end());
+            dependencies.insert(newCells.begin(), newCells.end());
+            changes.LocalInvalidatedCells.assign(dependencies.begin(), dependencies.end());
+        }
+        catch (...)
+        {
+            changes.OldGraphicalCells.clear(); changes.NewGraphicalCells.clear();
+            changes.DependencyOutputCells.clear(); changes.LocalInvalidatedCells.clear();
+            changes.LocalSafetyInvalidated = true;
+        }
+    }
+
+    void Index::ApplyLocalChangeLocked(ChangeSet& changes) noexcept
+    {
+        if (changes.LocalSafetyInvalidated || changes.GlobalCompletenessInvalidated ||
+            changes.GlobalSplineOcclusionInvalidated)
+        {
+            changes.LocalSafetyInvalidated = true;
+            AdvanceSafetyLocked();
+        }
+        else if (localValidityAvailable_)
+        {
+            for (const auto key : changes.LocalInvalidatedCells)
+            {
+                auto found = localEpochs_.find(key);
+                // No token has ever escaped for an untracked cell in this
+                // generation; its first future snapshot receives a fresh epoch.
+                if (found == localEpochs_.end()) continue;
+                if (localEpochSequence_ == (std::numeric_limits<uint64_t>::max)())
+                {
+                    changes.LocalSafetyInvalidated = true;
+                    AdvanceSafetyLocked();
+                    break;
+                }
+                found->second = ++localEpochSequence_;
+            }
+        }
+        changes.SafetyGeneration = localValidityAvailable_ ? safetyGeneration_ : 0;
+    }
+
+    void Index::InvalidateSafety() noexcept
+    {
+        std::lock_guard lock(mutex_);
+        AdvanceSafetyLocked();
+    }
+
+    void Index::ObserveRenderingPolicy(bool renderDroneRails) noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (renderingPolicyKnown_ && renderDroneRails_ != renderDroneRails)
+            AdvanceSafetyLocked();
+        renderDroneRails_ = renderDroneRails;
+        renderingPolicyKnown_ = true;
+    }
+
+    void Index::NotifyCaptureChange(MassKey key, uint64_t generation, ChangeSet& changes) noexcept
+    {
+        changes = {};
+        std::lock_guard lock(mutex_);
+        if (generation != worldGeneration_) return;
+        const auto record = records_.find(key);
+        // Removal has already invalidated the old support under this mutex.
+        // A capture for a nonmember cannot be acquired through the world owner.
+        if (record == records_.end()) return;
+        changes.WorldGeneration = generation;
+        changes.SourceRevision = sourceRevision_;
+        changes.DependencyRevision = dependencyRevision_;
+        changes.LocalSafetyInvalidated = Unbounded(*record->second.Record) ||
+            (PotentialOrdinaryOccluder(*record->second.Record->Source) &&
+             !VerifiedOccluderGeometry(*record->second.Record->Source) &&
+             !record->second.Record->Source->VisualSupport.Valid);
+        // Pixel availability changes do not change physical occluder geometry.
+        // Changed capture bounds/quad metadata subsequently use Upsert, which
+        // covers old/new support and dependent spline output before publication.
+        PrepareLocalChangeLocked(changes, record->second.Cells, record->second.Cells, {});
+        ApplyLocalChangeLocked(changes);
+    }
+
     bool Index::BeginWorld(uint64_t generation, WorldOrigin origin) noexcept
     {
         if (!generation || !origin.Valid || !std::isfinite(origin.X) || !std::isfinite(origin.Y)) return false;
         try
         {
             std::lock_guard lock(mutex_);
+            AdvanceSafetyLocked();
             records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear(); sectionDependencyRevisions_.clear();
             unboundedUnresolvedCount_ = 0;
             unresolvedOccluderCount_ = 0;
@@ -140,6 +283,7 @@ namespace MiniMapBuildingComplexIndex
     void Index::ResetWorld(uint64_t nextGeneration) noexcept
     {
         std::lock_guard lock(mutex_);
+        AdvanceSafetyLocked();
         records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear(); sectionDependencyRevisions_.clear();
         unboundedUnresolvedCount_ = 0;
         unresolvedOccluderCount_ = 0;
@@ -408,6 +552,7 @@ namespace MiniMapBuildingComplexIndex
                 if (sectionDependencyRevisions_.find(key) == sectionDependencyRevisions_.end())
                     newDependencyNodes.emplace(key, 0);
 
+            PrepareLocalChangeLocked(changes, oldCells, nextCells, invalidatedSections, &nextSectionCells);
             records_.merge(newRecordNode);
             unresolved_.merge(unresolvedNode);
             if (!newRecord) old->second.Record = owned;
@@ -466,6 +611,7 @@ namespace MiniMapBuildingComplexIndex
             changes.InvalidatedSections = std::move(invalidatedSections);
             changes.GlobalCompletenessInvalidated = wasUnbounded || isUnbounded;
             changes.GlobalSplineOcclusionInvalidated = globalOcclusionInvalidated;
+            ApplyLocalChangeLocked(changes);
             return newRecord ? UpsertResult::Inserted : UpsertResult::Replaced;
         }
         catch (const std::bad_alloc&) { changes = {}; return UpsertResult::AllocationFailure; }
@@ -504,6 +650,7 @@ namespace MiniMapBuildingComplexIndex
             if (affectedSections.size() > (std::numeric_limits<uint64_t>::max)() - dependencyRevision_)
                 return RemoveResult::AllocationFailure;
             std::vector<SectionKey> invalidatedSections(affectedSections.begin(), affectedSections.end());
+            PrepareLocalChangeLocked(changes, it->second.Cells, {}, invalidatedSections);
             for (const auto& cellKey : it->second.Cells)
             {
                 auto cell = cells_.find(cellKey);
@@ -548,6 +695,7 @@ namespace MiniMapBuildingComplexIndex
             changes.InvalidatedSections = std::move(invalidatedSections);
             changes.GlobalCompletenessInvalidated = wasUnbounded;
             changes.GlobalSplineOcclusionInvalidated = globalOcclusionInvalidated;
+            ApplyLocalChangeLocked(changes);
             return RemoveResult::Removed;
         }
         catch (const std::bad_alloc&) { changes = {}; return RemoveResult::AllocationFailure; }
@@ -629,6 +777,7 @@ namespace MiniMapBuildingComplexIndex
             // An unresolved unbounded source may affect every cell.
             if (unboundedUnresolvedCount_ || unresolvedOccluderCount_)
                 value.HasUnresolvedContributor = true;
+            value.Validity = SnapshotValidityLocked(key);
             output = std::move(value);
             return true;
         }
@@ -826,6 +975,8 @@ namespace MiniMapBuildingComplexIndex
             preparedChanges.DependencyRevision = dependencyRevision_;
             preparedChanges.InvalidatedSections.push_back(section);
             preparedChanges.InvalidatedCells.assign(owner->second.Cells.begin(), owner->second.Cells.end());
+            PrepareLocalChangeLocked(preparedChanges, owner->second.Cells, owner->second.Cells,
+                preparedChanges.InvalidatedSections);
 
             // Insert new reverse edges before dropping old ones. Allocation
             // failure can leave harmless extra edges, never a missing edge.
@@ -847,6 +998,7 @@ namespace MiniMapBuildingComplexIndex
                 auto cell = cells_.find(cellKey);
                 if (cell != cells_.end()) { Advance(cellRevisionSequence_); cell->second.Revision = cellRevisionSequence_; }
             }
+            ApplyLocalChangeLocked(preparedChanges);
             changes = std::move(preparedChanges);
             return true;
         }

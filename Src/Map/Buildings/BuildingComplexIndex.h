@@ -193,6 +193,16 @@ namespace MiniMapBuildingComplexIndex
         std::shared_ptr<const SplineOcclusionPayload> SplineOcclusion;
     };
 
+    // Phase-1 foundation only: no current validator accepts this token yet.
+    // Compare only within the same world/restore/grid/render-policy scope.
+    // Zero means unavailable; it must never certify currentness.
+    struct CellValidity
+    {
+        uint64_t SafetyGeneration = 0;
+        uint64_t LocalEpoch = 0;
+        bool operator==(const CellValidity&) const = default;
+    };
+
     struct CellSnapshot
     {
         CellKey Key;
@@ -207,6 +217,7 @@ namespace MiniMapBuildingComplexIndex
         std::vector<std::shared_ptr<const BuildingRecord>> Records;
         // True if an unbounded unknown-support record could affect this cell.
         bool HasUnresolvedContributor = false;
+        CellValidity Validity;
     };
 
     struct ChangeSet
@@ -220,6 +231,14 @@ namespace MiniMapBuildingComplexIndex
         // invalidates completeness without enumerating world cells.
         bool GlobalCompletenessInvalidated = false;
         bool GlobalSplineOcclusionInvalidated = false;
+        // Parallel local-validity coverage; legacy InvalidatedCells semantics
+        // and publication invalidation remain unchanged in Phase 1.
+        std::vector<CellKey> OldGraphicalCells;
+        std::vector<CellKey> NewGraphicalCells;
+        std::vector<CellKey> DependencyOutputCells;
+        std::vector<CellKey> LocalInvalidatedCells;
+        bool LocalSafetyInvalidated = false;
+        uint64_t SafetyGeneration = 0;
     };
 
     class Index
@@ -232,6 +251,13 @@ namespace MiniMapBuildingComplexIndex
         // Origin is copied from the live terrain pivot by the future world service.
         bool BeginWorld(uint64_t worldGeneration, WorldOrigin origin) noexcept;
         void ResetWorld(uint64_t nextWorldGeneration) noexcept;
+        // Metadata-only safety transitions, never source discovery or GPU work.
+        // World owner calls before capture availability mutations, including
+        // replacements with unchanged source geometry. Bounds changes still
+        // flow through Upsert's old/new support transaction.
+        void NotifyCaptureChange(MassKey key, uint64_t worldGeneration, ChangeSet& changes) noexcept;
+        void InvalidateSafety() noexcept;
+        void ObserveRenderingPolicy(bool renderDroneRails) noexcept;
 
         UpsertResult Upsert(BuildingRecord record, ChangeSet& changes) noexcept;
         RemoveResult Remove(MassKey key, uint64_t worldGeneration, ChangeSet& changes) noexcept;
@@ -254,6 +280,12 @@ namespace MiniMapBuildingComplexIndex
         uint64_t DependencyRevision() const noexcept;
 
     private:
+        void AdvanceSafetyLocked() const noexcept;
+        CellValidity SnapshotValidityLocked(CellKey key) const noexcept;
+        void PrepareLocalChangeLocked(ChangeSet& changes, const std::set<CellKey>& oldCells,
+            const std::set<CellKey>& newCells, const std::vector<SectionKey>& affectedSections,
+            const std::map<SectionKey, std::set<CellKey>>* newSections = nullptr) const noexcept;
+        void ApplyLocalChangeLocked(ChangeSet& changes) noexcept;
         struct Cell
         {
             std::set<MassKey> Records;
@@ -273,6 +305,15 @@ namespace MiniMapBuildingComplexIndex
         uint64_t dependencyRevision_ = 0;
         uint64_t cellRevisionSequence_ = 0;
         uint64_t resetRevision_ = 0;
+        // Tombstones are independent of allocated Cell records, including
+        // demanded Empty cells. Retain until safety advances; old certificates
+        // then fail by generation even if local epoch values are reused.
+        mutable uint64_t safetyGeneration_ = 1;
+        mutable uint64_t localEpochSequence_ = 0;
+        mutable bool localValidityAvailable_ = true;
+        mutable std::map<CellKey, uint64_t> localEpochs_;
+        bool renderingPolicyKnown_ = false;
+        bool renderDroneRails_ = true;
         size_t unboundedUnresolvedCount_ = 0;
         size_t unresolvedOccluderCount_ = 0;
         std::map<MassKey, Stored> records_;

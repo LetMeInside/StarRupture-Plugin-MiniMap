@@ -127,8 +127,17 @@ namespace
     };
     std::map<B::CellKey, std::shared_ptr<CanonicalResult>> CanonicalResults;
 
+    void NotifyCaptureValidityChange(B::MassKey key) noexcept
+    {
+        B::ChangeSet changes;
+        // Parallel foundation only. Do not feed its wider local coverage into
+        // legacy CPU/GPU invalidation until local validation is activated.
+        Index.NotifyCaptureChange(key, Current.WorldGeneration, changes);
+    }
+
     void InvalidateCanonicalCapture(B::MassKey key) noexcept
     {
+        NotifyCaptureValidityChange(key);
         for (auto it = CanonicalResults.begin(); it != CanonicalResults.end();)
         {
             const auto& captures = it->second->Identity.Captures;
@@ -235,6 +244,7 @@ namespace
 
     void ClearCaptureImages() noexcept
     {
+        Index.InvalidateSafety();
         CanonicalResults.clear();
         std::lock_guard lock(CaptureImagesMutex);
         CaptureImages.clear();
@@ -456,6 +466,9 @@ namespace
 
     void ResetIndex(uint64_t generation) noexcept
     {
+        // Revoke the parallel certificate scope before cancellation/native
+        // callbacks; ResetWorld advances it again before clearing index state.
+        Index.InvalidateSafety();
         CanonicalResults.clear();
         MiniMapTexturePublication::InvalidateAll();
         ClearCaptureRequests();
@@ -896,6 +909,7 @@ namespace
             {
                 CancelCaptureRequest(key);
                 bool retainedVerifiedCapture = false;
+                NotifyCaptureValidityChange(key);
                 {
                     std::lock_guard lock(CaptureImagesMutex);
                     auto image = CaptureImages.find(key);
@@ -999,6 +1013,7 @@ namespace
         const uint64_t generation = Current.WorldGeneration;
         if (!generation || !MiniMapMap::GameplayReady() || MiniMapMap::GetWorldGeneration() != generation ||
             lifecycle.WorldGeneration != generation || !L::InAdmittedService()) return;
+        Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails);
 
         if (lifecycle.ObservationLost || lifecycle.SeedRequired ||
             Current.State != MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished ||
@@ -1159,6 +1174,7 @@ namespace MiniMapBuildingComplexWorld
             if (!generation || initialStatus.State != MembershipState::MembershipEstablished ||
                 initialStatus.WorldGeneration != generation) return CellCompositionResult::Failed;
 
+            Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails);
             B::CellSnapshot snapshot;
             if (!Index.TrySnapshot(key, snapshot) || snapshot.WorldGeneration != generation || !snapshot.Origin.Valid)
                 return CellCompositionResult::Failed;
