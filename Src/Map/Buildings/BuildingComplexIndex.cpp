@@ -1,4 +1,5 @@
 #include "BuildingComplexIndex.h"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -55,9 +56,35 @@ namespace MiniMapBuildingComplexIndex
             return true;
         }
 
+        bool DependencyCellsFor(const WorldBounds& bounds, WorldOrigin origin, std::set<CellKey>& out)
+        {
+            if (!ValidBounds(bounds)) return false;
+            WorldBounds expanded = bounds;
+            expanded.MinX = std::nextafter(expanded.MinX, -std::numeric_limits<double>::infinity());
+            expanded.MinY = std::nextafter(expanded.MinY, -std::numeric_limits<double>::infinity());
+            expanded.MaxX = std::nextafter(expanded.MaxX, std::numeric_limits<double>::infinity());
+            expanded.MaxY = std::nextafter(expanded.MaxY, std::numeric_limits<double>::infinity());
+            if (!ValidBounds(expanded)) return false;
+            return CellsFor(expanded, origin, out);
+        }
+
         bool ValidKey(MassKey key) noexcept { return key.Index >= 0 && key.Serial > 0; }
+        bool UnresolvedContributor(const BuildingRecord& record) noexcept
+        { return record.Source->Support == SupportState::Unknown && !(record.Source->InteriorKnown && record.Source->InteriorOnly); }
         bool Unbounded(const BuildingRecord& record) noexcept
-        { return record.Source->Support == SupportState::Unknown && !record.Source->VisualSupport.Valid; }
+        { return UnresolvedContributor(record) && !record.Source->VisualSupport.Valid; }
+        bool PotentialOrdinaryOccluder(const SourcePayload& source) noexcept
+        { return !source.HasSplineSource && !source.BaseCoreOverlay && !(source.InteriorKnown && source.InteriorOnly); }
+        bool VerifiedOccluderGeometry(const SourcePayload& source) noexcept
+        {
+            if (!source.InteriorKnown || !source.SpriteQuadValid || !ValidBounds(source.OrdinarySpriteSupport) ||
+                !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return false;
+            for (const auto& point : source.SpriteQuadWorld)
+                for (double value : point) if (!std::isfinite(value)) return false;
+            return true;
+        }
+        bool Intersects(const WorldBounds& a, const WorldBounds& b) noexcept
+        { return ValidBounds(a) && ValidBounds(b) && a.MinX <= b.MaxX && b.MinX <= a.MaxX && a.MinY <= b.MaxY && b.MinY <= a.MaxY; }
         void Advance(uint64_t& revision) noexcept
         { if (revision != (std::numeric_limits<uint64_t>::max)()) ++revision; }
     }
@@ -81,8 +108,10 @@ namespace MiniMapBuildingComplexIndex
         try
         {
             std::lock_guard lock(mutex_);
-            records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear();
+            records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear(); sectionDependencyRevisions_.clear();
             unboundedUnresolvedCount_ = 0;
+            unresolvedOccluderCount_ = 0;
+            dependencyRevision_ = 0;
             worldGeneration_ = generation; origin_ = origin;
             ++resetRevision_; Advance(sourceRevision_);
             return true;
@@ -93,8 +122,10 @@ namespace MiniMapBuildingComplexIndex
     void Index::ResetWorld(uint64_t nextGeneration) noexcept
     {
         std::lock_guard lock(mutex_);
-        records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear();
+        records_.clear(); cells_.clear(); unresolved_.clear(); sectionCells_.clear(); occluderSections_.clear(); sectionDependencyRevisions_.clear();
         unboundedUnresolvedCount_ = 0;
+        unresolvedOccluderCount_ = 0;
+        dependencyRevision_ = 0;
         worldGeneration_ = nextGeneration; origin_ = {};
         ++resetRevision_; Advance(sourceRevision_);
     }
@@ -113,13 +144,38 @@ namespace MiniMapBuildingComplexIndex
             if (input.Source->BlueprintIdentity)
                 payload.BlueprintIdentity = std::make_shared<const std::string>(*input.Source->BlueprintIdentity);
             input.Source = std::make_shared<const SourcePayload>(std::move(payload));
+            // Derived occlusion output is published only through its revision-
+            // checked API, never carried across a source upsert.
+            input.SplineOcclusion.reset();
             std::lock_guard lock(mutex_);
             if (input.WorldGeneration != worldGeneration_ || !origin_.Valid) return UpsertResult::InvalidInput;
             if (input.Source->Support == SupportState::Supported && !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
+            if (input.Source->InteriorOnly && !input.Source->InteriorKnown) return UpsertResult::InvalidInput;
             if (input.Source->Support == SupportState::ExplicitlyUnsupported && input.Source->VisualSupport.Valid &&
                 !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
             if (input.Source->OrdinarySpriteSupport.Valid && !ValidBounds(input.Source->OrdinarySpriteSupport))
                 return UpsertResult::InvalidInput;
+            if (input.Source->OrdinarySpriteSupport.Valid != input.Source->SpriteQuadValid)
+                return UpsertResult::InvalidInput;
+            if (input.Source->SpriteQuadValid && !ValidBounds(input.Source->OrdinarySpriteSupport))
+                return UpsertResult::InvalidInput;
+            if (input.Source->SpriteQuadValid)
+            {
+                WorldBounds quadBounds;
+                for (const auto& point : input.Source->SpriteQuadWorld)
+                {
+                    for (double value : point) if (!std::isfinite(value)) return UpsertResult::InvalidInput;
+                    if (!quadBounds.Valid) quadBounds = {point[0], point[1], point[0], point[1], true};
+                    else
+                    {
+                        quadBounds.MinX = (std::min)(quadBounds.MinX, point[0]);
+                        quadBounds.MinY = (std::min)(quadBounds.MinY, point[1]);
+                        quadBounds.MaxX = (std::max)(quadBounds.MaxX, point[0]);
+                        quadBounds.MaxY = (std::max)(quadBounds.MaxY, point[1]);
+                    }
+                }
+                if (quadBounds != input.Source->OrdinarySpriteSupport) return UpsertResult::InvalidInput;
+            }
             if (input.Source->PreparedSplineSupport.Valid && !ValidBounds(input.Source->PreparedSplineSupport))
                 return UpsertResult::InvalidInput;
             if (!input.Source->SplineSections.empty() && !input.Source->PreparedSplineSupport.Valid)
@@ -183,6 +239,7 @@ namespace MiniMapBuildingComplexIndex
                 return UpsertResult::InvalidInput;
 
             auto old = records_.find(input.Key);
+            const auto oldRecord = old == records_.end() ? std::shared_ptr<const BuildingRecord>{} : old->second.Record;
             if (old != records_.end() && old->second.Record->Source->SourceRevision == input.Source->SourceRevision &&
                 old->second.Record->Source->SourceGeneration == input.Source->SourceGeneration &&
                 old->second.Record->Source->Support == input.Source->Support &&
@@ -195,6 +252,8 @@ namespace MiniMapBuildingComplexIndex
                 old->second.Record->Source->SplineCategory == input.Source->SplineCategory &&
                 old->second.Record->Source->SplineSortZValid == input.Source->SplineSortZValid &&
                 old->second.Record->Source->SplineSortZ == input.Source->SplineSortZ &&
+                old->second.Record->Source->InteriorKnown == input.Source->InteriorKnown &&
+                old->second.Record->Source->InteriorOnly == input.Source->InteriorOnly &&
                 old->second.Record->Source->SpriteQuadValid == input.Source->SpriteQuadValid &&
                 old->second.Record->Source->SpriteCaptureSupportMetadata == input.Source->SpriteCaptureSupportMetadata &&
                 old->second.Record->Source->SpriteQuadWorld == input.Source->SpriteQuadWorld)
@@ -206,7 +265,11 @@ namespace MiniMapBuildingComplexIndex
             };
             if (input.Source->Support == SupportState::Supported)
             {
-                if (!CellsFor(input.Source->VisualSupport, origin_, nextCells)) return UpsertResult::InvalidInput;
+                if (!CellsFor(input.Source->VisualSupport, origin_, nextCells) ||
+                    !addBounds(input.Source->OrdinarySpriteSupport) ||
+                    !addBounds(input.Source->PreparedSplineSupport)) return UpsertResult::InvalidInput;
+                for (const auto& section : input.Source->SplineSections)
+                    if (!CellsFor(section.Bounds, origin_, nextCells)) return UpsertResult::InvalidInput;
             }
             else if (input.Source->Support == SupportState::Unknown)
             {
@@ -217,10 +280,52 @@ namespace MiniMapBuildingComplexIndex
                 for (const auto& section : input.Source->SplineSections)
                     if (!CellsFor(section.Bounds, origin_, nextCells)) return UpsertResult::InvalidInput;
             }
+            else
+            {
+                // Explicitly unsupported contributors still have usable
+                // geometry when captured; index it for occlusion/cell
+                // invalidation without promoting visual completeness.
+                if ((input.Source->OrdinarySpriteSupport.Valid &&
+                        !CellsFor(input.Source->OrdinarySpriteSupport, origin_, nextCells)) ||
+                    (input.Source->VisualSupport.Valid &&
+                        !CellsFor(input.Source->VisualSupport, origin_, nextCells)) ||
+                    (input.Source->PreparedSplineSupport.Valid &&
+                        !CellsFor(input.Source->PreparedSplineSupport, origin_, nextCells)))
+                    return UpsertResult::InvalidInput;
+                for (const auto& section : input.Source->SplineSections)
+                    if (!CellsFor(section.Bounds, origin_, nextCells)) return UpsertResult::InvalidInput;
+            }
             const std::set<CellKey> oldCells = old == records_.end() ? std::set<CellKey>{} : old->second.Cells;
+
+            std::set<CellKey> oldOccluderCells, newOccluderCells;
+            if (old != records_.end() && old->second.Record->Source->OrdinarySpriteSupport.Valid &&
+                !CellsFor(old->second.Record->Source->OrdinarySpriteSupport, origin_, oldOccluderCells))
+                return UpsertResult::InvalidInput;
+            if (old != records_.end() && PotentialOrdinaryOccluder(*old->second.Record->Source) &&
+                !VerifiedOccluderGeometry(*old->second.Record->Source) && old->second.Record->Source->VisualSupport.Valid &&
+                !CellsFor(old->second.Record->Source->VisualSupport, origin_, oldOccluderCells))
+                return UpsertResult::InvalidInput;
+            if (input.Source->OrdinarySpriteSupport.Valid &&
+                !CellsFor(input.Source->OrdinarySpriteSupport, origin_, newOccluderCells))
+                return UpsertResult::InvalidInput;
+            if (PotentialOrdinaryOccluder(*input.Source) && !VerifiedOccluderGeometry(*input.Source) &&
+                input.Source->VisualSupport.Valid &&
+                !CellsFor(input.Source->VisualSupport, origin_, newOccluderCells))
+                return UpsertResult::InvalidInput;
+
+            std::map<SectionKey, std::set<CellKey>> nextSectionCells;
+            for (const auto& section : input.Source->SplineSections)
+            {
+                std::set<CellKey> sectionCells;
+                if (!DependencyCellsFor(section.Bounds, origin_, sectionCells)) return UpsertResult::InvalidInput;
+                nextSectionCells.emplace(SectionKey{input.Key, input.Source->SourceRevision, section.Identity},
+                    std::move(sectionCells));
+            }
 
             std::set<CellKey> touched = oldCells;
             touched.insert(nextCells.begin(), nextCells.end());
+            touched.insert(oldOccluderCells.begin(), oldOccluderCells.end());
+            touched.insert(newOccluderCells.begin(), newOccluderCells.end());
             std::map<CellKey, std::set<MassKey>> staged;
             for (const auto& cellKey : touched)
             {
@@ -233,10 +338,38 @@ namespace MiniMapBuildingComplexIndex
 
             auto owned = std::make_shared<const BuildingRecord>(std::move(input));
             const bool newRecord = old == records_.end();
-            const bool unresolved = owned->Source->Support == SupportState::Unknown;
+            const bool unresolved = UnresolvedContributor(*owned);
             const bool wasUnbounded = old != records_.end() && Unbounded(*old->second.Record);
             const bool isUnbounded = Unbounded(*owned);
             std::vector<CellKey> invalidated(touched.begin(), touched.end());
+            std::set<SectionKey> affectedSections;
+            auto touches = [&](const std::set<CellKey>& cells) {
+                for (const auto& cell : cells) if (touched.find(cell) != touched.end()) return true;
+                return false;
+            };
+            for (const auto& pair : sectionCells_)
+                if (touches(pair.second)) affectedSections.insert(pair.first);
+            if (old != records_.end())
+                affectedSections.insert(old->second.Sections.begin(), old->second.Sections.end());
+            for (const auto& pair : nextSectionCells) affectedSections.insert(pair.first);
+            if (auto reverse = occluderSections_.find(input.Key); reverse != occluderSections_.end())
+                affectedSections.insert(reverse->second.begin(), reverse->second.end());
+            const bool oldPotentialOccluder = old != records_.end() && PotentialOrdinaryOccluder(*old->second.Record->Source);
+            const bool newPotentialOccluder = PotentialOrdinaryOccluder(*input.Source);
+            const bool oldGeometryVerified = old != records_.end() && VerifiedOccluderGeometry(*old->second.Record->Source);
+            const bool newGeometryVerified = VerifiedOccluderGeometry(*input.Source);
+            const bool wasUnresolvedOccluder = oldPotentialOccluder && !oldGeometryVerified &&
+                !old->second.Record->Source->VisualSupport.Valid;
+            const bool isUnresolvedOccluder = newPotentialOccluder && !newGeometryVerified &&
+                !input.Source->VisualSupport.Valid;
+            const bool globalOcclusionInvalidated =
+                wasUnresolvedOccluder || isUnresolvedOccluder;
+            if (globalOcclusionInvalidated)
+                for (const auto& pair : sectionCells_) affectedSections.insert(pair.first);
+            for (const auto& pair : nextSectionCells) affectedSections.insert(pair.first);
+            if (affectedSections.size() > (std::numeric_limits<uint64_t>::max)() - dependencyRevision_)
+                return UpsertResult::InvalidInput;
+            std::vector<SectionKey> invalidatedSections(affectedSections.begin(), affectedSections.end());
             // Prepare all allocating map nodes before committing any visible
             // membership changes. merge transfers the prepared nodes.
             std::map<CellKey, Cell> newCellNodes;
@@ -244,9 +377,17 @@ namespace MiniMapBuildingComplexIndex
                 if (cells_.find(pair.first) == cells_.end() && !pair.second.empty())
                     newCellNodes.emplace(pair.first, Cell{});
             std::map<MassKey, Stored> newRecordNode;
-            if (newRecord) newRecordNode.emplace(owned->Key, Stored{owned, nextCells});
+            std::set<SectionKey> ownedSections;
+            for (const auto& pair : nextSectionCells) ownedSections.insert(pair.first);
+            if (newRecord) newRecordNode.emplace(owned->Key, Stored{owned, nextCells, ownedSections});
             std::set<MassKey> unresolvedNode;
             if (unresolved && unresolved_.find(owned->Key) == unresolved_.end()) unresolvedNode.insert(owned->Key);
+            std::map<SectionKey, std::set<CellKey>> newSectionNodes;
+            for (const auto& pair : nextSectionCells) newSectionNodes.emplace(pair.first, pair.second);
+            std::map<SectionKey, uint64_t> newDependencyNodes;
+            for (const auto& key : affectedSections)
+                if (sectionDependencyRevisions_.find(key) == sectionDependencyRevisions_.end())
+                    newDependencyNodes.emplace(key, 0);
 
             records_.merge(newRecordNode);
             unresolved_.merge(unresolvedNode);
@@ -264,11 +405,48 @@ namespace MiniMapBuildingComplexIndex
             if (!unresolved) unresolved_.erase(owned->Key);
             if (wasUnbounded && !isUnbounded) --unboundedUnresolvedCount_;
             else if (!wasUnbounded && isUnbounded) ++unboundedUnresolvedCount_;
-            records_.find(owned->Key)->second.Cells.swap(nextCells);
+            if (wasUnresolvedOccluder && !isUnresolvedOccluder) --unresolvedOccluderCount_;
+            else if (!wasUnresolvedOccluder && isUnresolvedOccluder) ++unresolvedOccluderCount_;
+            auto stored = records_.find(owned->Key);
+            stored->second.Cells.swap(nextCells);
+            if (!newRecord)
+            {
+                if (oldRecord && oldRecord->SplineOcclusion)
+                    for (const auto& oldSection : oldRecord->SplineOcclusion->Sections)
+                    {
+                        const SectionKey oldKey{owned->Key, oldRecord->Source->SourceRevision, oldSection.Identity};
+                        for (const auto& dependency : oldSection.Dependencies)
+                        {
+                            auto reverse = occluderSections_.find(dependency.Key);
+                            if (reverse == occluderSections_.end()) continue;
+                            reverse->second.erase(oldKey);
+                            if (reverse->second.empty()) occluderSections_.erase(reverse);
+                        }
+                    }
+                for (const auto& section : stored->second.Sections)
+                {
+                    sectionCells_.erase(section);
+                    if (nextSectionCells.find(section) == nextSectionCells.end())
+                        sectionDependencyRevisions_.erase(section);
+                }
+            }
+            sectionCells_.merge(newSectionNodes);
+            stored->second.Sections.swap(ownedSections);
+            occluderSections_.erase(owned->Key);
+            sectionDependencyRevisions_.merge(newDependencyNodes);
             Advance(sourceRevision_);
+            for (const auto& section : affectedSections)
+            {
+                auto revision = sectionDependencyRevisions_.find(section);
+                if (revision != sectionDependencyRevisions_.end())
+                { Advance(dependencyRevision_); revision->second = dependencyRevision_; }
+            }
             changes.WorldGeneration = worldGeneration_; changes.SourceRevision = sourceRevision_;
+            changes.DependencyRevision = dependencyRevision_;
             changes.InvalidatedCells = std::move(invalidated);
+            changes.InvalidatedSections = std::move(invalidatedSections);
             changes.GlobalCompletenessInvalidated = wasUnbounded || isUnbounded;
+            changes.GlobalSplineOcclusionInvalidated = globalOcclusionInvalidated;
             return newRecord ? UpsertResult::Inserted : UpsertResult::Replaced;
         }
         catch (const std::bad_alloc&) { changes = {}; return UpsertResult::AllocationFailure; }
@@ -285,8 +463,28 @@ namespace MiniMapBuildingComplexIndex
             if (generation != worldGeneration_) return RemoveResult::NotFound;
             auto it = records_.find(key);
             if (it == records_.end()) return RemoveResult::NotFound;
-            changes.InvalidatedCells.assign(it->second.Cells.begin(), it->second.Cells.end());
+            std::set<CellKey> touchedCells = it->second.Cells;
+            if (it->second.Record->Source->OrdinarySpriteSupport.Valid &&
+                !CellsFor(it->second.Record->Source->OrdinarySpriteSupport, origin_, touchedCells))
+                return RemoveResult::AllocationFailure;
+            changes.InvalidatedCells.assign(touchedCells.begin(), touchedCells.end());
             const bool wasUnbounded = Unbounded(*it->second.Record);
+            std::set<SectionKey> affectedSections;
+            for (const auto& pair : sectionCells_)
+                for (const auto& cell : touchedCells)
+                    if (pair.second.find(cell) != pair.second.end()) { affectedSections.insert(pair.first); break; }
+            affectedSections.insert(it->second.Sections.begin(), it->second.Sections.end());
+            if (auto reverse = occluderSections_.find(key); reverse != occluderSections_.end())
+                affectedSections.insert(reverse->second.begin(), reverse->second.end());
+            const bool potentialOccluder = PotentialOrdinaryOccluder(*it->second.Record->Source);
+            const bool geometryVerified = VerifiedOccluderGeometry(*it->second.Record->Source);
+            const bool globalOcclusionInvalidated = potentialOccluder && !geometryVerified &&
+                !it->second.Record->Source->VisualSupport.Valid;
+            if (globalOcclusionInvalidated)
+                for (const auto& pair : sectionCells_) affectedSections.insert(pair.first);
+            if (affectedSections.size() > (std::numeric_limits<uint64_t>::max)() - dependencyRevision_)
+                return RemoveResult::AllocationFailure;
+            std::vector<SectionKey> invalidatedSections(affectedSections.begin(), affectedSections.end());
             for (const auto& cellKey : it->second.Cells)
             {
                 auto cell = cells_.find(cellKey);
@@ -298,10 +496,39 @@ namespace MiniMapBuildingComplexIndex
             }
             unresolved_.erase(key);
             if (wasUnbounded) --unboundedUnresolvedCount_;
+            if (potentialOccluder && !geometryVerified && !it->second.Record->Source->VisualSupport.Valid)
+                --unresolvedOccluderCount_;
+            for (const auto& section : it->second.Sections)
+            {
+                sectionCells_.erase(section);
+                sectionDependencyRevisions_.erase(section);
+            }
+            if (it->second.Record->SplineOcclusion)
+                for (const auto& oldSection : it->second.Record->SplineOcclusion->Sections)
+                {
+                    const SectionKey oldKey{key, it->second.Record->Source->SourceRevision, oldSection.Identity};
+                    for (const auto& dependency : oldSection.Dependencies)
+                    {
+                        auto reverse = occluderSections_.find(dependency.Key);
+                        if (reverse == occluderSections_.end()) continue;
+                        reverse->second.erase(oldKey);
+                        if (reverse->second.empty()) occluderSections_.erase(reverse);
+                    }
+                }
+            occluderSections_.erase(key);
             records_.erase(it);
             Advance(sourceRevision_);
+            for (const auto& section : affectedSections)
+            {
+                auto revision = sectionDependencyRevisions_.find(section);
+                if (revision != sectionDependencyRevisions_.end())
+                { Advance(dependencyRevision_); revision->second = dependencyRevision_; }
+            }
             changes.WorldGeneration = worldGeneration_; changes.SourceRevision = sourceRevision_;
+            changes.DependencyRevision = dependencyRevision_;
+            changes.InvalidatedSections = std::move(invalidatedSections);
             changes.GlobalCompletenessInvalidated = wasUnbounded;
+            changes.GlobalSplineOcclusionInvalidated = globalOcclusionInvalidated;
             return RemoveResult::Removed;
         }
         catch (const std::bad_alloc&) { changes = {}; return RemoveResult::AllocationFailure; }
@@ -326,13 +553,61 @@ namespace MiniMapBuildingComplexIndex
                     auto record = records_.find(id);
                     if (record != records_.end())
                     {
-                        value.Records.push_back(record->second.Record);
+                        if (record->second.Record->Source->InteriorKnown && record->second.Record->Source->InteriorOnly)
+                            continue;
+                        auto visibleRecord = record->second.Record;
+                        if (visibleRecord->SplineOcclusion)
+                        {
+                            std::shared_ptr<SplineOcclusionPayload> sanitized;
+                            const bool payloadMismatch = visibleRecord->SplineOcclusion->WorldGeneration != visibleRecord->WorldGeneration ||
+                                visibleRecord->SplineOcclusion->SourceRevision != visibleRecord->Source->SourceRevision;
+                            if (payloadMismatch)
+                            {
+                                sanitized = std::make_shared<SplineOcclusionPayload>(*visibleRecord->SplineOcclusion);
+                                sanitized->Sections.clear();
+                                sanitized->State = SplineOcclusionState::Unevaluated;
+                            }
+                            for (size_t i = 0; !payloadMismatch && i < visibleRecord->SplineOcclusion->Sections.size(); ++i)
+                            {
+                                const auto& derived = visibleRecord->SplineOcclusion->Sections[i];
+                                const SectionKey section{visibleRecord->Key, visibleRecord->Source->SourceRevision, derived.Identity};
+                                auto current = sectionDependencyRevisions_.find(section);
+                                if (current != sectionDependencyRevisions_.end() && current->second == derived.DependencyRevision) continue;
+                                if (!sanitized) sanitized = std::make_shared<SplineOcclusionPayload>(*visibleRecord->SplineOcclusion);
+                                auto& stale = sanitized->Sections[i];
+                                stale.VisibleTriangles.clear();
+                                stale.WalkwayInsetTriangles.clear();
+                                stale.Complete = false;
+                                sanitized->State = SplineOcclusionState::Unevaluated;
+                            }
+                            if (sanitized)
+                            {
+                                auto copy = std::make_shared<BuildingRecord>(*visibleRecord);
+                                copy->SplineOcclusion = std::move(sanitized);
+                                visibleRecord = std::move(copy);
+                            }
+                        }
                         if (unresolved_.find(id) != unresolved_.end()) value.HasUnresolvedContributor = true;
+                        const auto& source = *visibleRecord->Source;
+                        if (PotentialOrdinaryOccluder(source) && !VerifiedOccluderGeometry(source))
+                            value.HasUnresolvedContributor = true;
+                        if (source.HasSplineSource && source.SplinePreparation != SplinePreparationState::Complete)
+                            value.HasUnresolvedContributor = true;
+                        if (!source.SplineSections.empty())
+                        {
+                            const auto& occlusion = visibleRecord->SplineOcclusion;
+                            if (!occlusion || occlusion->WorldGeneration != visibleRecord->WorldGeneration ||
+                                occlusion->SourceRevision != source.SourceRevision ||
+                                occlusion->State != SplineOcclusionState::Complete)
+                                value.HasUnresolvedContributor = true;
+                        }
+                        value.Records.push_back(std::move(visibleRecord));
                     }
                 }
             }
             // An unresolved unbounded source may affect every cell.
-            if (unboundedUnresolvedCount_) value.HasUnresolvedContributor = true;
+            if (unboundedUnresolvedCount_ || unresolvedOccluderCount_)
+                value.HasUnresolvedContributor = true;
             output = std::move(value);
             return true;
         }
@@ -342,12 +617,219 @@ namespace MiniMapBuildingComplexIndex
     bool Index::TryGetRecord(MassKey key, uint64_t generation,
         std::shared_ptr<const BuildingRecord>& output) const noexcept
     {
+        try
+        {
+            std::lock_guard lock(mutex_);
+            if (generation != worldGeneration_) return false;
+            auto it = records_.find(key);
+            if (it == records_.end()) return false;
+            auto value = it->second.Record;
+            if (value->SplineOcclusion)
+            {
+                std::shared_ptr<SplineOcclusionPayload> sanitized;
+                const bool payloadMismatch = value->SplineOcclusion->WorldGeneration != value->WorldGeneration ||
+                    value->SplineOcclusion->SourceRevision != value->Source->SourceRevision;
+                if (payloadMismatch)
+                {
+                    sanitized = std::make_shared<SplineOcclusionPayload>(*value->SplineOcclusion);
+                    sanitized->Sections.clear();
+                    sanitized->State = SplineOcclusionState::Unevaluated;
+                }
+                for (size_t i = 0; !payloadMismatch && i < value->SplineOcclusion->Sections.size(); ++i)
+                {
+                    const auto& derived = value->SplineOcclusion->Sections[i];
+                    const SectionKey section{value->Key, value->Source->SourceRevision, derived.Identity};
+                    auto current = sectionDependencyRevisions_.find(section);
+                    if (current != sectionDependencyRevisions_.end() && current->second == derived.DependencyRevision) continue;
+                    if (!sanitized) sanitized = std::make_shared<SplineOcclusionPayload>(*value->SplineOcclusion);
+                    auto& stale = sanitized->Sections[i];
+                    stale.VisibleTriangles.clear();
+                    stale.WalkwayInsetTriangles.clear();
+                    stale.Complete = false;
+                    sanitized->State = SplineOcclusionState::Unevaluated;
+                }
+                if (sanitized)
+                {
+                    auto copy = std::make_shared<BuildingRecord>(*value);
+                    copy->SplineOcclusion = std::move(sanitized);
+                    value = std::move(copy);
+                }
+            }
+            output = std::move(value);
+            return true;
+        }
+        catch (...) { output.reset(); return false; }
+    }
+
+    std::vector<SectionKey> Index::SnapshotSplineSections() const
+    {
         std::lock_guard lock(mutex_);
-        if (generation != worldGeneration_) return false;
-        auto it = records_.find(key);
-        if (it == records_.end()) return false;
-        output = it->second.Record;
-        return true;
+        std::vector<SectionKey> result;
+        result.reserve(sectionCells_.size());
+        for (const auto& pair : sectionCells_) result.push_back(pair.first);
+        return result;
+    }
+
+    bool Index::IsCurrentSplineSection(SectionKey section, uint64_t generation) const noexcept
+    {
+        try
+        {
+            std::lock_guard lock(mutex_);
+            auto owner = records_.find(section.Building);
+            if (!generation || generation != worldGeneration_ || owner == records_.end() ||
+                owner->second.Record->WorldGeneration != generation ||
+                !owner->second.Record->Source || owner->second.Record->Source->SourceRevision != section.SourceRevision ||
+                sectionCells_.find(section) == sectionCells_.end() ||
+                sectionDependencyRevisions_.find(section) == sectionDependencyRevisions_.end())
+                return false;
+            return std::find_if(owner->second.Record->Source->SplineSections.begin(),
+                owner->second.Record->Source->SplineSections.end(),
+                [&](const auto& value) { return value.Identity == section.Identity; }) !=
+                owner->second.Record->Source->SplineSections.end();
+        }
+        catch (...) { return false; }
+    }
+
+    bool Index::TryGetOcclusionInputs(SectionKey section,
+        std::shared_ptr<const BuildingRecord>& spline,
+        std::vector<std::shared_ptr<const BuildingRecord>>& ordinaryCandidates,
+        bool& hasUnresolvedOrdinary, uint64_t& dependencyRevision) const noexcept
+    {
+        try
+        {
+            std::lock_guard lock(mutex_);
+            spline.reset(); ordinaryCandidates.clear(); hasUnresolvedOrdinary = false; dependencyRevision = 0;
+            auto owner = records_.find(section.Building);
+            if (owner == records_.end() || owner->second.Record->WorldGeneration != worldGeneration_ ||
+                !owner->second.Record->Source || owner->second.Record->Source->SourceRevision != section.SourceRevision)
+                return false;
+            const auto sourceSection = std::find_if(owner->second.Record->Source->SplineSections.begin(),
+                owner->second.Record->Source->SplineSections.end(), [&](const auto& value) { return value.Identity == section.Identity; });
+            if (sourceSection == owner->second.Record->Source->SplineSections.end()) return false;
+            auto sectionCells = sectionCells_.find(section);
+            if (sectionCells == sectionCells_.end()) return false;
+            auto revision = sectionDependencyRevisions_.find(section);
+            if (revision == sectionDependencyRevisions_.end()) return false;
+            dependencyRevision = revision->second;
+            spline = owner->second.Record;
+
+            std::set<MassKey> candidateKeys;
+            for (const auto& cellKey : sectionCells->second)
+            {
+                auto cell = cells_.find(cellKey);
+                if (cell != cells_.end()) candidateKeys.insert(cell->second.Records.begin(), cell->second.Records.end());
+            }
+            // Unknown classification or absent geometry can hide an eligible
+            // ordinary occluder anywhere; keep this section unevaluable.
+            hasUnresolvedOrdinary = unresolvedOccluderCount_ != 0;
+            ordinaryCandidates.reserve(candidateKeys.size());
+            for (const auto& key : candidateKeys)
+            {
+                auto candidate = records_.find(key);
+                if (candidate == records_.end()) continue;
+                const auto& source = *candidate->second.Record->Source;
+                if (!source.InteriorKnown)
+                { hasUnresolvedOrdinary = true; continue; }
+                if (!PotentialOrdinaryOccluder(source)) continue;
+                if (!VerifiedOccluderGeometry(source))
+                {
+                    if (!source.VisualSupport.Valid || Intersects(source.VisualSupport, sourceSection->Bounds))
+                        hasUnresolvedOrdinary = true;
+                    continue;
+                }
+                ordinaryCandidates.push_back(candidate->second.Record);
+            }
+            return true;
+        }
+        catch (...) { return false; }
+    }
+
+    bool Index::PublishSplineOcclusion(SectionKey section, uint64_t generation,
+        OccludedSplineSection output, SplineOcclusionState state, ChangeSet& changes) noexcept
+    {
+        changes = {};
+        try
+        {
+            std::lock_guard lock(mutex_);
+            auto owner = records_.find(section.Building);
+            auto revision = sectionDependencyRevisions_.find(section);
+            if (generation != worldGeneration_ || owner == records_.end() || revision == sectionDependencyRevisions_.end() ||
+                owner->second.Record->WorldGeneration != generation || !owner->second.Record->Source ||
+                owner->second.Record->Source->SourceRevision != section.SourceRevision ||
+                output.Identity != section.Identity || output.DependencyRevision != revision->second)
+                return false;
+            auto sourceSection = std::find_if(owner->second.Record->Source->SplineSections.begin(),
+                owner->second.Record->Source->SplineSections.end(), [&](const auto& value) { return value.Identity == section.Identity; });
+            if (sourceSection == owner->second.Record->Source->SplineSections.end()) return false;
+            const auto dependencies = output.Dependencies;
+            for (const auto& dependency : dependencies)
+            {
+                auto current = records_.find(dependency.Key);
+                if (current == records_.end() || !current->second.Record->Source ||
+                    current->second.Record->Source->SourceRevision != dependency.SourceRevision ||
+                    !current->second.Record->Source->SpriteQuadValid)
+                    return false;
+                for (size_t i = 0; i < dependency.Corners.size(); ++i)
+                    if (current->second.Record->Source->SpriteQuadWorld[i][0] != dependency.Corners[i][0] ||
+                        current->second.Record->Source->SpriteQuadWorld[i][1] != dependency.Corners[i][1]) return false;
+            }
+            std::vector<SplineOccluderDependency> oldDependencies;
+            if (owner->second.Record->SplineOcclusion)
+            {
+                const auto prior = std::find_if(owner->second.Record->SplineOcclusion->Sections.begin(),
+                    owner->second.Record->SplineOcclusion->Sections.end(),
+                    [&](const auto& value) { return value.Identity == section.Identity; });
+                if (prior != owner->second.Record->SplineOcclusion->Sections.end()) oldDependencies = prior->Dependencies;
+            }
+            auto payload = owner->second.Record->SplineOcclusion ?
+                std::make_shared<SplineOcclusionPayload>(*owner->second.Record->SplineOcclusion) :
+                std::make_shared<SplineOcclusionPayload>();
+            payload->WorldGeneration = generation;
+            payload->SourceRevision = section.SourceRevision;
+            payload->DependencyRevision = dependencyRevision_;
+            auto storedSection = std::find_if(payload->Sections.begin(), payload->Sections.end(),
+                [&](const auto& value) { return value.Identity == section.Identity; });
+            if (storedSection == payload->Sections.end()) payload->Sections.push_back(std::move(output));
+            else *storedSection = std::move(output);
+            payload->State = state;
+            if (payload->Sections.size() != owner->second.Record->Source->SplineSections.size())
+                payload->State = SplineOcclusionState::Partial;
+            else if (std::any_of(payload->Sections.begin(), payload->Sections.end(), [](const auto& value) { return !value.Complete; }))
+                payload->State = SplineOcclusionState::Partial;
+
+            auto updated = std::make_shared<BuildingRecord>(*owner->second.Record);
+            updated->SplineOcclusion = std::move(payload);
+            ChangeSet preparedChanges;
+            preparedChanges.WorldGeneration = generation;
+            preparedChanges.SourceRevision = sourceRevision_;
+            preparedChanges.DependencyRevision = dependencyRevision_;
+            preparedChanges.InvalidatedSections.push_back(section);
+            preparedChanges.InvalidatedCells.assign(owner->second.Cells.begin(), owner->second.Cells.end());
+
+            // Insert new reverse edges before dropping old ones. Allocation
+            // failure can leave harmless extra edges, never a missing edge.
+            for (const auto& dependency : dependencies)
+                occluderSections_[dependency.Key].insert(section);
+            for (const auto& prior : oldDependencies)
+            {
+                const bool retained = std::any_of(dependencies.begin(), dependencies.end(),
+                    [&](const auto& dependency) { return dependency.Key == prior.Key; });
+                if (retained) continue;
+                auto reverse = occluderSections_.find(prior.Key);
+                if (reverse == occluderSections_.end()) continue;
+                reverse->second.erase(section);
+                if (reverse->second.empty()) occluderSections_.erase(reverse);
+            }
+            owner->second.Record = std::move(updated);
+            for (const auto& cellKey : owner->second.Cells)
+            {
+                auto cell = cells_.find(cellKey);
+                if (cell != cells_.end()) { Advance(cellRevisionSequence_); cell->second.Revision = cellRevisionSequence_; }
+            }
+            changes = std::move(preparedChanges);
+            return true;
+        }
+        catch (...) { changes = {}; return false; }
     }
 
     std::vector<std::shared_ptr<const BuildingRecord>> Index::SnapshotUnresolved() const
@@ -368,4 +850,7 @@ namespace MiniMapBuildingComplexIndex
 
     uint64_t Index::SourceRevision() const noexcept
     { std::lock_guard lock(mutex_); return sourceRevision_; }
+
+    uint64_t Index::DependencyRevision() const noexcept
+    { std::lock_guard lock(mutex_); return dependencyRevision_; }
 }

@@ -84,6 +84,47 @@ namespace MiniMapBuildingComplexIndex
         bool operator==(const SplineSectionSource&) const = default;
     };
 
+    struct SectionKey
+    {
+        MassKey Building;
+        uint64_t SourceRevision = 0, Identity = 0;
+        bool operator==(const SectionKey&) const = default;
+        bool operator<(const SectionKey& rhs) const noexcept
+        {
+            if (Building < rhs.Building) return true;
+            if (rhs.Building < Building) return false;
+            return SourceRevision < rhs.SourceRevision ||
+                (SourceRevision == rhs.SourceRevision && Identity < rhs.Identity);
+        }
+    };
+
+    struct SplineOccluderDependency
+    {
+        MassKey Key;
+        uint64_t SourceRevision = 0;
+        std::array<std::array<double, 2>, 4> Corners{};
+        double TopZ = 0;
+    };
+
+    struct OccludedSplineSection
+    {
+        uint64_t Identity = 0;
+        uint64_t DependencyRevision = 0;
+        std::vector<SplineTriangleSource> VisibleTriangles;
+        std::vector<SplineTriangleSource> WalkwayInsetTriangles;
+        std::vector<SplineOccluderDependency> Dependencies; // Includes all triangle-AABB candidates.
+        bool Complete = false;
+    };
+
+    enum class SplineOcclusionState : uint8_t { Unevaluated, Complete, Partial, Invalid };
+
+    struct SplineOcclusionPayload
+    {
+        uint64_t WorldGeneration = 0, SourceRevision = 0, DependencyRevision = 0;
+        SplineOcclusionState State = SplineOcclusionState::Unevaluated;
+        std::vector<OccludedSplineSection> Sections;
+    };
+
     struct SplineCurveSegmentSource
     {
         std::array<std::array<double, 3>, 4> WorldControls{};
@@ -114,6 +155,10 @@ namespace MiniMapBuildingComplexIndex
         std::shared_ptr<const std::string> BlueprintIdentity;
         // Preserves the established Base Core last-overlay classification.
         bool BaseCoreOverlay = false;
+        // Copied from the existing CrBuildingData Interior tag policy.
+        // False is meaningful only when InteriorKnown is true.
+        bool InteriorKnown = false;
+        bool InteriorOnly = false;
         MiniMapBuildingGeometryTypes::Transform Transform;
         std::array<std::array<double, 3>, 4> SpriteQuadWorld{};
         bool SpriteQuadValid = false;
@@ -145,6 +190,7 @@ namespace MiniMapBuildingComplexIndex
         MassKey Key;
         uint64_t WorldGeneration = 0;
         std::shared_ptr<const SourcePayload> Source;
+        std::shared_ptr<const SplineOcclusionPayload> SplineOcclusion;
     };
 
     struct CellSnapshot
@@ -165,10 +211,13 @@ namespace MiniMapBuildingComplexIndex
     {
         uint64_t WorldGeneration = 0;
         uint64_t SourceRevision = 0;
+        uint64_t DependencyRevision = 0;
         std::vector<CellKey> InvalidatedCells;
+        std::vector<SectionKey> InvalidatedSections;
         // An unbounded unknown-support transition may affect any cell. This
         // invalidates completeness without enumerating world cells.
         bool GlobalCompletenessInvalidated = false;
+        bool GlobalSplineOcclusionInvalidated = false;
     };
 
     class Index
@@ -188,9 +237,19 @@ namespace MiniMapBuildingComplexIndex
         bool TrySnapshot(CellKey key, CellSnapshot& output) const noexcept;
         bool TryGetRecord(MassKey key, uint64_t worldGeneration,
             std::shared_ptr<const BuildingRecord>& output) const noexcept;
+        std::vector<SectionKey> SnapshotSplineSections() const;
+        bool IsCurrentSplineSection(SectionKey section, uint64_t worldGeneration) const noexcept;
+        bool TryGetOcclusionInputs(SectionKey section,
+            std::shared_ptr<const BuildingRecord>& spline,
+            std::vector<std::shared_ptr<const BuildingRecord>>& ordinaryCandidates,
+            bool& hasUnresolvedOrdinary, uint64_t& dependencyRevision) const noexcept;
+        bool PublishSplineOcclusion(SectionKey section, uint64_t worldGeneration,
+            OccludedSplineSection output, SplineOcclusionState state,
+            ChangeSet& changes) noexcept;
         std::vector<std::shared_ptr<const BuildingRecord>> SnapshotUnresolved() const;
         uint64_t WorldGeneration() const noexcept;
         uint64_t SourceRevision() const noexcept;
+        uint64_t DependencyRevision() const noexcept;
 
     private:
         struct Cell
@@ -202,22 +261,24 @@ namespace MiniMapBuildingComplexIndex
         {
             std::shared_ptr<const BuildingRecord> Record;
             std::set<CellKey> Cells;
+            std::set<SectionKey> Sections;
         };
 
         mutable std::mutex mutex_;
         WorldOrigin origin_;
         uint64_t worldGeneration_ = 0;
         uint64_t sourceRevision_ = 0;
+        uint64_t dependencyRevision_ = 0;
         uint64_t cellRevisionSequence_ = 0;
         uint64_t resetRevision_ = 0;
         size_t unboundedUnresolvedCount_ = 0;
+        size_t unresolvedOccluderCount_ = 0;
         std::map<MassKey, Stored> records_;
         std::map<CellKey, Cell> cells_;
         std::set<MassKey> unresolved_;
-        // Narrow future dependency hooks. Section support stays whole until a
-        // separate preparation transaction produces cell-visible output.
-        std::map<std::pair<MassKey, uint64_t>, std::set<CellKey>> sectionCells_;
-        std::map<MassKey, std::set<uint64_t>> occluderSections_;
+        std::map<SectionKey, std::set<CellKey>> sectionCells_;
+        std::map<MassKey, std::set<SectionKey>> occluderSections_;
+        std::map<SectionKey, uint64_t> sectionDependencyRevisions_;
     };
 
     bool TryWorldCell(double worldX, double worldY, WorldOrigin origin, CellKey& output) noexcept;

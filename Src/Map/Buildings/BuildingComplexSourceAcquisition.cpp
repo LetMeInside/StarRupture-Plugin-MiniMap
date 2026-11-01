@@ -45,6 +45,7 @@ namespace
         SDK::UClass* Visual = nullptr;
         SDK::UClass* Cosmetic = nullptr;
         SDK::UClass* Walkway = nullptr;
+        SDK::UClass* BuildingData = nullptr;
         SDK::UClass* Blueprint = nullptr;
         SDK::UClass* SplineMesh = nullptr;
         std::vector<SDK::UObject*> Roots;
@@ -109,6 +110,20 @@ namespace
         for (auto* type = object->Class; type; type = static_cast<SDK::UClass*>(type->SuperStruct))
             if (type == base) return true;
         return false;
+    }
+
+    bool CopyInteriorPolicy(const MiniMapNative::NativeApi& native, SDK::UAuActorPlacementData& placement,
+        bool& known, bool& interiorOnly)
+    {
+        known = false;
+        interiorOnly = false;
+        if (!Types.BuildingData || !native.asset.nameEqualsWide) return false;
+        if (Is(&placement, Types.BuildingData))
+            for (const auto tag : static_cast<const SDK::UCrBuildingData*>(&placement)->Tags)
+                if (tag.Number == 0 && native.asset.nameEqualsWide(tag, L"Interior"))
+                    interiorOnly = true;
+        known = true;
+        return true;
     }
 
     bool CopyMeshProfile(const SDK::UStaticMesh* mesh, const SDK::USplineMeshComponent* spline,
@@ -230,17 +245,20 @@ namespace
         return true;
     }
 
-    bool EqualSource(const B::SourcePayload& a, const B::SourcePayload& b)
+    bool EqualSource(const B::SourcePayload& a, const B::SourcePayload& b,
+        bool compareInteriorPolicy = true, bool compareProfiles = true)
     {
         const bool sameBlueprint = (!a.BlueprintIdentity && !b.BlueprintIdentity) ||
             (a.BlueprintIdentity && b.BlueprintIdentity && *a.BlueprintIdentity == *b.BlueprintIdentity);
         if (a.CanonicalBuildingType != b.CanonicalBuildingType ||
             !sameBlueprint ||
             a.BaseCoreOverlay != b.BaseCoreOverlay ||
+            (compareInteriorPolicy && (a.InteriorKnown != b.InteriorKnown || a.InteriorOnly != b.InteriorOnly)) ||
             !SameValues(a.Transform.Translation, b.Transform.Translation) ||
             !SameValues(a.Transform.Scale, b.Transform.Scale) || !SameValues(a.Transform.Rotation, b.Transform.Rotation) ||
             a.SplineSourceIdentity != b.SplineSourceIdentity || a.HasSplineSource != b.HasSplineSource ||
-            a.SplineCurve.size() != b.SplineCurve.size() || a.SplineProfiles.size() != b.SplineProfiles.size() ||
+            a.SplineCurve.size() != b.SplineCurve.size() ||
+            (compareProfiles && a.SplineProfiles.size() != b.SplineProfiles.size()) ||
             a.Support != b.Support) return false;
         if (a.NumericalProfileInputs.size() != b.NumericalProfileInputs.size()) return false;
         for (size_t i = 0; i < a.NumericalProfileInputs.size(); ++i)
@@ -255,7 +273,7 @@ namespace
                 !SameDouble(x.StartKey, y.StartKey) || !SameDouble(x.EndKey, y.EndKey) ||
                 x.InterpolationMode != y.InterpolationMode) return false;
         }
-        for (size_t i = 0; i < a.SplineProfiles.size(); ++i)
+        for (size_t i = 0; compareProfiles && i < a.SplineProfiles.size(); ++i)
         {
             const auto& x = a.SplineProfiles[i]; const auto& y = b.SplineProfiles[i];
             if (!SameValues(x.BoundsOrigin, y.BoundsOrigin) || !SameValues(x.BoundsExtent, y.BoundsExtent) ||
@@ -281,6 +299,12 @@ namespace
             B::SplinePreparationState::NotPresent;
         source.SplineCategory = uint8_t(MiniMapBuildingSplinePolicy::Classify(true, source.CanonicalBuildingType));
         source.SplineSortZValid = false;
+        if (source.InteriorKnown && source.InteriorOnly)
+        {
+            // The collector omits InteriorOnly records before visual planning.
+            source.SplinePreparation = B::SplinePreparationState::NotPresent;
+            return true;
+        }
         if (!source.HasSplineSource) return true;
         if (source.SplineCurve.empty() || key.Index < 0 || key.Serial <= 0 || !source.SourceGeneration ||
             !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return true;
@@ -472,6 +496,9 @@ namespace MiniMapBuildingComplexSourceAcquisition
     bool IsSameSource(const B::SourcePayload& a, const B::SourcePayload& b) noexcept
     { return EqualSource(a, b); }
 
+    bool IsSameSourceExceptInteriorPolicy(const B::SourcePayload& a, const B::SourcePayload& b) noexcept
+    { return EqualSource(a, b, false, !(a.InteriorOnly || b.InteriorOnly)); }
+
     bool PrepareSplineGeometry(B::MassKey key, B::SourcePayload& source) noexcept
     {
         try { return PrepareSplineGeometryOwned(key, source); }
@@ -496,7 +523,7 @@ namespace MiniMapBuildingComplexSourceAcquisition
         } roots{*native};
         try
         {
-            roots.Values.reserve(9);
+            roots.Values.reserve(10);
             auto lookup = [&](const wchar_t* path) -> SDK::UObject*
             {
                 const auto result = objects->FindResident(nullptr, nullptr, path, false);
@@ -512,10 +539,11 @@ namespace MiniMapBuildingComplexSourceAcquisition
             candidate.Visual = static_cast<SDK::UClass*>(lookup(L"/Script/MassRepresentation.MassVisualizationTrait"));
             candidate.Cosmetic = static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrMassRepVisCosmeticsTrait"));
             candidate.Walkway = static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrModularRampWalkway"));
+            candidate.BuildingData = static_cast<SDK::UClass*>(lookup(L"/Script/Chimera.CrBuildingData"));
             candidate.Blueprint = static_cast<SDK::UClass*>(lookup(L"/Script/Engine.BlueprintGeneratedClass"));
             candidate.SplineMesh = static_cast<SDK::UClass*>(lookup(L"/Script/Engine.SplineMeshComponent"));
             if (!candidate.Parameters || !candidate.Transform || !candidate.Spline || !candidate.AP ||
-                !candidate.Visual || !candidate.Cosmetic || !candidate.Walkway || !candidate.Blueprint || !candidate.SplineMesh ||
+                !candidate.Visual || !candidate.Cosmetic || !candidate.Walkway || !candidate.BuildingData || !candidate.Blueprint || !candidate.SplineMesh ||
                 !MiniMapBuildingBlueprintIdentity::Initialize())
                 return false;
             candidate.Roots = std::move(roots.Values);
@@ -542,8 +570,8 @@ namespace MiniMapBuildingComplexSourceAcquisition
         complete = false;
         if (!generation || !manager || entity.Index < 0 || entity.SerialNumber <= 0 ||
             !Types.Parameters || !Types.Transform || !Types.Spline || !Types.AP ||
-            !Types.Visual || !Types.Cosmetic || !Types.Walkway || !Types.Blueprint || !Types.SplineMesh ||
-            !native.asset.loadSynchronous ||
+            !Types.Visual || !Types.Cosmetic || !Types.Walkway || !Types.BuildingData || !Types.Blueprint || !Types.SplineMesh ||
+            !native.asset.loadSynchronous || !native.asset.nameEqualsWide ||
             !native.player.isGameThread || !native.mass.isEntityValid ||
             !native.mass.isEntityBuilt || !native.mass.getFragmentDataPtr ||
             !native.mass.getConstSharedFragmentPtr || !native.player.isGameThread()) return false;
@@ -577,6 +605,8 @@ namespace MiniMapBuildingComplexSourceAcquisition
             candidate.BlueprintIdentity = std::move(blueprint);
             candidate.BaseCoreOverlay = *candidate.BlueprintIdentity ==
                 "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
+            if (!CopyInteriorPolicy(native, *placement, candidate.InteriorKnown, candidate.InteriorOnly) ||
+                !candidate.InteriorKnown) return false;
             candidate.Transform.Translation = {transform->Translation.X, transform->Translation.Y, transform->Translation.Z};
             candidate.Transform.Scale = {transform->Scale3D.X, transform->Scale3D.Y, transform->Scale3D.Z};
             candidate.Transform.Rotation = {transform->Rotation.X, transform->Rotation.Y, transform->Rotation.Z, transform->Rotation.W};
@@ -589,7 +619,7 @@ namespace MiniMapBuildingComplexSourceAcquisition
 
             bool splineKnown = false;
             if (!CopySplineSource(native, manager, entity, candidate, splineKnown)) return false;
-            if (!candidate.SplineCurve.empty())
+            if (!candidate.InteriorOnly && !candidate.SplineCurve.empty())
                 splineKnown = CopySplineProfiles(native, *placement, buildingType, candidate.SplineProfiles) && splineKnown;
             if (!splineKnown) return false;
             output = std::move(candidate);

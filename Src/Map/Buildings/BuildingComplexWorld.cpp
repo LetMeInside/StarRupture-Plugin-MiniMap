@@ -5,6 +5,7 @@
 #include "BuildingSpriteRenderer.h"
 #include "BuildingCache.h"
 #include "BuildingSpriteGeometryCore.h"
+#include "BuildingSplineOcclusionAdapter.h"
 #include "Map/Map.h"
 #include "Map/Terrain/TerrainSource.h"
 #include "Native/MassLifecycle.h"
@@ -22,7 +23,9 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <set>
 #include <span>
+#include <tuple>
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +33,9 @@
 namespace
 {
     namespace B = MiniMapBuildingComplexIndex;
+    namespace C = MiniMapBuildingCollector;
+    namespace A = MiniMapBuildingSplineOcclusionAdapter;
+    namespace O = MiniMapBuildingSplineOcclusion;
     namespace L = MiniMapMassLifecycle;
     using Event = L::Event;
     using Handle = MiniMapNative::MassEntityHandle;
@@ -73,6 +79,8 @@ namespace
         std::shared_ptr<const MiniMapBuildingCache::Sprite> Image;
     };
     std::unordered_map<B::MassKey, CompletedCaptureImage, MassKeyHash> CaptureImages;
+    std::set<B::SectionKey> PendingOcclusionSections;
+    bool PendingGlobalOcclusion = false;
     struct DeferredCaptureRetry
     {
         B::MassKey Key;
@@ -94,6 +102,169 @@ namespace
         SourceQueued.clear();
     }
 
+    void QueueOcclusionChanges(const B::ChangeSet& changes)
+    {
+        if (changes.GlobalSplineOcclusionInvalidated)
+        {
+            PendingGlobalOcclusion = true;
+            return;
+        }
+        PendingOcclusionSections.insert(changes.InvalidatedSections.begin(), changes.InvalidatedSections.end());
+    }
+
+    void ClearPendingOcclusion() noexcept
+    {
+        PendingOcclusionSections.clear();
+        PendingGlobalOcclusion = false;
+    }
+
+    bool PrepareOccludedSection(B::SectionKey key, uint64_t generation)
+    {
+        std::shared_ptr<const B::BuildingRecord> spline;
+        std::vector<std::shared_ptr<const B::BuildingRecord>> ordinary;
+        bool unresolvedOrdinary = false;
+        uint64_t dependencyRevision = 0;
+        if (!Index.TryGetOcclusionInputs(key, spline, ordinary, unresolvedOrdinary, dependencyRevision) ||
+            !spline || !spline->Source) return false;
+        const auto& source = *spline->Source;
+        const auto sectionIt = std::find_if(source.SplineSections.begin(), source.SplineSections.end(),
+            [&](const auto& value) { return value.Identity == key.Identity; });
+        if (sectionIt == source.SplineSections.end()) return false;
+
+        std::stable_sort(ordinary.begin(), ordinary.end(), [](const auto& left, const auto& right) {
+            const auto& a = *left->Source; const auto& b = *right->Source;
+            return std::tuple(1, a.Transform.Translation[2], a.Transform.Translation[1], a.Transform.Translation[0],
+                       left->Key.Serial, left->Key.Index) <
+                std::tuple(1, b.Transform.Translation[2], b.Transform.Translation[1], b.Transform.Translation[0],
+                       right->Key.Serial, right->Key.Index);
+        });
+
+        std::vector<O::Occluder> occluders;
+        std::vector<B::SplineOccluderDependency> identities;
+        occluders.reserve(ordinary.size()); identities.reserve(ordinary.size());
+        for (const auto& record : ordinary)
+        {
+            if (!record || !record->Source) { unresolvedOrdinary = true; continue; }
+            std::shared_ptr<const MiniMapBuildingCache::Sprite> image;
+            if (!MiniMapBuildingComplexWorld::TryGetCaptureImage(record->Key, generation,
+                record->Source->SourceRevision, image) || !image)
+            { unresolvedOrdinary = true; continue; }
+
+            C::Record collectorRecord;
+            collectorRecord.Generation = generation;
+            collectorRecord.Index = record->Key.Index; collectorRecord.Serial = record->Key.Serial;
+            collectorRecord.TransformValid = MiniMapBuildingGeometryTypes::Valid(record->Source->Transform);
+            collectorRecord.HasSpline = record->Source->HasSplineSource;
+            collectorRecord.Position = record->Source->Transform.Translation;
+            collectorRecord.Scale = record->Source->Transform.Scale;
+            collectorRecord.Rotation = record->Source->Transform.Rotation;
+
+            A::OrdinarySubmission submission;
+            submission.RecordIndex = occluders.size();
+            submission.Submitted = true;
+            submission.Min = image->Bounds.Min; submission.Max = image->Bounds.Max;
+            for (size_t i = 0; i < submission.Quad.size(); ++i)
+                submission.Quad[i] = {record->Source->SpriteQuadWorld[i][0], record->Source->SpriteQuadWorld[i][1]};
+            O::Occluder value;
+            if (!A::MakeOccluder(collectorRecord, submission, uint64_t(occluders.size()), value))
+            { unresolvedOrdinary = true; continue; }
+            occluders.push_back(value);
+            B::SplineOccluderDependency dependency;
+            dependency.Key = record->Key;
+            dependency.SourceRevision = record->Source->SourceRevision;
+            dependency.Corners = value.Corners;
+            dependency.TopZ = value.TopZ;
+            identities.push_back(dependency);
+        }
+
+        B::OccludedSplineSection output;
+        output.Identity = key.Identity;
+        output.DependencyRevision = dependencyRevision;
+        std::vector<O::Triangle> input;
+        input.reserve(sectionIt->Triangles.size());
+        for (size_t i = 0; i < sectionIt->Triangles.size(); ++i)
+        {
+            O::Triangle triangle;
+            triangle.Key = uint64_t(i);
+            triangle.Vertices = sectionIt->Triangles[i].Vertices;
+            input.push_back(triangle);
+        }
+
+        auto prepared = O::PrepareOccluders(occluders);
+        if (prepared.GetStatus() != O::Status::Complete)
+            unresolvedOrdinary = true;
+        else
+        {
+            std::set<size_t> dependencyOrdinals;
+            std::vector<size_t> candidates;
+            for (const auto& triangle : input)
+            {
+                prepared.Candidates(O::Bounds(triangle.Vertices), candidates);
+                dependencyOrdinals.insert(candidates.begin(), candidates.end());
+            }
+            for (size_t ordinal : dependencyOrdinals)
+                if (ordinal < identities.size()) output.Dependencies.push_back(identities[ordinal]);
+
+            auto plan = O::Plan(input, prepared);
+            if (plan.State == O::Status::Complete)
+            {
+                output.VisibleTriangles.reserve(plan.Visible.size());
+                for (const auto& triangle : plan.Visible)
+                    output.VisibleTriangles.push_back({triangle.Vertices});
+                bool insetComplete = true;
+                const bool insetApplicable = MiniMapBuildingSplinePolicy::IsWalkwayDefinition(
+                    true, source.CanonicalBuildingType);
+                if (insetApplicable && sectionIt->HasWalkwayInsetBands)
+                {
+                    A::WalkwayInsetScratch scratch;
+                    std::vector<O::Triangle> inset;
+                    for (const auto& triangle : plan.Visible)
+                        for (const auto& band : sectionIt->WalkwayInsetBands)
+                            A::ClipWalkwayInsetTriangle(triangle, band.Vertices, scratch, inset, insetComplete);
+                    output.WalkwayInsetTriangles.reserve(inset.size());
+                    for (const auto& triangle : inset)
+                        output.WalkwayInsetTriangles.push_back({triangle.Vertices});
+                }
+                const bool walkwayBandsComplete = !insetApplicable || sectionIt->HasWalkwayInsetBands;
+                output.Complete = insetComplete && walkwayBandsComplete && !unresolvedOrdinary &&
+                    source.SplinePreparation == B::SplinePreparationState::Complete;
+            }
+            else unresolvedOrdinary = true;
+        }
+
+        const auto state = output.Complete ? B::SplineOcclusionState::Complete :
+            (unresolvedOrdinary ? B::SplineOcclusionState::Partial : B::SplineOcclusionState::Invalid);
+        B::ChangeSet published;
+        return Index.PublishSplineOcclusion(key, generation, std::move(output), state, published);
+    }
+
+    void ServicePendingOcclusion(uint64_t generation)
+    {
+        if (PendingGlobalOcclusion)
+        {
+            const auto all = Index.SnapshotSplineSections();
+            PendingOcclusionSections.insert(all.begin(), all.end());
+            PendingGlobalOcclusion = false;
+        }
+        std::set<B::SectionKey> pending;
+        pending.swap(PendingOcclusionSections);
+        while (!pending.empty())
+        {
+            auto work = pending.extract(pending.begin());
+            const auto section = work.value();
+            // Source replacement and removal retire their old SectionKeys.
+            // Check before work so obsolete identities are not retained.
+            if (!Index.IsCurrentSplineSection(section, generation)) continue;
+            bool prepared = false;
+            try { prepared = PrepareOccludedSection(section, generation); }
+            catch (...) { /* Keep this output unevaluated; source/index state remains valid. */ }
+            if (!prepared && Index.IsCurrentSplineSection(section, generation))
+                PendingOcclusionSections.insert(std::move(work));
+        }
+        // Retry nodes enter a separate queue, not the local work set. Failed
+        // work is eligible on the next admitted service pass, never in this loop.
+    }
+
     void InvalidateCapture(B::MassKey key) noexcept
     {
         const auto found = CaptureRequests.find(key);
@@ -103,6 +274,14 @@ namespace
             CaptureRequests.erase(found);
         }
         CaptureImages.erase(key);
+    }
+
+    void CancelCaptureRequest(B::MassKey key) noexcept
+    {
+        const auto found = CaptureRequests.find(key);
+        if (found == CaptureRequests.end()) return;
+        MiniMapBuildingSpriteRenderer::CancelBuildingComplex(found->second.RequestId);
+        CaptureRequests.erase(found);
     }
 
     void ClearCaptureRequests() noexcept
@@ -123,6 +302,7 @@ namespace
         ClearCaptureRequests();
         Index.ResetWorld(generation);
         ClearSourceQueue();
+        ClearPendingOcclusion();
     }
 
     bool EnsureMembershipRecord(B::MassKey key, uint64_t generation)
@@ -143,6 +323,7 @@ namespace
         B::ChangeSet changes;
         const auto result = Index.Upsert(std::move(record), changes);
         if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure) return false;
+        QueueOcclusionChanges(changes);
         EnqueueSource(key);
         return true;
     }
@@ -277,6 +458,7 @@ namespace
                     const auto result = Index.Remove({event.Entity.Index, event.Entity.SerialNumber}, generation, changes);
                     if (result == B::RemoveResult::AllocationFailure)
                     { ResetIndex(generation); return false; }
+                    QueueOcclusionChanges(changes);
                     const B::MassKey key{event.Entity.Index, event.Entity.SerialNumber};
                     SourceQueued.erase(key);
                     InvalidateCapture(key);
@@ -309,6 +491,7 @@ namespace
             const B::MassKey key{event.Entity.Index, event.Entity.SerialNumber};
             if (Index.Remove(key, generation, changes) == B::RemoveResult::AllocationFailure)
                 return false;
+            QueueOcclusionChanges(changes);
             SourceQueued.erase(key);
             InvalidateCapture(key);
         }
@@ -341,7 +524,13 @@ namespace
     {
         if (!record || !record->Source || record->WorldGeneration != generation ||
             record->Source->SourceGeneration != generation || !record->Source->SourceRevision ||
-            !record->Source->BlueprintIdentity || record->Source->BlueprintIdentity->empty()) return;
+            !record->Source->BlueprintIdentity || record->Source->BlueprintIdentity->empty() ||
+            !record->Source->InteriorKnown || record->Source->InteriorOnly) return;
+        auto completedImage = CaptureImages.find(key);
+        if (completedImage != CaptureImages.end() && completedImage->second.WorldGeneration == generation &&
+            completedImage->second.SourceRevision == record->Source->SourceRevision &&
+            completedImage->second.Image && completedImage->second.CanonicalBlueprintIdentity == *record->Source->BlueprintIdentity)
+            return;
         auto prior = CaptureRequests.find(key);
         if (prior != CaptureRequests.end())
         {
@@ -472,6 +661,8 @@ namespace
             published.Source = std::make_shared<const B::SourcePayload>(std::move(updated));
             B::ChangeSet changes;
             const auto upserted = Index.Upsert(std::move(published), changes);
+            if (upserted == B::UpsertResult::Inserted || upserted == B::UpsertResult::Replaced)
+                QueueOcclusionChanges(changes);
             if (upserted != B::UpsertResult::Inserted && upserted != B::UpsertResult::Replaced &&
                 upserted != B::UpsertResult::Unchanged) CaptureImages.erase(key);
         }
@@ -516,7 +707,24 @@ namespace
             if (!MiniMapBuildingComplexSourceAcquisition::PrepareSplineGeometry(key, candidate))
             { retry(); return; }
             candidate.SourceRevision = before->Source->SourceRevision + 1;
-            InvalidateCapture(key);
+            const bool policyOnlyChange = MiniMapBuildingComplexSourceAcquisition::IsSameSourceExceptInteriorPolicy(
+                *before->Source, candidate);
+            if (policyOnlyChange)
+            {
+                candidate.SpriteQuadWorld = before->Source->SpriteQuadWorld;
+                candidate.SpriteQuadValid = before->Source->SpriteQuadValid;
+                candidate.SpriteCaptureSupportMetadata = before->Source->SpriteCaptureSupportMetadata;
+                candidate.OrdinarySpriteSupport = before->Source->OrdinarySpriteSupport;
+                CancelCaptureRequest(key);
+                auto image = CaptureImages.find(key);
+                if (image != CaptureImages.end() && image->second.WorldGeneration == generation &&
+                    image->second.SourceRevision == before->Source->SourceRevision && image->second.Image &&
+                    image->second.CanonicalBlueprintIdentity == *candidate.BlueprintIdentity)
+                    image->second.SourceRevision = candidate.SourceRevision;
+                else
+                    CaptureImages.erase(key);
+            }
+            else InvalidateCapture(key);
             B::BuildingRecord updated;
             updated.Key = key;
             updated.WorldGeneration = generation;
@@ -525,6 +733,7 @@ namespace
             const auto result = Index.Upsert(std::move(updated), changes);
             if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure)
             { retry(); return; }
+            QueueOcclusionChanges(changes);
         }
         if (complete)
         {
@@ -628,6 +837,7 @@ namespace
         ConsumeCaptureResults(generation);
         if (!SourceQueue.empty()) ServicePendingSources(*native, generation);
         ReleaseDeferredCaptureRetries(generation);
+        ServicePendingOcclusion(generation);
         lifecycle = L::Status();
         if (lifecycle.ObservationLost || lifecycle.Epoch != AppliedEpoch ||
             (lifecycle.Sequence != AppliedSequence && lifecycle.Queued == 0))

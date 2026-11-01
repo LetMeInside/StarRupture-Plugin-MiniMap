@@ -24,5 +24,9 @@ namespace MiniMapBuildingComplexSourceAcquisition
         MiniMapBuildingComplexIndex::SourcePayload& source) noexcept;
     bool IsSameSource(const MiniMapBuildingComplexIndex::SourcePayload& a,
         const MiniMapBuildingComplexIndex::SourcePayload& b) noexcept;
+    // Used only to retain an already-owned ordinary capture across an
+    // InteriorOnly policy transition; index/source revision still changes.
+    bool IsSameSourceExceptInteriorPolicy(const MiniMapBuildingComplexIndex::SourcePayload& a,
+        const MiniMapBuildingComplexIndex::SourcePayload& b) noexcept;
 }
 #endif
