@@ -2074,12 +2074,13 @@ namespace MiniMapFingerprints
 #if defined(MODLOADER_CLIENT_BUILD)
         // BuildingComplex foundations are required native contracts, resolved
         // only here. No optional second pass or consumer-local scanner exists.
-        auto foundation = [&](const char* name, const char* pattern, uintptr_t& out)
+        auto foundation = [&](const char* name, const char* pattern, uintptr_t& out,
+            AddressKind kind = AddressKind::FunctionEntry)
         {
             RequiredScan request{};
             request.name = name;
             request.idaPattern = pattern;
-            request.kind = AddressKind::FunctionEntry;
+            request.kind = kind;
             request.inMap = false; // Not in the version map yet.
             out = resolveRequired(request);
             return out != 0;
@@ -2118,11 +2119,17 @@ namespace MiniMapFingerprints
             "40 53 48 83 EC 20 80 79 13 00 48 8B D9 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 09 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC C6 43 13 00 8B 43 14 C1 E8 03 A8 01",
             addresses.bulkUnlock)) return false;
         // Folded UpdateResource wrapper: flags=0, virtual WithParams dispatch.
+        // A thunk with no unwind entry, so a code site and not a function start.
         if (!foundation("MiniMap::BuildingComplex::UpdateResource",
             "48 8B 01 33 D2 48 FF A0 30 03 00 00",
-            addresses.textureUpdateResource)) return false;
+            addresses.textureUpdateResource, AddressKind::Code)) return false;
+        // UTexture::GetResource has two identical copies (the const overload) one
+        // after the other. The pattern runs into the opening of the next one, which
+        // the second copy does not have, so it matches the first only.
         if (!foundation("MiniMap::BuildingComplex::GetResource",
-            "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38",
+            "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38 "
+            "E8 ?? ?? ?? ?? 33 C0 48 83 C4 20 5B C3 48 8B 83 28 01 00 00 48 83 C4 20 5B C3 48 8B 83 20 01 00 00 "
+            "48 83 C4 20 5B C3 CC CC CC CC 40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D",
             addresses.textureGetResource)) return false;
 #endif
         return true;
