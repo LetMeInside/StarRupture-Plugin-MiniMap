@@ -133,6 +133,8 @@
     <ClInclude Include="Map\Buildings\BuildingComplexCellRasterizer.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexSourceAcquisition.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexWorld.h" />
+    <ClInclude Include="Map\Buildings\BuildingComplexAbi.h" />
+    <ClInclude Include="Map\Buildings\BuildingComplexApiInternal.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
     <ClInclude Include="Map\MarkerIconSizing.h" />
     <ClInclude Include="Map\Terrain\TerrainProfile.h" />
@@ -230,6 +232,7 @@
     <ClCompile Include="Map\Buildings\BuildingComplexCellRasterizer.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexSourceAcquisition.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexWorld.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingComplexApi.cpp" />
     <ClCompile Include="Map\Buildings\ExternalMapBuildingSession.cpp" />
     <ClCompile Include="Map\Buildings\ExternalMapBuildingSessionAbi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />

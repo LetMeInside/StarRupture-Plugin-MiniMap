@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingComplexWorld.h"
+#include "BuildingComplexApiInternal.h"
 #include "BuildingComplexSourceAcquisition.h"
 #include "Config/Config.h"
 #include "BuildingScheduler.h"
@@ -1100,6 +1101,7 @@ namespace
         try
         {
             ServiceImpl();
+            MiniMapBuildingComplexApiInternal::ServiceRequests();
             MiniMapTexturePublication::ProcessRequests();
         }
         catch (...)
