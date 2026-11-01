@@ -19,9 +19,8 @@
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
 #include "Services/RuntimeEvents.h"
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <atomic>
 #include <chrono>
-#endif
 #include <mutex>
 #include <numeric>
 #include <string_view>
@@ -45,9 +44,7 @@ namespace
         uint8_t(SDK::EInterpCurveMode::CIM_CurveUser)==3 &&
         uint8_t(SDK::EInterpCurveMode::CIM_CurveBreak)==4 &&
         uint8_t(SDK::EInterpCurveMode::CIM_CurveAutoClamped)==5);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     using Clock = std::chrono::steady_clock;
-#endif
     constexpr uint8_t kSplineFillOpacity=255; // Fixed category opacity; no instance customization.
     struct Instance
     {
@@ -73,6 +70,42 @@ namespace
         size_t CanonicalTypeCount=0;
         std::vector<size_t> DrawOrder; // Prepared on snapshot changes, never sorted in Render.
     };
+    // Planned spline surfaces as copied world triangles. OnTick builds them;
+    // Render only culls and reprojects, so its cost follows what is on screen.
+    struct SplineDraw
+    {
+        C::Bounds World; // Union of this record's triangles: one viewport test per record.
+        size_t FirstBody=0,Bodies=0,FirstInset=0,Insets=0;
+        uint32_t Color=0,InsetColor=0;
+        bool DroneRail=false;
+    };
+    struct SplineDrawList
+    {
+        uint64_t Generation=0;
+        std::vector<OR::Triangle> Triangles;
+        std::vector<SplineDraw> Records;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        size_t PlanTriangles=0,PlanInsetTriangles=0;
+#endif
+    };
+    // Spline work stops for the tick once the layer's tick has taken this
+    // long and resumes on the next one, so a replan never stalls a frame.
+    constexpr auto kSplinePreparationBudget=std::chrono::milliseconds(2);
+    // The plan, then the draw list, being prepared across ticks. Render keeps
+    // replaying the published list until this one replaces it.
+    struct PendingSplines
+    {
+        A::Preparation Planning;
+        std::shared_ptr<const A::RenderPlan> Plan; // Set once planning completes.
+        std::shared_ptr<SplineDrawList> List;
+        double Scale=0;
+        size_t NextRecord=0,NextSource=0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        A::PreparationWork Work;
+        A::Invalidation Mismatch=A::Invalidation::None; // None: the plan was reused for a new zoom.
+        double PlanMs=0;
+#endif
+    };
     // Render's UI thread owns this storage; OnTick/Clear never touch it.
     // Only copied world XY is retained, after validating all three world axes.
     struct WorldQuad
@@ -96,16 +129,21 @@ namespace
             Session=session;Revision=revision;Owner=snapshot;
         }
     };
+    // One sprite the last complete draw pass submitted, in world space so a later
+    // frame can re-project it. Holds only a copied texture identity and numbers,
+    // never a UObject.
+    struct SpriteReplay
+    {
+        MiniMap::Services::Texture Texture;
+        std::array<MiniMapSpriteStatus::AtlasUV,4> UV;
+        std::array<G::XY,4> World;
+    };
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct RenderWorkload
     {
         size_t PreparedInstances=0,OrdinarySubmitted=0,BaseCoreSubmissions=0,SplineRecords=0,
             RetainedPlanTriangles=0,BodyTriangles=0,WalkwayInsetTriangles=0,RailBodyTriangles=0,
-            RetainedWalkwayInsetTriangles=0,PreparedWalkwayInsetTriangles=0;
-        size_t PlanReuses=0,PlanRebuilds=0;
-        A::PreparationWork Sections;
-        std::array<uint64_t,size_t(A::Invalidation::Count)> Reasons{}; // Nonexclusive callback flags, never per entity.
-        void Reason(A::Invalidation reason) noexcept {if(reason!=A::Invalidation::None)Reasons[size_t(reason)]=1;}
+            RetainedWalkwayInsetTriangles=0;
     };
     struct PhaseAggregate
     {
@@ -137,7 +175,21 @@ namespace MiniMapBuildingVisuals
         std::shared_ptr<const C::Snapshot> LastInput;
         std::mutex Mutex;
         std::shared_ptr<const Snapshot> Published;
-        std::shared_ptr<const A::RenderPlan> PlanOwner, OcclusionPlan;
+        std::shared_ptr<const SplineDrawList> Splines; // Also under Mutex, which Render only try-locks.
+        // Spline planning state, written by whoever prepares this consumer's splines, never by Render.
+        std::shared_ptr<const A::RenderPlan> Plan; // With the zoom its draw list was built for.
+        double PlanScale=0;
+        std::vector<std::shared_ptr<const A::SectionPlan>> RetiredSections; // Freed within the tick budget.
+        std::optional<PendingSplines> Pending;
+        std::atomic<double> DrawScale{0}; // Render's pixels per world unit, read when planning.
+        // Render-thread storage: the last publications that callback read. While
+        // the game thread holds a lock the draw replays these instead of waiting.
+        std::shared_ptr<const Snapshot> RetainedSnapshot;
+        std::shared_ptr<const SplineDrawList> RetainedSplines;
+        std::shared_ptr<const C::Snapshot> RetainedCurrent;
+        // The sprites of the last pass that ran to its end; a pass builds its own lists and swaps them in only when complete.
+        std::vector<SpriteReplay> RetainedOrdinary,RetainedBaseCore;
+        uint64_t RetainedEpoch=0; // MiniMapBuildingAtlas::RetiredEpoch() when the lists were recorded.
         WorldQuadCache WorldQuads;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         BuildingVisualsTimingTotals Timing;
@@ -255,14 +307,25 @@ namespace
         const std::optional<double> elevation=i.Spline?i.SplineSortZ:std::optional<double>(i.Elevation);
         return std::tuple(i.Spline?0:1,elevation,i.Origin.Y,i.Origin.X,i.EntitySerial,i.EntityIndex);
     }
+    // Releases every publication and planning state of one consumer. The objects
+    // are destroyed after the lock is released.
+    void DropPublications(MiniMapBuildingVisuals::State& state)
+    {
+        const auto plan=std::move(state.Plan); state.PlanScale=0;
+        std::optional<PendingSplines> pending; pending.swap(state.Pending);
+        const auto retired=std::move(state.RetiredSections); state.RetiredSections.clear();
+        std::shared_ptr<const Snapshot> published; std::shared_ptr<const SplineDrawList> splines;
+        std::scoped_lock lock(state.Mutex); published.swap(state.Published); splines.swap(state.Splines);
+    }
     void Clear()
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         {std::lock_guard<std::mutex> lock(g_traceMutex);g_trace.Reset(0);g_traceInput.reset();}
 #endif
         g_normalState.Generation=0; g_normalState.LastInput.reset();
-        std::scoped_lock lock(g_normalState.Mutex); g_normalState.Published.reset(); g_normalState.PlanOwner.reset();
+        DropPublications(g_normalState);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        std::scoped_lock lock(g_normalState.Mutex);
         g_normalState.Timing={};
         g_normalState.TimingIntervalStart=Clock::now();
 #endif
@@ -426,7 +489,7 @@ namespace
         if(input->Generation!=state.Generation)
         {
             state.LastInput.reset();state.Generation=input->Generation;
-            std::scoped_lock lock(state.Mutex);state.Published.reset();state.PlanOwner.reset();
+            DropPublications(state);
         }
         if(input==state.LastInput)
         {
@@ -525,6 +588,219 @@ namespace
         state.LastInput=input;
     }
 
+    bool BaseCore(const Instance& instance)
+    {
+        const auto& path=instance.SpriteSource.CanonicalBlueprint;
+        return !instance.Spline && path &&
+            *path=="/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
+    }
+    template<class Observe>
+    void SubmitSplineList(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer dl,const MiniMapMap::Transform& transform,
+        const C::Bounds& viewport,const MiniMapConfig::BuildingRenderSettings& settings,
+        const SplineDrawList& splines,Observe&& observe)
+    {
+        for(const auto& record:splines.Records)
+        {
+            if(record.DroneRail && !settings.RenderDroneRails)continue;
+            if(!G::Intersects(G::ScreenBounds(record.World,transform),viewport))continue;
+            const auto body=OR::Submit(ui,dl,transform,splines.Triangles.data()+record.FirstBody,
+                record.Bodies,viewport,record.Color);
+            const auto inset=OR::Submit(ui,dl,transform,splines.Triangles.data()+record.FirstInset,
+                record.Insets,viewport,record.InsetColor);
+            observe(record,body,inset);
+        }
+    }
+    void SubmitSplineList(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer dl,const MiniMapMap::Transform& transform,
+        const C::Bounds& viewport,const MiniMapConfig::BuildingRenderSettings& settings,const SplineDrawList& splines)
+    { SubmitSplineList(ui,dl,transform,viewport,settings,splines,[](const auto&,const auto&,const auto&){}); }
+    void SubmitSpriteReplays(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer dl,const MiniMapMap::Transform& transform,
+        const C::Bounds& viewport,const std::vector<SpriteReplay>& sprites)
+    {
+        for(const auto& sprite:sprites)
+        {
+            MiniMap::Services::Quad p;C::Bounds bounds;
+            if(!ProjectWorldQuad(sprite.World,transform,p,bounds) || !G::Intersects(bounds,viewport))continue;
+            const auto& uv=sprite.UV;
+            ui.ImageQuad(dl,sprite.Texture,p,{{{uv[0].U,uv[0].V},{uv[1].U,uv[1].V},{uv[2].U,uv[2].V},{uv[3].U,uv[3].V}}},0xFFFFFFFFu);
+        }
+    }
+    // The UV admission SubmitQuad applies, so planned occluders are sprites that draw.
+    bool SubmittableUVs(const MiniMapSpriteStatus::AtlasEntry& entry)
+    {
+        using UV=MiniMapSpriteStatus::PreparedAtlasUV;
+        const auto state=entry.UVs.Status()==UV::State::Unprepared?UV::FromRegion(entry.Region).Status():entry.UVs.Status();
+        return state==UV::State::Valid;
+    }
+    // Starts a plan of spline occlusion against every resolved sprite, not only
+    // those on screen, so panning never invalidates it. When the plan is current
+    // and only the zoom changed, starts a new draw list. False when there is
+    // nothing to do, or (unless it may wait) the atlas is busy.
+    bool BeginSplines(MiniMapBuildingVisuals::State& state,const std::shared_ptr<const Snapshot>& snapshot,double scale,bool wait)
+    {
+        A::Request request;request.Snapshot=snapshot->Source;
+        bool planned=false;
+        // Copied per canonical type: no atlas entry pointer outlives the lock.
+        std::vector<std::optional<MiniMapSpriteStatus::AtlasEntry>> entries;
+        {
+            // The draw pass holds this lock; the tick tries again next time rather than waits.
+            std::unique_lock<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex,std::defer_lock);
+            if(wait)lock.lock();else if(!lock.try_lock())return false;
+            MiniMapBuildingAtlas::ObservePublication(request.AtlasSession,request.AtlasRevision);
+            planned=state.Plan && !state.Plan->AllocationFailed && state.Plan->Binding.Snapshot==request.Snapshot &&
+                state.Plan->Binding.AtlasSession==request.AtlasSession && state.Plan->Binding.AtlasRevision==request.AtlasRevision;
+            if(planned && scale==state.PlanScale)return false;
+            if(!planned)
+            {
+                entries.resize(snapshot->CanonicalTypeCount);
+                std::vector<bool> looked(entries.size());
+                for(const auto& instance:snapshot->Instances)
+                {
+                    const auto type=instance.CanonicalType;
+                    if(type>=entries.size() || looked[type])continue;
+                    looked[type]=true;
+                    if(const auto* entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint))
+                    {entries[type]=*entry;entries[type]->Texture={};}
+                }
+            }
+        }
+        auto& pending=state.Pending.emplace();
+        pending.Scale=scale;
+        pending.List=std::make_shared<SplineDrawList>();pending.List->Generation=snapshot->Generation;
+        if(planned){pending.Plan=state.Plan;return true;}
+        for(size_t index:snapshot->DrawOrder)
+        {
+            const auto& instance=snapshot->Instances[index];
+            if(instance.Spline)
+            {
+                if(instance.PreparedEnvelope && MiniMapBuildingVisuals::Detail::Drawable(instance.PreparedEnvelope->Status))
+                    request.Splines.push_back({instance.RecordIndex,instance.PreparedEnvelope,uint8_t(instance.SplineCategory)});
+                continue;
+            }
+            // The captured canopy alpha composes over rails: Base Core never occludes them.
+            if(BaseCore(instance) || instance.CanonicalType>=entries.size() || !entries[instance.CanonicalType])continue;
+            const auto& entry=*entries[instance.CanonicalType];
+            std::array<G::XY,4> quad;
+            if(!SubmittableUVs(entry) || !BuildWorldQuad(instance.SpriteSource,entry,quad))continue;
+            A::OrdinarySubmission observed;observed.RecordIndex=instance.RecordIndex;
+            observed.Min=entry.Min;observed.Max=entry.Max;observed.Submitted=true;
+            for(size_t i=0;i<4;++i)observed.Quad[i]={quad[i].X,quad[i].Y};
+            request.Ordinary.push_back(observed);
+        }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        pending.Mismatch=A::Mismatch(state.Plan.get(),request);
+        const auto start=Clock::now();
+        A::Begin(pending.Planning,request,state.Plan,&pending.Work);
+        pending.PlanMs+=Ms(start);
+#else
+        A::Begin(pending.Planning,request,state.Plan);
+#endif
+        return true;
+    }
+    // Copies planned records into the pending list as world triangles merged
+    // to half a pixel at its zoom, at least one record per call, until
+    // spent() returns true. True once every record is copied.
+    template<class Spent> bool FlattenSplines(PendingSplines& pending,Spent&& spent)
+    {
+        const auto& plan=pending.Plan;auto& list=*pending.List;
+        if(!plan || !plan->Binding.Snapshot)return true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        list.PlanTriangles=plan->Triangles;list.PlanInsetTriangles=plan->WalkwayInsetTriangles;
+#endif
+        const double tolerance=pending.Scale>0?0.5/pending.Scale:0; // Half a pixel, in world units.
+        const auto& records=plan->Binding.Snapshot->Records;
+        const auto& sources=plan->Binding.Splines;
+        auto& source=pending.NextSource;
+        for(bool first=true;pending.NextRecord<plan->Records.size();first=false)
+        {
+            if(!first && spent())return false;
+            const auto& record=plan->Records[pending.NextRecord++];
+            while(source<sources.size() && sources[source].RecordIndex!=record.RecordIndex)++source;
+            if(source==sources.size())break;
+            const auto& profiles=sources[source].Envelope->Profiles;
+            if(record.SelectedProfile>=profiles.size() || OR::FullyOccluded(record))continue;
+            const auto& r=records[record.RecordIndex];
+            SplineDraw draw;draw.DroneRail=P::IsDroneRailDefinition(r.DefinitionValid,r.BuildingId);
+            draw.Color=P::Color(P::RepresentativeRgb(r.DefinitionValid,r.BuildingId),kSplineFillOpacity);
+            draw.FirstBody=list.Triangles.size();
+            OR::AppendBody(record,profiles[record.SelectedProfile],tolerance,list.Triangles);
+            draw.Bodies=list.Triangles.size()-draw.FirstBody;
+            if(P::IsWalkwayDefinition(r.DefinitionValid,r.BuildingId))
+            {
+                draw.InsetColor=P::Color(P::kWalkwayInsetRgb,kSplineFillOpacity);
+                draw.FirstInset=list.Triangles.size();OR::AppendInsets(record,list.Triangles);
+                draw.Insets=list.Triangles.size()-draw.FirstInset;
+            }
+            for(size_t t=draw.FirstBody;t<list.Triangles.size();++t)
+                for(const auto& point:list.Triangles[t])MiniMapBuildingGeometry::Add(draw.World,point[0],point[1]);
+            if(draw.World.Valid)list.Records.push_back(draw);
+        }
+        return true;
+    }
+    // Moves a replaced plan's sections to RetiredSections, so dropping the
+    // plan itself frees only its record vectors.
+    void RetirePlan(MiniMapBuildingVisuals::State& state,const std::shared_ptr<const A::RenderPlan>& plan)
+    {
+        if(!plan)return;
+        try
+        {
+            for(const auto& record:plan->Records)
+                state.RetiredSections.insert(state.RetiredSections.end(),record.Sections.begin(),record.Sections.end());
+        }
+        catch(...){} // Without room to defer them, they are freed with the plan.
+    }
+    // For kSplinePreparationBudget, or to completion when sync: frees retired
+    // sections, then advances the pending plan and its draw list, and publishes
+    // the list once it is complete. A change that arrives meanwhile is picked up
+    // by the next pending plan, so there is never more than one.
+    void PrepareSplines(MiniMapBuildingVisuals::State& state,const std::shared_ptr<const Snapshot>& snapshot,bool sync)
+    {
+        const auto deadline=Clock::now()+kSplinePreparationBudget;
+        const auto spent=[&]{return !sync && Clock::now()>=deadline;};
+        while(!state.RetiredSections.empty() && !spent())state.RetiredSections.pop_back();
+        const double scale=state.DrawScale.load(std::memory_order_relaxed);
+        try
+        {
+            if(!state.Pending && (spent() || !BeginSplines(state,snapshot,scale,sync)))return;
+            auto& pending=*state.Pending;
+            if(!pending.Plan)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                const auto start=Clock::now();
+                const bool planned=A::Continue(pending.Planning,spent,&pending.Work);
+                pending.PlanMs+=Ms(start);
+                if(!planned)return;
+#else
+                if(!A::Continue(pending.Planning,spent))return;
+#endif
+                pending.Plan=pending.Planning.Plan();pending.Planning={};
+                pending.Scale=scale; // Flatten at the zoom current now, not when planning began.
+                if(spent())return;
+            }
+            if(!FlattenSplines(pending,spent))return;
+            if(pending.Plan!=state.Plan)RetirePlan(state,state.Plan); // A new zoom keeps the plan.
+            state.Plan=std::move(pending.Plan);state.PlanScale=pending.Scale;
+            std::shared_ptr<const SplineDrawList> splines=std::move(pending.List);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const bool rebuilt=pending.Mismatch!=A::Invalidation::None;
+            const auto work=pending.Work;const auto mismatch=pending.Mismatch;const double planMs=pending.PlanMs;
+#endif
+            state.Pending.reset();
+            std::scoped_lock lock(state.Mutex);splines.swap(state.Splines); // The old list is released after the lock.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if(!rebuilt)++state.Timing.PlanReuses;
+            else
+            {
+                ++state.Timing.PlanRebuilds;state.Timing.PlanPreparation.Add(planMs);
+                state.Timing.Sections.Add(work);
+                for(size_t i=0;i<work.Ms.size();++i)state.Timing.SectionPhases[i].Add(work.Ms[i]);
+                ++state.Timing.Reasons[size_t(mismatch)];
+                state.Timing.PreparedWalkwayInsetTriangles+=work.PreparedInsets;
+            }
+#endif
+        }
+        catch(const std::bad_alloc&){state.Pending.reset();} // Keep the published list; retry next tick.
+        catch(const std::length_error&){state.Pending.reset();}
+    }
     void OnTick(float)
     {
         if(!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() ||
@@ -533,6 +809,12 @@ namespace
         if(!input) { if(g_normalState.LastInput)Clear(); return; }
         if(input->Generation!=g_normalState.Generation)Clear();
         PrepareVisuals(g_normalState,input);
+        if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
+        {
+            std::shared_ptr<const Snapshot> snapshot;
+            {std::scoped_lock lock(g_normalState.Mutex);snapshot=g_normalState.Published;}
+            if(snapshot)PrepareSplines(g_normalState,snapshot,false);
+        }
     }
 
 }
@@ -581,20 +863,37 @@ namespace MiniMapBuildingVisuals
         if(!settings.ShowLayer)return;
         if(!transform.Valid) return;
         auto& worldQuads=state.WorldQuads; // Per-consumer render-thread storage; no borrowed atlas pointers.
-        auto& occlusionPlan=state.OcclusionPlan; // Same consumer lifetime as quad cache.
+        state.DrawScale.store((std::max)(transform.PixelsPerWorldUnit,transform.PixelsPerWorldUnitY>0?transform.PixelsPerWorldUnitY:0),
+            std::memory_order_relaxed);
+        if(selected)
+        {
+            // An external image is rendered once per change, so its splines are
+            // planned to completion here rather than across later ticks.
+            if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
+            {
+                std::shared_ptr<const Snapshot> published;
+                {std::scoped_lock lock(state.Mutex);published=state.Published;}
+                if(published)PrepareSplines(state,published,true);
+            }
+        }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto elapsedMs=[](Clock::time_point begin,Clock::time_point end)
             {return std::chrono::duration<double,std::milli>(end-begin).count();};
         const auto measuredBegin=Clock::now();
 #endif
-        std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(state.Mutex); snapshot=state.Published; }
-        const auto current=(selected ? selected : C::GetSnapshot());
+        auto snapshot=state.RetainedSnapshot;auto splines=state.RetainedSplines;
+        {
+            std::unique_lock<std::mutex> lock(state.Mutex,std::try_to_lock);
+            if(lock.owns_lock()){snapshot=state.Published;splines=state.Splines;}
+        }
+        state.RetainedSnapshot=snapshot;state.RetainedSplines=splines;
+        if(selected)state.RetainedCurrent=selected;
+        else C::TryGetSnapshot(state.RetainedCurrent); // The collector's last publication this callback read.
+        const auto current=state.RetainedCurrent;
         if(!snapshot || !current || snapshot->Generation!=current->Generation)
         {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if(occlusionPlan){std::scoped_lock lock(state.Mutex);++state.Timing.Reasons[size_t(A::Invalidation::Context)];}
-#endif
-            worldQuads={};occlusionPlan.reset();
+            worldQuads={};state.RetainedSnapshot.reset();state.RetainedSplines.reset();
+            state.RetainedOrdinary.clear();state.RetainedBaseCore.clear();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if(!selected)TraceFrame(current,snapshot,false);
 #endif
@@ -604,19 +903,17 @@ namespace MiniMapBuildingVisuals
         const double snapshotAcquireMs=elapsedMs(measuredBegin,Clock::now());
 #endif
         const auto dl=MiniMap::Services::DrawLayer::Window;
-        std::shared_ptr<const A::RenderPlan> framePlanOwner; // Former frame-local stats.CoverageOwner lifetime.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         RenderWorkload workload;
         workload.PreparedInstances=snapshot->Instances.size();
 #endif
-        A::Invalidation discarded=A::Invalidation::NoPrevious;
         const C::Bounds viewport={transform.CenterX-transform.Width/2,transform.CenterY-transform.Height/2,
             transform.CenterX+transform.Width/2,transform.CenterY+transform.Height/2,true};
         ui.PushClip(dl, {float(viewport.MinX), float(viewport.MinY)}, {float(viewport.MaxX), float(viewport.MaxY)}, true);
         // Ordinary occluders, clipped splines, then Base Core overlays share
         // the same draw-list clip, scheduler pass and lifecycle admission.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        double lifecycleWaitMs=0,ordinaryMs=0,splineSubmissionMs=0,splinePlanMs=0;
+        double lifecycleWaitMs=0,ordinaryMs=0,splineSubmissionMs=0;
         Clock::time_point baseCoreFinalizeBegin;
 #endif
         {
@@ -627,28 +924,33 @@ namespace MiniMapBuildingVisuals
         // Never wait on the game-thread capture service from the UI callback:
         // while it holds the lifecycle lock, skip this layer for one frame.
         std::unique_lock<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex,std::try_to_lock);
-        if(!lock.owns_lock()){ui->DL_PopClipRect(dl);return;}
+        if(!lock.owns_lock())
+        {
+            // The game thread holds the lifecycle lock: keep showing the last complete set,
+            // unless an atlas texture it drew from has been released since.
+            if(state.RetainedEpoch!=MiniMapBuildingAtlas::RetiredEpoch()){state.RetainedOrdinary.clear();state.RetainedBaseCore.clear();}
+            if(MiniMapMap::GameplayReady())
+            {
+                SubmitSpriteReplays(ui,dl,transform,viewport,state.RetainedOrdinary);
+                if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
+                    if(splines && splines->Generation==snapshot->Generation)
+                        SubmitSplineList(ui,dl,transform,viewport,settings,*splines);
+                SubmitSpriteReplays(ui,dl,transform,viewport,state.RetainedBaseCore);
+            }
+            ui.PopClip(dl);
+            return;
+        }
+        const uint64_t passEpoch=MiniMapBuildingAtlas::RetiredEpoch(); // Read before any draw below.
+        std::vector<SpriteReplay> ordinaryPass,baseCorePass; // Published only if the pass completes.
+        try{ordinaryPass.reserve(state.RetainedOrdinary.size());baseCorePass.reserve(state.RetainedBaseCore.size());}
+        catch(...){} // They grow as they fill.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto phaseLockAcquired=Clock::now();
         lifecycleWaitMs=elapsedMs(phaseLockBegin,phaseLockAcquired);
 #endif
         uint64_t session=0,revision=0;
         MiniMapBuildingAtlas::ObservePublication(session,revision);
-        if(occlusionPlan)
-        {
-            auto reason=A::Invalidation::None;
-            if(occlusionPlan->Binding.Snapshot!=snapshot->Source || occlusionPlan->Generation!=snapshot->Generation)reason=A::Invalidation::Source;
-            else if(occlusionPlan->Binding.AtlasSession!=session)reason=A::Invalidation::AtlasSession;
-            else if(occlusionPlan->Binding.AtlasRevision!=revision)reason=A::Invalidation::AtlasRevision;
-            if(reason!=A::Invalidation::None)
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                workload.Reason(reason);
-#endif
-                discarded=reason;occlusionPlan.reset();
-            }
-        }
-        const auto currentSession = (selected ? selected : C::GetSnapshot());
+        const auto currentSession = current;
         const bool schedulerValid =
             MiniMapMap::GameplayReady() &&
             currentSession &&
@@ -667,28 +969,13 @@ namespace MiniMapBuildingVisuals
         } finishDraw{schedulerValid}; // Ends before the outer lifecycle lock, including unwinding.
         if (schedulerValid)
             MiniMapBuildingScheduler::StartDraw();
-        A::Request request;request.Snapshot=snapshot->Source;request.AtlasSession=session;request.AtlasRevision=revision;
-        bool observationsComplete=true;
-        if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if(occlusionPlan)workload.Reason(A::Invalidation::Context);
-#endif
-            occlusionPlan.reset();
-        }
         // Pass-local borrowed entries: destroyed before FinishDraw and LifecycleMutex unlock.
         // A positive Find proves Atlas status; discovery cannot replace/erase that status here.
         // Do not memoize misses: Current() also reads GameplayReady, which may close outside this mutex.
         std::vector<const MiniMapSpriteStatus::AtlasEntry*> atlasByType;
         try{atlasByType.resize(snapshot->CanonicalTypeCount,nullptr);}
         catch(...){} // Preserve the original per-instance path on allocation failure.
-        const auto baseCore=[](const Instance& instance)
-        {
-            const auto& path=instance.SpriteSource.CanonicalBlueprint;
-            return !instance.Spline && path &&
-                *path=="/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
-        };
-        auto submitOrdinary=[&](size_t index,bool collectOccluder)
+        auto submitOrdinary=[&](size_t index,[[maybe_unused]] bool ordinary)
         {
             const auto& instance=snapshot->Instances[index];const bool spline=instance.Spline;
             if(spline)return;
@@ -749,28 +1036,20 @@ namespace MiniMapBuildingVisuals
 #endif
                         if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,0xFFFFFFFFu))
                         {
+                            try
+                            {
+                                const auto uv=entry->UVs.Status()==MiniMapSpriteStatus::PreparedAtlasUV::State::Unprepared?
+                                    MiniMapSpriteStatus::PreparedAtlasUV::FromRegion(entry->Region):entry->UVs;
+                                (ordinary?ordinaryPass:baseCorePass).push_back({entry->Texture,uv.Corners(),worldQuad->Corners});
+                            }
+                            catch(...){} // The next pass records it again.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             TraceRender(traceTargets,instance.SpriteSource,V::State::Submitted);
 #endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                            if(collectOccluder)++workload.OrdinarySubmitted;
+                            if(ordinary)++workload.OrdinarySubmitted;
                             else ++workload.BaseCoreSubmissions;
 #endif
-                            if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
-                            {
-                                if(collectOccluder && observationsComplete)
-                                {
-                                    try
-                                    {
-                                        A::OrdinarySubmission observed;observed.RecordIndex=instance.RecordIndex;
-                                        observed.Min=entry->Min;observed.Max=entry->Max;observed.Submitted=true;
-                                        for(size_t i=0;i<4;++i)observed.Quad[i]={worldQuad->Corners[i].X,worldQuad->Corners[i].Y};
-                                        request.Ordinary.push_back(observed);
-                                    }
-                                    catch(const std::bad_alloc&){observationsComplete=false;}
-                                    catch(const std::length_error&){observationsComplete=false;}
-                                }
-                            }
                             return;
                         }
                     }
@@ -788,180 +1067,74 @@ namespace MiniMapBuildingVisuals
         const auto ordinaryBegin=Clock::now();
 #endif
         for(size_t index:snapshot->DrawOrder)
-            if(!snapshot->Instances[index].Spline && !baseCore(snapshot->Instances[index]))submitOrdinary(index,true);
+            if(!snapshot->Instances[index].Spline && !BaseCore(snapshot->Instances[index]))submitOrdinary(index,true);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ordinaryMs=elapsedMs(ordinaryBegin,Clock::now());
-        // This outer boundary includes request/preparation and the separately timed
-        // submission loop; subtract that loop below so phase totals stay exclusive.
-        const auto splinePlanBegin=Clock::now();
 #endif
         if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
         {
-            // Missing observations cannot be treated as an empty active set.
-            // In that allocation-failure case retain ordinary draws, omit ribbons.
-            auto currentPlanContext=[&]
-            {
-                uint64_t observedSession=0,observedRevision=0;
-                MiniMapBuildingAtlas::ObservePublication(observedSession,observedRevision);
-                const auto collector=(selected ? selected : C::GetSnapshot());
-                std::scoped_lock ownerLock(state.Mutex);
-                return schedulerValid && MiniMapMap::GameplayReady() && state.Published==snapshot && request.Snapshot &&
-                    collector==request.Snapshot && collector->Generation==snapshot->Generation &&
-                    observedSession==session && observedRevision==revision;
-            };
-            if(!observationsComplete || !currentPlanContext())
+            // OnTick planned and flattened these; the draw only culls and reprojects.
+            if(schedulerValid && splines && splines->Generation==snapshot->Generation)
             {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                workload.Reason(observationsComplete?A::Invalidation::Context:A::Invalidation::Incomplete);
+                const auto splineBegin=Clock::now();
+                workload.SplineRecords=splines->Records.size();
+                workload.RetainedPlanTriangles=splines->PlanTriangles;
+                workload.RetainedWalkwayInsetTriangles=splines->PlanInsetTriangles;
 #endif
-                occlusionPlan.reset();
-            }
-            else try
-            {
-                for(size_t index:snapshot->DrawOrder)
-                {
-                    const auto& instance=snapshot->Instances[index];if(!instance.Spline)continue;
-                    if(!instance.PreparedEnvelope || !Detail::Drawable(instance.PreparedEnvelope->Status))
-                    {continue;}
-                    request.Splines.push_back({instance.RecordIndex,instance.PreparedEnvelope,uint8_t(instance.SplineCategory)});
-                }
-                const auto mismatch=A::Mismatch(occlusionPlan.get(),request);
-                const bool reuse=mismatch==A::Invalidation::None;
-                if(!reuse)
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    if(mismatch!=A::Invalidation::NoPrevious || discarded==A::Invalidation::NoPrevious)workload.Reason(mismatch);
-                    workload.Sections.Ms[size_t(A::PreparationPhase::Binding)]+=elapsedMs(splinePlanBegin,Clock::now());
-#endif
-                }
-                A::PreparationWork* preparationWork=nullptr;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                preparationWork=&workload.Sections;
-#endif
-                auto planned=A::Prepare(request,occlusionPlan,preparationWork,discarded);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                if(reuse)++workload.PlanReuses;else ++workload.PlanRebuilds;
-#endif
-                bool planCurrent=false;
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    A::PreparationTimer timer(reuse?nullptr:&workload.Sections,A::PreparationPhase::Assembly);
-#endif
-                    planCurrent=currentPlanContext();
-                    if(planCurrent){occlusionPlan=planned;framePlanOwner=planned;}
-                }
-                if(!planCurrent)
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    workload.Reason(A::Invalidation::Context);
-#endif
-                    occlusionPlan.reset();
-                }
-                else
-                {
-                    // Existing retainedPlanTriangles is body-only, summed per admitted frame.
-                    // Prepared insets count committed output only on this callback's rebuild.
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    workload.RetainedPlanTriangles=planned->Triangles;
-                    workload.RetainedWalkwayInsetTriangles=planned->WalkwayInsetTriangles;
-                    if(!reuse)workload.PreparedWalkwayInsetTriangles=size_t(workload.Sections.PreparedInsets);
-                    struct SplineSubmissionBoundary
+                SubmitSplineList(ui,dl,transform,viewport,settings,*splines,
+                    [&]([[maybe_unused]] const auto& record,[[maybe_unused]] const auto& body,[[maybe_unused]] const auto& inset)
                     {
-                        double& ElapsedMs;
-                        Clock::time_point Begin=Clock::now();
-                        ~SplineSubmissionBoundary()
-                        {ElapsedMs=std::chrono::duration<double,std::milli>(Clock::now()-Begin).count();}
-                    } splineSubmissionBoundary{splineSubmissionMs};
-#endif
-                    for(const auto& record:planned->Records)
-                    {
-                        const auto& source=request.Snapshot->Records[record.RecordIndex];
-                        const bool droneRail=P::IsDroneRailDefinition(source.DefinitionValid,source.BuildingId);
-                        if(droneRail && !settings.RenderDroneRails)continue;
-                        if(OR::FullyOccluded(record)){continue;}
-                        const auto baseRgb=P::RepresentativeRgb(source.DefinitionValid,source.BuildingId);
-                        [[maybe_unused]] const auto submitted=OR::Submit(ui,dl,transform,record,viewport,
-                            P::Color(baseRgb,kSplineFillOpacity));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                        workload.BodyTriangles+=submitted.Triangles;
-                        if(droneRail)workload.RailBodyTriangles+=submitted.Triangles;
+                        workload.BodyTriangles+=body.Triangles;workload.WalkwayInsetTriangles+=inset.Triangles;
+                        if(record.DroneRail)workload.RailBodyTriangles+=body.Triangles;
 #endif
-                        if(P::IsWalkwayDefinition(source.DefinitionValid,source.BuildingId))
-                        {
-                            [[maybe_unused]] const auto inset=OR::SubmitWalkwayInsets(ui,dl,transform,record,
-                                viewport,P::Color(P::kWalkwayInsetRgb,kSplineFillOpacity));
+                    });
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                            workload.WalkwayInsetTriangles+=inset.Triangles;
+                splineSubmissionMs=elapsedMs(splineBegin,Clock::now());
 #endif
-                        }
-                    }
-                }
-            }
-            catch(const std::bad_alloc&)
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                workload.Reason(A::Invalidation::Allocation);
-#endif
-                occlusionPlan.reset();
-            }
-            catch(const std::length_error&)
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                workload.Reason(A::Invalidation::Allocation);
-#endif
-                occlusionPlan.reset();
             }
         }
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        workload.SplineRecords=request.Splines.size();
-        splinePlanMs=(std::max)(0.0,elapsedMs(splinePlanBegin,Clock::now())-splineSubmissionMs);
-#endif
         // The captured canopy alpha composes over rails. This exact authored
-        // type is deliberately absent from Request::Ordinary, even on success.
+        // type is deliberately absent from the planned occluders.
         // Keep this pass when spline rendering is disabled or planning fails.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         baseCoreFinalizeBegin=Clock::now();
 #endif
         for(size_t index:snapshot->DrawOrder)
-            if(baseCore(snapshot->Instances[index]))submitOrdinary(index,false);
+            if(BaseCore(snapshot->Instances[index]))submitOrdinary(index,false);
+        state.RetainedOrdinary.swap(ordinaryPass);state.RetainedBaseCore.swap(baseCorePass);state.RetainedEpoch=passEpoch;
         }
         ui.PopClip(dl);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         BuildingVisualsTimingTotals timingReport;double timingIntervalMs=0;bool emitTimingReport=false;
 #endif
         {
-            std::scoped_lock lock(state.Mutex);
-            if(state.Published==snapshot)
+            // Diagnostics drop this sample rather than wait for the tick.
+            std::unique_lock<std::mutex> lock(state.Mutex,std::try_to_lock);
+            if(lock.owns_lock() && state.Published==snapshot)
             {
-                state.PlanOwner=framePlanOwner;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 const auto phaseEnd=Clock::now();
                 const double renderTotalMs=elapsedMs(measuredBegin,phaseEnd);
                 const double baseCoreFinalizeMs=elapsedMs(baseCoreFinalizeBegin,phaseEnd);
                 const double unaccountedMs=(std::max)(0.0,renderTotalMs-(snapshotAcquireMs+lifecycleWaitMs+ordinaryMs+
-                    splinePlanMs+splineSubmissionMs+baseCoreFinalizeMs));
+                    splineSubmissionMs+baseCoreFinalizeMs));
                 state.Timing.SnapshotAcquire.Add(snapshotAcquireMs);
                 state.Timing.LockWait.Add(lifecycleWaitMs);
                 state.Timing.Ordinary.Add(ordinaryMs);
-                state.Timing.PlanPreparation.Add(splinePlanMs);
                 state.Timing.SplineSubmission.Add(splineSubmissionMs);
                 state.Timing.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
                 state.Timing.RenderTotal.Add(renderTotalMs);
                 state.Timing.Unaccounted.Add(unaccountedMs);
-                state.Timing.Sections.Add(workload.Sections);
-                for(size_t i=0;i<workload.Reasons.size();++i)state.Timing.Reasons[i]+=workload.Reasons[i];
-                if(workload.PlanRebuilds)for(size_t i=0;i<workload.Sections.Ms.size();++i)
-                    state.Timing.SectionPhases[i].Add(workload.Sections.Ms[i]);
                 state.Timing.PreparedInstances+=workload.PreparedInstances;
                 state.Timing.OrdinarySubmitted+=workload.OrdinarySubmitted;
                 state.Timing.SplineRecords+=workload.SplineRecords;
-                state.Timing.PlanReuses+=workload.PlanReuses;state.Timing.PlanRebuilds+=workload.PlanRebuilds;
                 state.Timing.RetainedPlanTriangles+=workload.RetainedPlanTriangles;
                 state.Timing.BodyTriangles+=workload.BodyTriangles;
                 state.Timing.RailBodyTriangles+=workload.RailBodyTriangles;
                 state.Timing.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
                 state.Timing.RetainedWalkwayInsetTriangles+=workload.RetainedWalkwayInsetTriangles;
-                state.Timing.PreparedWalkwayInsetTriangles+=workload.PreparedWalkwayInsetTriangles;
                 state.Timing.BaseCoreSubmissions+=workload.BaseCoreSubmissions;
                 if(state.TimingIntervalStart==Clock::time_point{})state.TimingIntervalStart=phaseEnd;
                 timingIntervalMs=elapsedMs(state.TimingIntervalStart,phaseEnd);

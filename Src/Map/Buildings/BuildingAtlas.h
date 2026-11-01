@@ -32,7 +32,7 @@ namespace MiniMapBuildingAtlas
     void EndSession();
     void Shutdown();
 
-    // UI callback only; caller holds LifecycleMutex from lookup through submit.
+    // Caller holds LifecycleMutex from lookup through its last use of the entry.
     // Borrowed metadata/texture: never release or retain the identity separately.
     const MiniMapSpriteStatus::AtlasEntry* Find(const std::string& canonicalBlueprint) noexcept;
     // Diagnostic values only, under the SAME caller-held lifecycle lock as Find.
