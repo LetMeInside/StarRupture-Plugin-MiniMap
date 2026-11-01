@@ -118,18 +118,30 @@ namespace MiniMapBuildingComplexIndex
             if (input.Source->Support == SupportState::Supported && !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
             if (input.Source->Support == SupportState::ExplicitlyUnsupported && input.Source->VisualSupport.Valid &&
                 !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
+            if (input.Source->OrdinarySpriteSupport.Valid && !ValidBounds(input.Source->OrdinarySpriteSupport))
+                return UpsertResult::InvalidInput;
 
             auto old = records_.find(input.Key);
             if (old != records_.end() && old->second.Record->Source->SourceRevision == input.Source->SourceRevision &&
                 old->second.Record->Source->SourceGeneration == input.Source->SourceGeneration &&
                 old->second.Record->Source->Support == input.Source->Support &&
-                old->second.Record->Source->VisualSupport == input.Source->VisualSupport)
+                old->second.Record->Source->OrdinarySpriteSupport == input.Source->OrdinarySpriteSupport &&
+                old->second.Record->Source->VisualSupport == input.Source->VisualSupport &&
+                old->second.Record->Source->SpriteQuadValid == input.Source->SpriteQuadValid &&
+                old->second.Record->Source->SpriteCaptureSupportMetadata == input.Source->SpriteCaptureSupportMetadata &&
+                old->second.Record->Source->SpriteQuadWorld == input.Source->SpriteQuadWorld)
                 return UpsertResult::Unchanged;
 
             std::set<CellKey> nextCells;
-            const bool boundedUnknown = input.Source->Support == SupportState::Unknown && input.Source->VisualSupport.Valid;
-            if (input.Source->Support == SupportState::Supported || boundedUnknown)
-                if (!CellsFor(input.Source->VisualSupport, origin_, nextCells)) return UpsertResult::InvalidInput;
+            const WorldBounds* membershipBounds = nullptr;
+            if (input.Source->Support == SupportState::Supported ||
+                (input.Source->Support == SupportState::Unknown && input.Source->VisualSupport.Valid))
+                membershipBounds = &input.Source->VisualSupport;
+            else if (input.Source->Support == SupportState::Unknown && input.Source->OrdinarySpriteSupport.Valid)
+                // Ordinary sprite bounds target invalidation only. Unbounded()
+                // still uses full VisualSupport, so completeness stays global.
+                membershipBounds = &input.Source->OrdinarySpriteSupport;
+            if (membershipBounds && !CellsFor(*membershipBounds, origin_, nextCells)) return UpsertResult::InvalidInput;
             const std::set<CellKey> oldCells = old == records_.end() ? std::set<CellKey>{} : old->second.Cells;
 
             std::set<CellKey> touched = oldCells;

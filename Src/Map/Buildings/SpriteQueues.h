@@ -27,9 +27,8 @@ namespace MiniMapSpriteQueues
         Unsupported
     };
 
-    // One FIFO carries both consumers. MiniMap uses only Kind, BlueprintPath,
-    // and the renderer-stamped Session. BuildingComplex fields are copied at
-    // admission and remain dormant until that consumer is implemented.
+    // One FIFO carries both consumers. MiniMap keeps its path/session contract;
+    // BuildingComplex admission carries an immutable exact-source receipt.
     struct Request
     {
         RequestKind Kind = RequestKind::MiniMap;
@@ -98,6 +97,18 @@ namespace MiniMapSpriteQueues
                 [expectedKind](const Request& candidate) { return candidate.Kind == expectedKind; });
             if (item == Items.end()) return false;
             request = std::move(*item);
+            Items.erase(item);
+            return true;
+        }
+
+        bool Remove(RequestKind expectedKind, uint64_t requestId)
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            const auto item = std::find_if(Items.begin(), Items.end(),
+                [expectedKind, requestId](const Request& candidate) {
+                    return candidate.Kind == expectedKind && candidate.RequestId == requestId;
+                });
+            if (item == Items.end()) return false;
             Items.erase(item);
             return true;
         }

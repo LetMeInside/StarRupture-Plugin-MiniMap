@@ -15,6 +15,12 @@ namespace MiniMapBuildingSpriteRenderer
     // False leaves admission closed when prior native ownership remains blocked.
     bool InitializeSession();
 
+    // Accepted only while the current shared renderer session and gameplay
+    // generation are admitted. The request is copied into the shared FIFO.
+    bool SubmitBuildingComplex(MiniMapSpriteQueues::Request request);
+    void CancelBuildingComplex(uint64_t requestId) noexcept;
+    void CancelPendingBuildingComplex() noexcept;
+
     void Tick(float deltaTime);
 
     void EndSession();

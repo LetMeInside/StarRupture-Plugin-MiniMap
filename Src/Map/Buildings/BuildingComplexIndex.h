@@ -99,6 +99,11 @@ namespace MiniMapBuildingComplexIndex
         uint64_t SpriteCaptureSupportMetadata = 0;
         uint64_t SplineSourceIdentity = 0;
         std::vector<SplineCurveSegmentSource> SplineCurve;
+        // Bounds proven only for the ordinary sprite. They support targeted
+        // cell invalidation but do not certify complete visual support.
+        WorldBounds OrdinarySpriteSupport;
+        // Full visual-contributor bounds; only this field can bound an
+        // Unknown record for global completeness purposes.
         WorldBounds VisualSupport;
         SupportState Support = SupportState::Unknown;
         std::vector<SplineSectionSource> SplineSections;

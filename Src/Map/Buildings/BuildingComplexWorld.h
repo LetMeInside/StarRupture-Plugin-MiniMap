@@ -3,6 +3,9 @@
 
 #include "BuildingComplexIndex.h"
 #include <cstdint>
+#include <memory>
+
+namespace MiniMapBuildingCache { struct Sprite; }
 
 namespace MiniMapBuildingComplexWorld
 {
@@ -36,5 +39,10 @@ namespace MiniMapBuildingComplexWorld
     // separately for unresolved support.
     Status GetStatus() noexcept;
     MiniMapBuildingComplexIndex::Index& GetIndex() noexcept;
+    // Returns the immutable CPU capture associated with this exact world/source
+    // identity. Image lifetime is owned separately from sparse index records.
+    bool TryGetCaptureImage(MiniMapBuildingComplexIndex::MassKey key,
+        uint64_t worldGeneration, uint64_t sourceRevision,
+        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output) noexcept;
 }
 #endif

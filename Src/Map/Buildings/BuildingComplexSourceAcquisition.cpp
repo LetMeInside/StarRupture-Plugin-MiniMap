@@ -234,14 +234,10 @@ namespace
             !SameValues(a.Transform.Scale, b.Transform.Scale) || !SameValues(a.Transform.Rotation, b.Transform.Rotation) ||
             a.SplineSourceIdentity != b.SplineSourceIdentity || a.SplineCurve.size() != b.SplineCurve.size() ||
             a.SplineProfiles.size() != b.SplineProfiles.size() ||
-            a.SplineSections.size() != b.SplineSections.size() || a.SpriteQuadValid != b.SpriteQuadValid ||
-            a.SpriteCaptureSupportMetadata != b.SpriteCaptureSupportMetadata || !SameBounds(a.VisualSupport, b.VisualSupport) ||
-            a.Support != b.Support) return false;
+            a.SplineSections.size() != b.SplineSections.size() || a.Support != b.Support) return false;
         if (a.NumericalProfileInputs.size() != b.NumericalProfileInputs.size()) return false;
         for (size_t i = 0; i < a.NumericalProfileInputs.size(); ++i)
             if (!SameDouble(a.NumericalProfileInputs[i], b.NumericalProfileInputs[i])) return false;
-        for (size_t i = 0; i < a.SpriteQuadWorld.size(); ++i)
-            if (!SameValues(a.SpriteQuadWorld[i], b.SpriteQuadWorld[i])) return false;
         for (size_t i = 0; i < a.SplineCurve.size(); ++i)
         {
             const auto& x = a.SplineCurve[i]; const auto& y = b.SplineCurve[i];

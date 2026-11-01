@@ -1,6 +1,10 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingComplexWorld.h"
 #include "BuildingComplexSourceAcquisition.h"
+#include "BuildingScheduler.h"
+#include "BuildingSpriteRenderer.h"
+#include "BuildingCache.h"
+#include "BuildingSpriteGeometryCore.h"
 #include "Map/Map.h"
 #include "Map/Terrain/TerrainSource.h"
 #include "Native/MassLifecycle.h"
@@ -12,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -19,6 +24,7 @@
 #include <memory>
 #include <span>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -50,6 +56,33 @@ namespace
     std::deque<B::MassKey> SourceQueue;
     std::unordered_set<B::MassKey, MassKeyHash> SourceQueued;
 
+    struct CaptureTrack
+    {
+        uint64_t RequestId = 0;
+        uint64_t SourceRevision = 0;
+        std::string CanonicalBlueprintIdentity;
+        std::shared_ptr<const B::SourcePayload> Snapshot;
+        bool Terminal = false;
+    };
+    std::unordered_map<B::MassKey, CaptureTrack, MassKeyHash> CaptureRequests;
+    struct CompletedCaptureImage
+    {
+        uint64_t WorldGeneration = 0;
+        uint64_t SourceRevision = 0;
+        std::string CanonicalBlueprintIdentity;
+        std::shared_ptr<const MiniMapBuildingCache::Sprite> Image;
+    };
+    std::unordered_map<B::MassKey, CompletedCaptureImage, MassKeyHash> CaptureImages;
+    struct DeferredCaptureRetry
+    {
+        B::MassKey Key;
+        uint64_t WorldGeneration = 0;
+        uint64_t SourceRevision = 0;
+        std::string CanonicalBlueprintIdentity;
+    };
+    std::vector<DeferredCaptureRetry> DeferredCaptureRetries;
+    uint64_t NextCaptureRequestId = 1;
+
     void EnqueueSource(B::MassKey key)
     {
         if (SourceQueued.insert(key).second) SourceQueue.push_back(key);
@@ -61,8 +94,33 @@ namespace
         SourceQueued.clear();
     }
 
+    void InvalidateCapture(B::MassKey key) noexcept
+    {
+        const auto found = CaptureRequests.find(key);
+        if (found != CaptureRequests.end())
+        {
+            MiniMapBuildingSpriteRenderer::CancelBuildingComplex(found->second.RequestId);
+            CaptureRequests.erase(found);
+        }
+        CaptureImages.erase(key);
+    }
+
+    void ClearCaptureRequests() noexcept
+    {
+        try
+        {
+            MiniMapBuildingSpriteRenderer::CancelPendingBuildingComplex();
+            MiniMapBuildingScheduler::FeedbackQueue().RemoveAll(MiniMapSpriteQueues::RequestKind::BuildingComplex);
+            CaptureRequests.clear();
+            CaptureImages.clear();
+            DeferredCaptureRetries.clear();
+        }
+        catch (...) { CaptureRequests.clear(); CaptureImages.clear(); DeferredCaptureRetries.clear(); }
+    }
+
     void ResetIndex(uint64_t generation) noexcept
     {
+        ClearCaptureRequests();
         Index.ResetWorld(generation);
         ClearSourceQueue();
     }
@@ -219,7 +277,9 @@ namespace
                     const auto result = Index.Remove({event.Entity.Index, event.Entity.SerialNumber}, generation, changes);
                     if (result == B::RemoveResult::AllocationFailure)
                     { ResetIndex(generation); return false; }
-                    SourceQueued.erase({event.Entity.Index, event.Entity.SerialNumber});
+                    const B::MassKey key{event.Entity.Index, event.Entity.SerialNumber};
+                    SourceQueued.erase(key);
+                    InvalidateCapture(key);
                 }
             }
         }
@@ -246,9 +306,11 @@ namespace
         B::ChangeSet changes;
         if (event.Kind == L::EventKind::Remove)
         {
-            if (Index.Remove({event.Entity.Index, event.Entity.SerialNumber}, generation, changes) == B::RemoveResult::AllocationFailure)
+            const B::MassKey key{event.Entity.Index, event.Entity.SerialNumber};
+            if (Index.Remove(key, generation, changes) == B::RemoveResult::AllocationFailure)
                 return false;
-            SourceQueued.erase({event.Entity.Index, event.Entity.SerialNumber});
+            SourceQueued.erase(key);
+            InvalidateCapture(key);
         }
         else
         {
@@ -267,6 +329,152 @@ namespace
         AppliedSequence = event.Sequence;
         Current.AppliedSequence = AppliedSequence;
         return true;
+    }
+
+    bool SameCanonical(const B::SourcePayload& source, const std::string& canonical) noexcept
+    {
+        return source.BlueprintIdentity && !canonical.empty() && *source.BlueprintIdentity == canonical;
+    }
+
+    void AdmitCaptureIfEligible(B::MassKey key, uint64_t generation,
+        const std::shared_ptr<const B::BuildingRecord>& record)
+    {
+        if (!record || !record->Source || record->WorldGeneration != generation ||
+            record->Source->SourceGeneration != generation || !record->Source->SourceRevision ||
+            !record->Source->BlueprintIdentity || record->Source->BlueprintIdentity->empty()) return;
+        auto prior = CaptureRequests.find(key);
+        if (prior != CaptureRequests.end())
+        {
+            if (prior->second.SourceRevision == record->Source->SourceRevision &&
+                prior->second.CanonicalBlueprintIdentity == *record->Source->BlueprintIdentity &&
+                (prior->second.Terminal || (prior->second.Snapshot &&
+                    MiniMapBuildingComplexSourceAcquisition::IsSameSource(*prior->second.Snapshot, *record->Source)))) return;
+            InvalidateCapture(key);
+        }
+        if (!NextCaptureRequestId) return; // Correlation IDs never wrap or alias.
+        const uint64_t requestId = NextCaptureRequestId;
+        NextCaptureRequestId = requestId == (std::numeric_limits<uint64_t>::max)() ? 0 : requestId + 1;
+        MiniMapSpriteQueues::Request request;
+        request.Kind = MiniMapSpriteQueues::RequestKind::BuildingComplex;
+        request.RequestId = requestId;
+        request.MassIndex = key.Index;
+        request.MassSerial = key.Serial;
+        request.WorldGeneration = generation;
+        request.SourceRevision = record->Source->SourceRevision;
+        request.CanonicalBlueprintIdentity = *record->Source->BlueprintIdentity;
+        request.SourceSnapshot = record->Source;
+        auto [track, inserted] = CaptureRequests.emplace(key,
+            CaptureTrack{requestId, record->Source->SourceRevision, request.CanonicalBlueprintIdentity,
+                record->Source, false});
+        if (!inserted) return;
+        if (!MiniMapBuildingSpriteRenderer::SubmitBuildingComplex(std::move(request)))
+        {
+            CaptureRequests.erase(track);
+            // The source remains in the established acquisition retry path.
+            EnqueueSource(key);
+            return;
+        }
+    }
+
+    void ConsumeCaptureResults(uint64_t generation)
+    {
+        auto& feedbackQueue = MiniMapBuildingScheduler::FeedbackQueue();
+        MiniMapSpriteQueues::Feedback result;
+        while (feedbackQueue.Remove(result, MiniMapSpriteQueues::RequestKind::BuildingComplex))
+        {
+            const B::MassKey key{result.MassIndex, result.MassSerial};
+            auto track = CaptureRequests.find(key);
+            if (track == CaptureRequests.end() || track->second.RequestId != result.RequestId) continue;
+            if (track->second.Terminal) continue;
+            const auto admittedSnapshot = track->second.Snapshot;
+            if (!admittedSnapshot || result.WorldGeneration != generation || result.WorldGeneration != admittedSnapshot->SourceGeneration ||
+                result.SourceRevision != track->second.SourceRevision ||
+                result.SourceSnapshot != admittedSnapshot ||
+                result.CanonicalBlueprintIdentity.empty() ||
+                result.CanonicalBlueprintIdentity != track->second.CanonicalBlueprintIdentity ||
+                !SameCanonical(*admittedSnapshot, result.CanonicalBlueprintIdentity))
+            {
+                CaptureRequests.erase(track);
+                continue;
+            }
+
+            std::shared_ptr<const B::BuildingRecord> current;
+            if (!Index.TryGetRecord(key, generation, current) || !current || !current->Source ||
+                current->WorldGeneration != generation || current->Source->SourceGeneration != generation ||
+                current->Source->SourceRevision != result.SourceRevision ||
+                !MiniMapBuildingComplexSourceAcquisition::IsSameSource(*current->Source, *result.SourceSnapshot) ||
+                !SameCanonical(*current->Source, result.CanonicalBlueprintIdentity))
+            {
+                CaptureRequests.erase(track);
+                continue;
+            }
+
+            if (result.Status == MiniMapSpriteQueues::ResultStatus::RetryableFailure)
+            {
+                DeferredCaptureRetries.push_back({key, generation, result.SourceRevision,
+                    result.CanonicalBlueprintIdentity});
+                CaptureRequests.erase(track);
+                continue;
+            }
+            if (result.Status != MiniMapSpriteQueues::ResultStatus::Success)
+            {
+                track->second.Terminal = true;
+                track->second.Snapshot.reset();
+                continue;
+            }
+
+            track->second.Terminal = true;
+            track->second.Snapshot.reset();
+            if (!result.Payload) continue;
+
+            const auto& sprite = *result.Payload;
+            if (!MiniMapBuildingCache::ValidSpatial(sprite.Width, sprite.Height, sprite.Bounds, sprite.Mapping) ||
+                sprite.Rgba.size() != size_t(sprite.Width) * sprite.Height * 4) continue;
+            std::array<std::array<double, 3>, 4> quad{};
+            const std::array<double, 4> sourceRect{
+                double(sprite.Mapping.X), double(sprite.Mapping.Y),
+                double(sprite.Mapping.X) + double(sprite.Width) * sprite.Mapping.Step,
+                double(sprite.Mapping.Y) + double(sprite.Height) * sprite.Mapping.Step};
+            if (!MiniMapBuildingSpriteGeometryCore::BuildWorldQuad(
+                current->Source->Transform.Translation, current->Source->Transform.Scale,
+                current->Source->Transform.Rotation, sprite.Bounds.Min, sprite.Bounds.Max,
+                sourceRect, quad)) continue;
+            bool finiteQuad = true;
+            for (const auto& point : quad)
+                for (double value : point) finiteQuad &= std::isfinite(value);
+            if (!finiteQuad) continue;
+
+            B::SourcePayload updated = *current->Source;
+            updated.SpriteQuadWorld = quad;
+            updated.SpriteQuadValid = true;
+            updated.OrdinarySpriteSupport = {};
+            updated.OrdinarySpriteSupport.Valid = true;
+            updated.OrdinarySpriteSupport.MinX = updated.OrdinarySpriteSupport.MaxX = quad[0][0];
+            updated.OrdinarySpriteSupport.MinY = updated.OrdinarySpriteSupport.MaxY = quad[0][1];
+            for (const auto& point : quad)
+            {
+                updated.OrdinarySpriteSupport.MinX = (std::min)(updated.OrdinarySpriteSupport.MinX, point[0]);
+                updated.OrdinarySpriteSupport.MaxX = (std::max)(updated.OrdinarySpriteSupport.MaxX, point[0]);
+                updated.OrdinarySpriteSupport.MinY = (std::min)(updated.OrdinarySpriteSupport.MinY, point[1]);
+                updated.OrdinarySpriteSupport.MaxY = (std::max)(updated.OrdinarySpriteSupport.MaxY, point[1]);
+            }
+            // Capture metadata is derived visual state. Preserve the admitted
+            // source revision and Unknown support/completeness classification.
+            try
+            {
+                CaptureImages.insert_or_assign(key, CompletedCaptureImage{
+                    generation, result.SourceRevision, result.CanonicalBlueprintIdentity, result.Payload});
+            }
+            catch (...) { continue; }
+            B::BuildingRecord published;
+            published.Key = key;
+            published.WorldGeneration = generation;
+            published.Source = std::make_shared<const B::SourcePayload>(std::move(updated));
+            B::ChangeSet changes;
+            const auto upserted = Index.Upsert(std::move(published), changes);
+            if (upserted != B::UpsertResult::Inserted && upserted != B::UpsertResult::Replaced &&
+                upserted != B::UpsertResult::Unchanged) CaptureImages.erase(key);
+        }
     }
 
     void ServiceOneSource(const MiniMapNative::NativeApi& native, uint64_t generation, B::MassKey key)
@@ -306,6 +514,7 @@ namespace
             if (before->Source->SourceRevision == (std::numeric_limits<uint64_t>::max)())
             { retry(); return; }
             candidate.SourceRevision = before->Source->SourceRevision + 1;
+            InvalidateCapture(key);
             B::BuildingRecord updated;
             updated.Key = key;
             updated.WorldGeneration = generation;
@@ -314,6 +523,12 @@ namespace
             const auto result = Index.Upsert(std::move(updated), changes);
             if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure)
             { retry(); return; }
+        }
+        if (complete)
+        {
+            std::shared_ptr<const B::BuildingRecord> admittedSource;
+            if (Index.TryGetRecord(key, generation, admittedSource))
+                AdmitCaptureIfEligible(key, generation, admittedSource);
         }
         if (!complete) retry();
     }
@@ -329,10 +544,39 @@ namespace
         {
             const B::MassKey key = SourceQueue.front();
             SourceQueue.pop_front();
-            if (SourceQueued.erase(key) != 0) pass.push_back(key);
+            if (SourceQueued.erase(key) == 0) continue;
+            std::shared_ptr<const B::BuildingRecord> current;
+            const bool deferredRetry = Index.TryGetRecord(key, generation, current) && current && current->Source &&
+                std::any_of(DeferredCaptureRetries.begin(), DeferredCaptureRetries.end(),
+                    [&](const DeferredCaptureRetry& retry) {
+                        return retry.Key == key && retry.WorldGeneration == generation &&
+                            retry.SourceRevision == current->Source->SourceRevision &&
+                            current->Source->BlueprintIdentity &&
+                            retry.CanonicalBlueprintIdentity == *current->Source->BlueprintIdentity;
+                    });
+            if (!deferredRetry) pass.push_back(key);
         }
         for (const B::MassKey key : pass)
             ServiceOneSource(native, generation, key);
+    }
+
+    void ReleaseDeferredCaptureRetries(uint64_t generation)
+    {
+        for (const auto& retry : DeferredCaptureRetries)
+        {
+            if (retry.WorldGeneration != generation) continue;
+            std::shared_ptr<const B::BuildingRecord> current;
+            if (!Index.TryGetRecord(retry.Key, generation, current) || !current || !current->Source ||
+                current->Source->SourceRevision != retry.SourceRevision ||
+                !current->Source->BlueprintIdentity ||
+                *current->Source->BlueprintIdentity != retry.CanonicalBlueprintIdentity) continue;
+            const auto outstanding = CaptureRequests.find(retry.Key);
+            if (outstanding != CaptureRequests.end() &&
+                outstanding->second.SourceRevision == retry.SourceRevision &&
+                outstanding->second.CanonicalBlueprintIdentity == retry.CanonicalBlueprintIdentity) continue;
+            EnqueueSource(retry.Key);
+        }
+        DeferredCaptureRetries.clear();
     }
 
     void ServiceImpl()
@@ -379,7 +623,9 @@ namespace
                     return;
                 }
         }
+        ConsumeCaptureResults(generation);
         if (!SourceQueue.empty()) ServicePendingSources(*native, generation);
+        ReleaseDeferredCaptureRetries(generation);
         lifecycle = L::Status();
         if (lifecycle.ObservationLost || lifecycle.Epoch != AppliedEpoch ||
             (lifecycle.Sequence != AppliedSequence && lifecycle.Queued == 0))
@@ -455,5 +701,23 @@ namespace MiniMapBuildingComplexWorld
         return result;
     }
     MiniMapBuildingComplexIndex::Index& GetIndex() noexcept { return Index; }
+
+    bool TryGetCaptureImage(B::MassKey key, uint64_t generation, uint64_t sourceRevision,
+        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output) noexcept
+    {
+        output.reset();
+        if (!generation || !sourceRevision) return false;
+        std::shared_ptr<const B::BuildingRecord> record;
+        if (!Index.TryGetRecord(key, generation, record) || !record || !record->Source ||
+            record->Source->SourceRevision != sourceRevision ||
+            record->Source->SourceGeneration != generation || !record->Source->BlueprintIdentity) return false;
+        const auto image = CaptureImages.find(key);
+        if (image == CaptureImages.end() || image->second.WorldGeneration != generation ||
+            image->second.SourceRevision != sourceRevision || !image->second.Image ||
+            !record->Source->BlueprintIdentity ||
+            *record->Source->BlueprintIdentity != image->second.CanonicalBlueprintIdentity) return false;
+        output = image->second.Image;
+        return true;
+    }
 }
 #endif
