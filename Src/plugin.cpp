@@ -9,6 +9,8 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
+#include "Native/MassLifecycle.h"
+#include "Native/TexturePublication.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "UI/MiniMapUI.h"
 #include "Input/MouseWheel.h"
@@ -362,6 +364,7 @@ static uint64_t g_worldGeneration=0,g_preparedGeneration=0;
 static bool g_worldEnding=false;
 static void SetServicesAdmitted(bool ready)
 {
+    MiniMapMassLifecycle::AdmitWorld(ready);
     const bool changed=MiniMapMap::GameplayReady()!=ready;
     MiniMapMap::SetGameplayReady(ready);
     if(changed)MiniMapUI::RefreshVisibility();
@@ -390,7 +393,10 @@ static bool BuildingServiceGameThread() noexcept
 }
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
-    if(!MiniMapMap::GameplayReady())return;
+    // Independent bounded native publication/retirement owners. Dormant until
+    // a future BuildingComplex consumer supplies imagery; no worldwide work.
+    if(!MiniMapMap::GameplayReady())
+    { MiniMapTexturePublication::Service(); return; }
     // Integration lock is outermost; FIFO/feedback locks are acquired only inside
     // it. Renderer functions never reacquire it or invoke scheduler transitions.
     {
@@ -400,6 +406,8 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
     if (MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
+    MiniMapTexturePublication::Service();
+    MiniMapMassLifecycle::Service();
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
@@ -413,6 +421,8 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     EndBuildingSession();
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
+    MiniMapTexturePublication::CancelWorld();
+    MiniMapMassLifecycle::BeginWorld(world, g_worldGeneration);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
@@ -481,6 +491,8 @@ static void OnExperienceLoadComplete()
 static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
+    MiniMapMassLifecycle::EndWorld();
+    MiniMapTexturePublication::CancelWorld();
     g_worldEnding=true;
     SetServicesAdmitted(false);
     EndBuildingSession();
@@ -507,6 +519,8 @@ static void OnAfterWorldEndPlay(
     std::string_view worldName)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
+    MiniMapMassLifecycle::EndWorld();
+    MiniMapTexturePublication::CancelWorld();
     LOG_INFO(
         "MiniMap: world ended: %.*s",
         int(worldName.data() ? worldName.size() : 6),
@@ -783,6 +797,9 @@ namespace MiniMap
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
+        if (!MiniMapMassLifecycle::Initialize())
+            LOG_ERROR("MiniMap: BuildingComplex native observer admission unavailable; normal MiniMap services continue");
+        MiniMapTexturePublication::Initialize();
         Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);
         if (!AcceptEventRegistration(g_afterEnd, events->OnWorld(S::WorldPhase::AfterEnd,
             [](void*, const S::WorldEvent& event) { OnAfterWorldEndPlay(event.world, event.displayName); }, nullptr)) ||
@@ -825,6 +842,8 @@ namespace MiniMap
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::StopInput();
+        MiniMapMassLifecycle::Shutdown();
+        MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();
         g_worldEnding=true;

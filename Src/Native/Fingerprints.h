@@ -10,6 +10,10 @@ namespace MiniMapFingerprints
     {
         uintptr_t commonUIWidgetNativeOnActivated = 0;
         uintptr_t commonUIWidgetNativeOnDeactivated = 0;
+        uintptr_t buildingOnCreate = 0, buildingOnDestroy = 0;
+        uintptr_t massOnSaveLoaded = 0, massOnPostSaveLoaded = 0;
+        uintptr_t textureCreateTransient = 0, bulkLock = 0, bulkUnlock = 0;
+        uintptr_t textureUpdateResource = 0, textureGetResource = 0;
 
         uintptr_t softObjectLoadSynchronous = 0;
         uintptr_t getBrushResourceAsTexture2D = 0;

@@ -2168,6 +2168,50 @@ namespace MiniMapFingerprints
 #endif
 #endif
 
+#if defined(MODLOADER_CLIENT_BUILD)
+        // BuildingComplex foundations are required native contracts, resolved
+        // only here. No optional second pass or consumer-local scanner exists.
+        auto foundation = [&](const char* name, const char* pattern, uintptr_t& out)
+        {
+            RequiredScan request{};
+            request.name = name;
+            request.idaPattern = pattern;
+            request.kind = AddressKind::FunctionEntry;
+            out = resolveRequired(request);
+            return out != 0;
+        };
+        // The two sinks have identical instruction shapes. Retain the matched
+        // final call displacement to distinguish Add/Remove viewport work.
+        // These are deliberately version-bound code signatures, never RVAs.
+        if (!foundation("MiniMap::BuildingComplex::OnCreateBuildingEntity",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 D0 CA 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            addresses.buildingOnCreate)) return false;
+        if (!foundation("MiniMap::BuildingComplex::OnDestroyBuildingEntity",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            addresses.buildingOnDestroy)) return false;
+        if (!foundation("MiniMap::BuildingComplex::OnSaveLoaded",
+            "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
+            addresses.massOnSaveLoaded)) return false;
+        if (!foundation("MiniMap::BuildingComplex::OnPostSaveLoaded",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33",
+            addresses.massOnPostSaveLoaded)) return false;
+        if (!foundation("MiniMap::BuildingComplex::CreateTransient",
+            "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
+            addresses.textureCreateTransient)) return false;
+        if (!foundation("MiniMap::BuildingComplex::BulkLock",
+            "48 89 5C 24 08 57 48 83 EC 20 80 79 13 00 8B FA 48 8B D9 74 26 4C 8D 0D ?? ?? ?? ?? 41 B8 C0 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 48 8B CB E8 ?? ?? ?? ?? 40 F6 C7 02",
+            addresses.bulkLock)) return false;
+        if (!foundation("MiniMap::BuildingComplex::BulkUnlock",
+            "40 53 48 83 EC 20 80 79 13 00 48 8B D9 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 09 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC C6 43 13 00 8B 43 14 C1 E8 03 A8 01",
+            addresses.bulkUnlock)) return false;
+        // Folded UpdateResource wrapper: flags=0, virtual WithParams dispatch.
+        if (!foundation("MiniMap::BuildingComplex::UpdateResource",
+            "48 8B 01 33 D2 48 FF A0 30 03 00 00",
+            addresses.textureUpdateResource)) return false;
+        if (!foundation("MiniMap::BuildingComplex::GetResource",
+            "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38",
+            addresses.textureGetResource)) return false;
+#endif
         return !scanFailed;
     }
 }

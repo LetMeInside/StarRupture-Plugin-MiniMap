@@ -41,6 +41,10 @@ namespace SDK
     class UCommonActivatableWidget;
     template<typename ClassType> class TSubclassOf;
     class UTexture2D;
+    class UTexture;
+    class UCrBuildingStabilitySubsystem;
+    class UCrMassSaveSubsystem;
+    enum class EPixelFormat : uint8_t;
     class UStreamableRenderAsset;
 
     class UWorld;
@@ -208,6 +212,29 @@ namespace MiniMapNative
         int32_t Max = 0;
     };
 
+    // Native by-value argument, including the non-reflected cached full handle.
+    struct alignas(8) PersistentEntityId
+    {
+        uint32_t Id = 0;
+        uint32_t Padding = 0;
+        MassEntityHandle CachedHandle;
+    };
+    static_assert(sizeof(PersistentEntityId) == 16);
+    static_assert(offsetof(PersistentEntityId, CachedHandle) == 8);
+    static_assert(offsetof(MassEntityHandle, SerialNumber) == 4);
+
+    struct MassLifecycleApi
+    {
+        using BuildingNotificationFn = void (__fastcall*)(SDK::UCrBuildingStabilitySubsystem*, PersistentEntityId);
+        using RestoreNotificationFn = void (__fastcall*)(SDK::UCrMassSaveSubsystem*);
+        BuildingNotificationFn onCreate = nullptr, onDestroy = nullptr;
+        RestoreNotificationFn onSaveLoaded = nullptr, onPostSaveLoaded = nullptr;
+    };
+
+    struct ConstByteView64 { const uint8_t* Data = nullptr; int64_t Num = 0; };
+    static_assert(sizeof(ConstByteView64) == 16 && alignof(ConstByteView64) == 8);
+    static_assert(offsetof(ConstByteView64, Num) == 8);
+
     static_assert(
         sizeof(MassEntityHandleArray) ==
         0x10);
@@ -330,6 +357,17 @@ namespace MiniMapNative
 
     struct TextureApi
     {
+        using CreateTransientFn = SDK::UTexture2D* (__fastcall*)(int32_t, int32_t,
+            SDK::EPixelFormat, SDK::FName, ConstByteView64);
+        using BulkLockFn = void* (__fastcall*)(void*, uint32_t);
+        using BulkUnlockFn = void (__fastcall*)(const void*);
+        using UpdateResourceFn = void (__fastcall*)(SDK::UTexture*);
+        using GetResourceFn = void* (__fastcall*)(SDK::UTexture*);
+        CreateTransientFn createTransient = nullptr;
+        BulkLockFn bulkLock = nullptr;
+        BulkUnlockFn bulkUnlock = nullptr;
+        UpdateResourceFn updateResource = nullptr;
+        GetResourceFn getResource = nullptr;
         using SubmitRenderCommandFn = void (*)(void*, const wchar_t*, uint32_t&, TStatId,
             TUniqueFunction<void(FRHICommandListImmediate&)>&&);
         SubmitRenderCommandFn submitRenderCommand = nullptr;
@@ -532,6 +570,7 @@ namespace MiniMapNative
     struct NativeApi
     {
         CommonUIApi commonUI;
+        MassLifecycleApi massLifecycle;
         AssetApi asset;
         WorldApi world;
         PlayerApi player;

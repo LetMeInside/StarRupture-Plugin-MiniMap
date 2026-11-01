@@ -199,6 +199,22 @@ namespace MiniMapNative
         if (!addresses.renderFenceDestroy) return false;
         if (!addresses.renderFenceBegin) return false;
         if (!addresses.renderFencePoll) return false;
+        if (!addresses.buildingOnCreate || !addresses.buildingOnDestroy ||
+            !addresses.massOnSaveLoaded || !addresses.massOnPostSaveLoaded ||
+            !addresses.textureCreateTransient || !addresses.bulkLock || !addresses.bulkUnlock ||
+            !addresses.textureUpdateResource || !addresses.textureGetResource) return false;
+
+        auto& lifecycle = g_nativeApi.massLifecycle;
+        lifecycle.onCreate = reinterpret_cast<MassLifecycleApi::BuildingNotificationFn>(addresses.buildingOnCreate);
+        lifecycle.onDestroy = reinterpret_cast<MassLifecycleApi::BuildingNotificationFn>(addresses.buildingOnDestroy);
+        lifecycle.onSaveLoaded = reinterpret_cast<MassLifecycleApi::RestoreNotificationFn>(addresses.massOnSaveLoaded);
+        lifecycle.onPostSaveLoaded = reinterpret_cast<MassLifecycleApi::RestoreNotificationFn>(addresses.massOnPostSaveLoaded);
+        auto& texture = g_nativeApi.texture;
+        texture.createTransient = reinterpret_cast<TextureApi::CreateTransientFn>(addresses.textureCreateTransient);
+        texture.bulkLock = reinterpret_cast<TextureApi::BulkLockFn>(addresses.bulkLock);
+        texture.bulkUnlock = reinterpret_cast<TextureApi::BulkUnlockFn>(addresses.bulkUnlock);
+        texture.updateResource = reinterpret_cast<TextureApi::UpdateResourceFn>(addresses.textureUpdateResource);
+        texture.getResource = reinterpret_cast<TextureApi::GetResourceFn>(addresses.textureGetResource);
 
         g_nativeApi.asset.loadSynchronous =
             reinterpret_cast<AssetApi::LoadSynchronousFn>(
