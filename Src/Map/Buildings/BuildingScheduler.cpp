@@ -146,10 +146,10 @@ namespace MiniMapBuildingScheduler
         if (!g_statuses || !g_fifo || g_sessionActive) return;
         if (g_serial == (std::numeric_limits<uint64_t>::max)())
         { LOG_ERROR("MiniMap: building scheduler session serial exhausted; admission closed"); return; }
-        MiniMapSpriteQueues::Request request;
-        while (g_fifo->Remove(request)) {}
-        MiniMapSpriteQueues::Feedback feedback;
-        while (g_feedback.Remove(feedback)) {}
+        // A MiniMap scheduler generation owns only its tagged work. Keep any
+        // future BuildingComplex identities/receipts in the shared transports.
+        g_fifo->RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
+        g_feedback.RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
         g_statuses->clear();
         Clear(g_pass); Clear(g_completed); g_passOpen = false;
         for (const auto blueprint : BlacklistedBlueprints)
@@ -395,9 +395,8 @@ namespace MiniMapBuildingScheduler
     void EndSession()
     {
         MiniMapBuildingSchedulerInternal::StopSession();
-        if (g_fifo) { MiniMapSpriteQueues::Request request; while (g_fifo->Remove(request)) {} }
-        MiniMapSpriteQueues::Feedback feedback;
-        while (g_feedback.Remove(feedback)) {}
+        if (g_fifo) g_fifo->RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
+        g_feedback.RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
         if (g_statuses) g_statuses->clear();
     }
     void Shutdown()

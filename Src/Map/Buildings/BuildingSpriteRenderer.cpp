@@ -2209,7 +2209,10 @@ namespace MiniMapBuildingSpriteRenderer
             static_assert(std::is_nothrow_move_assignable_v<MiniMapSpriteQueues::Request>);
             g_activeRequest.emplace(); // Allocate the private slot BEFORE removing a FIFO entry.
             MiniMapSpriteQueues::Request request;
-            if (!g_fifo->Remove(request, MiniMapSpriteQueues::RequestKind::MiniMap))
+            // The single renderer owns the shared FIFO head regardless of tag.
+            // BuildingComplex has no producer until its result consumer is
+            // activated with the matching BCB.8B completion path.
+            if (!g_fifo->Remove(request))
             { g_activeRequest.reset(); return; }
             g_activeRequest->Kind = request.Kind;
             g_activeRequest->BlueprintPath = std::move(request.BlueprintPath);

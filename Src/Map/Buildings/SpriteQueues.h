@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <deque>
@@ -86,15 +88,32 @@ namespace MiniMapSpriteQueues
             return true;
         }
 
-        // A consumer may service only its tag without skipping an earlier
-        // request owned by another consumer; shared FIFO order stays intact.
+        // Extract the earliest request for a tag while retaining the order of
+        // all remaining entries. The native renderer uses unfiltered Remove()
+        // so accepted capture work always follows the shared FIFO head.
         bool Remove(Request& request, RequestKind expectedKind)
         {
             std::lock_guard<std::mutex> lock(Mutex);
-            if (Items.empty() || Items.front().Kind != expectedKind) return false;
-            request = std::move(Items.front());
-            Items.pop_front();
+            const auto item = std::find_if(Items.begin(), Items.end(),
+                [expectedKind](const Request& candidate) { return candidate.Kind == expectedKind; });
+            if (item == Items.end()) return false;
+            request = std::move(*item);
+            Items.erase(item);
             return true;
+        }
+
+        // Session owners cancel only their own pending work. Erasing matching
+        // entries preserves the FIFO order and ownership of every other tag.
+        size_t RemoveAll(RequestKind kind)
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            size_t removed = 0;
+            for (auto item = Items.begin(); item != Items.end();)
+            {
+                if (item->Kind == kind) { item = Items.erase(item); ++removed; }
+                else ++item;
+            }
+            return removed;
         }
 
     private:
@@ -123,10 +142,24 @@ namespace MiniMapSpriteQueues
         bool Remove(Feedback& feedback, RequestKind expectedKind)
         {
             std::lock_guard<std::mutex> lock(Mutex);
-            if (Items.empty() || Items.front().Kind != expectedKind) return false;
-            feedback = std::move(Items.front());
-            Items.pop_front();
+            const auto item = std::find_if(Items.begin(), Items.end(),
+                [expectedKind](const Feedback& candidate) { return candidate.Kind == expectedKind; });
+            if (item == Items.end()) return false;
+            feedback = std::move(*item);
+            Items.erase(item);
             return true;
+        }
+
+        size_t RemoveAll(RequestKind kind)
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            size_t removed = 0;
+            for (auto item = Items.begin(); item != Items.end();)
+            {
+                if (item->Kind == kind) { item = Items.erase(item); ++removed; }
+                else ++item;
+            }
+            return removed;
         }
 
     private:
