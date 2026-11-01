@@ -2096,9 +2096,18 @@ namespace MiniMapFingerprints
         if (!foundation("MiniMap::BuildingComplex::OnSaveLoaded",
             "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
             addresses.massOnSaveLoaded)) return false;
-        if (!foundation("MiniMap::BuildingComplex::OnPostSaveLoaded",
-            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33",
-            addresses.massOnPostSaveLoaded)) return false;
+        // Building tracking across save loads is a feature of its own, so a miss
+        // here turns that feature off and does not stop the scans below. The
+        // pattern runs on past the opening it shares with a second function of
+        // the same shape, which the shorter form also matched.
+        {
+            RequiredScan request{};
+            request.name = Keys::PostSaveLoaded;
+            request.idaPattern =
+                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33 48 8B C8 E8 ?? ?? ?? ?? EB 05 48 85 DB 74 24 E8 ?? ?? ?? ?? 48 85 C0 74 1A 48 8D 50 30 48 63 40 38 3B 43 38 7F 0D 48 8B C8 48 8B 43 30 48 39 14 C8 74 02 33 DB 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 8B C8 E8";
+            request.kind = AddressKind::FunctionEntry;
+            addresses.massOnPostSaveLoaded = resolveRequired(request);
+        }
         if (!foundation("MiniMap::BuildingComplex::CreateTransient",
             "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
             addresses.textureCreateTransient)) return false;

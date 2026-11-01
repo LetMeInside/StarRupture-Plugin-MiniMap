@@ -97,6 +97,12 @@ namespace MiniMapFields
 				Keys::GridForEachCell),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
+		// The BuildingComplex observer hooks the save-load notifications to know when the
+		// buildings are restored. Without OnPostSaveLoaded it is not installed, and the
+		// pictures built on it wait for a build that has the function.
+		inline PluginMap::Feature BuildingRestore{ "building-restore", "Building tracking across save loads",
+			KeysOf(Keys::PostSaveLoaded), {} };
+
 		// Rails and pipes are drawn from the spline payload of the building actor.
 		// Without it the buildings still draw, as boxes.
 		inline PluginMap::Feature BuildingSplines{ "building-splines", "Rails and pipes on the minimap",
@@ -126,8 +132,8 @@ namespace MiniMapFields
 		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 		{
 			return PluginMap::DeclareFeatures(scanner, self,
-				FogOfWar, PointsOfInterest, Foundables, AlienActors, Buildings, BuildingSplines,
-				BuildingSprites);
+				FogOfWar, PointsOfInterest, Foundables, AlienActors, Buildings, BuildingRestore,
+				BuildingSplines, BuildingSprites);
 		}
 	}
 }

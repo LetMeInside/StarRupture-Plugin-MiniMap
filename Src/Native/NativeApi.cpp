@@ -128,7 +128,7 @@ namespace MiniMapNative
 
         if (!addresses.objectArray) return false;
         if (!addresses.buildingOnCreate || !addresses.buildingOnDestroy ||
-            !addresses.massOnSaveLoaded || !addresses.massOnPostSaveLoaded ||
+            !addresses.massOnSaveLoaded ||
             !addresses.textureCreateTransient || !addresses.bulkLock || !addresses.bulkUnlock ||
             !addresses.textureUpdateResource || !addresses.textureGetResource) return false;
 

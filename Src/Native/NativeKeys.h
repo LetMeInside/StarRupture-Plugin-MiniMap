@@ -45,6 +45,9 @@ namespace MiniMapNative::Keys
     inline constexpr const char* AbandonBaseCompleted = "FCrAbandonBaseData::IsCompleted";
     inline constexpr const char* FoundableCategory   = "UCrMapMenuDevSettings::FindFoundableMarkerCateroryData";
 
+    // Building tracking across save loads
+    inline constexpr const char* PostSaveLoaded      = "UCrMassSaveSubsystem::OnPostSaveLoaded";
+
     // Mass entity queries
     inline constexpr const char* MassSubsystem       = "UWorld::GetSubsystem<UMassEntitySubsystem>";
     inline constexpr const char* QueryConstruct      = "FMassEntityQuery::FMassEntityQuery";

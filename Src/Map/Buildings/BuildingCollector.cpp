@@ -2,6 +2,7 @@
 #include "BuildingCollector.h"
 #include "ExternalMapBuildingSession.h"
 #include "DiagnosticExports.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "BuildingBlueprintIdentity.h"
@@ -523,6 +524,8 @@ namespace MiniMapBuildingCollector
                 // A complete/unsupported Mass source is never silently
                 // replaced. Zero/one source point is initially incomplete.
                 if(mass && (mass->bSplineCurvesInitialized || mass->Data.SplineData.Num()>1))return false;
+                // Rails and pipes off: the payload is not read, the building draws as a box.
+                if(!MiniMapFields::Features::BuildingSplines.On()){r.HasSpline=false;return true;}
                 const auto* ap=static_cast<const SDK::FAuAPMassFragment*>(n.mass.getFragmentDataPtr(manager,id,types.AP));
                 if(!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload,*curve)!=MiniMapBuildingSplinePayload::CopyResult::Complete)return false;
             }
