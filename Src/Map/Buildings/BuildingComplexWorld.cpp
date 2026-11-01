@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingComplexWorld.h"
+#include "BuildingComplexSourceAcquisition.h"
 #include "Map/Map.h"
 #include "Map/Terrain/TerrainSource.h"
 #include "Native/MassLifecycle.h"
@@ -12,9 +13,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
+#include <unordered_set>
+#include <vector>
 
 namespace
 {
@@ -26,12 +31,63 @@ namespace
     constexpr size_t kQueryAlignment = 0x10;
     constexpr size_t kEventBatch = 256;
 
+    struct MassKeyHash
+    {
+        size_t operator()(B::MassKey key) const noexcept
+        {
+            const uint64_t packed = uint64_t(uint32_t(key.Index)) |
+                (uint64_t(uint32_t(key.Serial)) << 32);
+            return std::hash<uint64_t>{}(packed);
+        }
+    };
+
     B::Index Index;
     MiniMapBuildingComplexWorld::Status Current;
     SDK::UScriptStruct* BuildingTag = nullptr;
     bool BuildingTagRooted = false;
     uint64_t AppliedEpoch = 0;
     uint64_t AppliedSequence = 0;
+    std::deque<B::MassKey> SourceQueue;
+    std::unordered_set<B::MassKey, MassKeyHash> SourceQueued;
+
+    void EnqueueSource(B::MassKey key)
+    {
+        if (SourceQueued.insert(key).second) SourceQueue.push_back(key);
+    }
+
+    void ClearSourceQueue() noexcept
+    {
+        SourceQueue.clear();
+        SourceQueued.clear();
+    }
+
+    void ResetIndex(uint64_t generation) noexcept
+    {
+        Index.ResetWorld(generation);
+        ClearSourceQueue();
+    }
+
+    bool EnsureMembershipRecord(B::MassKey key, uint64_t generation)
+    {
+        std::shared_ptr<const B::BuildingRecord> existing;
+        if (Index.TryGetRecord(key, generation, existing))
+        {
+            EnqueueSource(key);
+            return true;
+        }
+        auto source = std::make_shared<B::SourcePayload>();
+        source->SourceGeneration = generation;
+        source->Support = B::SupportState::Unknown;
+        B::BuildingRecord record;
+        record.Key = key;
+        record.WorldGeneration = generation;
+        record.Source = std::move(source);
+        B::ChangeSet changes;
+        const auto result = Index.Upsert(std::move(record), changes);
+        if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure) return false;
+        EnqueueSource(key);
+        return true;
+    }
 
     bool AcquireBuildingTag()
     {
@@ -112,25 +168,17 @@ namespace
             MiniMapMap::GetWorldGeneration() != generation || MiniMapMap::GetWorld() != world) return false;
 
         if (!Index.BeginWorld(generation, {origin.X, origin.Y, true})) return false;
+        ClearSourceQueue();
         Current.State = MiniMapBuildingComplexWorld::MembershipState::CensusInProgress;
 
         for (int32_t i = 0; i < handles.Num; ++i)
         {
             const Handle id = handles.Data[i];
             if (id.Index < 0 || id.SerialNumber <= 0 || !native->mass.isEntityValid(manager, id))
-            { Index.ResetWorld(generation); return false; }
+            { ResetIndex(generation); return false; }
 
-            auto source = std::make_shared<B::SourcePayload>();
-            source->SourceGeneration = generation;
-            source->Support = B::SupportState::Unknown;
-            B::BuildingRecord record;
-            record.Key = {id.Index, id.SerialNumber};
-            record.WorldGeneration = generation;
-            record.Source = std::move(source);
-            B::ChangeSet changes;
-            const auto result = Index.Upsert(std::move(record), changes);
-            if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure)
-            { Index.ResetWorld(generation); return false; }
+            if (!EnsureMembershipRecord({id.Index, id.SerialNumber}, generation))
+            { ResetIndex(generation); return false; }
         }
 
         // Replay only events strictly after the seed watermark. AcceptSeed is
@@ -145,10 +193,10 @@ namespace
             {
                 const Event& event = events[i];
                 if (event.Epoch != token.Epoch)
-                { Index.ResetWorld(generation); return false; }
+                { ResetIndex(generation); return false; }
                 if (event.Sequence <= token.Watermark) continue;
                 if (replaySequence == (std::numeric_limits<uint64_t>::max)() || event.Sequence != replaySequence + 1)
-                { Index.ResetWorld(generation); return false; }
+                { ResetIndex(generation); return false; }
                 replaySequence = event.Sequence;
 
                 B::ChangeSet changes;
@@ -163,22 +211,15 @@ namespace
                         reinterpret_cast<const uint8_t*>(currentSubsystem) + 0x38, sizeof(currentManager));
                     if (currentManager != manager || !native->mass.isEntityValid(manager, event.Entity))
                         continue;
-                    auto source = std::make_shared<B::SourcePayload>();
-                    source->SourceGeneration = generation;
-                    source->Support = B::SupportState::Unknown;
-                    B::BuildingRecord record;
-                    record.Key = {event.Entity.Index, event.Entity.SerialNumber};
-                    record.WorldGeneration = generation;
-                    record.Source = std::move(source);
-                    const auto result = Index.Upsert(std::move(record), changes);
-                    if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure)
-                    { Index.ResetWorld(generation); return false; }
+                    if (!EnsureMembershipRecord({event.Entity.Index, event.Entity.SerialNumber}, generation))
+                    { ResetIndex(generation); return false; }
                 }
                 else
                 {
                     const auto result = Index.Remove({event.Entity.Index, event.Entity.SerialNumber}, generation, changes);
                     if (result == B::RemoveResult::AllocationFailure)
-                    { Index.ResetWorld(generation); return false; }
+                    { ResetIndex(generation); return false; }
+                    SourceQueued.erase({event.Entity.Index, event.Entity.SerialNumber});
                 }
             }
         }
@@ -188,7 +229,7 @@ namespace
         // restore barriers; no private save state or extra readiness probe.
         if (!L::AcceptSeed(token, false) || MiniMapMap::GetWorldGeneration() != generation ||
             MiniMapMap::GetWorld() != world)
-        { Index.ResetWorld(generation); return false; }
+        { ResetIndex(generation); return false; }
         AppliedEpoch = token.Epoch;
         AppliedSequence = replaySequence;
         Current.RestoreEpoch = AppliedEpoch;
@@ -207,6 +248,7 @@ namespace
         {
             if (Index.Remove({event.Entity.Index, event.Entity.SerialNumber}, generation, changes) == B::RemoveResult::AllocationFailure)
                 return false;
+            SourceQueued.erase({event.Entity.Index, event.Entity.SerialNumber});
         }
         else
         {
@@ -220,19 +262,77 @@ namespace
                 // incremental handoff; the next census reconciles membership.
                 return false;
             }
-            auto source = std::make_shared<B::SourcePayload>();
-            source->SourceGeneration = generation;
-            source->Support = B::SupportState::Unknown;
-            B::BuildingRecord record;
-            record.Key = {event.Entity.Index, event.Entity.SerialNumber};
-            record.WorldGeneration = generation;
-            record.Source = std::move(source);
-            const auto result = Index.Upsert(std::move(record), changes);
-            if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure) return false;
+            if (!EnsureMembershipRecord({event.Entity.Index, event.Entity.SerialNumber}, generation)) return false;
         }
         AppliedSequence = event.Sequence;
         Current.AppliedSequence = AppliedSequence;
         return true;
+    }
+
+    void ServiceOneSource(const MiniMapNative::NativeApi& native, uint64_t generation, B::MassKey key)
+    {
+        auto retry = [&]() { EnqueueSource(key); };
+        if (!MiniMapBuildingComplexSourceAcquisition::Initialize()) { retry(); return; }
+        std::shared_ptr<const B::BuildingRecord> before;
+        if (!Index.TryGetRecord(key, generation, before) || !before || !before->Source) return;
+
+        auto* world = MiniMapMap::GetWorld();
+        if (!world || MiniMapMap::GetWorldGeneration() != generation ||
+            !native.mass.getMassEntitySubsystem) { retry(); return; }
+        auto* subsystem = native.mass.getMassEntitySubsystem(world);
+        const void* manager = nullptr;
+        if (subsystem) std::memcpy(&manager, reinterpret_cast<const uint8_t*>(subsystem) + 0x38, sizeof(manager));
+        if (!manager) { retry(); return; }
+
+        B::SourcePayload candidate;
+        bool complete = false;
+        const Handle entity{key.Index, key.Serial};
+        if (!MiniMapBuildingComplexSourceAcquisition::TryAcquire(native, manager, entity,
+            generation, candidate, complete)) { retry(); return; }
+
+        auto* currentSubsystem = native.mass.getMassEntitySubsystem(world);
+        const void* currentManager = nullptr;
+        if (currentSubsystem) std::memcpy(&currentManager,
+            reinterpret_cast<const uint8_t*>(currentSubsystem) + 0x38, sizeof(currentManager));
+        if (MiniMapMap::GetWorldGeneration() != generation || MiniMapMap::GetWorld() != world ||
+            currentManager != manager || !native.mass.isEntityValid(manager, entity) ||
+            !native.mass.isEntityBuilt(manager, entity))
+        { retry(); return; }
+        std::shared_ptr<const B::BuildingRecord> current;
+        if (!Index.TryGetRecord(key, generation, current) || current != before) { retry(); return; }
+
+        if (!MiniMapBuildingComplexSourceAcquisition::IsSameSource(*before->Source, candidate))
+        {
+            if (before->Source->SourceRevision == (std::numeric_limits<uint64_t>::max)())
+            { retry(); return; }
+            candidate.SourceRevision = before->Source->SourceRevision + 1;
+            B::BuildingRecord updated;
+            updated.Key = key;
+            updated.WorldGeneration = generation;
+            updated.Source = std::make_shared<const B::SourcePayload>(std::move(candidate));
+            B::ChangeSet changes;
+            const auto result = Index.Upsert(std::move(updated), changes);
+            if (result == B::UpsertResult::InvalidInput || result == B::UpsertResult::AllocationFailure)
+            { retry(); return; }
+        }
+        if (!complete) retry();
+    }
+
+    void ServicePendingSources(const MiniMapNative::NativeApi& native, uint64_t generation)
+    {
+        // Source values are currently reacquired after membership activity or
+        // reseeding; ordinary transform or spline edits are not tracked here.
+        const size_t queuedAtStart = SourceQueue.size();
+        std::vector<B::MassKey> pass;
+        pass.reserve(queuedAtStart);
+        for (size_t i = 0; i < queuedAtStart && !SourceQueue.empty(); ++i)
+        {
+            const B::MassKey key = SourceQueue.front();
+            SourceQueue.pop_front();
+            if (SourceQueued.erase(key) != 0) pass.push_back(key);
+        }
+        for (const B::MassKey key : pass)
+            ServiceOneSource(native, generation, key);
     }
 
     void ServiceImpl()
@@ -247,13 +347,13 @@ namespace
             lifecycle.Epoch != AppliedEpoch)
         {
             Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
-            Index.ResetWorld(generation);
+            ResetIndex(generation);
             const auto token = L::BeginSeed(false);
             if (!token.Epoch) return;
             Current.State = MiniMapBuildingComplexWorld::MembershipState::CensusInProgress;
             if (!BuildCensus(generation, token))
             {
-                if (MiniMapMap::GetWorldGeneration() == generation) Index.ResetWorld(generation);
+                if (MiniMapMap::GetWorldGeneration() == generation) ResetIndex(generation);
                 Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
             }
             return;
@@ -262,7 +362,7 @@ namespace
         const auto* native = MiniMapNative::Get();
         if (!native)
         {
-            Index.ResetWorld(generation);
+            ResetIndex(generation);
             Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
             return;
         }
@@ -274,16 +374,17 @@ namespace
             for (size_t i = 0; i < count; ++i)
                 if (!ApplyIncremental(*native, events[i], generation))
                 {
-                    Index.ResetWorld(generation);
+                    ResetIndex(generation);
                     Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
                     return;
                 }
         }
+        if (!SourceQueue.empty()) ServicePendingSources(*native, generation);
         lifecycle = L::Status();
         if (lifecycle.ObservationLost || lifecycle.Epoch != AppliedEpoch ||
             (lifecycle.Sequence != AppliedSequence && lifecycle.Queued == 0))
         {
-            Index.ResetWorld(generation);
+            ResetIndex(generation);
             Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
         }
     }
@@ -293,7 +394,7 @@ namespace
         try { ServiceImpl(); }
         catch (...)
         {
-            if (Current.WorldGeneration) Index.ResetWorld(Current.WorldGeneration);
+            if (Current.WorldGeneration) ResetIndex(Current.WorldGeneration);
             Current.State = MiniMapBuildingComplexWorld::MembershipState::ReseedRequired;
         }
     }
@@ -307,7 +408,7 @@ namespace MiniMapBuildingComplexWorld
         Current.WorldGeneration = generation;
         Current.State = generation ? MembershipState::InitialCensusPending : MembershipState::WorldUnavailable;
         AppliedEpoch = AppliedSequence = 0;
-        Index.ResetWorld(generation);
+        ResetIndex(generation);
         if (!generation || !L::SetConsumer(&Service))
             Current.State = MembershipState::WorldUnavailable;
         else
@@ -320,7 +421,7 @@ namespace MiniMapBuildingComplexWorld
 
     void EndWorld(uint64_t nextGeneration) noexcept
     {
-        Index.ResetWorld(nextGeneration);
+        ResetIndex(nextGeneration);
         Current = {};
         Current.WorldGeneration = nextGeneration;
         Current.State = nextGeneration ? MembershipState::InitialCensusPending : MembershipState::WorldUnavailable;
@@ -330,6 +431,7 @@ namespace MiniMapBuildingComplexWorld
     void Shutdown() noexcept
     {
         EndWorld();
+        MiniMapBuildingComplexSourceAcquisition::Shutdown();
         if (BuildingTag && BuildingTagRooted)
         {
             if (const auto* native = MiniMapNative::Get(); native && native->asset.releaseObject)
