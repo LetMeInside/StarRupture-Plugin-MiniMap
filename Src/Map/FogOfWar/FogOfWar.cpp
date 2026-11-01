@@ -1448,7 +1448,8 @@ namespace MiniMapFogOfWar
         {
             return 0.0f;
         }
-        if (fog.Disabled) return 1.0f;
+        // Without the fog layer nothing is fogged, as when the user turns the fog off.
+        if (fog.Disabled || !MiniMapFields::Features::FogOfWar.On()) return 1.0f;
         const PinnedSnapshot pinned;
         if (!pinned.Valid()) return 0.0f;
         return static_cast<float>(std::clamp(

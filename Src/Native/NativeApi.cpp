@@ -321,7 +321,7 @@ namespace MiniMapNative
 
         g_nativeApi.texture.memoryFree =
             reinterpret_cast<TextureApi::MemoryFreeFn>(
-                addresses.readbackFree);
+                addresses.memoryFree);
 
         // Mandatory collector addresses resolved by the plugin hook admission phase.
         g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);

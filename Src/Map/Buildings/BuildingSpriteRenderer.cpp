@@ -2133,7 +2133,7 @@ namespace
     using Clock = std::chrono::steady_clock;
     constexpr auto kSessionSettleDelay = std::chrono::seconds(5);
     constexpr auto kCaptureGap = std::chrono::milliseconds(500);
-    Clock::time_point g_settleUntil{}, g_nextMiniMapAdmission{};
+    Clock::time_point g_settleUntil{}, g_nextMiniMapAdmission{}, g_retryUntil{};
 
     // Caller holds LifecycleMutex; only this game-thread path can write cache
     // files or submit feedback. Session end closes publication under that lock.
@@ -2212,6 +2212,7 @@ namespace MiniMapBuildingSpriteRenderer
         g_worldCreationAttempts = g_worldRetryTicks = 0;
         g_settleUntil = Clock::now() + kSessionSettleDelay;
         g_nextMiniMapAdmission = {};
+        g_retryUntil = {};
         g_sessionActive = true;
         return true;
     }
@@ -2258,7 +2259,7 @@ namespace MiniMapBuildingSpriteRenderer
     {
         (void)deltaTime;
         if (!g_fifo || !g_feedback || !g_sessionActive || !MiniMapMap::GameplayReady() ||
-            g_nativeWorld.Phase == WorldPhase::Quarantined) return;
+            g_nativeWorld.Phase == WorldPhase::Quarantined || Clock::now() < g_retryUntil) return;
         const bool captureSprites = MiniMapConfig::GetRenderSettings().Buildings.CaptureSprites;
         // MiniMap requests wait in the FIFO while capture is off, the world settles or the gap runs;
         // BuildingComplex requests do not.
@@ -2362,7 +2363,7 @@ namespace MiniMapBuildingSpriteRenderer
             // SpriteFifo moves a request envelope then pops it without allocation;
             // allocation/lock failure precedes removal. No native request began.
             g_activeRequest.reset();
-            g_settleUntil = Clock::now() + kCaptureGap; // Retry paced, not every tick.
+            g_retryUntil = Clock::now() + kCaptureGap; // Retry paced, not every tick.
             LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");
             return;
         }

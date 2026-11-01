@@ -103,6 +103,9 @@ namespace MiniMapFields
 			KeysOf(Keys::SplinePayloadGet, Keys::SplinePayloadDestroy, Keys::SplinePayloadStaticStruct),
 			{ "Buildings.RenderDroneRails" } };
 
+		// ReadbackGlobals and ReleaseGuard are not requests: they name the checks that
+		// report through the scanner, so a failed check turns this layer off. The loader
+		// notes that no request asked for them.
 		inline PluginMap::Feature BuildingSprites{ "building-sprites", "Building pictures on the minimap",
 			KeysOf(Keys::SpawnObject, Keys::SetObjectFlags, Keys::RegisterComponent, Keys::UnregisterComponent,
 				Keys::DestroyComponent, Keys::InitRenderTarget, Keys::RenderTargetResource,
