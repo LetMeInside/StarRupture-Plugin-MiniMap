@@ -1343,5 +1343,364 @@ namespace MiniMapBuildingComplexWorld
         }
         catch (...) { return false; }
     }
+
+    namespace
+    {
+        namespace B = MiniMapBuildingComplexIndex;
+        constexpr uint32_t kTilePolicyR1 = 1;
+        constexpr int64_t kCanonicalPixelsPerCell = 256;
+        constexpr int64_t kCanonicalPixelsPerTile = 1024;
+        constexpr int64_t kTileCells = 4;
+        constexpr std::array<uint32_t, 4> kTileSides{128, 256, 512, 1024};
+
+        struct GroupWorkKey
+        {
+            TileKey Key;
+            uint32_t Side = 0;
+            bool operator<(const GroupWorkKey& rhs) const noexcept
+            { return Key < rhs.Key || (!(rhs.Key < Key) && Side < rhs.Side); }
+        };
+        std::set<GroupWorkKey> ActiveTileWork;
+
+        bool MultiplyChecked(int64_t value, int64_t positive, int64_t& result) noexcept
+        {
+            if (positive <= 0 || value > (std::numeric_limits<int64_t>::max)() / positive ||
+                value < (std::numeric_limits<int64_t>::min)() / positive) return false;
+            result = value * positive;
+            return true;
+        }
+
+        bool AddChecked(int64_t value, int64_t delta, int64_t& result) noexcept
+        {
+            if ((delta > 0 && value > (std::numeric_limits<int64_t>::max)() - delta) ||
+                (delta < 0 && value < (std::numeric_limits<int64_t>::min)() - delta)) return false;
+            result = value + delta;
+            return true;
+        }
+
+        int64_t FloorDiv256(int64_t value) noexcept
+        {
+            int64_t quotient = value / kCanonicalPixelsPerCell;
+            if (value % kCanonicalPixelsPerCell < 0) --quotient;
+            return quotient;
+        }
+
+        bool RequiredCanonicalCells(TileKey key, uint32_t side,
+            std::vector<B::CellKey>& output, int64_t& pixelOriginX, int64_t& pixelOriginY) noexcept
+        {
+            output.clear();
+            if (std::find(kTileSides.begin(), kTileSides.end(), side) == kTileSides.end()) return false;
+            int64_t baseCellX = 0, baseCellY = 0;
+            if (!MultiplyChecked(key.X, kTileCells, baseCellX) || !MultiplyChecked(key.Y, kTileCells, baseCellY) ||
+                !MultiplyChecked(key.X, kCanonicalPixelsPerTile, pixelOriginX) ||
+                !MultiplyChecked(key.Y, kCanonicalPixelsPerTile, pixelOriginY)) return false;
+            const int64_t stride = kCanonicalPixelsPerTile / int64_t(side);
+            int64_t firstX = 0, firstY = 0, endX = 0, endY = 0;
+            if (!AddChecked(pixelOriginX, -stride, firstX) || !AddChecked(pixelOriginY, -stride, firstY) ||
+                !AddChecked(pixelOriginX, kCanonicalPixelsPerTile + stride, endX) ||
+                !AddChecked(pixelOriginY, kCanonicalPixelsPerTile + stride, endY) ||
+                endX <= firstX || endY <= firstY) return false;
+            const int64_t cellMinX = FloorDiv256(firstX), cellMinY = FloorDiv256(firstY);
+            const int64_t cellMaxX = FloorDiv256(endX - 1), cellMaxY = FloorDiv256(endY - 1);
+            // One output sample is at most eight canonical texels; therefore
+            // each edge and corner can depend on only the adjacent cell.
+            if (cellMinX != baseCellX - 1 || cellMinY != baseCellY - 1 ||
+                cellMaxX != baseCellX + kTileCells || cellMaxY != baseCellY + kTileCells) return false;
+            try
+            {
+                output.reserve(36);
+                for (int64_t x = cellMinX; x <= cellMaxX; ++x)
+                    for (int64_t y = cellMinY; y <= cellMaxY; ++y)
+                        output.push_back({x, y});
+                return output.size() == 36;
+            }
+            catch (...) { output.clear(); return false; }
+        }
+
+        bool ValidTileBounds(TileKey key, B::WorldOrigin origin) noexcept
+        {
+            if (!origin.Valid || !std::isfinite(origin.X) || !std::isfinite(origin.Y)) return false;
+            const long double minX = static_cast<long double>(origin.X) +
+                static_cast<long double>(key.X) * 50000.0L;
+            const long double minY = static_cast<long double>(origin.Y) +
+                static_cast<long double>(key.Y) * 50000.0L;
+            const long double maxX = minX + 50000.0L, maxY = minY + 50000.0L;
+            const double convertedMinX = static_cast<double>(minX), convertedMinY = static_cast<double>(minY);
+            const double convertedMaxX = static_cast<double>(maxX), convertedMaxY = static_cast<double>(maxY);
+            return std::isfinite(minX) && std::isfinite(minY) && std::isfinite(maxX) && std::isfinite(maxY) &&
+                std::isfinite(convertedMinX) && std::isfinite(convertedMinY) &&
+                std::isfinite(convertedMaxX) && std::isfinite(convertedMaxY) &&
+                convertedMinX < convertedMaxX && convertedMinY < convertedMaxY;
+        }
+
+        bool HalfToDouble(uint16_t half, double& value) noexcept
+        {
+            const uint16_t exponent = uint16_t((half >> 10) & 0x1F);
+            const uint16_t mantissa = uint16_t(half & 0x03FF);
+            if (exponent == 0x1F) return false;
+            value = exponent == 0 ? std::ldexp(double(mantissa), -24) :
+                std::ldexp(double(1024 + mantissa), int(exponent) - 25);
+            if (half & 0x8000) value = -value;
+            return std::isfinite(value);
+        }
+
+        uint16_t DoubleToHalf(double value) noexcept
+        {
+            const uint16_t sign = std::signbit(value) ? 0x8000 : 0;
+            const double magnitude = std::abs(value);
+            if (magnitude == 0) return sign;
+            auto roundEven = [](double input) noexcept -> uint32_t {
+                const double floorValue = std::floor(input);
+                uint32_t integer = static_cast<uint32_t>(floorValue);
+                const double fraction = input - floorValue;
+                if (fraction > 0.5 || (fraction == 0.5 && (integer & 1))) ++integer;
+                return integer;
+            };
+            if (magnitude < std::ldexp(1.0, -14))
+            {
+                const uint32_t subnormal = roundEven(std::ldexp(magnitude, 24));
+                return uint16_t(sign | (subnormal >= 1024 ? 0x0400 : subnormal));
+            }
+            int exponent = 0;
+            std::frexp(magnitude, &exponent);
+            int halfExponent = exponent - 1 + 15;
+            uint32_t significand = roundEven(std::ldexp(magnitude, 10 - (exponent - 1)));
+            if (significand == 2048) { significand = 1024; ++halfExponent; }
+            if (halfExponent >= 31) return uint16_t(sign | 0x7C00);
+            return uint16_t(sign | (uint16_t(halfExponent) << 10) | uint16_t(significand - 1024));
+        }
+
+        bool ReadCanonical(const std::map<B::CellKey,
+            std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>>& cells,
+            int64_t pixelX, int64_t pixelY, std::array<double, 4>& channels) noexcept
+        {
+            const int64_t cellX = FloorDiv256(pixelX), cellY = FloorDiv256(pixelY);
+            const B::CellKey key{cellX, cellY};
+            const auto found = cells.find(key);
+            if (found == cells.end() || !found->second ||
+                found->second->Rgba16F.size() != size_t(kCanonicalPixelsPerCell * kCanonicalPixelsPerCell * 8))
+                return false;
+            int64_t localX = pixelX - cellX * kCanonicalPixelsPerCell;
+            int64_t localY = pixelY - cellY * kCanonicalPixelsPerCell;
+            if (localX < 0 || localX >= kCanonicalPixelsPerCell || localY < 0 || localY >= kCanonicalPixelsPerCell)
+                return false;
+            const size_t offset = (size_t(localY) * size_t(kCanonicalPixelsPerCell) + size_t(localX)) * 8;
+            for (size_t channel = 0; channel < channels.size(); ++channel)
+            {
+                const uint16_t half = uint16_t(found->second->Rgba16F[offset + channel * 2]) |
+                    uint16_t(uint16_t(found->second->Rgba16F[offset + channel * 2 + 1]) << 8);
+                if (!HalfToDouble(half, channels[channel]) || channels[channel] < 0 || channels[channel] > 1)
+                    return false;
+            }
+            return true;
+        }
+
+        bool FilterTile(uint32_t side, int64_t pixelOriginX, int64_t pixelOriginY,
+            const std::map<B::CellKey, std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>>& cells,
+            std::vector<uint8_t>& output) noexcept
+        {
+            try
+            {
+                const int64_t stride = kCanonicalPixelsPerTile / int64_t(side);
+                const uint32_t physicalSide = side + 2;
+                output.resize(size_t(physicalSide) * physicalSide * 8);
+                std::array<double, 4> values{};
+                for (int64_t j = -1; j <= int64_t(side); ++j)
+                {
+                    int64_t rowStart = 0;
+                    if (!AddChecked(pixelOriginY, j * stride, rowStart)) return false;
+                    for (int64_t i = -1; i <= int64_t(side); ++i)
+                    {
+                        int64_t columnStart = 0;
+                        if (!AddChecked(pixelOriginX, i * stride, columnStart)) return false;
+                        std::array<double, 4> sums{};
+                        for (int64_t sy = 0; sy < stride; ++sy)
+                            for (int64_t sx = 0; sx < stride; ++sx)
+                            {
+                                if (!ReadCanonical(cells, columnStart + sx, rowStart + sy, values)) return false;
+                                for (size_t channel = 0; channel < sums.size(); ++channel) sums[channel] += values[channel];
+                            }
+                        const double divisor = double(stride * stride);
+                        const size_t pixel = (size_t(j + 1) * physicalSide + size_t(i + 1)) * 8;
+                        for (size_t channel = 0; channel < sums.size(); ++channel)
+                        {
+                            const double average = sums[channel] / divisor;
+                            if (!std::isfinite(average) || average < 0 || average > 1) return false;
+                            const uint16_t half = DoubleToHalf(average);
+                            output[pixel + channel * 2] = uint8_t(half & 0xFF);
+                            output[pixel + channel * 2 + 1] = uint8_t(half >> 8);
+                        }
+                    }
+                }
+                return true;
+            }
+            catch (...) { output.clear(); return false; }
+        }
+
+        bool IsClearImage(const std::vector<uint8_t>& pixels) noexcept
+        {
+            constexpr std::array<uint8_t, 8> clear{0, 0, 0, 0, 0, 0, 0, 0x3C};
+            if (pixels.empty() || pixels.size() % clear.size()) return false;
+            for (size_t offset = 0; offset < pixels.size(); offset += clear.size())
+                if (!std::equal(clear.begin(), clear.end(), pixels.begin() + offset)) return false;
+            return true;
+        }
+
+        struct TileWorkScope
+        {
+            GroupWorkKey Key;
+            ~TileWorkScope() { ActiveTileWork.erase(Key); }
+        };
+    }
+
+    int64_t FloorDiv4(int64_t value) noexcept
+    {
+        int64_t quotient = value / 4;
+        if (value % 4 < 0) --quotient;
+        return quotient;
+    }
+
+    TileKey TileForCell(B::CellKey key) noexcept
+    { return {FloorDiv4(key.X), FloorDiv4(key.Y)}; }
+
+    uint32_t SelectTileResolution(double projectedTilePixels, uint32_t currentSide) noexcept
+    {
+        if (!std::isfinite(projectedTilePixels) || projectedTilePixels < 0) return 0;
+        auto initial = [&]() noexcept {
+            for (const uint32_t side : kTileSides) if (double(side) >= projectedTilePixels) return side;
+            return kTileSides.back();
+        };
+        if (std::find(kTileSides.begin(), kTileSides.end(), currentSide) == kTileSides.end()) return initial();
+        if (projectedTilePixels > double(currentSide) ||
+            projectedTilePixels <= 0.40 * double(currentSide)) return initial();
+        return currentSide;
+    }
+
+    TileResult ComposeTile(TileKey key, uint64_t generation, uint32_t contentSide) noexcept
+    {
+        namespace R = MiniMapBuildingComplexCellRasterizer;
+        TileResult result;
+        const auto* native = MiniMapNative::Get();
+        if (!native || !native->player.isGameThread || !native->player.isGameThread()) return result;
+        GroupWorkKey workKey{key, contentSide};
+        try
+        {
+            if (!ActiveTileWork.insert(workKey).second)
+            { result.State = TileState::Pending; return result; }
+        }
+        catch (...) { return result; }
+        TileWorkScope workScope{workKey};
+
+        try
+        {
+            std::vector<B::CellKey> required;
+            int64_t pixelOriginX = 0, pixelOriginY = 0;
+            if (!RequiredCanonicalCells(key, contentSide, required, pixelOriginX, pixelOriginY)) return result;
+            const Status initialStatus = GetStatus();
+            if (!generation || initialStatus.State != MembershipState::MembershipEstablished ||
+                initialStatus.WorldGeneration != generation)
+            { result.State = TileState::Failed; return result; }
+
+            std::map<B::CellKey, std::shared_ptr<const R::CellImage>> cells;
+            bool partial = false;
+            for (const auto cellKey : required)
+            {
+                std::shared_ptr<const R::CellImage> image;
+                const auto composed = ComposeCell(cellKey, generation, image);
+                if (composed == CellCompositionResult::Pending)
+                { result.State = TileState::Pending; return result; }
+                if (composed == CellCompositionResult::Stale)
+                { result.State = TileState::Stale; return result; }
+                if (composed == CellCompositionResult::Failed || !image)
+                { result.State = TileState::Failed; return result; }
+                partial |= composed == CellCompositionResult::Partial;
+                cells.emplace(cellKey, std::move(image));
+            }
+
+            auto grouped = std::make_shared<GroupedTileImage>();
+            auto& identity = grouped->Identity;
+            identity.WorldGeneration = generation;
+            identity.RestoreEpoch = initialStatus.RestoreEpoch;
+            identity.Key = key;
+            identity.PolicyId = kTilePolicyR1;
+            identity.ContentSide = contentSide;
+            identity.RenderDroneRails = MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails;
+            identity.Inputs.reserve(required.size());
+            for (const auto cellKey : required)
+            {
+                const auto& image = cells.at(cellKey);
+                if (!image->Origin.Valid || image->WorldGeneration != generation ||
+                    image->RestoreEpoch != initialStatus.RestoreEpoch ||
+                    image->RenderDroneRails != identity.RenderDroneRails) return result;
+                if (identity.Inputs.empty()) identity.Origin = image->Origin;
+                else if (identity.Origin.X != image->Origin.X || identity.Origin.Y != image->Origin.Y) return result;
+                identity.Inputs.push_back(R::Identify(*image));
+                if (image->Status != R::State::Complete) partial = true;
+            }
+            if (!ValidTileBounds(key, identity.Origin)) return result;
+
+            for (const auto& input : identity.Inputs)
+                if (!ValidateCellImage(input)) { result.State = TileState::Stale; return result; }
+            if (partial)
+            {
+                identity.State = TileState::Partial;
+                result.State = TileState::Partial;
+                result.Image = std::move(grouped); // No unsafe partial pixels are exposed.
+                return result;
+            }
+
+            if (!FilterTile(contentSide, pixelOriginX, pixelOriginY, cells, grouped->Rgba16F))
+            { result.State = TileState::Failed; return result; }
+            for (const auto& input : identity.Inputs)
+                if (!ValidateCellImage(input)) { result.State = TileState::Stale; return result; }
+
+            grouped->Width = grouped->Height = contentSide + 2;
+            identity.State = IsClearImage(grouped->Rgba16F) ? TileState::Empty : TileState::Complete;
+            result.State = identity.State;
+            if (identity.State == TileState::Empty) grouped->Rgba16F.clear();
+            result.Image = std::move(grouped);
+            return result;
+        }
+        catch (...) { result.State = TileState::Failed; result.Image.reset(); return result; }
+    }
+
+    bool ValidateTile(const TileIdentity& identity) noexcept
+    {
+        try
+        {
+            namespace R = MiniMapBuildingComplexCellRasterizer;
+            if (!identity.WorldGeneration || !ValidTileBounds(identity.Key, identity.Origin) || identity.PolicyId != kTilePolicyR1 ||
+                std::find(kTileSides.begin(), kTileSides.end(), identity.ContentSide) == kTileSides.end() ||
+                (identity.State != TileState::Partial && identity.State != TileState::Complete &&
+                 identity.State != TileState::Empty)) return false;
+            const auto status = GetStatus();
+            if (status.State != MembershipState::MembershipEstablished ||
+                status.WorldGeneration != identity.WorldGeneration || status.RestoreEpoch != identity.RestoreEpoch)
+                return false;
+            const bool renderDroneRails = MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails;
+            if (renderDroneRails != identity.RenderDroneRails) return false;
+
+            std::vector<B::CellKey> required;
+            int64_t pixelOriginX = 0, pixelOriginY = 0;
+            if (!RequiredCanonicalCells(identity.Key, identity.ContentSide, required, pixelOriginX, pixelOriginY) ||
+                required.size() != identity.Inputs.size()) return false;
+            bool allComplete = true;
+            bool hasPartial = false;
+            for (size_t i = 0; i < required.size(); ++i)
+            {
+                const auto& input = identity.Inputs[i];
+                if (input.Key != required[i] || input.WorldGeneration != identity.WorldGeneration ||
+                    input.RestoreEpoch != identity.RestoreEpoch || !input.Origin.Valid ||
+                    input.Origin.X != identity.Origin.X || input.Origin.Y != identity.Origin.Y ||
+                    input.RenderDroneRails != identity.RenderDroneRails ||
+                    (input.Status != R::State::Complete && input.Status != R::State::Partial) ||
+                    !ValidateCellImage(input)) return false;
+                allComplete &= input.Status == R::State::Complete;
+                hasPartial |= input.Status == R::State::Partial;
+            }
+            return identity.State == TileState::Partial ? hasPartial : allComplete;
+        }
+        catch (...) { return false; }
+    }
 }
 #endif

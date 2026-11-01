@@ -5,6 +5,7 @@
 #include "BuildingComplexCellRasterizer.h"
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace MiniMapBuildingCache { struct Sprite; }
 
@@ -62,5 +63,41 @@ namespace MiniMapBuildingComplexWorld
         uint64_t worldGeneration, uint64_t& requestId) noexcept;
     bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImage& image) noexcept;
     bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImageIdentity& identity) noexcept;
+
+    struct TileKey
+    {
+        int64_t X = 0, Y = 0;
+        bool operator==(const TileKey&) const = default;
+        bool operator<(const TileKey& rhs) const noexcept
+        { return X < rhs.X || (X == rhs.X && Y < rhs.Y); }
+    };
+    enum class TileState : uint8_t { Pending, Partial, Complete, Empty, Failed, Stale };
+    struct TileIdentity
+    {
+        uint64_t WorldGeneration = 0, RestoreEpoch = 0;
+        MiniMapBuildingComplexIndex::WorldOrigin Origin;
+        TileKey Key;
+        uint32_t PolicyId = 1, ContentSide = 0;
+        bool RenderDroneRails = true;
+        TileState State = TileState::Failed;
+        std::vector<MiniMapBuildingComplexCellRasterizer::CellImageIdentity> Inputs;
+    };
+    struct GroupedTileImage
+    {
+        TileIdentity Identity;
+        uint32_t Width = 0, Height = 0; // (N+2) including one texel of guard.
+        std::vector<uint8_t> Rgba16F; // Empty results carry no pixel allocation.
+    };
+    struct TileResult
+    {
+        TileState State = TileState::Failed;
+        std::shared_ptr<const GroupedTileImage> Image;
+    };
+
+    int64_t FloorDiv4(int64_t value) noexcept;
+    TileKey TileForCell(MiniMapBuildingComplexIndex::CellKey key) noexcept;
+    uint32_t SelectTileResolution(double projectedTilePixels, uint32_t currentSide = 0) noexcept;
+    TileResult ComposeTile(TileKey key, uint64_t worldGeneration, uint32_t contentSide) noexcept;
+    bool ValidateTile(const TileIdentity& identity) noexcept;
 }
 #endif
