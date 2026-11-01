@@ -98,27 +98,40 @@ namespace
     uint64_t NextCaptureRequestId = 1;
     uint64_t NextCaptureImageRevision = 1;
 
-    // Game-thread owner state, like membership servicing. These certificates
-    // deliberately retain global revision equality until cell-local validity
-    // is supplied. No source records or capture owners survive in this cache.
+    // Game-thread owner state, like membership servicing. Global revisions
+    // remain audit metadata and are identity fields only when certification is unavailable.
     struct CanonicalScope
     {
         uint64_t WorldGeneration = 0, RestoreEpoch = 0;
         uint64_t SourceRevision = 0, DependencyRevision = 0;
         double OriginX = 0, OriginY = 0;
         bool RenderDroneRails = true;
-        bool operator==(const CanonicalScope&) const = default;
+        B::CellValidity Validity;
+        bool operator==(const CanonicalScope& rhs) const noexcept
+        {
+            if (WorldGeneration != rhs.WorldGeneration || RestoreEpoch != rhs.RestoreEpoch ||
+                OriginX != rhs.OriginX || OriginY != rhs.OriginY ||
+                RenderDroneRails != rhs.RenderDroneRails || Validity != rhs.Validity) return false;
+            return (Validity.SafetyGeneration && Validity.LocalEpoch) ||
+                (SourceRevision == rhs.SourceRevision && DependencyRevision == rhs.DependencyRevision);
+        }
     };
     struct CanonicalIdentity
     {
         CanonicalScope Scope;
         B::CellKey Key;
         uint64_t CellRevision = 0;
+        B::CellValidity Validity;
         bool HasUnresolvedContributor = false;
         // Includes absent eligible captures (ImageRevision == 0), even when
         // the rasterizer could not draw them into its successful manifest.
         std::vector<MiniMapBuildingComplexCellRasterizer::CaptureRevision> Captures;
-        bool operator==(const CanonicalIdentity&) const = default;
+        bool operator==(const CanonicalIdentity& rhs) const noexcept
+        {
+            if (!(Scope == rhs.Scope) || Key != rhs.Key || HasUnresolvedContributor != rhs.HasUnresolvedContributor ||
+                Captures != rhs.Captures) return false;
+            return (Validity.SafetyGeneration && Validity.LocalEpoch) || CellRevision == rhs.CellRevision;
+        }
     };
     struct CanonicalResult
     {
@@ -127,12 +140,13 @@ namespace
     };
     std::map<B::CellKey, std::shared_ptr<CanonicalResult>> CanonicalResults;
 
+    void QueueOcclusionChanges(const B::ChangeSet& changes);
+
     void NotifyCaptureValidityChange(B::MassKey key) noexcept
     {
         B::ChangeSet changes;
-        // Parallel foundation only. Do not feed its wider local coverage into
-        // legacy CPU/GPU invalidation until local validation is activated.
         Index.NotifyCaptureChange(key, Current.WorldGeneration, changes);
+        QueueOcclusionChanges(changes);
     }
 
     void InvalidateCanonicalCapture(B::MassKey key) noexcept
@@ -153,9 +167,10 @@ namespace
     {
         CanonicalIdentity identity;
         identity.Scope = {snapshot.WorldGeneration, restoreEpoch, snapshot.SourceRevision,
-            snapshot.DependencyRevision, snapshot.Origin.X, snapshot.Origin.Y, renderDroneRails};
+            snapshot.DependencyRevision, snapshot.Origin.X, snapshot.Origin.Y, renderDroneRails, snapshot.Validity};
         identity.Key = snapshot.Key;
         identity.CellRevision = snapshot.CellRevision;
+        identity.Validity = snapshot.Validity;
         identity.HasUnresolvedContributor = snapshot.HasUnresolvedContributor;
         identity.Captures.reserve(snapshot.Records.size());
         // Metadata only: no image acquisition, capture operation or engine call.
@@ -263,14 +278,14 @@ namespace
 
     void QueueOcclusionChanges(const B::ChangeSet& changes)
     {
-        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated)
+        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated || changes.LocalSafetyInvalidated)
             CanonicalResults.clear();
         else
-            for (const auto key : changes.InvalidatedCells) CanonicalResults.erase(key);
-        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated)
+            for (const auto key : changes.LocalInvalidatedCells) CanonicalResults.erase(key);
+        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated || changes.LocalSafetyInvalidated)
             MiniMapTexturePublication::InvalidateAll();
-        else if (!changes.InvalidatedCells.empty())
-            MiniMapTexturePublication::InvalidateCells(changes.InvalidatedCells);
+        else if (!changes.LocalInvalidatedCells.empty())
+            MiniMapTexturePublication::InvalidateCells(changes.LocalInvalidatedCells);
         if (changes.GlobalSplineOcclusionInvalidated)
         {
             PendingGlobalOcclusion = true;
@@ -402,7 +417,15 @@ namespace
         const auto state = output.Complete ? B::SplineOcclusionState::Complete :
             (unresolvedOrdinary ? B::SplineOcclusionState::Partial : B::SplineOcclusionState::Invalid);
         B::ChangeSet published;
-        return Index.PublishSplineOcclusion(key, generation, std::move(output), state, published);
+        const bool success = Index.PublishSplineOcclusion(key, generation, std::move(output), state, published);
+        if (success)
+        {
+            QueueOcclusionChanges(published);
+            // The published result is current for this section; its changes
+            // revoke cell images without scheduling the same section again.
+            PendingOcclusionSections.erase(key);
+        }
+        return success;
     }
 
     void ServicePendingOcclusion(uint64_t generation)
@@ -817,10 +840,6 @@ namespace
             {
                 InvalidateCanonicalCapture(key);
                 MiniMapTexturePublication::InvalidateCapture(key);
-                std::lock_guard lock(CaptureImagesMutex);
-                CaptureImages.insert_or_assign(key, CompletedCaptureImage{
-                    generation, result.SourceRevision, imageRevision,
-                    result.CanonicalBlueprintIdentity, result.Payload});
             }
             catch (...) { continue; }
             if (spriteRepresentation)
@@ -858,8 +877,18 @@ namespace
                 if (upserted == B::UpsertResult::Inserted || upserted == B::UpsertResult::Replaced)
                     QueueOcclusionChanges(changes);
                 if (upserted != B::UpsertResult::Inserted && upserted != B::UpsertResult::Replaced &&
-                    upserted != B::UpsertResult::Unchanged) EraseCaptureImage(key);
+                    upserted != B::UpsertResult::Unchanged) continue;
             }
+            // The index has now revoked old and new graphical/dependent cells.
+            // Publish capture availability only after that certificate change.
+            try
+            {
+                std::lock_guard lock(CaptureImagesMutex);
+                CaptureImages.insert_or_assign(key, CompletedCaptureImage{
+                    generation, result.SourceRevision, imageRevision,
+                    result.CanonicalBlueprintIdentity, result.Payload});
+            }
+            catch (...) { continue; }
         }
     }
 
@@ -1013,7 +1042,8 @@ namespace
         const uint64_t generation = Current.WorldGeneration;
         if (!generation || !MiniMapMap::GameplayReady() || MiniMapMap::GetWorldGeneration() != generation ||
             lifecycle.WorldGeneration != generation || !L::InAdmittedService()) return;
-        Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails);
+        if (Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails))
+        { CanonicalResults.clear(); MiniMapTexturePublication::InvalidateAll(); }
 
         if (lifecycle.ObservationLost || lifecycle.SeedRequired ||
             Current.State != MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished ||
@@ -1174,18 +1204,15 @@ namespace MiniMapBuildingComplexWorld
             if (!generation || initialStatus.State != MembershipState::MembershipEstablished ||
                 initialStatus.WorldGeneration != generation) return CellCompositionResult::Failed;
 
-            Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails);
+            if (Index.ObserveRenderingPolicy(MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails))
+            { CanonicalResults.clear(); MiniMapTexturePublication::InvalidateAll(); }
             B::CellSnapshot snapshot;
             if (!Index.TrySnapshot(key, snapshot) || snapshot.WorldGeneration != generation || !snapshot.Origin.Valid)
                 return CellCompositionResult::Failed;
             const bool renderDroneRails = MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails;
             auto identity = IdentifyCanonicalRequest(snapshot, initialStatus.RestoreEpoch, renderDroneRails);
-            // Discard obsolete global scopes without retaining historical images
-            // for cells that are no longer demanded. Capture-only changes are
-            // checked by the exact manifest on lookup below.
-            for (auto it = CanonicalResults.begin(); it != CanonicalResults.end();)
-                if (it->second->Identity.Scope != identity.Scope) it = CanonicalResults.erase(it);
-                else ++it;
+            // A changed unrelated journal counter does not evict certified cells.
+            // The demanded key is rechecked against its current local token below.
             auto found = CanonicalResults.find(key);
             if (found != CanonicalResults.end())
             {
@@ -1225,6 +1252,7 @@ namespace MiniMapBuildingComplexWorld
             const auto state = R::Compose(snapshot, sprites, renderDroneRails, composed);
             if (state == R::State::Failed) return CellCompositionResult::Failed;
             composed.RestoreEpoch = initialStatus.RestoreEpoch;
+            composed.CaptureAvailability = work->Identity.Captures;
 
             if (!ValidateCellImage(composed)) return CellCompositionResult::Stale;
 
@@ -1269,15 +1297,40 @@ namespace MiniMapBuildingComplexWorld
     {
         try
         {
+            const bool renderDroneRails = MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails;
+            if (Index.ObserveRenderingPolicy(renderDroneRails))
+            { CanonicalResults.clear(); MiniMapTexturePublication::InvalidateAll(); }
             const auto status = GetStatus();
+            const auto lifecycle = L::Status();
             if (!identity.WorldGeneration || status.State != MembershipState::MembershipEstablished ||
+                lifecycle.SeedRequired || lifecycle.ObservationLost || lifecycle.Queued || lifecycle.InFlight ||
+                (lifecycle.RestoreObserved && (!lifecycle.MassInitialized || !lifecycle.PostSaveCompleted)) ||
                 status.WorldGeneration != identity.WorldGeneration || status.RestoreEpoch != identity.RestoreEpoch ||
-                MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails != identity.RenderDroneRails) return false;
+                renderDroneRails != identity.RenderDroneRails) return false;
             B::CellSnapshot current;
             if (!Index.TrySnapshot(identity.Key, current) || current.WorldGeneration != identity.WorldGeneration ||
-                current.CellRevision != identity.CellRevision || current.SourceRevision != identity.SourceRevision ||
-                current.DependencyRevision != identity.DependencyRevision) return false;
-            for (const auto& capture : identity.CaptureRevisions)
+                !current.Origin.Valid || !identity.Origin.Valid || current.Origin.X != identity.Origin.X ||
+                current.Origin.Y != identity.Origin.Y || current.Validity != identity.Validity) return false;
+            const bool locallyCertified = current.Validity.SafetyGeneration != 0 && current.Validity.LocalEpoch != 0;
+            if (!locallyCertified && (current.CellRevision != identity.CellRevision ||
+                current.SourceRevision != identity.SourceRevision || current.DependencyRevision != identity.DependencyRevision)) return false;
+            auto expected = IdentifyCanonicalRequest(current, status.RestoreEpoch, renderDroneRails);
+            if (expected.Captures != identity.CaptureAvailability) return false;
+            std::vector<MiniMapBuildingComplexCellRasterizer::CaptureRevision> available;
+            for (const auto& capture : expected.Captures)
+                if (capture.ImageRevision) available.push_back(capture);
+            std::vector<bool> incorporated(available.size(), false);
+            for (const auto& captured : identity.CaptureRevisions)
+            {
+                size_t match = 0;
+                while (match < available.size() && (incorporated[match] || available[match] != captured)) ++match;
+                if (match == available.size() || !captured.ImageRevision) return false;
+                incorporated[match] = true;
+            }
+            if (identity.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
+                (current.HasUnresolvedContributor || available.size() != expected.Captures.size() ||
+                    identity.CaptureRevisions.size() != available.size())) return false;
+            for (const auto& capture : available)
             {
                 std::shared_ptr<const MiniMapBuildingCache::Sprite> source;
                 uint64_t imageRevision = 0;

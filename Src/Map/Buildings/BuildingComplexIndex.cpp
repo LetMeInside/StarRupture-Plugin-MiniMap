@@ -230,13 +230,15 @@ namespace MiniMapBuildingComplexIndex
         AdvanceSafetyLocked();
     }
 
-    void Index::ObserveRenderingPolicy(bool renderDroneRails) noexcept
+    bool Index::ObserveRenderingPolicy(bool renderDroneRails) noexcept
     {
         std::lock_guard lock(mutex_);
-        if (renderingPolicyKnown_ && renderDroneRails_ != renderDroneRails)
+        const bool changed = renderingPolicyKnown_ && renderDroneRails_ != renderDroneRails;
+        if (changed)
             AdvanceSafetyLocked();
         renderDroneRails_ = renderDroneRails;
         renderingPolicyKnown_ = true;
+        return changed;
     }
 
     void Index::NotifyCaptureChange(MassKey key, uint64_t generation, ChangeSet& changes) noexcept
@@ -248,6 +250,10 @@ namespace MiniMapBuildingComplexIndex
         // Removal has already invalidated the old support under this mutex.
         // A capture for a nonmember cannot be acquired through the world owner.
         if (record == records_.end()) return;
+        // Also advance conservative fallback metadata. Certified local cells
+        // ignore this journal movement; uncertified results must not survive
+        // a capture/readiness mutation with no local token available.
+        Advance(dependencyRevision_);
         changes.WorldGeneration = generation;
         changes.SourceRevision = sourceRevision_;
         changes.DependencyRevision = dependencyRevision_;
@@ -255,10 +261,27 @@ namespace MiniMapBuildingComplexIndex
             (PotentialOrdinaryOccluder(*record->second.Record->Source) &&
              !VerifiedOccluderGeometry(*record->second.Record->Source) &&
              !record->second.Record->Source->VisualSupport.Valid);
-        // Pixel availability changes do not change physical occluder geometry.
-        // Changed capture bounds/quad metadata subsequently use Upsert, which
-        // covers old/new support and dependent spline output before publication.
-        PrepareLocalChangeLocked(changes, record->second.Cells, record->second.Cells, {});
+        std::vector<SectionKey> affectedSections;
+        try
+        {
+            std::set<SectionKey> sections;
+            if (auto reverse = occluderSections_.find(key); reverse != occluderSections_.end())
+                sections.insert(reverse->second.begin(), reverse->second.end());
+            // Include current spatial-query coverage so an entering/replaced
+            // capture is covered even before it has a reverse dependency edge.
+            for (const auto& pair : sectionCells_)
+                for (const auto& cell : record->second.Cells)
+                    if (pair.second.find(cell) != pair.second.end()) { sections.insert(pair.first); break; }
+            affectedSections.assign(sections.begin(), sections.end());
+        }
+        catch (...)
+        {
+            changes.LocalSafetyInvalidated = true;
+            affectedSections.clear();
+        }
+        // Capture availability changes keep the same physical support. Bounds
+        // changes are published through Upsert's old/new support transaction.
+        PrepareLocalChangeLocked(changes, record->second.Cells, record->second.Cells, affectedSections);
         ApplyLocalChangeLocked(changes);
     }
 
@@ -954,6 +977,10 @@ namespace MiniMapBuildingComplexIndex
             auto payload = owner->second.Record->SplineOcclusion ?
                 std::make_shared<SplineOcclusionPayload>(*owner->second.Record->SplineOcclusion) :
                 std::make_shared<SplineOcclusionPayload>();
+            // A single section can affect cells outside its owner's graphical
+            // support. Keep fallback validation conservative if local epochs
+            // are unavailable; certified cells use the targeted ChangeSet.
+            Advance(dependencyRevision_);
             payload->WorldGeneration = generation;
             payload->SourceRevision = section.SourceRevision;
             payload->DependencyRevision = dependencyRevision_;

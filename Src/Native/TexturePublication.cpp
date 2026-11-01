@@ -85,25 +85,34 @@ namespace
     bool SameCellIdentity(const MiniMapBuildingComplexCellRasterizer::CellImage& a,
         const MiniMapBuildingComplexCellRasterizer::CellImage& b) noexcept
     {
+        const bool local = a.Validity.SafetyGeneration && a.Validity.LocalEpoch &&
+            b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
         return a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             a.Key == b.Key && a.WorldGeneration == b.WorldGeneration && a.RestoreEpoch == b.RestoreEpoch &&
-            a.SourceRevision == b.SourceRevision && a.CellRevision == b.CellRevision &&
-            a.DependencyRevision == b.DependencyRevision && a.RenderDroneRails == b.RenderDroneRails &&
+            a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
+            a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
+                a.CellRevision == b.CellRevision && a.DependencyRevision == b.DependencyRevision)) &&
+            a.RenderDroneRails == b.RenderDroneRails &&
             a.Width == b.Width && a.Height == b.Height && a.CaptureRevisions == b.CaptureRevisions &&
+            a.CaptureAvailability == b.CaptureAvailability &&
             a.Rgba16F == b.Rgba16F;
     }
     bool SameCellIdentity(const MiniMapBuildingComplexCellRasterizer::CellImageIdentity& a,
         const MiniMapBuildingComplexCellRasterizer::CellImage& b) noexcept
     {
+        const bool local = a.Validity.SafetyGeneration && a.Validity.LocalEpoch &&
+            b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
         return b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             a.Key == b.Key && a.WorldGeneration == b.WorldGeneration && a.RestoreEpoch == b.RestoreEpoch &&
-            a.SourceRevision == b.SourceRevision && a.CellRevision == b.CellRevision &&
-            a.DependencyRevision == b.DependencyRevision && a.RenderDroneRails == b.RenderDroneRails &&
+            a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
+            a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
+                a.CellRevision == b.CellRevision && a.DependencyRevision == b.DependencyRevision)) &&
+            a.RenderDroneRails == b.RenderDroneRails &&
             b.Width == MiniMapBuildingComplexIndex::kCellImageSizePixels &&
             b.Height == MiniMapBuildingComplexIndex::kCellImageSizePixels &&
-            a.CaptureRevisions == b.CaptureRevisions;
+            a.CaptureRevisions == b.CaptureRevisions && a.CaptureAvailability == b.CaptureAvailability;
     }
     bool ValidCanonical(int32_t width, int32_t height, const uint8_t* bytes, size_t size) noexcept
     {

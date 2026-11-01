@@ -257,7 +257,7 @@ namespace MiniMapBuildingComplexIndex
         // flow through Upsert's old/new support transaction.
         void NotifyCaptureChange(MassKey key, uint64_t worldGeneration, ChangeSet& changes) noexcept;
         void InvalidateSafety() noexcept;
-        void ObserveRenderingPolicy(bool renderDroneRails) noexcept;
+        bool ObserveRenderingPolicy(bool renderDroneRails) noexcept;
 
         UpsertResult Upsert(BuildingRecord record, ChangeSet& changes) noexcept;
         RemoveResult Remove(MassKey key, uint64_t worldGeneration, ChangeSet& changes) noexcept;

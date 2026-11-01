@@ -133,7 +133,8 @@ namespace MiniMapBuildingComplexCellRasterizer
                 area = -area;
             }
 
-            const long double cellX = snapshot.Key.X, cellY = snapshot.Key.Y;
+            const long double cellX = static_cast<long double>(snapshot.Key.X);
+            const long double cellY = static_cast<long double>(snapshot.Key.Y);
             long double minX = std::numeric_limits<long double>::infinity();
             long double minY = minX, maxX = -minX, maxY = -minX;
             for (const auto& vertex : vertices)
@@ -314,6 +315,8 @@ namespace MiniMapBuildingComplexCellRasterizer
             result.SourceRevision = snapshot.SourceRevision;
             result.CellRevision = snapshot.CellRevision;
             result.DependencyRevision = snapshot.DependencyRevision;
+            result.Validity = snapshot.Validity;
+            result.Origin = snapshot.Origin;
             result.RenderDroneRails = renderDroneRails;
             result.Status = snapshot.HasUnresolvedContributor ? State::Partial : State::Complete;
             const size_t pixelCount = kSide * kSide;

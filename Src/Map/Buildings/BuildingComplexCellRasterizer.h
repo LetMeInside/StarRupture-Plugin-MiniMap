@@ -34,11 +34,14 @@ namespace MiniMapBuildingComplexCellRasterizer
         uint64_t SourceRevision = 0;
         uint64_t CellRevision = 0;
         uint64_t DependencyRevision = 0;
+        B::CellValidity Validity;
+        B::WorldOrigin Origin;
         bool RenderDroneRails = true;
         uint32_t Width = B::kCellImageSizePixels;
         uint32_t Height = B::kCellImageSizePixels;
         State Status = State::Failed;
         std::vector<CaptureRevision> CaptureRevisions;
+        std::vector<CaptureRevision> CaptureAvailability;
         std::vector<uint8_t> Rgba16F;
     };
 
@@ -52,16 +55,19 @@ namespace MiniMapBuildingComplexCellRasterizer
         uint64_t SourceRevision = 0;
         uint64_t CellRevision = 0;
         uint64_t DependencyRevision = 0;
+        B::CellValidity Validity;
+        B::WorldOrigin Origin;
         bool RenderDroneRails = true;
         State Status = State::Failed;
         std::vector<CaptureRevision> CaptureRevisions;
+        std::vector<CaptureRevision> CaptureAvailability;
     };
 
     inline CellImageIdentity Identify(const CellImage& image)
     {
         return {image.Key, image.WorldGeneration, image.RestoreEpoch, image.SourceRevision,
-            image.CellRevision, image.DependencyRevision, image.RenderDroneRails, image.Status,
-            image.CaptureRevisions};
+            image.CellRevision, image.DependencyRevision, image.Validity, image.Origin, image.RenderDroneRails, image.Status,
+            image.CaptureRevisions, image.CaptureAvailability};
     }
 
     struct SpriteLease
