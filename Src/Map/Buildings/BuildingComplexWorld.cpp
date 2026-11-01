@@ -11,6 +11,7 @@
 #include "Map/Terrain/TerrainSource.h"
 #include "Native/MassLifecycle.h"
 #include "Native/NativeApi.h"
+#include "Native/TexturePublication.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
 #include <SDK/Chimera_classes.hpp>
@@ -78,6 +79,7 @@ namespace
     {
         uint64_t WorldGeneration = 0;
         uint64_t SourceRevision = 0;
+        uint64_t ImageRevision = 0;
         std::string CanonicalBlueprintIdentity;
         std::shared_ptr<const MiniMapBuildingCache::Sprite> Image;
     };
@@ -93,6 +95,7 @@ namespace
     };
     std::vector<DeferredCaptureRetry> DeferredCaptureRetries;
     uint64_t NextCaptureRequestId = 1;
+    uint64_t NextCaptureImageRevision = 1;
 
     void EraseCaptureImage(B::MassKey key) noexcept
     {
@@ -119,6 +122,10 @@ namespace
 
     void QueueOcclusionChanges(const B::ChangeSet& changes)
     {
+        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated)
+            MiniMapTexturePublication::InvalidateAll();
+        else if (!changes.InvalidatedCells.empty())
+            MiniMapTexturePublication::InvalidateCells(changes.InvalidatedCells);
         if (changes.GlobalSplineOcclusionInvalidated)
         {
             PendingGlobalOcclusion = true;
@@ -314,6 +321,7 @@ namespace
 
     void ResetIndex(uint64_t generation) noexcept
     {
+        MiniMapTexturePublication::InvalidateAll();
         ClearCaptureRequests();
         Index.ResetWorld(generation);
         ClearSourceQueue();
@@ -667,11 +675,15 @@ namespace
             }
             // Capture metadata is derived visual state. Preserve the admitted
             // source revision and Unknown support/completeness classification.
+            if (!NextCaptureImageRevision || NextCaptureImageRevision == (std::numeric_limits<uint64_t>::max)()) continue;
+            const uint64_t imageRevision = NextCaptureImageRevision++;
             try
             {
+                MiniMapTexturePublication::InvalidateCapture(key);
                 std::lock_guard lock(CaptureImagesMutex);
                 CaptureImages.insert_or_assign(key, CompletedCaptureImage{
-                    generation, result.SourceRevision, result.CanonicalBlueprintIdentity, result.Payload});
+                    generation, result.SourceRevision, imageRevision,
+                    result.CanonicalBlueprintIdentity, result.Payload});
             }
             catch (...) { continue; }
             B::BuildingRecord published;
@@ -871,7 +883,11 @@ namespace
 
     void Service() noexcept
     {
-        try { ServiceImpl(); }
+        try
+        {
+            ServiceImpl();
+            MiniMapTexturePublication::ProcessRequests();
+        }
         catch (...)
         {
             if (Current.WorldGeneration) ResetIndex(Current.WorldGeneration);
@@ -937,9 +953,10 @@ namespace MiniMapBuildingComplexWorld
     MiniMapBuildingComplexIndex::Index& GetIndex() noexcept { return Index; }
 
     bool TryGetCaptureImage(B::MassKey key, uint64_t generation, uint64_t sourceRevision,
-        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output) noexcept
+        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output, uint64_t* imageRevision) noexcept
     {
         output.reset();
+        if (imageRevision) *imageRevision = 0;
         try
         {
             if (!generation || !sourceRevision) return false;
@@ -953,6 +970,7 @@ namespace MiniMapBuildingComplexWorld
                 image->second.SourceRevision != sourceRevision || !image->second.Image ||
                 *record->Source->BlueprintIdentity != image->second.CanonicalBlueprintIdentity) return false;
             output = image->second.Image;
+            if (imageRevision) *imageRevision = image->second.ImageRevision;
             return true;
         }
         catch (...) { output.reset(); return false; }
@@ -980,8 +998,9 @@ namespace MiniMapBuildingComplexWorld
                 if (!record || !record->Source || !record->Source->InteriorKnown || record->Source->InteriorOnly ||
                     record->Source->HasSplineSource) continue;
                 std::shared_ptr<const MiniMapBuildingCache::Sprite> image;
-                if (TryGetCaptureImage(record->Key, generation, record->Source->SourceRevision, image) && image)
-                    sprites.push_back({record->Key, record->Source->SourceRevision, std::move(image)});
+                uint64_t imageRevision = 0;
+                if (TryGetCaptureImage(record->Key, generation, record->Source->SourceRevision, image, &imageRevision) && image)
+                    sprites.push_back({record->Key, record->Source->SourceRevision, imageRevision, std::move(image)});
             }
 
             R::CellImage composed;
@@ -997,22 +1016,45 @@ namespace MiniMapBuildingComplexWorld
         catch (...) { output.reset(); return CellCompositionResult::Failed; }
     }
 
+    CellCompositionResult RequestCellPublication(B::CellKey key, uint64_t generation,
+        uint64_t& requestId) noexcept
+    {
+        requestId = 0;
+        std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> image;
+        const auto result = ComposeCell(key, generation, image);
+        if (result != CellCompositionResult::Complete || !image) return result;
+        requestId = MiniMapTexturePublication::RequestCell(std::move(image));
+        return requestId ? CellCompositionResult::Complete : CellCompositionResult::Failed;
+    }
+
     bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImage& image) noexcept
     {
         try
         {
+            return ValidateCellImage(MiniMapBuildingComplexCellRasterizer::Identify(image));
+        }
+        catch (...) { return false; }
+    }
+
+    bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImageIdentity& identity) noexcept
+    {
+        try
+        {
             const auto status = GetStatus();
-            if (!image.WorldGeneration || status.State != MembershipState::MembershipEstablished ||
-                status.WorldGeneration != image.WorldGeneration || status.RestoreEpoch != image.RestoreEpoch ||
-                MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails != image.RenderDroneRails) return false;
+            if (!identity.WorldGeneration || status.State != MembershipState::MembershipEstablished ||
+                status.WorldGeneration != identity.WorldGeneration || status.RestoreEpoch != identity.RestoreEpoch ||
+                MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails != identity.RenderDroneRails) return false;
             B::CellSnapshot current;
-            if (!Index.TrySnapshot(image.Key, current) || current.WorldGeneration != image.WorldGeneration ||
-                current.CellRevision != image.CellRevision || current.SourceRevision != image.SourceRevision ||
-                current.DependencyRevision != image.DependencyRevision) return false;
-            for (const auto& capture : image.CaptureRevisions)
+            if (!Index.TrySnapshot(identity.Key, current) || current.WorldGeneration != identity.WorldGeneration ||
+                current.CellRevision != identity.CellRevision || current.SourceRevision != identity.SourceRevision ||
+                current.DependencyRevision != identity.DependencyRevision) return false;
+            for (const auto& capture : identity.CaptureRevisions)
             {
                 std::shared_ptr<const MiniMapBuildingCache::Sprite> source;
-                if (!TryGetCaptureImage(capture.Building, image.WorldGeneration, capture.SourceRevision, source) || !source)
+                uint64_t imageRevision = 0;
+                if (!TryGetCaptureImage(capture.Building, identity.WorldGeneration,
+                    capture.SourceRevision, source, &imageRevision) || !source ||
+                    imageRevision != capture.ImageRevision)
                     return false;
             }
             return true;

@@ -2,8 +2,10 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
+#include "../Map/Buildings/BuildingComplexCellRasterizer.h"
 namespace SDK { class UTexture2D; }
 
 namespace MiniMapTexturePublication
@@ -38,17 +40,55 @@ namespace MiniMapTexturePublication
         bool OwnershipUncertain = false, Failed = false;
         uint64_t ReservedCpuBytes = 0, ReservedGpuBytes = 0;
     };
+    enum class RequestState : uint8_t { Unknown, Pending, Ready, Failed, Stale };
+    struct RequestStatus
+    {
+        RequestState State = RequestState::Unknown;
+        uint64_t RequestId = 0;
+        uint64_t PublicationRevision = 0;
+        bool CompleteCell = false;
+    };
+    struct Lease
+    {
+        uint64_t LeaseId = 0;
+        uint64_t RequestId = 0;
+        uint64_t PublicationRevision = 0;
+        SDK::UTexture2D* Texture = nullptr;
+        Lease() = default;
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+        Lease(Lease&& other) noexcept
+            : LeaseId(other.LeaseId), RequestId(other.RequestId),
+              PublicationRevision(other.PublicationRevision), Texture(other.Texture)
+        { other.LeaseId = other.RequestId = other.PublicationRevision = 0; other.Texture = nullptr; }
+        Lease& operator=(Lease&&) = delete;
+    };
     bool Initialize() noexcept;
-    // All functions below are GT-only. Prepare/Ready require the existing
-    // admitted BuildingComplex service scope. Zero means no capacity/admission.
+    // Native functions below are GT-only. Prepare/Ready require the existing
+    // admitted BuildingComplex service scope. Zero means no admission.
     uint64_t Prepare(Image&&, Generation);
     SDK::UTexture2D* Ready(uint64_t owner, Generation current);
     Status Inspect(uint64_t owner);
     // The future consumer must detach all issued uses before Retire. A ready
     // identity is immutable and remains rooted until this acknowledgement.
     bool Retire(uint64_t owner, bool detached);
-    // Called outside lifecycle locks by the existing plugin callback. Polls at
-    // a bounded set of simultaneous owners; never waits, flushes, or does worker GPU IO.
+    // BCB request/acquire/release/invalidation functions are GT-only. Requests
+    // retain the immutable CPU image; native upload runs only in ProcessRequests
+    // inside the admitted GT service.
+    uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> image) noexcept;
+    RequestStatus InspectRequest(uint64_t requestId) noexcept;
+    // Acquire and Release are GT-only. Each successful acquisition has its own
+    // idempotently releasable lease. The texture pointer is valid only while
+    // that lease is held and must be detached before Release.
+    bool Acquire(uint64_t requestId, Lease& output) noexcept;
+    bool Release(uint64_t leaseId) noexcept;
+    // Called by the existing BuildingComplex world service while admitted.
+    void ProcessRequests() noexcept;
+    void InvalidateCells(const std::vector<MiniMapBuildingComplexIndex::CellKey>& cells) noexcept;
+    void InvalidateCapture(MiniMapBuildingComplexIndex::MassKey building) noexcept;
+    void InvalidateAll() noexcept;
+    // Called outside lifecycle locks by the existing plugin callback. Polls
+    // active owners; never waits, flushes, or does worker GPU IO.
     void Service();
     void CancelWorld() noexcept; // Withdraw readiness; retain issued uses.
     void Shutdown() noexcept; // No native work without safe GT/GC admission.

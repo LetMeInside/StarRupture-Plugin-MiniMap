@@ -19,6 +19,8 @@ namespace MiniMapBuildingComplexCellRasterizer
     {
         B::MassKey Building;
         uint64_t SourceRevision = 0;
+        // Distinguishes replacement of the captured sprite under one source revision.
+        uint64_t ImageRevision = 0;
         bool operator==(const CaptureRevision&) const = default;
     };
 
@@ -40,10 +42,33 @@ namespace MiniMapBuildingComplexCellRasterizer
         std::vector<uint8_t> Rgba16F;
     };
 
+    // Compact immutable publication token copied from CellImage metadata.
+    // It retains the exact capture manifest but no half-float pixel payload.
+    struct CellImageIdentity
+    {
+        B::CellKey Key;
+        uint64_t WorldGeneration = 0;
+        uint64_t RestoreEpoch = 0;
+        uint64_t SourceRevision = 0;
+        uint64_t CellRevision = 0;
+        uint64_t DependencyRevision = 0;
+        bool RenderDroneRails = true;
+        State Status = State::Failed;
+        std::vector<CaptureRevision> CaptureRevisions;
+    };
+
+    inline CellImageIdentity Identify(const CellImage& image)
+    {
+        return {image.Key, image.WorldGeneration, image.RestoreEpoch, image.SourceRevision,
+            image.CellRevision, image.DependencyRevision, image.RenderDroneRails, image.Status,
+            image.CaptureRevisions};
+    }
+
     struct SpriteLease
     {
         B::MassKey Building;
         uint64_t SourceRevision = 0;
+        uint64_t ImageRevision = 0;
         std::shared_ptr<const MiniMapBuildingCache::Sprite> Image;
     };
 

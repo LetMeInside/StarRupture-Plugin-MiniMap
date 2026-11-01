@@ -345,12 +345,12 @@ namespace MiniMapBuildingComplexCellRasterizer
                 {
                     const auto& source = *record->Source;
                     const auto* lease = FindSprite(sprites, record->Key);
-                    if (!lease || !lease->Image || lease->SourceRevision != source.SourceRevision ||
+                    if (!lease || !lease->Image || !lease->ImageRevision || lease->SourceRevision != source.SourceRevision ||
                         !source.SpriteQuadValid)
                     { result.Status = State::Partial; continue; }
                     if (!RasterSprite(source, *lease->Image, snapshot, samples))
                     { result.Status = State::Partial; continue; }
-                    result.CaptureRevisions.push_back({record->Key, lease->SourceRevision});
+                    result.CaptureRevisions.push_back({record->Key, lease->SourceRevision, lease->ImageRevision});
                 }
             };
             drawSprites(ordinary);

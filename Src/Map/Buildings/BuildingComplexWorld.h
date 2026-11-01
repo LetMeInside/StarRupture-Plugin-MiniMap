@@ -44,7 +44,8 @@ namespace MiniMapBuildingComplexWorld
     // identity. Image lifetime is owned separately from sparse index records.
     bool TryGetCaptureImage(MiniMapBuildingComplexIndex::MassKey key,
         uint64_t worldGeneration, uint64_t sourceRevision,
-        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output) noexcept;
+        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output,
+        uint64_t* imageRevision = nullptr) noexcept;
 
     enum class CellCompositionResult : uint8_t { Complete, Partial, Failed, Stale };
     // Synchronous CPU-only request over immutable index/capture snapshots. A
@@ -53,6 +54,11 @@ namespace MiniMapBuildingComplexWorld
     CellCompositionResult ComposeCell(MiniMapBuildingComplexIndex::CellKey key,
         uint64_t worldGeneration,
         std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>& output) noexcept;
+    // Composes through the existing CPU path and queues only Complete images
+    // for the independent native publisher. RequestId is not GPU readiness.
+    CellCompositionResult RequestCellPublication(MiniMapBuildingComplexIndex::CellKey key,
+        uint64_t worldGeneration, uint64_t& requestId) noexcept;
     bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImage& image) noexcept;
+    bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImageIdentity& identity) noexcept;
 }
 #endif
