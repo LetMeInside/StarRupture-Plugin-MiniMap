@@ -129,6 +129,7 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusion.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
+    <ClInclude Include="Map\Buildings\BuildingComplexIndex.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
     <ClInclude Include="Map\MarkerIconSizing.h" />
     <ClInclude Include="Map\Terrain\TerrainProfile.h" />
@@ -221,6 +222,7 @@
     <ClCompile Include="Map\Foundables\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingComplexIndex.cpp" />
     <ClCompile Include="Map\Buildings\ExternalMapBuildingSession.cpp" />
     <ClCompile Include="Map\Buildings\ExternalMapBuildingSessionAbi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
