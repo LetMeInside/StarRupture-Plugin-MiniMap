@@ -49,17 +49,39 @@ namespace MiniMapBuildingComplexIndex
     };
 
     enum class SupportState : uint8_t { Unknown, Supported, ExplicitlyUnsupported };
+    // Complete means every drawable section in the selected MiniMap
+    // representation was retained; it does not certify visual contributors.
+    enum class SplinePreparationState : uint8_t { NotPresent, Complete, Partial, Unsupported, Invalid };
     enum class UpsertResult : uint8_t { Inserted, Replaced, Unchanged, InvalidInput, AllocationFailure };
     enum class RemoveResult : uint8_t { Removed, NotFound, AllocationFailure };
 
     // All strings, transforms, quads, profile inputs and spline section data are
     // copied before construction. Shared immutable payloads avoid duplicating
     // long curves/definitions for each contributing cell.
+    struct SplineTriangleSource
+    {
+        std::array<std::array<double, 3>, 3> Vertices{};
+        bool operator==(const SplineTriangleSource&) const = default;
+    };
+
+    struct SplineInsetBandSource
+    {
+        std::array<std::array<double, 2>, 4> Vertices{};
+        bool operator==(const SplineInsetBandSource&) const = default;
+    };
+
     struct SplineSectionSource
     {
-        uint64_t Identity = 0;
-        WorldBounds Bounds; // Original complete source-section support, not clipped cell output.
+        uint64_t Identity = 0; // Ordinal in this exact Mass/source-revision geometry.
+        uint64_t SourceSegment = 0, SampleOrdinal = 0, ProfileIndex = 0;
+        double StartT = 0, EndT = 1;
+        bool SyntheticThin = false;
+        WorldBounds Bounds; // Bounds of the complete generated MiniMap-equivalent section.
+        std::vector<SplineTriangleSource> Triangles; // Original, unoccluded world XYZ geometry.
+        std::array<SplineInsetBandSource, 2> WalkwayInsetBands{};
+        bool HasWalkwayInsetBands = false;
         std::vector<double> NumericalInputs;
+        bool operator==(const SplineSectionSource&) const = default;
     };
 
     struct SplineCurveSegmentSource
@@ -69,9 +91,8 @@ namespace MiniMapBuildingComplexIndex
         uint8_t InterpolationMode = 0;
     };
 
-    // Exact copied inputs consumed by the existing spline profile projector.
-    // These are source values, not a claim that all native sections, joins,
-    // caps, or walkway/rail occlusion output have been prepared.
+    // Exact copied inputs consumed by the existing MiniMap spline profile
+    // projector. They remain distinct from its prepared CPU output.
     struct SplineProfileSource
     {
         std::array<double, 3> BoundsOrigin{}, BoundsExtent{};
@@ -98,7 +119,15 @@ namespace MiniMapBuildingComplexIndex
         bool SpriteQuadValid = false;
         uint64_t SpriteCaptureSupportMetadata = 0;
         uint64_t SplineSourceIdentity = 0;
+        bool HasSplineSource = false;
+        uint8_t SplineCategory = 3; // MiniMapBuildingSplinePolicy::SplineCategory numeric value.
+        bool SplineSortZValid = false;
+        double SplineSortZ = 0;
         std::vector<SplineCurveSegmentSource> SplineCurve;
+        SplinePreparationState SplinePreparation = SplinePreparationState::NotPresent;
+        // Bounds of prepared MiniMap-equivalent ribbon sections. This field
+        // targets cells but never certifies complete visual-contributor support.
+        WorldBounds PreparedSplineSupport;
         // Bounds proven only for the ordinary sprite. They support targeted
         // cell invalidation but do not certify complete visual support.
         WorldBounds OrdinarySpriteSupport;

@@ -3,11 +3,17 @@
 #include "BuildingBlueprintIdentity.h"
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
+#include "BuildingSplineGeometry.h"
+#include "BuildingSplineEnvelope.h"
+#include "BuildingSplineOcclusionAdapter.h"
+#include "BuildingSplineProfiles.h"
+#include "BuildingVisuals.h"
 #include "BuildingSplinePayload.h"
 #include "BuildingSplinePolicy.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
+#include "Map/MapTransform.h"
 #include <SDK/AuActorPlacement_classes.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
@@ -22,6 +28,12 @@ namespace
 {
     namespace B = MiniMapBuildingComplexIndex;
     namespace G = MiniMapBuildingGeometry;
+    namespace C = MiniMapBuildingCollector;
+    namespace S = MiniMapBuildingSplineGeometry;
+    namespace E = MiniMapBuildingSplineEnvelope;
+    namespace P = MiniMapBuildingSplineProfiles;
+    namespace A = MiniMapBuildingSplineOcclusionAdapter;
+    namespace O = MiniMapBuildingSplineOcclusion;
     using Id = MiniMapNative::MassEntityHandle;
 
     struct Metadata
@@ -58,6 +70,7 @@ namespace
         const auto* spline = static_cast<const SDK::FAuSplineConnectionFragment*>(
             native.mass.getFragmentDataPtr(manager, id, Types.Spline));
         if (!spline) return true;
+        output.HasSplineSource = true;
 
         MiniMapBuildingCollector::SplineGeometry copied;
         G::CopySpline(*spline, copied);
@@ -217,12 +230,6 @@ namespace
         return true;
     }
 
-    bool SameBounds(const B::WorldBounds& a, const B::WorldBounds& b) noexcept
-    {
-        return a.Valid == b.Valid && SameDouble(a.MinX, b.MinX) && SameDouble(a.MinY, b.MinY) &&
-            SameDouble(a.MaxX, b.MaxX) && SameDouble(a.MaxY, b.MaxY);
-    }
-
     bool EqualSource(const B::SourcePayload& a, const B::SourcePayload& b)
     {
         const bool sameBlueprint = (!a.BlueprintIdentity && !b.BlueprintIdentity) ||
@@ -232,9 +239,9 @@ namespace
             a.BaseCoreOverlay != b.BaseCoreOverlay ||
             !SameValues(a.Transform.Translation, b.Transform.Translation) ||
             !SameValues(a.Transform.Scale, b.Transform.Scale) || !SameValues(a.Transform.Rotation, b.Transform.Rotation) ||
-            a.SplineSourceIdentity != b.SplineSourceIdentity || a.SplineCurve.size() != b.SplineCurve.size() ||
-            a.SplineProfiles.size() != b.SplineProfiles.size() ||
-            a.SplineSections.size() != b.SplineSections.size() || a.Support != b.Support) return false;
+            a.SplineSourceIdentity != b.SplineSourceIdentity || a.HasSplineSource != b.HasSplineSource ||
+            a.SplineCurve.size() != b.SplineCurve.size() || a.SplineProfiles.size() != b.SplineProfiles.size() ||
+            a.Support != b.Support) return false;
         if (a.NumericalProfileInputs.size() != b.NumericalProfileInputs.size()) return false;
         for (size_t i = 0; i < a.NumericalProfileInputs.size(); ++i)
             if (!SameDouble(a.NumericalProfileInputs[i], b.NumericalProfileInputs[i])) return false;
@@ -261,14 +268,201 @@ namespace
                 !SameValues(x.Up, y.Up) || x.ForwardAxis != y.ForwardAxis || x.SourceRank != y.SourceRank ||
                 x.SelectionOrder != y.SelectionOrder) return false;
         }
-        for (size_t i = 0; i < a.SplineSections.size(); ++i)
+        // Prepared sections are derived output and do not participate in the
+        // source-input revision comparison.
+        return true;
+    }
+
+    bool PrepareSplineGeometryOwned(B::MassKey key, B::SourcePayload& source)
+    {
+        source.SplineSections.clear();
+        source.PreparedSplineSupport = {};
+        source.SplinePreparation = source.HasSplineSource ? B::SplinePreparationState::Invalid :
+            B::SplinePreparationState::NotPresent;
+        source.SplineCategory = uint8_t(MiniMapBuildingSplinePolicy::Classify(true, source.CanonicalBuildingType));
+        source.SplineSortZValid = false;
+        if (!source.HasSplineSource) return true;
+        if (source.SplineCurve.empty() || key.Index < 0 || key.Serial <= 0 || !source.SourceGeneration ||
+            !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return true;
+
+        C::Record record;
+        record.Generation = source.SourceGeneration;
+        record.Index = key.Index;
+        record.Serial = key.Serial;
+        record.BuildingId = source.CanonicalBuildingType;
+        record.TransformValid = true;
+        record.DefinitionValid = true;
+        record.HasSpline = true;
+        record.Position = source.Transform.Translation;
+        record.Scale = source.Transform.Scale;
+        record.Rotation = source.Transform.Rotation;
+        record.CanonicalBlueprint = source.BlueprintIdentity;
+
+        auto curve = std::make_shared<C::SplineGeometry>();
+        curve->Segments.reserve(source.SplineCurve.size());
+        for (const auto& input : source.SplineCurve)
         {
-            const auto& x = a.SplineSections[i]; const auto& y = b.SplineSections[i];
-            if (x.Identity != y.Identity || !SameBounds(x.Bounds, y.Bounds) ||
-                x.NumericalInputs.size() != y.NumericalInputs.size()) return false;
-            for (size_t j = 0; j < x.NumericalInputs.size(); ++j)
-                if (!SameDouble(x.NumericalInputs[j], y.NumericalInputs[j])) return false;
+            C::CurveSegment segment;
+            segment.Controls = input.WorldControls;
+            segment.StartKey = input.StartKey;
+            segment.EndKey = input.EndKey;
+            segment.Mode = input.InterpolationMode;
+            curve->Segments.push_back(segment);
         }
+        record.Curve = curve;
+
+        auto definition = std::make_shared<C::DefinitionGeometry>();
+        auto profiles = std::make_shared<P::Set>();
+        std::vector<size_t> profileOrder(source.SplineProfiles.size());
+        for (size_t i = 0; i < profileOrder.size(); ++i) profileOrder[i] = i;
+        std::stable_sort(profileOrder.begin(), profileOrder.end(), [&](size_t a, size_t b) {
+            return source.SplineProfiles[a].SelectionOrder < source.SplineProfiles[b].SelectionOrder;
+        });
+        profiles->Profiles.reserve(profileOrder.size());
+        for (const size_t index : profileOrder)
+        {
+            const auto& input = source.SplineProfiles[index];
+            P::Profile profile;
+            profile.LocalBounds = {input.BoundsOrigin, input.BoundsExtent, input.BoundsSphereRadius};
+            profile.Transform = {input.ComponentTranslation, input.ComponentRotationDegrees, input.ComponentScale};
+            profile.Section = {input.StartScale, input.EndScale, input.StartOffset, input.EndOffset,
+                input.StartRoll, input.EndRoll, input.Up};
+            profile.ForwardAxis = input.ForwardAxis;
+            profiles->Profiles.push_back(profile);
+        }
+        definition->Profiles = profiles;
+        record.DefinitionShape = definition;
+
+        if (!record.Curve->Segments.empty())
+        {
+            const double startZ = record.Curve->Segments.front().Controls[0][2];
+            const double endZ = record.Curve->Segments.back().Controls[3][2];
+            if (std::isfinite(startZ) && std::isfinite(endZ))
+            {
+                source.SplineSortZ = (std::max)(startZ, endZ);
+                source.SplineSortZValid = true;
+            }
+        }
+
+        S::SamplingPolicy policy;
+        policy.PixelsPerUnit = 1.0 / (100.0 * MiniMapMap::MinimumMetersPerPixel);
+        auto sampled = std::make_shared<const S::PreparedCurve>(S::Prepare(*record.Curve, policy));
+        if (sampled->SourceIssue != C::GeometryIssue::None ||
+            sampled->PreparationIssue != C::GeometryIssue::None ||
+            sampled->Sections.size() != record.Curve->Segments.size())
+        {
+            source.SplinePreparation = B::SplinePreparationState::Invalid;
+            return true;
+        }
+        const bool thin = MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true, source.CanonicalBuildingType);
+        const auto envelope = E::PrepareOwned(record, sampled, {}, thin);
+        const auto* selected = envelope ? MiniMapBuildingVisuals::Detail::SelectSpline(record, *envelope) : nullptr;
+        if (!selected)
+        {
+            source.SplinePreparation = B::SplinePreparationState::Unsupported;
+            return true;
+        }
+
+        source.SplineSections.reserve(selected->Sections.size());
+        bool complete = true;
+        size_t expectedSections = 0;
+        for (size_t segmentIndex = 0; segmentIndex < sampled->Sections.size(); ++segmentIndex)
+        {
+            const auto& sampledSegment = sampled->Sections[segmentIndex];
+            const auto& sourceSegment = record.Curve->Segments[segmentIndex];
+            if (sampledSegment.Discontinuous || sourceSegment.Mode == S::Constant) continue;
+            if (sampledSegment.Count < 2) { complete = false; continue; }
+            expectedSections += sampledSegment.Count - 1;
+        }
+        constexpr uint32_t representationOnlyReasons = E::NativeSectionsUnknown | E::JoinsAndCapsUnknown |
+            E::RibbonApproximation | E::Discontinuity | E::SamplingLimited;
+        if (selected->Reasons & ~representationOnlyReasons) complete = false;
+
+        for (size_t index = 0; index < selected->Sections.size(); ++index)
+        {
+            const auto& section = selected->Sections[index];
+            O::Input input;
+            if (!A::SectionInput(*envelope, *selected, index, input))
+            {
+                complete = false;
+                continue;
+            }
+            if (source.SplineSections.size() == (std::numeric_limits<uint64_t>::max)())
+                return false;
+            B::SplineSectionSource prepared;
+            prepared.Identity = uint64_t(source.SplineSections.size());
+            prepared.SourceSegment = section.SourceSegment;
+            prepared.SyntheticThin = thin;
+            prepared.ProfileIndex = thin ? (std::numeric_limits<uint64_t>::max)() : selected->SourceProfile;
+            prepared.StartT = section.StartT;
+            prepared.EndT = section.EndT;
+            const auto& samples = sampled->Sections[section.SourceSegment];
+            const auto begin = sampled->Samples.begin() + samples.First;
+            const auto sample = std::lower_bound(begin, begin + samples.Count, section.StartT,
+                [](const auto& value, double t) { return value.T < t; });
+            if (sample == begin + samples.Count || sample->T != section.StartT)
+            {
+                complete = false;
+                continue;
+            }
+            prepared.SampleOrdinal = uint64_t(sample - begin);
+            prepared.NumericalInputs = {section.StartT, section.EndT};
+            bool trianglesValid = true;
+            for (const auto& triangle : input.Triangles)
+            {
+                B::SplineTriangleSource copied;
+                for (size_t vertex = 0; vertex < 3; ++vertex)
+                {
+                    copied.Vertices[vertex] = triangle.Vertices[vertex];
+                    const auto& point = triangle.Vertices[vertex];
+                    if (!std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2]))
+                    { trianglesValid = false; break; }
+                    if (!prepared.Bounds.Valid)
+                    {
+                        prepared.Bounds = {point[0], point[1], point[0], point[1], true};
+                    }
+                    else
+                    {
+                        prepared.Bounds.MinX = (std::min)(prepared.Bounds.MinX, point[0]);
+                        prepared.Bounds.MinY = (std::min)(prepared.Bounds.MinY, point[1]);
+                        prepared.Bounds.MaxX = (std::max)(prepared.Bounds.MaxX, point[0]);
+                        prepared.Bounds.MaxY = (std::max)(prepared.Bounds.MaxY, point[1]);
+                    }
+                }
+                if (!trianglesValid) break;
+                prepared.Triangles.push_back(copied);
+            }
+            if (!trianglesValid || !prepared.Bounds.Valid || prepared.Triangles.empty())
+            {
+                complete = false;
+                continue;
+            }
+            if (MiniMapBuildingSplinePolicy::IsWalkwayDefinition(true, source.CanonicalBuildingType))
+            {
+                std::array<O::XY, 4> left{}, right{};
+                if (A::WalkwayInsetBands(section,
+                    MiniMapBuildingSplinePolicy::kWalkwayInsetFractionPerSide, left, right))
+                {
+                    prepared.WalkwayInsetBands[0].Vertices = left;
+                    prepared.WalkwayInsetBands[1].Vertices = right;
+                    prepared.HasWalkwayInsetBands = true;
+                }
+                else complete = false;
+            }
+            if (!source.PreparedSplineSupport.Valid)
+                source.PreparedSplineSupport = prepared.Bounds;
+            else
+            {
+                source.PreparedSplineSupport.MinX = (std::min)(source.PreparedSplineSupport.MinX, prepared.Bounds.MinX);
+                source.PreparedSplineSupport.MinY = (std::min)(source.PreparedSplineSupport.MinY, prepared.Bounds.MinY);
+                source.PreparedSplineSupport.MaxX = (std::max)(source.PreparedSplineSupport.MaxX, prepared.Bounds.MaxX);
+                source.PreparedSplineSupport.MaxY = (std::max)(source.PreparedSplineSupport.MaxY, prepared.Bounds.MaxY);
+            }
+            source.SplineSections.push_back(std::move(prepared));
+        }
+        if (source.SplineSections.size() != expectedSections) complete = false;
+        source.SplinePreparation = source.SplineSections.empty() ? B::SplinePreparationState::Unsupported :
+            complete ? B::SplinePreparationState::Complete : B::SplinePreparationState::Partial;
         return true;
     }
 }
@@ -277,6 +471,12 @@ namespace MiniMapBuildingComplexSourceAcquisition
 {
     bool IsSameSource(const B::SourcePayload& a, const B::SourcePayload& b) noexcept
     { return EqualSource(a, b); }
+
+    bool PrepareSplineGeometry(B::MassKey key, B::SourcePayload& source) noexcept
+    {
+        try { return PrepareSplineGeometryOwned(key, source); }
+        catch (...) { return false; }
+    }
 
     bool Initialize() noexcept
     {
@@ -373,6 +573,7 @@ namespace MiniMapBuildingComplexSourceAcquisition
             candidate.SourceGeneration = generation;
             candidate.Support = B::SupportState::Unknown;
             candidate.CanonicalBuildingType = buildingType;
+            candidate.SplineCategory = uint8_t(MiniMapBuildingSplinePolicy::Classify(true, buildingType));
             candidate.BlueprintIdentity = std::move(blueprint);
             candidate.BaseCoreOverlay = *candidate.BlueprintIdentity ==
                 "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";

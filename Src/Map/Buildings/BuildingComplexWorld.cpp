@@ -513,6 +513,8 @@ namespace
         {
             if (before->Source->SourceRevision == (std::numeric_limits<uint64_t>::max)())
             { retry(); return; }
+            if (!MiniMapBuildingComplexSourceAcquisition::PrepareSplineGeometry(key, candidate))
+            { retry(); return; }
             candidate.SourceRevision = before->Source->SourceRevision + 1;
             InvalidateCapture(key);
             B::BuildingRecord updated;

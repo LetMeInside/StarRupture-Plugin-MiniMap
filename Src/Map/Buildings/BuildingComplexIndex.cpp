@@ -120,6 +120,67 @@ namespace MiniMapBuildingComplexIndex
                 !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
             if (input.Source->OrdinarySpriteSupport.Valid && !ValidBounds(input.Source->OrdinarySpriteSupport))
                 return UpsertResult::InvalidInput;
+            if (input.Source->PreparedSplineSupport.Valid && !ValidBounds(input.Source->PreparedSplineSupport))
+                return UpsertResult::InvalidInput;
+            if (!input.Source->SplineSections.empty() && !input.Source->PreparedSplineSupport.Valid)
+                return UpsertResult::InvalidInput;
+            if ((!input.Source->HasSplineSource && input.Source->SplinePreparation != SplinePreparationState::NotPresent) ||
+                (input.Source->SplinePreparation == SplinePreparationState::Complete && input.Source->SplineSections.empty()) ||
+                (!input.Source->SplineSections.empty() &&
+                    (input.Source->SplinePreparation == SplinePreparationState::NotPresent ||
+                     input.Source->SplinePreparation == SplinePreparationState::Unsupported ||
+                     input.Source->SplinePreparation == SplinePreparationState::Invalid)))
+                return UpsertResult::InvalidInput;
+            WorldBounds computedSplineSupport;
+            size_t sectionOrdinal = 0;
+            for (const auto& section : input.Source->SplineSections)
+            {
+                if (section.Identity != sectionOrdinal++ || section.SourceSegment >= input.Source->SplineCurve.size() ||
+                    (section.SyntheticThin ? section.ProfileIndex != (std::numeric_limits<uint64_t>::max)() :
+                        section.ProfileIndex >= input.Source->SplineProfiles.size()) ||
+                    !std::isfinite(section.StartT) || !std::isfinite(section.EndT) ||
+                    section.StartT < 0 || section.EndT > 1 || section.StartT >= section.EndT ||
+                    !section.Bounds.Valid || !ValidBounds(section.Bounds) || section.Triangles.empty())
+                    return UpsertResult::InvalidInput;
+                for (double value : section.NumericalInputs)
+                    if (!std::isfinite(value)) return UpsertResult::InvalidInput;
+                WorldBounds computedSection;
+                for (const auto& triangle : section.Triangles)
+                    for (const auto& vertex : triangle.Vertices)
+                    {
+                        if (!std::isfinite(vertex[0]) || !std::isfinite(vertex[1]) || !std::isfinite(vertex[2]))
+                            return UpsertResult::InvalidInput;
+                        if (!computedSection.Valid)
+                            computedSection = {vertex[0], vertex[1], vertex[0], vertex[1], true};
+                        else
+                        {
+                            computedSection.MinX = (std::min)(computedSection.MinX, vertex[0]);
+                            computedSection.MinY = (std::min)(computedSection.MinY, vertex[1]);
+                            computedSection.MaxX = (std::max)(computedSection.MaxX, vertex[0]);
+                            computedSection.MaxY = (std::max)(computedSection.MaxY, vertex[1]);
+                        }
+                    }
+                if (computedSection != section.Bounds) return UpsertResult::InvalidInput;
+                if (!computedSplineSupport.Valid) computedSplineSupport = computedSection;
+                else
+                {
+                    computedSplineSupport.MinX = (std::min)(computedSplineSupport.MinX, computedSection.MinX);
+                    computedSplineSupport.MinY = (std::min)(computedSplineSupport.MinY, computedSection.MinY);
+                    computedSplineSupport.MaxX = (std::max)(computedSplineSupport.MaxX, computedSection.MaxX);
+                    computedSplineSupport.MaxY = (std::max)(computedSplineSupport.MaxY, computedSection.MaxY);
+                }
+                if (section.HasWalkwayInsetBands)
+                    for (const auto& band : section.WalkwayInsetBands)
+                        for (const auto& vertex : band.Vertices)
+                        {
+                            if (!std::isfinite(vertex[0]) || !std::isfinite(vertex[1]) ||
+                                vertex[0] < computedSection.MinX || vertex[0] > computedSection.MaxX ||
+                                vertex[1] < computedSection.MinY || vertex[1] > computedSection.MaxY)
+                                return UpsertResult::InvalidInput;
+                        }
+            }
+            if (computedSplineSupport != input.Source->PreparedSplineSupport)
+                return UpsertResult::InvalidInput;
 
             auto old = records_.find(input.Key);
             if (old != records_.end() && old->second.Record->Source->SourceRevision == input.Source->SourceRevision &&
@@ -127,21 +188,35 @@ namespace MiniMapBuildingComplexIndex
                 old->second.Record->Source->Support == input.Source->Support &&
                 old->second.Record->Source->OrdinarySpriteSupport == input.Source->OrdinarySpriteSupport &&
                 old->second.Record->Source->VisualSupport == input.Source->VisualSupport &&
+                old->second.Record->Source->PreparedSplineSupport == input.Source->PreparedSplineSupport &&
+                old->second.Record->Source->SplinePreparation == input.Source->SplinePreparation &&
+                old->second.Record->Source->SplineSections == input.Source->SplineSections &&
+                old->second.Record->Source->HasSplineSource == input.Source->HasSplineSource &&
+                old->second.Record->Source->SplineCategory == input.Source->SplineCategory &&
+                old->second.Record->Source->SplineSortZValid == input.Source->SplineSortZValid &&
+                old->second.Record->Source->SplineSortZ == input.Source->SplineSortZ &&
                 old->second.Record->Source->SpriteQuadValid == input.Source->SpriteQuadValid &&
                 old->second.Record->Source->SpriteCaptureSupportMetadata == input.Source->SpriteCaptureSupportMetadata &&
                 old->second.Record->Source->SpriteQuadWorld == input.Source->SpriteQuadWorld)
                 return UpsertResult::Unchanged;
 
             std::set<CellKey> nextCells;
-            const WorldBounds* membershipBounds = nullptr;
-            if (input.Source->Support == SupportState::Supported ||
-                (input.Source->Support == SupportState::Unknown && input.Source->VisualSupport.Valid))
-                membershipBounds = &input.Source->VisualSupport;
-            else if (input.Source->Support == SupportState::Unknown && input.Source->OrdinarySpriteSupport.Valid)
-                // Ordinary sprite bounds target invalidation only. Unbounded()
-                // still uses full VisualSupport, so completeness stays global.
-                membershipBounds = &input.Source->OrdinarySpriteSupport;
-            if (membershipBounds && !CellsFor(*membershipBounds, origin_, nextCells)) return UpsertResult::InvalidInput;
+            auto addBounds = [&](const WorldBounds& bounds) {
+                return !bounds.Valid || CellsFor(bounds, origin_, nextCells);
+            };
+            if (input.Source->Support == SupportState::Supported)
+            {
+                if (!CellsFor(input.Source->VisualSupport, origin_, nextCells)) return UpsertResult::InvalidInput;
+            }
+            else if (input.Source->Support == SupportState::Unknown)
+            {
+                // Known contributor bounds target membership/invalidation while
+                // Unbounded() continues to protect global completeness.
+                if (!addBounds(input.Source->VisualSupport) || !addBounds(input.Source->OrdinarySpriteSupport) ||
+                    !addBounds(input.Source->PreparedSplineSupport)) return UpsertResult::InvalidInput;
+                for (const auto& section : input.Source->SplineSections)
+                    if (!CellsFor(section.Bounds, origin_, nextCells)) return UpsertResult::InvalidInput;
+            }
             const std::set<CellKey> oldCells = old == records_.end() ? std::set<CellKey>{} : old->second.Cells;
 
             std::set<CellKey> touched = oldCells;
