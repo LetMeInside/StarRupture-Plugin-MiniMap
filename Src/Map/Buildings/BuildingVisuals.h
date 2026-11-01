@@ -11,6 +11,12 @@ namespace MiniMapBuildingVisuals
 {
     // Owned numerical ribbons may be approximate; confidence is not permission.
     inline constexpr bool SplineRenderingEnabled = true;
+    struct State;
+    std::shared_ptr<State> CreateState();
+    void Prepare(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&);
+    void RenderSelected(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&,
+        MiniMap::Services::ICanvas&, const MiniMapMap::Transform&,
+        const MiniMapConfig::BuildingRenderSettings&);
     bool Initialize(IPluginSelf* self);
     void Reset();
     void Shutdown();

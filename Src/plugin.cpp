@@ -272,6 +272,7 @@ static bool InstallCommonUIHooks()
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
 #include "Map/Buildings/BuildingCollector.h"
+#include "Map/Buildings/ExternalMapBuildingSession.h"
 #include "Map/Buildings/BuildingVisuals.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
@@ -367,6 +368,7 @@ static void SetServicesAdmitted(bool ready)
 }
 static void EndBuildingSession()
 {
+    MiniMapBuildingCollector::InvalidateExternalMapBuildingSessionAbi();
     {
         std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
         MiniMapBuildingSchedulerInternal::StopSession();

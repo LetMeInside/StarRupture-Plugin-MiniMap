@@ -37,6 +37,7 @@ namespace MiniMapMap
         double CosMapRotation = 1.0;
 
         double PixelsPerWorldUnit = 0.0;
+        double PixelsPerWorldUnitY = 0.0; // Zero retains normal uniform map scaling.
         double MetersPerPixel = 0.0;
 
         float CenterX = 0.0f;
@@ -134,7 +135,7 @@ namespace MiniMapMap
             const double screenY =
                 static_cast<double>(
                     CenterY) +
-                PixelsPerWorldUnit *
+                (PixelsPerWorldUnitY>0 ? PixelsPerWorldUnitY : PixelsPerWorldUnit) *
                 static_cast<double>(
                     direction.Y);
 

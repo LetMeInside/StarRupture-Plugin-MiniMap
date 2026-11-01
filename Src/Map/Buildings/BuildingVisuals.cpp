@@ -116,7 +116,7 @@ namespace
     };
     struct BuildingVisualsTimingTotals
     {
-        // Fixed-size render/OnTick aggregates, published under the existing g_mutex.
+        // Fixed-size render/OnTick aggregates, published under the existing g_normalState.Mutex.
         PhaseAggregate SnapshotAcquire,LockWait,Ordinary,PlanPreparation,SplineSubmission,
             BaseCoreAndFinalize,RenderTotal,Unaccounted,SnapshotPreparation;
         uint64_t PreparedInstances=0,OrdinarySubmitted=0,SplineRecords=0,PlanReuses=0,PlanRebuilds=0,
@@ -126,15 +126,29 @@ namespace
         std::array<PhaseAggregate,size_t(A::PreparationPhase::Count)> SectionPhases;
         std::array<uint64_t,size_t(A::Invalidation::Count)> Reasons{};
     };
-    BuildingVisualsTimingTotals g_buildingVisualsTiming;
-    Clock::time_point g_timingIntervalStart{};
 #endif
     bool g_initialized=false;
-    uint64_t g_generation=0;
-    std::shared_ptr<const C::Snapshot> g_lastInput;
-    std::mutex g_mutex;
-    std::shared_ptr<const Snapshot> g_published;
-    std::shared_ptr<const A::RenderPlan> g_renderPlanOwner; // Accepted-frame retention, formerly g_render.CoverageOwner.
+}
+namespace MiniMapBuildingVisuals
+{
+    struct State
+    {
+        uint64_t Generation=0;
+        std::shared_ptr<const C::Snapshot> LastInput;
+        std::mutex Mutex;
+        std::shared_ptr<const Snapshot> Published;
+        std::shared_ptr<const A::RenderPlan> PlanOwner, OcclusionPlan;
+        WorldQuadCache WorldQuads;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        BuildingVisualsTimingTotals Timing;
+        Clock::time_point TimingIntervalStart{};
+#endif
+    };
+    std::shared_ptr<State> CreateState() { return std::make_shared<State>(); }
+}
+namespace
+{
+    MiniMapBuildingVisuals::State g_normalState;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     namespace V = MiniMapBuildingVisibilityTrace;
@@ -246,11 +260,11 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         {std::lock_guard<std::mutex> lock(g_traceMutex);g_trace.Reset(0);g_traceInput.reset();}
 #endif
-        g_generation=0; g_lastInput.reset();
-        std::scoped_lock lock(g_mutex); g_published.reset(); g_renderPlanOwner.reset();
+        g_normalState.Generation=0; g_normalState.LastInput.reset();
+        std::scoped_lock lock(g_normalState.Mutex); g_normalState.Published.reset(); g_normalState.PlanOwner.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        g_buildingVisualsTiming={};
-        g_timingIntervalStart=Clock::now();
+        g_normalState.Timing={};
+        g_normalState.TimingIntervalStart=Clock::now();
 #endif
     }
     using MiniMapBuildingSpriteGeometry::BuildWorldQuad;
@@ -343,7 +357,7 @@ namespace
                 const double screenY =
                     static_cast<double>(
                         CenterY) +
-                    PixelsPerWorldUnit *
+                    (PixelsPerWorldUnitY>0 ? PixelsPerWorldUnitY : PixelsPerWorldUnit) *
                     static_cast<double>(
                         direction.Y);
 
@@ -406,24 +420,23 @@ namespace
             quad.State=BuildWorldQuad(record,entry,quad.Corners)?WorldQuad::Status::Valid:WorldQuad::Status::Invalid;
         return quad.State==WorldQuad::Status::Valid && ProjectWorldQuad(quad.Corners,transform,points,bounds);
     }
-    void OnTick(float)
+    void PrepareVisuals(MiniMapBuildingVisuals::State& state, const std::shared_ptr<const C::Snapshot>& input)
     {
-        if(!MiniMapUI::IsVisible())return;
-        if(!MiniMapMap::GameplayReady())return;
-        const auto settings=MiniMapConfig::GetRenderSettings().Buildings;
-        if(!settings.ShowLayer)return;
-        const auto input=C::GetSnapshot();
-        if(!input) { if(g_lastInput) Clear(); return; }
-        if(input->Generation!=g_generation) { Clear(); g_generation=input->Generation; }
-        if(input==g_lastInput)
+        if(!input)return;
+        if(input->Generation!=state.Generation)
+        {
+            state.LastInput.reset();state.Generation=input->Generation;
+            std::scoped_lock lock(state.Mutex);state.Published.reset();state.PlanOwner.reset();
+        }
+        if(input==state.LastInput)
         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            std::scoped_lock lock(g_mutex);++g_buildingVisualsTiming.SnapshotPreparationSkips;
+            std::scoped_lock lock(state.Mutex);++state.Timing.SnapshotPreparationSkips;
 #endif
             return;
         }
         std::shared_ptr<const Snapshot> previous;
-        {std::scoped_lock lock(g_mutex);previous=g_published;}
+        {std::scoped_lock lock(state.Mutex);previous=state.Published;}
         // Snapshot-local reuse only; no collector, native acquisition or refresh
         // policy is owned by the geometry preparer.
         std::unordered_map<uint64_t,const Instance*> previousSplines;
@@ -504,12 +517,22 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const double prepareMs=Ms(start);
 #endif
-        { std::scoped_lock lock(g_mutex); g_published=std::move(result);
+        { std::scoped_lock lock(state.Mutex); state.Published=std::move(result);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            g_buildingVisualsTiming.SnapshotPreparation.Add(prepareMs);
+            state.Timing.SnapshotPreparation.Add(prepareMs);
 #endif
         }
-        g_lastInput=input;
+        state.LastInput=input;
+    }
+
+    void OnTick(float)
+    {
+        if(!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() ||
+            !MiniMapConfig::GetRenderSettings().Buildings.ShowLayer)return;
+        const auto input=C::GetSnapshot();
+        if(!input) { if(g_normalState.LastInput)Clear(); return; }
+        if(input->Generation!=g_normalState.Generation)Clear();
+        PrepareVisuals(g_normalState,input);
     }
 
 }
@@ -544,30 +567,36 @@ namespace MiniMapBuildingVisuals
         }
         Reset(); g_initialized=false;
     }
+    void Prepare(State& state, const std::shared_ptr<const C::Snapshot>& input)
+    { PrepareVisuals(state,input); }
     void Render(MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
+        const MiniMapConfig::BuildingRenderSettings& settings)
+    { RenderSelected(g_normalState,{},ui,transform,settings); }
+    void RenderSelected(State& state, const std::shared_ptr<const C::Snapshot>& selected,
+        MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
     {
         // Presentation only: leave draw-driven queues and the independent game-thread
         // capture service untouched while this layer is hidden.
         if(!settings.ShowLayer)return;
         if(!transform.Valid) return;
-        static WorldQuadCache worldQuads; // Single UI callback owner; no borrowed atlas pointers.
-        static std::shared_ptr<const A::RenderPlan> occlusionPlan; // Same UI-thread lifetime as quad cache.
+        auto& worldQuads=state.WorldQuads; // Per-consumer render-thread storage; no borrowed atlas pointers.
+        auto& occlusionPlan=state.OcclusionPlan; // Same consumer lifetime as quad cache.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto elapsedMs=[](Clock::time_point begin,Clock::time_point end)
             {return std::chrono::duration<double,std::milli>(end-begin).count();};
         const auto measuredBegin=Clock::now();
 #endif
-        std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(g_mutex); snapshot=g_published; }
-        const auto current=C::GetSnapshot();
+        std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(state.Mutex); snapshot=state.Published; }
+        const auto current=(selected ? selected : C::GetSnapshot());
         if(!snapshot || !current || snapshot->Generation!=current->Generation)
         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if(occlusionPlan){std::scoped_lock lock(g_mutex);++g_buildingVisualsTiming.Reasons[size_t(A::Invalidation::Context)];}
+            if(occlusionPlan){std::scoped_lock lock(state.Mutex);++state.Timing.Reasons[size_t(A::Invalidation::Context)];}
 #endif
             worldQuads={};occlusionPlan.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            TraceFrame(current,snapshot,false);
+            if(!selected)TraceFrame(current,snapshot,false);
 #endif
             return;
         }
@@ -616,13 +645,13 @@ namespace MiniMapBuildingVisuals
                 discarded=reason;occlusionPlan.reset();
             }
         }
-        const auto currentSession = C::GetSnapshot();
+        const auto currentSession = (selected ? selected : C::GetSnapshot());
         const bool schedulerValid =
             MiniMapMap::GameplayReady() &&
             currentSession &&
             currentSession->Generation == snapshot->Generation;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        const auto traceTargets=TraceFrame(currentSession,snapshot,schedulerValid);
+        const auto traceTargets=selected?TraceTargets{}:TraceFrame(currentSession,snapshot,schedulerValid);
 #endif
         // The locked publication fixes Region/SourceRect/Min/Max for every resolved entry.
         // Snapshot identity fixes copied transforms, membership and instance indices.
@@ -771,9 +800,9 @@ namespace MiniMapBuildingVisuals
             {
                 uint64_t observedSession=0,observedRevision=0;
                 MiniMapBuildingAtlas::ObservePublication(observedSession,observedRevision);
-                const auto collector=C::GetSnapshot();
-                std::scoped_lock ownerLock(g_mutex);
-                return schedulerValid && MiniMapMap::GameplayReady() && g_published==snapshot && request.Snapshot &&
+                const auto collector=(selected ? selected : C::GetSnapshot());
+                std::scoped_lock ownerLock(state.Mutex);
+                return schedulerValid && MiniMapMap::GameplayReady() && state.Published==snapshot && request.Snapshot &&
                     collector==request.Snapshot && collector->Generation==snapshot->Generation &&
                     observedSession==session && observedRevision==revision;
             };
@@ -898,45 +927,45 @@ namespace MiniMapBuildingVisuals
         BuildingVisualsTimingTotals timingReport;double timingIntervalMs=0;bool emitTimingReport=false;
 #endif
         {
-            std::scoped_lock lock(g_mutex);
-            if(g_published==snapshot)
+            std::scoped_lock lock(state.Mutex);
+            if(state.Published==snapshot)
             {
-                g_renderPlanOwner=framePlanOwner;
+                state.PlanOwner=framePlanOwner;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 const auto phaseEnd=Clock::now();
                 const double renderTotalMs=elapsedMs(measuredBegin,phaseEnd);
                 const double baseCoreFinalizeMs=elapsedMs(baseCoreFinalizeBegin,phaseEnd);
                 const double unaccountedMs=(std::max)(0.0,renderTotalMs-(snapshotAcquireMs+lifecycleWaitMs+ordinaryMs+
                     splinePlanMs+splineSubmissionMs+baseCoreFinalizeMs));
-                g_buildingVisualsTiming.SnapshotAcquire.Add(snapshotAcquireMs);
-                g_buildingVisualsTiming.LockWait.Add(lifecycleWaitMs);
-                g_buildingVisualsTiming.Ordinary.Add(ordinaryMs);
-                g_buildingVisualsTiming.PlanPreparation.Add(splinePlanMs);
-                g_buildingVisualsTiming.SplineSubmission.Add(splineSubmissionMs);
-                g_buildingVisualsTiming.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
-                g_buildingVisualsTiming.RenderTotal.Add(renderTotalMs);
-                g_buildingVisualsTiming.Unaccounted.Add(unaccountedMs);
-                g_buildingVisualsTiming.Sections.Add(workload.Sections);
-                for(size_t i=0;i<workload.Reasons.size();++i)g_buildingVisualsTiming.Reasons[i]+=workload.Reasons[i];
+                state.Timing.SnapshotAcquire.Add(snapshotAcquireMs);
+                state.Timing.LockWait.Add(lifecycleWaitMs);
+                state.Timing.Ordinary.Add(ordinaryMs);
+                state.Timing.PlanPreparation.Add(splinePlanMs);
+                state.Timing.SplineSubmission.Add(splineSubmissionMs);
+                state.Timing.BaseCoreAndFinalize.Add(baseCoreFinalizeMs);
+                state.Timing.RenderTotal.Add(renderTotalMs);
+                state.Timing.Unaccounted.Add(unaccountedMs);
+                state.Timing.Sections.Add(workload.Sections);
+                for(size_t i=0;i<workload.Reasons.size();++i)state.Timing.Reasons[i]+=workload.Reasons[i];
                 if(workload.PlanRebuilds)for(size_t i=0;i<workload.Sections.Ms.size();++i)
-                    g_buildingVisualsTiming.SectionPhases[i].Add(workload.Sections.Ms[i]);
-                g_buildingVisualsTiming.PreparedInstances+=workload.PreparedInstances;
-                g_buildingVisualsTiming.OrdinarySubmitted+=workload.OrdinarySubmitted;
-                g_buildingVisualsTiming.SplineRecords+=workload.SplineRecords;
-                g_buildingVisualsTiming.PlanReuses+=workload.PlanReuses;g_buildingVisualsTiming.PlanRebuilds+=workload.PlanRebuilds;
-                g_buildingVisualsTiming.RetainedPlanTriangles+=workload.RetainedPlanTriangles;
-                g_buildingVisualsTiming.BodyTriangles+=workload.BodyTriangles;
-                g_buildingVisualsTiming.RailBodyTriangles+=workload.RailBodyTriangles;
-                g_buildingVisualsTiming.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
-                g_buildingVisualsTiming.RetainedWalkwayInsetTriangles+=workload.RetainedWalkwayInsetTriangles;
-                g_buildingVisualsTiming.PreparedWalkwayInsetTriangles+=workload.PreparedWalkwayInsetTriangles;
-                g_buildingVisualsTiming.BaseCoreSubmissions+=workload.BaseCoreSubmissions;
-                if(g_timingIntervalStart==Clock::time_point{})g_timingIntervalStart=phaseEnd;
-                timingIntervalMs=elapsedMs(g_timingIntervalStart,phaseEnd);
+                    state.Timing.SectionPhases[i].Add(workload.Sections.Ms[i]);
+                state.Timing.PreparedInstances+=workload.PreparedInstances;
+                state.Timing.OrdinarySubmitted+=workload.OrdinarySubmitted;
+                state.Timing.SplineRecords+=workload.SplineRecords;
+                state.Timing.PlanReuses+=workload.PlanReuses;state.Timing.PlanRebuilds+=workload.PlanRebuilds;
+                state.Timing.RetainedPlanTriangles+=workload.RetainedPlanTriangles;
+                state.Timing.BodyTriangles+=workload.BodyTriangles;
+                state.Timing.RailBodyTriangles+=workload.RailBodyTriangles;
+                state.Timing.WalkwayInsetTriangles+=workload.WalkwayInsetTriangles;
+                state.Timing.RetainedWalkwayInsetTriangles+=workload.RetainedWalkwayInsetTriangles;
+                state.Timing.PreparedWalkwayInsetTriangles+=workload.PreparedWalkwayInsetTriangles;
+                state.Timing.BaseCoreSubmissions+=workload.BaseCoreSubmissions;
+                if(state.TimingIntervalStart==Clock::time_point{})state.TimingIntervalStart=phaseEnd;
+                timingIntervalMs=elapsedMs(state.TimingIntervalStart,phaseEnd);
                 if(timingIntervalMs>=10000.0)
                 {
-                    timingReport=g_buildingVisualsTiming;g_buildingVisualsTiming={};
-                    g_timingIntervalStart=phaseEnd;emitTimingReport=true;
+                    timingReport=state.Timing;state.Timing={};
+                    state.TimingIntervalStart=phaseEnd;emitTimingReport=true;
                 }
 #endif
             }
