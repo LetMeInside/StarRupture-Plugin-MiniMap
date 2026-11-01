@@ -6,6 +6,7 @@
 #include <optional>
 #include <vector>
 #include "../Map/Buildings/BuildingComplexCellRasterizer.h"
+#include "../Map/Buildings/BuildingComplexWorld.h"
 namespace SDK { class UTexture2D; }
 
 namespace MiniMapTexturePublication
@@ -63,6 +64,14 @@ namespace MiniMapTexturePublication
         { other.LeaseId = other.RequestId = other.PublicationRevision = 0; other.Texture = nullptr; }
         Lease& operator=(Lease&&) = delete;
     };
+    struct GroupedRequestStatus
+    {
+        RequestState State = RequestState::Unknown;
+        uint64_t RequestId = 0;
+        uint64_t PublicationId = 0;
+        uint64_t CertificateId = 0;
+        bool CompleteTile = false;
+    };
     bool Initialize() noexcept;
     // Native functions below are GT-only. Prepare/Ready require the existing
     // admitted BuildingComplex service scope. Zero means no admission.
@@ -82,6 +91,18 @@ namespace MiniMapTexturePublication
     // that lease is held and must be detached before Release.
     bool Acquire(uint64_t requestId, Lease& output) noexcept;
     bool Release(uint64_t leaseId) noexcept;
+    // BCT1 grouped publications share the same native texture/root/fence owner
+    // and deferred retirement path as canonical cell publications.
+    uint64_t RequestGroupedTile(std::shared_ptr<const MiniMapBuildingComplexWorld::GroupedTileImage> image,
+        uint64_t certificateId) noexcept;
+    GroupedRequestStatus InspectGroupedRequest(uint64_t requestId) noexcept;
+    GroupedRequestStatus InspectGroupedPublication(uint64_t publicationId) noexcept;
+    GroupedRequestStatus FindGroupedTile(int64_t tileX, int64_t tileY, uint32_t interiorSide,
+        MiniMapBuildingComplexWorld::TileIdentity& identity) noexcept;
+    void WithdrawGroupedPublication(uint64_t publicationId) noexcept;
+    bool AcquireGrouped(uint64_t publicationId, Lease& output) noexcept;
+    bool ReleaseGrouped(uint64_t leaseId) noexcept;
+    void WithdrawGroupedRequest(uint64_t requestId) noexcept;
     // Called by the existing BuildingComplex world service while admitted.
     void ProcessRequests() noexcept;
     void InvalidateCells(const std::vector<MiniMapBuildingComplexIndex::CellKey>& cells) noexcept;

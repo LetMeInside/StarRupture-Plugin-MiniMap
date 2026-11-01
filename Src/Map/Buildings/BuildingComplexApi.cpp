@@ -2,6 +2,7 @@
 #include "BuildingComplexAbi.h"
 #include "BuildingComplexApiInternal.h"
 #include "BuildingComplexWorld.h"
+#include "Native/TexturePublication.h"
 #include "Native/NativeApi.h"
 #include "Native/MassLifecycle.h"
 #include "Native/ResidentMetadata.h"
@@ -45,6 +46,7 @@ static_assert(sizeof(BC_OpenFn)==8 && sizeof(BC_InspectSessionFn)==8 && sizeof(B
 namespace {
     struct Request {
         uint64_t Id=0, DetailEpoch=0, Certificate=0, ReadinessRevision=0;
+        uint64_t NativeRequest=0, PublicationId=0;
         int64_t X=0,Y=0; uint32_t Side=0; bool Visible=false, Withdrawn=false, CpuComplete=false;
         bool Processed=false;
         bool RetryEligible=true,RetryOnRevision=false,TerminalFailure=false;
@@ -60,8 +62,16 @@ namespace {
         std::map<uint64_t,Request> Requests;
         std::map<uint64_t,DemandDescriptor> DemandIds;
         std::set<uint64_t> WithdrawTombstones;
+        std::map<uint64_t,uint64_t> LeasePublications;
+        std::set<uint64_t> ReleasedLeases;
+    };
+    struct PublicationRecord {
+        uint64_t Session=0, Request=0;
+        BC_Status Snapshot{};
     };
     std::map<uint64_t,Session> Sessions;
+    std::map<uint64_t,PublicationRecord> Publications;
+    std::map<uint64_t,uint64_t> LeaseSessions;
     uint64_t NextSession=1,NextGrid=1,NextRequest=1,NextCertificate=1;
     constexpr uint32_t kSides[]={128,256,512,1024};
 
@@ -87,6 +97,7 @@ namespace {
     }
     void MarkRequestStale(Request& q) noexcept {
         q.CpuIdentity.reset();q.CpuComplete=false;q.State=BC_STALE;q.Reason=BC_STALE_OR_REVOKED_IDENTITY;
+        q.NativeRequest=0;q.PublicationId=0;
         q.RequiredCells=q.ReadyCells=q.PendingCells=q.FailedCells=0;q.Certificate=0;
         q.RetryEligible=true;q.RetryOnRevision=false;q.TerminalFailure=false;
         if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
@@ -210,8 +221,56 @@ namespace {
         if(q.CpuComplete)o.Flags|=BC_COMPLETE;
         if(q.State==BC_FAILED)o.Flags|=BC_HAS_FAILURE;
         if(q.RetryEligible)o.Flags|=BC_RETRY_ELIGIBLE;
+        if(q.State==BC_PENDING&&q.CpuComplete) {
+            for(const auto& [id,other]:s.Requests) if(id!=q.Id&&!other.Withdrawn&&
+                other.X==q.X&&other.Y==q.Y&&other.Side!=q.Side&&other.State==BC_READY) {
+                o.Flags|=BC_DETAIL_PENDING;break;
+            }
+        }
         if(MiniMapBuildingComplexWorld::GetStatus().State!=MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished)o.Flags|=BC_ADMISSION_PENDING;
         o.RequiredCells=q.RequiredCells;o.ReadyCells=q.ReadyCells;o.PendingCells=q.PendingCells;o.FailedCells=q.FailedCells;
+        if(q.State==BC_READY&&q.PublicationId) {
+            o.PublicationId=q.PublicationId;o.Flags|=BC_NATIVE_READY;
+            o.TextureWidth=o.TextureHeight=q.Side+2;o.Gutter=1;
+            o.UVScaleX=o.UVScaleY=double(q.Side)/double(q.Side+2);
+            o.UVBiasX=o.UVBiasY=1.0/double(q.Side+2);
+        }
+        else if(q.State==BC_EMPTY) { o.Gutter=1; }
+    }
+    void RefreshNative(Session& s,Request& q) noexcept {
+        if(!q.NativeRequest||q.Withdrawn)return;
+        const auto native=MiniMapTexturePublication::InspectGroupedRequest(q.NativeRequest);
+        if(native.CertificateId)q.Certificate=native.CertificateId;
+        if(native.State==MiniMapTexturePublication::RequestState::Pending) {
+            if(q.CpuComplete&&q.CpuIdentity&&q.CpuIdentity->State==MiniMapBuildingComplexWorld::TileState::Complete) {
+                q.State=BC_PENDING;q.Reason=BC_UPLOAD_PENDING;
+            }
+            return;
+        }
+        if(native.State==MiniMapTexturePublication::RequestState::Failed) {
+            if(q.State!=BC_FAILED)if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
+            q.State=BC_FAILED;q.Reason=BC_RESOURCE_FAILURE_REASON;q.TerminalFailure=true;
+            return;
+        }
+        if(native.State==MiniMapTexturePublication::RequestState::Stale) {
+            if(q.CpuIdentity&&!MiniMapBuildingComplexWorld::ValidateTile(*q.CpuIdentity))MarkRequestStale(q);
+            else { q.State=BC_PENDING;q.Reason=BC_SOURCE_PENDING;q.NativeRequest=0;q.PublicationId=0;
+                q.CpuComplete=false;q.RetryEligible=true;q.RetryOnRevision=false; }
+            return;
+        }
+        if(native.State!=MiniMapTexturePublication::RequestState::Ready||!native.PublicationId)return;
+        if(q.State!=BC_READY||q.PublicationId!=native.PublicationId)
+            if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
+        q.PublicationId=native.PublicationId;q.State=BC_READY;q.Reason=BC_REASON_NONE;
+        q.CpuComplete=true;
+        BC_Status snapshot{};Init(&snapshot);FillRequest(s,q,snapshot);
+        try {
+            PublicationRecord record;record.Session=s.Id;record.Request=q.Id;record.Snapshot=snapshot;
+            Publications[native.PublicationId]=record;
+        } catch(...) {
+            MiniMapTexturePublication::WithdrawGroupedPublication(native.PublicationId);
+            q.State=BC_FAILED;q.Reason=BC_RESOURCE_FAILURE_REASON;q.PublicationId=0;
+        }
     }
     uint32_t Inspect(uint64_t sid,uint64_t id,BC_Status& out) {
         if(!Admitted())return FailedStatus(BC_REJECTED_THREAD_OR_ADMISSION,out);Session* s=nullptr;auto r=SessionCheck(sid,s);if(r!=BC_RESULT_OK)return FailedStatus(r,out);
@@ -220,6 +279,7 @@ namespace {
         auto& q=it->second;if(q.Withdrawn)return FailedStatus(BC_CLOSED,out);
         if(q.CpuIdentity&&!MiniMapBuildingComplexWorld::ValidateTile(*q.CpuIdentity))MarkRequestStale(q);
         RefreshRetryEligibility(q);
+        RefreshNative(*s,q);
         FillRequest(*s,q,out);return BC_RESULT_OK;
     }
     uint32_t BC_CALL InspectRequest(const BC_Ref* in,BC_Status* out) {
@@ -236,9 +296,23 @@ namespace {
         Session* s=nullptr;
         const auto result=SessionCheck(in->Session,s);
         if(result!=BC_RESULT_OK)return FailedStatus(result,*out);
-        // Phase 1 has no grouped PublicationId. The native publication owner
-        // is intentionally not asked to synthesize one from CPU tile output.
-        return FailedStatus(BC_UNAVAILABLE,*out);
+        const auto found=Publications.find(in->Id);
+        if(found==Publications.end()||found->second.Session!=s->Id)return FailedStatus(BC_INVALID_ARGUMENT,*out);
+        auto native=MiniMapTexturePublication::InspectGroupedPublication(in->Id);
+        if(native.State==MiniMapTexturePublication::RequestState::Unknown)
+            return FailedStatus(BC_INTERNAL_FAILURE,*out);
+        *out=found->second.Snapshot;
+        if(native.State==MiniMapTexturePublication::RequestState::Ready) {
+            out->State=BC_READY;out->Reason=BC_REASON_NONE;out->Flags|=BC_CURRENT|BC_NATIVE_READY|BC_COMPLETE;
+        } else {
+            out->State=native.State==MiniMapTexturePublication::RequestState::Pending?BC_PENDING:
+                native.State==MiniMapTexturePublication::RequestState::Failed?BC_FAILED:BC_STALE;
+            out->Reason=native.State==MiniMapTexturePublication::RequestState::Pending?BC_UPLOAD_PENDING:
+                native.State==MiniMapTexturePublication::RequestState::Failed?BC_RESOURCE_FAILURE_REASON:BC_STALE_OR_REVOKED_IDENTITY;
+            out->Flags&=~(BC_CURRENT|BC_NATIVE_READY);
+            if(out->State==BC_FAILED)out->Flags|=BC_HAS_FAILURE;
+        }
+        return BC_RESULT_OK;
     }
     uint32_t BC_CALL Acquire(const BC_Ref* in,BC_Lease* out) {
         if(!Shape(out))return BC_INVALID_ARGUMENT;
@@ -247,14 +321,37 @@ namespace {
         if(!Admitted())return BC_REJECTED_THREAD_OR_ADMISSION;
         Session* s=nullptr;const auto result=SessionCheck(in->Session,s);
         if(result!=BC_RESULT_OK)return result;
-        // No grouped native publication or consumer lease exists in Phase 1.
-        return BC_UNAVAILABLE;
+        const auto publication=Publications.find(in->Id);
+        if(publication==Publications.end()||publication->second.Session!=s->Id)return BC_INVALID_ARGUMENT;
+        if(publication->second.Snapshot.State!=BC_READY||
+            MiniMapTexturePublication::InspectGroupedPublication(in->Id).State!=MiniMapTexturePublication::RequestState::Ready)
+            return BC_UNAVAILABLE;
+        MiniMapTexturePublication::Lease nativeLease;
+        if(!MiniMapTexturePublication::AcquireGrouped(in->Id,nativeLease))return BC_UNAVAILABLE;
+        try {
+            const auto inserted=s->LeasePublications.emplace(nativeLease.LeaseId,in->Id);
+            if(!inserted.second) { MiniMapTexturePublication::ReleaseGrouped(nativeLease.LeaseId);return BC_INTERNAL_FAILURE; }
+            LeaseSessions.emplace(nativeLease.LeaseId,s->Id);
+        } catch(...) {
+            s->LeasePublications.erase(nativeLease.LeaseId);
+            MiniMapTexturePublication::ReleaseGrouped(nativeLease.LeaseId);
+            return BC_RESOURCE_FAILURE;
+        }
+        out->Session=s->Id;out->LeaseId=nativeLease.LeaseId;out->PublicationId=in->Id;out->Texture=nativeLease.Texture;
+        return BC_RESULT_OK;
     }
     uint32_t BC_CALL Release(const BC_Ref* in) {
         if(!ValidRef(in,true))return BC_INVALID_ARGUMENT;
         if(!OnGameThread())return BC_REJECTED_THREAD_OR_ADMISSION;auto* s=Find(in->Session);if(!s)return BC_STALE_SESSION;if(s->Closed)return BC_CLOSED;
-        // Phase 1 has no issued grouped publication leases. Reject foreign IDs.
-        return BC_INVALID_ARGUMENT;
+        const auto owner=LeaseSessions.find(in->Id);
+        if(owner==LeaseSessions.end()||owner->second!=s->Id)return BC_INVALID_ARGUMENT;
+        if(s->ReleasedLeases.contains(in->Id))return BC_RESULT_OK;
+        if(!s->LeasePublications.contains(in->Id))return BC_INVALID_ARGUMENT;
+        try { s->ReleasedLeases.insert(in->Id); }
+        catch(...) { return BC_RESOURCE_FAILURE; }
+        if(!MiniMapTexturePublication::ReleaseGrouped(in->Id)) { s->ReleasedLeases.erase(in->Id);return BC_INTERNAL_FAILURE; }
+        s->LeasePublications.erase(in->Id);
+        return BC_RESULT_OK;
     }
     uint32_t BC_CALL Withdraw(const BC_Ref* in) {
         if(!ValidRef(in,true))return BC_INVALID_ARGUMENT;
@@ -263,6 +360,16 @@ namespace {
         if(it->second.Withdrawn)return BC_RESULT_OK;
         try { s->WithdrawTombstones.insert(in->Id); }
         catch(...) { return BC_RESOURCE_FAILURE; }
+        const uint64_t nativeRequest=it->second.NativeRequest;
+        const bool shared= nativeRequest && std::any_of(s->Requests.begin(),s->Requests.end(),[&](const auto& pair) {
+            return pair.first!=in->Id&&!pair.second.Withdrawn&&pair.second.NativeRequest==nativeRequest;
+        });
+        if(!shared)MiniMapTexturePublication::WithdrawGroupedRequest(nativeRequest);
+        const uint64_t publication=it->second.PublicationId;
+        const bool publicationShared=publication&&std::any_of(s->Requests.begin(),s->Requests.end(),[&](const auto& pair) {
+            return pair.first!=in->Id&&!pair.second.Withdrawn&&pair.second.PublicationId==publication;
+        });
+        if(publication&&!publicationShared)MiniMapTexturePublication::WithdrawGroupedPublication(publication);
         it->second.Withdrawn=true;it->second.Visible=false;it->second.CpuIdentity.reset();it->second.CpuComplete=false;
         return BC_RESULT_OK;
     }
@@ -271,7 +378,9 @@ namespace {
         if(!OnGameThread())return BC_REJECTED_THREAD_OR_ADMISSION;auto* s=Find(in->Session);if(!s)return BC_STALE_SESSION;if(s->Closed)return BC_CLOSED;
         try { for(const auto& [id,q]:s->Requests){(void)q;s->WithdrawTombstones.insert(id);} }
         catch(...) { return BC_RESOURCE_FAILURE; }
-        for(auto& [id,q]:s->Requests){(void)id;q.Withdrawn=true;q.Visible=false;q.CpuIdentity.reset();q.CpuComplete=false;}
+        for(auto& [id,q]:s->Requests){(void)id;MiniMapTexturePublication::WithdrawGroupedRequest(q.NativeRequest);
+            if(q.PublicationId)MiniMapTexturePublication::WithdrawGroupedPublication(q.PublicationId);
+            q.Withdrawn=true;q.Visible=false;q.CpuIdentity.reset();q.CpuComplete=false;}
         return BC_RESULT_OK;
     }
     uint32_t BC_CALL Close(const BC_Ref* in) {
@@ -281,7 +390,10 @@ namespace {
         // Stop all request activity and release CPU image ownership before any
         // fallible bookkeeping. A failed Close is not acknowledged: the
         // request/demand records and tombstones remain for a later retry.
-        for(auto& [id,q]:s->Requests){(void)id;q.Withdrawn=true;q.Visible=false;q.CpuIdentity.reset();q.CpuComplete=false;}
+        for(auto& [id,q]:s->Requests){(void)id;MiniMapTexturePublication::WithdrawGroupedRequest(q.NativeRequest);
+            if(q.PublicationId)MiniMapTexturePublication::WithdrawGroupedPublication(q.PublicationId);
+            q.Withdrawn=true;q.Visible=false;q.CpuIdentity.reset();q.CpuComplete=false;}
+        if(!s->LeasePublications.empty())return BC_BUSY;
         try { for(const auto& [id,q]:s->Requests){(void)q;s->WithdrawTombstones.insert(id);} }
         catch(...) { return BC_RESOURCE_FAILURE; }
         // Tombstones and demand descriptors live through this successful
@@ -353,7 +465,11 @@ namespace {
         q.CpuComplete=t.State==MiniMapBuildingComplexWorld::TileState::Complete||t.State==MiniMapBuildingComplexWorld::TileState::Empty;
         switch(t.State) {
         case MiniMapBuildingComplexWorld::TileState::Partial:q.State=BC_PARTIAL;q.Reason=BC_GLOBAL_COMPLETENESS_UNAVAILABLE;break;
-        case MiniMapBuildingComplexWorld::TileState::Complete:q.State=BC_PENDING;q.Reason=BC_UPLOAD_PENDING;break;
+        case MiniMapBuildingComplexWorld::TileState::Complete:
+            q.State=BC_PENDING;q.Reason=BC_UPLOAD_PENDING;
+            q.NativeRequest=MiniMapTexturePublication::RequestGroupedTile(t.Image,q.Certificate);
+            if(!q.NativeRequest) { q.State=BC_FAILED;q.Reason=BC_RESOURCE_FAILURE_REASON;q.TerminalFailure=true; }
+            break;
         case MiniMapBuildingComplexWorld::TileState::Empty:q.State=BC_EMPTY;q.Reason=BC_REASON_NONE;break;
         default:q.State=BC_FAILED;q.Reason=BC_REASON_NONE;q.CpuComplete=false;DeferRetryUntilRevision(q);break;
         }
@@ -372,7 +488,42 @@ namespace MiniMapBuildingComplexApiInternal {
                 if(!q.RetryEligible||q.CpuComplete)continue;
                 if(q.State==BC_PARTIAL&&q.CpuIdentity)continue;
                 q.RetryEligible=false;q.RetryOnRevision=false;
-                try { const auto t=MiniMapBuildingComplexWorld::ComposeTile({q.X,q.Y},s.WorldGeneration,q.Side);FillCpuResult(q,t); }
+                try {
+                    // Reuse another exact current tile result/publication before composing.
+                    bool reused=false;
+                    MiniMapBuildingComplexWorld::TileIdentity sharedIdentity;
+                    const auto shared=MiniMapTexturePublication::FindGroupedTile(q.X,q.Y,q.Side,sharedIdentity);
+                    if((shared.State==MiniMapTexturePublication::RequestState::Ready||
+                        shared.State==MiniMapTexturePublication::RequestState::Pending)&&
+                        MiniMapBuildingComplexWorld::ValidateTile(sharedIdentity)) {
+                        q.CpuIdentity=std::move(sharedIdentity);q.Certificate=shared.CertificateId;
+                        q.NativeRequest=shared.RequestId;q.PublicationId=shared.PublicationId;
+                        q.CpuComplete=true;q.RequiredCells=q.CpuIdentity->Inputs.size();
+                        q.ReadyCells=q.PendingCells=q.FailedCells=0;
+                        for(const auto& cell:q.CpuIdentity->Inputs) {
+                            if(cell.Status==MiniMapBuildingComplexCellRasterizer::State::Complete)++q.ReadyCells;
+                            else ++q.PendingCells;
+                        }
+                        q.State=shared.State==MiniMapTexturePublication::RequestState::Ready?BC_READY:BC_PENDING;
+                        q.Reason=q.State==BC_READY?BC_REASON_NONE:BC_UPLOAD_PENDING;
+                        if(q.State==BC_READY)RefreshNative(s,q);
+                        reused=true;
+                    }
+                    for(auto& [otherId,other]:s.Requests) {
+                        if(reused)break;
+                        RefreshNative(s,other);
+                        if(otherId==q.Id||other.Withdrawn||other.X!=q.X||other.Y!=q.Y||other.Side!=q.Side||
+                            !other.CpuIdentity||other.State==BC_FAILED||!MiniMapBuildingComplexWorld::ValidateTile(*other.CpuIdentity))continue;
+                        q.CpuIdentity=other.CpuIdentity;q.CpuComplete=other.CpuComplete;q.Certificate=other.Certificate;
+                        q.RequiredCells=other.RequiredCells;q.ReadyCells=other.ReadyCells;q.PendingCells=other.PendingCells;
+                        q.FailedCells=other.FailedCells;q.State=other.State;q.Reason=other.Reason;
+                        q.NativeRequest=other.NativeRequest;q.PublicationId=other.PublicationId;
+                        q.RetryEligible=other.RetryEligible;q.RetryOnRevision=other.RetryOnRevision;
+                        reused=true;break;
+                    }
+                    if(!reused) { const auto t=MiniMapBuildingComplexWorld::ComposeTile({q.X,q.Y},s.WorldGeneration,q.Side);FillCpuResult(q,t); }
+                    else if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
+                }
                 catch(...) {
                     q.CpuIdentity.reset();q.CpuComplete=false;q.State=BC_FAILED;q.Reason=BC_RESOURCE_FAILURE_REASON;
                     q.TerminalFailure=false;

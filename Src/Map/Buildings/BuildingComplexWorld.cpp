@@ -1704,5 +1704,27 @@ namespace MiniMapBuildingComplexWorld
         }
         catch (...) { return false; }
     }
+
+    bool ValidateGroupedTileImage(const GroupedTileImage& image) noexcept
+    {
+        const auto& identity = image.Identity;
+        if (!ValidateTile(identity) || identity.State != image.Identity.State ||
+            (identity.State != TileState::Complete && identity.State != TileState::Empty) ||
+            std::find(kTileSides.begin(), kTileSides.end(), identity.ContentSide) == kTileSides.end() ||
+            image.Width != identity.ContentSide + 2 || image.Height != identity.ContentSide + 2)
+            return false;
+        if (identity.State == TileState::Empty) return image.Rgba16F.empty();
+        const uint64_t expected = uint64_t(image.Width) * uint64_t(image.Height) * 8;
+        if (!expected || expected != image.Rgba16F.size()) return false;
+        for (size_t offset = 0; offset < image.Rgba16F.size(); offset += 2)
+        {
+            const uint16_t half = uint16_t(image.Rgba16F[offset]) |
+                uint16_t(uint16_t(image.Rgba16F[offset + 1]) << 8);
+            double value = 0;
+            if (!HalfToDouble(half, value) || value < 0 || value > 1 ||
+                (offset % 8 == 6 && value > 1)) return false;
+        }
+        return true;
+    }
 }
 #endif

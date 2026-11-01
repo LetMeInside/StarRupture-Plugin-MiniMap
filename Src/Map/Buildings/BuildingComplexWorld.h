@@ -99,5 +99,6 @@ namespace MiniMapBuildingComplexWorld
     uint32_t SelectTileResolution(double projectedTilePixels, uint32_t currentSide = 0) noexcept;
     TileResult ComposeTile(TileKey key, uint64_t worldGeneration, uint32_t contentSide) noexcept;
     bool ValidateTile(const TileIdentity& identity) noexcept;
+    bool ValidateGroupedTileImage(const GroupedTileImage& image) noexcept;
 }
 #endif
