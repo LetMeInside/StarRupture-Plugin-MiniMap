@@ -160,9 +160,12 @@ jobs:
 
           $content = Get-Content $interfaceHeader.FullName -Raw
 
+          # The manifest minimum is the plugin's own PLUGIN_INTERFACE_VERSION, not
+          # the header's MIN: a loader older than that refuses the plugin, so its
+          # auto-updater must not replace a copy that works.
           $minMatch = [regex]::Match(
             $content,
-            '#define\s+PLUGIN_INTERFACE_VERSION_MIN\s+(\d+)'
+            '#define\s+PLUGIN_INTERFACE_VERSION\s+(\d+)'
           )
 
           $maxMatch = [regex]::Match(

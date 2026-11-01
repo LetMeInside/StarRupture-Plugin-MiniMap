@@ -9,6 +9,7 @@
 #include "Viewport.h"
 #include "Textures.h"
 #include "Services/RuntimeBinding.h"
+#include "GameFields.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 
@@ -62,7 +63,11 @@ namespace
         "Kian369",
         "A configurable on-screen minimap for StarRupture",
         PLUGIN_INTERFACE_VERSION,
-        MINIMAP_EXPORTS_TARGET
+        MINIMAP_EXPORTS_TARGET,
+        PLUGIN_GAME_BUILT_CL,
+        // TODO: set PLUGIN_MAP_MIGRATED once the loader admits plugins by built CL and CI
+        // has checked the used set.
+        0
     };
 
     void ReleaseRuntime() noexcept
@@ -155,8 +160,12 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
                 scanner->ReportFailure(self, "MiniMap::NativeDependencies", "invalid required scanner callback arguments");
             return;
         }
+        // The map layers are declared before any key is resolved, so a miss turns
+        // off the layer it belongs to and not the plugin.
+        MiniMapFields::Features::Declare(self, scanner);
         MiniMap::Adapters::AlienX::RequiredScanner requiredScanner(*self, *scanner);
         MiniMap::Adapters::AlienX::ResolveNativeDependencies(requiredScanner);
+        MiniMapFields::Resolve(self, scanner);
         if (requiredScanner.HasFailures() && MiniMapNative::IsInitialized())
             MiniMapNative::Shutdown();
 #else
@@ -180,6 +189,9 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
 
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 {
+    // First, before any early return: off its game build the loader refuses a
+    // plugin whose PluginInit did not take the globals.
+    PluginSdkRuntime::Init(self->hooks);
     if (g_binding) return false; // Never replace an active composition/identity.
     g_baseline = {};
     g_self = self;

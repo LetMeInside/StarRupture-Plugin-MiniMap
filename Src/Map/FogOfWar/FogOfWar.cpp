@@ -9,6 +9,7 @@
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 
+#include "Adapters/AlienX/GameFields.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
@@ -102,18 +103,10 @@ namespace
     constexpr double kNativeEdgeHigh =
         0.65;
 
-    constexpr std::ptrdiff_t kFOWDataOffset =
-        0x100;
-
     constexpr std::size_t kFogSegmentNativeSize =
         0x10;
 
-    struct RawTArray
-    {
-        const void* Data = nullptr;
-        int32_t Num = 0;
-        int32_t Max = 0;
-    };
+    using RawTArray = MiniMapFields::RawTArray;
 
     static_assert(
         sizeof(RawTArray) ==
@@ -403,17 +396,18 @@ namespace
             return false;
         }
 
-        const auto* componentBytes =
-            reinterpret_cast<const uint8_t*>(
+        const auto* fowData =
+            MiniMapFields::FogData.In(
                 component);
 
-        RawTArray outer = {};
+        if (fowData ==
+            nullptr)
+        {
+            return false;
+        }
 
-        std::memcpy(
-            &outer,
-            componentBytes +
-                kFOWDataOffset,
-            sizeof(outer));
+        const RawTArray outer =
+            *fowData;
 
         if (!ValidateRawArray(
             outer,

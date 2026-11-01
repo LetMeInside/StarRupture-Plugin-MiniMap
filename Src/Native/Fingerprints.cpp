@@ -2,6 +2,7 @@
 
 #include "../plugin_helpers.h"
 #include "NativeApi.h"
+#include "NativeKeys.h"
 #include <array>
 #include <cstring>
 
@@ -17,6 +18,8 @@
 // should fail rather than allowing MiniMap to continue with stale assumptions.
 // ---------------------------------------------------------------------------
 
+namespace Keys = MiniMapNative::Keys;
+
 namespace MiniMapFingerprints
 {
     bool Resolve(
@@ -27,14 +30,12 @@ namespace MiniMapFingerprints
 
         using MiniMap::Services::AddressKind;
         using MiniMap::Services::RequiredScan;
-        bool scanFailed = false;
         const auto resolveRequired = [&](const RequiredScan& request) -> uintptr_t
         {
             const auto result = scanner.Resolve(request);
             if (result.status.error != MiniMap::Services::Error::None ||
                 !result.value || !*result.value)
             {
-                scanFailed = true;
                 return 0;
             }
             return *result.value;
@@ -46,7 +47,7 @@ namespace MiniMapFingerprints
         // dispatch is not sufficient because CommonUI calls them natively.
         RequiredScan commonUIActivatedRequest{};
         commonUIActivatedRequest.name =
-            "MiniMap::UCommonActivatableWidget::NativeOnActivated";
+            Keys::CommonUIActivated;
         commonUIActivatedRequest.idaPattern =
             "40 53 48 83 EC 50 80 B9 50 04 00 00 00 48 8B D9 75 17 "
             "48 89 4C 24 60 48 8D 4C 24 60 E8 ?? ?? ?? ?? 84 C0 "
@@ -61,7 +62,7 @@ namespace MiniMapFingerprints
 
         RequiredScan commonUIDeactivatedRequest{};
         commonUIDeactivatedRequest.name =
-            "MiniMap::UCommonActivatableWidget::NativeOnDeactivated";
+            Keys::CommonUIDeactivated;
         commonUIDeactivatedRequest.idaPattern =
             "40 53 48 83 EC 50 80 B9 50 04 00 00 00 48 8B D9 74 37 "
             "48 8D 05 ?? ?? ?? ?? 41 B9 2C 01 00 00 4C 8D 05 ?? ?? ?? ?? "
@@ -93,7 +94,7 @@ namespace MiniMapFingerprints
         RequiredScan loadSynchronousRequest{};
 
         loadSynchronousRequest.name =
-            "MiniMap::FSoftObjectPtr::LoadSynchronous";
+            Keys::LoadSynchronous;
 
         loadSynchronousRequest.idaPattern =
             "48 8B 8B 10 01 00 00 "
@@ -133,8 +134,7 @@ namespace MiniMapFingerprints
         RequiredScan brushTextureRequest{};
 
         brushTextureRequest.name =
-            "MiniMap::UWidgetBlueprintLibrary::"
-            "GetBrushResourceAsTexture2D";
+            Keys::BrushTexture;
 
         brushTextureRequest.idaPattern =
             "40 53 "
@@ -173,8 +173,7 @@ namespace MiniMapFingerprints
         RequiredScan forceMipsRequest{};
 
         forceMipsRequest.name =
-            "MiniMap::UStreamableRenderAsset::"
-            "SetForceMipLevelsToBeResident";
+            Keys::ForceMips;
 
         forceMipsRequest.idaPattern =
             "48 89 5C 24 ?? "
@@ -220,7 +219,7 @@ namespace MiniMapFingerprints
         RequiredScan waitForStreamingRequest{};
 
         waitForStreamingRequest.name =
-            "MiniMap::UStreamableRenderAsset::WaitForStreaming";
+            Keys::WaitForStreaming;
 
         waitForStreamingRequest.idaPattern =
             "48 89 5C 24 ?? "
@@ -260,7 +259,7 @@ namespace MiniMapFingerprints
         RequiredScan residentMipsRequest{};
 
         residentMipsRequest.name =
-            "MiniMap::UTexture2D::GetNumResidentMips";
+            Keys::ResidentMips;
 
         residentMipsRequest.idaPattern =
             "40 53 "
@@ -301,7 +300,7 @@ namespace MiniMapFingerprints
         RequiredScan allowedMipsRequest{};
 
         allowedMipsRequest.name =
-            "MiniMap::UTexture2D::GetNumMipsAllowed";
+            Keys::AllowedMips;
 
         allowedMipsRequest.idaPattern =
             "48 89 5C 24 ?? "
@@ -347,7 +346,7 @@ namespace MiniMapFingerprints
         RequiredScan numMipsRequest{};
 
         numMipsRequest.name =
-            "MiniMap::UTexture2D::GetNumMips";
+            Keys::NumMips;
 
         numMipsRequest.idaPattern =
             "40 53 "
@@ -393,7 +392,7 @@ namespace MiniMapFingerprints
         RequiredScan streamInRequest{};
 
         streamInRequest.name =
-            "MiniMap::UTexture2D::StreamIn";
+            Keys::StreamIn;
 
         streamInRequest.idaPattern =
             "40 53 "
@@ -441,8 +440,7 @@ namespace MiniMapFingerprints
         RequiredScan waitPendingRequest{};
 
         waitPendingRequest.name =
-            "MiniMap::UStreamableRenderAsset::"
-            "WaitForPendingInitOrStreaming";
+            Keys::WaitForPendingInit;
 
         waitPendingRequest.idaPattern =
             "48 89 5C 24 ?? "
@@ -487,7 +485,7 @@ namespace MiniMapFingerprints
         RequiredScan firstControllerRequest{};
 
         firstControllerRequest.name =
-            "MiniMap::UWorld::GetFirstPlayerController";
+            Keys::FirstPlayerController;
 
         firstControllerRequest.idaPattern =
             "40 53 "
@@ -531,7 +529,7 @@ namespace MiniMapFingerprints
         RequiredScan componentLocationRequest{};
 
         componentLocationRequest.name =
-            "MiniMap::USceneComponent::K2_GetComponentLocation";
+            Keys::ComponentLocation;
 
         componentLocationRequest.idaPattern =
             "0F 10 81 10 02 00 00 "
@@ -587,7 +585,7 @@ namespace MiniMapFingerprints
         RequiredScan getPlatformDataRequest{};
 
         getPlatformDataRequest.name =
-            "MiniMap::UTexture2D::GetPlatformData";
+            Keys::PlatformData;
 
         getPlatformDataRequest.idaPattern =
             "8B FE "
@@ -635,7 +633,7 @@ namespace MiniMapFingerprints
         RequiredScan getBulkDataSizeRequest{};
 
         getBulkDataSizeRequest.name =
-            "MiniMap::FBulkData::GetBulkDataSize";
+            Keys::BulkDataSize;
 
         getBulkDataSizeRequest.idaPattern =
             "44 0F B6 49 0C "
@@ -682,7 +680,7 @@ namespace MiniMapFingerprints
         RequiredScan canLoadFromDiskRequest{};
 
         canLoadFromDiskRequest.name =
-            "MiniMap::FBulkData::CanLoadFromDisk";
+            Keys::CanLoadFromDisk;
 
         canLoadFromDiskRequest.idaPattern =
             "48 8B 51 18 "
@@ -737,7 +735,7 @@ namespace MiniMapFingerprints
         RequiredScan getBulkDataCopyRequest{};
 
         getBulkDataCopyRequest.name =
-            "MiniMap::FBulkData::GetCopy";
+            Keys::BulkDataCopy;
 
         getBulkDataCopyRequest.idaPattern =
             "48 89 5C 24 ?? "
@@ -789,7 +787,7 @@ namespace MiniMapFingerprints
         RequiredScan memoryFreeRequest{};
 
         memoryFreeRequest.name =
-            "MiniMap::FMemory::Free";
+            Keys::MemoryFree;
 
         memoryFreeRequest.idaPattern =
             "48 85 C9 "
@@ -848,8 +846,7 @@ namespace MiniMapFingerprints
         RequiredScan forgottenEngineRequest{};
 
         forgottenEngineRequest.name =
-            "MiniMap::ACrCharacterPlayerBase::"
-            "IsPlayerInForgottenEngine";
+            Keys::InForgottenEngine;
 
         forgottenEngineRequest.idaPattern =
             "48 8B CB "
@@ -900,7 +897,7 @@ namespace MiniMapFingerprints
         RequiredScan controlRotationRequest{};
 
         controlRotationRequest.name =
-            "MiniMap::AController::GetControlRotation";
+            Keys::ControlRotation;
 
         controlRotationRequest.idaPattern =
             "0F 10 81 38 03 00 00 "
@@ -927,7 +924,7 @@ namespace MiniMapFingerprints
         RequiredScan getAllActorsRequest{};
 
         getAllActorsRequest.name =
-            "MiniMap::UGameplayStatics::GetAllActorsOfClass";
+            Keys::GetAllActorsOfClass;
 
         getAllActorsRequest.idaPattern =
             "4C 8D 44 24 30 4C 89 A4 24 28 01 00 00 "
@@ -944,10 +941,6 @@ namespace MiniMapFingerprints
         const uintptr_t getAllActorsAddress =
             resolveRequired(getAllActorsRequest);
 
-        if (getAllActorsAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getAllActorsOfClass =
             getAllActorsAddress;
@@ -956,7 +949,7 @@ namespace MiniMapFingerprints
         RequiredScan poiStaticClassRequest{};
 
         poiStaticClassRequest.name =
-            "MiniMap::ACrPointOfInterestMarkerActor::StaticClass";
+            Keys::PoiStaticClass;
 
         poiStaticClassRequest.idaPattern =
             "48 C7 44 24 30 00 00 00 00 "
@@ -976,10 +969,6 @@ namespace MiniMapFingerprints
         const uintptr_t poiStaticClassAddress =
             resolveRequired(poiStaticClassRequest);
 
-        if (poiStaticClassAddress == 0)
-        {
-            return false;
-        }
 
         addresses.pointOfInterestStaticClass =
             poiStaticClassAddress;
@@ -988,7 +977,7 @@ namespace MiniMapFingerprints
         RequiredScan poiCategoryRequest{};
 
         poiCategoryRequest.name =
-            "MiniMap::UCrMapMenuDevSettings::FindPOIMarkerCategoryData";
+            Keys::PoiCategory;
 
         poiCategoryRequest.idaPattern =
             "48 8B 8B 10 01 00 00 48 85 C9 74 ?? "
@@ -1005,10 +994,6 @@ namespace MiniMapFingerprints
         const uintptr_t poiCategoryAddress =
             resolveRequired(poiCategoryRequest);
 
-        if (poiCategoryAddress == 0)
-        {
-            return false;
-        }
 
         addresses.findPOIMarkerCategoryData =
             poiCategoryAddress;
@@ -1017,8 +1002,7 @@ namespace MiniMapFingerprints
         RequiredScan markerFilterRequest{};
 
         markerFilterRequest.name =
-            "MiniMap::UCrPlayerMapMenuDataComponent::"
-            "GetMapMenuMarkerFiltersOnOffStatus";
+            Keys::MarkerFilter;
 
         markerFilterRequest.idaPattern =
             "48 89 5C 24 08 57 48 83 EC ?? "
@@ -1032,10 +1016,6 @@ namespace MiniMapFingerprints
         const uintptr_t markerFilterAddress =
             resolveRequired(markerFilterRequest);
 
-        if (markerFilterAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getMapMenuMarkerFilterStatus =
             markerFilterAddress;
@@ -1060,7 +1040,7 @@ namespace MiniMapFingerprints
         RequiredScan abandonBaseCompletedRequest{};
 
         abandonBaseCompletedRequest.name =
-            "MiniMap::FCrAbandonBaseData::IsCompleted";
+            Keys::AbandonBaseCompleted;
 
         abandonBaseCompletedRequest.idaPattern =
             "48 8B 44 24 70 48 8D 55 B0 "
@@ -1080,10 +1060,6 @@ namespace MiniMapFingerprints
         const uintptr_t abandonBaseCompletedAddress =
             resolveRequired(abandonBaseCompletedRequest);
 
-        if (abandonBaseCompletedAddress == 0)
-        {
-            return false;
-        }
 
         addresses.isAbandonBaseCompleted =
             abandonBaseCompletedAddress;
@@ -1094,8 +1070,7 @@ namespace MiniMapFingerprints
         RequiredScan foundableCategoryRequest{};
 
         foundableCategoryRequest.name =
-            "MiniMap::UCrMapMenuDevSettings::"
-            "FindFoundableMarkerCateroryData";
+            Keys::FoundableCategory;
 
         foundableCategoryRequest.idaPattern =
             "48 8B 8C 24 D0 00 00 00 41 0F B6 14 24 48 8B 49 08 "
@@ -1110,10 +1085,6 @@ namespace MiniMapFingerprints
         const uintptr_t foundableCategoryAddress =
             resolveRequired(foundableCategoryRequest);
 
-        if (foundableCategoryAddress == 0)
-        {
-            return false;
-        }
 
         addresses.findFoundableMarkerCategoryData =
             foundableCategoryAddress;
@@ -1124,7 +1095,7 @@ namespace MiniMapFingerprints
         // independently of private-world capture diagnostics. Existing patterns.
         {
             RequiredScan request{};
-            request.name = "MiniMap::Retain";
+            request.name = Keys::RetainObject;
             request.idaPattern = "40 53 48 83 EC 30 8B 59 0C 85 DB 79 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 0D 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 05 ?? ?? ?? ?? 3B D8 0F 8D ?? ?? ?? ?? 48 89 74 24 40 48 89 7C 24 48 8B FB C1 EF 10 0F B7 F3 3B D8 7D ?? 85 DB 79 ?? 4C 8D 0D ?? ?? ?? ?? 89 5C 24 20 41 B8 2C 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? 3B F8 72 ?? 89 44 24 28 4C 8D 0D ?? ?? ?? ?? 41 B8 2D 03 00 00 89 7C 24 20 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? 3B D8 7C ?? 89 44 24 28 4C 8D 0D ?? ?? ?? ?? 41 B8 2E 03 00 00 89 5C 24 20 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 05 ?? ?? ?? ?? 48 8B 1C F8 48 8B 7C 24 48 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 30 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8D 0C 76 48 8B 74 24 40 48 8D 1C CB 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 4B 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC EB ?? 33 DB F0 FF 43 14 8B 43 08 0F BA E0 1D 72 ?? BA 00 00 00 20 48 8B CB 48 83 C4 30 5B E9 ?? ?? ?? ?? 48 83 C4 30 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 10 57 48 83 EC 20 48 8B 02 48 8B FA 48 8B D9 48 8D 51 78 45 33 C9 45 33 C0 48 8B CF FF 90 88 00 00 00 F6 43 10 01 74 ?? 48 8B 43 10 48 83 E0 FE EB ?? 33 C0 80 3D ?? ?? ?? ?? 00 48 89 44 24 30 74 ?? 48 85 C0 74 ?? 48 8B C8 E8 ?? ?? ?? ?? 48 8B 44 24 30 48 85 C0 74 ?? 48 8B 07";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1134,7 +1105,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Release";
+            request.name = Keys::ReleaseObject;
             request.idaPattern = "80 3D ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? C3 CC CC 40 53 55 56 57 41 54 41 56 41 57 48 83 EC 50 48 8B EA 4C 8B F9 48 8B D1 49 8B D8 48 8D 4C 24 30 E8 ?? ?? ?? ?? 4D 8B 67 08 49 8D 77 08 4D 63 77 10 49 8B FC 49 C1 E6 04 4D 03 F4 4D 3B E6 74 ?? 33 C0 88 84 24 90 00 00 00 48 39 5F 08 75 ?? 88 84 24 98 00 00 00 48 85 ED 74 ?? 48 8B CF 88 84 24 A0 00 00 00 E8 ?? ?? ?? ?? 48 3B E8 74 ?? 48 83 C7 10 49 3B FE 75 ?? 49 8D 77 08 41 B0 01 48 8D 94 24 A8 00 00 00 48 8B CE E8 ?? ?? ?? ?? 48 8D 4C 24 30 E8 ?? ?? ?? ?? 48 83 C4 50 41 5F 41 5E 41 5C 5F 5E 5D 5B C3 49 2B FC 49 8D 77 08 48 C1 FF 04 83 FF FF 74 ?? 48 63 56 08 48 8D 5E 08 33 C0 8B CF F7 D1 48 8B EE C1 E9 1F 3B FA 0F 4C C1 85 C0 75 ?? 48 89 54 24 28 4C 8D 0D ?? ?? ?? ?? 48 63 CF 48 8D 15 ?? ?? ?? ?? 48 89 4C 24 20 41 B8 2B 04 00 00 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 49 8D 6F 08 8B 0B BA 01 00 00 00 4C 8B 0E 8B C1 2B C7 FF C8 3B C2 0F 4F C2 85 C0 74 ?? 2B C8 4C 63 C0 48 63 D1 48 C1 E2 04 48 63 CF 49 03 D1 48 C1 E1 04 49 03 C9 49 C1 E0 04 E8 ?? ?? ?? ?? 48 8B F5 FF 0B E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 18 55 48 83 EC 20 8B 41 08 48 8B EA 48 8B D9 3B 41 34 0F 84 ?? ?? ?? ?? 4C 8B C2 48 89 74 24 30 49 C1 E8 04 41 8B C0 48 89 7C 24 38 C1 E8 10 33 FF 41 33 C0 4C 8B 43 40 69 D0 6B CA EB 85 8B C2 C1 E8 0D 33 C2 69 C8 35 AE B2 C2 48 63 C1 8B D1 48 C1 EA 10 48 33 D0 8B 43 48 FF C8 48 63 C8 48 8D 43 38 48 23 D1 4D 85 C0 4C 0F 44 C0 41 8B 04 90 49 8D 34 90 83 F8 FF 74 ?? 66 90 48 63 C8 48 8D 14 89 48 8B 0B 48 39 2C D1 4C 8D 04 D1";
             request.kind = AddressKind::Code;
 
@@ -1144,7 +1115,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::FName::EqualsWide";
+            request.name = Keys::NameEqualsWide;
             request.idaPattern = "45 33 C0 48 8B C2 48 85 D2 74 13 66 44 39 02 74 0D 48 8D 40 02 41 FF C0 66 83 38 00 75 F3 E9 0D 65 FF FF CC CC CC CC CC CC CC CC CC CC CC CC CC 44 8B 42 08 48 8B 12 E9 F4 64 FF FF CC CC CC CC";
             request.kind = AddressKind::Code;
 
@@ -1155,7 +1126,7 @@ namespace MiniMapFingerprints
         // Shared thread predicate is also required by the standalone payload adapter.
         {
             RequiredScan request{};
-            request.name = "MiniMap::GameThread";
+            request.name = Keys::GameThread;
             request.idaPattern = "48 83 EC 28 80 3D ?? ?? ?? ?? 00 74 ?? 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 02 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 81 3C 02 02 00 00 40 0F 94 C0 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 8B 04 02 C1 E8 05 24 01 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 83 3D ?? ?? ?? ?? 00 BA D0 09 00 00 75 ?? 65 48 8B 04 25 58 00 00 00 8B 0D ?? ?? ?? ?? 48 8B 0C C8 8B 04 0A 83 F8 10 74 ?? 83 F8 02 74 ?? 3D 10 00 00 40 74 ?? 32 C0 C3 B0 01 C3 8B 05 ?? ?? ?? ?? 65 48 8B 0C 25 58 00 00 00 48 8B 0C C1 8B 04 11 83 E8 10 A9 EF FF FF BF 0F 94 C0 C3 CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 20 0F 94 C0 C3 48 83 EC 28 83 3D ?? ?? ?? ?? 00 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 0C C8 75 ?? 8B 04 0A 83 F8 02 74 ?? 83 F8 10 74 ?? E8 ?? ?? ?? ?? 84 C0 75 ?? 48 83 C4 28 C3 B0 01 48 83 C4 28 C3 83 3C 0A 10 0F 94 C0 48 83 C4 28 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA D0 09 00 00 48 8B 04 C8 83 3C 02 04 0F 94 C0 C3 48 8B 49 08 48 8B 01 48 FF A0 B8 00 00 00 CC CC 40 53 48 83 EC 20 48 8B 19 48 85 DB 74 ?? 48 83 BB 90 00 00 00 00 74 ?? FF 15 ?? ?? ?? ?? 48 8B 8B 90 00 00 00 3B 41 34 74 ?? B0 01 48 83 C4 20 5B C3 32 C0 48 83 C4 20 5B C3 CC CC CC CC CC CC 0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1168,7 +1139,7 @@ namespace MiniMapFingerprints
         // The getter's generic forwarding body is not unique. Follow the call
         // at +0x0C in SetActorPlacementPayloadData's unique numerical-copy site.
         RequiredScan splinePayloadRequest{};
-        splinePayloadRequest.name = "MiniMap::SplinePayload::GetSplineActorData";
+        splinePayloadRequest.name = Keys::SplinePayloadGet;
         splinePayloadRequest.idaPattern =
             "48 8D 97 30 03 00 00 48 8D 4C 24 58 E8 ?? ?? ?? ?? "
             "83 BC 24 D0 00 00 00 00 48 8B CF 7E ?? 48 8B 07";
@@ -1176,10 +1147,9 @@ namespace MiniMapFingerprints
 
         splinePayloadRequest.followRel32At = 0x0C;
         addresses.getSplineActorData = resolveRequired(splinePayloadRequest);
-        if (!addresses.getSplineActorData) return false;
 
         RequiredScan splinePayloadDestroyRequest{};
-        splinePayloadDestroyRequest.name = "MiniMap::SplinePayload::Destroy";
+        splinePayloadDestroyRequest.name = Keys::SplinePayloadDestroy;
         splinePayloadDestroyRequest.idaPattern =
             "40 53 48 83 EC 20 48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 "
             "48 8D 05 ?? ?? ?? ?? 48 89 41 68 8B 51 78 48 8B 49 70 "
@@ -1188,13 +1158,12 @@ namespace MiniMapFingerprints
         splinePayloadDestroyRequest.kind = AddressKind::FunctionEntry;
 
         addresses.destroySplineActorPayloadData = resolveRequired(splinePayloadDestroyRequest);
-        if (!addresses.destroySplineActorPayloadData) return false;
 
         // Warm the exact type cache used by GetValue during NativeApi initialization.
         // The fixed name-string LEA displacement distinguishes this generated
         // StaticStruct body in CL-127004; no absolute runtime address is embedded.
         RequiredScan splinePayloadTypeRequest{};
-        splinePayloadTypeRequest.name = "MiniMap::SplinePayload::StaticStruct";
+        splinePayloadTypeRequest.name = Keys::SplinePayloadStaticStruct;
         splinePayloadTypeRequest.idaPattern =
             "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75 ?? E8 ?? ?? ?? ?? "
             "48 8B D0 4C 8D 05 41 FF B5 05 48 8D 0D ?? ?? ?? ?? "
@@ -1202,13 +1171,12 @@ namespace MiniMapFingerprints
         splinePayloadTypeRequest.kind = AddressKind::FunctionEntry;
 
         addresses.splineActorPayloadStaticStruct = resolveRequired(splinePayloadTypeRequest);
-        if (!addresses.splineActorPayloadStaticStruct) return false;
 #endif
 
         RequiredScan massSubsystemRequest{};
 
         massSubsystemRequest.name =
-            "MiniMap::UWorld::GetSubsystem<UMassEntitySubsystem>";
+            Keys::MassSubsystem;
 
         massSubsystemRequest.idaPattern =
             "49 8B CD E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B C8 "
@@ -1223,10 +1191,6 @@ namespace MiniMapFingerprints
         const uintptr_t massSubsystemAddress =
             resolveRequired(massSubsystemRequest);
 
-        if (massSubsystemAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getMassEntitySubsystem =
             massSubsystemAddress;
@@ -1235,7 +1199,7 @@ namespace MiniMapFingerprints
         RequiredScan massQueryCtorRequest{};
 
         massQueryCtorRequest.name =
-            "MiniMap::FMassEntityQuery::FMassEntityQuery";
+            Keys::QueryConstruct;
 
         massQueryCtorRequest.idaPattern =
             "48 8D 54 24 60 48 8D 8D 80 03 00 00 E8 ?? ?? ?? ?? "
@@ -1249,10 +1213,6 @@ namespace MiniMapFingerprints
         const uintptr_t massQueryCtorAddress =
             resolveRequired(massQueryCtorRequest);
 
-        if (massQueryCtorAddress == 0)
-        {
-            return false;
-        }
 
         addresses.massQueryConstruct =
             massQueryCtorAddress;
@@ -1270,47 +1230,34 @@ namespace MiniMapFingerprints
             AddressKind::FunctionEntry;
 
         massRequirementsRequest.name =
-            "MiniMap::AddRequirement<FCrInventoryFragment>";
+            Keys::AddInventoryRequirement;
         massRequirementsRequest.followRel32At = 0x21;
 
         const uintptr_t inventoryRequirementAddress =
             resolveRequired(massRequirementsRequest);
 
-        if (inventoryRequirementAddress == 0)
-        {
-            return false;
-        }
 
         addresses.addInventoryRequirement =
             inventoryRequirementAddress;
 
         massRequirementsRequest.name =
-            "MiniMap::AddRequirement<FTransformFragment>";
+            Keys::AddTransformRequirement;
         massRequirementsRequest.followRel32At = 0x32;
 
         const uintptr_t transformRequirementAddress =
             resolveRequired(massRequirementsRequest);
 
-        if (transformRequirementAddress == 0)
-        {
-            return false;
-        }
 
         addresses.addTransformRequirement =
             transformRequirementAddress;
 
         massRequirementsRequest.name =
-            "MiniMap::AddConstSharedRequirement<"
-            "FCrMassFoundableParameters>";
+            Keys::AddFoundableParameters;
         massRequirementsRequest.followRel32At = 0x40;
 
         const uintptr_t foundableParametersRequirementAddress =
             resolveRequired(massRequirementsRequest);
 
-        if (foundableParametersRequirementAddress == 0)
-        {
-            return false;
-        }
 
         addresses.addFoundableParametersRequirement =
             foundableParametersRequirementAddress;
@@ -1319,7 +1266,7 @@ namespace MiniMapFingerprints
         RequiredScan foundableTagRequest{};
 
         foundableTagRequest.name =
-            "MiniMap::AddTagRequirement<FCrMassFoundableTag>";
+            Keys::AddFoundableTag;
 
         foundableTagRequest.idaPattern =
             "40 53 48 83 EC 20 48 8B DA 33 D2 48 8B CB E8 ?? ?? ?? ?? "
@@ -1336,10 +1283,6 @@ namespace MiniMapFingerprints
         const uintptr_t foundableTagAddress =
             resolveRequired(foundableTagRequest);
 
-        if (foundableTagAddress == 0)
-        {
-            return false;
-        }
 
         addresses.addFoundableTagRequirement =
             foundableTagAddress;
@@ -1348,7 +1291,7 @@ namespace MiniMapFingerprints
         RequiredScan massQueryDtorRequest{};
 
         massQueryDtorRequest.name =
-            "MiniMap::FMassEntityQuery::~FMassEntityQuery";
+            Keys::QueryDestruct;
 
         massQueryDtorRequest.idaPattern =
             "48 8D 8D D0 06 00 00 E8 ?? ?? ?? ?? "
@@ -1364,10 +1307,6 @@ namespace MiniMapFingerprints
         const uintptr_t massQueryDtorAddress =
             resolveRequired(massQueryDtorRequest);
 
-        if (massQueryDtorAddress == 0)
-        {
-            return false;
-        }
 
         addresses.massQueryDestruct =
             massQueryDtorAddress;
@@ -1376,7 +1315,7 @@ namespace MiniMapFingerprints
         RequiredScan matchingHandlesRequest{};
 
         matchingHandlesRequest.name =
-            "MiniMap::FMassEntityQuery::GetMatchingEntityHandles";
+            Keys::MatchingHandles;
 
         matchingHandlesRequest.idaPattern =
             "40 53 41 54 41 56 41 57 48 83 EC 48 "
@@ -1391,10 +1330,6 @@ namespace MiniMapFingerprints
         const uintptr_t matchingHandlesAddress =
             resolveRequired(matchingHandlesRequest);
 
-        if (matchingHandlesAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getMatchingEntityHandles =
             matchingHandlesAddress;
@@ -1403,8 +1338,7 @@ namespace MiniMapFingerprints
         RequiredScan fragmentDataRequest{};
 
         fragmentDataRequest.name =
-            "MiniMap::FMassEntityManager::"
-            "InternalGetFragmentDataPtr";
+            Keys::FragmentDataPtr;
 
         fragmentDataRequest.idaPattern =
             "E8 ?? ?? ?? ?? "
@@ -1422,25 +1356,17 @@ namespace MiniMapFingerprints
         const uintptr_t fragmentDataAddress =
             resolveRequired(fragmentDataRequest);
 
-        if (fragmentDataAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getMassFragmentDataPtr =
             fragmentDataAddress;
 
         fragmentDataRequest.name =
-            "MiniMap::FTransformFragment::StaticStruct";
+            Keys::TransformStaticStruct;
         fragmentDataRequest.followRel32At = 0x00;
 
         const uintptr_t transformStaticStructAddress =
             resolveRequired(fragmentDataRequest);
 
-        if (transformStaticStructAddress == 0)
-        {
-            return false;
-        }
 
         addresses.transformFragmentStaticStruct =
             transformStaticStructAddress;
@@ -1449,8 +1375,7 @@ namespace MiniMapFingerprints
         RequiredScan constSharedDataRequest{};
 
         constSharedDataRequest.name =
-            "MiniMap::FMassEntityManager::"
-            "InternalGetConstSharedFragmentPtr";
+            Keys::ConstSharedPtr;
 
         constSharedDataRequest.idaPattern =
             "E8 ?? ?? ?? ?? "
@@ -1471,10 +1396,6 @@ namespace MiniMapFingerprints
         const uintptr_t constSharedDataAddress =
             resolveRequired(constSharedDataRequest);
 
-        if (constSharedDataAddress == 0)
-        {
-            return false;
-        }
 
         addresses.getMassConstSharedFragmentPtr =
             constSharedDataAddress;
@@ -1483,7 +1404,7 @@ namespace MiniMapFingerprints
         RequiredScan inventoryStaticStructRequest{};
 
         inventoryStaticStructRequest.name =
-            "MiniMap::FCrInventoryFragment::StaticStruct";
+            Keys::InventoryStaticStruct;
 
         inventoryStaticStructRequest.idaPattern =
             "E8 ?? ?? ?? ?? "
@@ -1504,10 +1425,6 @@ namespace MiniMapFingerprints
         const uintptr_t inventoryStaticStructAddress =
             resolveRequired(inventoryStaticStructRequest);
 
-        if (inventoryStaticStructAddress == 0)
-        {
-            return false;
-        }
 
         addresses.inventoryFragmentStaticStruct =
             inventoryStaticStructAddress;
@@ -1516,7 +1433,7 @@ namespace MiniMapFingerprints
         RequiredScan foundableParametersStructRequest{};
 
         foundableParametersStructRequest.name =
-            "MiniMap::FCrMassFoundableParameters::StaticStruct";
+            Keys::FoundableStaticStruct;
 
         foundableParametersStructRequest.idaPattern =
             "4D 63 B5 30 03 00 00 48 0F 44 D8 48 C1 E6 05 48 03 F3 "
@@ -1531,10 +1448,6 @@ namespace MiniMapFingerprints
         const uintptr_t foundableParametersStructAddress =
             resolveRequired(foundableParametersStructRequest);
 
-        if (foundableParametersStructAddress == 0)
-        {
-            return false;
-        }
 
         addresses.foundableParametersStaticStruct =
             foundableParametersStructAddress;
@@ -1542,7 +1455,7 @@ namespace MiniMapFingerprints
         // Alien Actors: each anchor verified unique in client CL-127004.
         {
             RequiredScan request{};
-            request.name = "MiniMap::AddRequirement<FMassEnemyStateFragment>";
+            request.name = Keys::AddEnemyStateRequirement;
             request.idaPattern =
                 "45 33 C0 B2 02 48 8B CB E8 ?? ?? ?? ?? 41 B0 03 "
                 "B2 02 48 8B CB E8 ?? ?? ?? ?? 33 D2 48 8B CB E8 "
@@ -1555,17 +1468,13 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
 
             addresses.addEnemyStateRequirement = resolveRequired(request);
-            if (addresses.addEnemyStateRequirement == 0)
-            {
-                return false;
-            }
             LOG_DEBUG("MiniMap: AddRequirement<FMassEnemyStateFragment> = 0x%llX",
                 static_cast<unsigned long long>(addresses.addEnemyStateRequirement));
         }
 
         {
             RequiredScan request{};
-            request.name = "MiniMap::FMassEnemyStateFragment::StaticStruct";
+            request.name = Keys::EnemyStateStaticStruct;
             request.idaPattern =
                 "0F 10 46 48 0F 11 00 F2 0F 10 4E 58 F2 0F 11 48 "
                 "10 E8 ?? ?? ?? ?? 48 8B D0 49 8B CE E8 ?? ?? ?? "
@@ -1578,17 +1487,13 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
 
             addresses.enemyStateFragmentStaticStruct = resolveRequired(request);
-            if (addresses.enemyStateFragmentStaticStruct == 0)
-            {
-                return false;
-            }
             LOG_DEBUG("MiniMap: FMassEnemyStateFragment::StaticStruct = 0x%llX",
                 static_cast<unsigned long long>(addresses.enemyStateFragmentStaticStruct));
         }
 
         {
             RequiredScan request{};
-            request.name = "MiniMap::FMassEnemyTag::StaticStruct";
+            request.name = Keys::EnemyTagStaticStruct;
             request.idaPattern =
                 "48 8B 9A C8 00 00 00 49 8B F8 4C 8B F2 48 8B F1 "
                 "E8 ?? ?? ?? ?? 48 8D 4B 20 8B D0 E8 ?? ?? ?? ?? "
@@ -1600,17 +1505,13 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
 
             addresses.enemyTagStaticStruct = resolveRequired(request);
-            if (addresses.enemyTagStaticStruct == 0)
-            {
-                return false;
-            }
             LOG_DEBUG("MiniMap: FMassEnemyTag::StaticStruct = 0x%llX",
                 static_cast<unsigned long long>(addresses.enemyTagStaticStruct));
         }
 
         {
             RequiredScan request{};
-            request.name = "MiniMap::FMassNeutralAITag::StaticStruct";
+            request.name = Keys::NeutralTagStaticStruct;
             request.idaPattern =
                 "E8 ?? ?? ?? ?? 48 8B D0 48 8D 4C 24 20 E8 ?? ?? "
                 "?? ?? 48 83 C4 50 5F 5E 5B C3 32 C0 48 83 C4 50";
@@ -1620,17 +1521,13 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
 
             addresses.neutralTagStaticStruct = resolveRequired(request);
-            if (addresses.neutralTagStaticStruct == 0)
-            {
-                return false;
-            }
             LOG_DEBUG("MiniMap: FMassNeutralAITag::StaticStruct = 0x%llX",
                 static_cast<unsigned long long>(addresses.neutralTagStaticStruct));
         }
 
         {
             RequiredScan request{};
-            request.name = "MiniMap::FMassFragmentRequirements::AddTagRequirement";
+            request.name = Keys::AddTagRequirement;
             request.idaPattern =
                 "48 8B 03 48 8B CB FF 90 10 03 00 00 45 33 C0 49 "
                 "8B CF 48 8B D0 E8 ?? ?? ?? ?? 48 8B 03 48 8D 54 "
@@ -1641,10 +1538,6 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
 
             addresses.addTagRequirement = resolveRequired(request);
-            if (addresses.addTagRequirement == 0)
-            {
-                return false;
-            }
             LOG_DEBUG("MiniMap: FMassFragmentRequirements::AddTagRequirement = 0x%llX",
                 static_cast<unsigned long long>(addresses.addTagRequirement));
         }
@@ -1670,11 +1563,11 @@ namespace MiniMapFingerprints
             "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 "
             "E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? "
             "41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??";
-        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityBuilt",
+        resolveGridDiagnostic(Keys::IsEntityBuilt,
             entityBuiltPattern, -1, addresses.isMassEntityBuilt);
-        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityValid",
+        resolveGridDiagnostic(Keys::IsEntityValid,
             entityBuiltPattern, 21, addresses.isMassEntityValid);
-        resolveGridDiagnostic("MiniMap::UWorld::GetSubsystem<UCrEntityGridSubsystem>",
+        resolveGridDiagnostic(Keys::GridSubsystem,
             "48 89 74 24 20 57 48 81 EC 90 00 00 00 48 8B F9 E8 ?? ?? ?? ?? "
             "48 85 C0 0F 84 F8 00 00 00 48 8B C8 E8 ?? ?? ?? ?? 48 8B F0 "
             "48 85 C0 0F 84 E4 00 00 00", 0x21, addresses.getEntityGridSubsystem);
@@ -1687,12 +1580,45 @@ namespace MiniMapFingerprints
         // PDB: (const FVector&, float, const TFunctionRef<bool(const
         // FCrGridEntityHandle&)>&, bool). Final bool gates IsInRadius only;
         // cell selection is XY at both hierarchy levels regardless of Z.
-        resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::ForEachCellInRadius",
+        resolveGridDiagnostic(Keys::GridForEachCell,
             gridBoxPattern, 0x14D, addresses.gridForEachCellInRadius);
 #if defined(MODLOADER_CLIENT_BUILD)
         {
             RequiredScan request{};
-            request.name = "MiniMap::Spawn";
+            request.name = Keys::ObjectArray;
+            request.idaPattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 1B 48 8B D3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 08 B0 01 48 83 C4 20 5B C3 32 C0";
+            request.kind = AddressKind::FunctionEntry;
+
+            request.resultOffset = 0;
+            const uintptr_t anchor = resolveRequired(request);
+            if (!anchor) return false;
+            auto invalid = [&]()
+            {
+                scanner.Fail(request.name, "invalid UObject-array LEA or unreadable array storage");
+                return false;
+            };
+            std::array<uint8_t,7> instruction{};
+            if (anchor > UINTPTR_MAX-0x1c ||
+                !MiniMapNative::ReadMemory(anchor+0x15, instruction.data(), instruction.size()) ||
+                instruction[0]!=0x48 || instruction[1]!=0x8d || instruction[2]!=0x0d) return invalid();
+            int32_t displacement{};
+            std::memcpy(&displacement, instruction.data()+3, sizeof(displacement));
+            const uintptr_t next = anchor+0x1c;
+            const uint64_t magnitude = displacement<0 ? uint64_t(-int64_t(displacement)) : uint64_t(displacement);
+            if ((displacement<0 && next<magnitude) || (displacement>=0 && magnitude>UINTPTR_MAX-next)) return invalid();
+            const uintptr_t target = displacement<0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
+            if (!MiniMapNative::IsMemoryRangeReadable(target,0x30,8)) return invalid();
+            addresses.objectArray = target; // Enclosing UObject array; no extra indirection.
+        }
+        // The building pictures are a feature of their own: a native missing here
+        // turns that feature off, so the rest keep resolving.
+        const bool spriteNativesResolved = [&]() -> bool
+        {
+#endif
+#if defined(MODLOADER_CLIENT_BUILD)
+        {
+            RequiredScan request{};
+            request.name = Keys::SpawnObject;
             request.idaPattern = "48 89 5C 24 18 55 56 57 48 81 EC D0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 C0 00 00 00 48 8B 19 48 8B EA 48 8B F1 48 85 DB 0F 84 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8D 50 30 48 63 40 38 3B 43 38 0F 8F ?? ?? ?? ?? 48 8B C8 48 8B 43 30 48 39 14 C8 0F 85 ?? ?? ?? ?? 48 8B 1E 48 85 DB 0F 84 ?? ?? ?? ?? 48 85 ED 75 ?? 80 3D ?? ?? ?? ?? 03 0F 82 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? E9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 FF 48 85 C0 74 ?? 48 8D 50 30 48 63 40 38 3B 43 38 7F ?? 48 8B C8 48 8B 43 30 48 39 14 C8 75 ?? 48 8B 06 EB ?? 48 8B C7 48 39 B8 E0 00 00 00 0F 84 ?? ?? ?? ?? 48 8B 1E 48 85 DB 74 ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8D 50 30 48 63 40 38 3B 43 38 7F ?? 48 8B C8 48 8B 43 30 48 39 14 C8 75 ?? 48 8B 1E EB ?? 48 8B DF 40 38 3D ?? ?? ?? ?? 48 8B 9B E0 00 00 00 74 ?? 48 85 DB 74 ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B 45 10 48 83 C3 30 48 63 4B 08 3B 48 38 7F ?? 48 8B 40 30 48 39 1C C8 0F 84 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 03 0F 82 ?? ?? ?? ?? 48 8B 1E 48 85 DB 74 ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8D 50 30 48 63 40 38 3B 43 38 7F ?? 48 8B C8 48 8B 43 30 48 39 14 C8 75 ?? 48 8B 3E 48 8B 8F E0 00 00 00 48 85 C9 75 ?? 48 8D 15 ?? ?? ?? ?? 48 8D 4C 24 20 E8 ?? ?? ?? ?? EB ?? 45 33 C0 48 8D 54 24 20 E8 ?? ?? ?? ?? 83 7C 24 28 00 48 8D 3D ?? ?? ?? ?? 48 8B DF 48 8D 54 24 30 48 0F 45 5C 24 20 48 8B CD 45 33 C0 E8 ?? ?? ?? ?? 83 7C 24 38 00 48 8D 15 ?? ?? ?? ?? 4C 8B CB 48 8D 0D ?? ?? ?? ?? 48 0F 45 7C 24 30 4C 8B C7 E8 ?? ?? ?? ?? 48 8B 4C 24 30 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 85 C9";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1702,7 +1628,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Flags";
+            request.name = Keys::SetObjectFlags;
             request.idaPattern = "44 8B 41 08 41 8B C0 0B C2 41 3B C0 74 ?? F0 09 51 08 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8B 12 E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC 40 53 48 83 EC 30 48 8B 19 48 8B C2 48 8B C8 48 8D 54 24 20 E8 ?? ?? ?? ?? 83 78 08 00 74 ?? 48 8B 00 EB ?? 48 8D 05 ?? ?? ?? ?? 48 8B 4B 08 48 8D 54 24 40 48 89 44 24 40 48 8B 03 FF D0 48 8B 4C 24 20 0F B6 D8 48 85 C9 74 ?? E8 ?? ?? ?? ?? 0F B6 C3 48 83 C4 30 5B C3 CC CC CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 30 0F 10 0A 48 8B 51 08 BF 3A 00 00 00 0F 29 4C 24 20 44 8B 02 41 83 F8 01 41 8D 40 01 89 02 B8 2E 00 00 00 48 8B 19 66 0F 45 F8 48 8B 43 08 48 83 C0 02 48 3B 43 10 72 ?? BA 01 00 00 00 48 8B CB E8 ?? ?? ?? ?? 0F 28 4C 24 20 48 8B 43 08 66 0F 6F C1 66 0F 73 D8 08 66 48 0F 7E CA 66 41 0F 7E C0 48 8B CB 66 89 38 48 83 43 08 02 48 8B 5C 24 40 48 83 C4 30 5F E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC 4D 8B 00 E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC 48 8B 12 E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC 48 8B 12 E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC 40 55 53 57 48 8D AC 24 50 F8 FF FF 48 81 EC B0 08 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 A0 07 00 00 48 8B F9 48 8B DA 8B 4A 18 8B C1 C1 E8 1F 84 C0 0F 85 ?? ?? ?? ?? 81 E1 FF FF FF 7F 77 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 31 06 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC EB ?? 83 F9 01 0F 87 ?? ?? ?? ??";
             request.kind = AddressKind::Code;
 
@@ -1714,7 +1640,7 @@ namespace MiniMapFingerprints
 
         {
             RequiredScan request{};
-            request.name = "MiniMap::Register";
+            request.name = Keys::RegisterComponent;
             request.idaPattern = "48 89 5C 24 18 48 89 74 24 20 57 41 54 41 57 48 81 EC A0 00 00 00 8B 79 0C 48 8D 1D ?? ?? ?? ?? 4D 8B E0 4C 8B FA 48 8B F1 85 FF 79 ?? 4C 8B CB 48 8D 15 ?? ?? ?? ?? 41 B8 0D 04 00 00 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? 48 89 AC 24 C0 00 00 00 4C 89 B4 24 C8 00 00 00 3B F8 0F 8D ?? ?? ?? ?? 8B EF 44 0F B7 F7 C1 ED 10 3B F8 7D ?? 85 FF 79 ?? 4C 8D 0D ?? ?? ?? ?? 89 7C 24 20 41 B8 2C 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? 3B E8 72 ?? 89 44 24 28 4C 8D 0D ?? ?? ?? ?? 41 B8 2D 03 00 00 89 6C 24 20 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? 3B F8 7C ?? 89 44 24 28 4C 8D 0D ?? ?? ?? ?? 41 B8 2E 03 00 00 89 7C 24 20 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 05 ?? ?? ?? ?? 48 8B 3C E8 48 85 FF 75 ?? 4C 8B CB 48 8D 15 ?? ?? ?? ?? 41 B8 30 03 00 00 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 4B 8D 0C 76 48 8D 3C CF 48 85 FF 75 ?? 4C 8B CB 48 8D 15 ?? ?? ?? ?? 41 B8 4B 03 00 00 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC EB ?? 33 FF 8B 47 08 C1 E8 1C A8 01 74 ?? 45 33 C9 48 8D 54 24 50 45 33 C0 48 8B CE E8 ?? ?? ?? ?? 83 78 08 00 74 ?? 48 8B 00 EB ?? 48 8B C3 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 20 41 B8 3E 07 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 4C 24 50 0F B6 F8 48 85 C9 74 ?? E8 ?? ?? ?? ?? 40 84 FF 74 ?? 90 CC 8B 46 08 C1 E8 1E F6 D0 A8 01 75 ?? 80 3D ?? ?? ?? ?? 05 0F 82 ?? ?? ?? ?? 45 33 C0";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1724,7 +1650,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Unregister";
+            request.name = Keys::UnregisterComponent;
             request.idaPattern = "40 53 48 83 EC 50 F6 81 94 00 00 00 01 48 8B D9 75 ?? 80 3D ?? ?? ?? ?? 05 0F 82 ?? ?? ?? ?? 45 33 C0 48 8D 54 24 30 E8 ?? ?? ?? ?? 83 78 08 00 74 ?? 48 8B 00 EB ?? 48 8D 05 ?? ?? ?? ?? 4C 8B C0 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 4C 24 30 48 85 C9 0F 84 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 83 C4 50 5B C3 48 83 B9 A8 00 00 00 00 75 ?? 45 33 C9 48 89 7C 24 60 45 33 C0 48 8D 54 24 40 E8 ?? ?? ?? ?? 83 78 08 00 74 ?? 48 8B 00 EB ?? 48 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 20 41 B8 E5 07 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 4C 24 40 0F B6 F8 48 85 C9 74 ?? E8 ?? ?? ?? ?? 40 84 FF 48 8B 7C 24 60 74 ?? 90 CC 33 D2 48 8B CB E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 C7 83 A8 00 00 00 00 00 00 00 48 83 C4 50 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC 48 83 EC 48 33 C0 48 89 02 48 89 42 08 48 89 42 10 48 89 42 18 48 89 42 20 48 89 42 28 88 42 30 48 8B C2 4C 8B 81 90 00 00 00 4D 85 C0 74 ?? 41 0F 10 90 D0 00 00 00 C6 44 24 30 01 F2 41 0F 10 88 C8 00 00 00 41 0F 10 80 B8 00 00 00 0F 11 54 24 18 F2 41 0F 10 90 E0 00 00 00 0F 11 02 0F 10 44 24 10 F2 0F 10 C1 0F 10 4C 24 20 0F 11 42 10 F2 0F 10 44 24 30 66 0F 14 CA 0F 11 4A 20 F2 0F 11 42 30 48 83 C4 48 C3 CC CC CC CC CC CC CC CC 48 83 EC 48 33 C0 48 89 02 48 89 42 08 48 89 42 10 48 89 42 18 48 89 42 20 48 89 42 28 88 42 30 48 8B C2 4C 8B 41 30 4D 85 C0 74 ?? 41 0F 10 90 E0 00 00 00 C6 44 24 30 01 F2 41 0F 10 88 D8 00 00 00 41 0F 10 80 C8 00 00 00 0F 11 54 24 18 F2 41 0F 10 90 F0 00 00 00 0F 11 02 0F 10 44 24 10";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1734,7 +1660,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::DestroyComponent";
+            request.name = Keys::DestroyComponent;
             request.idaPattern = "4C 8B DC 41 56 48 81 EC A0 00 00 00 0F B6 81 97 00 00 00 4C 8B F1 A8 40 0F 85 ?? ?? ?? ?? 0C 40 49 89 5B 10 49 89 6B F0 88 81 97 00 00 00 A8 20 74 ?? 48 8B 01 33 D2 FF 90 F0 03 00 00 41 F6 86 97 00 00 00 08 74 ?? 49 8B 06 49 8B CE FF 90 F8 03 00 00 41 80 A6 97 00 00 00 EF 33 ED 41 F6 86 94 00 00 00 01 0F 84 ?? ?? ?? ?? 49 39 AE A8 00 00 00 75 ?? 45 33 C9 48 8D 54 24 60 45 33 C0 49 8B CE E8 ?? ?? ?? ?? 39 68 08 74 ?? 48 8B 00 EB ?? 48 8D 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 20 41 B8 E5 07 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 4C 24 60 0F B6 D8 48 85 C9 74 ?? E8 ?? ?? ?? ?? 84 DB 74 ?? 90 CC 33 D2 49 8B CE E8 ?? ?? ?? ?? 49 8B CE E8 ?? ?? ?? ?? 49 89 AE A8 00 00 00 49 8B 9E A0 00 00 00 48 89 B4 24 90 00 00 00 48 89 BC 24 88 00 00 00 48 89 5C 24 58 48 85 DB 0F 84 ?? ?? ?? ?? 41 0F B6 86 B1 00 00 00 FE C8 3C 01 76 ?? 49 8B D6 48 8B CB E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 40 38 2D ?? ?? ?? ?? 49 8B CE 48 89 4C 24 50 74 ?? E8 ?? ?? ?? ?? 48 8B 4C 24 50 48 8B 93 90 02 00 00 48 8D 44 24 50 48 3B C2 72 ?? 4C 63 83 9C 02 00 00 4C 8D 4C 24 50 4A 8D 04 C2 4C 3B C8 73 ?? 48 63 83 98 02 00 00 4C 8D 0D ?? ?? ?? ?? 48 C7 44 24 40 08 00 00 00 48 8D 0D ?? ?? ?? ?? 48 89 44 24 38 48 8D 44 24 50 4C 89 44 24 30 41 B8 AC 07 00 00 48 89 54 24 28 48 8D 15 ?? ?? ?? ?? 48 89 44 24 20 E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 4C 24 50 48 63 BB 98 02 00 00 85 FF 0F 84 ?? ?? ?? ?? 4C 89 A4 24 80 00 00 00 8B F5 40 38 35 ?? ?? ?? ?? 4C 8B A3 90 02 00 00 48 8B D9 4C 89 6C 24 78 44 8B ED 4C 89 7C 24 70 89 AC 24 C0 00 00 00";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1744,7 +1670,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::InitTarget";
+            request.name = Keys::InitRenderTarget;
             request.idaPattern = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 30 41 0F B6 E9 41 8B F8 8B F2 48 8B D9 85 D2 74 ?? 45 85 C0 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 89 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 40 0F B6 CD E8 ?? ?? ?? ?? 84 C0 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 0F B6 83 62 01 00 00 24 FE 89 B3 48 01 00 00 0A 44 24 60 89 BB 4C 01 00 00 40 88 AB 68 01 00 00 88 83 62 01 00 00 81 FE 00 00 01 00 76 ?? 48 8D 4C 24 40 48 89 5C 24 40 E8 ?? ?? ?? ?? 84 C0 75 ?? C7 83 48 01 00 00 01 00 00 00 81 BB 4C 01 00 00 00 00 01 00 76 ?? 48 8D 4C 24 20 48 89 5C 24 20 E8 ?? ?? ?? ?? 84 C0 75 ?? C7 83 4C 01 00 00 01 00 00 00 48 8B 03 48 8B CB 48 8B 5C 24 48 48 8B 6C 24 50 48 8B 74 24 58 48 83 C4 30 5F 48 FF A0 28 03 00 00 CC CC CC CC CC CC CC CC CC 4C 8B DC 55 53 56 49 8D AB 28 FF FF FF 48 81 EC C0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 90 00 00 00 49 89 7B 18 48 8B F1 48 8B 89 90 00 00 00 4D 89 6B D8 45 33 ED 4D 89 73 D0 4D 89 7B C8 4C 8B FA 44 39 A9 48 01 00 00 0F 8E ?? ?? ?? ?? 44 39 A9 4C 01 00 00 0F 8E ?? ?? ?? ?? 44 39 A9 50 01 00 00 0F 8E ?? ?? ?? ?? 48 8B 01 4D 89 63 E0 FF 90 D8 03 00 00 4C 8B 8E 90 00 00 00 41 BC 01 00 00 00 F6 D8 4C 89 AD 80 00 00 00 41 8B FC 4C 89 AD 88 00 00 00 48 1B C9 41 8B 81 48 01 00 00 83 E1 10 45 8B 81 44 01 00 00 8B D1 41 0F B7 99 50 01 00 00 48 0F BA EA 11 41 F6 C0 02 89 44 24 30 41 8B 81 4C 01 00 00 48 0F 44 D1 89 44 24 34 8B 0D ?? ?? ?? ?? 4C 8B F2 49 8B 01 49 0F BA EE 18";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1754,7 +1680,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::TargetResource";
+            request.name = Keys::RenderTargetResource;
             request.idaPattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 38 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B CB 48 83 C4 20 5B E9 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC 48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 20 57 48 83 EC 20 48 8B 1D ?? ?? ?? ?? 48 BD 00 00 00 00 00 01 00 00 48 FF C3 41 8B F0 48 89 1D ?? ?? ?? ?? 48 8B FA 48 3B DD 75 ?? 48 8D 4C 24 40 C6 44 24 40 00 48 8B DD E8 ?? ?? ?? ?? 84 C0 B9 01 00 00 00 48 0F 44 D9 48 C7 07 00 00 00 00 81 FE FF FF FF 00 76 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 3D 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 3B DD 72 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 3E 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 6C 24 38 48 8B C7 48 C1 E3 18 48 0B DE 48 8B 74 24 48 48 89 1F 48 8B 5C 24 30 48 83 C4 20 5F C3 CC CC CC CC CC CC CC 48 83 EC 28 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA B0 17 00 00 48 8B 04 C8 8B 04 02 39 05 ?? ?? ?? ?? 7F ?? 48 8D 05 ?? ?? ?? ?? 48 83 C4 28 C3 48 8B 0D ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 45 33 C9 48 8D 15 ?? ?? ?? ?? 48 8B 01 FF 50 70 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 83 C4 28 C3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? FF 75 ?? 48 8D 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 33 C0 48 39 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? C7 05 ?? ?? ?? ?? 01 00 00 00";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1764,7 +1690,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Transition";
+            request.name = Keys::TransitionResources;
             request.idaPattern = "40 53 56 57 41 54 41 56 41 57 48 83 EC 78 0F 10 02 48 8B DA 48 8B F9 48 8D 54 24 40 0F 29 44 24 40 E8 ?? ?? ?? ?? 48 8B 43 08 0F 10 03 44 0F B6 67 6A 4C 63 F8 49 8B DF 0F 29 44 24 50 48 C1 E3 04 80 7F 25 00 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 37 48 83 C6 07 48 83 E6 F8 48 8D 04 1E 48 3B 47 08 76 ?? 8D 53 08 48 8B CF E8 ?? ?? ?? ?? 48 8B 37 48 83 C6 07 48 83 E6 F8 48 8D 04 1E 48 8B 5C 24 50 4F 8D 3C 7F 49 C1 E7 04 45 33 F6 4C 03 FB 48 89 07 49 3B DF 0F 84 ?? ?? ?? ?? 48 89 AC 24 C0 00 00 00 48 8B EE 4C 89 6C 24 70 41 BD FF FF 00 00 66 44 39 2B 75 ?? 66 44 39 6B 02 75 ?? 66 44 39 6B 04 74 ?? 48 8D 8C 24 B0 00 00 00 C6 84 24 B0 00 00 00 00 E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 ?? 8B 4B 18 48 8B D5 41 FF C6 48 83 C5 10 89 0A 44 88 62 04 48 89 42 08 48 83 C3 30 49 3B DF 75 ?? 4C 8B 6C 24 70 45 85 F6 0F 8E ?? ?? ?? ?? 80 7F 25 00 48 89 74 24 20 44 89 74 24 28 0F 29 74 24 60 0F 28 74 24 20 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 48 8B 1F 48 83 C3 07 48 83 E3 F8 48 8D 43 20 48 3B 47 08 76 ?? BA 28 00 00 00 48 8B CF E8 ?? ?? ?? ?? 48 8B 1F 48 83 C3 07 48 83 E3 F8 48 8D 43 20 48 89 07 66 0F 6F C6 48 8B 47 30 FF 47 60 66 0F 73 D8 08 48 89 18 48 8D 43 08 48 89 47 30 66 48 0F 7E C0 85 C0 75 ?? 33 ED 33 F6 E9 ?? ?? ?? ?? 4C 63 F0 49 C1 E6 04 80 7F 25 00 74 ?? 83 7F 20 00 7F ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 8A 00 00 00";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1774,7 +1700,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::RetirementConstruct";
+            request.name = Keys::FenceConstruct;
             request.idaPattern = "48 C7 01 00 00 00 00 48 8B C1 C3 CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D 05 82 42 7D 09 48 8B D9 48 89 01 48 8B 02 48 89 41 08 48 8B 42 08 48 89 41 10 48 85 C0 74 04";
             request.kind = AddressKind::Code;
 
@@ -1784,7 +1710,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::RetirementDestroy";
+            request.name = Keys::FenceDestroy;
             request.idaPattern = "48 8B 09 48 85 C9 74 1A B8 FF FF FF FF F0 0F C1 41 08 83 F8 01 75 0B 48 8B 01 BA 01 00 00 00 48 FF 20 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8D 05 91 07 F3 0B 48 89 01 C3 CC CC CC CC CC";
             request.kind = AddressKind::Code;
 
@@ -1794,7 +1720,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::RetirementBegin";
+            request.name = Keys::FenceBegin;
             request.idaPattern = "40 55 53 56 48 8D 6C 24 B9 48 81 EC 00 01 00 00 48 8B 05 39 49 6C 0A 48 33 C4 48 89 45 27 80 3D D3 6D 98 0A 00 8B DA 89 55 9F 48 8B F1 48 89 4D 87 0F 84 3F 08 00 00 E8 14 70 84 FD 84 C0 75 26";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1804,7 +1730,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::RetirementPoll";
+            request.name = Keys::FencePoll;
             request.idaPattern = "40 53 48 83 EC 30 80 3D 3B 1B 97 0A 00 48 8B D9 0F 84 8A 00 00 00 E8 85 1D 83 FD 84 C0 75 30 FF 15 EB 7B 4D 0A 84 C0 75 26 4C 8D 0D B4 10 3F 07 41 B8 5C 04 00 00 48 8D 15 E3 88 AC 07 48 8D 0D";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1817,7 +1743,7 @@ namespace MiniMapFingerprints
 #if defined(MODLOADER_CLIENT_BUILD)
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::FromValidEName";
+            request.name = Keys::FromValidEName;
             request.idaPattern = "48 89 5C 24 08 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B D9 48 8D 0D ?? ?? ?? ?? 8B FA 75 ?? E8 ?? ?? ?? ?? 48 8B C8 C6 05 ?? ?? ?? ?? 01 8B 8C B9 40 40 01 00 48 8B C3 89 0B 48 8B 5C 24 30 48 83 C4 20 5F C3";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1827,7 +1753,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Submit";
+            request.name = Keys::SubmitRenderCommand;
             request.idaPattern = "48 89 5C 24 18 48 89 6C 24 20 56 57 41 54 41 56 41 57 48 81 EC 80 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 70 4C 8B B4 24 D0 00 00 00 48 8B D9 48 89 4C 24 38";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1837,7 +1763,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Immediate";
+            request.name = Keys::ImmediateCommandList;
             request.idaPattern = "48 8D 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 30 33 C0 48 63 DA 44 8B C3 48 8B F9 48 63 49 28 41 F7 D0 41 C1 E8 1F 3B D9 41 0F 4C C0 85 C0";
             request.kind = AddressKind::Code;
 
@@ -1847,7 +1773,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Create";
+            request.name = Keys::CreateRHITexture;
             request.idaPattern = "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 41 56 48 83 EC 40 49 83 79 48 00 49 8B F9 48 8B 01 49 8B F0 4C 8B F2 48 C7 44 24 20 00 00 00 00 41 0F 95 C1 48 8D 54 24 30";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1857,7 +1783,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Construct";
+            request.name = Keys::ReadbackConstruct;
             request.idaPattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 03 33 C0 48 89 43 18 48 89 43 20 48 89 43 28 48 89 43 30 48 89 43 38 48 89 43 40 48 89 43 48 48 89 43 50 48 8B C3 48 83 C4 20 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 7C 24 08";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1867,7 +1793,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Destroy";
+            request.name = Keys::ReadbackDestroy;
             request.idaPattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B 79 50 48 8B D9 48 85 FF 74 ?? 48 8D 4F 08 BA 03 00 00 00 E8 ?? ?? ?? ?? 85 C0 79 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 53 00 00 00 48 8D 15 ?? ?? ?? ??";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1877,7 +1803,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Copy";
+            request.name = Keys::ReadbackCopy;
             request.idaPattern = "40 55 57 41 54 41 56 48 8D AC 24 D8 FD FF FF 48 81 EC 28 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 F0 01 00 00 4C 8B B5 78 02 00 00 48 8B F9 48 89 4C 24 60 4C 8B E2";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1887,7 +1813,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Lock";
+            request.name = Keys::ReadbackLock;
             request.idaPattern = "4C 8B DC 49 89 5B 10 57 48 83 EC 50 0F BC 41 10 41 B9 20 00 00 00 49 8B D8 48 8B FA 48 8B D1 44 0F 45 C8 33 C0 4A 39 44 C9 18 4E 8D 04 C9 74 ?? 49 89 43 E8 89 44 24 78";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1897,7 +1823,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Unlock";
+            request.name = Keys::ReadbackUnlock;
             request.idaPattern = "40 53 48 83 EC 30 8B 41 14 48 8B D9 48 83 7C C1 18 00 75 ?? 48 8D 05 ?? ?? ?? ?? 41 B9 0C 01 00 00 4C 8D 05 ?? ?? ?? ?? 48 89 44 24 20 33 D2 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ??";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1907,7 +1833,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Poll";
+            request.name = Keys::GpuFencePoll;
             request.idaPattern = "48 8B C1 BA 01 00 00 00 8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00";
             request.kind = AddressKind::Code;
 
@@ -1917,7 +1843,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::MarkForDelete";
+            request.name = Keys::MarkForDelete;
             request.idaPattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 0F 0D 49 08 8B 41 08 0F 1F 40 00 0F 1F 84 00 00 00 00 00 8B D0 0F BA EA 1E F0 0F B1 51 08 75 ?? 8B F8 85 C0 79 ?? 4C 8D 0D ?? ?? ?? ??";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1927,7 +1853,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Malloc";
+            request.name = Keys::MemoryMalloc;
             request.idaPattern = "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 8B DA 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 44 8B C3 48 8B D7 48 8B 5C 24 30 48 83 C4 20 5F 48 FF 60 28";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1937,7 +1863,7 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Free";
+            request.name = Keys::ReadbackFree;
             request.idaPattern = "48 85 C9 74 ?? 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3 CC CC CC CC";
             request.kind = AddressKind::FunctionEntry;
 
@@ -1949,7 +1875,7 @@ namespace MiniMapFingerprints
         // Keep both mandatory contracts, but publish one NativeApi callable.
         if (addresses.readbackFree != addresses.memoryFree)
         {
-            scanner.Fail("MiniMap::Readback::Free", "FMemory::Free fingerprints resolved to different entries");
+            scanner.Fail(Keys::ReadbackFree, "FMemory::Free fingerprints resolved to different entries");
             return false;
         }
 
@@ -1958,7 +1884,7 @@ namespace MiniMapFingerprints
         IMAGE_NT_HEADERS64 readbackNt{};
         auto imageFailure = [&]()
         {
-            scanner.Fail("MiniMap::Readback::Globals", "invalid or unreadable executable headers/section table");
+            scanner.Fail(Keys::ReadbackGlobals, "invalid or unreadable executable headers/section table");
             return false;
         };
         if (!readbackImage || !MiniMapNative::ReadMemory(readbackImage, &readbackDos, sizeof(readbackDos)) ||
@@ -2031,46 +1957,18 @@ namespace MiniMapFingerprints
             const uintptr_t anchor = resolveRequired(request);
             return anchor && decodeGlobal(name, anchor, displacementOffset, instructionSize, opcode, 8, 1, output);
         };
-        if (!resolveReadbackGlobal("MiniMap::Readback::DynamicRHI",
+        if (!resolveReadbackGlobal(Keys::DynamicRHI,
             "48 8B 0D ?? ?? ?? ?? 4C 8D 44 24 20 C7 44 24 20 01 03 01 07 48 8D 54 24 40 C7 44 24 24 00 00 02 00 C7 44 24 28 07 00 00 00 66 C7 44 24 2C FF F4 48 8B 01 FF 50 58 48 8B 1D ?? ?? ?? ??", 3, 7, {0x48,0x8b,0x0d}, addresses.readbackDynamicRHI)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::Pipe",
+        if (!resolveReadbackGlobal(Keys::RenderCommandPipe,
             "48 8D 0D ?? ?? ?? ?? 48 89 45 E7 48 8D 45 E7 48 89 44 24 20 E8 ?? ?? ?? ?? 48 39 7D E7 0F 84 ?? ?? ?? ?? 48 8B 45 0F 48 8D 4D F7 48 85 C0 48 0F 45 C8 48 8B 01 FF 50 10", 3, 7, {0x48,0x8d,0x0d}, addresses.readbackPipe)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::Threaded",
+        if (!resolveReadbackGlobal(Keys::ThreadedRendering,
             "80 3D ?? ?? ?? ?? 00 74 ?? 8B 05 ?? ?? ?? ?? 83 F8 01 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 E5 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D0 48 8D 8B B0 00 00 00 E8 ?? ?? ?? ?? 48 83 BB C0 00 00 00 00", 2, 7, {0x80,0x3d,0}, addresses.readbackThreaded)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::Multithreaded",
+        if (!resolveReadbackGlobal(Keys::RHIMultithreading,
             "80 3D ?? ?? ?? ?? 00 41 8B F9 49 8B E8 48 8B F2 74 ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 4C 8B 88 38 02 00 00 83 FF FF 75 ?? 0F BC 82 BC 01 00 00 BF 20 00 00 00 0F 45 F8 44 8B C7", 2, 7, {0x80,0x3d,0}, addresses.readbackMultithreaded)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::GpuCount",
+        if (!resolveReadbackGlobal(Keys::GpuCount,
             "8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00 48 8B 05 ?? ?? ?? ??", 2, 6, {0x8b,0x0d,0}, addresses.readbackGpuCount)) return false;
 #endif
 
-#if defined(MODLOADER_CLIENT_BUILD)
-        {
-            RequiredScan request{};
-            request.name = "MiniMap::GUObjectArray";
-            request.idaPattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 74 1B 48 8B D3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 08 B0 01 48 83 C4 20 5B C3 32 C0";
-            request.kind = AddressKind::FunctionEntry;
-
-            request.resultOffset = 0;
-            const uintptr_t anchor = resolveRequired(request);
-            if (!anchor) return false;
-            auto invalid = [&]()
-            {
-                scanner.Fail(request.name, "invalid UObject-array LEA or unreadable array storage");
-                return false;
-            };
-            std::array<uint8_t,7> instruction{};
-            if (anchor > UINTPTR_MAX-0x1c ||
-                !MiniMapNative::ReadMemory(anchor+0x15, instruction.data(), instruction.size()) ||
-                instruction[0]!=0x48 || instruction[1]!=0x8d || instruction[2]!=0x0d) return invalid();
-            int32_t displacement{};
-            std::memcpy(&displacement, instruction.data()+3, sizeof(displacement));
-            const uintptr_t next = anchor+0x1c;
-            const uint64_t magnitude = displacement<0 ? uint64_t(-int64_t(displacement)) : uint64_t(displacement);
-            if ((displacement<0 && next<magnitude) || (displacement>=0 && magnitude>UINTPTR_MAX-next)) return invalid();
-            const uintptr_t target = displacement<0 ? next-uintptr_t(magnitude) : next+uintptr_t(magnitude);
-            if (!MiniMapNative::IsMemoryRangeReadable(target,0x30,8)) return invalid();
-            addresses.objectArray = target; // Enclosing UObject array; no extra indirection.
-        }
 #if defined(MODLOADER_CLIENT_BUILD)
         // Private-world native entry points. Leaf functions use CODE; unwind-covered
         // callable entries use FUNCTION_START. All requests are mandatory.
@@ -2086,63 +1984,63 @@ namespace MiniMapFingerprints
             output = resolveRequired(request);
             return output != 0;
         };
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::createWorld",
+        if (!resolvePrivateWorld(Keys::CreateWorld,
             "48 89 5C 24 10 4C 89 44 24 18 55 56 57 41 54 41 55 41 56 41 57 48 81 EC A0 00 00 00 44 8B A4 24 08 01 00 00 33 FF 41 83 FC 05 49 8B E9 44 0F B6 EA 44 8B F9",
             AddressKind::FunctionEntry, addresses.createWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::initWorld",
+        if (!resolvePrivateWorld(Keys::InitWorld,
             "40 55 57 41 54 48 8D AC 24 40 FE FF FF 48 81 EC C0 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 80 01 00 00 0F B6 81 8B 01 00 00 4C 8B E2 48 8B F9 A8 40",
             AddressKind::FunctionEntry, addresses.initWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::updateWorldComponents",
+        if (!resolvePrivateWorld(Keys::UpdateWorldComponents,
             "4C 8B DC 55 56 57 41 55 41 57 48 81 EC 80 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 60 01 00 00 4D 89 63 D0 45 0F B6 E0 4D 89 73 C8 4D 8B F9 44 0F B6 EA 48 8B E9",
             AddressKind::FunctionEntry, addresses.updateWorldComponents)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::cleanupWorld",
+        if (!resolvePrivateWorld(Keys::CleanupWorld,
             "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 FF 05 ?? ?? ?? ?? 48 8D 3D ?? ?? ?? ?? F6 81 8B 01 00 00 40 49 8B F1 41 0F B6 E8 44 0F B6 F2 48 8B D9",
             AddressKind::FunctionEntry, addresses.cleanupWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getWorldContextFromWorld",
+        if (!resolvePrivateWorld(Keys::WorldContext,
             "48 8B 81 C8 11 00 00 48 63 89 D0 11 00 00 48 8D 0C C8 48 3B C1 74 ?? 66 0F 1F 84 00 00 00 00 00 4C 8B 00 49 39 90 C0 02 00 00 74 ?? 48 83 C0 08 48 3B C1 75 ?? 33 C0 C3 49 8B C0 C3",
             AddressKind::Code, addresses.getWorldContextFromWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getSubsystemInternal",
+        if (!resolvePrivateWorld(Keys::GetSubsystemInternal,
             "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 30 48 8B FA 48 8B F1 48 85 D2 75 ?? 48 8D 05 ?? ?? ?? ?? 44 8D 4A 35 48 89 44 24 20 4C 8D 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 33 C0",
             AddressKind::FunctionEntry, addresses.getSubsystemInternal)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isGarbageCollectingAndLocking",
+        if (!resolvePrivateWorld(Keys::GarbageCollectingLocking,
             "0F B6 05 ?? ?? ?? ?? 90 C3 CC CC CC CC CC CC CC 40 53 48 83 EC 20 48 8B 1D ?? ?? ?? ?? 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 B2 00 00 00",
             AddressKind::Code, addresses.isGarbageCollectingAndLocking)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isIncrementalPurgePending",
+        if (!resolvePrivateWorld(Keys::PurgePending,
             "0F B6 05 ?? ?? ?? ?? 90 84 C0 75 ?? 0F B6 05 ?? ?? ?? ?? 90 84 C0 75 ?? C3 B0 01 C3 CC CC CC CC 0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC",
             AddressKind::Code, addresses.isIncrementalPurgePending)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isIncrementalReachabilityPending",
+        if (!resolvePrivateWorld(Keys::ReachabilityPending,
             "0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 8B 05 ?? ?? ?? ?? 39 05 ?? ?? ?? ?? 7C ?? 80 3D ?? ?? ?? ?? 00 75 ?? 32 C0 C3 B0 01 C3",
             AddressKind::Code, addresses.isIncrementalReachabilityPending)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getTickableTickType",
+        if (!resolvePrivateWorld(Keys::TickableTickType,
             "40 53 48 83 EC 20 48 8B D9 BA 30 00 00 00 48 83 C1 D0 E8 ?? ?? ?? ?? 84 C0 75 ?? 38 43 08 74 ?? 48 83 C4 20 5B C3 B0 02 48 83 C4 20 5B C3",
             AddressKind::FunctionEntry, addresses.getTickableTickType)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isVisibilityRequestPending",
+        if (!resolvePrivateWorld(Keys::VisibilityPending,
             "40 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 ?? 48 89 5C 24 30 48 8D 9F 18 01 00 00 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 44 8D 43 1C",
             AddressKind::FunctionEntry, addresses.isVisibilityRequestPending)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::destroyActor",
+        if (!resolvePrivateWorld(Keys::DestroyActor,
             "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 F6 41 5D 02 41 0F B6 F0 0F B6 EA 48 8B F9 75 ?? 8B 41 08 C1 E8 1E F6 D0 A8 01 74 ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? 44 0F B6 CE 44 0F B6 C5 48 8B D7 48 8B C8 E8 ?? ?? ?? ??",
             AddressKind::FunctionEntry, addresses.destroyActor)) return false;
 
         uintptr_t activeGCAnchor = 0, engineAnchor = 0;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::ActiveGarbageCollection",
+        if (!resolvePrivateWorld(Keys::ActiveGarbageCollection,
             "0F B6 35 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 FF 15 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 0F 57 C0 39 05 ?? ?? ?? ?? F2 48 0F 2A 44 24 50",
             AddressKind::Code, activeGCAnchor) ||
-            !decodeGlobal("MiniMap::PrivateWorld::ActiveGarbageCollection", activeGCAnchor,
+            !decodeGlobal(Keys::ActiveGarbageCollection, activeGCAnchor,
                 3, 7, {0x0f,0xb6,0x35}, 1, 1, addresses.activeGarbageCollection)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::EngineStorage",
+        if (!resolvePrivateWorld(Keys::EngineStorage,
             "48 8B 3D ?? ?? ?? ?? 49 8B F1 49 8B E8 4C 8B F2 48 8B D9 48 85 FF 74 ?? 48 83 BF ?? ?? ?? ?? 00 75 ??",
             AddressKind::Code, engineAnchor) ||
-            !decodeGlobal("MiniMap::PrivateWorld::EngineStorage", engineAnchor,
+            !decodeGlobal(Keys::EngineStorage, engineAnchor,
                 3, 7, {0x48,0x8b,0x3d}, 8, 8, addresses.engineStorage)) return false;
         // Reuse the already resolved guarded Release wrapper, without another scan.
-        if (!decodeGlobal("MiniMap::Release", addresses.releaseObject,
+        if (!decodeGlobal(Keys::ReleaseGuard, addresses.releaseObject,
                 2, 7, {0x80,0x3d,0}, 1, 1, addresses.exitPurge)) return false;
 
         // Preserve the legacy direct ReleaseRef verification, deriving its address
         // from the wrapper's JE rather than a historical RVA. It is not a call binding.
         auto invalidRelease = [&]()
         {
-            scanner.Fail("MiniMap::Release", "invalid guarded Release branch or direct ReleaseRef entry");
+            scanner.Fail(Keys::ReleaseGuard, "invalid guarded Release branch or direct ReleaseRef entry");
             return false;
         };
         std::array<uint8_t,13> releaseInstruction{};
@@ -2166,6 +2064,11 @@ namespace MiniMapFingerprints
             (releasePage.Protect & (PAGE_GUARD|PAGE_NOACCESS)) ||
             !(releasePage.Protect & (PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return invalidRelease();
 #endif
+
+#if defined(MODLOADER_CLIENT_BUILD)
+        return true;
+        }();
+        (void)spriteNativesResolved;
 #endif
 
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -2177,6 +2080,7 @@ namespace MiniMapFingerprints
             request.name = name;
             request.idaPattern = pattern;
             request.kind = AddressKind::FunctionEntry;
+            request.inMap = false; // Not in the version map yet.
             out = resolveRequired(request);
             return out != 0;
         };
@@ -2212,6 +2116,6 @@ namespace MiniMapFingerprints
             "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38",
             addresses.textureGetResource)) return false;
 #endif
-        return !scanFailed;
+        return true;
     }
 }

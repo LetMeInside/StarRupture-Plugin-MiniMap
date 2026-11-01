@@ -3,7 +3,11 @@
   <PropertyGroup>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <!-- The game build (CL) the Game-SDK was generated from, stored in PluginInfo::gameBuiltCL. -->
+    <PluginGameBuiltCL Condition="'$(PluginGameBuiltCL)' == ''">127004</PluginGameBuiltCL>
   </PropertyGroup>
+  <Import Project="$(StarRupturePluginSDKRoot)PluginGameBuild.props"
+          Condition="Exists('$(StarRupturePluginSDKRoot)PluginGameBuild.props')" />
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
