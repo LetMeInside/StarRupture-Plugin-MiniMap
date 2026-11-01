@@ -69,12 +69,30 @@ namespace MiniMapBuildingComplexIndex
         uint8_t InterpolationMode = 0;
     };
 
+    // Exact copied inputs consumed by the existing spline profile projector.
+    // These are source values, not a claim that all native sections, joins,
+    // caps, or walkway/rail occlusion output have been prepared.
+    struct SplineProfileSource
+    {
+        std::array<double, 3> BoundsOrigin{}, BoundsExtent{};
+        double BoundsSphereRadius = 0;
+        std::array<double, 3> ComponentTranslation{}, ComponentRotationDegrees{}, ComponentScale{1, 1, 1};
+        std::array<double, 2> StartScale{1, 1}, EndScale{1, 1}, StartOffset{}, EndOffset{};
+        double StartRoll = 0, EndRoll = 0;
+        std::array<double, 3> Up{0, 0, 1};
+        uint8_t ForwardAxis = 0;
+        uint8_t SourceRank = 0; // 0 high-res trait, 1 low-res trait, 2 authored class.
+        std::array<int64_t, 12> SelectionOrder{}; // Existing collector's exact deterministic tie-break key.
+    };
+
     struct SourcePayload
     {
         uint64_t SourceRevision = 0;
         uint64_t SourceGeneration = 0;
         uint32_t CanonicalBuildingType = 0;
         std::shared_ptr<const std::string> BlueprintIdentity;
+        // Preserves the established Base Core last-overlay classification.
+        bool BaseCoreOverlay = false;
         MiniMapBuildingGeometryTypes::Transform Transform;
         std::array<std::array<double, 3>, 4> SpriteQuadWorld{};
         bool SpriteQuadValid = false;
@@ -84,6 +102,7 @@ namespace MiniMapBuildingComplexIndex
         WorldBounds VisualSupport;
         SupportState Support = SupportState::Unknown;
         std::vector<SplineSectionSource> SplineSections;
+        std::vector<SplineProfileSource> SplineProfiles;
         std::vector<double> NumericalProfileInputs;
     };
 

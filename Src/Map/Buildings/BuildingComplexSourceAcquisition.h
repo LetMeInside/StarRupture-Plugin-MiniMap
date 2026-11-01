@@ -10,8 +10,9 @@ namespace MiniMapBuildingComplexSourceAcquisition
     void Shutdown() noexcept;
 
     // Copies current SDK values for one exact Mass identity. No live pointer is
-    // returned or retained. complete means all available identity/transform/
-    // spline source fields were read; it does not mean render support is known.
+    // returned or retained. complete means available identity/transform, full
+    // curve, and spline-profile inputs were copied; it does not certify complete
+    // sprite/spline rendering support or world-space support bounds.
     bool TryAcquire(const MiniMapNative::NativeApi& native, const void* manager,
         MiniMapNative::MassEntityHandle entity, uint64_t worldGeneration,
         MiniMapBuildingComplexIndex::SourcePayload& output, bool& complete) noexcept;
