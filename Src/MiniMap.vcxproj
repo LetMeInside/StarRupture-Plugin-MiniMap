@@ -130,6 +130,7 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexIndex.h" />
+    <ClInclude Include="Map\Buildings\BuildingComplexCellRasterizer.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexSourceAcquisition.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexWorld.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
@@ -226,6 +227,7 @@
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexIndex.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingComplexCellRasterizer.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexSourceAcquisition.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexWorld.cpp" />
     <ClCompile Include="Map\Buildings\ExternalMapBuildingSession.cpp" />

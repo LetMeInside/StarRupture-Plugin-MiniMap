@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingComplexIndex.h"
+#include "BuildingComplexCellRasterizer.h"
 #include <cstdint>
 #include <memory>
 
@@ -44,5 +45,14 @@ namespace MiniMapBuildingComplexWorld
     bool TryGetCaptureImage(MiniMapBuildingComplexIndex::MassKey key,
         uint64_t worldGeneration, uint64_t sourceRevision,
         std::shared_ptr<const MiniMapBuildingCache::Sprite>& output) noexcept;
+
+    enum class CellCompositionResult : uint8_t { Complete, Partial, Failed, Stale };
+    // Synchronous CPU-only request over immutable index/capture snapshots. A
+    // returned image owns RGBA16F bytes and carries its input revisions;
+    // consumers revalidate immediately before publication.
+    CellCompositionResult ComposeCell(MiniMapBuildingComplexIndex::CellKey key,
+        uint64_t worldGeneration,
+        std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>& output) noexcept;
+    bool ValidateCellImage(const MiniMapBuildingComplexCellRasterizer::CellImage& image) noexcept;
 }
 #endif

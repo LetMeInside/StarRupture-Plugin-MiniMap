@@ -543,6 +543,8 @@ namespace MiniMapBuildingComplexIndex
             std::lock_guard lock(mutex_);
             CellSnapshot value; value.Key = key; value.WorldGeneration = worldGeneration_;
             value.SourceRevision = sourceRevision_;
+            value.DependencyRevision = dependencyRevision_;
+            value.Origin = origin_;
             auto cell = cells_.find(key);
             if (cell != cells_.end())
             {

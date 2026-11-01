@@ -202,6 +202,8 @@ namespace MiniMapBuildingComplexIndex
         // invalidation revision, never CellRevision alone.
         uint64_t CellRevision = 0;
         uint64_t SourceRevision = 0;
+        uint64_t DependencyRevision = 0;
+        WorldOrigin Origin;
         std::vector<std::shared_ptr<const BuildingRecord>> Records;
         // True if an unbounded unknown-support record could affect this cell.
         bool HasUnresolvedContributor = false;
