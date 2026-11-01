@@ -146,8 +146,8 @@ namespace MiniMapBuildingScheduler
         if (!g_statuses || !g_fifo || g_sessionActive) return;
         if (g_serial == (std::numeric_limits<uint64_t>::max)())
         { LOG_ERROR("MiniMap: building scheduler session serial exhausted; admission closed"); return; }
-        std::string path;
-        while (g_fifo->Remove(path)) {}
+        MiniMapSpriteQueues::Request request;
+        while (g_fifo->Remove(request)) {}
         MiniMapSpriteQueues::Feedback feedback;
         while (g_feedback.Remove(feedback)) {}
         g_statuses->clear();
@@ -167,7 +167,7 @@ namespace MiniMapBuildingScheduler
         MiniMapSpriteQueues::Feedback feedback;
         // Leave feedback in its original queue if this handoff is full. A success
         // can move its owned string and optional CPU payload into the pass slot.
-        while (Room() && g_feedback.Remove(feedback))
+        while (Room() && g_feedback.Remove(feedback, MiniMapSpriteQueues::RequestKind::MiniMap))
         {
             // All feedback originates from an admitted request under the same
             // lifecycle lock. Reject old generations before looking up the path.
@@ -182,7 +182,7 @@ namespace MiniMapBuildingScheduler
                 }
                 continue;
             }
-            if (feedback.Success)
+            if (feedback.Status == MiniMapSpriteQueues::ResultStatus::Success)
             {
                 g_pass.Payloads[g_pass.Count] = std::move(feedback.Payload);
                 g_pass.Paths[g_pass.Count++] = std::move(feedback.BlueprintPath);
@@ -336,7 +336,14 @@ namespace MiniMapBuildingScheduler
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++missingSprites;
 #endif
-                        try { g_fifo->Add(path); it->second.Where = S::Location::Queued; }
+                        try
+                        {
+                            MiniMapSpriteQueues::Request request;
+                            request.Kind = MiniMapSpriteQueues::RequestKind::MiniMap;
+                            request.BlueprintPath = path;
+                            g_fifo->Add(std::move(request));
+                            it->second.Where = S::Location::Queued;
+                        }
                         catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
                         continue;
                     }
@@ -388,7 +395,7 @@ namespace MiniMapBuildingScheduler
     void EndSession()
     {
         MiniMapBuildingSchedulerInternal::StopSession();
-        if (g_fifo) { std::string path; while (g_fifo->Remove(path)) {} }
+        if (g_fifo) { MiniMapSpriteQueues::Request request; while (g_fifo->Remove(request)) {} }
         MiniMapSpriteQueues::Feedback feedback;
         while (g_feedback.Remove(feedback)) {}
         if (g_statuses) g_statuses->clear();

@@ -1318,7 +1318,13 @@ namespace
     {
         // Functional provenance captured at FIFO admission; the scheduler owns
         // session transitions.
+        MiniMapSpriteQueues::RequestKind Kind = MiniMapSpriteQueues::RequestKind::MiniMap;
         uint64_t Session = 0;
+        uint64_t RequestId = 0;
+        int32_t MassIndex = -1, MassSerial = 0;
+        uint64_t WorldGeneration = 0, SourceRevision = 0;
+        std::string CanonicalBlueprintIdentity;
+        std::shared_ptr<const MiniMapBuildingComplexIndex::SourcePayload> SourceSnapshot;
         ActiveRequest() = default;
         ActiveRequest(const ActiveRequest&) = delete;
         ActiveRequest& operator=(const ActiveRequest&) = delete;
@@ -1662,7 +1668,21 @@ namespace
             }
             try
             {
-                feedback.Add({BlueprintPath, *FinalResult, Session, CompletedSprite});
+                MiniMapSpriteQueues::Feedback result;
+                result.Kind = Kind;
+                result.RequestId = RequestId;
+                result.MassIndex = MassIndex;
+                result.MassSerial = MassSerial;
+                result.WorldGeneration = WorldGeneration;
+                result.SourceRevision = SourceRevision;
+                result.CanonicalBlueprintIdentity = std::move(CanonicalBlueprintIdentity);
+                result.SourceSnapshot = std::move(SourceSnapshot);
+                result.Status = *FinalResult ? MiniMapSpriteQueues::ResultStatus::Success
+                    : MiniMapSpriteQueues::ResultStatus::RetryableFailure;
+                result.BlueprintPath = BlueprintPath;
+                result.Session = Session;
+                result.Payload = CompletedSprite;
+                feedback.Add(std::move(result));
                 FeedbackSubmitted = true;
             }
             catch (...) { Wait(WaitReason::Feedback, "feedback delivery allocation/queue exception; result retained without another write"); return false; }
@@ -2186,14 +2206,24 @@ namespace MiniMapBuildingSpriteRenderer
         catch (...) { g_nativeWorld.LightFailure("shared lighting initialization/service exception"); return; }
         try
         {
-            static_assert(std::is_nothrow_move_assignable_v<std::string>);
+            static_assert(std::is_nothrow_move_assignable_v<MiniMapSpriteQueues::Request>);
             g_activeRequest.emplace(); // Allocate the private slot BEFORE removing a FIFO entry.
-            if (!g_fifo->Remove(g_activeRequest->BlueprintPath))
+            MiniMapSpriteQueues::Request request;
+            if (!g_fifo->Remove(request, MiniMapSpriteQueues::RequestKind::MiniMap))
             { g_activeRequest.reset(); return; }
+            g_activeRequest->Kind = request.Kind;
+            g_activeRequest->BlueprintPath = std::move(request.BlueprintPath);
+            g_activeRequest->RequestId = request.RequestId;
+            g_activeRequest->MassIndex = request.MassIndex;
+            g_activeRequest->MassSerial = request.MassSerial;
+            g_activeRequest->WorldGeneration = request.WorldGeneration;
+            g_activeRequest->SourceRevision = request.SourceRevision;
+            g_activeRequest->CanonicalBlueprintIdentity = std::move(request.CanonicalBlueprintIdentity);
+            g_activeRequest->SourceSnapshot = std::move(request.SourceSnapshot);
         }
         catch (...)
         {
-            // SpriteFifo moves a std::string then pops it without allocation;
+            // SpriteFifo moves a request envelope then pops it without allocation;
             // allocation/lock failure precedes removal. No native request began.
             g_activeRequest.reset();
             LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");
