@@ -197,6 +197,19 @@ namespace MiniMapTerrainSource
     }
 
 
+    bool TryGetWorldOrigin(double& outX, double& outY)
+    {
+        outX = outY = 0.0;
+        SDK::UCrMapMenuTerrainData* terrainData = LoadTerrainData();
+        if (!terrainData) return false;
+        const auto& pivot = terrainData->MapTerrainTopLeftPivotPoint;
+        if (!std::isfinite(pivot.X) || !std::isfinite(pivot.Y)) return false;
+        outX = static_cast<double>(pivot.X);
+        outY = static_cast<double>(pivot.Y);
+        return true;
+    }
+
+
     bool TryResolveSourceTile(
         const SDK::FVector& worldPosition,
         SourceTile& outSourceTile,

@@ -17,6 +17,7 @@
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "Map/Buildings/BuildingCache.h"
+#include "Map/Buildings/BuildingComplexWorld.h"
 #include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Buildings/BuildingAtlas.h"
 #include "Map/Buildings/BuildingSpriteRenderer.h"
@@ -423,6 +424,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     MiniMapMap::SetWorld(world);
     MiniMapTexturePublication::CancelWorld();
     MiniMapMassLifecycle::BeginWorld(world, g_worldGeneration);
+    MiniMapBuildingComplexWorld::BeginWorld(g_worldGeneration);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
@@ -492,6 +494,7 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
     MiniMapMassLifecycle::EndWorld();
+    MiniMapBuildingComplexWorld::EndWorld();
     MiniMapTexturePublication::CancelWorld();
     g_worldEnding=true;
     SetServicesAdmitted(false);
@@ -520,6 +523,7 @@ static void OnAfterWorldEndPlay(
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
     MiniMapMassLifecycle::EndWorld();
+    MiniMapBuildingComplexWorld::EndWorld();
     MiniMapTexturePublication::CancelWorld();
     LOG_INFO(
         "MiniMap: world ended: %.*s",
@@ -843,6 +847,7 @@ namespace MiniMap
 
         MiniMapUI::StopInput();
         MiniMapMassLifecycle::Shutdown();
+        MiniMapBuildingComplexWorld::Shutdown();
         MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();

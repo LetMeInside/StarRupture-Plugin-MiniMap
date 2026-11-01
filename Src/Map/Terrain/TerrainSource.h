@@ -39,6 +39,10 @@ namespace MiniMapTerrainSource
 
     void Shutdown();
 
+    // Copies the terrain-aligned sparse-index origin from the loaded terrain
+    // definition. Game-thread only; no terrain texture or chunk work is done.
+    bool TryGetWorldOrigin(double& outX, double& outY);
+
     bool TryResolveSourceTile(
         const SDK::FVector& worldPosition,
         SourceTile& outSourceTile,
