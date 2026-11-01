@@ -258,8 +258,7 @@ namespace
             !SameValues(a.Transform.Scale, b.Transform.Scale) || !SameValues(a.Transform.Rotation, b.Transform.Rotation) ||
             a.SplineSourceIdentity != b.SplineSourceIdentity || a.HasSplineSource != b.HasSplineSource ||
             a.SplineCurve.size() != b.SplineCurve.size() ||
-            (compareProfiles && a.SplineProfiles.size() != b.SplineProfiles.size()) ||
-            a.Support != b.Support) return false;
+            (compareProfiles && a.SplineProfiles.size() != b.SplineProfiles.size())) return false;
         if (a.NumericalProfileInputs.size() != b.NumericalProfileInputs.size()) return false;
         for (size_t i = 0; i < a.NumericalProfileInputs.size(); ++i)
             if (!SameDouble(a.NumericalProfileInputs[i], b.NumericalProfileInputs[i])) return false;
@@ -603,8 +602,6 @@ namespace MiniMapBuildingComplexSourceAcquisition
             candidate.CanonicalBuildingType = buildingType;
             candidate.SplineCategory = uint8_t(MiniMapBuildingSplinePolicy::Classify(true, buildingType));
             candidate.BlueprintIdentity = std::move(blueprint);
-            candidate.BaseCoreOverlay = *candidate.BlueprintIdentity ==
-                "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
             if (!CopyInteriorPolicy(native, *placement, candidate.InteriorKnown, candidate.InteriorOnly) ||
                 !candidate.InteriorKnown) return false;
             candidate.Transform.Translation = {transform->Translation.X, transform->Translation.Y, transform->Translation.Z};
@@ -619,6 +616,8 @@ namespace MiniMapBuildingComplexSourceAcquisition
 
             bool splineKnown = false;
             if (!CopySplineSource(native, manager, entity, candidate, splineKnown)) return false;
+            candidate.BaseCoreOverlay = !candidate.HasSplineSource && *candidate.BlueprintIdentity ==
+                "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
             if (!candidate.InteriorOnly && !candidate.SplineCurve.empty())
                 splineKnown = CopySplineProfiles(native, *placement, buildingType, candidate.SplineProfiles) && splineKnown;
             if (!splineKnown) return false;

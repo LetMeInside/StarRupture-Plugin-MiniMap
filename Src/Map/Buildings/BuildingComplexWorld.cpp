@@ -97,6 +97,50 @@ namespace
     uint64_t NextCaptureRequestId = 1;
     uint64_t NextCaptureImageRevision = 1;
 
+    bool ValidBounds(const B::WorldBounds& bounds) noexcept
+    {
+        return bounds.Valid && std::isfinite(bounds.MinX) && std::isfinite(bounds.MinY) &&
+            std::isfinite(bounds.MaxX) && std::isfinite(bounds.MaxY) &&
+            bounds.MinX <= bounds.MaxX && bounds.MinY <= bounds.MaxY;
+    }
+
+    void ClassifyVisualSupport(B::SourcePayload& source) noexcept
+    {
+        source.Support = B::SupportState::Unknown;
+        source.VisualSupport = {};
+        if (!source.InteriorKnown) return;
+        if (source.InteriorOnly)
+        {
+            // The existing collector deliberately excludes this known class.
+            source.Support = B::SupportState::ExplicitlyUnsupported;
+            return;
+        }
+        if (!source.BlueprintIdentity || source.BlueprintIdentity->empty() ||
+            !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return;
+
+        // Base Core is the existing final sprite overlay. Other spline records
+        // are represented only by the complete prepared MiniMap ribbon source.
+        if (!source.BaseCoreOverlay && source.HasSplineSource)
+        {
+            if (source.SplinePreparation == B::SplinePreparationState::Complete &&
+                !source.SplineSections.empty() && ValidBounds(source.PreparedSplineSupport))
+            {
+                source.VisualSupport = source.PreparedSplineSupport;
+                source.Support = B::SupportState::Supported;
+            }
+            return;
+        }
+
+        // Ordinary and Base Core representations require a valid captured
+        // assembly bound/crop certificate, not merely source acquisition.
+        if (source.SpriteCaptureSupportMetadata && source.SpriteQuadValid &&
+            ValidBounds(source.OrdinarySpriteSupport))
+        {
+            source.VisualSupport = source.OrdinarySpriteSupport;
+            source.Support = B::SupportState::Supported;
+        }
+    }
+
     void EraseCaptureImage(B::MassKey key) noexcept
     {
         std::lock_guard lock(CaptureImagesMutex);
@@ -645,36 +689,23 @@ namespace
             const auto& sprite = *result.Payload;
             if (!MiniMapBuildingCache::ValidSpatial(sprite.Width, sprite.Height, sprite.Bounds, sprite.Mapping) ||
                 sprite.Rgba.size() != size_t(sprite.Width) * sprite.Height * 4) continue;
+            const bool spriteRepresentation = current->Source->BaseCoreOverlay || !current->Source->HasSplineSource;
             std::array<std::array<double, 3>, 4> quad{};
-            const std::array<double, 4> sourceRect{
-                double(sprite.Mapping.X), double(sprite.Mapping.Y),
-                double(sprite.Mapping.X) + double(sprite.Width) * sprite.Mapping.Step,
-                double(sprite.Mapping.Y) + double(sprite.Height) * sprite.Mapping.Step};
-            if (!MiniMapBuildingSpriteGeometryCore::BuildWorldQuad(
-                current->Source->Transform.Translation, current->Source->Transform.Scale,
-                current->Source->Transform.Rotation, sprite.Bounds.Min, sprite.Bounds.Max,
-                sourceRect, quad)) continue;
-            bool finiteQuad = true;
-            for (const auto& point : quad)
-                for (double value : point) finiteQuad &= std::isfinite(value);
-            if (!finiteQuad) continue;
-
-            B::SourcePayload updated = *current->Source;
-            updated.SpriteQuadWorld = quad;
-            updated.SpriteQuadValid = true;
-            updated.OrdinarySpriteSupport = {};
-            updated.OrdinarySpriteSupport.Valid = true;
-            updated.OrdinarySpriteSupport.MinX = updated.OrdinarySpriteSupport.MaxX = quad[0][0];
-            updated.OrdinarySpriteSupport.MinY = updated.OrdinarySpriteSupport.MaxY = quad[0][1];
-            for (const auto& point : quad)
+            bool verifiedQuad = false;
+            if (spriteRepresentation && sprite.AssemblyBoundsVerified)
             {
-                updated.OrdinarySpriteSupport.MinX = (std::min)(updated.OrdinarySpriteSupport.MinX, point[0]);
-                updated.OrdinarySpriteSupport.MaxX = (std::max)(updated.OrdinarySpriteSupport.MaxX, point[0]);
-                updated.OrdinarySpriteSupport.MinY = (std::min)(updated.OrdinarySpriteSupport.MinY, point[1]);
-                updated.OrdinarySpriteSupport.MaxY = (std::max)(updated.OrdinarySpriteSupport.MaxY, point[1]);
+                const std::array<double, 4> sourceRect{
+                    double(sprite.Mapping.X), double(sprite.Mapping.Y),
+                    double(sprite.Mapping.X) + double(sprite.Width) * sprite.Mapping.Step,
+                    double(sprite.Mapping.Y) + double(sprite.Height) * sprite.Mapping.Step};
+                verifiedQuad = MiniMapBuildingSpriteGeometryCore::BuildWorldQuad(
+                    current->Source->Transform.Translation, current->Source->Transform.Scale,
+                    current->Source->Transform.Rotation, sprite.Bounds.Min, sprite.Bounds.Max,
+                    sourceRect, quad);
+                for (const auto& point : quad)
+                    for (double value : point) verifiedQuad &= std::isfinite(value);
             }
-            // Capture metadata is derived visual state. Preserve the admitted
-            // source revision and Unknown support/completeness classification.
+
             if (!NextCaptureImageRevision || NextCaptureImageRevision == (std::numeric_limits<uint64_t>::max)()) continue;
             const uint64_t imageRevision = NextCaptureImageRevision++;
             try
@@ -686,16 +717,43 @@ namespace
                     result.CanonicalBlueprintIdentity, result.Payload});
             }
             catch (...) { continue; }
-            B::BuildingRecord published;
-            published.Key = key;
-            published.WorldGeneration = generation;
-            published.Source = std::make_shared<const B::SourcePayload>(std::move(updated));
-            B::ChangeSet changes;
-            const auto upserted = Index.Upsert(std::move(published), changes);
-            if (upserted == B::UpsertResult::Inserted || upserted == B::UpsertResult::Replaced)
-                QueueOcclusionChanges(changes);
-            if (upserted != B::UpsertResult::Inserted && upserted != B::UpsertResult::Replaced &&
-                upserted != B::UpsertResult::Unchanged) EraseCaptureImage(key);
+            if (spriteRepresentation)
+            {
+                B::SourcePayload updated = *current->Source;
+                updated.SpriteQuadWorld = {};
+                updated.SpriteQuadValid = false;
+                updated.SpriteCaptureSupportMetadata = 0;
+                updated.OrdinarySpriteSupport = {};
+                updated.Support = B::SupportState::Unknown;
+                updated.VisualSupport = {};
+                if (verifiedQuad)
+                {
+                    updated.SpriteQuadWorld = quad;
+                    updated.SpriteQuadValid = true;
+                    updated.SpriteCaptureSupportMetadata = imageRevision;
+                    updated.OrdinarySpriteSupport.Valid = true;
+                    updated.OrdinarySpriteSupport.MinX = updated.OrdinarySpriteSupport.MaxX = quad[0][0];
+                    updated.OrdinarySpriteSupport.MinY = updated.OrdinarySpriteSupport.MaxY = quad[0][1];
+                    for (const auto& point : quad)
+                    {
+                        updated.OrdinarySpriteSupport.MinX = (std::min)(updated.OrdinarySpriteSupport.MinX, point[0]);
+                        updated.OrdinarySpriteSupport.MaxX = (std::max)(updated.OrdinarySpriteSupport.MaxX, point[0]);
+                        updated.OrdinarySpriteSupport.MinY = (std::min)(updated.OrdinarySpriteSupport.MinY, point[1]);
+                        updated.OrdinarySpriteSupport.MaxY = (std::max)(updated.OrdinarySpriteSupport.MaxY, point[1]);
+                    }
+                }
+                ClassifyVisualSupport(updated);
+                B::BuildingRecord published;
+                published.Key = key;
+                published.WorldGeneration = generation;
+                published.Source = std::make_shared<const B::SourcePayload>(std::move(updated));
+                B::ChangeSet changes;
+                const auto upserted = Index.Upsert(std::move(published), changes);
+                if (upserted == B::UpsertResult::Inserted || upserted == B::UpsertResult::Replaced)
+                    QueueOcclusionChanges(changes);
+                if (upserted != B::UpsertResult::Inserted && upserted != B::UpsertResult::Replaced &&
+                    upserted != B::UpsertResult::Unchanged) EraseCaptureImage(key);
+            }
         }
     }
 
@@ -738,25 +796,43 @@ namespace
             if (!MiniMapBuildingComplexSourceAcquisition::PrepareSplineGeometry(key, candidate))
             { retry(); return; }
             candidate.SourceRevision = before->Source->SourceRevision + 1;
+            ClassifyVisualSupport(candidate);
             const bool policyOnlyChange = MiniMapBuildingComplexSourceAcquisition::IsSameSourceExceptInteriorPolicy(
                 *before->Source, candidate);
             if (policyOnlyChange)
             {
-                candidate.SpriteQuadWorld = before->Source->SpriteQuadWorld;
-                candidate.SpriteQuadValid = before->Source->SpriteQuadValid;
-                candidate.SpriteCaptureSupportMetadata = before->Source->SpriteCaptureSupportMetadata;
-                candidate.OrdinarySpriteSupport = before->Source->OrdinarySpriteSupport;
                 CancelCaptureRequest(key);
+                bool retainedVerifiedCapture = false;
                 {
                     std::lock_guard lock(CaptureImagesMutex);
                     auto image = CaptureImages.find(key);
                     if (image != CaptureImages.end() && image->second.WorldGeneration == generation &&
                         image->second.SourceRevision == before->Source->SourceRevision && image->second.Image &&
-                        image->second.CanonicalBlueprintIdentity == *candidate.BlueprintIdentity)
+                        image->second.CanonicalBlueprintIdentity == *candidate.BlueprintIdentity &&
+                        image->second.Image->AssemblyBoundsVerified &&
+                        MiniMapBuildingCache::ValidSpatial(image->second.Image->Width, image->second.Image->Height,
+                            image->second.Image->Bounds, image->second.Image->Mapping) &&
+                        image->second.Image->Rgba.size() == size_t(image->second.Image->Width) *
+                            image->second.Image->Height * 4)
+                    {
                         image->second.SourceRevision = candidate.SourceRevision;
+                        candidate.SpriteQuadWorld = before->Source->SpriteQuadWorld;
+                        candidate.SpriteQuadValid = before->Source->SpriteQuadValid;
+                        candidate.SpriteCaptureSupportMetadata = image->second.ImageRevision;
+                        candidate.OrdinarySpriteSupport = before->Source->OrdinarySpriteSupport;
+                        retainedVerifiedCapture = true;
+                    }
                     else
                         CaptureImages.erase(key);
                 }
+                if (!retainedVerifiedCapture)
+                {
+                    candidate.SpriteQuadWorld = {};
+                    candidate.SpriteQuadValid = false;
+                    candidate.SpriteCaptureSupportMetadata = 0;
+                    candidate.OrdinarySpriteSupport = {};
+                }
+                ClassifyVisualSupport(candidate);
             }
             else InvalidateCapture(key);
             B::BuildingRecord updated;

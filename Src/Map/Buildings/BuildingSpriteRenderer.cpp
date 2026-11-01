@@ -1336,6 +1336,7 @@ namespace
         std::array<NativeReference, MetadataCount> Metadata{};
         NativeReference Actor, Capture, Target;
         SDK::FVector Center{}, Extent{};
+        bool AssemblyBoundsVerified = false;
         uint64_t PreparedTick{}, C0Tick{};
         bool CaptureSubmitted = false; // Monotonic scene-work history across both passes, including retirement.
         bool Committed = false; // Current Job's readback commitment; reset only after that Job is destroyed.
@@ -1632,6 +1633,7 @@ namespace
                             auto payload = std::make_shared<MiniMapBuildingCache::Sprite>();
                             payload->Width = uint32_t(Processed.Width); payload->Height = uint32_t(Processed.Height);
                             payload->Bounds = bounds; payload->Mapping = mapping;
+                            payload->AssemblyBoundsVerified = AssemblyBoundsVerified;
                             payload->Rgba = Processed.Passthrough ? std::move(Rgba) : std::move(Processed.Rgba);
                             if (MiniMapBuildingCache::ValidSpatial(payload->Width, payload->Height,
                                 payload->Bounds, payload->Mapping) &&
@@ -2079,11 +2081,14 @@ namespace
             { Quarantine("Blueprint construction interrupted or ownership invalid"); return; }
             if (!ActorBounds(Actor.Object.Bits, &Center, &Extent)) { Quarantine("Actor bounds call interrupted"); return; }
             const float width = float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1);
-            if (!std::isfinite(Center.X) || !std::isfinite(Center.Y) || !std::isfinite(Center.Z) ||
-                !std::isfinite(Extent.X) || !std::isfinite(Extent.Y) || !std::isfinite(Extent.Z) ||
-                !(Extent.X > 0 && Extent.Y > 0 && Extent.Z >= 0) || !std::isfinite(Center.Z + Extent.Z + 1000.0) ||
-                !std::isfinite(width) || !(width > 0))
-            { Center = SDK::FVector(0, 0, 0); Extent = SDK::FVector(500, 500, 500); }
+            AssemblyBoundsVerified = std::isfinite(Center.X) && std::isfinite(Center.Y) && std::isfinite(Center.Z) &&
+                std::isfinite(Extent.X) && std::isfinite(Extent.Y) && std::isfinite(Extent.Z) &&
+                Extent.X > 0 && Extent.Y > 0 && Extent.Z >= 0 &&
+                std::isfinite(Center.Z + Extent.Z + 1000.0) && std::isfinite(width) && width > 0;
+            if (!AssemblyBoundsVerified)
+            {
+                Center = SDK::FVector(0, 0, 0); Extent = SDK::FVector(500, 500, 500);
+            }
             if (!Ready() || !ActorState(true)) { Quarantine("world changed after construction"); return; }
             if (!NewResource(CaptureType, Capture, sizeof(SDK::USceneCaptureComponent2D)) ||
                 !NewResource(TargetType, Target, sizeof(SDK::UTextureRenderTarget2D))) return;

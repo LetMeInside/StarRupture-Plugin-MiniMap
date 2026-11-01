@@ -16,6 +16,23 @@ namespace MiniMapBuildingComplexIndex
                 b.MinX <= b.MaxX && b.MinY <= b.MaxY;
         }
 
+        bool ValidSupportCertification(const SourcePayload& source) noexcept
+        {
+            if (source.Support == SupportState::Unknown) return true;
+            if (!source.InteriorKnown) return false;
+            if (source.InteriorOnly)
+                return source.Support == SupportState::ExplicitlyUnsupported && !source.VisualSupport.Valid;
+            if (source.Support == SupportState::ExplicitlyUnsupported) return false;
+            if (!source.BlueprintIdentity || source.BlueprintIdentity->empty() ||
+                !MiniMapBuildingGeometryTypes::Valid(source.Transform) || !ValidBounds(source.VisualSupport)) return false;
+            if (source.BaseCoreOverlay || !source.HasSplineSource)
+                return source.SpriteCaptureSupportMetadata && source.SpriteQuadValid &&
+                    ValidBounds(source.OrdinarySpriteSupport) && source.VisualSupport == source.OrdinarySpriteSupport;
+            return source.SplinePreparation == SplinePreparationState::Complete &&
+                !source.SplineSections.empty() && ValidBounds(source.PreparedSplineSupport) &&
+                source.VisualSupport == source.PreparedSplineSupport;
+        }
+
         bool AxisRange(double minimum, double maximum, double origin,
             int64_t& first, int64_t& last) noexcept
         {
@@ -77,7 +94,8 @@ namespace MiniMapBuildingComplexIndex
         { return !source.HasSplineSource && !source.BaseCoreOverlay && !(source.InteriorKnown && source.InteriorOnly); }
         bool VerifiedOccluderGeometry(const SourcePayload& source) noexcept
         {
-            if (!source.InteriorKnown || !source.SpriteQuadValid || !ValidBounds(source.OrdinarySpriteSupport) ||
+            if (!source.InteriorKnown || !source.SpriteCaptureSupportMetadata || !source.SpriteQuadValid ||
+                !ValidBounds(source.OrdinarySpriteSupport) ||
                 !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return false;
             for (const auto& point : source.SpriteQuadWorld)
                 for (double value : point) if (!std::isfinite(value)) return false;
@@ -149,6 +167,7 @@ namespace MiniMapBuildingComplexIndex
             input.SplineOcclusion.reset();
             std::lock_guard lock(mutex_);
             if (input.WorldGeneration != worldGeneration_ || !origin_.Valid) return UpsertResult::InvalidInput;
+            if (!ValidSupportCertification(*input.Source)) return UpsertResult::InvalidInput;
             if (input.Source->Support == SupportState::Supported && !ValidBounds(input.Source->VisualSupport)) return UpsertResult::InvalidInput;
             if (input.Source->InteriorOnly && !input.Source->InteriorKnown) return UpsertResult::InvalidInput;
             if (input.Source->Support == SupportState::ExplicitlyUnsupported && input.Source->VisualSupport.Valid &&
@@ -352,16 +371,16 @@ namespace MiniMapBuildingComplexIndex
             if (old != records_.end())
                 affectedSections.insert(old->second.Sections.begin(), old->second.Sections.end());
             for (const auto& pair : nextSectionCells) affectedSections.insert(pair.first);
-            if (auto reverse = occluderSections_.find(input.Key); reverse != occluderSections_.end())
+            if (auto reverse = occluderSections_.find(owned->Key); reverse != occluderSections_.end())
                 affectedSections.insert(reverse->second.begin(), reverse->second.end());
             const bool oldPotentialOccluder = old != records_.end() && PotentialOrdinaryOccluder(*old->second.Record->Source);
-            const bool newPotentialOccluder = PotentialOrdinaryOccluder(*input.Source);
+            const bool newPotentialOccluder = PotentialOrdinaryOccluder(*owned->Source);
             const bool oldGeometryVerified = old != records_.end() && VerifiedOccluderGeometry(*old->second.Record->Source);
-            const bool newGeometryVerified = VerifiedOccluderGeometry(*input.Source);
+            const bool newGeometryVerified = VerifiedOccluderGeometry(*owned->Source);
             const bool wasUnresolvedOccluder = oldPotentialOccluder && !oldGeometryVerified &&
                 !old->second.Record->Source->VisualSupport.Valid;
             const bool isUnresolvedOccluder = newPotentialOccluder && !newGeometryVerified &&
-                !input.Source->VisualSupport.Valid;
+                !owned->Source->VisualSupport.Valid;
             const bool globalOcclusionInvalidated =
                 wasUnresolvedOccluder || isUnresolvedOccluder;
             if (globalOcclusionInvalidated)
