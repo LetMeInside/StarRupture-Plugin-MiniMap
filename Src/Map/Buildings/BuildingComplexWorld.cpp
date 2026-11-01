@@ -24,6 +24,7 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -97,6 +98,90 @@ namespace
     uint64_t NextCaptureRequestId = 1;
     uint64_t NextCaptureImageRevision = 1;
 
+    // Game-thread owner state, like membership servicing. These certificates
+    // deliberately retain global revision equality until cell-local validity
+    // is supplied. No source records or capture owners survive in this cache.
+    struct CanonicalScope
+    {
+        uint64_t WorldGeneration = 0, RestoreEpoch = 0;
+        uint64_t SourceRevision = 0, DependencyRevision = 0;
+        double OriginX = 0, OriginY = 0;
+        bool RenderDroneRails = true;
+        bool operator==(const CanonicalScope&) const = default;
+    };
+    struct CanonicalIdentity
+    {
+        CanonicalScope Scope;
+        B::CellKey Key;
+        uint64_t CellRevision = 0;
+        bool HasUnresolvedContributor = false;
+        // Includes absent eligible captures (ImageRevision == 0), even when
+        // the rasterizer could not draw them into its successful manifest.
+        std::vector<MiniMapBuildingComplexCellRasterizer::CaptureRevision> Captures;
+        bool operator==(const CanonicalIdentity&) const = default;
+    };
+    struct CanonicalResult
+    {
+        CanonicalIdentity Identity;
+        std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> Image;
+    };
+    std::map<B::CellKey, std::shared_ptr<CanonicalResult>> CanonicalResults;
+
+    void InvalidateCanonicalCapture(B::MassKey key) noexcept
+    {
+        for (auto it = CanonicalResults.begin(); it != CanonicalResults.end();)
+        {
+            const auto& captures = it->second->Identity.Captures;
+            if (std::any_of(captures.begin(), captures.end(),
+                [&](const auto& capture) { return capture.Building == key; }))
+                it = CanonicalResults.erase(it);
+            else ++it;
+        }
+    }
+
+    CanonicalIdentity IdentifyCanonicalRequest(const B::CellSnapshot& snapshot,
+        uint64_t restoreEpoch, bool renderDroneRails)
+    {
+        CanonicalIdentity identity;
+        identity.Scope = {snapshot.WorldGeneration, restoreEpoch, snapshot.SourceRevision,
+            snapshot.DependencyRevision, snapshot.Origin.X, snapshot.Origin.Y, renderDroneRails};
+        identity.Key = snapshot.Key;
+        identity.CellRevision = snapshot.CellRevision;
+        identity.HasUnresolvedContributor = snapshot.HasUnresolvedContributor;
+        identity.Captures.reserve(snapshot.Records.size());
+        // Metadata only: no image acquisition, capture operation or engine call.
+        std::lock_guard lock(CaptureImagesMutex);
+        for (const auto& record : snapshot.Records)
+        {
+            if (!record || !record->Source || !record->Source->InteriorKnown ||
+                record->Source->InteriorOnly || record->Source->HasSplineSource) continue;
+            const auto& source = *record->Source;
+            uint64_t revision = 0;
+            const auto found = CaptureImages.find(record->Key);
+            if (source.SourceGeneration == snapshot.WorldGeneration && source.BlueprintIdentity &&
+                found != CaptureImages.end() && found->second.WorldGeneration == snapshot.WorldGeneration &&
+                found->second.SourceRevision == source.SourceRevision && found->second.Image &&
+                found->second.CanonicalBlueprintIdentity == *source.BlueprintIdentity)
+                revision = found->second.ImageRevision;
+            identity.Captures.push_back({record->Key, source.SourceRevision, revision});
+        }
+        return identity;
+    }
+
+    // Removes failed/stale/cancelled work on every exit, including exceptions.
+    // A reset or reentrant replacement must never be erased by an older owner.
+    struct CanonicalWorkScope
+    {
+        std::shared_ptr<CanonicalResult> Work;
+        ~CanonicalWorkScope()
+        {
+            if (Work->Image) return;
+            const auto found = CanonicalResults.find(Work->Identity.Key);
+            if (found != CanonicalResults.end() && found->second == Work)
+                CanonicalResults.erase(found);
+        }
+    };
+
     bool ValidBounds(const B::WorldBounds& bounds) noexcept
     {
         return bounds.Valid && std::isfinite(bounds.MinX) && std::isfinite(bounds.MinY) &&
@@ -143,12 +228,14 @@ namespace
 
     void EraseCaptureImage(B::MassKey key) noexcept
     {
+        InvalidateCanonicalCapture(key);
         std::lock_guard lock(CaptureImagesMutex);
         CaptureImages.erase(key);
     }
 
     void ClearCaptureImages() noexcept
     {
+        CanonicalResults.clear();
         std::lock_guard lock(CaptureImagesMutex);
         CaptureImages.clear();
     }
@@ -166,6 +253,10 @@ namespace
 
     void QueueOcclusionChanges(const B::ChangeSet& changes)
     {
+        if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated)
+            CanonicalResults.clear();
+        else
+            for (const auto key : changes.InvalidatedCells) CanonicalResults.erase(key);
         if (changes.GlobalCompletenessInvalidated || changes.GlobalSplineOcclusionInvalidated)
             MiniMapTexturePublication::InvalidateAll();
         else if (!changes.InvalidatedCells.empty())
@@ -365,6 +456,7 @@ namespace
 
     void ResetIndex(uint64_t generation) noexcept
     {
+        CanonicalResults.clear();
         MiniMapTexturePublication::InvalidateAll();
         ClearCaptureRequests();
         Index.ResetWorld(generation);
@@ -710,6 +802,7 @@ namespace
             const uint64_t imageRevision = NextCaptureImageRevision++;
             try
             {
+                InvalidateCanonicalCapture(key);
                 MiniMapTexturePublication::InvalidateCapture(key);
                 std::lock_guard lock(CaptureImagesMutex);
                 CaptureImages.insert_or_assign(key, CompletedCaptureImage{
@@ -1059,6 +1152,9 @@ namespace MiniMapBuildingComplexWorld
         output.reset();
         try
         {
+            const auto* native = MiniMapNative::Get();
+            if (!native || !native->player.isGameThread || !native->player.isGameThread())
+                return CellCompositionResult::Failed;
             const auto initialStatus = GetStatus();
             if (!generation || initialStatus.State != MembershipState::MembershipEstablished ||
                 initialStatus.WorldGeneration != generation) return CellCompositionResult::Failed;
@@ -1067,6 +1163,36 @@ namespace MiniMapBuildingComplexWorld
             if (!Index.TrySnapshot(key, snapshot) || snapshot.WorldGeneration != generation || !snapshot.Origin.Valid)
                 return CellCompositionResult::Failed;
             const bool renderDroneRails = MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails;
+            auto identity = IdentifyCanonicalRequest(snapshot, initialStatus.RestoreEpoch, renderDroneRails);
+            // Discard obsolete global scopes without retaining historical images
+            // for cells that are no longer demanded. Capture-only changes are
+            // checked by the exact manifest on lookup below.
+            for (auto it = CanonicalResults.begin(); it != CanonicalResults.end();)
+                if (it->second->Identity.Scope != identity.Scope) it = CanonicalResults.erase(it);
+                else ++it;
+            auto found = CanonicalResults.find(key);
+            if (found != CanonicalResults.end())
+            {
+                const auto cached = found->second;
+                if (cached->Identity == identity)
+                {
+                    // Synchronous GT callers cannot wait for their own reentrant
+                    // stack. They observe the same work and may retry after it
+                    // returns; they never start an independent rasterization.
+                    if (!cached->Image) return CellCompositionResult::Pending;
+                    if (ValidateCellImage(*cached->Image))
+                    {
+                        output = cached->Image;
+                        return output->Status == R::State::Complete ?
+                            CellCompositionResult::Complete : CellCompositionResult::Partial;
+                    }
+                }
+                CanonicalResults.erase(key);
+            }
+            auto work = std::make_shared<CanonicalResult>();
+            work->Identity = std::move(identity);
+            CanonicalResults.emplace(key, work);
+            CanonicalWorkScope workScope{work};
             std::vector<R::SpriteLease> sprites;
             sprites.reserve(snapshot.Records.size());
             for (const auto& record : snapshot.Records)
@@ -1086,7 +1212,18 @@ namespace MiniMapBuildingComplexWorld
 
             if (!ValidateCellImage(composed)) return CellCompositionResult::Stale;
 
-            output = std::make_shared<const R::CellImage>(std::move(composed));
+            // Also recheck absences/readiness, which the rasterizer's successful
+            // capture manifest alone cannot certify for a Partial result.
+            B::CellSnapshot current;
+            if (!Index.TrySnapshot(key, current) || !current.Origin.Valid ||
+                IdentifyCanonicalRequest(current, GetStatus().RestoreEpoch,
+                    MiniMapConfig::GetRenderSettings().Buildings.RenderDroneRails) != work->Identity)
+                return CellCompositionResult::Stale;
+            const auto owned = CanonicalResults.find(key);
+            if (owned == CanonicalResults.end() || owned->second != work)
+                return CellCompositionResult::Stale;
+            work->Image = std::make_shared<const R::CellImage>(std::move(composed));
+            output = work->Image;
             return state == R::State::Complete ? CellCompositionResult::Complete : CellCompositionResult::Partial;
         }
         catch (...) { output.reset(); return CellCompositionResult::Failed; }

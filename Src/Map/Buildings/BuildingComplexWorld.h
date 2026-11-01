@@ -47,14 +47,16 @@ namespace MiniMapBuildingComplexWorld
         std::shared_ptr<const MiniMapBuildingCache::Sprite>& output,
         uint64_t* imageRevision = nullptr) noexcept;
 
-    enum class CellCompositionResult : uint8_t { Complete, Partial, Failed, Stale };
-    // Synchronous CPU-only request over immutable index/capture snapshots. A
-    // returned image owns RGBA16F bytes and carries its input revisions;
-    // consumers revalidate immediately before publication.
+    enum class CellCompositionResult : uint8_t { Complete, Partial, Failed, Stale, Pending };
+    // Game-thread-only synchronous CPU request over immutable index/capture
+    // snapshots. Reuses a current shared immutable RGBA16F result before image
+    // acquisition/rasterization. Identical reentry returns Pending with no image;
+    // retry after the owning call returns (no wait or asynchronous job is added).
+    // Off-thread calls fail. Consumers revalidate before using returned images.
     CellCompositionResult ComposeCell(MiniMapBuildingComplexIndex::CellKey key,
         uint64_t worldGeneration,
         std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>& output) noexcept;
-    // Composes through the existing CPU path and queues only Complete images
+    // Uses the reusable CPU path and queues only Complete images
     // for the independent native publisher. RequestId is not GPU readiness.
     CellCompositionResult RequestCellPublication(MiniMapBuildingComplexIndex::CellKey key,
         uint64_t worldGeneration, uint64_t& requestId) noexcept;
