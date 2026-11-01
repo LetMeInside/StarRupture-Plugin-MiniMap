@@ -6,6 +6,7 @@
 #include <memory>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -125,6 +126,33 @@ namespace MiniMapSpriteQueues
                 else ++item;
             }
             return removed;
+        }
+
+        // True when any queued request satisfies the predicate. The predicate
+        // runs under the queue mutex and must not call back into this queue.
+        template<class Pred> bool HasAny(const Pred& pred)
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            return std::any_of(Items.begin(), Items.end(), pred);
+        }
+
+        // Removes the lowest-ranked admissible request; a rank of nullopt skips
+        // the entry, ties keep queue order. Rank runs under the queue mutex and
+        // must not call back into this queue.
+        template<class Rank> bool RemoveLowest(Request& request, const Rank& rank)
+        {
+            std::lock_guard<std::mutex> lock(Mutex);
+            auto best = Items.end();
+            double bestRank = 0.0;
+            for (auto it = Items.begin(); it != Items.end(); ++it)
+            {
+                const std::optional<double> itemRank = rank(*it);
+                if (itemRank && (best == Items.end() || *itemRank < bestRank)) { best = it; bestRank = *itemRank; }
+            }
+            if (best == Items.end()) return false;
+            request = std::move(*best);
+            Items.erase(best);
+            return true;
         }
 
     private:

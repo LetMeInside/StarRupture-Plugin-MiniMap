@@ -61,6 +61,9 @@ namespace
          "Show Building Layer: display building sprites and splines; retain pending capture work while hidden."},
         {"Buildings", "RenderDroneRails", S::SettingKind::Boolean, "true",
          "Render Drone Rails: display drone rail splines when the building layer is shown."},
+        {"Buildings", "CaptureSprites", S::SettingKind::Boolean, "true",
+         "Capture Building Sprites: render sprites for buildings missing from the cache; buildings skipped while off "
+         "stay hidden until the next world load."},
         {"Fog Of War", "DisableFog", S::SettingKind::Boolean, "false",
          "Disable Fog of War: bypass MiniMap visual fog and fog-based marker hiding; native exploration is unchanged."},
         {"Fog Of War", "FeatherRange", S::SettingKind::Float, "55.0",
@@ -98,6 +101,7 @@ namespace
         Initial,
         BuildingLayer,
         DroneRails,
+        CaptureSprites,
         DisableFog,
         Feather,
         AlienLayer,
@@ -109,7 +113,7 @@ namespace
         FieldCount
     };
     static_assert(FieldCount == std::size(kEntries));
-    static_assert(FieldCount == 24);
+    static_assert(FieldCount == 25);
     static_assert(ClearCache + 1 == 8); // General entries precede Zoom.
     std::mutex g_settingsMutex;
     Settings g_settings;
@@ -364,6 +368,9 @@ constexpr const char* kKeys[] = {
         case DroneRails:
             s.RenderDroneRails = v.Boolean;
             break;
+        case CaptureSprites:
+            s.CaptureBuildingSprites = v.Boolean;
+            break;
         case DisableFog:
             s.DisableFogOfWar = v.Boolean;
             break;
@@ -470,7 +477,7 @@ namespace MiniMapConfig
         std::lock_guard lock(g_settingsMutex);
         return {g_settings.RotatingMiniMap, g_settings.ShowCoordinates, g_settings.CoordsInUEUnits, g_settings.ShowCompass,
                 g_settings.TrackingRevision,
-                {g_settings.ShowBuildingLayer, g_settings.RenderDroneRails},
+                {g_settings.ShowBuildingLayer, g_settings.RenderDroneRails, g_settings.CaptureBuildingSprites},
                 {g_settings.DisableFogOfWar, g_settings.VisibilityFeatherRange},
                 g_settings.ShowAlienActorLayer,
                 {g_settings.ShowFoundablesLayer, g_settings.ShowLootInBases,

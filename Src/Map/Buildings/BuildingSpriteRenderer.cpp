@@ -4,6 +4,7 @@
 #include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingComplexIndex.h"
+#include "Config/Config.h"
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
@@ -23,13 +24,17 @@
 #include <SDK/MassReplication_classes.hpp>
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -2121,6 +2126,13 @@ namespace
     constexpr unsigned kWorldCreationAttempts = 3;
     constexpr unsigned kWorldRetryTicks = 120;
     unsigned g_worldCreationAttempts = 0, g_worldRetryTicks = 0;
+    // Large bases queue many classes at once. Let a freshly loaded world settle
+    // before the first capture, then leave a gap after every finished MiniMap
+    // request. BuildingComplex requests share the renderer but not the gap.
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kSessionSettleDelay = std::chrono::seconds(5);
+    constexpr auto kCaptureGap = std::chrono::milliseconds(500);
+    Clock::time_point g_settleUntil{}, g_nextMiniMapAdmission{};
 
     // Caller holds LifecycleMutex; only this game-thread path can write cache
     // files or submit feedback. Session end closes publication under that lock.
@@ -2129,6 +2141,7 @@ namespace
         if (!g_sessionActive || !g_feedback || !g_activeRequest || !GameThread() ||
             g_nativeWorld.Phase == WorldPhase::Quarantined) return;
         auto& request = *g_activeRequest;
+        const bool miniMapRequest = request.Kind == MiniMapSpriteQueues::RequestKind::MiniMap;
         if (request.Phase == RequestPhase::Failed && request.HasNativeOwnership())
             request.Retire();
         else
@@ -2136,7 +2149,43 @@ namespace
         if (g_sessionActive && request.Complete(*g_feedback))
         {
             g_activeRequest.reset(); // World remains owned and ready for the next request.
+            if (miniMapRequest) g_nextMiniMapAdmission = Clock::now() + kCaptureGap;
         }
+    }
+
+    // Game-thread admission only. Takes the queued MiniMap class whose nearest
+    // collected instance is closest to the map's tracked pose; classes with no
+    // collected instance follow in queue order. Each admission removes one class
+    // and a class is queued at most once per session, so none can wait forever.
+    // BuildingComplex requests keep their queue order ahead of MiniMap classes
+    // and are never paced; MiniMap requests are skipped while capture is off or
+    // the gap since the last MiniMap request has not elapsed.
+    bool RemoveNearest(MiniMapSpriteQueues::Request& request, bool captureSprites)
+    {
+        const bool miniMapAdmissible = captureSprites && Clock::now() >= g_nextMiniMapAdmission;
+        const auto snapshot = MiniMapBuildingCollector::GetSnapshot();
+        std::unordered_map<std::string_view, double> nearest; // Views into snapshot.
+        MiniMapMap::PresentationSample sample{};
+        if (snapshot && MiniMapMap::TryGetPresentationSample(sample))
+        {
+            nearest.reserve(64);
+            for (const auto& record : snapshot->Records)
+            {
+                if (record.Generation != snapshot->Generation || record.HasSpline || !record.TransformValid ||
+                        !record.CanonicalBlueprint) continue;
+                const double dx = record.Position[0] - sample.Tracking.WorldX, dy = record.Position[1] - sample.Tracking.WorldY;
+                const double distance = dx * dx + dy * dy;
+                const auto [it, added] = nearest.try_emplace(*record.CanonicalBlueprint, distance);
+                if (!added) it->second = (std::min)(it->second, distance);
+            }
+        }
+        return g_fifo->RemoveLowest(request, [&](const MiniMapSpriteQueues::Request& queued) -> std::optional<double>
+        {
+            if (queued.Kind != MiniMapSpriteQueues::RequestKind::MiniMap) return -std::numeric_limits<double>::infinity();
+            if (!miniMapAdmissible) return std::nullopt;
+            const auto it = nearest.find(queued.BlueprintPath);
+            return it == nearest.end() ? std::numeric_limits<double>::infinity() : it->second;
+        });
     }
 }
 
@@ -2154,6 +2203,8 @@ namespace MiniMapBuildingSpriteRenderer
     {
         if (!g_fifo || !g_feedback || g_sessionActive || g_activeRequest || !g_nativeWorld.CanStartSession()) return false;
         g_worldCreationAttempts = g_worldRetryTicks = 0;
+        g_settleUntil = Clock::now() + kSessionSettleDelay;
+        g_nextMiniMapAdmission = {};
         g_sessionActive = true;
         return true;
     }
@@ -2201,17 +2252,23 @@ namespace MiniMapBuildingSpriteRenderer
         (void)deltaTime;
         if (!g_fifo || !g_feedback || !g_sessionActive || !MiniMapMap::GameplayReady() ||
             g_nativeWorld.Phase == WorldPhase::Quarantined) return;
-        if (!g_activeRequest && g_nativeWorld.Phase != WorldPhase::Ready && !g_fifo->HasPending()) return;
+        const bool captureSprites = MiniMapConfig::GetRenderSettings().Buildings.CaptureSprites;
+        // MiniMap requests wait in the FIFO while capture is off or the gap runs;
+        // BuildingComplex requests do not.
+        const bool miniMapAdmissible = captureSprites && Clock::now() >= g_nextMiniMapAdmission;
+        const bool hasWork = g_fifo->HasAny([miniMapAdmissible](const MiniMapSpriteQueues::Request& queued)
+            { return miniMapAdmissible || queued.Kind != MiniMapSpriteQueues::RequestKind::MiniMap; });
+        if (!g_activeRequest && g_nativeWorld.Phase != WorldPhase::Ready && !hasWork) return;
         // CPU-only idle proof under the caller's LifecycleMutex. Every request
         // Job/callable/retirement/undelivered feedback keeps g_activeRequest alive.
         // Pending lighting has its own fence and must continue through service;
         // Ready lights/world roots need no polling until actual use or EndSession.
-        // HasPending takes only the FIFO mutex. A later enqueue stays queued for
+        // HasAny takes only the FIFO mutex. A later enqueue stays queued for
         // the next Tick; no native call runs while that mutex is held.
         if (!g_activeRequest && g_nativeWorld.Phase == WorldPhase::Ready &&
             g_nativeWorld.Rig == NativeWorldOwner::RigPhase::Ready &&
             g_nativeWorld.LightFence.GetState() == MiniMapCaptureRetirement::FenceState::Destroyed &&
-            !g_fifo->HasPending()) return;
+            !hasWork) return;
         if (!GameThread())
         {
             if (g_activeRequest || !g_nativeWorld.CanStartSession())
@@ -2230,6 +2287,7 @@ namespace MiniMapBuildingSpriteRenderer
         // Retirement and undelivered feedback take priority. Even if this clears
         // the request, admission waits until the next service iteration.
         if (g_activeRequest) { ServiceActiveRequest(); return; }
+        if (Clock::now() < g_settleUntil) return; // Settle delay after session start.
         if (g_nativeWorld.Phase != WorldPhase::Ready)
         {
             if (!g_nativeWorld.CanStartSession())
@@ -2278,9 +2336,10 @@ namespace MiniMapBuildingSpriteRenderer
             static_assert(std::is_nothrow_move_assignable_v<MiniMapSpriteQueues::Request>);
             g_activeRequest.emplace(); // Allocate the private slot BEFORE removing a FIFO entry.
             MiniMapSpriteQueues::Request request;
-            // The single renderer owns the shared FIFO head regardless of tag;
-            // both consumers share this owner and its established retirement.
-            if (!g_fifo->Remove(request))
+            // The single renderer owns the shared FIFO; both consumers share this
+            // owner and its established retirement. With capture off or inside the
+            // MiniMap gap only BuildingComplex requests are admissible.
+            if (!RemoveNearest(request, captureSprites))
             { g_activeRequest.reset(); return; }
             g_activeRequest->Kind = request.Kind;
             g_activeRequest->BlueprintPath = std::move(request.BlueprintPath);
@@ -2297,6 +2356,7 @@ namespace MiniMapBuildingSpriteRenderer
             // SpriteFifo moves a request envelope then pops it without allocation;
             // allocation/lock failure precedes removal. No native request began.
             g_activeRequest.reset();
+            g_settleUntil = Clock::now() + kCaptureGap; // Retry paced, not every tick.
             LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");
             return;
         }

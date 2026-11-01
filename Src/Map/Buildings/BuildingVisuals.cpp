@@ -624,7 +624,10 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto phaseLockBegin=Clock::now();
 #endif
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        // Never wait on the game-thread capture service from the UI callback:
+        // while it holds the lifecycle lock, skip this layer for one frame.
+        std::unique_lock<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex,std::try_to_lock);
+        if(!lock.owns_lock()){ui->DL_PopClipRect(dl);return;}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto phaseLockAcquired=Clock::now();
         lifecycleWaitMs=elapsedMs(phaseLockBegin,phaseLockAcquired);
