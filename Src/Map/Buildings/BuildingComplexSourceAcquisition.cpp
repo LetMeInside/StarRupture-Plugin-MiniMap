@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingComplexSourceAcquisition.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "BuildingBlueprintIdentity.h"
 #include "BuildingCollector.h"
 #include "BuildingGeometry.h"
@@ -79,6 +80,12 @@ namespace
         {
             if (spline->bSplineCurvesInitialized || spline->Data.SplineData.Num() > 1)
                 return false;
+            // Rails and pipes off: the payload is not read, the building draws as a box.
+            if (!MiniMapFields::Features::BuildingSplines.On())
+            {
+                output.HasSplineSource = false;
+                return true;
+            }
             const auto* ap = static_cast<const SDK::FAuAPMassFragment*>(
                 native.mass.getFragmentDataPtr(manager, id, Types.AP));
             if (!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload, copied) !=

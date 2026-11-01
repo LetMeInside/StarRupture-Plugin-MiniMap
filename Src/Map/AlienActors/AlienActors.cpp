@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -73,7 +74,7 @@ namespace
 
     std::mutex g_snapshotMutex;
     uint64_t g_worldGeneration = 0;
-    double g_acquisitionRadius = 0.0;
+    std::atomic<double> g_acquisitionRadius = 0.0; // Set from the render callback, which must not wait.
     std::vector<AlienRecord> g_records;
 
     void ResetPollReporting()
@@ -446,7 +447,6 @@ namespace MiniMapAlienActors
             radius = 0.5 * std::hypot(transform.Width, transform.Height) /
                 transform.PixelsPerWorldUnit + kMovementMarginWorldUnits;
         }
-        std::scoped_lock lock(g_snapshotMutex);
         g_acquisitionRadius = std::isfinite(radius) ? radius : 0.0;
     }
 
@@ -460,24 +460,38 @@ namespace MiniMapAlienActors
         const float right = left + transform.Width;
         const float bottom = top + transform.Height;
 
-        // Hold the snapshot lock through drawing so a reset cannot invalidate
-        // a copied old-world snapshot between the generation check and draw.
-        std::scoped_lock lock(g_snapshotMutex);
-        if (g_records.empty()) return;
+        // Draw from a render-thread copy so the callback never waits on the game
+        // thread: when the snapshot lock is busy the previous copy stands in.
+        static std::vector<AlienRecord> records;
+        static double acquisitionRadius = 0.0;
+        static uint64_t copiedWorldGeneration = 0; // MiniMapMap generation the copy was taken in.
+        {
+            std::unique_lock<std::mutex> lock(g_snapshotMutex, std::try_to_lock);
+            if (lock.owns_lock())
+            {
+                records.clear();
+                for (const auto& record : g_records)
+                    if (record.WorldGeneration == g_worldGeneration) records.push_back(record);
+                acquisitionRadius = g_acquisitionRadius;
+                copiedWorldGeneration = MiniMapMap::GetWorldGeneration();
+            }
+        }
+        if (copiedWorldGeneration != MiniMapMap::GetWorldGeneration()) records.clear();
+        if (records.empty()) return;
         struct VisibleRecord { size_t RecordIndex; float Visibility; double DistanceSquared; };
         // UI-callback-owned scratch capacity only. Membership and visibility are
         // rebuilt every frame; no actor pointers or prior-frame decisions survive.
         static std::vector<VisibleRecord> visible;
         visible.clear();
-        visible.reserve(g_records.size());
-        const double radiusSquared = g_acquisitionRadius * g_acquisitionRadius;
-        for (size_t index = 0; index < g_records.size(); ++index)
+        visible.reserve(records.size());
+        const double radiusSquared = acquisitionRadius * acquisitionRadius;
+        for (size_t index = 0; index < records.size(); ++index)
         {
-            const auto& record = g_records[index];
+            const auto& record = records[index];
             const double dx = record.WorldX - transform.TrackingWorldX;
             const double dy = record.WorldY - transform.TrackingWorldY;
             const double distanceSquared = dx*dx + dy*dy;
-            if (record.WorldGeneration != g_worldGeneration || distanceSquared > radiusSquared) continue;
+            if (distanceSquared > radiusSquared) continue;
             const float visibility = MiniMapFogOfWar::GetRenderedVisibilityAtWorldPosition(
                 record.WorldX, record.WorldY, transform, fog);
             if (visibility > 0.0f) visible.push_back({index, visibility, distanceSquared});
@@ -496,7 +510,7 @@ namespace MiniMapAlienActors
         ui.PushClip(drawList, {left, top}, {right, bottom}, true);
         for (const auto& candidate : visible)
         {
-            const auto& record = g_records[candidate.RecordIndex];
+            const auto& record = records[candidate.RecordIndex];
             MiniMapMap::ScreenPoint point = {};
             if (!transform.WorldToScreen(record.WorldX, record.WorldY, point) ||
                 point.X + kDotRadiusPixels < left || point.X - kDotRadiusPixels > right ||

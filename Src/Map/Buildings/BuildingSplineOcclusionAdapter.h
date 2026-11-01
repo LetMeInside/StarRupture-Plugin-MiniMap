@@ -442,35 +442,56 @@ namespace MiniMapBuildingSplineOcclusionAdapter
         }
     }
     struct CoverageAllocationFailure {};
-    inline std::shared_ptr<const RenderPlan> Prepare(const Request& request,std::shared_ptr<const RenderPlan> previous={},
-        PreparationWork* work=nullptr,Invalidation discarded=Invalidation::NoPrevious)
+    inline void RetainCommitted(RenderPlan& result)
     {
+        result.Triangles=0;result.WalkwayInsetTriangles=0;result.DrawableRecords={};result.AllocationFailed=true;
+        for(const auto& record:result.Records)
+        {
+            bool drawable=false;
+            for(const auto& section:record.Sections)
+            {result.Triangles+=section->Geometry->Visible.size();result.WalkwayInsetTriangles+=section->Geometry->WalkwayInsets.size();drawable|=!section->Geometry->Visible.empty();}
+            if(drawable)++result.DrawableRecords[(std::min)(size_t(record.Category),size_t(3))];
+        }
+        result.Diagnostic.Add(0,0,Failure::AllocationFailure,O::Status::AllocationFailure);
+    }
+    // One plan, prepared a few splines at a time so the work can be spread
+    // over game ticks. Every member is owned plain data (the bound snapshot
+    // and envelopes are immutable), so it may outlive the tick that began it.
+    struct Preparation
+    {
+        std::shared_ptr<RenderPlan> Result;
+        std::shared_ptr<const RenderPlan> Previous; // Kept only while its sections can be reused.
+        O::PreparedOccluders Occluders;
+        std::vector<size_t> Visited,Candidates; // One BVH-query scratch vector, reused across sections.
+        size_t Next=0,PreviousRecord=0;
+        bool ReuseSections=false,Complete=false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        Invalidation Rejected=Invalidation::NoPrevious;
+#endif
+        // The finished plan, or the previous one when nothing changed.
+        std::shared_ptr<const RenderPlan> Plan() const {return Result?Result:Previous;}
+    };
+    // Binds the request and builds the occluder set. Continue plans the splines.
+    inline void Begin(Preparation& preparation,const Request& request,std::shared_ptr<const RenderPlan> previous={},
+        [[maybe_unused]] PreparationWork* work=nullptr,[[maybe_unused]] Invalidation discarded=Invalidation::NoPrevious)
+    {
+        preparation={};
         const auto mismatch=Mismatch(previous.get(),request);
-        if(mismatch==Invalidation::None)return previous;
+        if(mismatch==Invalidation::None){preparation.Previous=std::move(previous);preparation.Complete=true;return;}
         // Whole-plan semantics unchanged. Partial reuse is ONLY within the same
         // complete source/atlas/policy/envelope binding, with ordinary observations differing.
-        const bool reuseSections=previous && mismatch==Invalidation::Ordinary;
+        preparation.ReuseSections=previous && mismatch==Invalidation::Ordinary;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        const auto rejected=previous?mismatch:discarded;
+        preparation.Rejected=previous?mismatch:discarded;
 #endif
-        auto result=std::make_shared<RenderPlan>();
-        auto retainCommitted=[&]
-        {
-            result->Triangles=0;result->WalkwayInsetTriangles=0;result->DrawableRecords={};result->AllocationFailed=true;
-            for(const auto& record:result->Records)
-            {
-                bool drawable=false;
-                for(const auto& section:record.Sections)
-                {result->Triangles+=section->Geometry->Visible.size();result->WalkwayInsetTriangles+=section->Geometry->WalkwayInsets.size();drawable|=!section->Geometry->Visible.empty();}
-                if(drawable)++result->DrawableRecords[(std::min)(size_t(record.Category),size_t(3))];
-            }
-            result->Diagnostic.Add(0,0,Failure::AllocationFailure,O::Status::AllocationFailure);
-        };
+        if(preparation.ReuseSections)preparation.Previous=std::move(previous);
+        auto& result=preparation.Result;auto& prepared=preparation.Occluders;
+        result=std::make_shared<RenderPlan>();
         try
         {
             if(!request.Snapshot || ((!request.AtlasSession || !request.AtlasRevision) &&
                 std::any_of(request.Ordinary.begin(),request.Ordinary.end(),[](const auto& o){return o.Submitted;})))
-            {result->Diagnostic.Add(0,0,Failure::Context);return result;}
+            {result->Diagnostic.Add(0,0,Failure::Context);preparation.Complete=true;return;}
             {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 PreparationTimer timer(work,PreparationPhase::Binding);
@@ -478,7 +499,6 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                 result->Binding=request;result->Generation=request.Snapshot->Generation;
             }
             const auto& records=request.Snapshot->Records;
-            O::PreparedOccluders prepared;
             {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 PreparationTimer timer(work,PreparationPhase::Occluders);
@@ -498,12 +518,31 @@ namespace MiniMapBuildingSplineOcclusionAdapter
             if(prepared.GetStatus()!=O::Status::Complete)
             {
                 result->AllocationFailed=prepared.GetStatus()==O::Status::AllocationFailure;
-                result->Diagnostic.Add(0,0,Failure::Planner,prepared.GetStatus());return result;
+                result->Diagnostic.Add(0,0,Failure::Planner,prepared.GetStatus());preparation.Complete=true;
             }
-            std::vector<size_t> visited,candidates; // One BVH-query scratch vector, reused across sections.
-            size_t previousRecord=0;
-            for(const auto& source:request.Splines)
+        }
+        catch(const std::bad_alloc&){RetainCommitted(*result);preparation.Complete=true;}
+        catch(const std::length_error&){RetainCommitted(*result);preparation.Complete=true;}
+    }
+    // Plans whole splines in request order until stop() returns true, at
+    // least one per call. Returns true once every spline has been planned.
+    template<class Stop> inline bool Continue(Preparation& preparation,Stop&& stop,[[maybe_unused]] PreparationWork* work=nullptr)
+    {
+        if(preparation.Complete)return true;
+        auto& result=preparation.Result;const auto& previous=preparation.Previous;const auto& prepared=preparation.Occluders;
+        auto& visited=preparation.Visited;auto& candidates=preparation.Candidates;auto& previousRecord=preparation.PreviousRecord;
+        const bool reuseSections=preparation.ReuseSections;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const auto rejected=preparation.Rejected;
+#endif
+        try
+        {
+            const auto& request=result->Binding;
+            const auto& records=request.Snapshot->Records;
+            for(bool first=true;preparation.Next<request.Splines.size();first=false)
             {
+                if(!first && stop())return false;
+                const auto& source=request.Splines[preparation.Next++];
                 const auto index=source.RecordIndex;
                 if(index>=records.size() || !source.Envelope || records[index].Generation!=result->Generation ||
                     std::find(visited.begin(),visited.end(),index)!=visited.end())
@@ -711,10 +750,10 @@ namespace MiniMapBuildingSplineOcclusionAdapter
                 }
             }
         }
-        catch(CoverageAllocationFailure){retainCommitted();}
-        catch(const std::bad_alloc&){retainCommitted();}
-        catch(const std::length_error&){retainCommitted();}
-        return result;
+        catch(CoverageAllocationFailure){RetainCommitted(*result);}
+        catch(const std::bad_alloc&){RetainCommitted(*result);}
+        catch(const std::length_error&){RetainCommitted(*result);}
+        preparation.Complete=true;return true;
     }
 }
 #endif

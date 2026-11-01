@@ -104,6 +104,8 @@ namespace MiniMapBuildingCollector
         void SetRegion(const Bounds& region);
         void SetRenderDroneRails(bool enabled);
         std::shared_ptr<const Snapshot> GetSnapshot();
+        // For the render thread: false, and `out` untouched, when the game thread is publishing.
+        bool TryGetSnapshot(std::shared_ptr<const Snapshot>& out);
         CollectorDiagnostics GetDiagnostics() const;
         void OnTick(float delta);
         void ShutdownResources();
@@ -122,6 +124,8 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete();
     void SetViewport(const MiniMapMap::Transform& transform);
     std::shared_ptr<const Snapshot> GetSnapshot();
+    // For the render thread: false, and `out` untouched, when the game thread is publishing.
+    bool TryGetSnapshot(std::shared_ptr<const Snapshot>& out);
     void Shutdown();
 }
 #endif

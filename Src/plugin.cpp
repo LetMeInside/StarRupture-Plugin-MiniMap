@@ -7,6 +7,7 @@
 #include "Services/NativeHooks.h"
 
 #ifdef MODLOADER_CLIENT_BUILD
+#include "Adapters/AlienX/GameFields.h"
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/MassLifecycle.h"
@@ -312,6 +313,12 @@ void MiniMapCacheIdentity::ClearOnExit()
 }
 #endif
 
+// The building pictures need the buildings layer and the capture natives.
+static bool BuildingSpritesOn()
+{
+    return MiniMapFields::Features::Buildings.On() && MiniMapFields::Features::BuildingSprites.On();
+}
+
 // Preserve the centralized mandatory resolution chain through a borrowed service.
 void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
     MiniMap::Services::IRequiredScanner& scanner)
@@ -349,7 +356,7 @@ void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
 #endif
 
     // Optional private preflight: failure never changes production readiness.
-    MiniMapReadbackNative::ResolvePrerequisites();
+    if (BuildingSpritesOn()) MiniMapReadbackNative::ResolvePrerequisites();
 
 #else
 
@@ -460,10 +467,18 @@ static void OnExperienceLoadComplete()
         return;
     }
 
-    MiniMapFoundables::OnExperienceLoadComplete();
-    MiniMapAlienActors::OnExperienceLoadComplete();
-    MiniMapBuildingCollector::OnExperienceLoadComplete();
-    MiniMapPointsOfInterest::OnExperienceLoadComplete();
+    if(MiniMapFields::Features::Foundables.On())MiniMapFoundables::OnExperienceLoadComplete();
+    if(MiniMapFields::Features::AlienActors.On())MiniMapAlienActors::OnExperienceLoadComplete();
+    if(MiniMapFields::Features::Buildings.On())MiniMapBuildingCollector::OnExperienceLoadComplete();
+    if(MiniMapFields::Features::PointsOfInterest.On())MiniMapPointsOfInterest::OnExperienceLoadComplete();
+
+    if(!BuildingSpritesOn())
+    {
+        SetServicesAdmitted(true);
+        if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
+        else MiniMapUI::Hide();
+        return;
+    }
 
     bool rendererReady=false;
     uint64_t buildingSession=0;
@@ -652,36 +667,36 @@ namespace MiniMap
             return false;
         }
 
-        if (!MiniMapFogOfWar::Initialize(
+        if (MiniMapFields::Features::FogOfWar.On() && !MiniMapFogOfWar::Initialize(
             pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: FOW diagnostic initialization failed");
         }
 
-        if (!MiniMapPointsOfInterest::Initialize(
+        if (MiniMapFields::Features::PointsOfInterest.On() && !MiniMapPointsOfInterest::Initialize(
             pluginSelf))
         {
             LOG_ERROR(
                 "MiniMap: landmark POI initialization failed");
         }
 
-        if (!MiniMapAlienActors::Initialize(pluginSelf))
+        if (MiniMapFields::Features::AlienActors.On() && !MiniMapAlienActors::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: Alien Actors initialization failed");
         }
 
-        if (!MiniMapBuildingCollector::Initialize(pluginSelf))
+        if (MiniMapFields::Features::Buildings.On() && !MiniMapBuildingCollector::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
         }
 
-        if (!MiniMapBuildingVisuals::Initialize(pluginSelf))
+        if (MiniMapFields::Features::Buildings.On() && !MiniMapBuildingVisuals::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: building visuals initialization failed");
         }
 
-        if (!MiniMapFoundables::Initialize(
+        if (MiniMapFields::Features::Foundables.On() && !MiniMapFoundables::Initialize(
             pluginSelf))
         {
             LOG_ERROR(
@@ -801,7 +816,7 @@ namespace MiniMap
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
-        if (!MiniMapMassLifecycle::Initialize())
+        if (MiniMapFields::Features::BuildingRestore.On() && !MiniMapMassLifecycle::Initialize())
             LOG_ERROR("MiniMap: BuildingComplex native observer admission unavailable; normal MiniMap services continue");
         MiniMapTexturePublication::Initialize();
         Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);

@@ -25,6 +25,7 @@ namespace MiniMapConfig
         double InitialZoom = 100.0 / 300.0;
         bool ShowBuildingLayer = true;
         bool RenderDroneRails = true;
+        bool CaptureBuildingSprites = true;
         bool DisableFogOfWar = false;
         double VisibilityFeatherRange = 55.0;
         bool ShowAlienActorLayer = true;
@@ -47,6 +48,7 @@ namespace MiniMapConfig
     {
         bool ShowLayer;
         bool RenderDroneRails;
+        bool CaptureSprites;
     };
     struct FogOfWarSettings
     {

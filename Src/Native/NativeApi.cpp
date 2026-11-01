@@ -114,33 +114,6 @@ namespace MiniMapNative
             addresses.getControlRotation == 0 ||
             addresses.isPlayerInForgottenEngine == 0 ||
             addresses.getComponentLocation == 0 ||
-            addresses.getAllActorsOfClass == 0 ||
-            addresses.pointOfInterestStaticClass == 0 ||
-            addresses.findPOIMarkerCategoryData == 0 ||
-            addresses.getMapMenuMarkerFilterStatus == 0 ||
-            addresses.isAbandonBaseCompleted == 0 ||
-            addresses.findFoundableMarkerCategoryData == 0 ||
-            addresses.getMassEntitySubsystem == 0 ||
-            addresses.massQueryConstruct == 0 ||
-            addresses.massQueryDestruct == 0 ||
-            addresses.addInventoryRequirement == 0 ||
-            addresses.addTransformRequirement == 0 ||
-            addresses.addEnemyStateRequirement == 0 ||
-            addresses.enemyStateFragmentStaticStruct == 0 ||
-            addresses.enemyTagStaticStruct == 0 ||
-            addresses.neutralTagStaticStruct == 0 ||
-            addresses.addTagRequirement == 0 ||
-            addresses.addFoundableParametersRequirement == 0 ||
-            addresses.addFoundableTagRequirement == 0 ||
-            addresses.getMatchingEntityHandles == 0 ||
-            addresses.getMassFragmentDataPtr == 0 ||
-            addresses.getMassConstSharedFragmentPtr == 0 ||
-            addresses.transformFragmentStaticStruct == 0 ||
-            addresses.inventoryFragmentStaticStruct == 0 ||
-            addresses.foundableParametersStaticStruct == 0 ||
-            addresses.getSplineActorData == 0 ||
-            addresses.destroySplineActorPayloadData == 0 ||
-            addresses.splineActorPayloadStaticStruct == 0 ||
             addresses.isGameThread == 0 ||
             addresses.getPlatformData == 0 ||
             addresses.getBulkDataSize == 0 ||
@@ -154,53 +127,8 @@ namespace MiniMapNative
         if (!addresses.retainObject || !addresses.releaseObject || !addresses.nameEqualsWide) return false;
 
         if (!addresses.objectArray) return false;
-        if (!addresses.activeGarbageCollection) return false;
-        if (!addresses.engineStorage) return false;
-        if (!addresses.exitPurge) return false;
-        if (!addresses.createWorld) return false;
-        if (!addresses.initWorld) return false;
-        if (!addresses.updateWorldComponents) return false;
-        if (!addresses.cleanupWorld) return false;
-        if (!addresses.getWorldContextFromWorld) return false;
-        if (!addresses.getSubsystemInternal) return false;
-        if (!addresses.isGarbageCollectingAndLocking) return false;
-        if (!addresses.isIncrementalPurgePending) return false;
-        if (!addresses.isIncrementalReachabilityPending) return false;
-        if (!addresses.getTickableTickType) return false;
-        if (!addresses.isVisibilityRequestPending) return false;
-        if (!addresses.destroyActor) return false;
-        if (!addresses.readbackFromValidEName) return false;
-        if (!addresses.readbackSubmit) return false;
-        if (!addresses.readbackImmediate) return false;
-        if (!addresses.readbackCreate) return false;
-        if (!addresses.readbackConstruct) return false;
-        if (!addresses.readbackDestroy) return false;
-        if (!addresses.readbackCopy) return false;
-        if (!addresses.readbackLock) return false;
-        if (!addresses.readbackUnlock) return false;
-        if (!addresses.readbackPoll) return false;
-        if (!addresses.readbackMarkForDelete) return false;
-        if (!addresses.readbackMalloc) return false;
-        if (!addresses.readbackFree) return false;
-        if (!addresses.readbackDynamicRHI) return false;
-        if (!addresses.readbackPipe) return false;
-        if (!addresses.readbackThreaded) return false;
-        if (!addresses.readbackMultithreaded) return false;
-        if (!addresses.readbackGpuCount) return false;
-        if (!addresses.spawnObject) return false;
-        if (!addresses.setObjectFlags) return false;
-        if (!addresses.registerComponent) return false;
-        if (!addresses.unregisterComponent) return false;
-        if (!addresses.destroyComponent) return false;
-        if (!addresses.initRenderTarget) return false;
-        if (!addresses.getRenderTargetResource) return false;
-        if (!addresses.transitionResources) return false;
-        if (!addresses.renderFenceConstruct) return false;
-        if (!addresses.renderFenceDestroy) return false;
-        if (!addresses.renderFenceBegin) return false;
-        if (!addresses.renderFencePoll) return false;
         if (!addresses.buildingOnCreate || !addresses.buildingOnDestroy ||
-            !addresses.massOnSaveLoaded || !addresses.massOnPostSaveLoaded ||
+            !addresses.massOnSaveLoaded ||
             !addresses.textureCreateTransient || !addresses.bulkLock || !addresses.bulkUnlock ||
             !addresses.textureUpdateResource || !addresses.textureGetResource) return false;
 
@@ -393,7 +321,7 @@ namespace MiniMapNative
 
         g_nativeApi.texture.memoryFree =
             reinterpret_cast<TextureApi::MemoryFreeFn>(
-                addresses.readbackFree);
+                addresses.memoryFree);
 
         // Mandatory collector addresses resolved by the plugin hook admission phase.
         g_nativeApi.gridDiagnostic.getSubsystem = reinterpret_cast<GridDiagnosticApi::GetSubsystemFn>(addresses.getEntityGridSubsystem);
@@ -455,9 +383,13 @@ namespace MiniMapNative
         g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);
         // This populates the same static type cache used by the native typed getter.
         // No script-struct discovery belongs in the gameplay numerical adapter.
-        g_nativeApi.splinePayload.payloadType =
-            reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
-        if (!g_nativeApi.splinePayload.payloadType) return false;
+        // A null type is not fatal: the payload copy reports Unavailable and the rails
+        // and pipes are skipped (building-splines).
+        if (addresses.splineActorPayloadStaticStruct)
+        {
+            g_nativeApi.splinePayload.payloadType =
+                reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
+        }
 
         g_initialized = true;
 

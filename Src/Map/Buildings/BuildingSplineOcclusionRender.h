@@ -2,6 +2,7 @@
 #include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSplineOcclusionAdapter.h"
+#include "BuildingVisualGeometry.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -9,90 +10,105 @@
 namespace MiniMapBuildingSplineOcclusionRender
 {
     namespace A=MiniMapBuildingSplineOcclusionAdapter;
-    struct SubmissionDiagnostics
-    {
-        size_t OutsideViewportTriangles=0,ProjectionRejectedTriangles=0;
-        bool Rejected=false,Transparent=false;
-    };
+    namespace E=MiniMapBuildingSplineEnvelope;
+    namespace G=MiniMapBuildingVisualGeometry;
+    using Triangle=std::array<E::XY,3>; // World XY, either winding.
+    // Bounds the work of one merge; each step rechecks every interior joint.
+    constexpr size_t kMaximumMergedSections=64;
     inline bool FullyOccluded(const A::RecordPlan& record)
     {
         return !record.Sections.empty() && !record.FailedSections &&
             std::all_of(record.Sections.begin(),record.Sections.end(),[](const auto& section){return section->Geometry->Visible.empty();});
     }
-    // Reproject final plan-owned inset triangles in section/visible/left/right/fan order.
-    inline MiniMapBuildingVisuals::Detail::SplineSubmission SubmitWalkwayInsets(
-        MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,const MiniMapMap::Transform& transform,
-        const A::RecordPlan& record,const MiniMapBuildingCollector::Bounds& viewport,uint32_t color)
+    // One ribbon cell from start to end, split the way AppendRibbon splits it.
+    inline bool Cell(const E::Ring& start,const E::Ring& end,std::array<Triangle,2>& cell)
+    {
+        const std::array<E::XY,4> p{start.Edges[0],end.Edges[0],end.Edges[1],start.Edges[1]};
+        auto positive=[&](size_t a,size_t b,size_t c)
+        {const double area=E::Area(p[a],p[b],p[c]);return std::isfinite(area) && area>0;};
+        if(positive(0,1,2) && positive(0,2,3)){cell={Triangle{p[0],p[1],p[2]},Triangle{p[0],p[2],p[3]}};return true;}
+        if(positive(0,1,3) && positive(1,2,3)){cell={Triangle{p[0],p[1],p[3]},Triangle{p[1],p[2],p[3]}};return true;}
+        return false;
+    }
+    // Copy a planned body as world triangles. Runs of unclipped, adjacent
+    // sections become one cell while every interior joint stays within
+    // tolerance (world units) of the merged edges, so the triangle count
+    // follows screen size rather than sampling density. Clipped sections are
+    // copied exactly.
+    inline void AppendBody(const A::RecordPlan& record,const E::Profile& profile,double tolerance,std::vector<Triangle>& out)
+    {
+        const auto& sections=record.Sections;
+        auto copy=[&](const A::SectionPlan& section)
+        {
+            for(const auto& t:section.Geometry->Visible)
+                out.push_back({E::XY{t.Vertices[0][0],t.Vertices[0][1]},E::XY{t.Vertices[1][0],t.Vertices[1][1]},
+                    E::XY{t.Vertices[2][0],t.Vertices[2][1]}});
+        };
+        auto clean=[&](size_t i)
+        {
+            const auto& s=*sections[i];
+            return s.Removed.Polygons==0 && s.Geometry->Visible.size()==2 && s.SectionIndex<profile.Sections.size();
+        };
+        auto ring=[&](size_t i,bool end)->const E::Ring&
+        {const auto& s=profile.Sections[sections[i]->SectionIndex];return end?s.End:s.Start;};
+        auto inside=[&](const E::XY& p,const E::XY& a,const E::XY& b)
+        {return G::DistanceSquared({p[0],p[1]},{a[0],a[1]},{b[0],b[1]})<=tolerance*tolerance;};
+        for(size_t i=0;i<sections.size();)
+        {
+            if(!clean(i) || !(tolerance>0)){copy(*sections[i++]);continue;}
+            std::array<Triangle,2> merged{};
+            size_t last=i;
+            for(size_t next=i+1;next<sections.size() && next-i<kMaximumMergedSections && clean(next) &&
+                sections[next]->SectionIndex==sections[next-1]->SectionIndex+1 && ring(next-1,true).Edges==ring(next,false).Edges;++next)
+            {
+                std::array<Triangle,2> candidate;
+                if(!Cell(ring(i,false),ring(next,true),candidate))break;
+                bool within=true;
+                for(size_t joint=i;within && joint<next;++joint)
+                    for(size_t side=0;within && side<2;++side)
+                        within=inside(ring(joint,true).Edges[side],ring(i,false).Edges[side],ring(next,true).Edges[side]);
+                if(!within)break;
+                merged=candidate;last=next;
+            }
+            if(last==i)copy(*sections[i]);
+            else out.insert(out.end(),merged.begin(),merged.end());
+            i=last+1;
+        }
+    }
+    inline void AppendInsets(const A::RecordPlan& record,std::vector<Triangle>& out)
+    {
+        for(const auto& section:record.Sections)for(const auto& t:section->Geometry->WalkwayInsets)
+            out.push_back({E::XY{t.Vertices[0][0],t.Vertices[0][1]},E::XY{t.Vertices[1][0],t.Vertices[1][1]},
+                E::XY{t.Vertices[2][0],t.Vertices[2][1]}});
+    }
+    // Reproject prepared world triangles without allocation or native reads.
+    // Rendering counters count calls that returned from ImGui successfully.
+    inline MiniMapBuildingVisuals::Detail::SplineSubmission Submit(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,
+        const MiniMapMap::Transform& transform,const Triangle* triangles,size_t count,
+        const MiniMapBuildingCollector::Bounds& viewport,uint32_t color)
     {
         MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
         if(!transform.Valid || !(color>>24) || !viewport.Valid)return submitted;
         if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
             !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)return submitted;
-        namespace O=A::O;
-        for(const auto& section:record.Sections)for(size_t first=0;first<section->Geometry->WalkwayInsets.size();++first)
-        {
-            const auto& triangle=section->Geometry->WalkwayInsets[first];
-            const auto& a=triangle.Vertices[0];const auto& b=triangle.Vertices[1];const auto& c=triangle.Vertices[2];
-            std::array<MiniMapMap::ScreenPoint,3> p{};
-            bool valid=true;
-            const std::array<const O::Point*,3> world{&a,&b,&c};
-            for(size_t vertex=0;vertex<3;++vertex)
-                valid&=transform.WorldToScreen((*world[vertex])[0],(*world[vertex])[1],p[vertex]) &&
-                    std::isfinite(p[vertex].X) && std::isfinite(p[vertex].Y);
-            submitted.ProjectedVertices+=3;if(!valid)continue;
-            const double area=(double(p[1].X)-p[0].X)*(double(p[2].Y)-p[0].Y)-
-                (double(p[1].Y)-p[0].Y)*(double(p[2].X)-p[0].X);
-            if(!std::isfinite(area) || area==0.0)continue;
-            if((std::max)({p[0].X,p[1].X,p[2].X})<viewport.MinX ||
-                (std::min)({p[0].X,p[1].X,p[2].X})>viewport.MaxX ||
-                (std::max)({p[0].Y,p[1].Y,p[2].Y})<viewport.MinY ||
-                (std::min)({p[0].Y,p[1].Y,p[2].Y})>viewport.MaxY)continue;
-            if(area<0.0)std::swap(p[1],p[2]);
-            try{ui.FilledTriangle(list, {{{p[0].X, p[0].Y}, {p[1].X, p[1].Y}, {p[2].X, p[2].Y}}}, color);}
-            catch(...)
-            {
-                // The original helper stopped only this band after a possibly recorded call.
-                // Skip its remaining fan triangles, then continue with the next band.
-                while(first+1<section->Geometry->WalkwayInsets.size() && section->Geometry->WalkwayInsets[first+1].Key==triangle.Key)++first;
-                continue;
-            }
-            ++submitted.Triangles;
-        }
-        return submitted;
-    }
-    // Complete, owned section plans only. Reproject without allocation or native
-    // reads. Rendering counters count calls that returned from ImGui successfully.
-    inline MiniMapBuildingVisuals::Detail::SplineSubmission Submit(MiniMap::Services::ICanvas& ui,MiniMap::Services::DrawLayer list,
-        const MiniMapMap::Transform& transform,const A::RecordPlan& record,
-        const MiniMapBuildingCollector::Bounds& viewport,uint32_t color,SubmissionDiagnostics* diagnostic=nullptr)
-    {
-        MiniMapBuildingVisuals::Detail::SplineSubmission submitted;
-        if(diagnostic)*diagnostic={};
-        if(!transform.Valid || !(color>>24) || !viewport.Valid)
-        {if(diagnostic){diagnostic->Transparent=!(color>>24);diagnostic->Rejected=!diagnostic->Transparent;}return submitted;}
-        if(!std::isfinite(viewport.MinX) || !std::isfinite(viewport.MinY) || !std::isfinite(viewport.MaxX) ||
-            !std::isfinite(viewport.MaxY) || viewport.MinX>=viewport.MaxX || viewport.MinY>=viewport.MaxY)
-        {if(diagnostic)diagnostic->Rejected=true;return submitted;}
-        for(const auto& section:record.Sections)for(const auto& triangle:section->Geometry->Visible)
+        for(size_t t=0;t<count;++t)
         {
             std::array<MiniMapMap::ScreenPoint,3> points;
             bool valid=true;
             for(size_t i=0;i<3;++i)
             {
-                const auto& world=triangle.Vertices[i];auto& p=points[i];
+                const auto& world=triangles[t][i];auto& p=points[i];
                 valid&=transform.WorldToScreen(world[0],world[1],p) && std::isfinite(p.X) && std::isfinite(p.Y);
             }
-            submitted.ProjectedVertices+=3;if(!valid){if(diagnostic)++diagnostic->ProjectionRejectedTriangles;continue;}
+            submitted.ProjectedVertices+=3;if(!valid)continue;
             auto p=points[0],q=points[1],r=points[2];
             const double area=(double(q.X)-p.X)*(double(r.Y)-p.Y)-(double(q.Y)-p.Y)*(double(r.X)-p.X);
-            if(!std::isfinite(area) || area==0){if(diagnostic)++diagnostic->ProjectionRejectedTriangles;continue;}
+            if(!std::isfinite(area) || area==0)continue;
             if((std::max)({p.X,q.X,r.X})<viewport.MinX || (std::min)({p.X,q.X,r.X})>viewport.MaxX ||
-                (std::max)({p.Y,q.Y,r.Y})<viewport.MinY || (std::min)({p.Y,q.Y,r.Y})>viewport.MaxY)
-            {if(diagnostic)++diagnostic->OutsideViewportTriangles;continue;}
+                (std::max)({p.Y,q.Y,r.Y})<viewport.MinY || (std::min)({p.Y,q.Y,r.Y})>viewport.MaxY)continue;
             if(area<0)std::swap(q,r);
             try{ui.FilledTriangle(list, {{{p.X, p.Y}, {q.X, q.Y}, {r.X, r.Y}}}, color);}
-            catch(...){
-                if(diagnostic)diagnostic->Rejected=true;return submitted;} // Never retry a possibly recorded call.
+            catch(...){return submitted;} // Never retry a possibly recorded call.
             ++submitted.Triangles;
         }
         return submitted;

@@ -5,6 +5,7 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
+#include "../Adapters/AlienX/GameFields.h"
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
 #include "../DiagnosticExports.h"
@@ -58,14 +59,15 @@ namespace
         if (!IsObject<SDK::ACrPlayerControllerBase>(controller) || !InWorld(controller) ||
             !controller->bIsLocalPlayerController) return false;
         auto* pc = static_cast<SDK::ACrPlayerControllerBase*>(controller);
-        auto* character = pc->PlayerMainCharacter;
-        if (!IsObject<SDK::ACrCharacterPlayerBase>(character) || !InWorld(character) || character->bDead) return false;
+        auto* character = PluginMap::ValueOr(MiniMapFields::PlayerMainCharacter, pc);
+        if (!IsObject<SDK::ACrCharacterPlayerBase>(character) || !InWorld(character) ||
+            PluginMap::ValueOr(MiniMapFields::IsDead, character, true)) return false;
         auto* pawn = pc->Pawn;
         if (!IsObject<SDK::APawn>(pawn) || !InWorld(pawn) || pawn->Controller != pc) return false;
         if (pawn != character)
         {
             if (!IsObject<SDK::ACrCharacterDroneBase>(pawn) ||
-                static_cast<SDK::ACrCharacterDroneBase*>(pawn)->OwnerPlayer != character) return false;
+                PluginMap::ValueOr(MiniMapFields::DroneOwner, static_cast<SDK::ACrCharacterDroneBase*>(pawn)) != character) return false;
         }
         out = {pc, character, pawn};
         return true;

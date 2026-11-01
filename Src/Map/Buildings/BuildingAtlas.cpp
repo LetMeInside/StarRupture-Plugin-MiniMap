@@ -7,6 +7,7 @@
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <limits>
@@ -67,6 +68,7 @@ namespace
     std::condition_variable g_serviceFinished;
     bool g_stopping = false;
     std::shared_ptr<A::Session> g_session, g_uncertain;
+    std::atomic<uint64_t> g_retiredEpoch{0};
 
     bool Current(const A::Batch& batch)
     {
@@ -164,6 +166,7 @@ namespace
                 if (status.Where == S::Location::Atlas) { status.Atlas = {}; status.Where = S::Location::FileCache; }
         lock.unlock();
         if (session) Release(session, old);
+        g_retiredEpoch.fetch_add(1, std::memory_order_release);
         lock.lock();
         if (shutdown)
         {
@@ -186,6 +189,10 @@ namespace MiniMapBuildingAtlas
         if (!textures || !textures->Available()) return false;
         g_statuses = &statuses; g_textures = textures; g_interfacesAlive = true;
         return true;
+    }
+    uint64_t RetiredEpoch() noexcept
+    {
+        return g_retiredEpoch.load(std::memory_order_acquire);
     }
     void ObservePublication(uint64_t& session,uint64_t& revision) noexcept
     {
@@ -473,6 +480,7 @@ namespace MiniMapBuildingAtlas
         // Never invoke the texture service inside LifecycleMutex, including rejected/stale uploads.
         Release(batch, candidate);
         Release(batch,old);
+        if (old || candidate) g_retiredEpoch.fetch_add(1, std::memory_order_release);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (diagnosticPixels)
             MiniMapBuildingCache::WriteAtlasDiagnosticPng(diagnosticPixels->Rgba,

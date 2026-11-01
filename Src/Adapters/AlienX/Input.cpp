@@ -4,7 +4,7 @@
 #include <utility>
 
 // Preserve the former input ABI/vocabulary review checks inside the adapter.
-static_assert(PLUGIN_INTERFACE_VERSION == 70, "Review the wheel ABI when updating the SDK");
+static_assert(PLUGIN_INTERFACE_VERSION == 73, "Review the wheel ABI when updating the SDK");
 static_assert(std::size_t(EModKey::Unknown) == 101);
 
 namespace MiniMap::Adapters::AlienX

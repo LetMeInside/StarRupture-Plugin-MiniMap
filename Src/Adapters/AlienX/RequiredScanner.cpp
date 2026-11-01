@@ -1,6 +1,9 @@
 #include "RequiredScanner.h"
 #include "Compatibility.h"
 
+#include "SDK/Engine_classes.hpp"
+#include "plugin_map.h"
+
 #include <limits>
 #include <string>
 
@@ -9,9 +12,11 @@ namespace MiniMap::Adapters::AlienX
     RequiredScanner::RequiredScanner(IPluginSelf& self, IPluginHookScanner& scanner) noexcept
         : Self(self), Scanner(scanner) {}
 
+    // A scan the loader could not place is recorded there. Whether it refuses the
+    // plugin or only turns off the feature that lists its key is the loader's
+    // call, so only failures the plugin reported itself stop the resolve.
     bool RequiredScanner::HasFailures()
     {
-        Failed = Failed || Scanner.HasFailures(&Self);
         return Failed;
     }
 
@@ -31,20 +36,19 @@ namespace MiniMap::Adapters::AlienX
             return {std::nullopt, {Error::InvalidArgument, "invalid required scan name or pattern"}};
         }
 
-        PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
         const std::string name(scan.name);
         const std::string pattern(scan.idaPattern);
-        request.hookName = name.c_str();
-        request.pattern = pattern.c_str();
+        int kind = PLUGIN_SCAN_UNSPECIFIED;
         switch (scan.kind)
         {
-        case AddressKind::FunctionEntry: request.kind = PLUGIN_SCAN_FUNCTION_START; break;
-        case AddressKind::Code: request.kind = PLUGIN_SCAN_CODE; break;
+        case AddressKind::FunctionEntry: kind = PLUGIN_SCAN_FUNCTION_START; break;
+        case AddressKind::Code: kind = PLUGIN_SCAN_CODE; break;
         default:
             Fail(scan.name, "invalid required scan address kind");
             return {std::nullopt, {Error::InvalidArgument, "invalid required scan address kind"}};
         }
-        request.resultOffset = scan.resultOffset;
+        uint32_t flags = PLUGIN_SCAN_FLAG_NONE;
+        std::int32_t followRel32At = 0;
         if (scan.followRel32At)
         {
             // The approved neutral field is unsigned; AlienX uses signed int32.
@@ -54,20 +58,22 @@ namespace MiniMap::Adapters::AlienX
                 Fail(scan.name, "required scan rel32 offset exceeds AlienX int32 range");
                 return {std::nullopt, {Error::InvalidArgument, "unrepresentable rel32 offset"}};
             }
-            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
-            request.followRel32At = static_cast<std::int32_t>(*scan.followRel32At);
+            flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            followRel32At = static_cast<std::int32_t>(*scan.followRel32At);
         }
 
-        // Main executable and required flags come from REQUEST_INIT. The host
-        // owns uniqueness, transform/kind validation and detailed failure reports.
+        // A keyed scan goes to the loader's version map first and idaPattern is
+        // the fallback (PluginMap::Request sets the key flag). Main executable
+        // and required flags come from REQUEST_INIT; the host owns uniqueness,
+        // transform/kind validation and detailed failure reports.
+        PluginScanRequest request = PluginMap::Request(name.c_str(), pattern.c_str(), kind, flags,
+            scan.resultOffset, followRel32At);
+        if (!scan.inMap)
+            request.flags &= ~static_cast<uint32_t>(PLUGIN_SCAN_FLAG_MAP_KEY);
+
         const auto address = Scanner.Resolve(&Self, &request);
         if (!address)
-        {
-            Failed = true; // Resolve already recorded the named required failure.
             return {std::nullopt, {Error::BackendFailure, "required scan failed; see loader scan report"}};
-        }
-        if (HasFailures())
-            return {std::nullopt, {Error::BackendFailure, "loader reports a failed required scan session"}};
         return {address, {}};
     }
 
