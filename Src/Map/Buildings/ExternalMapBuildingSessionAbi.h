@@ -7,7 +7,7 @@
 #define MINIMAP_BUILDING_ABI_CALL
 #define MINIMAP_BUILDING_ABI_EXPORT
 #endif
-#define MINIMAP_BUILDING_SESSION_ABI_VERSION 2u
+#define MINIMAP_BUILDING_SESSION_ABI_VERSION 1u /* Keep at v1 until public release. */
 #ifdef __cplusplus
 namespace SDK { class UWorld; class UCanvas; class UTextureRenderTarget2D; class UMaterialInstanceDynamic; }
 typedef SDK::UWorld MiniMapBuildingWorld;
