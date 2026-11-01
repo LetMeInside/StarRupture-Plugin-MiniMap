@@ -383,11 +383,12 @@ namespace MiniMapNative
         g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);
         // This populates the same static type cache used by the native typed getter.
         // No script-struct discovery belongs in the gameplay numerical adapter.
+        // A null type is not fatal: the payload copy reports Unavailable and the rails
+        // and pipes are skipped (building-splines).
         if (addresses.splineActorPayloadStaticStruct)
         {
             g_nativeApi.splinePayload.payloadType =
                 reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
-            if (!g_nativeApi.splinePayload.payloadType) return false;
         }
 
         g_initialized = true;
