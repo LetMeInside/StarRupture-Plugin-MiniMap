@@ -37,6 +37,9 @@ namespace MiniMapBuildingAtlas
     const MiniMapSpriteStatus::AtlasEntry* Find(const std::string& canonicalBlueprint) noexcept;
     // Diagnostic values only, under the SAME caller-held lifecycle lock as Find.
     void ObservePublication(uint64_t& session, uint64_t& revision) noexcept;
+    // Rises once a replaced or ended atlas texture has been released. Any texture
+    // handle recorded under an earlier value may be retired. Lock-free.
+    uint64_t RetiredEpoch() noexcept;
     bool SubmitQuad(MiniMap::Services::ICanvas&, MiniMap::Services::DrawLayer, const MiniMapSpriteStatus::AtlasEntry&,
         const MiniMap::Services::Quad& positions, uint32_t color) noexcept;
 

@@ -21,6 +21,7 @@
 #include "Services/RuntimeEvents.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -80,7 +81,7 @@ namespace MiniMapBuildingCollector
     Clock::time_point nextMembership{};
     std::mutex publicationMutex;
     std::shared_ptr<const Snapshot> snapshot;
-    double viewRadius=0;
+    std::atomic<double> viewRadius=0; // Set from the render callback, which must not wait.
     bool renderDroneRails=true;
     bool regionOverride=false;
     Bounds region;
@@ -774,7 +775,7 @@ namespace MiniMapBuildingCollector
             else
             {
                 MiniMapMap::PresentationSample sample{};
-                {std::scoped_lock lock(publicationMutex);radius=viewRadius;}
+                radius=viewRadius;
                 hasLocalCenter=radius>0 && MiniMapMap::TryGetPresentationSample(sample);
                 if(hasLocalCenter)
                 {
@@ -910,7 +911,7 @@ namespace MiniMapBuildingCollector
     BuildingCollector::BuildingCollector(BuildingCollector&&) noexcept=default;
     BuildingCollector& BuildingCollector::operator=(BuildingCollector&&) noexcept=default;
     bool BuildingCollector::InitializeResources(){return state_->InitializeMetadata();}
-    void BuildingCollector::Reset(){state_->ready=false;state_->ClearSession();std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=0;}
+    void BuildingCollector::Reset(){state_->ready=false;state_->ClearSession();state_->viewRadius=0;}
     void BuildingCollector::OnExperienceLoadComplete()
     {
         state_->ready=state_->InitializeMetadata();
@@ -926,7 +927,7 @@ namespace MiniMapBuildingCollector
     void BuildingCollector::SetViewport(const MiniMapMap::Transform& t)
     {
         const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
-        std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=std::isfinite(radius)?radius:0;
+        state_->viewRadius=std::isfinite(radius)?radius:0; // Atomic: the render callback must not wait.
     }
     void BuildingCollector::SetRegion(const Bounds& region)
     {
@@ -938,6 +939,17 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::SetRenderDroneRails(bool enabled){state_->renderDroneRails=enabled;}
     std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}
+    bool BuildingCollector::TryGetSnapshot(std::shared_ptr<const Snapshot>& out)
+    {
+        std::shared_ptr<const Snapshot> current;
+        {
+            std::unique_lock<std::mutex> lock(state_->publicationMutex,std::try_to_lock);
+            if(!lock.owns_lock())return false;
+            current=state_->snapshot;
+        }
+        out.swap(current); // The replaced one is released outside the lock.
+        return true;
+    }
     CollectorDiagnostics BuildingCollector::GetDiagnostics() const
     {
         CollectorDiagnostics result{};
@@ -995,6 +1007,7 @@ namespace MiniMapBuildingCollector
     void OnExperienceLoadComplete(){if(g_initialized)MiniMapInstance().OnExperienceLoadComplete();}
     void SetViewport(const MiniMapMap::Transform& t){MiniMapInstance().SetViewport(t);}
     std::shared_ptr<const Snapshot> GetSnapshot(){return MiniMapInstance().GetSnapshot();}
+    bool TryGetSnapshot(std::shared_ptr<const Snapshot>& out){return MiniMapInstance().TryGetSnapshot(out);}
     void OnTick(float delta)
     {
         if(!MiniMapUI::IsVisible())return;

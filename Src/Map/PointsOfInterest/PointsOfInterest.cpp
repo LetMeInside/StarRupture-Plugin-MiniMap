@@ -993,14 +993,28 @@ namespace MiniMapPointsOfInterest
             return;
         }
 
-        std::vector<POIRecord> records;
+        // Render-thread copy; a busy snapshot lock keeps the previous one
+        // rather than making the callback wait on the game thread.
+        static std::vector<POIRecord> records;
+        static uint64_t copiedWorldGeneration = 0;
 
         {
-            std::scoped_lock lock(
-                g_snapshotMutex);
+            std::unique_lock<std::mutex> lock(
+                g_snapshotMutex, std::try_to_lock);
 
-            records =
-                g_records;
+            if (lock.owns_lock())
+            {
+                records =
+                    g_records;
+                copiedWorldGeneration =
+                    MiniMapMap::GetWorldGeneration();
+            }
+        }
+
+        if (copiedWorldGeneration !=
+            MiniMapMap::GetWorldGeneration())
+        {
+            records.clear();
         }
 
         if (records.empty())
