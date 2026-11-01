@@ -160,6 +160,7 @@
     <ClInclude Include="Map\Buildings\BuildingSplinePayload.h" />
     <ClInclude Include="Map\Buildings\BuildingVisualGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSpriteGeometry.h" />
+    <ClInclude Include="Map\Buildings\BuildingSpriteGeometryCore.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineGeometry.h" />
     <ClInclude Include="Map\Buildings\BuildingSplinePolicy.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineProfiles.h" />
