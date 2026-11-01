@@ -2127,8 +2127,9 @@ namespace
     constexpr unsigned kWorldRetryTicks = 120;
     unsigned g_worldCreationAttempts = 0, g_worldRetryTicks = 0;
     // Large bases queue many classes at once. Let a freshly loaded world settle
-    // before the first capture, then leave a gap after every finished MiniMap
-    // request. BuildingComplex requests share the renderer but not the gap.
+    // before the first MiniMap capture, then leave a gap after every finished
+    // MiniMap request. BuildingComplex requests share the renderer but neither
+    // the settle delay nor the gap.
     using Clock = std::chrono::steady_clock;
     constexpr auto kSessionSettleDelay = std::chrono::seconds(5);
     constexpr auto kCaptureGap = std::chrono::milliseconds(500);
@@ -2160,9 +2161,15 @@ namespace
     // BuildingComplex requests keep their queue order ahead of MiniMap classes
     // and are never paced; MiniMap requests are skipped while capture is off or
     // the gap since the last MiniMap request has not elapsed.
+    bool MiniMapAdmissible(bool captureSprites)
+    {
+        const auto now = Clock::now();
+        return captureSprites && now >= g_settleUntil && now >= g_nextMiniMapAdmission;
+    }
+
     bool RemoveNearest(MiniMapSpriteQueues::Request& request, bool captureSprites)
     {
-        const bool miniMapAdmissible = captureSprites && Clock::now() >= g_nextMiniMapAdmission;
+        const bool miniMapAdmissible = MiniMapAdmissible(captureSprites);
         const auto snapshot = MiniMapBuildingCollector::GetSnapshot();
         std::unordered_map<std::string_view, double> nearest; // Views into snapshot.
         MiniMapMap::PresentationSample sample{};
@@ -2253,9 +2260,9 @@ namespace MiniMapBuildingSpriteRenderer
         if (!g_fifo || !g_feedback || !g_sessionActive || !MiniMapMap::GameplayReady() ||
             g_nativeWorld.Phase == WorldPhase::Quarantined) return;
         const bool captureSprites = MiniMapConfig::GetRenderSettings().Buildings.CaptureSprites;
-        // MiniMap requests wait in the FIFO while capture is off or the gap runs;
+        // MiniMap requests wait in the FIFO while capture is off, the world settles or the gap runs;
         // BuildingComplex requests do not.
-        const bool miniMapAdmissible = captureSprites && Clock::now() >= g_nextMiniMapAdmission;
+        const bool miniMapAdmissible = MiniMapAdmissible(captureSprites);
         const bool hasWork = g_fifo->HasAny([miniMapAdmissible](const MiniMapSpriteQueues::Request& queued)
             { return miniMapAdmissible || queued.Kind != MiniMapSpriteQueues::RequestKind::MiniMap; });
         if (!g_activeRequest && g_nativeWorld.Phase != WorldPhase::Ready && !hasWork) return;
@@ -2287,7 +2294,6 @@ namespace MiniMapBuildingSpriteRenderer
         // Retirement and undelivered feedback take priority. Even if this clears
         // the request, admission waits until the next service iteration.
         if (g_activeRequest) { ServiceActiveRequest(); return; }
-        if (Clock::now() < g_settleUntil) return; // Settle delay after session start.
         if (g_nativeWorld.Phase != WorldPhase::Ready)
         {
             if (!g_nativeWorld.CanStartSession())
