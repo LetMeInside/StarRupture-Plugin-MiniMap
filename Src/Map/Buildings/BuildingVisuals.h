@@ -1,26 +1,101 @@
 #pragma once
 #include "Services/Viewport.h"
+#include "Services/ImageDestination.h"
 #include "DiagnosticExports.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
 #include "Config/Config.h"
 #include "Map/MapTransform.h"
 #include "BuildingSplineEnvelope.h"
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <string>
 
 namespace MiniMapBuildingVisuals
 {
     // Owned numerical ribbons may be approximate; confidence is not permission.
     inline constexpr bool SplineRenderingEnabled = true;
     struct State;
+    using DestinationMapping = MiniMap::Services::ImageDestinationMapping;
+    struct DrawingCoordinates
+    {
+        std::array<double, 3> Position{}, SignedScale{};
+        std::array<double, 4> Rotation{};
+        bool PlacementValid = false;
+        DestinationMapping Destination;
+    };
+    // Owns the serialized drawing and scheduler pass. Keep it on the thread
+    // that called BeginDraw and end it before submitting another pass.
+    class DrawingPass final
+    {
+    public:
+        DrawingPass() noexcept;
+        ~DrawingPass();
+        DrawingPass(DrawingPass&&) noexcept;
+        DrawingPass& operator=(DrawingPass&&) noexcept;
+        DrawingPass(const DrawingPass&) = delete;
+        DrawingPass& operator=(const DrawingPass&) = delete;
+        explicit operator bool() const noexcept { return bool(Owner); }
+    private:
+        struct Impl;
+        explicit DrawingPass(std::unique_ptr<Impl>) noexcept;
+        std::unique_ptr<Impl> Owner;
+        friend DrawingPass BeginDraw();
+        friend void EndDraw(DrawingPass&) noexcept;
+    };
+    DrawingPass BeginDraw();
+    void EndDraw(DrawingPass&) noexcept;
+    enum class DrawStatus : uint8_t
+    {
+        Submitted, SpritePending, SpriteUnavailable, DestinationUnavailable, InvalidPlacement, Culled, SubmissionFailure
+    };
+    struct OcclusionGeometry
+    {
+        std::array<std::array<double, 2>, 4> WorldQuad{};
+        std::array<double, 3> SourceMin{}, SourceMax{};
+    };
+    struct DrawResult
+    {
+        DrawStatus Status = DrawStatus::SpriteUnavailable;
+        OcclusionGeometry Evidence; // Valid only when Status is Submitted.
+    };
     std::shared_ptr<State> CreateState();
     void Prepare(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&);
-    void RenderSelected(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&,
+    // Call only while a DrawingPass from BeginDraw is active on this thread.
+    // The caller provides placement and destination mapping; geometry and
+    // atlas lookup/submission remain owned by this implementation.
+    DrawResult DrawBuilding(const std::string& blueprintName, const DrawingCoordinates&,
+        MiniMap::Services::IImageDestination& destination);
+    void DrawBuildings(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&,
         MiniMap::Services::ICanvas&, const MiniMapMap::Transform&,
         const MiniMapConfig::BuildingRenderSettings&);
+    bool InitializeSpriteProcessing();
+    bool BeginSession();
+    void TickSpriteCapture(float deltaTime, bool gameplayReady);
+    void ServiceSpriteRequirements(bool gameplayReady, bool visible, bool gameThread);
+    void EndSession();
+    void ShutdownSpriteProcessing();
+    namespace CollectorIntegration
+    {
+        struct DrawingBoundsVersion { uint64_t Session = 0, Revision = 0; };
+        struct DrawingBoundsChange { bool Changed = false, SessionChanged = false, RevisionChanged = false; };
+        DrawingBoundsChange ObserveDrawingBoundsVersion(DrawingBoundsVersion& previous);
+        void RefreshRecordBounds(MiniMapBuildingCollector::Record&);
+    }
+    struct DiagnosticSnapshot
+    {
+        uintptr_t PrivateWorld = 0;
+        uint64_t Session = 0;
+        unsigned WorldPhase = 0, RequestPhase = 0;
+        bool Active = false;
+        char BlueprintTail[96]{};
+    };
+    DiagnosticSnapshot GetDiagnosticSnapshot() noexcept;
     bool Initialize(IPluginSelf* self);
     void Reset();
     void Shutdown();
-    void Render(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
+    void DrawBuildings(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings);
 
     // Shared with narrow submission fixtures. Called only from the existing UI

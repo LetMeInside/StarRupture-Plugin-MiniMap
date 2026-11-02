@@ -153,7 +153,7 @@ namespace
             transform,
             settings))
         {
-            MiniMapBuildingVisuals::Render(ui, transform, settings.Buildings);
+            MiniMapBuildingVisuals::DrawBuildings(ui, transform, settings.Buildings);
             MiniMapFogOfWar::Render(
                 ui,
                 transform, settings.Fog);

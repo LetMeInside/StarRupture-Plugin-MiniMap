@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,9 @@ namespace MiniMapBuildingAtlasCore
     {
         std::string Identifier;
         CropRect Crop;
-        std::vector<std::uint8_t> Rgba; // Processed Width * Height * 4; never resampled here.
+        // Immutable once admitted. Atlas packing and drawing leases share this
+        // exact processed pixel allocation.
+        std::shared_ptr<const std::vector<std::uint8_t>> Rgba;
     };
     struct PackedSource
     {
@@ -61,8 +64,11 @@ namespace MiniMapBuildingAtlasCore
         // Copies an already processed positive image bounded by SourceSize on
         // each axis. No crop/downscale is repeated; input ownership stays with caller.
         // Failure leaves sources and current layout unchanged; identifiers are opaque bytes.
+        // On success, retainedSource receives the stable immutable source handle.
+        // DuplicateIdentifier also returns the already-retained handle when requested.
         Result Add(const std::string& identifier, std::uint32_t width, std::uint32_t height,
-            std::span<const std::uint8_t> rgba) noexcept;
+            std::span<const std::uint8_t> rgba,
+            std::shared_ptr<const CroppedSource>* retainedSource = nullptr) noexcept;
         // Complete-set attempts at 512 then 1024, without shrinking the current
         // canvas or moving any current allocation. Failure preserves the last layout.
         Result Repack() noexcept;
@@ -74,14 +80,15 @@ namespace MiniMapBuildingAtlasCore
         // Current().DeferredIdentifiers.
         // Errors preserve all current metadata, pixels, revision and sources.
         Result RepackSubset() noexcept;
-        // Read-only views: Sources references invalidate on a successful Add;
+        // Read-only vector view: its references invalidate on a successful Add;
+        // copied shared source handles remain valid independently of vector growth.
         // Current references into buffers invalidate on a successful Repack or
         // RepackSubset. Add never changes Current; neither repack changes Sources.
-        const std::vector<CroppedSource>& Sources() const noexcept { return Retained; }
+        const std::vector<std::shared_ptr<const CroppedSource>>& Sources() const noexcept { return Retained; }
         const Layout& Current() const noexcept { return Packed; }
 
     private:
-        std::vector<CroppedSource> Retained; // Sorted by unsigned identifier bytes, not status data.
+        std::vector<std::shared_ptr<const CroppedSource>> Retained; // Sorted by unsigned identifier bytes, not status data.
         Layout Packed;
     };
 }

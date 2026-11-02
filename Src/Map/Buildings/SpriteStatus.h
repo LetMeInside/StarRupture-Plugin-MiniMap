@@ -43,6 +43,7 @@ namespace MiniMapSpriteStatus
         Atlas,
         PendingCache
     };
+    enum class FailureReason { None, CacheLoad, NativeCapture, Other };
 
     struct AtlasEntry
     {
@@ -70,6 +71,7 @@ namespace MiniMapSpriteStatus
         }
 
         Location Where;
+        FailureReason Failure = FailureReason::None;
         AtlasEntry Atlas{};
     };
 

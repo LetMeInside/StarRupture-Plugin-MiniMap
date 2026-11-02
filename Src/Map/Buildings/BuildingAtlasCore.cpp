@@ -99,7 +99,7 @@ namespace MiniMapBuildingAtlasCore
                     std::uint32_t(crop.Y) + crop.Height > SourceSize) return Result::InternalError;
                 if (!ImageBytes(crop.Width, crop.Height, bytes) ||
                     !AddSize(crop.Width, 2 * Gutter, width) || !AddSize(crop.Height, 2 * Gutter, height)) return Result::Overflow;
-                if (bytes != source->Rgba.size()) return Result::InternalError;
+                if (!source->Rgba || bytes != source->Rgba->size()) return Result::InternalError;
                 if (width > side || height > side) return Result::Capacity;
                 order.push_back(source);
             }
@@ -192,10 +192,10 @@ namespace MiniMapBuildingAtlasCore
                         const std::size_t sx = x < Gutter ? 0 : (std::min)(x - Gutter, std::size_t(source.Crop.Width - 1));
                         const std::size_t sy = y < Gutter ? 0 : (std::min)(y - Gutter, std::size_t(source.Crop.Height - 1));
                         std::size_t from{}, to{};
-                        if (!Pixel(sx, sy, source.Crop.Width, source.Crop.Height, source.Rgba.size(), from) ||
+                        if (!source.Rgba || !Pixel(sx, sy, source.Crop.Width, source.Crop.Height, source.Rgba->size(), from) ||
                             !Pixel(std::size_t(allocation.X) + x, std::size_t(allocation.Y) + y, side, side, bytes, to))
                             return Result::InternalError;
-                        std::memcpy(candidate.Rgba.data() + to, source.Rgba.data() + from, 4);
+                        std::memcpy(candidate.Rgba.data() + to, source.Rgba->data() + from, 4);
                     }
             }
             return Result::Ok;
@@ -215,8 +215,10 @@ namespace MiniMapBuildingAtlasCore
     }
 
     Result Atlas::Add(const std::string& identifier, std::uint32_t width, std::uint32_t height,
-        std::span<const std::uint8_t> rgba) noexcept
+        std::span<const std::uint8_t> rgba,
+        std::shared_ptr<const CroppedSource>* retainedSource) noexcept
     {
+        if (retainedSource) retainedSource->reset();
         try
         {
             if (!width || !height || width > SourceSize || height > SourceSize) return Result::UnsupportedDimensions;
@@ -225,17 +227,23 @@ namespace MiniMapBuildingAtlasCore
             if (rgba.size() != bytes) return Result::InvalidBuffer;
             if (identifier.empty()) return Result::EmptyIdentifier;
             const auto position = std::lower_bound(Retained.begin(), Retained.end(), identifier,
-                [](const CroppedSource& source, const std::string& key) { return BytesLess(source.Identifier, key); });
-            if (position != Retained.end() && position->Identifier == identifier) return Result::DuplicateIdentifier;
+                [](const std::shared_ptr<const CroppedSource>& source, const std::string& key)
+                { return BytesLess(source->Identifier, key); });
+            if (position != Retained.end() && (*position)->Identifier == identifier)
+            {
+                if (retainedSource) *retainedSource = *position;
+                return Result::DuplicateIdentifier;
+            }
             bool coverage = false;
             for (std::size_t i = 3; i < rgba.size(); i += 4) coverage |= rgba[i] != 0;
             if (!coverage) return Result::EmptyAlpha;
-            CroppedSource source;
-            source.Identifier = identifier;
-            source.Crop = {0, 0, std::uint16_t(width), std::uint16_t(height)};
-            source.Rgba.assign(rgba.begin(), rgba.end());
-            // String/vector moves are noexcept; insertion has the strong failure guarantee.
-            Retained.insert(position, std::move(source));
+            auto source = std::make_shared<CroppedSource>();
+            source->Identifier = identifier;
+            source->Crop = {0, 0, std::uint16_t(width), std::uint16_t(height)};
+            source->Rgba = std::make_shared<const std::vector<std::uint8_t>>(rgba.begin(), rgba.end());
+            std::shared_ptr<const CroppedSource> immutable = source;
+            Retained.insert(position, immutable);
+            if (retainedSource) *retainedSource = std::move(immutable);
             return Result::Ok;
         }
         catch (const std::bad_alloc&) { return Result::AllocationFailure; }
@@ -251,7 +259,7 @@ namespace MiniMapBuildingAtlasCore
             if (Packed.Revision == (std::numeric_limits<std::uint64_t>::max)()) return Result::Overflow;
             std::vector<const CroppedSource*> sources;
             sources.reserve(Retained.size());
-            for (const auto& source : Retained) sources.push_back(&source);
+            for (const auto& source : Retained) sources.push_back(source.get());
             for (std::uint16_t side : {std::uint16_t(512), std::uint16_t(1024)})
             {
                 if (side < Packed.Width || side < Packed.Height) continue;
@@ -285,16 +293,16 @@ namespace MiniMapBuildingAtlasCore
             for (const auto& image : Packed.Images)
             {
                 const auto source = std::lower_bound(Retained.begin(), Retained.end(), image.Identifier,
-                    [](const CroppedSource& retained, const std::string& key)
-                    { return BytesLess(retained.Identifier, key); });
-                if (source == Retained.end() || source->Identifier != image.Identifier)
+                    [](const std::shared_ptr<const CroppedSource>& retained, const std::string& key)
+                    { return BytesLess(retained->Identifier, key); });
+                if (source == Retained.end() || (*source)->Identifier != image.Identifier)
                     return Result::InternalError;
                 const auto index = std::size_t(source - Retained.begin());
                 if (admitted[index]) return Result::InternalError;
                 admitted[index] = true;
             }
             for (std::size_t i = 0; i < Retained.size(); ++i)
-                if (admitted[i]) selection.push_back(&Retained[i]);
+                if (admitted[i]) selection.push_back(Retained[i].get());
 
             std::uint16_t minimumSide = (std::max)(Packed.Width, Packed.Height);
             auto fit = [&]() -> Result
@@ -322,7 +330,7 @@ namespace MiniMapBuildingAtlasCore
             for (std::size_t i = 0; i < Retained.size(); ++i)
             {
                 if (admitted[i]) continue;
-                selection.push_back(&Retained[i]);
+                selection.push_back(Retained[i].get());
                 const auto result = fit();
                 if (result == Result::Ok) admitted[i] = true;
                 else
@@ -338,7 +346,7 @@ namespace MiniMapBuildingAtlasCore
             if (result != Result::Ok) return result;
             candidate.DeferredIdentifiers.reserve(Retained.size() - selection.size());
             for (std::size_t i = 0; i < Retained.size(); ++i)
-                if (!admitted[i]) candidate.DeferredIdentifiers.push_back(Retained[i].Identifier);
+                if (!admitted[i]) candidate.DeferredIdentifiers.push_back(Retained[i]->Identifier);
             candidate.Revision = Packed.Revision + 1;
             Commit(Packed, candidate);
             return Result::Ok;

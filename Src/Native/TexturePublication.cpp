@@ -1,6 +1,5 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TexturePublication.h"
-#include "MassLifecycle.h"
 #include "NativeApi.h"
 #include "TextureAccess.h"
 #include "CaptureRetirementCore.h"
@@ -19,7 +18,6 @@
 namespace
 {
     namespace N = MiniMapNative;
-    namespace B = MiniMapMassLifecycle;
     namespace T = MiniMapTexturePublication;
     namespace R = MiniMapCaptureRetirement;
     static_assert(sizeof(SDK::FName) == 8);
@@ -111,7 +109,7 @@ namespace
     bool SameGroupedIdentity(const MiniMapBuildingComplexWorld::TileIdentity& a,
         const MiniMapBuildingComplexWorld::TileIdentity& b) noexcept
     {
-        if (a.WorldGeneration != b.WorldGeneration || a.RestoreEpoch != b.RestoreEpoch ||
+        if (a.WorldGeneration != b.WorldGeneration ||
             a.Origin.Valid != b.Origin.Valid || a.Origin.X != b.Origin.X || a.Origin.Y != b.Origin.Y ||
             a.Key != b.Key || a.PolicyId != b.PolicyId || a.ContentSide != b.ContentSide ||
             a.RenderDroneRails != b.RenderDroneRails || a.State != b.State || a.Inputs.size() != b.Inputs.size())
@@ -119,7 +117,7 @@ namespace
         for (size_t i = 0; i < a.Inputs.size(); ++i)
         {
             const auto& x = a.Inputs[i]; const auto& y = b.Inputs[i];
-            if (x.Key != y.Key || x.WorldGeneration != y.WorldGeneration || x.RestoreEpoch != y.RestoreEpoch ||
+            if (x.Key != y.Key || x.WorldGeneration != y.WorldGeneration ||
                 x.SourceRevision != y.SourceRevision || x.CellRevision != y.CellRevision ||
                 x.DependencyRevision != y.DependencyRevision || x.Validity != y.Validity ||
                 x.Origin.Valid != y.Origin.Valid || x.Origin.X != y.Origin.X || x.Origin.Y != y.Origin.Y ||
@@ -136,7 +134,7 @@ namespace
             b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
         return a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
-            a.Key == b.Key && a.WorldGeneration == b.WorldGeneration && a.RestoreEpoch == b.RestoreEpoch &&
+            a.Key == b.Key && a.WorldGeneration == b.WorldGeneration &&
             a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
             a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
                 a.CellRevision == b.CellRevision && a.DependencyRevision == b.DependencyRevision)) &&
@@ -152,7 +150,7 @@ namespace
             b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
         return b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
             a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
-            a.Key == b.Key && a.WorldGeneration == b.WorldGeneration && a.RestoreEpoch == b.RestoreEpoch &&
+            a.Key == b.Key && a.WorldGeneration == b.WorldGeneration &&
             a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
             a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
                 a.CellRevision == b.CellRevision && a.DependencyRevision == b.DependencyRevision)) &&
@@ -369,11 +367,8 @@ namespace MiniMapTexturePublication
     }
     uint64_t Prepare(Image&& image, Generation generation)
     {
-        const auto lifecycle = B::Status();
-        if (Closed || !B::InAdmittedService() || !NativeAdmission() || !generation.Request || !generation.Revision ||
-            lifecycle.SeedRequired || lifecycle.ObservationLost || lifecycle.Queued || lifecycle.InFlight ||
-            (lifecycle.RestoreObserved && (!lifecycle.MassInitialized || !lifecycle.PostSaveCompleted)) ||
-            generation.Epoch != lifecycle.Epoch || image.Pixels.empty() || image.Width < 1 || image.Height < 1 ||
+        if (Closed || !NativeAdmission() || !generation.Request || !generation.Revision ||
+            image.Pixels.empty() || image.Width < 1 || image.Height < 1 ||
             uint64_t(image.Width) * uint64_t(image.Height) * 8 != image.Pixels.size()) return 0;
         if (!NextId || NextId == (std::numeric_limits<uint64_t>::max)()) return 0;
         std::unique_ptr<Owner> candidate;
@@ -585,9 +580,7 @@ namespace MiniMapTexturePublication
         namespace R = MiniMapBuildingComplexCellRasterizer;
         try
         {
-            if (Closed || !B::InAdmittedService() || !NativeAdmission()) return;
-            const auto world = W::GetStatus();
-            if (world.State != W::MembershipState::MembershipEstablished) return;
+            if (Closed || !NativeAdmission()) return;
             for (auto it = PendingCells.begin(); it != PendingCells.end();)
             {
                 const uint64_t requestId = it->first;
@@ -676,7 +669,7 @@ namespace MiniMapTexturePublication
                     owner->Current = false;
                     owner->Cancelled = true;
                 }
-                // Service no more than one grouped texture upload per admitted
+                // Service no more than one grouped texture upload per native-safe
                 // publisher pass; composition is already paced by the world owner.
                 break;
             }
@@ -889,13 +882,10 @@ namespace MiniMapTexturePublication
     }
     SDK::UTexture2D* Ready(uint64_t id, Generation current)
     {
-        if (!B::InAdmittedService() || !NativeAdmission()) return nullptr;
+        if (!NativeAdmission()) return nullptr;
         auto* owner = Find(id);
-        const auto lifecycle = B::Status();
         if (!owner || owner->RequestId || owner->Phase != State::Ready || owner->Cancelled || owner->Uncertain ||
-            current != owner->Token || current.Epoch != lifecycle.Epoch || lifecycle.ObservationLost || lifecycle.SeedRequired ||
-            lifecycle.Queued || lifecycle.InFlight ||
-            (lifecycle.RestoreObserved && (!lifecycle.MassInitialized || !lifecycle.PostSaveCompleted)))
+            current != owner->Token)
             return nullptr;
         uintptr_t resource = 0;
         if (!Call(Op::Resource, owner->Texture, resource))
@@ -930,7 +920,6 @@ namespace MiniMapTexturePublication
             if (owner && owner->Id && !owner->Uncertain) { pending = true; break; }
         if (!pending) { HasOwners.store(false, std::memory_order_release); return; }
         if (!NativeAdmission()) return;
-        const auto lifecycle = B::Status();
         for (auto it = Owners.begin(); it != Owners.end();)
         {
             Owner& owner = **it;
@@ -940,7 +929,7 @@ namespace MiniMapTexturePublication
                 if (Closed || (owner.IsGrouped ? !ValidGroupedOwner(owner) : !ValidCellOwner(owner)) ||
                     (!owner.IsGrouped && !IsCurrentRequest(owner))) Withdraw(owner);
             }
-            else if (Closed || owner.Token.Epoch != lifecycle.Epoch || lifecycle.Cancelled || lifecycle.ObservationLost)
+            else if (Closed)
                 owner.Cancelled = true;
             if (owner.Phase == State::ResourceInitializing && CompleteFence(owner))
             {
@@ -1012,16 +1001,11 @@ namespace MiniMapTexturePublication
             else ++it;
         }
     }
-    void CancelWorld() noexcept
-    {
-        if (!GameThread()) return;
-        InvalidateAll();
-        for (auto& owner : Owners) if (owner) owner->Cancelled = true;
-    }
     void Shutdown() noexcept
     {
         if (!GameThread()) return;
-        Closed = true; CancelWorld();
+        Closed = true; InvalidateAll();
+        for (auto& owner : Owners) if (owner) owner->Cancelled = true;
         try
         {
             Service(); // One nonblocking retirement service pass while NativeApi is live.

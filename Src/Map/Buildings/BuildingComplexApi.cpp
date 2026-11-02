@@ -4,7 +4,6 @@
 #include "BuildingComplexWorld.h"
 #include "Native/TexturePublication.h"
 #include "Native/NativeApi.h"
-#include "Native/MassLifecycle.h"
 #include "Native/ResidentMetadata.h"
 #include "Map/Map.h"
 #include <algorithm>
@@ -20,30 +19,31 @@
 #include <vector>
 
 #define BC_LAYOUT(T, S) static_assert(sizeof(T)==S); static_assert(alignof(T)==8)
-BC_LAYOUT(BC_Key,16); BC_LAYOUT(BC_Rect,32); BC_LAYOUT(BC_Ref,24); BC_LAYOUT(BC_Open,64);
-BC_LAYOUT(BC_Grid,96); BC_LAYOUT(BC_Demand,64); BC_LAYOUT(BC_Status,208);
-BC_LAYOUT(BC_Lease,40); BC_LAYOUT(BC_Policy,64); BC_LAYOUT(BC_Api,104);
+BC_LAYOUT(BC_Key,16); BC_LAYOUT(BC_Rect,32); BC_LAYOUT(BC_Ref,24); BC_LAYOUT(BC_Open,56);
+BC_LAYOUT(BC_Grid,80); BC_LAYOUT(BC_Demand,64); BC_LAYOUT(BC_Status,192);
+BC_LAYOUT(BC_Lease,40); BC_LAYOUT(BC_Policy,64); BC_LAYOUT(BC_Api,112);
 #undef BC_LAYOUT
 static_assert(offsetof(BC_Key,X)==0 && offsetof(BC_Key,Y)==8);
 static_assert(offsetof(BC_Rect,MinX)==0 && offsetof(BC_Rect,MinY)==8 && offsetof(BC_Rect,MaxX)==16 && offsetof(BC_Rect,MaxY)==24);
 static_assert(offsetof(BC_Ref,StructSize)==0 && offsetof(BC_Ref,Reserved)==4 && offsetof(BC_Ref,Session)==8 && offsetof(BC_Ref,Id)==16);
-static_assert(offsetof(BC_Open,StructSize)==0 && offsetof(BC_Open,Reserved)==4 && offsetof(BC_Open,World)==8 && offsetof(BC_Open,ClientWorldEpoch)==16 && offsetof(BC_Open,OriginX)==24 && offsetof(BC_Open,OriginY)==32 && offsetof(BC_Open,CellSizeCm)==40 && offsetof(BC_Open,CellPixels)==48 && offsetof(BC_Open,GroupWidth)==52 && offsetof(BC_Open,GridSchema)==56);
-static_assert(offsetof(BC_Grid,StructSize)==0 && offsetof(BC_Grid,Version)==4 && offsetof(BC_Grid,ContractId)==8 && offsetof(BC_Grid,AdmissionFlags)==12 && offsetof(BC_Grid,Session)==16 && offsetof(BC_Grid,WorldGeneration)==24 && offsetof(BC_Grid,RestoreEpoch)==32 && offsetof(BC_Grid,GridId)==40 && offsetof(BC_Grid,OriginX)==48 && offsetof(BC_Grid,OriginY)==56 && offsetof(BC_Grid,CellSizeCm)==64 && offsetof(BC_Grid,TileSizeCm)==72 && offsetof(BC_Grid,CellPixels)==80 && offsetof(BC_Grid,GroupWidth)==84 && offsetof(BC_Grid,MaxInteriorSide)==88 && offsetof(BC_Grid,PixelConvention)==92);
+static_assert(offsetof(BC_Open,StructSize)==0 && offsetof(BC_Open,Reserved)==4 && offsetof(BC_Open,World)==8 && offsetof(BC_Open,OriginX)==16 && offsetof(BC_Open,OriginY)==24 && offsetof(BC_Open,CellSizeCm)==32 && offsetof(BC_Open,CellPixels)==40 && offsetof(BC_Open,GroupWidth)==44 && offsetof(BC_Open,GridSchema)==48);
+static_assert(offsetof(BC_Grid,StructSize)==0 && offsetof(BC_Grid,Version)==4 && offsetof(BC_Grid,ContractId)==8 && offsetof(BC_Grid,Session)==16 && offsetof(BC_Grid,GridId)==24 && offsetof(BC_Grid,OriginX)==32 && offsetof(BC_Grid,OriginY)==40 && offsetof(BC_Grid,CellSizeCm)==48 && offsetof(BC_Grid,TileSizeCm)==56 && offsetof(BC_Grid,CellPixels)==64 && offsetof(BC_Grid,GroupWidth)==68 && offsetof(BC_Grid,MaxInteriorSide)==72 && offsetof(BC_Grid,PixelConvention)==76);
 static_assert(offsetof(BC_Demand,StructSize)==0 && offsetof(BC_Demand,InteriorSide)==4 && offsetof(BC_Demand,Session)==8 && offsetof(BC_Demand,ClientDemandId)==16 && offsetof(BC_Demand,TileX)==24 && offsetof(BC_Demand,TileY)==32 && offsetof(BC_Demand,Visible)==40 && offsetof(BC_Demand,Reserved)==44 && offsetof(BC_Demand,GridId)==48 && offsetof(BC_Demand,DetailEpoch)==56);
-static_assert(offsetof(BC_Status,StructSize)==0 && offsetof(BC_Status,State)==4 && offsetof(BC_Status,Flags)==8 && offsetof(BC_Status,Reason)==12 && offsetof(BC_Status,RequestId)==16 && offsetof(BC_Status,PublicationId)==24 && offsetof(BC_Status,WorldGeneration)==32 && offsetof(BC_Status,RestoreEpoch)==40 && offsetof(BC_Status,GridId)==48 && offsetof(BC_Status,CertificateId)==56 && offsetof(BC_Status,DetailEpoch)==64 && offsetof(BC_Status,TileX)==72 && offsetof(BC_Status,TileY)==80 && offsetof(BC_Status,WorldBounds)==88 && offsetof(BC_Status,InteriorSide)==120 && offsetof(BC_Status,TextureWidth)==124 && offsetof(BC_Status,TextureHeight)==128 && offsetof(BC_Status,Gutter)==132 && offsetof(BC_Status,UVScaleX)==136 && offsetof(BC_Status,UVScaleY)==144 && offsetof(BC_Status,UVBiasX)==152 && offsetof(BC_Status,UVBiasY)==160 && offsetof(BC_Status,ReadinessRevision)==168 && offsetof(BC_Status,RequiredCells)==176 && offsetof(BC_Status,ReadyCells)==184 && offsetof(BC_Status,PendingCells)==192 && offsetof(BC_Status,FailedCells)==200);
+static_assert(offsetof(BC_Status,StructSize)==0 && offsetof(BC_Status,State)==4 && offsetof(BC_Status,Flags)==8 && offsetof(BC_Status,Reason)==12 && offsetof(BC_Status,RequestId)==16 && offsetof(BC_Status,PublicationId)==24 && offsetof(BC_Status,GridId)==32 && offsetof(BC_Status,CertificateId)==40 && offsetof(BC_Status,DetailEpoch)==48 && offsetof(BC_Status,TileX)==56 && offsetof(BC_Status,TileY)==64 && offsetof(BC_Status,WorldBounds)==72 && offsetof(BC_Status,InteriorSide)==104 && offsetof(BC_Status,TextureWidth)==108 && offsetof(BC_Status,TextureHeight)==112 && offsetof(BC_Status,Gutter)==116 && offsetof(BC_Status,UVScaleX)==120 && offsetof(BC_Status,UVScaleY)==128 && offsetof(BC_Status,UVBiasX)==136 && offsetof(BC_Status,UVBiasY)==144 && offsetof(BC_Status,ReadinessRevision)==152 && offsetof(BC_Status,RequiredCells)==160 && offsetof(BC_Status,ReadyCells)==168 && offsetof(BC_Status,PendingCells)==176 && offsetof(BC_Status,FailedCells)==184);
 static_assert(offsetof(BC_Lease,StructSize)==0 && offsetof(BC_Lease,Reserved)==4 && offsetof(BC_Lease,Session)==8 && offsetof(BC_Lease,LeaseId)==16 && offsetof(BC_Lease,PublicationId)==24 && offsetof(BC_Lease,Texture)==32);
 static_assert(offsetof(BC_Policy,StructSize)==0 && offsetof(BC_Policy,PolicyId)==4 && offsetof(BC_Policy,ClassCount)==8 && offsetof(BC_Policy,Gutter)==12 && offsetof(BC_Policy,Sides)==16 && offsetof(BC_Policy,DowngradeFraction)==48 && offsetof(BC_Policy,MaxInteriorSide)==56 && offsetof(BC_Policy,Flags)==60);
-static_assert(offsetof(BC_Api,StructSize)==0 && offsetof(BC_Api,Version)==4 && offsetof(BC_Api,ContractId)==8 && offsetof(BC_Api,Reserved)==12 && offsetof(BC_Api,Open)==16 && offsetof(BC_Api,InspectSession)==24 && offsetof(BC_Api,Submit)==32 && offsetof(BC_Api,InspectRequest)==40 && offsetof(BC_Api,InspectPublication)==48 && offsetof(BC_Api,Acquire)==56 && offsetof(BC_Api,Release)==64 && offsetof(BC_Api,Withdraw)==72 && offsetof(BC_Api,WithdrawAll)==80 && offsetof(BC_Api,Close)==88 && offsetof(BC_Api,GetPolicy)==96);
+static_assert(offsetof(BC_Api,StructSize)==0 && offsetof(BC_Api,Version)==4 && offsetof(BC_Api,ContractId)==8 && offsetof(BC_Api,Reserved)==12 && offsetof(BC_Api,Open)==16 && offsetof(BC_Api,InspectSession)==24 && offsetof(BC_Api,Submit)==32 && offsetof(BC_Api,InspectRequest)==40 && offsetof(BC_Api,InspectPublication)==48 && offsetof(BC_Api,Acquire)==56 && offsetof(BC_Api,Release)==64 && offsetof(BC_Api,Withdraw)==72 && offsetof(BC_Api,WithdrawAll)==80 && offsetof(BC_Api,Close)==88 && offsetof(BC_Api,GetPolicy)==96 && offsetof(BC_Api,Service)==104);
 using BC_GetterSignature=uint32_t (__cdecl *)(uint32_t,BC_Api*);
 static_assert(std::is_same_v<decltype(&MiniMap_GetBuildingComplexApi),BC_GetterSignature>);
-static_assert(std::is_same_v<decltype(BC_Api::Open),BC_OpenFn> && std::is_same_v<decltype(BC_Api::InspectSession),BC_InspectSessionFn> && std::is_same_v<decltype(BC_Api::Submit),BC_SubmitFn> && std::is_same_v<decltype(BC_Api::InspectRequest),BC_InspectRequestFn> && std::is_same_v<decltype(BC_Api::InspectPublication),BC_InspectPublicationFn> && std::is_same_v<decltype(BC_Api::Acquire),BC_AcquireFn> && std::is_same_v<decltype(BC_Api::Release),BC_ReleaseFn> && std::is_same_v<decltype(BC_Api::Withdraw),BC_WithdrawFn> && std::is_same_v<decltype(BC_Api::WithdrawAll),BC_WithdrawAllFn> && std::is_same_v<decltype(BC_Api::Close),BC_CloseFn> && std::is_same_v<decltype(BC_Api::GetPolicy),BC_GetPolicyFn>);
+static_assert(std::is_same_v<decltype(BC_Api::Open),BC_OpenFn> && std::is_same_v<decltype(BC_Api::InspectSession),BC_InspectSessionFn> && std::is_same_v<decltype(BC_Api::Submit),BC_SubmitFn> && std::is_same_v<decltype(BC_Api::InspectRequest),BC_InspectRequestFn> && std::is_same_v<decltype(BC_Api::InspectPublication),BC_InspectPublicationFn> && std::is_same_v<decltype(BC_Api::Acquire),BC_AcquireFn> && std::is_same_v<decltype(BC_Api::Release),BC_ReleaseFn> && std::is_same_v<decltype(BC_Api::Withdraw),BC_WithdrawFn> && std::is_same_v<decltype(BC_Api::WithdrawAll),BC_WithdrawAllFn> && std::is_same_v<decltype(BC_Api::Close),BC_CloseFn> && std::is_same_v<decltype(BC_Api::GetPolicy),BC_GetPolicyFn> && std::is_same_v<decltype(BC_Api::Service),BC_ServiceFn>);
 static_assert(sizeof(void*)==8 && sizeof(BC_World*)==8 && sizeof(BC_Texture*)==8);
 static_assert(sizeof(BC_OpenFn)==8 && sizeof(BC_InspectSessionFn)==8 && sizeof(BC_SubmitFn)==8 &&
     sizeof(BC_InspectRequestFn)==8 && sizeof(BC_InspectPublicationFn)==8 && sizeof(BC_AcquireFn)==8 &&
     sizeof(BC_ReleaseFn)==8 && sizeof(BC_WithdrawFn)==8 && sizeof(BC_WithdrawAllFn)==8 &&
-    sizeof(BC_CloseFn)==8 && sizeof(BC_GetPolicyFn)==8);
+    sizeof(BC_CloseFn)==8 && sizeof(BC_GetPolicyFn)==8 && sizeof(BC_ServiceFn)==8);
 
 namespace {
+    namespace B = MiniMapBuildingComplexIndex;
     struct Request {
         uint64_t Id=0, DetailEpoch=0, Certificate=0, ReadinessRevision=0;
         uint64_t NativeRequest=0, PublicationId=0;
@@ -57,8 +57,8 @@ namespace {
     };
     struct DemandDescriptor { int64_t X=0,Y=0; uint32_t Side=0,Visible=0; uint64_t GridId=0,Epoch=0,Request=0; };
     struct Session {
-        uint64_t Id=0,GridId=0,WorldGeneration=0,RestoreEpoch=0,LastDemandId=0,RestoreToken=0;
-        BC_World* World=nullptr; double OriginX=0,OriginY=0; bool Closing=false,Closed=false,Revoked=false;
+        uint64_t Id=0,GridId=0,LastDemandId=0;
+        BC_World* World=nullptr; double OriginX=0,OriginY=0; bool Closing=false,Closed=false;
         std::map<uint64_t,Request> Requests;
         std::map<uint64_t,DemandDescriptor> DemandIds;
         std::set<uint64_t> WithdrawTombstones;
@@ -114,25 +114,35 @@ namespace {
             std::isfinite(out.MinX)&&std::isfinite(out.MinY)&&std::isfinite(out.MaxX)&&std::isfinite(out.MaxY)&&
             out.MinX<out.MaxX&&out.MinY<out.MaxY;
     }
-    bool Current(Session& s) noexcept {
-        if(s.Closed||s.Closing)return false;
-        const auto w=MiniMapBuildingComplexWorld::GetStatus();
-        const auto life=MiniMapMassLifecycle::Status();
-        MiniMapBuildingComplexIndex::CellSnapshot snapshot;
-        if(MiniMapMap::GetWorld()!=s.World || MiniMapMap::GetWorldGeneration()!=s.WorldGeneration ||
-           w.WorldGeneration!=s.WorldGeneration || w.RestoreEpoch!=s.RestoreEpoch ||
-           life.WorldGeneration!=s.WorldGeneration || life.RestoreToken!=s.RestoreToken ||
-           !MiniMapBuildingComplexWorld::GetIndex().TrySnapshot({0,0},snapshot) || !snapshot.Origin.Valid ||
-           snapshot.WorldGeneration!=s.WorldGeneration ||
-           snapshot.Origin.X!=s.OriginX || snapshot.Origin.Y!=s.OriginY) { s.Revoked=true; return false; }
-        return !s.Revoked;
+    bool Current(const Session& s) noexcept;
+    bool CollectVisibleRequests(const Session& s) noexcept {
+        if(s.Closed||s.Closing||!Current(s))return false;
+        B::WorldBounds region{};
+        for(const auto& [id,q]:s.Requests) {
+            (void)id;
+            if(q.Withdrawn||!q.Visible)continue;
+            BC_Rect bounds{};
+            if(!TileBounds(s,q.X,q.Y,bounds))continue;
+            constexpr double spatialMargin=12500.0; // One adjacent canonical cell: 12,500 cm (125 m).
+            const double minX=bounds.MinX-spatialMargin,minY=bounds.MinY-spatialMargin;
+            const double maxX=bounds.MaxX+spatialMargin,maxY=bounds.MaxY+spatialMargin;
+            if(!region.Valid)region={minX,minY,maxX,maxY,true};
+            else {
+                region.MinX=(std::min)(region.MinX,minX);region.MinY=(std::min)(region.MinY,minY);
+                region.MaxX=(std::max)(region.MaxX,maxX);region.MaxY=(std::max)(region.MaxY,maxY);
+            }
+        }
+        return region.Valid && MiniMapBuildingComplexWorld::ServiceCollectorRegion(s.Id,region);
+    }
+    bool Current(const Session& s) noexcept {
+        return !s.Closed && !s.Closing &&
+            MiniMapBuildingComplexWorld::OwnsCollectorSession(s.Id, s.World);
     }
     void FillGrid(const Session& s,BC_Grid& g) noexcept {
-        g.Version=BC_VERSION;g.ContractId=BC_CONTRACT_ID;g.AdmissionFlags=s.Revoked?8u:(s.Closing?4u:1u);
-        g.Session=s.Id;g.WorldGeneration=s.WorldGeneration;g.RestoreEpoch=s.RestoreEpoch;g.GridId=s.GridId;
+        g.Version=BC_VERSION;g.ContractId=BC_CONTRACT_ID;
+        g.Session=s.Id;g.GridId=s.GridId;
         g.OriginX=s.OriginX;g.OriginY=s.OriginY;g.CellSizeCm=12500.0;g.TileSizeCm=50000.0;
         g.CellPixels=256;g.GroupWidth=4;g.MaxInteriorSide=1024;g.PixelConvention=BC_PIXEL_CONVENTION;
-        if(MiniMapBuildingComplexWorld::GetStatus().State==MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished) g.AdmissionFlags|=2u;
     }
     uint32_t FailedStatus(uint32_t result,BC_Status& out) noexcept {
         out.State=(result==BC_STALE_SESSION||result==BC_CLOSED)?BC_STALE:BC_FAILED;
@@ -145,8 +155,6 @@ namespace {
         if(s->Closed)return BC_CLOSED;
         if(s->Closing)return BC_BUSY;
         if(!Current(*s))return BC_STALE_SESSION;
-        const auto life=MiniMapMassLifecycle::Status();
-        if(!life.Admitted||life.Cancelled)return BC_REJECTED_THREAD_OR_ADMISSION;
         return BC_RESULT_OK;
     }
     bool InputHeader(const void* p,uint32_t size,uint32_t expected) noexcept {
@@ -164,18 +172,22 @@ namespace {
            in->CellSizeCm!=12500.0||in->CellPixels!=256||in->GroupWidth!=4||in->GridSchema!=BC_SCHEMA)return BC_INVALID_ARGUMENT;
         if(!OnGameThread())return BC_REJECTED_THREAD_OR_ADMISSION;
         if(!MiniMapResidentMetadata::Available())return BC_REJECTED_THREAD_OR_ADMISSION;
-        if(!MiniMapMap::GameplayReady())return BC_UNAVAILABLE;
-        const auto life=MiniMapMassLifecycle::Status();
-        const auto world=MiniMapBuildingComplexWorld::GetStatus();
-        if(!life.Admitted||life.Cancelled||!life.WorldGeneration||!world.WorldGeneration||
-            life.WorldGeneration!=MiniMapMap::GetWorldGeneration()||MiniMapMap::GetWorld()!=in->World||
-            MiniMapMap::GetWorldGeneration()!=world.WorldGeneration)return BC_UNAVAILABLE;
-        auto& index=MiniMapBuildingComplexWorld::GetIndex();MiniMapBuildingComplexIndex::CellSnapshot snap;
-        if(!index.TrySnapshot({0,0},snap)||!snap.Origin.Valid)return BC_UNAVAILABLE;
-        if(snap.Origin.X!=in->OriginX||snap.Origin.Y!=in->OriginY)return BC_UNAVAILABLE;
+        const auto mapWorld=MiniMapMap::GetWorld();
+        if(mapWorld!=in->World)return BC_UNAVAILABLE;
         for(const auto& [id,session]:Sessions){(void)id;if(!session.Closed)return BC_BUSY;}
         if(!NextSession||NextSession==(std::numeric_limits<uint64_t>::max)()||!NextGrid||NextGrid==(std::numeric_limits<uint64_t>::max)())return BC_RESOURCE_FAILURE;
-        try { Session s;s.Id=NextSession++;s.GridId=NextGrid++;s.WorldGeneration=world.WorldGeneration;s.RestoreEpoch=world.RestoreEpoch;s.RestoreToken=life.RestoreToken;s.World=in->World;s.OriginX=snap.Origin.X;s.OriginY=snap.Origin.Y;auto [it,ok]=Sessions.emplace(s.Id,std::move(s));if(!ok)return BC_INTERNAL_FAILURE;FillGrid(it->second,*out);return BC_RESULT_OK; }
+        try {
+            Session s;s.Id=NextSession++;s.GridId=NextGrid++;s.World=in->World;
+            s.OriginX=in->OriginX;s.OriginY=in->OriginY;
+            auto [it,ok]=Sessions.emplace(s.Id,std::move(s));
+            if(!ok)return BC_INTERNAL_FAILURE;
+            if(!MiniMapBuildingComplexWorld::OpenCollectorSession(it->second.Id,it->second.World,it->second.OriginX,it->second.OriginY)) {
+                Sessions.erase(it);
+                return BC_UNAVAILABLE;
+            }
+            FillGrid(it->second,*out);
+            return BC_RESULT_OK;
+        }
         catch(...) { return BC_RESOURCE_FAILURE; }
     }
     uint32_t BC_CALL InspectSession(const BC_Ref* in,BC_Grid* out) {
@@ -213,8 +225,7 @@ namespace {
         } catch(...) { return BC_RESOURCE_FAILURE; }
     }
     void FillRequest(const Session& s,const Request& q,BC_Status& o) noexcept {
-        o.State=q.State;o.Reason=q.Reason;o.RequestId=q.Id;o.WorldGeneration=s.WorldGeneration;
-        o.RestoreEpoch=s.RestoreEpoch;o.GridId=s.GridId;o.CertificateId=q.Certificate;o.DetailEpoch=q.DetailEpoch;
+        o.State=q.State;o.Reason=q.Reason;o.RequestId=q.Id;o.GridId=s.GridId;o.CertificateId=q.Certificate;o.DetailEpoch=q.DetailEpoch;
         o.TileX=q.X;o.TileY=q.Y;o.InteriorSide=q.Side;o.ReadinessRevision=q.ReadinessRevision;
         TileBounds(s,q.X,q.Y,o.WorldBounds);
         if(q.CpuIdentity&&q.State!=BC_STALE)o.Flags|=BC_CURRENT;
@@ -227,7 +238,6 @@ namespace {
                 o.Flags|=BC_DETAIL_PENDING;break;
             }
         }
-        if(MiniMapBuildingComplexWorld::GetStatus().State!=MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished)o.Flags|=BC_ADMISSION_PENDING;
         o.RequiredCells=q.RequiredCells;o.ReadyCells=q.ReadyCells;o.PendingCells=q.PendingCells;o.FailedCells=q.FailedCells;
         if(q.State==BC_READY&&q.PublicationId) {
             o.PublicationId=q.PublicationId;o.Flags|=BC_NATIVE_READY;
@@ -390,6 +400,7 @@ namespace {
         // Stop all request activity and release CPU image ownership before any
         // fallible bookkeeping. A failed Close is not acknowledged: the
         // request/demand records and tombstones remain for a later retry.
+        MiniMapBuildingComplexWorld::CloseCollectorSession(s->Id);
         for(auto& [id,q]:s->Requests){(void)id;MiniMapTexturePublication::WithdrawGroupedRequest(q.NativeRequest);
             if(q.PublicationId)MiniMapTexturePublication::WithdrawGroupedPublication(q.PublicationId);
             q.Withdrawn=true;q.Visible=false;q.CpuIdentity.reset();q.CpuComplete=false;}
@@ -406,6 +417,15 @@ namespace {
         if(!Admitted())return BC_REJECTED_THREAD_OR_ADMISSION;Session* s=nullptr;auto r=SessionCheck(in->Session,s);if(r!=BC_RESULT_OK)return r;
         out->PolicyId=1;out->ClassCount=4;out->Gutter=1;std::copy(std::begin(kSides),std::end(kSides),out->Sides);out->DowngradeFraction=0.40;out->MaxInteriorSide=1024;return BC_RESULT_OK;
     }
+    uint32_t BC_CALL Service(const BC_Ref* in) {
+        if(!ValidRef(in,false))return BC_INVALID_ARGUMENT;
+        if(!Admitted())return BC_REJECTED_THREAD_OR_ADMISSION;
+        Session* s=nullptr;const auto result=SessionCheck(in->Session,s);
+        if(result!=BC_RESULT_OK)return result;
+        if(!MiniMapNative::Get())return BC_UNAVAILABLE;
+        MiniMapBuildingComplexWorld::Service(s->Id);
+        return BC_RESULT_OK;
+    }
     static_assert(std::is_same_v<decltype(&Open),BC_OpenFn>);
     static_assert(std::is_same_v<decltype(&InspectSession),BC_InspectSessionFn>);
     static_assert(std::is_same_v<decltype(&Submit),BC_SubmitFn>);
@@ -417,6 +437,7 @@ namespace {
     static_assert(std::is_same_v<decltype(&WithdrawAll),BC_WithdrawAllFn>);
     static_assert(std::is_same_v<decltype(&Close),BC_CloseFn>);
     static_assert(std::is_same_v<decltype(&GetPolicy),BC_GetPolicyFn>);
+    static_assert(std::is_same_v<decltype(&Service),BC_ServiceFn>);
     void FillCpuResult(Request& q,const MiniMapBuildingComplexWorld::TileResult& t) {
         q.Processed=true;
         if(t.State==MiniMapBuildingComplexWorld::TileState::Stale) {
@@ -478,10 +499,17 @@ namespace {
 }
 
 namespace MiniMapBuildingComplexApiInternal {
-    void ServiceRequests() noexcept {
-        if(!Admitted()||!MiniMapMassLifecycle::InAdmittedService())return;
-        try { for(auto& [sid,s]:Sessions){(void)sid;if(s.Closed||!Current(s))continue;
-            if(MiniMapBuildingComplexWorld::GetStatus().State!=MiniMapBuildingComplexWorld::MembershipState::MembershipEstablished)continue;
+    bool ServiceCollectorForVisibleRequests(uint64_t session) noexcept {
+        if(!Admitted())return false;
+        auto* s=Find(session);
+        return s&&CollectVisibleRequests(*s);
+    }
+    void ServiceRequests(uint64_t session) noexcept {
+        if(!Admitted())return;
+        try {
+            auto* sessionState=Find(session);
+            if(!sessionState||sessionState->Closed||sessionState->Closing||!Current(*sessionState))return;
+            auto& s=*sessionState;
             for(auto& [id,q]:s.Requests){(void)id;if(q.Withdrawn||!q.Visible)continue;
                 if(q.CpuIdentity&&!MiniMapBuildingComplexWorld::ValidateTile(*q.CpuIdentity))MarkRequestStale(q);
                 RefreshRetryEligibility(q);
@@ -521,7 +549,7 @@ namespace MiniMapBuildingComplexApiInternal {
                         q.RetryEligible=other.RetryEligible;q.RetryOnRevision=other.RetryOnRevision;
                         reused=true;break;
                     }
-                    if(!reused) { const auto t=MiniMapBuildingComplexWorld::ComposeTile({q.X,q.Y},s.WorldGeneration,q.Side);FillCpuResult(q,t); }
+                    if(!reused) { const auto t=MiniMapBuildingComplexWorld::ComposeTile({q.X,q.Y},s.Id,q.Side);FillCpuResult(q,t); }
                     else if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
                 }
                 catch(...) {
@@ -531,7 +559,8 @@ namespace MiniMapBuildingComplexApiInternal {
                     if(q.ReadinessRevision!=(std::numeric_limits<uint64_t>::max)())++q.ReadinessRevision;
                     DeferRetryUntilRevision(q,false);
                 }
-                break;}} }
+                break;}
+        }
         catch(...){}
     }
 }
@@ -541,6 +570,7 @@ extern "C" MINIMAP_BUILDING_ABI_EXPORT uint32_t MINIMAP_BUILDING_ABI_CALL MiniMa
     if(requestedVersion!=BC_VERSION)return BC_VERSION_MISMATCH;
     outApi->Version=BC_VERSION;outApi->ContractId=BC_CONTRACT_ID;outApi->Open=&Open;outApi->InspectSession=&InspectSession;outApi->Submit=&Submit;
     outApi->InspectRequest=&InspectRequest;outApi->InspectPublication=&InspectPublication;outApi->Acquire=&Acquire;outApi->Release=&Release;
-    outApi->Withdraw=&Withdraw;outApi->WithdrawAll=&WithdrawAll;outApi->Close=&Close;outApi->GetPolicy=&GetPolicy;return BC_RESULT_OK;
+    outApi->Withdraw=&Withdraw;outApi->WithdrawAll=&WithdrawAll;outApi->Close=&Close;outApi->GetPolicy=&GetPolicy;
+    outApi->Service=&Service;return BC_RESULT_OK;
 }
 #endif

@@ -9,7 +9,6 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
-#include "Native/MassLifecycle.h"
 #include "Native/TexturePublication.h"
 #include "Native/ReadbackNativeAdapter.h"
 #include "UI/MiniMapUI.h"
@@ -18,15 +17,13 @@
 #include "SDK/ChimeraUI_classes.hpp"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingComplexWorld.h"
-#include "Map/Buildings/BuildingScheduler.h"
-#include "Map/Buildings/BuildingAtlas.h"
-#include "Map/Buildings/BuildingSpriteRenderer.h"
+#include "Map/Buildings/BuildingVisuals.h"
+#include "Native/ResidentMetadata.h"
+#include <array>
 #endif
 
 #ifdef MODLOADER_CLIENT_BUILD
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
-static MiniMapSpriteStatus::Dictionary g_buildingSpriteStatuses;
-static MiniMapSpriteQueues::SpriteFifo g_buildingSpriteFifo;
 namespace S = MiniMap::Services;
 static S::Hook g_commonUIActivatedHook{};
 static S::Hook g_commonUIDeactivatedHook{};
@@ -275,7 +272,6 @@ static bool InstallCommonUIHooks()
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
 #include "Map/Buildings/BuildingCollector.h"
-#include "Map/Buildings/ExternalMapBuildingSession.h"
 #include "Map/Buildings/BuildingVisuals.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
@@ -365,25 +361,13 @@ static uint64_t g_worldGeneration=0,g_preparedGeneration=0;
 static bool g_worldEnding=false;
 static void SetServicesAdmitted(bool ready)
 {
-    MiniMapMassLifecycle::AdmitWorld(ready);
     const bool changed=MiniMapMap::GameplayReady()!=ready;
     MiniMapMap::SetGameplayReady(ready);
     if(changed)MiniMapUI::RefreshVisibility();
 }
 static void EndBuildingSession()
 {
-    MiniMapBuildingCollector::InvalidateExternalMapBuildingSessionAbi();
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        MiniMapBuildingSchedulerInternal::StopSession();
-        MiniMapBuildingSpriteRenderer::EndSession();
-    }
-    // Withdraw under a short internal lock; FreeTexture runs after that lock ends.
-    MiniMapBuildingAtlas::EndSession();
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        MiniMapBuildingScheduler::EndSession();
-    }
+    MiniMapBuildingVisuals::EndSession();
 }
 static bool BuildingServiceGameThread() noexcept
 {
@@ -392,23 +376,193 @@ static bool BuildingServiceGameThread() noexcept
     __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
         ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
 }
+
+// Stage 1 diagnostics intentionally run in Client Release as well as Debug.
+// No new compile switch and no changes to the services' admission or ordering.
+namespace
+{
+    enum class DiagnosticWorld { Null, Gameplay, Private, Other };
+    enum class DiagnosticGameState { Deferred, Null, Compatible, Incompatible };
+    struct WorldIdentitySample
+    {
+        uint64_t Sequence = 0, Tick = 0;
+        const char* Phase = nullptr;
+        SDK::UWorld* Getter = nullptr;
+        SDK::UWorld* Gameplay = nullptr;
+        SDK::AGameStateBase* GameState = nullptr;
+        DiagnosticWorld Selection = DiagnosticWorld::Null;
+        DiagnosticGameState State = DiagnosticGameState::Deferred;
+        bool Changed = false, Determinate = false, Anomalous = false;
+        MiniMapBuildingVisuals::DiagnosticSnapshot Capture;
+    };
+    struct WorldIdentityDiagnostics
+    {
+        uint64_t Generation = 0, Tick = 0, Sequence = 0, LastSummaryTick = 0;
+        SDK::AGameStateBase* BaselineGameState = nullptr; // Identity only; never dereferenced.
+        SDK::FName GameStateClassName{};
+        bool ClassNameKnown = false, InitialLogged = false, FirstAnomaly = false, Anomalous = false;
+        unsigned Transitions = 0, Summaries = 0;
+        size_t Next = 0, Count = 0;
+        std::array<WorldIdentitySample, 16> History{};
+    } g_worldIdentityDiagnostics;
+
+    const char* WorldSelectionName(DiagnosticWorld value)
+    {
+        switch (value)
+        {
+        case DiagnosticWorld::Null: return "null";
+        case DiagnosticWorld::Gameplay: return "gameplay";
+        case DiagnosticWorld::Private: return "private";
+        default: return "other";
+        }
+    }
+    const char* GameStateObservationName(DiagnosticGameState value)
+    {
+        switch (value)
+        {
+        case DiagnosticGameState::Null: return "null";
+        case DiagnosticGameState::Compatible: return "compatible";
+        case DiagnosticGameState::Incompatible: return "incompatible";
+        default: return "deferred";
+        }
+    }
+    bool DiagnosticLiveInstance(const SDK::UObject* object)
+    {
+        const auto forbidden = SDK::EObjectFlags::ClassDefaultObject | SDK::EObjectFlags::ArchetypeObject |
+            SDK::EObjectFlags::BeginDestroyed | SDK::EObjectFlags::FinishDestroyed;
+        return object && !(unsigned(object->Flags) & unsigned(forbidden));
+    }
+    DiagnosticGameState DiagnosticGameStateCompatibility(const SDK::AGameStateBase* gameState)
+    {
+        auto& d = g_worldIdentityDiagnostics;
+        if (d.ClassNameKnown) return gameState->IsA(d.GameStateClassName) ?
+            DiagnosticGameState::Compatible : DiagnosticGameState::Incompatible;
+        // StaticClass() can enumerate GObjects on its first use. Instead observe
+        // only this admitted object's existing, bounded SDK class hierarchy.
+        auto* type = gameState->Class;
+        if (!type) return DiagnosticGameState::Deferred;
+        for (unsigned depth = 0; type && depth < 32; ++depth, type = static_cast<SDK::UClass*>(type->SuperStruct))
+        {
+            // No object-table lookup, loading, or native ownership operation.
+            if (type->GetName() == "CrGameStateBase")
+            {
+                d.GameStateClassName = type->Name;
+                d.ClassNameKnown = true;
+                return DiagnosticGameState::Compatible;
+            }
+        }
+        return type ? DiagnosticGameState::Deferred : DiagnosticGameState::Incompatible;
+    }
+    void LogWorldIdentity(const char* event, const WorldIdentitySample& s)
+    {
+        const auto& d = g_worldIdentityDiagnostics;
+        const auto& c = s.Capture;
+        LOG_INFO("MiniMap world identity: event=%s generation=%llu seq=%llu tick=%llu phase=%s sdk=%p gameplay=%p private=%p selection=%s gs=%p gsState=%s baselineGS=%p changed=%u determinate=%u anomalous=%u capture=%s session=%llu worldPhase=%u requestPhase=%u blueprintTail=%s",
+            event, d.Generation, s.Sequence, s.Tick, s.Phase, s.Getter, s.Gameplay,
+            reinterpret_cast<void*>(c.PrivateWorld), WorldSelectionName(s.Selection), s.GameState,
+            GameStateObservationName(s.State), d.BaselineGameState, unsigned(s.Changed),
+            unsigned(s.Determinate), unsigned(s.Anomalous),
+            c.Active ? "active" : "none", c.Session, c.WorldPhase, c.RequestPhase, c.BlueprintTail);
+    }
+    void ObserveWorldIdentity(const char* phase, bool tickEntry = false) noexcept
+    {
+        // The renderer metadata is GT-owned. Never touch it on rejected threads.
+        if (!BuildingServiceGameThread()) return;
+        auto* gameplay = MiniMapMap::GetWorld();
+        if (!gameplay) return;
+        auto& d = g_worldIdentityDiagnostics;
+        if (d.Generation != g_worldGeneration)
+        {
+            d = {};
+            d.Generation = g_worldGeneration;
+        }
+        if (tickEntry) ++d.Tick;
+        WorldIdentitySample s;
+        s.Sequence = ++d.Sequence; s.Tick = d.Tick; s.Phase = phase;
+        s.Gameplay = gameplay;
+        s.Getter = SDK::UWorld::GetWorld(); // Scalar identity only; NEVER dereference this result.
+        s.Capture = MiniMapBuildingVisuals::GetDiagnosticSnapshot();
+        s.Selection = !s.Getter ? DiagnosticWorld::Null : s.Getter == gameplay ? DiagnosticWorld::Gameplay :
+            reinterpret_cast<uintptr_t>(s.Getter) == s.Capture.PrivateWorld ? DiagnosticWorld::Private : DiagnosticWorld::Other;
+        const bool active = MiniMapMap::GameplayReady() && !g_worldEnding;
+        try
+        {
+            // Available's existing GT/GC predicates do not probe memory or enumerate.
+            // Only the lifecycle-retained gameplay world is inspected, never Getter.
+            if (active && MiniMapResidentMetadata::Available() && DiagnosticLiveInstance(gameplay))
+            {
+                s.GameState = gameplay->GameState;
+                if (!s.GameState) s.State = DiagnosticGameState::Null;
+                else if (DiagnosticLiveInstance(s.GameState))
+                    s.State = DiagnosticGameStateCompatibility(s.GameState);
+            }
+        }
+        catch (...) { s.State = DiagnosticGameState::Deferred; }
+        if (!d.BaselineGameState && s.State == DiagnosticGameState::Compatible)
+            d.BaselineGameState = s.GameState;
+        s.Changed = d.BaselineGameState && s.State != DiagnosticGameState::Deferred && s.GameState != d.BaselineGameState;
+        s.Determinate = active && (s.Selection != DiagnosticWorld::Gameplay || s.State != DiagnosticGameState::Deferred);
+        if (s.Determinate)
+            d.Anomalous = s.Selection != DiagnosticWorld::Gameplay || s.State == DiagnosticGameState::Null ||
+                s.State == DiagnosticGameState::Incompatible || s.Changed;
+        s.Anomalous = d.Anomalous; // A deferred inspection cannot claim recovery.
+        const WorldIdentitySample* previous = d.Count ? &d.History[(d.Next + d.History.size() - 1) % d.History.size()] : nullptr;
+        const bool transition = previous && active && (s.Getter != previous->Getter ||
+            s.Capture.PrivateWorld != previous->Capture.PrivateWorld ||
+            (s.State != DiagnosticGameState::Deferred && previous->State != DiagnosticGameState::Deferred &&
+                (s.GameState != previous->GameState || s.State != previous->State)) ||
+            s.Anomalous != previous->Anomalous);
+        d.History[d.Next] = s;
+        d.Next = (d.Next + 1) % d.History.size();
+        if (d.Count < d.History.size()) ++d.Count;
+        if (!d.InitialLogged && active && s.State != DiagnosticGameState::Deferred)
+        {
+            d.InitialLogged = true;
+            LogWorldIdentity("initial-admitted-baseline", s);
+        }
+        if (s.Determinate && s.Anomalous && !d.FirstAnomaly)
+        {
+            d.FirstAnomaly = true; d.LastSummaryTick = d.Tick;
+            // At most 15 preceding records, oldest first, then the anomaly.
+            for (size_t i = 0; i + 1 < d.Count; ++i)
+                LogWorldIdentity("history", d.History[(d.Next + d.History.size() - d.Count + i) % d.History.size()]);
+            LogWorldIdentity("first-anomaly", s);
+        }
+        else if (d.InitialLogged && transition && d.Transitions < 12)
+        {
+            ++d.Transitions;
+            LogWorldIdentity("transition", s);
+        }
+        else if (active && d.FirstAnomaly && d.Anomalous && d.Summaries < 4 && d.Tick - d.LastSummaryTick >= 300)
+        {
+            ++d.Summaries; d.LastSummaryTick = d.Tick;
+            LogWorldIdentity("anomaly-summary", s);
+        }
+    }
+}
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
+    ObserveWorldIdentity("renderer-entry", true);
     // Independent bounded native publication/retirement owners. Dormant until
     // a future BuildingComplex consumer supplies imagery; no worldwide work.
     if(!MiniMapMap::GameplayReady())
-    { MiniMapTexturePublication::Service(); return; }
-    // Integration lock is outermost; FIFO/feedback locks are acquired only inside
-    // it. Renderer functions never reacquire it or invoke scheduler transitions.
     {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        if(MiniMapMap::GameplayReady())MiniMapBuildingSpriteRenderer::Tick(deltaTime);
+        MiniMapTexturePublication::Service();
+        ObserveWorldIdentity("after-texture-publication");
+        return;
     }
+    MiniMapBuildingVisuals::TickSpriteCapture(deltaTime,MiniMapMap::GameplayReady());
+    ObserveWorldIdentity("after-sprite-renderer");
     // Native progress has priority. Process the entire last completed drawing
     // batch on this existing GT callback, never while holding LifecycleMutex.
-    if (MiniMapMap::GameplayReady() && MiniMapUI::IsVisible() && BuildingServiceGameThread()) MiniMapBuildingScheduler::Service();
+    const bool buildingGameplayReady=MiniMapMap::GameplayReady();
+    const bool buildingVisible=buildingGameplayReady && MiniMapUI::IsVisible();
+    const bool buildingGameThread=buildingGameplayReady && buildingVisible && BuildingServiceGameThread();
+    MiniMapBuildingVisuals::ServiceSpriteRequirements(buildingGameplayReady,buildingVisible,buildingGameThread);
+    ObserveWorldIdentity("after-sprite-scheduler");
     MiniMapTexturePublication::Service();
-    MiniMapMassLifecycle::Service();
+    ObserveWorldIdentity("after-texture-publication");
+    ObserveWorldIdentity("after-mass-buildingcomplex");
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
@@ -422,9 +576,6 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     EndBuildingSession();
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
-    MiniMapTexturePublication::CancelWorld();
-    MiniMapMassLifecycle::BeginWorld(world, g_worldGeneration);
-    MiniMapBuildingComplexWorld::BeginWorld(g_worldGeneration);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
@@ -465,20 +616,7 @@ static void OnExperienceLoadComplete()
     MiniMapBuildingCollector::OnExperienceLoadComplete();
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
-    bool rendererReady=false;
-    uint64_t buildingSession=0;
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        MiniMapBuildingScheduler::InitializeSession();
-        buildingSession=MiniMapBuildingSchedulerInternal::ActiveSession();
-    }
-    const bool atlasReady=MiniMapBuildingAtlas::InitializeSession(buildingSession);
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        rendererReady=atlasReady && MiniMapBuildingSchedulerInternal::ActiveSession()==buildingSession &&
-            MiniMapBuildingSpriteRenderer::InitializeSession();
-    }
-    if(!rendererReady)
+    if(!MiniMapBuildingVisuals::BeginSession())
     {
         EndBuildingSession();
         LOG_ERROR("MiniMap: building renderer/atlas session blocked by retained ownership or missing dependencies; gameplay remains unadmitted");
@@ -493,9 +631,6 @@ static void OnExperienceLoadComplete()
 static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
-    MiniMapMassLifecycle::EndWorld();
-    MiniMapBuildingComplexWorld::EndWorld();
-    MiniMapTexturePublication::CancelWorld();
     g_worldEnding=true;
     SetServicesAdmitted(false);
     EndBuildingSession();
@@ -522,9 +657,6 @@ static void OnAfterWorldEndPlay(
     std::string_view worldName)
 {
     if(!world||world!=MiniMapMap::GetWorld())return;
-    MiniMapMassLifecycle::EndWorld();
-    MiniMapBuildingComplexWorld::EndWorld();
-    MiniMapTexturePublication::CancelWorld();
     LOG_INFO(
         "MiniMap: world ended: %.*s",
         int(worldName.data() ? worldName.size() : 6),
@@ -625,12 +757,7 @@ namespace MiniMap
             return false;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-            MiniMapBuildingScheduler::Initialize(g_buildingSpriteStatuses, g_buildingSpriteFifo);
-            MiniMapBuildingSpriteRenderer::Initialize(g_buildingSpriteFifo, MiniMapBuildingScheduler::FeedbackQueue());
-        }
-        if (!MiniMapBuildingAtlas::Initialize(g_buildingSpriteStatuses))
+        if(!MiniMapBuildingVisuals::InitializeSpriteProcessing())
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
             MiniMapUI::Shutdown();
@@ -801,8 +928,6 @@ namespace MiniMap
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
-        if (!MiniMapMassLifecycle::Initialize())
-            LOG_ERROR("MiniMap: BuildingComplex native observer admission unavailable; normal MiniMap services continue");
         MiniMapTexturePublication::Initialize();
         Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);
         if (!AcceptEventRegistration(g_afterEnd, events->OnWorld(S::WorldPhase::AfterEnd,
@@ -846,23 +971,13 @@ namespace MiniMap
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::StopInput();
-        MiniMapMassLifecycle::Shutdown();
         MiniMapBuildingComplexWorld::Shutdown();
         MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();
         g_worldEnding=true;
         SetServicesAdmitted(false);
-        {
-            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-            MiniMapBuildingSchedulerInternal::StopSession();
-            MiniMapBuildingSpriteRenderer::Shutdown();
-        }
-        MiniMapBuildingAtlas::Shutdown();
-        {
-            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-            MiniMapBuildingScheduler::Shutdown();
-        }
+        MiniMapBuildingVisuals::ShutdownSpriteProcessing();
         RemoveEventRegistration(g_rendererTick);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

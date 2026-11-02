@@ -4,6 +4,7 @@
 #include "NativeApi.h"
 #include <array>
 #include <cstring>
+#include <optional>
 
 // ---------------------------------------------------------------------------
 // Native pattern resolution.
@@ -2171,12 +2172,15 @@ namespace MiniMapFingerprints
 #if defined(MODLOADER_CLIENT_BUILD)
         // BuildingComplex foundations are required native contracts, resolved
         // only here. No optional second pass or consumer-local scanner exists.
-        auto foundation = [&](const char* name, const char* pattern, uintptr_t& out)
+        auto foundation = [&](const char* name, const char* pattern, uintptr_t& out,
+            AddressKind kind = AddressKind::FunctionEntry,
+            std::optional<std::uint32_t> followRel32At = std::nullopt)
         {
             RequiredScan request{};
             request.name = name;
             request.idaPattern = pattern;
-            request.kind = AddressKind::FunctionEntry;
+            request.kind = kind;
+            request.followRel32At = followRel32At;
             out = resolveRequired(request);
             return out != 0;
         };
@@ -2193,7 +2197,8 @@ namespace MiniMapFingerprints
             "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
             addresses.massOnSaveLoaded)) return false;
         if (!foundation("MiniMap::BuildingComplex::OnPostSaveLoaded",
-            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33 "
+            "48 8B C8 E8 ?? ?? ?? ?? EB 05 48 85 DB 74 24 E8 ?? ?? ?? ?? 48 85 C0 74 1A 48 8D 50 30 48 63 40 38 3B 43 38 7F 0D 48 8B C8 48 8B 43 30 48 39 14 C8 74 02 33 DB 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 8B C8",
             addresses.massOnPostSaveLoaded)) return false;
         if (!foundation("MiniMap::BuildingComplex::CreateTransient",
             "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
@@ -2207,10 +2212,12 @@ namespace MiniMapFingerprints
         // Folded UpdateResource wrapper: flags=0, virtual WithParams dispatch.
         if (!foundation("MiniMap::BuildingComplex::UpdateResource",
             "48 8B 01 33 D2 48 FF A0 30 03 00 00",
-            addresses.textureUpdateResource)) return false;
+            addresses.textureUpdateResource, AddressKind::Code)) return false;
+        // Anchor the non-const UTexture::GetResource call made by
+        // UTextureRenderTarget::GetRenderTargetResource; follow its E8 rel32.
         if (!foundation("MiniMap::BuildingComplex::GetResource",
-            "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38",
-            addresses.textureGetResource)) return false;
+            "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4A E8 ?? ?? ?? ?? 84 C0 74 1B 48 8B CB E8 ?? ?? ?? ??",
+            addresses.textureGetResource, AddressKind::FunctionEntry, 0x1E)) return false;
 #endif
         return !scanFailed;
     }

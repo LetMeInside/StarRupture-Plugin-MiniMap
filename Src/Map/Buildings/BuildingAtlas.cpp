@@ -5,6 +5,7 @@
 #include "BuildingScheduler.h"
 #include "Map/Map.h"
 #include "plugin_helpers.h"
+#include "Services/ImageDestination.h"
 #include "Services/Runtime.h"
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,7 @@ namespace MiniMapBuildingAtlas
         MiniMap::Services::OwnedTexture Owner;
         MiniMap::Services::Texture Texture{};
         std::shared_ptr<const C::Layout> Pixels;
+        uint64_t SessionSerial{};
         uint64_t LayoutRevision{};
         bool UncertaintyReported = false;
         std::shared_ptr<Revision> NextRetained; // Explicit retained ownership debt only.
@@ -44,6 +46,7 @@ namespace MiniMapBuildingAtlas
         uint64_t NextAttempt = 0, CandidateRevision = 0, PublishedRevision = 0;
         C::Atlas Core;
         std::vector<SourceBounds> Bounds; // Representation metadata, never class-status truth.
+        std::unordered_map<std::string, SourceLease> Sources; // Immutable leases, published under LifecycleMutex.
         std::shared_ptr<Revision> Published, RetainedTextures;
         std::shared_ptr<Session> NextRetained;
     };
@@ -227,9 +230,11 @@ namespace MiniMapBuildingAtlas
         }
         try
         {
-            if (!Admitted(batch)) return AddResult::Unavailable;
-            for (const auto& bounds : batch->Bounds)
-                if (bounds.Identifier == name) return AddResult::Retained;
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                if (g_uncertain || !Current(batch)) return AddResult::Unavailable;
+                if (batch->Sources.find(name) != batch->Sources.end()) return AddResult::Retained;
+            }
             if (!MiniMapBuildingCache::ValidSpatial(sprite.Width, sprite.Height, sprite.Bounds, sprite.Mapping))
             {
                 SpriteDiagnostic("MiniMap: atlas spatial metadata rejected: canonical=%s reason=invalid processed dimensions/capture mapping", name.c_str());
@@ -247,14 +252,10 @@ namespace MiniMapBuildingAtlas
                 SpriteDiagnostic("MiniMap: atlas bounds rejected: canonical=%s reason=nonpositive XY extent", name.c_str());
                 return AddResult::Invalid;
             }
-            // Allocate representation identity before Add can acquire retained pixels.
-            batch->Bounds.push_back({name, sprite.Bounds,
-                {double(sprite.Mapping.X), double(sprite.Mapping.Y), sprite.Mapping.X + sprite.Width * sprite.Mapping.Step,
-                 sprite.Mapping.Y + sprite.Height * sprite.Mapping.Step}});
-            const auto result = batch->Core.Add(name, sprite.Width, sprite.Height, sprite.Rgba);
-            if (result != C::Result::Ok)
+            std::shared_ptr<const C::CroppedSource> retained;
+            const auto result = batch->Core.Add(name, sprite.Width, sprite.Height, sprite.Rgba, &retained);
+            if ((result != C::Result::Ok && result != C::Result::DuplicateIdentifier) || !retained)
             {
-                batch->Bounds.pop_back();
                 const auto reason = result == C::Result::UnsupportedDimensions ? "unsupported processed image dimensions" :
                     result == C::Result::InvalidBuffer ? "RGBA byte length rejected" : result == C::Result::EmptyAlpha ? "no alpha occupancy" :
                     result == C::Result::AllocationFailure ? "CPU allocation failed" :
@@ -264,6 +265,32 @@ namespace MiniMapBuildingAtlas
                 if (result == C::Result::AllocationFailure || result == C::Result::Overflow || result == C::Result::InternalError)
                     return AddResult::Unavailable;
                 return AddResult::Invalid;
+            }
+            auto source = std::make_shared<CanonicalSource>();
+            source->Retained = std::move(retained);
+            source->Bounds = sprite.Bounds;
+            source->Mapping = sprite.Mapping;
+            source->SessionSerial = batch->Serial;
+            SourceLease immutable = std::move(source);
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                if (g_uncertain || !Current(batch)) return AddResult::Unavailable;
+                const auto existing = batch->Sources.find(name);
+                if (existing != batch->Sources.end()) return AddResult::Retained;
+                batch->Bounds.push_back({name, sprite.Bounds,
+                    {double(sprite.Mapping.X), double(sprite.Mapping.Y),
+                     sprite.Mapping.X + sprite.Width * sprite.Mapping.Step,
+                     sprite.Mapping.Y + sprite.Height * sprite.Mapping.Step}});
+                try
+                {
+                    const auto inserted = batch->Sources.emplace(name, std::move(immutable));
+                    if (!inserted.second)
+                    {
+                        batch->Bounds.pop_back();
+                        return AddResult::Retained;
+                    }
+                }
+                catch (...) { batch->Bounds.pop_back(); throw; }
             }
             batch->Dirty = true;
             batch->PackAttempts = 0;
@@ -318,7 +345,7 @@ namespace MiniMapBuildingAtlas
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         for (const auto& source : batch->Core.Sources())
                             SpriteDiagnostic("MiniMap: atlas repack candidate includes canonical=%s result=%u attempt=%u/3; previous representation preserved",
-                                source.Identifier.c_str(), unsigned(result), batch->PackAttempts);
+                                source->Identifier.c_str(), unsigned(result), batch->PackAttempts);
 #endif
                         return;
                     }
@@ -356,6 +383,7 @@ namespace MiniMapBuildingAtlas
                 // only committed GPU generations, including after failed uploads.
                 pixels->Revision = batch->PublishedRevision + 1;
                 candidate->Pixels = std::move(pixels);
+                candidate->SessionSerial = batch->Serial;
                 candidate->LayoutRevision = layout.Revision;
                 std::vector<std::pair<std::string, S::AtlasEntry>> entries;
                 entries.reserve(layout.Images.size());
@@ -510,18 +538,16 @@ namespace MiniMapBuildingAtlas
         }
         return &it->second.Atlas;
     }
-    bool SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list, const S::AtlasEntry& entry,
-        const MiniMap::Services::Quad& positions, uint32_t color) noexcept
+    bool SubmitQuad(MiniMap::Services::ICanvas& ui, MiniMap::Services::DrawLayer list,
+        const MiniMap::Services::GpuImageBinding& binding, const MiniMap::Services::Quad& positions,
+        uint32_t color) noexcept
     {
-        if (!Current(g_session) || !g_session->Published || !entry.Texture.id ||
-            entry.Texture.id != g_session->Published->Texture.id) return false;
-        // Default/compatibility entries retain submission-time preparation.
-        // Published entries never take this branch; Region is immutable there.
-        std::optional<S::PreparedAtlasUV> local;
-        const auto* uv = &entry.UVs;
-        if (uv->Status() == S::PreparedAtlasUV::State::Unprepared)
-        { local.emplace(S::PreparedAtlasUV::FromRegion(entry.Region)); uv = &*local; }
-        if (uv->Status() == S::PreparedAtlasUV::State::InvalidRegion)
+        if (!Current(g_session) || !g_session->Published || !g_session->Published->Pixels || !binding.TextureIdentity.id ||
+            binding.TextureIdentity.id != g_session->Published->Texture.id ||
+            binding.Session != g_session->Serial ||
+            binding.Revision != g_session->Published->Pixels->Revision) return false;
+        const auto uv = S::PreparedAtlasUV::FromRegion(binding.Region);
+        if (uv.Status() == S::PreparedAtlasUV::State::InvalidRegion)
         {
             if (!(g_session->DrawDiagnostics & 2))
             {
@@ -530,7 +556,7 @@ namespace MiniMapBuildingAtlas
             }
             return false;
         }
-        if (uv->Status() == S::PreparedAtlasUV::State::InvalidRectangle)
+        if (uv.Status() == S::PreparedAtlasUV::State::InvalidRectangle)
         {
             if (!(g_session->DrawDiagnostics & 4))
             {
@@ -541,21 +567,71 @@ namespace MiniMapBuildingAtlas
         }
         for (const auto& point : positions)
             if (!std::isfinite(point.x) || !std::isfinite(point.y)) return false;
-        const auto& corners = uv->Corners();
+        const auto& corners = uv.Corners();
         const MiniMap::Services::Quad uvQuad{{
             {corners[0].U, corners[0].V}, {corners[1].U, corners[1].V},
             {corners[2].U, corners[2].V}, {corners[3].U, corners[3].V}}};
         try
         {
-            ui.ImageQuad(list, g_session->Published->Texture, positions, uvQuad, color);
+            ui.ImageQuad(list, binding.TextureIdentity, positions, uvQuad, color);
             return true;
         }
         catch (...) { return false; } // Never retry a possibly recorded draw.
     }
-    std::shared_ptr<const C::Layout> PublishedImage()
+    SourceResult AcquireSourceLocked(const std::string& name) noexcept
     {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        return g_session && g_session->Active && g_session->Published ? g_session->Published->Pixels : nullptr;
+        SourceResult result;
+        if (!Current(g_session) || !g_statuses) return result;
+        const auto retained = g_session->Sources.find(name);
+        if (retained != g_session->Sources.end() && retained->second &&
+            retained->second->SessionSerial == g_session->Serial && retained->second->Retained &&
+            retained->second->Retained->Rgba)
+        {
+            result.Lease = retained->second;
+            const auto status = g_statuses->find(name);
+            const bool published = status != g_statuses->end() && status->second.Where == S::Location::Atlas &&
+                g_session->Published && g_session->Published->Texture.id &&
+                status->second.Atlas.Texture.id == g_session->Published->Texture.id;
+            result.Availability = published ? SourceAvailability::RetainedPublished : SourceAvailability::RetainedUnpublished;
+            return result;
+        }
+        const auto status = g_statuses->find(name);
+        if (status == g_statuses->end()) result.Availability = SourceAvailability::NotRequested;
+        else switch (status->second.Where)
+        {
+        case S::Location::PendingCache: result.Availability = SourceAvailability::PendingCache; break;
+        case S::Location::Queued: result.Availability = SourceAvailability::PendingCapture; break;
+        case S::Location::Failed:
+            if (status->second.Failure == S::FailureReason::CacheLoad)
+                result.Availability = SourceAvailability::CacheLoadFailed;
+            else if (status->second.Failure == S::FailureReason::NativeCapture)
+                result.Availability = SourceAvailability::CaptureFailed;
+            else result.Availability = SourceAvailability::FailedOther;
+            break;
+        case S::Location::FileCache:
+        case S::Location::Atlas: result.Availability = SourceAvailability::RetentionUnavailable; break;
+        }
+        return result;
+    }
+    bool ValidateSourceLocked(const SourceLease& lease) noexcept
+    {
+        if (!lease || !Current(g_session) || lease->SessionSerial != g_session->Serial || !lease->Retained ||
+            !lease->Retained->Rgba) return false;
+        const auto found = g_session->Sources.find(lease->Retained->Identifier);
+        return found != g_session->Sources.end() && found->second == lease;
+    }
+    PublishedSnapshot AcquirePublishedSnapshotLocked() noexcept
+    {
+        PublishedSnapshot snapshot;
+        if (!Current(g_session) || !g_session->Published) return snapshot;
+        const auto& revision = g_session->Published;
+        if (!revision->Texture.id || !revision->Pixels || !revision->SessionSerial ||
+            revision->SessionSerial != g_session->Serial || !revision->Pixels->Revision) return snapshot;
+        snapshot.Texture = revision->Texture;
+        snapshot.Pixels = revision->Pixels;
+        snapshot.SessionSerial = revision->SessionSerial;
+        snapshot.PublicationRevision = revision->Pixels->Revision;
+        return snapshot;
     }
 }
 

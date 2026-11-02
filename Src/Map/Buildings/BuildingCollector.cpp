@@ -1,6 +1,5 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
-#include "ExternalMapBuildingSession.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
@@ -9,9 +8,7 @@
 #include "BuildingSplinePayload.h"
 #include "BuildingSplinePolicy.h"
 #include "BuildingSplineEnvelope.h"
-#include "BuildingSpriteGeometry.h"
-#include "BuildingAtlas.h"
-#include "BuildingScheduler.h"
+#include "BuildingVisuals.h"
 #include "Native/NativeApi.h"
 #include "Map/Map.h"
 #include "Services/Objects.h"
@@ -86,7 +83,7 @@ namespace MiniMapBuildingCollector
     Bounds region;
     enum class DiscoveryInput : uint8_t { MiniMapPresentation, ExplicitRegion };
     DiscoveryInput discoveryInput=DiscoveryInput::MiniMapPresentation;
-    uint64_t atlasSession=0,atlasRevision=0;
+    MiniMapBuildingVisuals::CollectorIntegration::DrawingBoundsVersion drawingBoundsVersion{};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct PhaseAggregate
     {
@@ -186,7 +183,7 @@ namespace MiniMapBuildingCollector
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
-        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;atlasSession=atlasRevision=0;
+        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;drawingBoundsVersion={};
         pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
@@ -556,33 +553,22 @@ namespace MiniMapBuildingCollector
         }
         return G::Inflate(r.Curve->CenterlineBounds,inflation+0.01);
     }
-    void SpriteBounds(Record& r)
+    void UpdateDrawingBounds()
     {
-        r.Extent={};
-        if(!r.CanonicalBlueprint)return;
-        const auto* entry=MiniMapBuildingAtlas::Find(*r.CanonicalBlueprint);
-        std::array<MiniMapBuildingVisualGeometry::XY,4> quad;
-        if(entry && MiniMapBuildingSpriteGeometry::BuildWorldQuad(r,*entry,quad))
-            for(const auto& point:quad)G::Add(r.Extent,point.X,point.Y);
-        r.Extent=G::Inflate(r.Extent,0.01);
-    }
-    void UpdateAtlasBounds()
-    {
-        std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        uint64_t session=0,revision=0;MiniMapBuildingAtlas::ObservePublication(session,revision);
-        if(session==atlasSession && revision==atlasRevision)return;
+        const auto change=MiniMapBuildingVisuals::CollectorIntegration::ObserveDrawingBoundsVersion(drawingBoundsVersion);
+        if(!change.Changed)return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        if(session!=atlasSession)++measurements.AtlasSessionChanges;
-        if(revision!=atlasRevision)++measurements.AtlasRevisionChanges;
+        if(change.SessionChanged)++measurements.AtlasSessionChanges;
+        if(change.RevisionChanged)++measurements.AtlasRevisionChanges;
 #endif
         for(auto& [key,e]:entities)if(e.Complete && !e.Data.HasSpline)
         {
-            SpriteBounds(e.Data);
+            MiniMapBuildingVisuals::CollectorIntegration::RefreshRecordBounds(e.Data);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             ++measurements.AtlasBoundsRecalculations;
 #endif
         }
-        atlasSession=session;atlasRevision=revision;dirty=true;
+        dirty=true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.DirtyAtlas;
 #endif
@@ -616,7 +602,7 @@ namespace MiniMapBuildingCollector
         result.CanonicalBlueprint=definition->Blueprint;result.DefinitionShape=definition->Recipe;
         result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
         if(result.HasSpline)result.Extent=SplineBounds(result);
-        else {std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);SpriteBounds(result);}
+        else MiniMapBuildingVisuals::CollectorIntegration::RefreshRecordBounds(result);
         // Owned Record move and key erasure do not allocate or call native
         // code: completion and removal from scheduling commit together.
         it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;
@@ -751,7 +737,7 @@ namespace MiniMapBuildingCollector
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 const auto begin=Clock::now();
 #endif
-                UpdateAtlasBounds();
+                UpdateDrawingBounds();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 measurements.Maintenance.Add(std::chrono::duration<double,std::milli>(Clock::now()-begin).count());
 #endif
@@ -1006,7 +992,6 @@ namespace MiniMapBuildingCollector
     void Shutdown()
     {
         if(!g_initialized)return;
-        ShutdownExternalMapBuildingSessionAbi();
         if (auto* events = MiniMap::Services::TryRuntimeEvents())
         {
             const auto removal = events->Remove(g_tickRegistration);

@@ -30,7 +30,6 @@ namespace MiniMapBuildingComplexCellRasterizer
     {
         B::CellKey Key;
         uint64_t WorldGeneration = 0;
-        uint64_t RestoreEpoch = 0;
         uint64_t SourceRevision = 0;
         uint64_t CellRevision = 0;
         uint64_t DependencyRevision = 0;
@@ -51,7 +50,6 @@ namespace MiniMapBuildingComplexCellRasterizer
     {
         B::CellKey Key;
         uint64_t WorldGeneration = 0;
-        uint64_t RestoreEpoch = 0;
         uint64_t SourceRevision = 0;
         uint64_t CellRevision = 0;
         uint64_t DependencyRevision = 0;
@@ -65,7 +63,7 @@ namespace MiniMapBuildingComplexCellRasterizer
 
     inline CellImageIdentity Identify(const CellImage& image)
     {
-        return {image.Key, image.WorldGeneration, image.RestoreEpoch, image.SourceRevision,
+        return {image.Key, image.WorldGeneration, image.SourceRevision,
             image.CellRevision, image.DependencyRevision, image.Validity, image.Origin, image.RenderDroneRails, image.Status,
             image.CaptureRevisions, image.CaptureAvailability};
     }

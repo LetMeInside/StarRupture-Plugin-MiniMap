@@ -2,10 +2,10 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
-#include "Map/Buildings/BuildingCollector.h"
 #include "Map/Buildings/SpriteStatus.h"
 #include "Map/Buildings/SpriteQueues.h"
 #include <mutex>
+#include <string>
 
 // Integration callers serialize drawing and lifecycle transitions with this lock.
 namespace MiniMapBuildingSchedulerInternal
@@ -29,8 +29,7 @@ namespace MiniMapBuildingScheduler
 
     void StartDraw();
 
-    void DrawBuilding(
-        const MiniMapBuildingCollector::Record& building);
+    void RegisterSpriteRequirement(const std::string& canonicalBlueprint);
 
     void EndDraw() noexcept;
 

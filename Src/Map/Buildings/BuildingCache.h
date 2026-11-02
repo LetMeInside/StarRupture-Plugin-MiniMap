@@ -54,10 +54,6 @@ namespace MiniMapBuildingCache
         std::vector<uint8_t> Rgba;
         SpatialBounds Bounds{};
         ImageMapping Mapping{};
-        // True only when the source actor returned finite, positive assembly
-        // bounds; fallback capture bounds remain usable for legacy visuals but
-        // cannot certify BuildingComplex visual support.
-        bool AssemblyBoundsVerified = false;
     };
 
     // Encodes the UTF-8 bytes reversibly. The returned name includes .sprite.

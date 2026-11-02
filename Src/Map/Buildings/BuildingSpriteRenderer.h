@@ -15,13 +15,19 @@ namespace MiniMapBuildingSpriteRenderer
     // False leaves admission closed when prior native ownership remains blocked.
     bool InitializeSession();
 
-    // Accepted only while the current shared renderer session and gameplay
-    // generation are admitted. The request is copied into the shared FIFO.
-    bool SubmitBuildingComplex(MiniMapSpriteQueues::Request request);
-    void CancelBuildingComplex(uint64_t requestId) noexcept;
-    void CancelPendingBuildingComplex() noexcept;
-
     void Tick(float deltaTime);
+
+    // Diagnostic CPU metadata only. Caller is the existing game-thread service;
+    // no UObject dereference, admission change, lease, or native call is made.
+    struct DiagnosticSnapshot
+    {
+        uintptr_t PrivateWorld = 0;
+        uint64_t Session = 0;
+        unsigned WorldPhase = 0, RequestPhase = 0;
+        bool Active = false;
+        char BlueprintTail[96]{};
+    };
+    DiagnosticSnapshot GetDiagnosticSnapshot() noexcept;
 
     void EndSession();
 

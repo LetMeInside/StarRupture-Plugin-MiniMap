@@ -103,6 +103,8 @@
     <ClInclude Include="Services\RuntimeEvents.h" />
     <ClInclude Include="Services\NativeHooks.h" />
     <ClInclude Include="Services\Viewport.h" />
+    <ClInclude Include="Services\ImageDestination.h" />
+    <ClInclude Include="Services\Rgba16fImageDestination.h" />
     <ClInclude Include="Services\Textures.h" />
     <ClInclude Include="Services\Runtime.h" />
     <ClInclude Include="Services\RuntimeBinding.h" />
@@ -131,6 +133,7 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexIndex.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexCellRasterizer.h" />
+    <ClInclude Include="Map\Buildings\BuildingImageRasterizationCore.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexSourceAcquisition.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexWorld.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexAbi.h" />
@@ -155,8 +158,6 @@
     <ClInclude Include="Map\Foundables\Foundables.h" />
     <ClInclude Include="Map\AlienActors\AlienActors.h" />
     <ClInclude Include="Map\Buildings\BuildingCollector.h" />
-    <ClInclude Include="Map\Buildings\ExternalMapBuildingSession.h" />
-    <ClInclude Include="Map\Buildings\ExternalMapBuildingSessionAbi.h" />
     <ClInclude Include="Map\Buildings\BuildingScheduler.h" />
     <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
     <ClInclude Include="Map\Buildings\BuildingGeometry.h" />
@@ -230,11 +231,10 @@
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexIndex.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexCellRasterizer.cpp" />
+    <ClCompile Include="Services\Rgba16fImageDestination.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexSourceAcquisition.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexWorld.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexApi.cpp" />
-    <ClCompile Include="Map\Buildings\ExternalMapBuildingSession.cpp" />
-    <ClCompile Include="Map\Buildings\ExternalMapBuildingSessionAbi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
     <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />

@@ -90,6 +90,7 @@ namespace
         if (added == A::AddResult::Invalid)
         {
             it->second.Where = S::Location::Failed;
+            it->second.Failure = S::FailureReason::Other;
             SpriteDiagnostic("MiniMap: cached sprite '%s' has unsupported atlas image/bounds; failed for session", path.c_str());
         }
         else if (added == A::AddResult::Unavailable)
@@ -146,10 +147,10 @@ namespace MiniMapBuildingScheduler
         if (!g_statuses || !g_fifo || g_sessionActive) return;
         if (g_serial == (std::numeric_limits<uint64_t>::max)())
         { LOG_ERROR("MiniMap: building scheduler session serial exhausted; admission closed"); return; }
-        // A MiniMap scheduler generation owns only its tagged work. Keep any
-        // future BuildingComplex identities/receipts in the shared transports.
-        g_fifo->RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
-        g_feedback.RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
+        std::string pendingPath;
+        while (g_fifo->Remove(pendingPath)) {}
+        MiniMapSpriteQueues::Feedback pendingFeedback;
+        while (g_feedback.Remove(pendingFeedback)) {}
         g_statuses->clear();
         Clear(g_pass); Clear(g_completed); g_passOpen = false;
         for (const auto blueprint : BlacklistedBlueprints)
@@ -167,10 +168,9 @@ namespace MiniMapBuildingScheduler
         MiniMapSpriteQueues::Feedback feedback;
         // Leave feedback in its original queue if this handoff is full. A success
         // can move its owned string and optional CPU payload into the pass slot.
-        while (Room() && g_feedback.Remove(feedback, MiniMapSpriteQueues::RequestKind::MiniMap))
+        while (Room() && g_feedback.Remove(feedback))
         {
-            // All feedback originates from an admitted request under the same
-            // lifecycle lock. Reject old generations before looking up the path.
+            // Reject feedback retained from an earlier renderer session.
             if (feedback.Session != g_serial) continue;
             const auto it = g_statuses->find(feedback.BlueprintPath);
             if (it == g_statuses->end() || it->second.Where != S::Location::Queued)
@@ -182,24 +182,24 @@ namespace MiniMapBuildingScheduler
                 }
                 continue;
             }
-            if (feedback.Status == MiniMapSpriteQueues::ResultStatus::Success)
+            if (feedback.Success)
             {
                 g_pass.Payloads[g_pass.Count] = std::move(feedback.Payload);
                 g_pass.Paths[g_pass.Count++] = std::move(feedback.BlueprintPath);
                 it->second.Where = S::Location::PendingCache;
+                it->second.Failure = S::FailureReason::None;
             }
             else
             {
                 it->second.Where = S::Location::Failed;
+                it->second.Failure = S::FailureReason::NativeCapture;
                 SpriteDiagnostic("MiniMap: sprite marked Failed: canonical=%s reason=unsuccessful capture/cache feedback; no rediscovery retry this session; see request rejection/persistence diagnostic", feedback.BlueprintPath.c_str());
             }
         }
     }
-    void DrawBuilding(const MiniMapBuildingCollector::Record& building)
+    void RegisterSpriteRequirement(const std::string& path)
     {
-        if (!g_sessionActive || !g_passOpen || g_drawThread != std::this_thread::get_id() ||
-            !building.CanonicalBlueprint || building.CanonicalBlueprint->empty()) return;
-        const auto& path = *building.CanonicalBlueprint;
+        if (!g_sessionActive || !g_passOpen || g_drawThread != std::this_thread::get_id() || path.empty()) return;
         if (g_statuses->find(path) != g_statuses->end()) return;
         if (!Room())
         {
@@ -338,24 +338,24 @@ namespace MiniMapBuildingScheduler
 #endif
                         try
                         {
-                            MiniMapSpriteQueues::Request request;
-                            request.Kind = MiniMapSpriteQueues::RequestKind::MiniMap;
-                            request.BlueprintPath = path;
-                            g_fifo->Add(std::move(request));
+                            g_fifo->Add(path);
                             it->second.Where = S::Location::Queued;
+                            it->second.Failure = S::FailureReason::None;
                         }
-                        catch (...) { it->second.Where = S::Location::Failed; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
+                        catch (...) { it->second.Where = S::Location::Failed; it->second.Failure = S::FailureReason::Other; SpriteDiagnostic("MiniMap: capture FIFO allocation failed for '%s'; failed for session", path.c_str()); }
                         continue;
                     }
                     if (result.Status != C::LoadStatus::Loaded)
                     {
                         // Explicit non-spinning policy; I/O errors never enqueue capture.
                         it->second.Where = S::Location::Failed;
+                        it->second.Failure = S::FailureReason::CacheLoad;
                         SpriteDiagnostic("MiniMap: sprite TryLoad '%s' failed (%u, %s, 0x%08X); failed for session",
                             path.c_str(), unsigned(result.Status), result.Detail, unsigned(result.Error));
                         continue;
                     }
                     it->second.Where = S::Location::FileCache;
+                    it->second.Failure = S::FailureReason::None;
                 }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++loadedSprites;
@@ -395,8 +395,9 @@ namespace MiniMapBuildingScheduler
     void EndSession()
     {
         MiniMapBuildingSchedulerInternal::StopSession();
-        if (g_fifo) g_fifo->RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
-        g_feedback.RemoveAll(MiniMapSpriteQueues::RequestKind::MiniMap);
+        if (g_fifo) { std::string path; while (g_fifo->Remove(path)) {} }
+        MiniMapSpriteQueues::Feedback feedback;
+        while (g_feedback.Remove(feedback)) {}
         if (g_statuses) g_statuses->clear();
     }
     void Shutdown()

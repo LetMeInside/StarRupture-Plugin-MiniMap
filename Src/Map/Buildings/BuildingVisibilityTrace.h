@@ -9,12 +9,12 @@ namespace MiniMapBuildingVisibilityTrace
     enum class State : unsigned
     {
         Unknown, Present, Absent, CanonicalUnavailable, SessionUnavailable,
-        AtlasMissing, QuadRejected, Culled, SubmitRejected, Submitted
+        AtlasMissing, QuadRejected, Culled, SubmitRejected, Submitted, DestinationUnavailable
     };
     inline const char* Name(State state) noexcept
     {
         constexpr const char* names[]{"unknown", "present", "absent", "canonical-unavailable", "session-unavailable",
-            "atlas-missing", "quad-rejected", "culled", "submit-rejected", "draw-submitted"};
+            "atlas-missing", "quad-rejected", "culled", "submit-rejected", "draw-submitted", "destination-unavailable"};
         return names[unsigned(state)];
     }
     struct Sample

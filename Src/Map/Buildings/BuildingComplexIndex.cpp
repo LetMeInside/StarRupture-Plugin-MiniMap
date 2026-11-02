@@ -26,7 +26,7 @@ namespace MiniMapBuildingComplexIndex
             if (!source.BlueprintIdentity || source.BlueprintIdentity->empty() ||
                 !MiniMapBuildingGeometryTypes::Valid(source.Transform) || !ValidBounds(source.VisualSupport)) return false;
             if (source.BaseCoreOverlay || !source.HasSplineSource)
-                return source.SpriteCaptureSupportMetadata && source.SpriteQuadValid &&
+                return source.SpriteQuadValid &&
                     ValidBounds(source.OrdinarySpriteSupport) && source.VisualSupport == source.OrdinarySpriteSupport;
             return source.SplinePreparation == SplinePreparationState::Complete &&
                 !source.SplineSections.empty() && ValidBounds(source.PreparedSplineSupport) &&
@@ -94,7 +94,7 @@ namespace MiniMapBuildingComplexIndex
         { return !source.HasSplineSource && !source.BaseCoreOverlay && !(source.InteriorKnown && source.InteriorOnly); }
         bool VerifiedOccluderGeometry(const SourcePayload& source) noexcept
         {
-            if (!source.InteriorKnown || !source.SpriteCaptureSupportMetadata || !source.SpriteQuadValid ||
+            if (!source.InteriorKnown || !source.SpriteQuadValid ||
                 !ValidBounds(source.OrdinarySpriteSupport) ||
                 !MiniMapBuildingGeometryTypes::Valid(source.Transform)) return false;
             for (const auto& point : source.SpriteQuadWorld)
@@ -241,50 +241,6 @@ namespace MiniMapBuildingComplexIndex
         return changed;
     }
 
-    void Index::NotifyCaptureChange(MassKey key, uint64_t generation, ChangeSet& changes) noexcept
-    {
-        changes = {};
-        std::lock_guard lock(mutex_);
-        if (generation != worldGeneration_) return;
-        const auto record = records_.find(key);
-        // Removal has already invalidated the old support under this mutex.
-        // A capture for a nonmember cannot be acquired through the world owner.
-        if (record == records_.end()) return;
-        // Also advance conservative fallback metadata. Certified local cells
-        // ignore this journal movement; uncertified results must not survive
-        // a capture/readiness mutation with no local token available.
-        Advance(dependencyRevision_);
-        changes.WorldGeneration = generation;
-        changes.SourceRevision = sourceRevision_;
-        changes.DependencyRevision = dependencyRevision_;
-        changes.LocalSafetyInvalidated = Unbounded(*record->second.Record) ||
-            (PotentialOrdinaryOccluder(*record->second.Record->Source) &&
-             !VerifiedOccluderGeometry(*record->second.Record->Source) &&
-             !record->second.Record->Source->VisualSupport.Valid);
-        std::vector<SectionKey> affectedSections;
-        try
-        {
-            std::set<SectionKey> sections;
-            if (auto reverse = occluderSections_.find(key); reverse != occluderSections_.end())
-                sections.insert(reverse->second.begin(), reverse->second.end());
-            // Include current spatial-query coverage so an entering/replaced
-            // capture is covered even before it has a reverse dependency edge.
-            for (const auto& pair : sectionCells_)
-                for (const auto& cell : record->second.Cells)
-                    if (pair.second.find(cell) != pair.second.end()) { sections.insert(pair.first); break; }
-            affectedSections.assign(sections.begin(), sections.end());
-        }
-        catch (...)
-        {
-            changes.LocalSafetyInvalidated = true;
-            affectedSections.clear();
-        }
-        // Capture availability changes keep the same physical support. Bounds
-        // changes are published through Upsert's old/new support transaction.
-        PrepareLocalChangeLocked(changes, record->second.Cells, record->second.Cells, affectedSections);
-        ApplyLocalChangeLocked(changes);
-    }
-
     bool Index::BeginWorld(uint64_t generation, WorldOrigin origin) noexcept
     {
         if (!generation || !origin.Valid || !std::isfinite(origin.X) || !std::isfinite(origin.Y)) return false;
@@ -377,9 +333,9 @@ namespace MiniMapBuildingComplexIndex
             size_t sectionOrdinal = 0;
             for (const auto& section : input.Source->SplineSections)
             {
-                if (section.Identity != sectionOrdinal++ || section.SourceSegment >= input.Source->SplineCurve.size() ||
+                if (section.Identity != sectionOrdinal++ || section.SourceSegment >= input.Source->SplineCurveCount ||
                     (section.SyntheticThin ? section.ProfileIndex != (std::numeric_limits<uint64_t>::max)() :
-                        section.ProfileIndex >= input.Source->SplineProfiles.size()) ||
+                        section.ProfileIndex >= input.Source->SplineProfileCount) ||
                     !std::isfinite(section.StartT) || !std::isfinite(section.EndT) ||
                     section.StartT < 0 || section.EndT > 1 || section.StartT >= section.EndT ||
                     !section.Bounds.Valid || !ValidBounds(section.Bounds) || section.Triangles.empty())
@@ -441,7 +397,6 @@ namespace MiniMapBuildingComplexIndex
                 old->second.Record->Source->InteriorKnown == input.Source->InteriorKnown &&
                 old->second.Record->Source->InteriorOnly == input.Source->InteriorOnly &&
                 old->second.Record->Source->SpriteQuadValid == input.Source->SpriteQuadValid &&
-                old->second.Record->Source->SpriteCaptureSupportMetadata == input.Source->SpriteCaptureSupportMetadata &&
                 old->second.Record->Source->SpriteQuadWorld == input.Source->SpriteQuadWorld)
                 return UpsertResult::Unchanged;
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -10,66 +9,29 @@
 #include <utility>
 
 namespace MiniMapBuildingCache { struct Sprite; }
-namespace MiniMapBuildingComplexIndex { struct SourcePayload; }
 
 namespace MiniMapSpriteQueues
 {
-    enum class RequestKind : uint8_t
-    {
-        MiniMap,
-        BuildingComplex
-    };
+    // The renderer FIFO is keyed only by canonical blueprint path.
+    using Request = std::string;
 
-    enum class ResultStatus : uint8_t
+    struct Feedback
     {
-        Success,
-        RetryableFailure,
-        Unsupported
-    };
-
-    // One FIFO carries both consumers. MiniMap keeps its path/session contract;
-    // BuildingComplex admission carries an immutable exact-source receipt.
-    struct Request
-    {
-        RequestKind Kind = RequestKind::MiniMap;
         std::string BlueprintPath;
+        bool Success = false;
         uint64_t Session = 0;
-        uint64_t RequestId = 0; // Caller-owned correlation/cancellation identity.
-        int32_t MassIndex = -1;
-        int32_t MassSerial = 0;
-        uint64_t WorldGeneration = 0;
-        uint64_t SourceRevision = 0; // Stamped by the producer at admission.
-        std::string CanonicalBlueprintIdentity;
-        std::shared_ptr<const MiniMapBuildingComplexIndex::SourcePayload> SourceSnapshot;
-    };
-
-    struct CaptureResult
-    {
-        RequestKind Kind = RequestKind::MiniMap;
-        uint64_t RequestId = 0;
-        int32_t MassIndex = -1;
-        int32_t MassSerial = 0;
-        uint64_t WorldGeneration = 0;
-        uint64_t SourceRevision = 0;
-        std::string CanonicalBlueprintIdentity;
-        std::shared_ptr<const MiniMapBuildingComplexIndex::SourcePayload> SourceSnapshot;
-        ResultStatus Status = ResultStatus::RetryableFailure;
-        std::string BlueprintPath;
-        uint64_t Session = 0;
-        // Optional immutable processed CPU pixels and their actual capture bounds
-        // and crop mapping, never a native/readback pointer. BuildingCache::Sprite
-        // owns all of that metadata together with its RGBA bytes.
+        // Optional CPU-owned processed pixels. The canonical .sprite write has
+        // already succeeded before the renderer reports successful feedback.
         std::shared_ptr<const MiniMapBuildingCache::Sprite> Payload;
     };
-    using Feedback = CaptureResult; // Existing queue spelling remains source-compatible.
 
     class SpriteFifo
     {
     public:
-        void Add(Request request)
+        void Add(std::string path)
         {
             std::lock_guard<std::mutex> lock(Mutex);
-            Items.push_back(std::move(request));
+            Items.push_back(std::move(path));
         }
 
         bool HasPending()
@@ -78,53 +40,13 @@ namespace MiniMapSpriteQueues
             return !Items.empty();
         }
 
-        bool Remove(Request& request)
+        bool Remove(std::string& path)
         {
             std::lock_guard<std::mutex> lock(Mutex);
             if (Items.empty()) return false;
-            request = std::move(Items.front());
+            path = std::move(Items.front());
             Items.pop_front();
             return true;
-        }
-
-        // Extract the earliest request for a tag while retaining the order of
-        // all remaining entries. The native renderer uses unfiltered Remove()
-        // so accepted capture work always follows the shared FIFO head.
-        bool Remove(Request& request, RequestKind expectedKind)
-        {
-            std::lock_guard<std::mutex> lock(Mutex);
-            const auto item = std::find_if(Items.begin(), Items.end(),
-                [expectedKind](const Request& candidate) { return candidate.Kind == expectedKind; });
-            if (item == Items.end()) return false;
-            request = std::move(*item);
-            Items.erase(item);
-            return true;
-        }
-
-        bool Remove(RequestKind expectedKind, uint64_t requestId)
-        {
-            std::lock_guard<std::mutex> lock(Mutex);
-            const auto item = std::find_if(Items.begin(), Items.end(),
-                [expectedKind, requestId](const Request& candidate) {
-                    return candidate.Kind == expectedKind && candidate.RequestId == requestId;
-                });
-            if (item == Items.end()) return false;
-            Items.erase(item);
-            return true;
-        }
-
-        // Session owners cancel only their own pending work. Erasing matching
-        // entries preserves the FIFO order and ownership of every other tag.
-        size_t RemoveAll(RequestKind kind)
-        {
-            std::lock_guard<std::mutex> lock(Mutex);
-            size_t removed = 0;
-            for (auto item = Items.begin(); item != Items.end();)
-            {
-                if (item->Kind == kind) { item = Items.erase(item); ++removed; }
-                else ++item;
-            }
-            return removed;
         }
 
     private:
@@ -148,29 +70,6 @@ namespace MiniMapSpriteQueues
             feedback = std::move(Items.front());
             Items.pop_front();
             return true;
-        }
-
-        bool Remove(Feedback& feedback, RequestKind expectedKind)
-        {
-            std::lock_guard<std::mutex> lock(Mutex);
-            const auto item = std::find_if(Items.begin(), Items.end(),
-                [expectedKind](const Feedback& candidate) { return candidate.Kind == expectedKind; });
-            if (item == Items.end()) return false;
-            feedback = std::move(*item);
-            Items.erase(item);
-            return true;
-        }
-
-        size_t RemoveAll(RequestKind kind)
-        {
-            std::lock_guard<std::mutex> lock(Mutex);
-            size_t removed = 0;
-            for (auto item = Items.begin(); item != Items.end();)
-            {
-                if (item->Kind == kind) { item = Items.erase(item); ++removed; }
-                else ++item;
-            }
-            return removed;
         }
 
     private:

@@ -29,12 +29,12 @@ typedef struct BC_Key { int64_t X, Y; } BC_Key;
 typedef struct BC_Rect { double MinX, MinY, MaxX, MaxY; } BC_Rect;
 typedef struct BC_Ref { uint32_t StructSize, Reserved; uint64_t Session, Id; } BC_Ref;
 typedef struct BC_Open {
-    uint32_t StructSize, Reserved; BC_World* World; uint64_t ClientWorldEpoch;
+    uint32_t StructSize, Reserved; BC_World* World;
     double OriginX, OriginY, CellSizeCm; uint32_t CellPixels, GroupWidth; uint64_t GridSchema;
 } BC_Open;
 typedef struct BC_Grid {
-    uint32_t StructSize, Version, ContractId, AdmissionFlags;
-    uint64_t Session, WorldGeneration, RestoreEpoch, GridId;
+    uint32_t StructSize, Version, ContractId;
+    uint64_t Session, GridId;
     double OriginX, OriginY, CellSizeCm, TileSizeCm;
     uint32_t CellPixels, GroupWidth, MaxInteriorSide, PixelConvention;
 } BC_Grid;
@@ -44,7 +44,7 @@ typedef struct BC_Demand {
 } BC_Demand;
 typedef struct BC_Status {
     uint32_t StructSize, State, Flags, Reason;
-    uint64_t RequestId, PublicationId, WorldGeneration, RestoreEpoch, GridId, CertificateId, DetailEpoch;
+    uint64_t RequestId, PublicationId, GridId, CertificateId, DetailEpoch;
     int64_t TileX, TileY; BC_Rect WorldBounds;
     uint32_t InteriorSide, TextureWidth, TextureHeight, Gutter;
     double UVScaleX, UVScaleY, UVBiasX, UVBiasY;
@@ -62,7 +62,7 @@ enum { BC_RESULT_OK=0u, BC_INVALID_ARGUMENT=1u, BC_UNAVAILABLE=2u, BC_REJECTED_T
        BC_INTERNAL_FAILURE=8u, BC_RESOURCE_FAILURE=9u };
 enum { BC_PENDING=1u, BC_PARTIAL=2u, BC_READY=3u, BC_EMPTY=4u, BC_FAILED=5u, BC_STALE=6u };
 enum { BC_CURRENT=1u, BC_NATIVE_READY=2u, BC_COMPLETE=4u, BC_HAS_FAILURE=8u,
-       BC_DETAIL_PENDING=16u, BC_RETRY_ELIGIBLE=32u, BC_ADMISSION_PENDING=64u };
+       BC_DETAIL_PENDING=16u, BC_RETRY_ELIGIBLE=32u };
 enum { BC_REASON_NONE=0u, BC_SOURCE_PENDING=1u, BC_CAPTURE_PENDING=2u, BC_SPLINE_OCCLUSION_PENDING=3u,
        BC_UPLOAD_PENDING=4u, BC_GLOBAL_COMPLETENESS_UNAVAILABLE=5u, BC_POLICY_MISMATCH=6u,
        BC_RESOURCE_FAILURE_REASON=7u, BC_STALE_OR_REVOKED_IDENTITY=8u };
@@ -78,6 +78,7 @@ typedef uint32_t (BC_CALL *BC_WithdrawFn)(const BC_Ref*);
 typedef uint32_t (BC_CALL *BC_WithdrawAllFn)(const BC_Ref*);
 typedef uint32_t (BC_CALL *BC_CloseFn)(const BC_Ref*);
 typedef uint32_t (BC_CALL *BC_GetPolicyFn)(const BC_Ref*, BC_Policy*);
+typedef uint32_t (BC_CALL *BC_ServiceFn)(const BC_Ref*);
 
 typedef struct BC_Api {
     uint32_t StructSize, Version, ContractId, Reserved;
@@ -92,6 +93,7 @@ typedef struct BC_Api {
     BC_WithdrawAllFn WithdrawAll;
     BC_CloseFn Close;
     BC_GetPolicyFn GetPolicy;
+    BC_ServiceFn Service;
 } BC_Api;
 #pragma pack(pop)
 

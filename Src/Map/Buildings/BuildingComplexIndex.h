@@ -55,9 +55,9 @@ namespace MiniMapBuildingComplexIndex
     enum class UpsertResult : uint8_t { Inserted, Replaced, Unchanged, InvalidInput, AllocationFailure };
     enum class RemoveResult : uint8_t { Removed, NotFound, AllocationFailure };
 
-    // All strings, transforms, quads, profile inputs and spline section data are
-    // copied before construction. Shared immutable payloads avoid duplicating
-    // long curves/definitions for each contributing cell.
+    // Derived section data and the source fields needed by current CPU consumers
+    // are copied before construction. Raw collector curves and profiles remain
+    // owned by immutable collector snapshots and are not retained here.
     struct SplineTriangleSource
     {
         std::array<std::array<double, 3>, 3> Vertices{};
@@ -125,28 +125,6 @@ namespace MiniMapBuildingComplexIndex
         std::vector<OccludedSplineSection> Sections;
     };
 
-    struct SplineCurveSegmentSource
-    {
-        std::array<std::array<double, 3>, 4> WorldControls{};
-        double StartKey = 0, EndKey = 1;
-        uint8_t InterpolationMode = 0;
-    };
-
-    // Exact copied inputs consumed by the existing MiniMap spline profile
-    // projector. They remain distinct from its prepared CPU output.
-    struct SplineProfileSource
-    {
-        std::array<double, 3> BoundsOrigin{}, BoundsExtent{};
-        double BoundsSphereRadius = 0;
-        std::array<double, 3> ComponentTranslation{}, ComponentRotationDegrees{}, ComponentScale{1, 1, 1};
-        std::array<double, 2> StartScale{1, 1}, EndScale{1, 1}, StartOffset{}, EndOffset{};
-        double StartRoll = 0, EndRoll = 0;
-        std::array<double, 3> Up{0, 0, 1};
-        uint8_t ForwardAxis = 0;
-        uint8_t SourceRank = 0; // 0 high-res trait, 1 low-res trait, 2 authored class.
-        std::array<int64_t, 12> SelectionOrder{}; // Existing collector's exact deterministic tie-break key.
-    };
-
     struct SourcePayload
     {
         uint64_t SourceRevision = 0;
@@ -162,13 +140,12 @@ namespace MiniMapBuildingComplexIndex
         MiniMapBuildingGeometryTypes::Transform Transform;
         std::array<std::array<double, 3>, 4> SpriteQuadWorld{};
         bool SpriteQuadValid = false;
-        uint64_t SpriteCaptureSupportMetadata = 0;
-        uint64_t SplineSourceIdentity = 0;
         bool HasSplineSource = false;
+        // Counts validate section source ordinals after raw inputs are discarded.
+        uint64_t SplineCurveCount = 0, SplineProfileCount = 0;
         uint8_t SplineCategory = 3; // MiniMapBuildingSplinePolicy::SplineCategory numeric value.
         bool SplineSortZValid = false;
         double SplineSortZ = 0;
-        std::vector<SplineCurveSegmentSource> SplineCurve;
         SplinePreparationState SplinePreparation = SplinePreparationState::NotPresent;
         // Bounds of prepared MiniMap-equivalent ribbon sections. This field
         // targets cells but never certifies complete visual-contributor support.
@@ -181,8 +158,6 @@ namespace MiniMapBuildingComplexIndex
         WorldBounds VisualSupport;
         SupportState Support = SupportState::Unknown;
         std::vector<SplineSectionSource> SplineSections;
-        std::vector<SplineProfileSource> SplineProfiles;
-        std::vector<double> NumericalProfileInputs;
     };
 
     struct BuildingRecord
@@ -251,11 +226,6 @@ namespace MiniMapBuildingComplexIndex
         // Origin is copied from the live terrain pivot by the future world service.
         bool BeginWorld(uint64_t worldGeneration, WorldOrigin origin) noexcept;
         void ResetWorld(uint64_t nextWorldGeneration) noexcept;
-        // Metadata-only safety transitions, never source discovery or GPU work.
-        // World owner calls before capture availability mutations, including
-        // replacements with unchanged source geometry. Bounds changes still
-        // flow through Upsert's old/new support transaction.
-        void NotifyCaptureChange(MassKey key, uint64_t worldGeneration, ChangeSet& changes) noexcept;
         void InvalidateSafety() noexcept;
         bool ObserveRenderingPolicy(bool renderDroneRails) noexcept;
 

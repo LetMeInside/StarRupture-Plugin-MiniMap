@@ -3,7 +3,6 @@
 #include "Map/Buildings/BuildingSpriteRenderer.h"
 #include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Buildings/BuildingCache.h"
-#include "Map/Buildings/BuildingComplexIndex.h"
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
@@ -24,6 +23,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -1317,15 +1317,8 @@ namespace
 
     struct ActiveRequest
     {
-        // Functional provenance captured at FIFO admission; the scheduler owns
-        // session transitions.
-        MiniMapSpriteQueues::RequestKind Kind = MiniMapSpriteQueues::RequestKind::MiniMap;
+        // The scheduler owns session transitions; capture identity is the path.
         uint64_t Session = 0;
-        uint64_t RequestId = 0;
-        int32_t MassIndex = -1, MassSerial = 0;
-        uint64_t WorldGeneration = 0, SourceRevision = 0;
-        std::string CanonicalBlueprintIdentity;
-        std::shared_ptr<const MiniMapBuildingComplexIndex::SourcePayload> SourceSnapshot;
         ActiveRequest() = default;
         ActiveRequest(const ActiveRequest&) = delete;
         ActiveRequest& operator=(const ActiveRequest&) = delete;
@@ -1336,7 +1329,6 @@ namespace
         std::array<NativeReference, MetadataCount> Metadata{};
         NativeReference Actor, Capture, Target;
         SDK::FVector Center{}, Extent{};
-        bool AssemblyBoundsVerified = false;
         uint64_t PreparedTick{}, C0Tick{};
         bool CaptureSubmitted = false; // Monotonic scene-work history across both passes, including retirement.
         bool Committed = false; // Current Job's readback commitment; reset only after that Job is destroyed.
@@ -1349,7 +1341,6 @@ namespace
         std::vector<uint8_t> Rgba; // Full canvas; retained through native retirement and feedback delivery.
         MiniMapCapturePng::ProcessedImage Processed;
         std::optional<bool> FinalResult; // Set once, including write failure; never retry persistence.
-        MiniMapSpriteQueues::ResultStatus FinalStatus = MiniMapSpriteQueues::ResultStatus::RetryableFailure;
         bool FeedbackSubmitted = false;
         std::shared_ptr<const MiniMapBuildingCache::Sprite> CompletedSprite;
         enum class WaitReason { AdmissionGC, PreparationAdmission, ReadbackPrerequisite,
@@ -1628,33 +1619,10 @@ namespace
                             uint16_t(Processed.X0), uint16_t(Processed.Y0), Processed.SourceStep};
                         if (pixels.size() != Processed.Width * Processed.Height * 4)
                         { Rejected("processed sprite dimensions/buffer inconsistent"); }
-                        else if (Kind == MiniMapSpriteQueues::RequestKind::BuildingComplex)
-                        {
-                            auto payload = std::make_shared<MiniMapBuildingCache::Sprite>();
-                            payload->Width = uint32_t(Processed.Width); payload->Height = uint32_t(Processed.Height);
-                            payload->Bounds = bounds; payload->Mapping = mapping;
-                            payload->AssemblyBoundsVerified = AssemblyBoundsVerified;
-                            payload->Rgba = Processed.Passthrough ? std::move(Rgba) : std::move(Processed.Rgba);
-                            if (MiniMapBuildingCache::ValidSpatial(payload->Width, payload->Height,
-                                payload->Bounds, payload->Mapping) &&
-                                payload->Rgba.size() == size_t(payload->Width) * payload->Height * 4)
-                            {
-                                CompletedSprite = std::move(payload);
-                                FinalResult = true;
-                                FinalStatus = MiniMapSpriteQueues::ResultStatus::Success;
-                            }
-                        }
                         else FinalResult = MiniMapBuildingCache::Write(BlueprintPath, pixels.data(),
                             uint32_t(Processed.Width), uint32_t(Processed.Height), bounds, mapping);
                         if (*FinalResult)
                         {
-                            if (Kind == MiniMapSpriteQueues::RequestKind::BuildingComplex)
-                            {
-                                // BuildingComplex owns its processed CPU result without
-                                // making persistent-cache or atlas publication a condition.
-                            }
-                            else
-                            {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                             // Keep the original source PNG; all native owners have retired.
                             // Optional export failure cannot invalidate processed persistence.
@@ -1683,7 +1651,6 @@ namespace
                             }
                             catch (...) {}
 #endif
-                            }
                         }
                     }
                     else if (!FailureReported)
@@ -1696,18 +1663,8 @@ namespace
             try
             {
                 MiniMapSpriteQueues::Feedback result;
-                result.Kind = Kind;
-                result.RequestId = RequestId;
-                result.MassIndex = MassIndex;
-                result.MassSerial = MassSerial;
-                result.WorldGeneration = WorldGeneration;
-                result.SourceRevision = SourceRevision;
-                result.CanonicalBlueprintIdentity = CanonicalBlueprintIdentity;
-                result.SourceSnapshot = SourceSnapshot;
-                result.Status = *FinalResult ? (Kind == MiniMapSpriteQueues::RequestKind::BuildingComplex
-                    ? FinalStatus : MiniMapSpriteQueues::ResultStatus::Success)
-                    : MiniMapSpriteQueues::ResultStatus::RetryableFailure;
                 result.BlueprintPath = BlueprintPath;
+                result.Success = *FinalResult;
                 result.Session = Session;
                 result.Payload = CompletedSprite;
                 feedback.Add(std::move(result));
@@ -2081,11 +2038,11 @@ namespace
             { Quarantine("Blueprint construction interrupted or ownership invalid"); return; }
             if (!ActorBounds(Actor.Object.Bits, &Center, &Extent)) { Quarantine("Actor bounds call interrupted"); return; }
             const float width = float(2.0 * (std::max)(Extent.X, Extent.Y) * 1.1);
-            AssemblyBoundsVerified = std::isfinite(Center.X) && std::isfinite(Center.Y) && std::isfinite(Center.Z) &&
+            const bool validCaptureBounds = std::isfinite(Center.X) && std::isfinite(Center.Y) && std::isfinite(Center.Z) &&
                 std::isfinite(Extent.X) && std::isfinite(Extent.Y) && std::isfinite(Extent.Z) &&
                 Extent.X > 0 && Extent.Y > 0 && Extent.Z >= 0 &&
                 std::isfinite(Center.Z + Extent.Z + 1000.0) && std::isfinite(width) && width > 0;
-            if (!AssemblyBoundsVerified)
+            if (!validCaptureBounds)
             {
                 Center = SDK::FVector(0, 0, 0); Extent = SDK::FVector(500, 500, 500);
             }
@@ -2142,6 +2099,24 @@ namespace
 
 namespace MiniMapBuildingSpriteRenderer
 {
+    DiagnosticSnapshot GetDiagnosticSnapshot() noexcept
+    {
+        DiagnosticSnapshot result;
+        result.PrivateWorld = g_nativeWorld.Private.Object.Bits;
+        result.WorldPhase = unsigned(g_nativeWorld.Phase);
+        if (g_activeRequest)
+        {
+            const auto& request = *g_activeRequest;
+            result.Active = true;
+            result.Session = request.Session;
+            result.RequestPhase = unsigned(request.Phase);
+            const auto count = (std::min)(request.BlueprintPath.size(), sizeof(result.BlueprintTail) - 1);
+            std::memcpy(result.BlueprintTail,
+                request.BlueprintPath.data() + request.BlueprintPath.size() - count, count);
+        }
+        return result;
+    }
+
     void Initialize(MiniMapSpriteQueues::SpriteFifo& fifo, MiniMapSpriteQueues::SpriteFeedbackQueue& feedback)
     {
         if (g_sessionActive || g_activeRequest) return; // Do not redirect a retained request's feedback.
@@ -2156,44 +2131,6 @@ namespace MiniMapBuildingSpriteRenderer
         g_worldCreationAttempts = g_worldRetryTicks = 0;
         g_sessionActive = true;
         return true;
-    }
-
-    bool SubmitBuildingComplex(MiniMapSpriteQueues::Request request)
-    {
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-        if (!g_fifo || !g_sessionActive || request.Kind != MiniMapSpriteQueues::RequestKind::BuildingComplex ||
-            !request.RequestId || request.MassIndex < 0 || request.MassSerial <= 0 ||
-            !request.WorldGeneration || request.WorldGeneration != MiniMapMap::GetWorldGeneration() ||
-            !request.SourceRevision || !request.SourceSnapshot || !request.SourceSnapshot->BlueprintIdentity ||
-            request.CanonicalBlueprintIdentity.empty() ||
-            *request.SourceSnapshot->BlueprintIdentity != request.CanonicalBlueprintIdentity ||
-            request.SourceSnapshot->SourceGeneration != request.WorldGeneration ||
-            request.SourceSnapshot->SourceRevision != request.SourceRevision ||
-            !MiniMapMap::GameplayReady() || !MiniMapBuildingSchedulerInternal::ActiveSession()) return false;
-        request.BlueprintPath = request.CanonicalBlueprintIdentity;
-        request.Session = MiniMapBuildingSchedulerInternal::ActiveSession();
-        try { g_fifo->Add(std::move(request)); return true; }
-        catch (...) { return false; }
-    }
-
-    void CancelBuildingComplex(uint64_t requestId) noexcept
-    {
-        try
-        {
-            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-            if (g_fifo && requestId) g_fifo->Remove(MiniMapSpriteQueues::RequestKind::BuildingComplex, requestId);
-        }
-        catch (...) {}
-    }
-
-    void CancelPendingBuildingComplex() noexcept
-    {
-        try
-        {
-            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
-            if (g_fifo) g_fifo->RemoveAll(MiniMapSpriteQueues::RequestKind::BuildingComplex);
-        }
-        catch (...) {}
     }
 
     void Tick(float deltaTime)
@@ -2278,23 +2215,14 @@ namespace MiniMapBuildingSpriteRenderer
             static_assert(std::is_nothrow_move_assignable_v<MiniMapSpriteQueues::Request>);
             g_activeRequest.emplace(); // Allocate the private slot BEFORE removing a FIFO entry.
             MiniMapSpriteQueues::Request request;
-            // The single renderer owns the shared FIFO head regardless of tag;
-            // both consumers share this owner and its established retirement.
+            // The renderer owns the canonical path at the shared FIFO head.
             if (!g_fifo->Remove(request))
             { g_activeRequest.reset(); return; }
-            g_activeRequest->Kind = request.Kind;
-            g_activeRequest->BlueprintPath = std::move(request.BlueprintPath);
-            g_activeRequest->RequestId = request.RequestId;
-            g_activeRequest->MassIndex = request.MassIndex;
-            g_activeRequest->MassSerial = request.MassSerial;
-            g_activeRequest->WorldGeneration = request.WorldGeneration;
-            g_activeRequest->SourceRevision = request.SourceRevision;
-            g_activeRequest->CanonicalBlueprintIdentity = std::move(request.CanonicalBlueprintIdentity);
-            g_activeRequest->SourceSnapshot = std::move(request.SourceSnapshot);
+            g_activeRequest->BlueprintPath = std::move(request);
         }
         catch (...)
         {
-            // SpriteFifo moves a request envelope then pops it without allocation;
+            // SpriteFifo moves the path then pops it without allocation;
             // allocation/lock failure precedes removal. No native request began.
             g_activeRequest.reset();
             LOG_WARN("MiniMap: building capture FIFO admission unavailable; queued work retained");

@@ -7,51 +7,30 @@
 #include <memory>
 #include <vector>
 
-namespace MiniMapBuildingCache { struct Sprite; }
+namespace SDK { class UWorld; }
 
 namespace MiniMapBuildingComplexWorld
 {
-    enum class MembershipState : uint8_t
-    {
-        WorldUnavailable,
-        InitialCensusPending,
-        CensusInProgress,
-        EventReplayPending,
-        MembershipEstablished,
-        ReseedRequired
-    };
-
     struct Status
     {
-        // MembershipEstablished certifies only entity membership and journal
-        // handoff; unresolved Unknown-support records still block cell completeness.
-        MembershipState State = MembershipState::WorldUnavailable;
-        uint64_t WorldGeneration = 0;
-        uint64_t RestoreEpoch = 0;
-        uint64_t AppliedSequence = 0;
+        uint64_t WorldGeneration = 0; // Provider-owned session scope for tile and index identity.
     };
 
-    // Called from the existing admitted world lifecycle. All service work is
-    // subsequently driven by MassLifecycle::Service on its game-thread scope.
-    void BeginWorld(uint64_t worldGeneration) noexcept;
-    void EndWorld(uint64_t nextWorldGeneration = 0) noexcept;
     void Shutdown() noexcept;
-    // Game-thread lifecycle/status APIs. Consumers must gate index reads on
-    // GetStatus().State == MembershipEstablished and inspect cell snapshots
-    // separately for unresolved support.
+    void Service(uint64_t consumerSession) noexcept;
+    bool OpenCollectorSession(uint64_t consumerSession, SDK::UWorld* world,
+        double originX, double originY) noexcept;
+    bool OwnsCollectorSession(uint64_t consumerSession, SDK::UWorld* world) noexcept;
+    void CloseCollectorSession(uint64_t consumerSession) noexcept;
+    bool ServiceCollectorRegion(uint64_t consumerSession,
+        const MiniMapBuildingComplexIndex::WorldBounds& region) noexcept;
     Status GetStatus() noexcept;
     MiniMapBuildingComplexIndex::Index& GetIndex() noexcept;
-    // Returns the immutable CPU capture associated with this exact world/source
-    // identity. Image lifetime is owned separately from sparse index records.
-    bool TryGetCaptureImage(MiniMapBuildingComplexIndex::MassKey key,
-        uint64_t worldGeneration, uint64_t sourceRevision,
-        std::shared_ptr<const MiniMapBuildingCache::Sprite>& output,
-        uint64_t* imageRevision = nullptr) noexcept;
 
     enum class CellCompositionResult : uint8_t { Complete, Partial, Failed, Stale, Pending };
-    // Game-thread-only synchronous CPU request over immutable index/capture
-    // snapshots. Reuses a current shared immutable RGBA16F result before image
-    // acquisition/rasterization. Identical reentry returns Pending with no image;
+    // Game-thread-only synchronous CPU request over immutable index snapshots.
+    // Reuses a current shared immutable RGBA16F result before rasterization.
+    // Identical reentry returns Pending with no image;
     // retry after the owning call returns (no wait or asynchronous job is added).
     // Off-thread calls fail. Consumers revalidate before using returned images.
     CellCompositionResult ComposeCell(MiniMapBuildingComplexIndex::CellKey key,
@@ -74,7 +53,7 @@ namespace MiniMapBuildingComplexWorld
     enum class TileState : uint8_t { Pending, Partial, Complete, Empty, Failed, Stale };
     struct TileIdentity
     {
-        uint64_t WorldGeneration = 0, RestoreEpoch = 0;
+        uint64_t WorldGeneration = 0;
         MiniMapBuildingComplexIndex::WorldOrigin Origin;
         TileKey Key;
         uint32_t PolicyId = 1, ContentSide = 0;

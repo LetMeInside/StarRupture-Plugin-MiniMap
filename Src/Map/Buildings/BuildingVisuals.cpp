@@ -6,6 +6,7 @@
 #include "UI/MiniMapUI.h"
 #include "BuildingScheduler.h"
 #include "BuildingAtlas.h"
+#include "BuildingSpriteRenderer.h"
 #include "BuildingVisualGeometry.h"
 #include "BuildingSpriteGeometry.h"
 #include "BuildingSplineGeometry.h"
@@ -24,11 +25,13 @@
 #endif
 #include <mutex>
 #include <numeric>
-#include <string_view>
 #include <unordered_map>
+#include <iterator>
+#include <string>
 #include <tuple>
 #include <optional>
 #include <algorithm>
+#include <thread>
 
 namespace
 {
@@ -53,7 +56,6 @@ namespace
     {
         C::Record SpriteSource;
         size_t RecordIndex=0; // Index in Snapshot::Source, including filtered-out collector records.
-        size_t CanonicalType=size_t(-1); // Immutable value-identity slot; no atlas state.
         C::Bounds Bounds;
         G::XY Origin;
         std::shared_ptr<const C::SplineGeometry> Curve;
@@ -70,31 +72,7 @@ namespace
         uint64_t Generation=0;
         std::shared_ptr<const C::Snapshot> Source;
         std::vector<Instance> Instances; // Same stable identity order as collector.
-        size_t CanonicalTypeCount=0;
         std::vector<size_t> DrawOrder; // Prepared on snapshot changes, never sorted in Render.
-    };
-    // Render's UI thread owns this storage; OnTick/Clear never touch it.
-    // Only copied world XY is retained, after validating all three world axes.
-    struct WorldQuad
-    {
-        enum class Status : uint8_t { Unknown, Valid, Invalid };
-        std::array<G::XY,4> Corners;
-        Status State=Status::Unknown;
-    };
-    struct WorldQuadCache
-    {
-        std::weak_ptr<const Snapshot> Owner;
-        uint64_t Session=0,Revision=0;
-        std::vector<WorldQuad> Slots; // One contiguous allocation, indexed by Instance, not type.
-        void Bind(const std::shared_ptr<const Snapshot>& snapshot,uint64_t session,uint64_t revision)
-        {
-            if(Owner.lock()==snapshot && Session==session && Revision==revision)return;
-            Owner.reset(); // Allocation failure cannot leave old slots associated with new input.
-            try{Slots.resize(snapshot->Instances.size());}
-            catch(...){Slots.clear();return;} // Recompute locally; retry allocation next callback.
-            for(auto& slot:Slots)slot.State=WorldQuad::Status::Unknown;
-            Session=session;Revision=revision;Owner=snapshot;
-        }
     };
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     struct RenderWorkload
@@ -128,6 +106,7 @@ namespace
     };
 #endif
     bool g_initialized=false;
+    thread_local bool g_drawingPassActive=false;
 }
 namespace MiniMapBuildingVisuals
 {
@@ -138,7 +117,6 @@ namespace MiniMapBuildingVisuals
         std::mutex Mutex;
         std::shared_ptr<const Snapshot> Published;
         std::shared_ptr<const A::RenderPlan> PlanOwner, OcclusionPlan;
-        WorldQuadCache WorldQuads;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         BuildingVisualsTimingTotals Timing;
         Clock::time_point TimingIntervalStart{};
@@ -149,6 +127,10 @@ namespace MiniMapBuildingVisuals
 namespace
 {
     MiniMapBuildingVisuals::State g_normalState;
+    MiniMapSpriteStatus::Dictionary g_spriteStatuses;
+    MiniMapSpriteQueues::SpriteFifo g_spriteFifo;
+    bool g_spriteProcessingInitialized=false;
+    bool g_spriteSubsystemsInitialized=false;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     namespace V = MiniMapBuildingVisibilityTrace;
@@ -267,131 +249,35 @@ namespace
         g_normalState.TimingIntervalStart=Clock::now();
 #endif
     }
-    using MiniMapBuildingSpriteGeometry::BuildWorldQuad;
-    // Candidate A: copy the stable transform once per quad after its Valid guard.
-    // Keep every dynamic numerical guard and both float rounding stages.
-    struct PreparedTransform : MiniMapMap::Transform {
-    using ScreenPoint = MiniMapMap::ScreenPoint;
-    explicit PreparedTransform(const MiniMapMap::Transform& t):MiniMapMap::Transform(t) {}
-    bool DirectionToScreen(
-                double worldDirectionX,
-                double worldDirectionY,
-                ScreenPoint& outDirection) const
-            {
-                outDirection = {};
-
-                if (
-                    !std::isfinite(worldDirectionX) ||
-                    !std::isfinite(worldDirectionY))
-                {
-                    return false;
-                }
-
-                const double screenX =
-                    CosMapRotation *
-                    worldDirectionX -
-                    SinMapRotation *
-                    worldDirectionY;
-
-                const double screenY =
-                    SinMapRotation *
-                    worldDirectionX +
-                    CosMapRotation *
-                    worldDirectionY;
-
-                if (!std::isfinite(screenX) ||
-                    !std::isfinite(screenY))
-                {
-                    return false;
-                }
-
-                outDirection.X =
-                    static_cast<float>(
-                        screenX);
-
-                outDirection.Y =
-                    static_cast<float>(
-                        screenY);
-
-                return true;
-            }
-    bool WorldToScreen(
-                double worldX,
-                double worldY,
-                ScreenPoint& outPoint) const
-            {
-                outPoint = {};
-
-                if (
-                    !std::isfinite(worldX) ||
-                    !std::isfinite(worldY))
-                {
-                    return false;
-                }
-
-                const double dx =
-                    worldX -
-                    TrackingWorldX;
-
-                const double dy =
-                    worldY -
-                    TrackingWorldY;
-
-                ScreenPoint direction = {};
-
-                if (!DirectionToScreen(
-                    dx,
-                    dy,
-                    direction))
-                {
-                    return false;
-                }
-
-                const double screenX =
-                    static_cast<double>(
-                        CenterX) +
-                    PixelsPerWorldUnit *
-                    static_cast<double>(
-                        direction.X);
-
-                const double screenY =
-                    static_cast<double>(
-                        CenterY) +
-                    (PixelsPerWorldUnitY>0 ? PixelsPerWorldUnitY : PixelsPerWorldUnit) *
-                    static_cast<double>(
-                        direction.Y);
-
-                if (!std::isfinite(screenX) ||
-                    !std::isfinite(screenY))
-                {
-                    return false;
-                }
-
-                outPoint.X =
-                    static_cast<float>(
-                        screenX);
-
-                outPoint.Y =
-                    static_cast<float>(
-                        screenY);
-
-                return true;
-            }
-    };
-    bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapMap::Transform& transform,
+    bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapBuildingVisuals::DestinationMapping& transform,
         MiniMap::Services::Quad& points, C::Bounds& bounds)
     {
         if (!transform.Valid) return false;
-        PreparedTransform prepared(transform);
         bounds={};
         for (size_t i=0;i<corners.size();++i)
         {
-            MiniMapMap::ScreenPoint p;
-            if (!prepared.WorldToScreen(corners[i].X,corners[i].Y,p) || !std::isfinite(p.X) || !std::isfinite(p.Y)) return false;
-            points[i]={p.X,p.Y};
-            if (!bounds.Valid) bounds={p.X,p.Y,p.X,p.Y,true};
-            else { bounds.MinX=(std::min)(bounds.MinX,double(p.X)); bounds.MinY=(std::min)(bounds.MinY,double(p.Y));
-                bounds.MaxX=(std::max)(bounds.MaxX,double(p.X)); bounds.MaxY=(std::max)(bounds.MaxY,double(p.Y)); }
+            if(!std::isfinite(corners[i].X) || !std::isfinite(corners[i].Y))return false;
+            float directionX=0.0f,directionY=0.0f;
+            const double dx=corners[i].X-transform.TrackingWorldX;
+            const double dy=corners[i].Y-transform.TrackingWorldY;
+            if(!std::isfinite(dx) || !std::isfinite(dy))return false;
+            const double rotatedX=transform.CosRotation*dx-transform.SinRotation*dy;
+            const double rotatedY=transform.SinRotation*dx+transform.CosRotation*dy;
+            if(!std::isfinite(rotatedX) || !std::isfinite(rotatedY))return false;
+            directionX=static_cast<float>(rotatedX);
+            directionY=static_cast<float>(rotatedY);
+            const double screenX=static_cast<double>(transform.CenterX)+
+                transform.PixelsPerWorldUnit*static_cast<double>(directionX);
+            const double screenY=static_cast<double>(transform.CenterY)+
+                (transform.PixelsPerWorldUnitY>0 ? transform.PixelsPerWorldUnitY : transform.PixelsPerWorldUnit)*
+                    static_cast<double>(directionY);
+            if(!std::isfinite(screenX) || !std::isfinite(screenY))return false;
+            const float pointX=static_cast<float>(screenX),pointY=static_cast<float>(screenY);
+            if(!std::isfinite(pointX) || !std::isfinite(pointY))return false;
+            points[i]={pointX,pointY};
+            if (!bounds.Valid) bounds={pointX,pointY,pointX,pointY,true};
+            else { bounds.MinX=(std::min)(bounds.MinX,double(pointX)); bounds.MinY=(std::min)(bounds.MinY,double(pointY));
+                bounds.MaxX=(std::max)(bounds.MaxX,double(pointX)); bounds.MaxY=(std::max)(bounds.MaxY,double(pointY)); }
         }
         // Reject float-collapsed/degenerate projections, but keep mirrored winding
         // attached to the same TL/TR/BR/BL UVs (the backend does not cull faces).
@@ -405,21 +291,37 @@ namespace
         }
         return true;
     }
-    bool AtlasQuad(const C::Record& record, const MiniMapSpriteStatus::AtlasEntry& entry,
-        const MiniMapMap::Transform& transform,
-        MiniMap::Services::Quad& points, C::Bounds& bounds, WorldQuad* cached)
+    class UIImageDestination final : public MiniMap::Services::IImageDestination
     {
-        if (!transform.Valid) return false;
-        if (!cached)
+    public:
+        explicit UIImageDestination(MiniMap::Services::ICanvas& canvas) noexcept : Canvas(canvas) {}
+        MiniMap::Services::ImageSubmission SubmitImage(const MiniMap::Services::ImageDrawingCommand& command) override
         {
-            WorldQuad local; // Allocate fallback storage only when the slot vector is unavailable.
-            return AtlasQuad(record,entry,transform,points,bounds,&local);
+            if (!command.Pixels || !command.Width || !command.Height || !command.Destination.Valid)
+                return MiniMap::Services::ImageSubmission::InvalidGeometry;
+            if (!command.HasGpuBinding)
+                return MiniMap::Services::ImageSubmission::Unavailable;
+            std::array<G::XY,4> world{};
+            for(size_t i=0;i<world.size();++i)
+            {
+                world[i]={command.WorldCorners[i][0],command.WorldCorners[i][1]};
+                if(!std::isfinite(world[i].X) || !std::isfinite(world[i].Y))
+                    return MiniMap::Services::ImageSubmission::InvalidGeometry;
+            }
+            MiniMap::Services::Quad screen;
+            C::Bounds bounds;
+            if(!ProjectWorldQuad(world,command.Destination,screen,bounds))
+                return MiniMap::Services::ImageSubmission::InvalidGeometry;
+            const auto& mapping=command.Destination;
+            const C::Bounds viewport={mapping.ClipMinX,mapping.ClipMinY,mapping.ClipMaxX,mapping.ClipMaxY,true};
+            if(!G::Intersects(bounds,viewport))return MiniMap::Services::ImageSubmission::Culled;
+            return MiniMapBuildingAtlas::SubmitQuad(Canvas,MiniMap::Services::DrawLayer::Window,
+                command.GpuBinding,screen,0xFFFFFFFFu) ? MiniMap::Services::ImageSubmission::Submitted :
+                    MiniMap::Services::ImageSubmission::Rejected;
         }
-        auto& quad=*cached;
-        if (quad.State==WorldQuad::Status::Unknown)
-            quad.State=BuildWorldQuad(record,entry,quad.Corners)?WorldQuad::Status::Valid:WorldQuad::Status::Invalid;
-        return quad.State==WorldQuad::Status::Valid && ProjectWorldQuad(quad.Corners,transform,points,bounds);
-    }
+    private:
+        MiniMap::Services::ICanvas& Canvas;
+    };
     void PrepareVisuals(MiniMapBuildingVisuals::State& state, const std::shared_ptr<const C::Snapshot>& input)
     {
         if(!input)return;
@@ -448,9 +350,6 @@ namespace
 #endif
         auto result=std::make_shared<Snapshot>(); result->Generation=input->Generation;result->Source=input;
         result->Instances.reserve(input->Records.size());
-        // Borrow input-owned strings only during preparation; equality is string value, not shared_ptr identity.
-        std::unordered_map<std::string_view,size_t> canonicalTypes;
-        if(!input->Records.empty())canonicalTypes.reserve(64);
         // Prepare owned geometry for every current-generation spline in this collector snapshot.
         for(const auto& r:input->Records)
         {
@@ -459,12 +358,6 @@ namespace
             instance.Elevation=r.Position[2];instance.EntityIndex=r.Index;instance.EntitySerial=r.Serial;
             instance.SpriteSource=r;
             instance.RecordIndex=size_t(&r-input->Records.data());
-            if(!r.HasSpline && r.CanonicalBlueprint)
-            {
-                const auto [type,inserted]=canonicalTypes.try_emplace(std::string_view(*r.CanonicalBlueprint),result->CanonicalTypeCount);
-                if(inserted)++result->CanonicalTypeCount;
-                instance.CanonicalType=type->second;
-            }
             if(r.HasSpline)
             {
                 instance.SplineCategory=MiniMapBuildingSplinePolicy::Classify(r.DefinitionValid,r.BuildingId);
@@ -539,6 +432,156 @@ namespace
 
 namespace MiniMapBuildingVisuals
 {
+    struct DrawingPass::Impl
+    {
+        std::unique_lock<std::mutex> Lock{MiniMapBuildingSchedulerInternal::LifecycleMutex};
+        std::thread::id OwnerThread=std::this_thread::get_id();
+        bool SchedulerAdmitted=false;
+        bool Finished=false;
+        Impl()
+        {
+            if(g_drawingPassActive)return;
+            g_drawingPassActive=true;
+            SchedulerAdmitted=MiniMapBuildingSchedulerInternal::ActiveSession()!=0;
+            if(SchedulerAdmitted)MiniMapBuildingScheduler::StartDraw();
+        }
+        void Finish() noexcept
+        {
+            if(Finished)return;
+            if(OwnerThread!=std::this_thread::get_id())
+            { LOG_ERROR("MiniMap: building drawing pass must end on its starting thread");return; }
+            if(SchedulerAdmitted)MiniMapBuildingScheduler::EndDraw();
+            g_drawingPassActive=false;
+            Finished=true;
+            if(Lock.owns_lock())Lock.unlock();
+        }
+        ~Impl(){Finish();}
+    };
+    DrawingPass::DrawingPass() noexcept=default;
+    DrawingPass::DrawingPass(std::unique_ptr<Impl> owner) noexcept:Owner(std::move(owner)){}
+    DrawingPass::~DrawingPass()=default;
+    DrawingPass::DrawingPass(DrawingPass&&) noexcept=default;
+    DrawingPass& DrawingPass::operator=(DrawingPass&&) noexcept=default;
+    DrawingPass BeginDraw()
+    {
+        if(g_drawingPassActive)return {};
+        try{return DrawingPass(std::make_unique<DrawingPass::Impl>());}
+        catch(...){return {};}
+    }
+    void EndDraw(DrawingPass& pass) noexcept
+    { pass.Owner.reset(); }
+
+    bool InitializeSpriteProcessing()
+    {
+        if(g_spriteProcessingInitialized)return true;
+        if(!g_spriteSubsystemsInitialized)
+        {
+            {
+                std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+                MiniMapBuildingScheduler::Initialize(g_spriteStatuses,g_spriteFifo);
+                MiniMapBuildingSpriteRenderer::Initialize(g_spriteFifo,MiniMapBuildingScheduler::FeedbackQueue());
+            }
+            g_spriteSubsystemsInitialized=true;
+        }
+        if(!MiniMapBuildingAtlas::Initialize(g_spriteStatuses))return false;
+        g_spriteProcessingInitialized=true;
+        return true;
+    }
+    bool BeginSession()
+    {
+        if(!g_spriteProcessingInitialized)return false;
+        uint64_t session=0;
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingScheduler::InitializeSession();
+            session=MiniMapBuildingSchedulerInternal::ActiveSession();
+        }
+        const bool atlasReady=MiniMapBuildingAtlas::InitializeSession(session);
+        bool rendererReady=false;
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            rendererReady=atlasReady && MiniMapBuildingSchedulerInternal::ActiveSession()==session &&
+                MiniMapBuildingSpriteRenderer::InitializeSession();
+        }
+        return rendererReady;
+    }
+    void TickSpriteCapture(float deltaTime,bool gameplayReady)
+    {
+        if(gameplayReady)
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            if(gameplayReady)MiniMapBuildingSpriteRenderer::Tick(deltaTime);
+        }
+    }
+    void ServiceSpriteRequirements(bool gameplayReady,bool visible,bool gameThread)
+    {
+        if(gameplayReady && visible && gameThread)MiniMapBuildingScheduler::Service();
+    }
+    void EndSession()
+    {
+        if(!g_spriteSubsystemsInitialized)return;
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingSchedulerInternal::StopSession();
+            MiniMapBuildingSpriteRenderer::EndSession();
+        }
+        // Withdraw under a short internal lock; FreeTexture runs after that lock ends.
+        MiniMapBuildingAtlas::EndSession();
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingScheduler::EndSession();
+        }
+    }
+    void ShutdownSpriteProcessing()
+    {
+        if(!g_spriteSubsystemsInitialized)return;
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingSchedulerInternal::StopSession();
+            MiniMapBuildingSpriteRenderer::Shutdown();
+        }
+        MiniMapBuildingAtlas::Shutdown();
+        {
+            std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+            MiniMapBuildingScheduler::Shutdown();
+        }
+        g_spriteProcessingInitialized=false;
+        g_spriteSubsystemsInitialized=false;
+    }
+    DiagnosticSnapshot GetDiagnosticSnapshot() noexcept
+    {
+        const auto capture=MiniMapBuildingSpriteRenderer::GetDiagnosticSnapshot();
+        DiagnosticSnapshot result;
+        result.PrivateWorld=capture.PrivateWorld;result.Session=capture.Session;
+        result.WorldPhase=capture.WorldPhase;result.RequestPhase=capture.RequestPhase;
+        result.Active=capture.Active;
+        std::copy(std::begin(capture.BlueprintTail),std::end(capture.BlueprintTail),std::begin(result.BlueprintTail));
+        return result;
+    }
+    CollectorIntegration::DrawingBoundsChange CollectorIntegration::ObserveDrawingBoundsVersion(
+        CollectorIntegration::DrawingBoundsVersion& previous)
+    {
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        CollectorIntegration::DrawingBoundsVersion current;
+        MiniMapBuildingAtlas::ObservePublication(current.Session,current.Revision);
+        CollectorIntegration::DrawingBoundsChange result;
+        result.SessionChanged=current.Session!=previous.Session;
+        result.RevisionChanged=current.Revision!=previous.Revision;
+        result.Changed=result.SessionChanged||result.RevisionChanged;
+        previous=current;
+        return result;
+    }
+    void CollectorIntegration::RefreshRecordBounds(MiniMapBuildingCollector::Record& record)
+    {
+        record.Extent={};
+        if(!record.CanonicalBlueprint)return;
+        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        const auto* entry=MiniMapBuildingAtlas::Find(*record.CanonicalBlueprint);
+        std::array<MiniMapBuildingVisualGeometry::XY,4> quad;
+        if(entry && MiniMapBuildingSpriteGeometry::BuildWorldQuad(record,*entry,quad))
+            for(const auto& point:quad)MiniMapBuildingGeometry::Add(record.Extent,point.X,point.Y);
+        record.Extent=MiniMapBuildingGeometry::Inflate(record.Extent,0.01);
+    }
     bool Initialize(IPluginSelf* self)
     {
         if(g_initialized) return true;
@@ -569,10 +612,86 @@ namespace MiniMapBuildingVisuals
     }
     void Prepare(State& state, const std::shared_ptr<const C::Snapshot>& input)
     { PrepareVisuals(state,input); }
-    void Render(MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
+    DrawResult DrawBuilding(const std::string& blueprintName,const DrawingCoordinates& coordinates,
+        MiniMap::Services::IImageDestination& destination)
+    {
+        DrawResult result;
+        if(blueprintName.empty() || !g_drawingPassActive)return result;
+
+        auto source=MiniMapBuildingAtlas::AcquireSourceLocked(blueprintName);
+        if(!source.Lease)
+        {
+            // Registration remains draw-pass-owned. Outside an admitted pass
+            // the scheduler declines the request without changing draw state.
+            MiniMapBuildingScheduler::RegisterSpriteRequirement(blueprintName);
+            source=MiniMapBuildingAtlas::AcquireSourceLocked(blueprintName);
+        }
+        if(!source.Lease || !MiniMapBuildingAtlas::ValidateSourceLocked(source.Lease))
+        {
+            const auto status=g_spriteStatuses.find(blueprintName);
+            const bool terminal=status!=g_spriteStatuses.end() &&
+                (status->second.Where==MiniMapSpriteStatus::Location::Failed ||
+                    status->second.Where==MiniMapSpriteStatus::Location::Atlas);
+            result.Status=MiniMapBuildingSchedulerInternal::ActiveSession()!=0 && !terminal ?
+                DrawStatus::SpritePending : DrawStatus::SpriteUnavailable;
+            return result;
+        }
+
+        if(!coordinates.PlacementValid)
+        { result.Status=DrawStatus::InvalidPlacement;return result; }
+        const auto& retained=*source.Lease->Retained;
+        const auto& crop=retained.Crop;
+        const std::array<double,4> sourceRect{{
+            double(source.Lease->Mapping.X), double(source.Lease->Mapping.Y),
+            double(source.Lease->Mapping.X)+double(crop.Width)*source.Lease->Mapping.Step,
+            double(source.Lease->Mapping.Y)+double(crop.Height)*source.Lease->Mapping.Step}};
+        std::array<MiniMapBuildingSpriteGeometryCore::Point,4> world3d;
+        if(!MiniMapBuildingSpriteGeometryCore::BuildWorldQuad(coordinates.Position,coordinates.SignedScale,
+            coordinates.Rotation,source.Lease->Bounds.Min,source.Lease->Bounds.Max,sourceRect,world3d))
+        { result.Status=DrawStatus::InvalidPlacement;return result; }
+        MiniMap::Services::ImageDrawingCommand command;
+        command.Pixels=retained.Rgba;
+        command.Width=crop.Width;command.Height=crop.Height;
+        command.SourceRegion={{0.0,0.0,double(crop.Width),double(crop.Height)}};
+        command.Destination=coordinates.Destination;
+        for(size_t i=0;i<world3d.size();++i)command.WorldCorners[i]={world3d[i][0],world3d[i][1]};
+        if(const auto* entry=MiniMapBuildingAtlas::Find(blueprintName))
+        {
+            const auto published=MiniMapBuildingAtlas::AcquirePublishedSnapshotLocked();
+            if(published.Texture.id && published.Texture.id==entry->Texture.id)
+            {
+                command.HasGpuBinding=true;
+                command.GpuBinding.TextureIdentity=published.Texture;
+                command.GpuBinding.Region=entry->Region;
+                command.GpuBinding.Session=published.SessionSerial;
+                command.GpuBinding.Revision=published.PublicationRevision;
+            }
+        }
+        const auto submission=destination.SubmitImage(command);
+        switch(submission)
+        {
+        case MiniMap::Services::ImageSubmission::Submitted: break;
+        case MiniMap::Services::ImageSubmission::Unavailable:
+            result.Status=DrawStatus::DestinationUnavailable;return result;
+        case MiniMap::Services::ImageSubmission::InvalidGeometry:
+            result.Status=DrawStatus::InvalidPlacement;return result;
+        case MiniMap::Services::ImageSubmission::Culled:
+            result.Status=DrawStatus::Culled;return result;
+        case MiniMap::Services::ImageSubmission::Rejected:
+            result.Status=DrawStatus::SubmissionFailure;return result;
+        }
+
+        result.Status=DrawStatus::Submitted;
+        result.Evidence.SourceMin=source.Lease->Bounds.Min;
+        result.Evidence.SourceMax=source.Lease->Bounds.Max;
+        for(size_t i=0;i<world3d.size();++i)
+            result.Evidence.WorldQuad[i]={world3d[i][0],world3d[i][1]};
+        return result;
+    }
+    void DrawBuildings(MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
-    { RenderSelected(g_normalState,{},ui,transform,settings); }
-    void RenderSelected(State& state, const std::shared_ptr<const C::Snapshot>& selected,
+    { DrawBuildings(g_normalState,{},ui,transform,settings); }
+    void DrawBuildings(State& state, const std::shared_ptr<const C::Snapshot>& selected,
         MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
     {
@@ -580,8 +699,7 @@ namespace MiniMapBuildingVisuals
         // capture service untouched while this layer is hidden.
         if(!settings.ShowLayer)return;
         if(!transform.Valid) return;
-        auto& worldQuads=state.WorldQuads; // Per-consumer render-thread storage; no borrowed atlas pointers.
-        auto& occlusionPlan=state.OcclusionPlan; // Same consumer lifetime as quad cache.
+        auto& occlusionPlan=state.OcclusionPlan;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto elapsedMs=[](Clock::time_point begin,Clock::time_point end)
             {return std::chrono::duration<double,std::milli>(end-begin).count();};
@@ -594,7 +712,7 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if(occlusionPlan){std::scoped_lock lock(state.Mutex);++state.Timing.Reasons[size_t(A::Invalidation::Context)];}
 #endif
-            worldQuads={};occlusionPlan.reset();
+            occlusionPlan.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if(!selected)TraceFrame(current,snapshot,false);
 #endif
@@ -624,11 +742,13 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto phaseLockBegin=Clock::now();
 #endif
-        std::lock_guard<std::mutex> lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);
+        auto drawingPass=BeginDraw();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto phaseLockAcquired=Clock::now();
         lifecycleWaitMs=elapsedMs(phaseLockBegin,phaseLockAcquired);
 #endif
+        if(!drawingPass){ui.PopClip(dl);return;}
+        UIImageDestination imageDestination(ui);
         uint64_t session=0,revision=0;
         MiniMapBuildingAtlas::ObservePublication(session,revision);
         if(occlusionPlan)
@@ -653,17 +773,7 @@ namespace MiniMapBuildingVisuals
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const auto traceTargets=selected?TraceTargets{}:TraceFrame(currentSession,snapshot,schedulerValid);
 #endif
-        // The locked publication fixes Region/SourceRect/Min/Max for every resolved entry.
         // Snapshot identity fixes copied transforms, membership and instance indices.
-        if(schedulerValid)worldQuads.Bind(snapshot,session,revision);
-        else worldQuads={};
-        struct FinishDraw
-        {
-            bool Admitted;
-            ~FinishDraw() { if (Admitted) MiniMapBuildingScheduler::EndDraw(); }
-        } finishDraw{schedulerValid}; // Ends before the outer lifecycle lock, including unwinding.
-        if (schedulerValid)
-            MiniMapBuildingScheduler::StartDraw();
         A::Request request;request.Snapshot=snapshot->Source;request.AtlasSession=session;request.AtlasRevision=revision;
         bool observationsComplete=true;
         if constexpr(!MiniMapBuildingVisuals::SplineRenderingEnabled)
@@ -673,12 +783,6 @@ namespace MiniMapBuildingVisuals
 #endif
             occlusionPlan.reset();
         }
-        // Pass-local borrowed entries: destroyed before FinishDraw and LifecycleMutex unlock.
-        // A positive Find proves Atlas status; discovery cannot replace/erase that status here.
-        // Do not memoize misses: Current() also reads GameplayReady, which may close outside this mutex.
-        std::vector<const MiniMapSpriteStatus::AtlasEntry*> atlasByType;
-        try{atlasByType.resize(snapshot->CanonicalTypeCount,nullptr);}
-        catch(...){} // Preserve the original per-instance path on allocation failure.
         const auto baseCore=[](const Instance& instance)
         {
             const auto& path=instance.SpriteSource.CanonicalBlueprint;
@@ -687,94 +791,89 @@ namespace MiniMapBuildingVisuals
         };
         auto submitOrdinary=[&](size_t index,bool collectOccluder)
         {
-            const auto& instance=snapshot->Instances[index];const bool spline=instance.Spline;
-            if(spline)return;
-            auto* resolution=instance.CanonicalType<atlasByType.size()?&atlasByType[instance.CanonicalType]:nullptr;
-            // Discover before proxy culling: the authored assembly may extend
-            // beyond its proxy. Native capture is serviced on the game thread.
-            if(!spline && schedulerValid)
-            {
-                // Only an already-positive atlas resolution proves this call is an effect-free known-type return.
-                // Unknown/missing types still call on EVERY occurrence, preserving allocation-failure retries.
-                if(resolution && *resolution)
-                {}
-                else
-                {
-                    MiniMapBuildingScheduler::DrawBuilding(instance.SpriteSource);
-                }
-            }
+            const auto& instance=snapshot->Instances[index];
+            if(instance.Spline)return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             auto visibility=instance.SpriteSource.CanonicalBlueprint?V::State::AtlasMissing:V::State::CanonicalUnavailable;
-
             if(!schedulerValid)visibility=V::State::SessionUnavailable;
 #endif
-            if(!spline && schedulerValid && instance.SpriteSource.CanonicalBlueprint)
+            if(!instance.SpriteSource.CanonicalBlueprint || !schedulerValid)
             {
-                const MiniMapSpriteStatus::AtlasEntry* entry;
-                if(resolution && *resolution)
-                {
-                    // Match Find's dynamic admission predicate even while the atlas publication is locked.
-                    entry=MiniMapMap::GameplayReady()?*resolution:nullptr;
-                }
-                else
-                {
-                    entry=MiniMapBuildingAtlas::Find(*instance.SpriteSource.CanonicalBlueprint);
-                    if(resolution && entry)*resolution=entry;
-                }
-                if (entry)
-                {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    visibility=V::State::QuadRejected;
+                TraceRender(traceTargets,instance.SpriteSource,visibility);
 #endif
-                    MiniMap::Services::Quad points;
-                    C::Bounds spriteBounds;
-                    WorldQuad fallbackQuad;
-                    auto* worldQuad=index<worldQuads.Slots.size()?&worldQuads.Slots[index]:&fallbackQuad;
-                    if (AtlasQuad(instance.SpriteSource,*entry,transform,points,spriteBounds,worldQuad))
-                    {
-                        // A captured assembly may extend beyond the targeting
-                        // proxy, including instances whose proxy is unresolved.
-                        if (!G::Intersects(spriteBounds,viewport))
-                        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                            TraceRender(traceTargets,instance.SpriteSource,V::State::Culled);
-#endif
-                            return;
-                        }
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                        visibility=V::State::SubmitRejected;
-#endif
-                        if (MiniMapBuildingAtlas::SubmitQuad(ui,dl,*entry,points,0xFFFFFFFFu))
-                        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                            TraceRender(traceTargets,instance.SpriteSource,V::State::Submitted);
-#endif
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                            if(collectOccluder)++workload.OrdinarySubmitted;
-                            else ++workload.BaseCoreSubmissions;
-#endif
-                            if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
-                            {
-                                if(collectOccluder && observationsComplete)
-                                {
-                                    try
-                                    {
-                                        A::OrdinarySubmission observed;observed.RecordIndex=instance.RecordIndex;
-                                        observed.Min=entry->Min;observed.Max=entry->Max;observed.Submitted=true;
-                                        for(size_t i=0;i<4;++i)observed.Quad[i]={worldQuad->Corners[i].X,worldQuad->Corners[i].Y};
-                                        request.Ordinary.push_back(observed);
-                                    }
-                                    catch(const std::bad_alloc&){observationsComplete=false;}
-                                    catch(const std::length_error&){observationsComplete=false;}
-                                }
-                            }
-                            return;
-                        }
-                    }
-                }
+                return;
             }
-            // Ordinary buildings without a ready atlas sprite stay invisible.
-            // Keep discovery above so the existing scheduler can load or capture them.
+            DrawingCoordinates coordinates;
+            coordinates.Position=instance.SpriteSource.Position;
+            coordinates.SignedScale=instance.SpriteSource.Scale;
+            coordinates.Rotation=instance.SpriteSource.Rotation;
+            coordinates.PlacementValid=instance.SpriteSource.TransformValid;
+            auto& mapping=coordinates.Destination;
+            mapping.TrackingWorldX=transform.TrackingWorldX;mapping.TrackingWorldY=transform.TrackingWorldY;
+            mapping.SinRotation=transform.SinMapRotation;mapping.CosRotation=transform.CosMapRotation;
+            mapping.PixelsPerWorldUnit=transform.PixelsPerWorldUnit;
+            mapping.PixelsPerWorldUnitY=transform.PixelsPerWorldUnitY;
+            mapping.CenterX=transform.CenterX;mapping.CenterY=transform.CenterY;
+            mapping.ClipMinX=transform.CenterX-transform.Width/2;
+            mapping.ClipMinY=transform.CenterY-transform.Height/2;
+            mapping.ClipMaxX=transform.CenterX+transform.Width/2;
+            mapping.ClipMaxY=transform.CenterY+transform.Height/2;
+            mapping.Valid=transform.Valid;
+            const auto result=DrawBuilding(*instance.SpriteSource.CanonicalBlueprint,coordinates,imageDestination);
+            switch(result.Status)
+            {
+            case DrawStatus::Submitted:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                TraceRender(traceTargets,instance.SpriteSource,V::State::Submitted);
+                if(collectOccluder)++workload.OrdinarySubmitted;
+                else ++workload.BaseCoreSubmissions;
+#endif
+                if constexpr(MiniMapBuildingVisuals::SplineRenderingEnabled)
+                    if(collectOccluder && observationsComplete)
+                    {
+                        try
+                        {
+                            A::OrdinarySubmission observed;
+                            observed.RecordIndex=instance.RecordIndex;
+                            observed.Min=result.Evidence.SourceMin;
+                            observed.Max=result.Evidence.SourceMax;
+                            observed.Submitted=true;
+                            for(size_t i=0;i<4;++i)
+                                observed.Quad[i]={result.Evidence.WorldQuad[i][0],result.Evidence.WorldQuad[i][1]};
+                            request.Ordinary.push_back(observed);
+                        }
+                        catch(const std::bad_alloc&){observationsComplete=false;}
+                        catch(const std::length_error&){observationsComplete=false;}
+                    }
+                return;
+            case DrawStatus::SpritePending:
+            case DrawStatus::SpriteUnavailable:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                visibility=V::State::AtlasMissing;
+#endif
+                break;
+            case DrawStatus::InvalidPlacement:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                visibility=V::State::QuadRejected;
+#endif
+                break;
+            case DrawStatus::Culled:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                visibility=V::State::Culled;
+#endif
+                break;
+            case DrawStatus::DestinationUnavailable:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                visibility=V::State::DestinationUnavailable;
+#endif
+                break;
+            case DrawStatus::SubmissionFailure:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                visibility=V::State::SubmitRejected;
+#endif
+                break;
+            }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             TraceRender(traceTargets,instance.SpriteSource,visibility);
 #endif
@@ -921,6 +1020,7 @@ namespace MiniMapBuildingVisuals
 #endif
         for(size_t index:snapshot->DrawOrder)
             if(baseCore(snapshot->Instances[index]))submitOrdinary(index,false);
+        EndDraw(drawingPass);
         }
         ui.PopClip(dl);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

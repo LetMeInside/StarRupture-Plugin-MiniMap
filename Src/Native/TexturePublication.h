@@ -31,7 +31,7 @@ namespace MiniMapTexturePublication
     };
     struct Generation
     {
-        uint64_t Epoch = 0, Request = 0, Revision = 0;
+        uint64_t Request = 0, Revision = 0;
         bool operator==(const Generation&) const = default;
     };
     enum class State : uint8_t { Empty, Prepared, ResourceInitializing, Ready, Retiring, Failed };
@@ -73,8 +73,7 @@ namespace MiniMapTexturePublication
         bool CompleteTile = false;
     };
     bool Initialize() noexcept;
-    // Native functions below are GT-only. Prepare/Ready require the existing
-    // admitted BuildingComplex service scope. Zero means no admission.
+    // Native functions below are GT-only and retain their explicit native admission checks.
     uint64_t Prepare(Image&&, Generation);
     SDK::UTexture2D* Ready(uint64_t owner, Generation current);
     Status Inspect(uint64_t owner);
@@ -83,7 +82,7 @@ namespace MiniMapTexturePublication
     bool Retire(uint64_t owner, bool detached);
     // BCB request/acquire/release/invalidation functions are GT-only. Requests
     // retain the immutable CPU image; native upload runs only in ProcessRequests
-    // inside the admitted GT service.
+    // after its native game-thread and GC admission checks.
     uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> image) noexcept;
     RequestStatus InspectRequest(uint64_t requestId) noexcept;
     // Acquire and Release are GT-only. Each successful acquisition has its own
@@ -103,15 +102,13 @@ namespace MiniMapTexturePublication
     bool AcquireGrouped(uint64_t publicationId, Lease& output) noexcept;
     bool ReleaseGrouped(uint64_t leaseId) noexcept;
     void WithdrawGroupedRequest(uint64_t requestId) noexcept;
-    // Called by the existing BuildingComplex world service while admitted.
+    // Called by the existing BuildingComplex world service; native work remains gated internally.
     void ProcessRequests() noexcept;
     void InvalidateCells(const std::vector<MiniMapBuildingComplexIndex::CellKey>& cells) noexcept;
     void InvalidateCapture(MiniMapBuildingComplexIndex::MassKey building) noexcept;
     void InvalidateAll() noexcept;
-    // Called outside lifecycle locks by the existing plugin callback. Polls
-    // active owners; never waits, flushes, or does worker GPU IO.
+    // Polls active owners; never waits, flushes, or does worker GPU IO.
     void Service();
-    void CancelWorld() noexcept; // Withdraw readiness; retain issued uses.
     void Shutdown() noexcept; // No native work without safe GT/GC admission.
 }
 #endif
