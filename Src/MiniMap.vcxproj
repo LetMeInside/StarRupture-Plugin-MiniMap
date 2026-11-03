@@ -98,6 +98,10 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\SplineGeometry.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\SplineSurfaceGeometry.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Coordination\IBuildingMapService.h" />
     <ClInclude Include="Services\Log.h" />
     <ClInclude Include="Services\ServiceTypes.h" />

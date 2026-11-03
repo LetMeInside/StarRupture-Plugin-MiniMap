@@ -1,0 +1,1074 @@
+// Provides reusable game-independent sprite-prism occlusion planning for prepared XYZ spline triangles.
+#pragma once
+
+#include "SplineSurfaceGeometry.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <new>
+#include <span>
+#include <stdexcept>
+#include <vector>
+
+namespace Services::Map::Buildings::Visuals
+{
+	/** Names the canonical three-component world-space point shared with prepared spline surfaces. */
+	using SplineOcclusionPoint3D = std::array<double, 3>;
+
+	/** Holds one generated visible world-space XYZ triangle and its source-order key. */
+	struct SplineOcclusionTriangle
+	{
+		std::array<SplineOcclusionPoint3D, 3> Vertices{};
+		std::uint64_t Key = 0;
+	};
+
+	/** Holds one convex world-XY sprite quad and the explicit world-space top height used for occlusion. */
+	struct SplineOcclusionSpriteQuad
+	{
+		std::array<std::array<double, 2>, 4> Corners{};
+		double TopHeight = 0.0;
+		std::uint64_t Key = 0;
+	};
+
+	/** Reports numerical planning outcomes without renderer, source, or policy concepts. */
+	enum class SplineOcclusionStatus : std::uint8_t
+	{
+		Complete,
+		NotPrepared,
+		InvalidInput,
+		NumericalFailure,
+		AllocationFailure
+	};
+
+	/** Owns validated occluders and a deterministic BVH, immutable while compatible clipping operations read it. */
+	class SplineOcclusionIndex final
+	{
+		friend class SplineOcclusionGeometry;
+
+		/** Stores a conservative world-XY broad-phase box. */
+		struct Bounds2D
+		{
+			std::array<double, 2> Minimum{};
+			std::array<double, 2> Maximum{};
+		};
+
+		/** Owns one validated occluder value and its precomputed XY bounds. */
+		struct PreparedOccluder
+		{
+			SplineOcclusionSpriteQuad Value;
+			Bounds2D Bounds;
+		};
+
+		/** Stores one median BVH node or leaf ordinal range. */
+		struct BvhNode
+		{
+			Bounds2D Bounds;
+			std::size_t Begin = 0;
+			std::size_t End = 0;
+			std::size_t Left = 0;
+			std::size_t Right = 0;
+		};
+
+		std::vector<PreparedOccluder> Occluders;
+		std::vector<BvhNode> Nodes;
+		std::vector<std::size_t> Ordinals;
+		SplineOcclusionStatus PreparationStatus = SplineOcclusionStatus::NotPrepared;
+
+	public:
+		/** Constructs an empty index whose storage is owned by its caller. */
+		SplineOcclusionIndex() = default;
+
+		/** Prevents accidental deep copies of prepared occluders and BVH storage. */
+		SplineOcclusionIndex(const SplineOcclusionIndex&) = delete;
+
+		/** Prevents accidental deep assignment of prepared occluders and BVH storage. */
+		SplineOcclusionIndex& operator=(const SplineOcclusionIndex&) = delete;
+
+		/** Transfers prepared-index ownership without copying its spatial data. */
+		SplineOcclusionIndex(SplineOcclusionIndex&&) noexcept = default;
+
+		/** Transfers prepared-index ownership without copying its spatial data. */
+		SplineOcclusionIndex& operator=(SplineOcclusionIndex&&) noexcept = default;
+
+		/** Reports whether the current immutable numerical index is ready for queries. */
+		SplineOcclusionStatus Status() const noexcept
+		{
+			return PreparationStatus;
+		}
+	};
+
+	/** Owns mutable per-operation query, clipping, and visible-output storage while retaining vector capacities. */
+	class SplineOcclusionWorkspace final
+	{
+		friend class SplineOcclusionGeometry;
+
+		/** Identifies a polygon in the flat reusable clipping vertex buffer. */
+		struct PolygonRange
+		{
+			std::size_t Begin = 0;
+			std::size_t Count = 0;
+		};
+
+		/** Retains original-edge provenance through consecutive plane splits. */
+		struct SupportedVertex
+		{
+			std::array<double, 3> Position{};
+			std::array<std::array<std::array<double, 3>, 2>, 2> Supports{};
+			std::size_t SupportCount = 0;
+		};
+
+		std::vector<std::size_t> Candidates;
+		std::vector<std::size_t> TriangleCandidates;
+		std::vector<SupportedVertex> CurrentVertices;
+		std::vector<SupportedVertex> NextVertices;
+		std::vector<PolygonRange> CurrentPolygons;
+		std::vector<PolygonRange> NextPolygons;
+		std::vector<SupportedVertex> WorkingPolygon;
+		std::vector<SupportedVertex> InsidePolygon;
+		std::vector<SupportedVertex> OutsidePolygon;
+		std::vector<SplineOcclusionTriangle> Visible;
+
+	public:
+		/** Constructs empty per-operation scratch owned by its caller. */
+		SplineOcclusionWorkspace() = default;
+
+		/** Prevents accidental copying of potentially large retained clipping buffers. */
+		SplineOcclusionWorkspace(const SplineOcclusionWorkspace&) = delete;
+
+		/** Prevents accidental copying of potentially large retained clipping buffers. */
+		SplineOcclusionWorkspace& operator=(const SplineOcclusionWorkspace&) = delete;
+
+		/** Transfers caller-owned scratch storage without copying retained buffers. */
+		SplineOcclusionWorkspace(SplineOcclusionWorkspace&&) noexcept = default;
+
+		/** Transfers caller-owned scratch storage without copying retained buffers. */
+		SplineOcclusionWorkspace& operator=(SplineOcclusionWorkspace&&) noexcept = default;
+
+		/** Returns the visible XYZ fragments generated by the last successful clipping call. */
+		const std::vector<SplineOcclusionTriangle>& VisibleTriangles() const noexcept
+		{
+			return Visible;
+		}
+	};
+
+	/** Builds deterministic occluder BVHs and clips caller-prepared XYZ triangles against sprite prisms. */
+	class SplineOcclusionGeometry final
+	{
+		using Point2D = std::array<double, 2>;
+		using Point3D = SplineOcclusionPoint3D;
+		using Bounds2D = SplineOcclusionIndex::Bounds2D;
+		using PreparedOccluder = SplineOcclusionIndex::PreparedOccluder;
+		using BvhNode = SplineOcclusionIndex::BvhNode;
+		using PolygonRange = SplineOcclusionWorkspace::PolygonRange;
+		using SupportedVertex = SplineOcclusionWorkspace::SupportedVertex;
+
+		/** Represents either a quad side plane or the occluder's top-height plane. */
+		struct ClipPlane
+		{
+			Point2D First{};
+			Point2D Second{};
+			double TopHeight = 0.0;
+			bool IsHeight = false;
+		};
+
+		/** Caches one source triangle's broad-phase bounds and minimum world height. */
+		struct TriangleMetrics
+		{
+			Bounds2D Bounds;
+			double MinimumZ = 0.0;
+		};
+
+	public:
+		/** Validates, canonicalizes, sorts, bounds, and indexes sprite quads into caller-owned immutable index storage.
+		 * Input values are copied into the index; no span or caller-owned memory is retained.
+		 * The index must not be prepared again while clipping operations hold const references to it.
+		 * @param input World-XY convex quads with explicit world-space top heights and stable numerical keys.
+		 * @param index Caller-owned prepared index that may be read by multiple independent workspaces.
+		 * @return Complete on success, otherwise the validation or allocation failure category.
+		 */
+		static SplineOcclusionStatus PrepareOccluders(
+			std::span<const SplineOcclusionSpriteQuad> input,
+			SplineOcclusionIndex& index) noexcept
+		{
+			ResetPrepared(index);
+			try
+			{
+				CopyOccluders(input, index);
+				std::sort(index.Occluders.begin(), index.Occluders.end(), OccluderLess);
+				BuildBvh(index);
+				index.PreparationStatus = SplineOcclusionStatus::Complete;
+			}
+			catch (SplineOcclusionStatus status)
+			{
+				SetPreparationFailure(index, status);
+			}
+			catch (const std::bad_alloc&)
+			{
+				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
+			}
+			catch (const std::length_error&)
+			{
+				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
+			}
+			return index.PreparationStatus;
+		}
+
+		/** Clips every prepared spline cell using one shared-index query per cell and reusable caller scratch.
+		 * Each call clears prior visible output. Any invalid input or allocation failure clears partial output.
+		 * @param vertices Non-owning world-space XYZ surface vertices from prepared spline surface geometry.
+		 * @param indices Non-owning six-index ranges into vertices, partitioned exactly by cells.
+		 * @param cells Non-owning accepted spline-profile cells with contiguous vertex and index ranges.
+		 * @param index Immutable prepared occluder index shared only among equivalent input operations.
+		 * @param workspace Caller-owned mutable query/clipping scratch and visible output storage.
+		 * @return Complete when every source triangle was processed, or the failure category.
+		 */
+		static SplineOcclusionStatus ClipSurface(
+			std::span<const Point3D> vertices,
+			std::span<const std::uint32_t> indices,
+			std::span<const SplineSurfaceCell> cells,
+			const SplineOcclusionIndex& index,
+			SplineOcclusionWorkspace& workspace) noexcept
+		{
+			workspace.Visible.clear();
+			if (index.Status() != SplineOcclusionStatus::Complete)
+			{
+				return index.Status();
+			}
+
+			try
+			{
+				std::size_t nextVertex = 0;
+				std::size_t nextIndex = 0;
+				for (const auto& cell : cells)
+				{
+					ValidateCellRanges(vertices, indices, cell, nextVertex, nextIndex);
+					ValidateCellIndices(indices, cell);
+					if (!ClipCell(vertices, indices, cell, index, workspace))
+					{
+						workspace.Visible.clear();
+						return SplineOcclusionStatus::NumericalFailure;
+					}
+					nextVertex += cell.VertexCount;
+					nextIndex += cell.IndexCount;
+				}
+				Require(nextVertex == vertices.size() && nextIndex == indices.size(), SplineOcclusionStatus::InvalidInput);
+			}
+			catch (SplineOcclusionStatus status)
+			{
+				workspace.Visible.clear();
+				return status;
+			}
+			catch (const std::bad_alloc&)
+			{
+				workspace.Visible.clear();
+				return SplineOcclusionStatus::AllocationFailure;
+			}
+			catch (const std::length_error&)
+			{
+				workspace.Visible.clear();
+				return SplineOcclusionStatus::AllocationFailure;
+			}
+			return SplineOcclusionStatus::Complete;
+		}
+
+	private:
+		/** Clears index-owned values while preserving prepared vector capacities. */
+		static void ResetPrepared(SplineOcclusionIndex& index) noexcept
+		{
+			index.Occluders.clear();
+			index.Nodes.clear();
+			index.Ordinals.clear();
+			index.PreparationStatus = SplineOcclusionStatus::NotPrepared;
+		}
+
+		/** Clears invalid prepared state and records its failure category. */
+		static void SetPreparationFailure(
+			SplineOcclusionIndex& index,
+			SplineOcclusionStatus status) noexcept
+		{
+			index.Occluders.clear();
+			index.Nodes.clear();
+			index.Ordinals.clear();
+			index.PreparationStatus = status;
+		}
+
+		/** Validates and copies every supplied quad, computing its canonical bounds once. */
+		static void CopyOccluders(
+			std::span<const SplineOcclusionSpriteQuad> input,
+			SplineOcclusionIndex& index)
+		{
+			for (auto value : input)
+			{
+				Require(Canonicalize(value), SplineOcclusionStatus::InvalidInput);
+				index.Occluders.push_back({value, CalculateBounds(value.Corners)});
+			}
+		}
+
+		/** Canonicalizes a finite strictly convex quad to counter-clockwise perimeter order. */
+		static bool Canonicalize(SplineOcclusionSpriteQuad& value) noexcept
+		{
+			if (!std::isfinite(value.TopHeight))
+			{
+				return false;
+			}
+			for (const auto& point : value.Corners)
+			{
+				if (!IsFinite(point))
+				{
+					return false;
+				}
+			}
+			const long double turn = Turn(value.Corners[0], value.Corners[1], value.Corners[2]);
+			if (!std::isfinite(turn) || turn == 0.0)
+			{
+				return false;
+			}
+			if (turn < 0.0)
+			{
+				std::reverse(value.Corners.begin(), value.Corners.end());
+			}
+			for (std::size_t edge = 0; edge < value.Corners.size(); ++edge)
+			{
+				for (std::size_t point = 0; point < value.Corners.size(); ++point)
+				{
+					if (point == edge || point == (edge + 1) % value.Corners.size())
+					{
+						continue;
+					}
+					const long double side = Turn(value.Corners[edge], value.Corners[(edge + 1) % 4], value.Corners[point]);
+					if (!std::isfinite(side) || side <= 0.0)
+					{
+						return false;
+					}
+				}
+			}
+			RotateToMinimum(value.Corners);
+			return true;
+		}
+
+		/** Orders canonical quads by key, perimeter corners, then explicit top height. */
+		static bool OccluderLess(const PreparedOccluder& first, const PreparedOccluder& second) noexcept
+		{
+			const auto& a = first.Value;
+			const auto& b = second.Value;
+			if (a.Key != b.Key)
+			{
+				return a.Key < b.Key;
+			}
+			if (a.Corners != b.Corners)
+			{
+				return a.Corners < b.Corners;
+			}
+			return a.TopHeight < b.TopHeight;
+		}
+
+		/** Builds a balanced median BVH with alternating axes and eight-item leaves. */
+		static void BuildBvh(SplineOcclusionIndex& index)
+		{
+			index.Ordinals.resize(index.Occluders.size());
+			for (std::size_t ordinal = 0; ordinal < index.Ordinals.size(); ++ordinal)
+			{
+				index.Ordinals[ordinal] = ordinal;
+			}
+			if (index.Occluders.empty())
+			{
+				return;
+			}
+			const auto count = index.Occluders.size();
+			if (count > (std::numeric_limits<std::size_t>::max)() / 2)
+			{
+				throw std::length_error("occlusion BVH node count overflow");
+			}
+			index.Nodes.reserve(count * 2 - 1);
+			BuildRange(index, 0, count, 0);
+		}
+
+		/** Creates one node, partitions its ordinals by median, and recursively builds children. */
+		static std::size_t BuildRange(
+			SplineOcclusionIndex& index,
+			std::size_t begin,
+			std::size_t end,
+			std::size_t axis)
+		{
+			const auto bounds = UnionBounds(index, begin, end);
+			const auto node = index.Nodes.size();
+			index.Nodes.push_back({bounds, begin, end, 0, 0});
+			if (end - begin <= 8)
+			{
+				return node;
+			}
+			const auto middle = begin + (end - begin) / 2;
+			std::nth_element(index.Ordinals.begin() + begin, index.Ordinals.begin() + middle,
+				index.Ordinals.begin() + end, [&index, axis](std::size_t first, std::size_t second)
+				{
+					return OrdinalLess(index, first, second, axis);
+				});
+			const auto left = BuildRange(index, begin, middle, 1 - axis);
+			const auto right = BuildRange(index, middle, end, 1 - axis);
+			index.Nodes[node].Left = left;
+			index.Nodes[node].Right = right;
+			return node;
+		}
+
+		/** Orders BVH partition values by selected-axis minimum, maximum, then canonical ordinal. */
+		static bool OrdinalLess(
+			const SplineOcclusionIndex& index,
+			std::size_t first,
+			std::size_t second,
+			std::size_t axis) noexcept
+		{
+			const auto& a = index.Occluders[first].Bounds;
+			const auto& b = index.Occluders[second].Bounds;
+			if (a.Minimum[axis] != b.Minimum[axis])
+			{
+				return a.Minimum[axis] < b.Minimum[axis];
+			}
+			if (a.Maximum[axis] != b.Maximum[axis])
+			{
+				return a.Maximum[axis] < b.Maximum[axis];
+			}
+			return first < second;
+		}
+
+		/** Unions item bounds for one BVH node without computing potentially overflowing centers. */
+		static Bounds2D UnionBounds(
+			const SplineOcclusionIndex& index,
+			std::size_t begin,
+			std::size_t end) noexcept
+		{
+			Bounds2D result = index.Occluders[index.Ordinals[begin]].Bounds;
+			for (std::size_t position = begin + 1; position < end; ++position)
+			{
+				const auto& bounds = index.Occluders[index.Ordinals[position]].Bounds;
+				for (std::size_t axis = 0; axis < 2; ++axis)
+				{
+					result.Minimum[axis] = (std::min)(result.Minimum[axis], bounds.Minimum[axis]);
+					result.Maximum[axis] = (std::max)(result.Maximum[axis], bounds.Maximum[axis]);
+				}
+			}
+			return result;
+		}
+
+		/** Ensures each cell exactly follows the accepted four-vertex/six-index surface layout. */
+		static void ValidateCellRanges(
+			std::span<const Point3D> vertices,
+			std::span<const std::uint32_t> indices,
+			const SplineSurfaceCell& cell,
+			std::size_t nextVertex,
+			std::size_t nextIndex)
+		{
+			Require(cell.VertexCount == 4 && cell.IndexCount == 6 &&
+				cell.FirstVertex == nextVertex && cell.FirstIndex == nextIndex,
+				SplineOcclusionStatus::InvalidInput);
+			Require(cell.FirstVertex <= vertices.size() && cell.VertexCount <= vertices.size() - cell.FirstVertex,
+				SplineOcclusionStatus::InvalidInput);
+			Require(cell.FirstIndex <= indices.size() && cell.IndexCount <= indices.size() - cell.FirstIndex,
+				SplineOcclusionStatus::InvalidInput);
+		}
+
+		/** Requires the exact two-triangle diagonal patterns emitted by spline surface preparation. */
+		static void ValidateCellIndices(
+			std::span<const std::uint32_t> indices,
+			const SplineSurfaceCell& cell)
+		{
+			std::array<std::uint32_t, 6> local{};
+			for (std::size_t offset = 0; offset < local.size(); ++offset)
+			{
+				const auto index = indices[cell.FirstIndex + offset];
+				Require(index >= cell.FirstVertex && index - cell.FirstVertex < cell.VertexCount,
+					SplineOcclusionStatus::InvalidInput);
+				local[offset] = static_cast<std::uint32_t>(static_cast<std::size_t>(index) - cell.FirstVertex);
+			}
+			const bool firstDiagonal = local == std::array<std::uint32_t, 6>{0, 1, 2, 0, 2, 3};
+			const bool secondDiagonal = local == std::array<std::uint32_t, 6>{0, 1, 3, 1, 2, 3};
+			Require(firstDiagonal || secondDiagonal, SplineOcclusionStatus::InvalidInput);
+		}
+
+		/** Reads and canonicalizes one indexed source triangle without allocating or retaining input storage. */
+		static SplineOcclusionTriangle ReadTriangle(
+			std::span<const Point3D> vertices,
+			std::span<const std::uint32_t> indices,
+			std::size_t firstIndex)
+		{
+			SplineOcclusionTriangle triangle;
+			triangle.Key = static_cast<std::uint64_t>(firstIndex / 3);
+			for (std::size_t corner = 0; corner < 3; ++corner)
+			{
+				const auto vertexIndex = indices[firstIndex + corner];
+				Require(vertexIndex < vertices.size(), SplineOcclusionStatus::InvalidInput);
+				triangle.Vertices[corner] = vertices[vertexIndex];
+			}
+			Require(Canonicalize(triangle), SplineOcclusionStatus::InvalidInput);
+			return triangle;
+		}
+
+		/** Rejects non-finite or zero-area triangles and rotates positive-XY winding to a canonical start. */
+		static bool Canonicalize(SplineOcclusionTriangle& triangle) noexcept
+		{
+			for (const auto& point : triangle.Vertices)
+			{
+				if (!IsFinite(point))
+				{
+					return false;
+				}
+			}
+			const long double area = TriangleTurn(triangle.Vertices[0], triangle.Vertices[1], triangle.Vertices[2]);
+			if (!std::isfinite(area) || area == 0.0L)
+			{
+				return false;
+			}
+			if (area < 0.0L)
+			{
+				std::swap(triangle.Vertices[1], triangle.Vertices[2]);
+			}
+			RotateToMinimum(triangle.Vertices);
+			return true;
+		}
+
+		/** Canonicalizes a three-point perimeter to its lexicographically smallest vertex. */
+		template <typename Point, std::size_t Count>
+		static void RotateToMinimum(std::array<Point, Count>& points) noexcept
+		{
+			const auto minimum = std::min_element(points.begin(), points.end());
+			std::rotate(points.begin(), minimum, points.end());
+		}
+
+		/** Queries once for the full accepted cell, filters its two triangles, and preserves source index order. */
+		static bool ClipCell(
+			std::span<const Point3D> vertices,
+			std::span<const std::uint32_t> indices,
+			const SplineSurfaceCell& cell,
+			const SplineOcclusionIndex& index,
+			SplineOcclusionWorkspace& workspace)
+		{
+			const auto cellBounds = CalculateBounds(vertices.subspan(cell.FirstVertex, cell.VertexCount));
+			QueryCandidates(cellBounds, index, workspace);
+			for (std::size_t triangleOffset = 0; triangleOffset < cell.IndexCount; triangleOffset += 3)
+			{
+				const auto triangle = ReadTriangle(vertices, indices, cell.FirstIndex + triangleOffset);
+				const auto metrics = MeasureTriangle(triangle);
+				FilterTriangleCandidates(metrics, index, workspace);
+				if (workspace.TriangleCandidates.empty())
+				{
+					workspace.Visible.push_back(triangle);
+				}
+				else if (!ClipTriangle(triangle, index, workspace))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/** Computes triangle XY bounds and minimum Z in one pass over its three canonical vertices. */
+		static TriangleMetrics MeasureTriangle(const SplineOcclusionTriangle& triangle) noexcept
+		{
+			TriangleMetrics metrics;
+			metrics.Bounds = CalculateBounds(triangle.Vertices);
+			metrics.MinimumZ = (std::min)({triangle.Vertices[0][2], triangle.Vertices[1][2], triangle.Vertices[2][2]});
+			return metrics;
+		}
+
+		/** Retains candidates that touch the triangle in XY and whose top can reach its minimum height. */
+		static void FilterTriangleCandidates(
+			const TriangleMetrics& metrics,
+			const SplineOcclusionIndex& index,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.TriangleCandidates.clear();
+			for (const auto candidate : workspace.Candidates)
+			{
+				const auto& occluder = index.Occluders[candidate];
+				if (!Disjoint(metrics.Bounds, occluder.Bounds) && metrics.MinimumZ <= occluder.Value.TopHeight)
+				{
+					workspace.TriangleCandidates.push_back(candidate);
+				}
+			}
+		}
+
+		/** Clips one candidate-bearing triangle and emits its visible fragments. */
+		static bool ClipTriangle(
+			const SplineOcclusionTriangle& triangle,
+			const SplineOcclusionIndex& index,
+			SplineOcclusionWorkspace& workspace)
+		{
+			InitializeFrontier(triangle, workspace);
+			for (const auto candidate : workspace.TriangleCandidates)
+			{
+				if (!SubtractOccluder(index.Occluders[candidate].Value, workspace))
+				{
+					return false;
+				}
+				if (workspace.CurrentPolygons.empty())
+				{
+					break;
+				}
+			}
+			return EmitVisible(triangle.Key, workspace);
+		}
+
+		/** Initializes reusable flat polygon storage with one original triangle and edge provenance. */
+		static void InitializeFrontier(
+			const SplineOcclusionTriangle& triangle,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.CurrentVertices.clear();
+			workspace.CurrentPolygons.clear();
+			workspace.CurrentVertices.reserve(3);
+			workspace.CurrentPolygons.reserve(1);
+			for (std::size_t index = 0; index < 3; ++index)
+			{
+				SupportedVertex vertex;
+				vertex.Position = triangle.Vertices[index];
+				vertex.Supports[0] = MakeEdge(triangle.Vertices[index], triangle.Vertices[(index + 1) % 3]);
+				vertex.Supports[1] = MakeEdge(triangle.Vertices[index], triangle.Vertices[(index + 2) % 3]);
+				vertex.SupportCount = 2;
+				workspace.CurrentVertices.push_back(vertex);
+			}
+			workspace.CurrentPolygons.push_back({0, 3});
+		}
+
+		/** Queries the BVH and sorts candidate ordinals into deterministic canonical order. */
+		static void QueryCandidates(
+			const Bounds2D& bounds,
+			const SplineOcclusionIndex& index,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.Candidates.clear();
+			if (!index.Nodes.empty())
+				QueryNode(0, bounds, index, workspace.Candidates);
+			std::sort(workspace.Candidates.begin(), workspace.Candidates.end());
+		}
+
+		/** Prunes disjoint BVH nodes and appends only intersecting leaf ordinals. */
+		static void QueryNode(
+			std::size_t nodeIndex,
+			const Bounds2D& bounds,
+			const SplineOcclusionIndex& index,
+			std::vector<std::size_t>& candidates)
+		{
+			const auto& node = index.Nodes[nodeIndex];
+			if (Disjoint(bounds, node.Bounds))
+			{
+				return;
+			}
+			if (node.Left != 0)
+			{
+				QueryNode(node.Left, bounds, index, candidates);
+				QueryNode(node.Right, bounds, index, candidates);
+				return;
+			}
+			for (std::size_t ordinalIndex = node.Begin; ordinalIndex < node.End; ++ordinalIndex)
+			{
+				const auto ordinal = index.Ordinals[ordinalIndex];
+				if (!Disjoint(bounds, index.Occluders[ordinal].Bounds))
+				{
+					candidates.push_back(ordinal);
+				}
+			}
+		}
+
+		/** Subtracts one quad prism from every current polygon using five exact clip planes. */
+		static bool SubtractOccluder(
+			const SplineOcclusionSpriteQuad& occluder,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.NextVertices.clear();
+			workspace.NextPolygons.clear();
+			for (const auto& range : workspace.CurrentPolygons)
+			{
+				CopyRangeToWorking(range, workspace);
+				for (std::size_t planeIndex = 0; planeIndex < 5 && !workspace.WorkingPolygon.empty(); ++planeIndex)
+				{
+					const auto plane = MakePlane(occluder, planeIndex);
+					if (!SplitWorkingPolygon(plane, workspace))
+					{
+						return false;
+					}
+					if (HasArea(workspace.OutsidePolygon))
+					{
+						AppendPolygon(workspace.OutsidePolygon, workspace.NextVertices, workspace.NextPolygons);
+					}
+					if (HasArea(workspace.InsidePolygon))
+					{
+						workspace.WorkingPolygon.swap(workspace.InsidePolygon);
+					}
+					else
+					{
+						workspace.WorkingPolygon.clear();
+					}
+				}
+			}
+			workspace.CurrentVertices.swap(workspace.NextVertices);
+			workspace.CurrentPolygons.swap(workspace.NextPolygons);
+			return true;
+		}
+
+		/** Copies one flat-buffer polygon range into retained working storage. */
+		static void CopyRangeToWorking(
+			const PolygonRange& range,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.WorkingPolygon.assign(workspace.CurrentVertices.begin() + range.Begin,
+				workspace.CurrentVertices.begin() + range.Begin + range.Count);
+		}
+
+		/** Appends polygon vertices to flat storage and records their range without a nested allocation. */
+		static void AppendPolygon(
+			const std::vector<SupportedVertex>& polygon,
+			std::vector<SupportedVertex>& vertices,
+			std::vector<PolygonRange>& ranges)
+		{
+			const auto begin = vertices.size();
+			vertices.insert(vertices.end(), polygon.begin(), polygon.end());
+			ranges.push_back({begin, polygon.size()});
+		}
+
+		/** Converts a canonical quad side or its top height into the planner's ordered five planes. */
+		static ClipPlane MakePlane(const SplineOcclusionSpriteQuad& occluder, std::size_t index) noexcept
+		{
+			if (index == 4)
+			{
+				return {{}, {}, occluder.TopHeight, true};
+			}
+			return {occluder.Corners[index], occluder.Corners[(index + 1) % 4], occluder.TopHeight, false};
+		}
+
+		/** Splits a polygon and reports arithmetic failures without changing caller-visible partial output. */
+		static bool SplitWorkingPolygon(
+			const ClipPlane& plane,
+			SplineOcclusionWorkspace& workspace)
+		{
+			workspace.InsidePolygon.clear();
+			workspace.OutsidePolygon.clear();
+			bool positive = false;
+			bool negative = false;
+			for (const auto& vertex : workspace.WorkingPolygon)
+			{
+				long double distance = 0.0L;
+				if (!Distance(plane, vertex.Position, distance))
+				{
+					return false;
+				}
+				positive |= distance > 0.0L;
+				negative |= distance < 0.0L;
+			}
+			if (!positive)
+			{
+				workspace.InsidePolygon = workspace.WorkingPolygon;
+				return true;
+			}
+			if (!negative)
+			{
+				workspace.OutsidePolygon = workspace.WorkingPolygon;
+				return true;
+			}
+			return SplitCrossingPolygon(plane, workspace);
+		}
+
+		/** Performs inclusive half-plane splitting while retaining exact original-edge support. */
+		static bool SplitCrossingPolygon(
+			const ClipPlane& plane,
+			SplineOcclusionWorkspace& workspace)
+		{
+			SupportedVertex previous = workspace.WorkingPolygon.back();
+			long double previousDistance = 0.0L;
+			if (!Distance(plane, previous.Position, previousDistance))
+			{
+				return false;
+			}
+			for (const auto& current : workspace.WorkingPolygon)
+			{
+				long double currentDistance = 0.0L;
+				if (!Distance(plane, current.Position, currentDistance))
+				{
+					return false;
+				}
+				if (((previousDistance < 0.0L && currentDistance > 0.0L) ||
+					(previousDistance > 0.0L && currentDistance < 0.0L)) &&
+					!AppendIntersection(previous, current, plane, workspace))
+				{
+					return false;
+				}
+				AppendBySign(workspace, current, currentDistance);
+				previous = current;
+				previousDistance = currentDistance;
+			}
+			ClosePolygon(workspace.InsidePolygon);
+			ClosePolygon(workspace.OutsidePolygon);
+			return true;
+		}
+
+		/** Appends an edge-plane intersection to both split results using canonical original endpoints. */
+		static bool AppendIntersection(
+			const SupportedVertex& first,
+			const SupportedVertex& second,
+			const ClipPlane& plane,
+			SplineOcclusionWorkspace& workspace)
+		{
+			SupportedVertex intersection;
+			FindSharedSupports(first, second, intersection);
+			Point3D edgeFirst = first.Position;
+			Point3D edgeSecond = second.Position;
+			if (intersection.SupportCount != 0)
+			{
+				edgeFirst = intersection.Supports[0][0];
+				edgeSecond = intersection.Supports[0][1];
+			}
+			if (edgeSecond < edgeFirst)
+			{
+				std::swap(edgeFirst, edgeSecond);
+			}
+			long double firstDistance = 0.0L;
+			long double secondDistance = 0.0L;
+			if (!Distance(plane, edgeFirst, firstDistance) || !Distance(plane, edgeSecond, secondDistance))
+			{
+				return false;
+			}
+			if (!CalculateIntersection(edgeFirst, edgeSecond, firstDistance, secondDistance, plane, intersection.Position))
+			{
+				return false;
+			}
+			AppendDistinct(workspace.InsidePolygon, intersection);
+			AppendDistinct(workspace.OutsidePolygon, intersection);
+			return true;
+		}
+
+		/** Finds shared original-edge provenance carried by adjacent polygon vertices. */
+		static void FindSharedSupports(
+			const SupportedVertex& first,
+			const SupportedVertex& second,
+			SupportedVertex& intersection) noexcept
+		{
+			for (std::size_t firstIndex = 0; firstIndex < first.SupportCount; ++firstIndex)
+			{
+				for (std::size_t secondIndex = 0; secondIndex < second.SupportCount; ++secondIndex)
+				{
+					if (first.Supports[firstIndex] == second.Supports[secondIndex] && intersection.SupportCount < 2)
+					{
+						intersection.Supports[intersection.SupportCount++] = first.Supports[firstIndex];
+					}
+				}
+			}
+		}
+
+		/** Interpolates a canonical edge intersection and pins height-plane results to the exact top value. */
+		static bool CalculateIntersection(
+			const Point3D& first,
+			const Point3D& second,
+			long double firstDistance,
+			long double secondDistance,
+			const ClipPlane& plane,
+			Point3D& output) noexcept
+		{
+			if (firstDistance == 0.0L)
+			{
+				output = first;
+				return true;
+			}
+			if (secondDistance == 0.0L)
+			{
+				output = second;
+				return true;
+			}
+			const long double denominator = firstDistance - secondDistance;
+			if (!std::isfinite(denominator) || denominator == 0.0L)
+			{
+				return false;
+			}
+			const long double parameter = firstDistance / denominator;
+			if (!std::isfinite(parameter) || parameter < 0.0L || parameter > 1.0L)
+			{
+				return false;
+			}
+			for (std::size_t axis = 0; axis < 3; ++axis)
+			{
+				const long double value = (1.0L - parameter) * first[axis] + parameter * second[axis];
+				if (!std::isfinite(value))
+				{
+					return false;
+				}
+				output[axis] = static_cast<double>(value);
+				if (!std::isfinite(output[axis]))
+				{
+					return false;
+				}
+			}
+			if (plane.IsHeight)
+			{
+				output[2] = plane.TopHeight;
+			}
+			return true;
+		}
+
+		/** Appends the current vertex to each inclusive side selected by its signed distance. */
+		static void AppendBySign(
+			SplineOcclusionWorkspace& workspace,
+			const SupportedVertex& vertex,
+			long double distance)
+		{
+			if (distance <= 0.0L)
+			{
+				AppendDistinct(workspace.InsidePolygon, vertex);
+			}
+			if (distance >= 0.0L)
+			{
+				AppendDistinct(workspace.OutsidePolygon, vertex);
+			}
+		}
+
+		/** Appends a vertex unless its XYZ position duplicates the current polygon tail. */
+		static void AppendDistinct(
+			std::vector<SupportedVertex>& polygon,
+			const SupportedVertex& vertex)
+		{
+			if (polygon.empty() || polygon.back().Position != vertex.Position)
+			{
+				polygon.push_back(vertex);
+			}
+		}
+
+		/** Removes a duplicated closing vertex from one polygon. */
+		static void ClosePolygon(std::vector<SupportedVertex>& polygon) noexcept
+		{
+			if (polygon.size() > 1 && polygon.front().Position == polygon.back().Position)
+			{
+				polygon.pop_back();
+			}
+		}
+
+		/** Tests that a polygon has positive XY area and reports non-finite or reversed geometry. */
+		static bool HasArea(const std::vector<SupportedVertex>& polygon)
+		{
+			if (polygon.size() < 3)
+			{
+				return false;
+			}
+			bool nonzero = false;
+			for (std::size_t index = 1; index + 1 < polygon.size(); ++index)
+			{
+				const long double area = TriangleTurn(polygon[0].Position, polygon[index].Position,
+					polygon[index + 1].Position);
+				Require(std::isfinite(area) && area >= 0.0L, SplineOcclusionStatus::NumericalFailure);
+				nonzero |= area > 0.0L;
+			}
+			return nonzero;
+		}
+
+		/** Triangulates every surviving convex polygon as a fan into retained output storage. */
+		static bool EmitVisible(std::uint64_t key, SplineOcclusionWorkspace& workspace)
+		{
+			for (const auto& range : workspace.CurrentPolygons)
+			{
+				for (std::size_t index = 1; index + 1 < range.Count; ++index)
+				{
+					const auto& first = workspace.CurrentVertices[range.Begin];
+					const auto& second = workspace.CurrentVertices[range.Begin + index];
+					const auto& third = workspace.CurrentVertices[range.Begin + index + 1];
+					const long double area = TriangleTurn(first.Position, second.Position, third.Position);
+					Require(std::isfinite(area) && area >= 0.0L, SplineOcclusionStatus::NumericalFailure);
+					if (area > 0.0L)
+					{
+						workspace.Visible.push_back({{first.Position, second.Position, third.Position}, key});
+					}
+				}
+			}
+			return true;
+		}
+
+		/** Calculates the signed plane distance for either an XY quad side or a top-Z plane. */
+		static bool Distance(
+			const ClipPlane& plane,
+			const Point3D& point,
+			long double& output) noexcept
+		{
+			if (plane.IsHeight)
+			{
+				output = static_cast<long double>(point[2]) - plane.TopHeight;
+			}
+			else
+			{
+				output = -Turn(plane.First, plane.Second, {point[0], point[1]});
+			}
+			return std::isfinite(output);
+		}
+
+		/** Computes one quad's endpoint-only XY bounds without center or extent arithmetic. */
+		template <typename Points>
+		static Bounds2D CalculateBounds(const Points& points) noexcept
+		{
+			Bounds2D result{{INFINITY, INFINITY}, {-INFINITY, -INFINITY}};
+			for (const auto& point : points)
+			{
+				for (std::size_t axis = 0; axis < 2; ++axis)
+				{
+					result.Minimum[axis] = (std::min)(result.Minimum[axis], point[axis]);
+					result.Maximum[axis] = (std::max)(result.Maximum[axis], point[axis]);
+				}
+			}
+			return result;
+		}
+
+		/** Builds a lexicographically ordered XYZ edge used to stabilize shared-edge intersections. */
+		static std::array<Point3D, 2> MakeEdge(Point3D first, Point3D second) noexcept
+		{
+			if (second < first)
+			{
+				std::swap(first, second);
+			}
+			return {first, second};
+		}
+
+		/** Computes the signed doubled XY area using widened intermediate differences. */
+		static long double TriangleTurn(
+			const Point3D& first,
+			const Point3D& second,
+			const Point3D& third) noexcept
+		{
+			return Turn({first[0], first[1]}, {second[0], second[1]}, {third[0], third[1]});
+		}
+
+		/** Computes a signed XY turn using widened intermediate differences. */
+		static long double Turn(const Point2D& first, const Point2D& second, const Point2D& third) noexcept
+		{
+			return (static_cast<long double>(second[0]) - first[0]) *
+				(static_cast<long double>(third[1]) - first[1]) -
+				(static_cast<long double>(second[1]) - first[1]) *
+				(static_cast<long double>(third[0]) - first[0]);
+		}
+
+		/** Checks that every coordinate in a fixed-size point is finite. */
+		template <typename Point, std::size_t Count>
+		static bool IsFinite(const std::array<Point, Count>& point) noexcept
+		{
+			for (const auto& value : point)
+			{
+				if (!std::isfinite(value))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/** Implements strict AABB separation so boundary contacts continue to exact clipping. */
+		static bool Disjoint(const Bounds2D& first, const Bounds2D& second) noexcept
+		{
+			return first.Maximum[0] < second.Minimum[0] || second.Maximum[0] < first.Minimum[0] ||
+				first.Maximum[1] < second.Minimum[1] || second.Maximum[1] < first.Minimum[1];
+		}
+
+		/** Throws the requested numerical status when a validation or arithmetic predicate fails. */
+		static void Require(bool condition, SplineOcclusionStatus status)
+		{
+			if (!condition)
+			{
+				throw status;
+			}
+		}
+	};
+}
