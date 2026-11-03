@@ -153,7 +153,9 @@ namespace
             transform,
             settings))
         {
-            MiniMapBuildingVisuals::DrawBuildings(ui, transform, settings.Buildings);
+            if (auto buildingState = MiniMapBuildingVisuals::MiniMapState())
+                MiniMapBuildingVisuals::DrawBuildings(*buildingState,
+                    MiniMapBuildingCollector::GetSnapshot(), ui, transform, settings.Buildings);
             MiniMapFogOfWar::Render(
                 ui,
                 transform, settings.Fog);

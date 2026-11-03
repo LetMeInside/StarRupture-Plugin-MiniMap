@@ -94,7 +94,7 @@ namespace
     };
     struct BuildingVisualsTimingTotals
     {
-        // Fixed-size render/OnTick aggregates, published under the existing g_normalState.Mutex.
+        // Fixed-size render/OnTick aggregates, published under their State mutex.
         PhaseAggregate SnapshotAcquire,LockWait,Ordinary,PlanPreparation,SplineSubmission,
             BaseCoreAndFinalize,RenderTotal,Unaccounted,SnapshotPreparation;
         uint64_t PreparedInstances=0,OrdinarySubmitted=0,SplineRecords=0,PlanReuses=0,PlanRebuilds=0,
@@ -126,7 +126,7 @@ namespace MiniMapBuildingVisuals
 }
 namespace
 {
-    MiniMapBuildingVisuals::State g_normalState;
+    std::shared_ptr<MiniMapBuildingVisuals::State> g_miniMapState;
     MiniMapSpriteStatus::Dictionary g_spriteStatuses;
     MiniMapSpriteQueues::SpriteFifo g_spriteFifo;
     bool g_spriteProcessingInitialized=false;
@@ -237,16 +237,16 @@ namespace
         const std::optional<double> elevation=i.Spline?i.SplineSortZ:std::optional<double>(i.Elevation);
         return std::tuple(i.Spline?0:1,elevation,i.Origin.Y,i.Origin.X,i.EntitySerial,i.EntityIndex);
     }
-    void Clear()
+    void Clear(MiniMapBuildingVisuals::State& state)
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         {std::lock_guard<std::mutex> lock(g_traceMutex);g_trace.Reset(0);g_traceInput.reset();}
 #endif
-        g_normalState.Generation=0; g_normalState.LastInput.reset();
-        std::scoped_lock lock(g_normalState.Mutex); g_normalState.Published.reset(); g_normalState.PlanOwner.reset();
+        state.Generation=0; state.LastInput.reset();
+        std::scoped_lock lock(state.Mutex); state.Published.reset(); state.PlanOwner.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        g_normalState.Timing={};
-        g_normalState.TimingIntervalStart=Clock::now();
+        state.Timing={};
+        state.TimingIntervalStart=Clock::now();
 #endif
     }
     bool ProjectWorldQuad(const std::array<G::XY,4>& corners, const MiniMapBuildingVisuals::DestinationMapping& transform,
@@ -418,14 +418,14 @@ namespace
         state.LastInput=input;
     }
 
-    void OnTick(float)
+    void OnTick(MiniMapBuildingVisuals::State& state, float)
     {
         if(!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() ||
             !MiniMapConfig::GetRenderSettings().Buildings.ShowLayer)return;
         const auto input=C::GetSnapshot();
-        if(!input) { if(g_normalState.LastInput)Clear(); return; }
-        if(input->Generation!=g_normalState.Generation)Clear();
-        PrepareVisuals(g_normalState,input);
+        if(!input) { if(state.LastInput)Clear(state); return; }
+        if(input->Generation!=state.Generation)Clear(state);
+        PrepareVisuals(state,input);
     }
 
 }
@@ -587,8 +587,9 @@ namespace MiniMapBuildingVisuals
         if(g_initialized) return true;
         if(!self || !self->hooks || !MiniMap::Services::TryRuntimeEvents()) return false;
         Reset();
+        if(!g_miniMapState) g_miniMapState=CreateState();
         const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
-            [](void*, float delta) { OnTick(delta); }, nullptr);
+            [](void*, float delta) { if(g_miniMapState) OnTick(*g_miniMapState,delta); }, nullptr);
         if (tickReceipt.token.id) g_tickRegistration = tickReceipt.token;
         if (tickReceipt.acceptance == MiniMap::Services::Acceptance::Rejected ||
             tickReceipt.acceptance == MiniMap::Services::Acceptance::BackendUnknown)
@@ -598,7 +599,8 @@ namespace MiniMapBuildingVisuals
         }
         g_initialized=true; return true;
     }
-    void Reset() { Clear(); }
+    State* MiniMapState() noexcept { return g_miniMapState.get(); }
+    void Reset() { if(g_miniMapState) Clear(*g_miniMapState); }
     void Shutdown()
     {
         if(!g_initialized) return;
@@ -606,7 +608,8 @@ namespace MiniMapBuildingVisuals
         {
             const auto removal = events->Remove(g_tickRegistration);
             if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
-                removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+                removal.core == MiniMap::Services::CoreDrain::Quiescent)
+                g_tickRegistration = {};
         }
         Reset(); g_initialized=false;
     }
@@ -690,7 +693,10 @@ namespace MiniMapBuildingVisuals
     }
     void DrawBuildings(MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
-    { DrawBuildings(g_normalState,{},ui,transform,settings); }
+    {
+        if(g_miniMapState)
+            DrawBuildings(*g_miniMapState,C::GetSnapshot(),ui,transform,settings);
+    }
     void DrawBuildings(State& state, const std::shared_ptr<const C::Snapshot>& selected,
         MiniMap::Services::ICanvas& ui,const MiniMapMap::Transform& transform,
         const MiniMapConfig::BuildingRenderSettings& settings)
@@ -706,15 +712,14 @@ namespace MiniMapBuildingVisuals
         const auto measuredBegin=Clock::now();
 #endif
         std::shared_ptr<const Snapshot> snapshot; { std::scoped_lock lock(state.Mutex); snapshot=state.Published; }
-        const auto current=(selected ? selected : C::GetSnapshot());
-        if(!snapshot || !current || snapshot->Generation!=current->Generation)
+        if(!snapshot || !selected || snapshot->Generation!=selected->Generation)
         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if(occlusionPlan){std::scoped_lock lock(state.Mutex);++state.Timing.Reasons[size_t(A::Invalidation::Context)];}
 #endif
             occlusionPlan.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if(!selected)TraceFrame(current,snapshot,false);
+            if(!selected)TraceFrame(selected,snapshot,false);
 #endif
             return;
         }
@@ -765,7 +770,7 @@ namespace MiniMapBuildingVisuals
                 discarded=reason;occlusionPlan.reset();
             }
         }
-        const auto currentSession = (selected ? selected : C::GetSnapshot());
+        const auto currentSession = selected;
         const bool schedulerValid =
             MiniMapMap::GameplayReady() &&
             currentSession &&
@@ -899,7 +904,7 @@ namespace MiniMapBuildingVisuals
             {
                 uint64_t observedSession=0,observedRevision=0;
                 MiniMapBuildingAtlas::ObservePublication(observedSession,observedRevision);
-                const auto collector=(selected ? selected : C::GetSnapshot());
+                const auto collector=selected;
                 std::scoped_lock ownerLock(state.Mutex);
                 return schedulerValid && MiniMapMap::GameplayReady() && state.Published==snapshot && request.Snapshot &&
                     collector==request.Snapshot && collector->Generation==snapshot->Generation &&

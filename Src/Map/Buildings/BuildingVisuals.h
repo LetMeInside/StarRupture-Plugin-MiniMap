@@ -61,6 +61,9 @@ namespace MiniMapBuildingVisuals
         OcclusionGeometry Evidence; // Valid only when Status is Submitted.
     };
     std::shared_ptr<State> CreateState();
+    // The MiniMap renderer's persistent context. Other consumers should own
+    // their own State and use the explicit overloads below.
+    State* MiniMapState() noexcept;
     void Prepare(State&, const std::shared_ptr<const MiniMapBuildingCollector::Snapshot>&);
     // Call only while a DrawingPass from BeginDraw is active on this thread.
     // The caller provides placement and destination mapping; geometry and
