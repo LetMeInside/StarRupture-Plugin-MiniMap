@@ -18,7 +18,9 @@
 #include "Services/RuntimeEvents.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -48,7 +50,30 @@ namespace MiniMapBuildingCollector
         SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
         SDK::UClass *BuildingData=nullptr,*Visual=nullptr,*Cosmetic=nullptr,*Walkway=nullptr,*Blueprint=nullptr,*SplineMesh=nullptr;
     } types;
-    struct Entry {Record Data;const SDK::UAuActorPlacementData* Definition=nullptr;bool Complete=false;uint64_t SeenScan=0;};
+    struct Entry
+    {
+        Record Data;
+        const SDK::UAuActorPlacementData* Definition=nullptr;
+        bool Complete=false;
+        bool DroneRailClassificationKnown=false;
+        bool IsDroneRail=false;
+        uint64_t SeenScan=0;
+    };
+    /** Holds commutative contributor data for one requested section. */
+    struct SectionAccumulator
+    {
+        uint64_t Sum=0;
+        uint64_t Xor=0;
+        uint64_t Count=0;
+    };
+    /** Stores a clipped half-open range in the requested section grid. */
+    struct SectionIndexRange
+    {
+        size_t FirstColumn=0;
+        size_t EndColumn=0;
+        size_t FirstRow=0;
+        size_t EndRow=0;
+    };
     struct Definition
     {
         // A strong engine reference makes this engine-facing lookup key stable
@@ -186,6 +211,14 @@ namespace MiniMapBuildingCollector
         queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;drawingBoundsVersion={};
         pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
+    }
+    /** Marks only positively classified drone-rail entries as policy-excluded. */
+    void RecordDroneRailClassification(Entry& entry,bool isDroneRail)
+    {
+        if(entry.DroneRailClassificationKnown && entry.IsDroneRail==isDroneRail)return;
+        entry.DroneRailClassificationKnown=true;
+        entry.IsDroneRail=isDroneRail;
+        dirty=true;
     }
     bool Ensure(const Native& n)
     {
@@ -441,9 +474,9 @@ namespace MiniMapBuildingCollector
         if(Is(placement,types.BuildingData))
             for(const auto tag:static_cast<const SDK::UCrBuildingData*>(placement)->Tags)
                 if(tag.Number==0 && n.asset.nameEqualsWide(tag,L"Interior"))d.Interior=true;
-        if(d.Interior){d.Prepared=true;return true;}
         if(!d.Blueprint)d.Blueprint=MiniMapBuildingBlueprintIdentity::Copy(*placement);
         if(!d.Blueprint)return false;
+        if(d.Interior){d.Prepared=true;return true;}
         if(!spline || MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,building))
         {d.Prepared=true;return true;}
         std::vector<Candidate> candidates;
@@ -477,6 +510,8 @@ namespace MiniMapBuildingCollector
     bool CopyInitial(const Native& n,Entry& entry,bool includeDroneRails)
     {
         auto& r=entry.Data;
+        if(r.DefinitionValid)
+            RecordDroneRailClassification(entry,MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,r.BuildingId));
         if(r.DefinitionValid && r.TransformValid && (!r.HasSpline || r.Curve))return true;
         const Id id{r.Index,r.Serial};
         if(!r.DefinitionValid)
@@ -485,7 +520,9 @@ namespace MiniMapBuildingCollector
             if(!placement)return false;
             // Exact validated definition admission precedes rooting, transform
             // and spline/payload copying. Leave the identity pending on exclusion.
-            if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID)))return false;
+            const bool isDroneRail=MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID));
+            RecordDroneRailClassification(entry,isDroneRail);
+            if(!includeDroneRails && isDroneRail)return false;
             auto it=definitions.find(placement);
             if(it==definitions.end())
             {
@@ -573,6 +610,53 @@ namespace MiniMapBuildingCollector
         ++measurements.DirtyAtlas;
 #endif
     }
+    /** Adds one byte to the deterministic FNV-1a source fingerprint. */
+    static void HashFingerprintByte(uint64_t& hash,uint8_t value)
+    {
+        hash^=value;
+        hash*=1099511628211ull;
+    }
+    /** Adds a 64-bit value in a platform-independent little-endian byte order. */
+    static void HashFingerprintUint64(uint64_t& hash,uint64_t value)
+    {
+        for(unsigned int shift=0;shift<64;shift+=8)
+            HashFingerprintByte(hash,static_cast<uint8_t>(value>>shift));
+    }
+    /** Adds an IEEE-754 value while representing either zero sign identically. */
+    static void HashFingerprintDouble(uint64_t& hash,double value)
+    {
+        const double canonicalValue=value==0.0 ? 0.0 : value;
+        HashFingerprintUint64(hash,std::bit_cast<uint64_t>(canonicalValue));
+    }
+    /** Hashes only the canonical blueprint name, world position and rotation. */
+    static uint64_t CalculateSourceFingerprint(const Record& record)
+    {
+        static_assert(sizeof(double)==sizeof(uint64_t));
+        static_assert(std::numeric_limits<double>::is_iec559);
+        uint64_t hash=14695981039346656037ull;
+        const std::string& blueprint=*record.CanonicalBlueprint;
+        HashFingerprintUint64(hash,static_cast<uint64_t>(blueprint.size()));
+        for(const unsigned char character:blueprint)
+            HashFingerprintByte(hash,character);
+        for(const double position:record.Position)
+            HashFingerprintDouble(hash,position);
+        auto rotation=record.Rotation;
+        constexpr std::array<size_t,4> signOrder{3,0,1,2};
+        bool negateRotation=false;
+        for(const size_t componentIndex:signOrder)
+        {
+            if(rotation[componentIndex]==0.0)
+                continue;
+            negateRotation=rotation[componentIndex]<0.0;
+            break;
+        }
+        if(negateRotation)
+            for(double& component:rotation)
+                component=-component;
+        for(const double component:rotation)
+            HashFingerprintDouble(hash,component);
+        return hash;
+    }
     bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,bool includeDroneRails)
     {
         auto it=entities.find(key);if(it==entities.end() || it->second.Complete)return false;
@@ -603,6 +687,7 @@ namespace MiniMapBuildingCollector
         result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
         if(result.HasSpline)result.Extent=SplineBounds(result);
         else MiniMapBuildingVisuals::CollectorIntegration::RefreshRecordBounds(result);
+        result.SourceFingerprint=CalculateSourceFingerprint(result);
         // Owned Record move and key erasure do not allocate or call native
         // code: completion and removal from scheduling commit together.
         it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;
@@ -610,6 +695,106 @@ namespace MiniMapBuildingCollector
         ++measurements.DirtyAcquisition;
 #endif
         return true;
+    }
+    /** Validates copied support bounds before they are used for certification. */
+    static bool HasValidSupportExtent(const Bounds& extent) noexcept
+    {
+        return extent.Valid && std::isfinite(extent.MinX) && std::isfinite(extent.MinY) &&
+            std::isfinite(extent.MaxX) && std::isfinite(extent.MaxY) &&
+            extent.MinX<=extent.MaxX && extent.MinY<=extent.MaxY;
+    }
+    /** Computes the clipped candidate section range for one support extent. */
+    static bool GetSectionIndexRange(
+        const Record& record,
+        const Services::Map::Buildings::BuildingSectionGrid& grid,
+        long double gridRight,
+        long double gridBottom,
+        SectionIndexRange& range)
+    {
+        const Bounds& extent=record.Extent;
+        if(!HasValidSupportExtent(extent))return false;
+        if(extent.MaxX<=grid.xMapUnits || extent.MinX>=gridRight ||
+            extent.MaxY<=grid.yMapUnits || extent.MinY>=gridBottom)return true;
+        const long double originX=grid.xMapUnits;
+        const long double originY=grid.yMapUnits;
+        const long double sectionSize=grid.sectionSizeMapUnits;
+        const long double columns=grid.columnCount;
+        const long double rows=grid.rowCount;
+        const long double firstColumn=std::clamp(
+            std::floor((static_cast<long double>(extent.MinX)-originX)/sectionSize),0.0L,columns);
+        const long double endColumn=std::clamp(
+            std::ceil((static_cast<long double>(extent.MaxX)-originX)/sectionSize),0.0L,columns);
+        const long double firstRow=std::clamp(
+            std::floor((static_cast<long double>(extent.MinY)-originY)/sectionSize),0.0L,rows);
+        const long double endRow=std::clamp(
+            std::ceil((static_cast<long double>(extent.MaxY)-originY)/sectionSize),0.0L,rows);
+        range={static_cast<size_t>(firstColumn),static_cast<size_t>(endColumn),
+            static_cast<size_t>(firstRow),static_cast<size_t>(endRow)};
+        return true;
+    }
+    /** Adds one record signature to every requested cell touched by its extent. */
+    static bool AccumulateRecordSections(
+        const Record& record,
+        const Services::Map::Buildings::BuildingSectionGrid& grid,
+        long double gridRight,
+        long double gridBottom,
+        std::vector<SectionAccumulator>& accumulators)
+    {
+        SectionIndexRange range{};
+        if(!GetSectionIndexRange(record,grid,gridRight,gridBottom,range))return false;
+        const long double originX=grid.xMapUnits;
+        const long double originY=grid.yMapUnits;
+        const long double sectionSize=grid.sectionSizeMapUnits;
+        for(size_t row=range.FirstRow;row<range.EndRow;++row)
+        {
+            const long double sectionTop=originY+static_cast<long double>(row)*sectionSize;
+            const long double sectionBottom=sectionTop+sectionSize;
+            if(record.Extent.MaxY<=sectionTop || record.Extent.MinY>=sectionBottom)continue;
+            for(size_t column=range.FirstColumn;column<range.EndColumn;++column)
+            {
+                const long double sectionLeft=originX+static_cast<long double>(column)*sectionSize;
+                const long double sectionRight=sectionLeft+sectionSize;
+                if(record.Extent.MaxX<=sectionLeft || record.Extent.MinX>=sectionRight)continue;
+                auto& accumulator=accumulators[row*grid.columnCount+column];
+                accumulator.Sum+=record.SourceFingerprint;
+                accumulator.Xor^=record.SourceFingerprint;
+                ++accumulator.Count;
+            }
+        }
+        return true;
+    }
+    /** Finalizes an order-independent multiset accumulator as a stable 64-bit value. */
+    static uint64_t FinalizeSectionFingerprint(const SectionAccumulator& accumulator) noexcept
+    {
+        uint64_t value=accumulator.Sum^std::rotl(accumulator.Xor,23);
+        value+=accumulator.Count*0x9E3779B97F4A7C15ull;
+        value^=value>>30;
+        value*=0xBF58476D1CE4E5B9ull;
+        value^=value>>27;
+        value*=0x94D049BB133111EBull;
+        value^=value>>31;
+        return value;
+    }
+    /** Validates section-grid geometry and derives its half-open outer bounds. */
+    static bool GetSectionGridBounds(
+        const Services::Map::Buildings::BuildingSectionGrid& grid,
+        size_t observationCount,
+        size_t& sectionCount,
+        long double& gridRight,
+        long double& gridBottom)
+    {
+        if(!std::isfinite(grid.xMapUnits) || !std::isfinite(grid.yMapUnits) ||
+            !std::isfinite(grid.sectionSizeMapUnits) || grid.sectionSizeMapUnits<=0 ||
+            grid.columnCount==0 || grid.rowCount==0 ||
+            grid.rowCount>(std::numeric_limits<size_t>::max)()/grid.columnCount)return false;
+        sectionCount=grid.columnCount*grid.rowCount;
+        if(sectionCount!=observationCount)return false;
+        gridRight=static_cast<long double>(grid.xMapUnits)+
+            static_cast<long double>(grid.sectionSizeMapUnits)*grid.columnCount;
+        gridBottom=static_cast<long double>(grid.yMapUnits)+
+            static_cast<long double>(grid.sectionSizeMapUnits)*grid.rowCount;
+        return std::isfinite(gridRight) && std::isfinite(gridBottom) &&
+            gridRight>grid.xMapUnits && gridBottom>grid.yMapUnits;
     }
     void Publish(bool includeDroneRails)
     {
@@ -619,14 +804,57 @@ namespace MiniMapBuildingCollector
         if(!dirty)return;
         auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
         value->IncludedDroneRails=includeDroneRails;
-        for(const auto& [key,e]:entities)if(e.Complete && !e.Data.InteriorOnly &&
-            (includeDroneRails || !MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId)) &&
-            (!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region)))value->Records.push_back(e.Data);
+        bool acquisitionComplete=membershipComplete;
+        for(const auto& [key,e]:entities)
+        {
+            const bool excludedDroneRail=!includeDroneRails && e.DroneRailClassificationKnown && e.IsDroneRail;
+            if(!e.Complete)
+            {
+                if(!excludedDroneRail)acquisitionComplete=false;
+                continue;
+            }
+            if(e.Data.InteriorOnly || excludedDroneRail)continue;
+            if(!HasValidSupportExtent(e.Data.Extent))acquisitionComplete=false;
+            if(!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region))
+                value->Records.push_back(e.Data);
+        }
+        value->AcquisitionComplete=acquisitionComplete;
         std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
         {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.Publications;
 #endif
+    }
+    /** Obtains one immutable publication only while it belongs to this session. */
+    std::shared_ptr<const Snapshot> GetCurrentSnapshot()
+    {
+        std::scoped_lock lock(publicationMutex);
+        if(!snapshot || snapshot->Generation!=generation)return {};
+        return snapshot;
+    }
+    /** Observes the requested section grid from one immutable publication. */
+    void ObserveSections(
+        const Services::Map::Buildings::BuildingSectionGrid& grid,
+        std::span<Services::Map::Buildings::BuildingSectionObservation> observations)
+    {
+        for(auto& observation:observations)observation={};
+        size_t sectionCount=0;
+        long double gridRight=0;
+        long double gridBottom=0;
+        if(!GetSectionGridBounds(grid,observations.size(),sectionCount,gridRight,gridBottom))return;
+        const auto selectedSnapshot=GetCurrentSnapshot();
+        if(!selectedSnapshot || !selectedSnapshot->Complete || !selectedSnapshot->AcquisitionComplete)return;
+        const Bounds& acquiredRegion=selectedSnapshot->Region;
+        if(!HasValidSupportExtent(acquiredRegion) || acquiredRegion.MinX>grid.xMapUnits ||
+            acquiredRegion.MinY>grid.yMapUnits || acquiredRegion.MaxX<gridRight || acquiredRegion.MaxY<gridBottom)return;
+        std::vector<SectionAccumulator> accumulators(sectionCount);
+        for(const Record& record:selectedSnapshot->Records)
+            if(!AccumulateRecordSections(record,grid,gridRight,gridBottom,accumulators))return;
+        for(size_t index=0;index<sectionCount;++index)
+        {
+            observations[index].isComplete=true;
+            observations[index].membershipFingerprint=FinalizeSectionFingerprint(accumulators[index]);
+        }
     }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     void MaybeReportMeasurements(Clock::time_point callbackBegin,uint64_t scanSerialAtEntry) noexcept
@@ -921,6 +1149,31 @@ namespace MiniMapBuildingCollector
         if(current.MinX!=region.MinX || current.MinY!=region.MinY || current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid)
         {state_->region=region;state_->regionOverride=true;state_->dirty=true;}
         else state_->regionOverride=true;
+    }
+    /** Validates the map rectangle before forwarding it to the existing region setter. */
+    bool BuildingCollector::SetAcquisitionRegion(
+        const Services::Map::Buildings::BuildingCollectionRegion& requestedRegion) noexcept
+    {
+        if(!std::isfinite(requestedRegion.xMapUnits) || !std::isfinite(requestedRegion.yMapUnits) ||
+            !std::isfinite(requestedRegion.widthMapUnits) || !std::isfinite(requestedRegion.heightMapUnits) ||
+            requestedRegion.widthMapUnits<=0 || requestedRegion.heightMapUnits<=0)return false;
+        const double right=requestedRegion.xMapUnits+requestedRegion.widthMapUnits;
+        const double bottom=requestedRegion.yMapUnits+requestedRegion.heightMapUnits;
+        if(!std::isfinite(right) || !std::isfinite(bottom) ||
+            right<=requestedRegion.xMapUnits || bottom<=requestedRegion.yMapUnits)return false;
+        const double width=right-requestedRegion.xMapUnits;
+        const double height=bottom-requestedRegion.yMapUnits;
+        if(!std::isfinite(width) || !std::isfinite(height) ||
+            !std::isfinite(std::hypot(width,height)))return false;
+        SetRegion(Bounds{requestedRegion.xMapUnits,requestedRegion.yMapUnits,right,bottom,true});
+        return true;
+    }
+    /** Delegates batch observation to the collector's immutable snapshot state. */
+    void BuildingCollector::ObserveSections(
+        const Services::Map::Buildings::BuildingSectionGrid& grid,
+        std::span<Services::Map::Buildings::BuildingSectionObservation> observations) const
+    {
+        state_->ObserveSections(grid,observations);
     }
     void BuildingCollector::SetRenderDroneRails(bool enabled){state_->renderDroneRails=enabled;}
     std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}

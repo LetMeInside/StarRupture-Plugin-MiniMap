@@ -4,10 +4,12 @@
 #include "BuildingGeometryTypes.h"
 #include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
+#include "Services/Map/Buildings/IBuildingCollector.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -51,6 +53,7 @@ namespace MiniMapBuildingCollector
     struct Record
     {
         uint64_t Generation = 0;
+        uint64_t SourceFingerprint = 0;
         int32_t Index = 0, Serial = 0;
         uint32_t BuildingId = 0;
         // Copied object index for render tracing, never a native lifetime certificate.
@@ -68,7 +71,8 @@ namespace MiniMapBuildingCollector
     {
         uint64_t Generation = 0;
         Bounds Region;
-        bool Complete = false; // Observation completeness; never an atlas publication barrier.
+        bool Complete = false; // Authoritative membership reconciliation succeeded.
+        bool AcquisitionComplete = false; // No eligible pending work; included support extents are valid.
         bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
         std::vector<Record> Records;
     };
@@ -86,11 +90,11 @@ namespace MiniMapBuildingCollector
     // Reusable, caller-scheduled collector. Each object owns its collection,
     // world session, region and publication state. MiniMap's current events
     // continue to use the namespace facade below.
-    class BuildingCollector
+    class BuildingCollector final : public Services::Map::Buildings::IBuildingCollector
     {
     public:
         BuildingCollector();
-        ~BuildingCollector();
+        ~BuildingCollector() override;
         BuildingCollector(const BuildingCollector&) = delete;
         BuildingCollector& operator=(const BuildingCollector&) = delete;
         BuildingCollector(BuildingCollector&&) noexcept;
@@ -102,6 +106,13 @@ namespace MiniMapBuildingCollector
         bool BeginExplicitSession();
         void SetViewport(const MiniMapMap::Transform& transform);
         void SetRegion(const Bounds& region);
+        /** Validates and stores a native-centimeter acquisition rectangle without conversion. */
+        bool SetAcquisitionRegion(
+            const Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
+        /** Fills row-major section observations from one immutable published snapshot. */
+        void ObserveSections(
+            const Services::Map::Buildings::BuildingSectionGrid& grid,
+            std::span<Services::Map::Buildings::BuildingSectionObservation> observations) const override;
         void SetRenderDroneRails(bool enabled);
         std::shared_ptr<const Snapshot> GetSnapshot();
         CollectorDiagnostics GetDiagnostics() const;

@@ -94,6 +94,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
+    <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
+    <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
+    <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
+    <ClInclude Include="Services\Map\Buildings\Coordination\IBuildingMapService.h" />
     <ClInclude Include="Services\Log.h" />
     <ClInclude Include="Services\ServiceTypes.h" />
     <ClInclude Include="Services\Configuration.h" />
@@ -131,13 +136,9 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusion.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexIndex.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexCellRasterizer.h" />
     <ClInclude Include="Map\Buildings\BuildingImageRasterizationCore.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexSourceAcquisition.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexWorld.h" />
     <ClInclude Include="Map\Buildings\BuildingComplexAbi.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexApiInternal.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
     <ClInclude Include="Map\MarkerIconSizing.h" />
     <ClInclude Include="Map\Terrain\TerrainProfile.h" />
@@ -192,6 +193,9 @@
     <ClInclude Include="plugin_helpers.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp" />
+    <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp" />
+    <ClCompile Include="Services\Map\Buildings\BuildingMapSection.cpp" />
     <ClCompile Include="Services\Runtime.cpp" />
     <ClCompile Include="Adapters\AlienX\Bootstrap.cpp" />
     <ClCompile Include="Adapters\AlienX\Log.cpp" />
@@ -229,10 +233,7 @@
     <ClCompile Include="Map\Foundables\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingComplexIndex.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingComplexCellRasterizer.cpp" />
     <ClCompile Include="Services\Rgba16fImageDestination.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingComplexSourceAcquisition.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexWorld.cpp" />
     <ClCompile Include="Map\Buildings\BuildingComplexApi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
@@ -265,3 +266,7 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
+
+
+
+
