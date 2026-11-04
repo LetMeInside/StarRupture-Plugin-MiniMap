@@ -98,10 +98,14 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
+    <ClInclude Include="Services\Map\Buildings\IImageDestination.h" />
+    <ClInclude Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\BuildingRenderSceneInput.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineSurfaceGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionGeometry.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionPlanner.h" />
     <ClInclude Include="Services\Map\Buildings\Coordination\IBuildingMapService.h" />
     <ClInclude Include="Services\Log.h" />
     <ClInclude Include="Services\ServiceTypes.h" />
@@ -210,6 +214,7 @@
     <ClCompile Include="Adapters\AlienX\RuntimeEvents.cpp" />
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
+    <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp" />
     <ClCompile Include="Adapters\AlienX\Textures.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>

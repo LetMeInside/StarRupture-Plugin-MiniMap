@@ -49,11 +49,12 @@ namespace Services::Map::Buildings::Visuals
 		std::size_t SampleLimit = (std::numeric_limits<std::size_t>::max)();
 	};
 
-	/** Stores a sampled XYZ position and its normalized parameter within one source segment. */
+	/** Stores sampled XYZ position, source parameter, and cumulative distance within its continuous run. */
 	struct SplineSample
 	{
 		std::array<double, 3> Position{};
 		double Parameter = 0.0;
+		double CumulativeDistance = 0.0;
 		bool operator==(const SplineSample&) const = default;
 	};
 
@@ -178,6 +179,7 @@ namespace Services::Map::Buildings::Visuals
 
 			PrepareStorage(segments, policy, output);
 			PrepareSegments(segments, policy, output);
+			CalculateCumulativeDistances(output);
 		}
 
 	private:
@@ -374,6 +376,35 @@ namespace Services::Map::Buildings::Visuals
 			for (std::size_t index = 0; index < segments.size(); ++index)
 			{
 				PrepareSegment(segments, index, policy, output);
+			}
+		}
+
+		/** Assigns sampled XYZ centerline distance, restarting at each disconnected run. */
+		static void CalculateCumulativeDistances(PreparedSpline& output) noexcept
+		{
+			double distance = 0.0;
+			for (const auto& section : output.Sections)
+			{
+				if (section.StartsNewRun)
+				{
+					distance = 0.0;
+				}
+				for (std::size_t offset = 0; offset < section.SampleCount; ++offset)
+				{
+					auto& sample = output.Samples[section.FirstSample + offset];
+					if (offset != 0)
+					{
+						const auto& previous = output.Samples[section.FirstSample + offset - 1].Position;
+						distance += std::hypot(sample.Position[0] - previous[0], sample.Position[1] - previous[1],
+							sample.Position[2] - previous[2]);
+						if (!std::isfinite(distance))
+						{
+							output.Issue = SplineNumericalIssue::NonFinite;
+							return;
+						}
+					}
+					sample.CumulativeDistance = distance;
+				}
 			}
 		}
 

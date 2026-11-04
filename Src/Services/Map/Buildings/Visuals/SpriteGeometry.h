@@ -102,7 +102,79 @@ namespace Services::Map::Buildings::Visuals
 			return true;
 		}
 
+		/** Calculates the maximum world Z of all eight transformed capture-bound corners.
+		 * @param placement Source position, signed scale, and XYZW rotation.
+		 * @param captureBounds Full source capture bounds, not the projected image footprint.
+		 * @param topHeight Receives the conservative world-space maximum height on success.
+		 * @return True when the transform and all eight transformed corners are finite and valid.
+		 */
+		static bool TryGetCaptureBoundsTopHeight(
+			const SpritePlacement& placement,
+			const SpriteCaptureBounds& captureBounds,
+			double& topHeight) noexcept
+		{
+			std::array<double, 4> rotation{};
+			if (!TryNormalizeRotation(placement.Rotation, rotation))
+			{
+				return false;
+			}
+
+			double maximumHeight = -INFINITY;
+			for (std::size_t axis = 0; axis < 3; ++axis)
+			{
+				if (!std::isfinite(placement.Position[axis]) || !std::isfinite(placement.SignedScale[axis]) ||
+					!std::isfinite(captureBounds.Minimum[axis]) || !std::isfinite(captureBounds.Maximum[axis]) ||
+					captureBounds.Maximum[axis] < captureBounds.Minimum[axis])
+				{
+					return false;
+				}
+			}
+			for (unsigned corner = 0; corner < 8; ++corner)
+			{
+				std::array<double, 3> local{};
+				for (std::size_t axis = 0; axis < 3; ++axis)
+				{
+					const double bound = (corner & (1u << axis)) ? captureBounds.Maximum[axis] : captureBounds.Minimum[axis];
+					local[axis] = bound * placement.SignedScale[axis];
+				}
+				std::array<double, 3> world{};
+				if (!TransformScaledPoint(placement, rotation, local, world))
+				{
+					return false;
+				}
+				maximumHeight = (std::max)(maximumHeight, world[2]);
+			}
+			topHeight = maximumHeight;
+			return true;
+		}
+
 	private:
+		/** Applies the reference transform to one signed-scaled point.
+		 * @param placement World translation and signed scale.
+		 * @param rotation Normalized XYZW quaternion.
+		 * @param local Signed-scaled source XYZ point.
+		 * @param world Receives the transformed world point when finite.
+		 * @return True when all resulting coordinates are finite.
+		 */
+		static bool TransformScaledPoint(
+			const SpritePlacement& placement,
+			const std::array<double, 4>& rotation,
+			const std::array<double, 3>& local,
+			std::array<double, 3>& world) noexcept
+		{
+			const double x = rotation[0];
+			const double y = rotation[1];
+			const double z = rotation[2];
+			const double w = rotation[3];
+			const double tx = 2.0 * (y * local[2] - z * local[1]);
+			const double ty = 2.0 * (z * local[0] - x * local[2]);
+			const double tz = 2.0 * (x * local[1] - y * local[0]);
+			world = {{placement.Position[0] + local[0] + w * tx + y * tz - z * ty,
+				placement.Position[1] + local[1] + w * ty + z * tx - x * tz,
+				placement.Position[2] + local[2] + w * tz + x * ty - y * tx}};
+			return std::isfinite(world[0]) && std::isfinite(world[1]) && std::isfinite(world[2]);
+		}
+
 		/**
 		 * Normalizes a finite nonzero XYZW quaternion using the reference algorithm.
 		 *

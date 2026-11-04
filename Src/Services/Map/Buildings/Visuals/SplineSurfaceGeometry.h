@@ -15,6 +15,19 @@
 
 namespace Services::Map::Buildings::Visuals
 {
+	/** Stores one canonical world-space surface vertex and its longitudinal/lateral UV pair. */
+	struct SplineSurfaceVertex
+	{
+		std::array<double, 3> Position{};
+		std::array<double, 2> TextureCoordinates{};
+		bool operator==(const SplineSurfaceVertex&) const = default;
+		/** Orders vertices by position and then UV for deterministic clipping-edge provenance. */
+		bool operator<(const SplineSurfaceVertex& other) const noexcept
+		{
+			return Position < other.Position || (Position == other.Position && TextureCoordinates < other.TextureCoordinates);
+		}
+	};
+
 	/** Describes a numerical transform used to orient cross-sections around world-space spline controls. */
 	struct SplineSurfaceTransform
 	{
@@ -38,11 +51,12 @@ namespace Services::Map::Buildings::Visuals
 		std::array<double, 3> Up{0.0, 0.0, 1.0};
 	};
 
-	/** Stores one projected sample ring's world-space XY path position, centerline height, and lateral boundary envelope. */
+	/** Stores one projected ring's world-space path values, cumulative UV distance, and lateral envelope. */
 	struct SplineSurfaceRing
 	{
 		std::array<double, 2> Position{};
 		double PathHeight = 0.0;
+		double LongitudinalDistance = 0.0;
 		std::array<double, 2> LateralExtent{};
 		std::array<double, 2> LateralDirection{};
 		std::array<std::array<double, 2>, 2> Edges{};
@@ -69,13 +83,14 @@ namespace Services::Map::Buildings::Visuals
 		InvalidInput
 	};
 
-	/** Owns caller-reusable XYZ surface vertices, counter-clockwise indices, and accepted projected cell metadata.
+	/** Owns caller-reusable XYZ/UV surface vertices, counter-clockwise indices, and accepted projected cell metadata.
 	 * XY carries the projected ribbon boundary; Z carries the sampled spline centerline height at the
-	 * corresponding longitudinal endpoint, matching the established occlusion input semantics.
+	 * corresponding longitudinal endpoint, matching established occlusion semantics. U stores cumulative
+	 * sampled XYZ centerline distance and V spans the lateral edges from zero to one.
 	 */
 	struct PreparedSplineSurface
 	{
-		std::vector<std::array<double, 3>> Vertices;
+		std::vector<SplineSurfaceVertex> Vertices;
 		std::vector<std::uint32_t> Indices;
 		std::vector<SplineSurfaceCell> Cells;
 		SplineSurfaceIssue Issue = SplineSurfaceIssue::None;
@@ -107,7 +122,7 @@ namespace Services::Map::Buildings::Visuals
 		 * @param component Transform mapping fixed section coordinates into the root frame.
 		 * @param bounds Local cross-section bounds in the component coordinate frame.
 		 * @param crossSection Fixed numerical width, offset and up-direction parameters.
-		 * @param output Receives XYZ vertices, indices and accepted cells while retaining vector capacities.
+		 * @param output Receives canonical XYZ/UV vertices, indices and accepted cells while retaining capacity.
 		 */
 		static void Prepare(
 			std::span<const SplineCurveSegment> segments,
@@ -340,7 +355,7 @@ namespace Services::Map::Buildings::Visuals
 		{
 			SplineEvaluation evaluation;
 			return SplineGeometry::Evaluate(segment, sample.Parameter, evaluation) &&
-				ProjectRing(root, component, bounds, crossSection, evaluation, ring);
+				ProjectRing(root, component, bounds, crossSection, evaluation, sample.CumulativeDistance, ring);
 		}
 
 		/** Appends one pair of adjacent projected rings when its interval and ribbon are valid.
@@ -418,6 +433,7 @@ namespace Services::Map::Buildings::Visuals
 			const SplineSurfaceBounds& bounds,
 			const SplineSurfaceCrossSection& crossSection,
 			const SplineEvaluation& evaluation,
+			double longitudinalDistance,
 			SplineSurfaceRing& ring) noexcept
 		{
 			std::array<double, 3> localTangent;
@@ -436,7 +452,7 @@ namespace Services::Map::Buildings::Visuals
 				return false;
 			}
 			return BuildRing(root, component, bounds, crossSection, evaluation,
-				frameY, frameZ, tangentLength, ring);
+				frameY, frameZ, tangentLength, longitudinalDistance, ring);
 		}
 
 		/** Calculates normalized cross-section frame axes using the established up-cross-tangent order.
@@ -470,6 +486,7 @@ namespace Services::Map::Buildings::Visuals
 		 * @param frameY Normalized lateral frame axis.
 		 * @param frameZ Normalized depth frame axis.
 		 * @param tangentLength XY magnitude used for the world lateral direction.
+		 * @param longitudinalDistance Cumulative sampled XYZ centerline distance at this ring.
 		 * @param ring Receives lateral extents and boundary edges.
 		 * @return True when all projected corners form a finite envelope.
 		 */
@@ -482,6 +499,7 @@ namespace Services::Map::Buildings::Visuals
 			const std::array<double, 3>& frameY,
 			const std::array<double, 3>& frameZ,
 			double tangentLength,
+			double longitudinalDistance,
 			SplineSurfaceRing& ring) noexcept
 		{
 			if (!std::isfinite(evaluation.Position[2]))
@@ -491,6 +509,7 @@ namespace Services::Map::Buildings::Visuals
 
 			ring.Position = {evaluation.Position[0], evaluation.Position[1]};
 			ring.PathHeight = evaluation.Position[2];
+			ring.LongitudinalDistance = longitudinalDistance;
 			ring.LateralDirection = {-evaluation.Tangent[1] / tangentLength, evaluation.Tangent[0] / tangentLength};
 			ring.LateralExtent = {std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
 			const auto rangeY = Dimension(bounds, 1, crossSection.Scale[0]);
@@ -828,11 +847,11 @@ namespace Services::Map::Buildings::Visuals
 
 			// The legacy planner assigns sample-centerline Z by longitudinal endpoint,
 			// not by the projected lateral extrema that supplied each XY boundary.
-			const std::array<double, 3> startLow{points[0][0], points[0][1], cell.Start.PathHeight};
-			const std::array<double, 3> endLow{points[1][0], points[1][1], cell.End.PathHeight};
-			const std::array<double, 3> endHigh{points[2][0], points[2][1], cell.End.PathHeight};
-			const std::array<double, 3> startHigh{points[3][0], points[3][1], cell.Start.PathHeight};
-			const std::array<std::array<double, 3>, 4> worldPoints{startLow, endLow, endHigh, startHigh};
+			const std::array<SplineSurfaceVertex, 4> worldPoints{{
+				{{points[0][0], points[0][1], cell.Start.PathHeight}, {cell.Start.LongitudinalDistance, 0.0}},
+				{{points[1][0], points[1][1], cell.End.PathHeight}, {cell.End.LongitudinalDistance, 0.0}},
+				{{points[2][0], points[2][1], cell.End.PathHeight}, {cell.End.LongitudinalDistance, 1.0}},
+				{{points[3][0], points[3][1], cell.Start.PathHeight}, {cell.Start.LongitudinalDistance, 1.0}}}};
 			cell.FirstVertex = output.Vertices.size();
 			cell.VertexCount = points.size();
 			cell.FirstIndex = output.Indices.size();
