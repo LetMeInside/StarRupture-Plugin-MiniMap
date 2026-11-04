@@ -1,9 +1,12 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements immutable map settings, sparse section ownership, viewport
 // registration and invalidation of non-owning viewport relationships.
 #include "BuildingMapService.h"
 
 #include "BuildingMapSection.h"
 #include "BuildingMapViewport.h"
+#include "Capture/BuildingSpriteRenderer.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -38,6 +41,22 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.clear();
 	}
 
+	/** Drives private renderer teardown without releasing its owner while NativeApi work is pending. */
+	bool BuildingMapService::AdvanceCaptureRendererShutdown()
+	{
+		if (!captureRenderer_)
+		{
+			return true;
+		}
+		captureRenderer_->RequestServiceShutdown();
+		if (!captureRenderer_->AdvanceServiceShutdown())
+		{
+			return false;
+		}
+		captureRenderer_.reset();
+		return true;
+	}
+
 	/** Returns the configured square cell size in map units. */
 	double BuildingMapService::GetSectionSizeMapUnits() const noexcept
 	{
@@ -60,6 +79,12 @@ namespace Services::Map::Buildings
 	double BuildingMapService::GetPixelsPerMapUnit() const noexcept
 	{
 		return static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
+	}
+
+	/** Exposes the service-owned CPU source manager without initializing it. */
+	Cache::CpuSpriteSourceManager& BuildingMapService::GetCpuSpriteSourceManager() noexcept
+	{
+		return cpuSpriteSourceManager_;
 	}
 
 	/** Validates the requested rectangle and registers a caller-owned viewport object. */
@@ -228,3 +253,5 @@ namespace Services::Map::Buildings
 	}
 
 }
+
+#endif // MODLOADER_CLIENT_BUILD

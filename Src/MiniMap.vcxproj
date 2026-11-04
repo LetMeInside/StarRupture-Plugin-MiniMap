@@ -97,12 +97,18 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\CaptureSubjectFacts.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingSourceView.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingSourcePublication.h" />
     <ClInclude Include="Services\Map\Buildings\IImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\OwnedSpriteKey.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\ProcessedSpritePayload.h" />
+    <ClInclude Include="Services\Map\Buildings\Cache\CpuSpriteSourceLease.h" />
+    <ClInclude Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpriteProcessing.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodec.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodecApartment.h" />
@@ -209,11 +215,28 @@
     <ClInclude Include="plugin_helpers.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp" />
-    <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp" />
-    <ClCompile Include="Services\Map\Buildings\BuildingMapSection.cpp" />
-    <ClCompile Include="Services\Map\Buildings\Cache\SpritePngCodec.cpp" />
-    <ClCompile Include="Services\Map\Buildings\Cache\SpriteDiskCache.cpp" />
+    <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.cpp">
+      <ObjectFileName>$(IntDir)BuildingMapCaptureSpriteRenderer.obj</ObjectFileName>
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\BuildingMapSection.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Cache\SpritePngCodec.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Cache\SpriteDiskCache.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Services\Runtime.cpp" />
     <ClCompile Include="Adapters\AlienX\Bootstrap.cpp" />
     <ClCompile Include="Adapters\AlienX\Log.cpp" />
@@ -224,7 +247,9 @@
     <ClCompile Include="Adapters\AlienX\RuntimeEvents.cpp" />
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
-    <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp" />
+    <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Adapters\AlienX\Textures.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>

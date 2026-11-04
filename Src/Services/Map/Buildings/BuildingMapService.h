@@ -2,6 +2,7 @@
 // objects whose registrations and section references are scoped to the service.
 #pragma once
 
+#include "Cache/CpuSpriteSourceManager.h"
 #include "IBuildingCollector.h"
 #include "Coordination/IBuildingMapService.h"
 
@@ -14,10 +15,15 @@ namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
 	class BuildingMapViewport;
+	namespace Capture
+	{
+		class BuildingSpriteRenderer;
+	}
 
-	/** Owns immutable map configuration, shared section lifetime and viewport registrations.
+	/** Owns immutable map configuration, shared section and capture-renderer lifetimes, and viewport registrations.
 	 * Service and viewport calls must be made on one calling thread; this
-	 * foundation does not provide concurrent access or synchronization.
+	 * foundation does not provide concurrent access or synchronization. The capture
+	 * renderer pointer remains empty until future service-directed initialization.
 	 */
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
@@ -42,7 +48,7 @@ namespace Services::Map::Buildings
 		BuildingMapService(BuildingMapService&&) = delete;
 		/** Prevents moves from invalidating non-owning viewport service references. */
 		BuildingMapService& operator=(BuildingMapService&&) = delete;
-		/** Invalidates live viewport relationships before releasing shared sections. */
+		/** Invalidates viewports; any owned renderer must first finish AdvanceCaptureRendererShutdown(). */
 		~BuildingMapService();
 
 		/** Returns the configured square grid-cell width and height in map units. */
@@ -56,6 +62,12 @@ namespace Services::Map::Buildings
 
 		/** Returns the derived number of image pixels per map unit. */
 		double GetPixelsPerMapUnit() const noexcept;
+
+		/** Returns the inert service-owned manager for immutable CPU sprite sources.
+		 * It performs no startup work; callers publish sources only through an explicitly
+		 * authorized producer path and retain lookup leases across source use.
+		 */
+		Cache::CpuSpriteSourceManager& GetCpuSpriteSourceManager() noexcept;
 
 		/**
 		 * Opens a viewport with its own non-owning collector association. The caller
@@ -107,6 +119,8 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
+		/** Advances renderer shutdown and releases its owner only after native retirement completes. */
+		bool AdvanceCaptureRendererShutdown();
 
 		/**
 		 * Applies one cell result from a batch without creating a section for incomplete coverage.
@@ -127,5 +141,8 @@ namespace Services::Map::Buildings
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
+		Cache::CpuSpriteSourceManager cpuSpriteSourceManager_;
+		// Default-null inert owner; service teardown must retire request work, shared lights, and world first.
+		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;
 	};
 }

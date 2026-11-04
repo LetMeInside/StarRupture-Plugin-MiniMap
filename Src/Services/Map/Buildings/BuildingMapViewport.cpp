@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements 2D map-rectangle movement and read-only access to service-owned
 // sparse Building Map sections.
 #include "BuildingMapViewport.h"
@@ -205,3 +207,5 @@ namespace Services::Map::Buildings
 			static_cast<std::int64_t>(endY)};
 	}
 }
+
+#endif // MODLOADER_CLIENT_BUILD

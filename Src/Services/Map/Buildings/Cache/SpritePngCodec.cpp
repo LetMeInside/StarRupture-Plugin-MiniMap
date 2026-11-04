@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements the independent WIC PNG codec for compatible sprite cache payloads.
 #include "SpritePngCodec.h"
 #include "SpritePngCodecApartment.h"
@@ -183,3 +185,5 @@ namespace Services::Map::Buildings::Cache
 		return true;
 	}
 }
+
+#endif // MODLOADER_CLIENT_BUILD

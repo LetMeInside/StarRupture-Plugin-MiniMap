@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements grid identity and currentness tracking for one shared membership
 // fingerprint observation.
 #include "BuildingMapSection.h"
@@ -58,3 +60,5 @@ namespace Services::Map::Buildings
 		return fingerprintChanged;
 	}
 }
+
+#endif // MODLOADER_CLIENT_BUILD

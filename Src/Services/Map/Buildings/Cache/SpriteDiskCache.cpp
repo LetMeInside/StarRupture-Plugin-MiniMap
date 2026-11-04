@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements independent v1 sprite validation, WIC payload decoding and atomic persistence.
 #include "SpriteDiskCache.h"
 
@@ -381,3 +383,5 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 		return std::bit_cast<double>(bits);
 	}
 }
+
+#endif // MODLOADER_CLIENT_BUILD

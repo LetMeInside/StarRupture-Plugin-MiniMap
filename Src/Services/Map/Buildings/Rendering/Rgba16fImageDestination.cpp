@@ -1,3 +1,5 @@
+#if defined(MODLOADER_CLIENT_BUILD)
+
 // Implements independent RGBA8 image, solid-triangle, and textured-triangle rasterization for the Building Map library.
 #include "Rgba16fImageDestination.h"
 
@@ -760,3 +762,5 @@ namespace Services::Map::Buildings::Rendering
 		return true;
 	}
 }
+
+#endif // MODLOADER_CLIENT_BUILD
