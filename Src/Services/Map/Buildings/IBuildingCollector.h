@@ -1,13 +1,16 @@
-// Defines game-independent acquisition regions, observation grids and results,
-// plus the collector operations currently required by BuildingMapService.
+// Defines game-independent acquisition regions and batch membership observations,
+// with optional access to a retained publication for associated numerical source views.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 namespace Services::Map::Buildings
 {
+	class IBuildingSourcePublication;
+
 	/** Describes a unit-agnostic 2D map rectangle with an upper-left origin and downward-positive Y. */
 	struct BuildingCollectionRegion
 	{
@@ -41,7 +44,9 @@ namespace Services::Map::Buildings
 	{
 		/** True only when source acquisition and contributor coverage are complete and reliable. */
 		bool isComplete = false;
-		/** Deterministic source-membership fingerprint; meaningful only when isComplete is true. */
+		/** Membership fingerprint only; not a publication identity or rendering revision.
+		 * Meaningful only when isComplete is true; zero is a valid complete fingerprint.
+		 */
 		std::uint64_t membershipFingerprint = 0;
 	};
 
@@ -77,5 +82,24 @@ namespace Services::Map::Buildings
 		virtual void ObserveSections(
 			const BuildingSectionGrid& grid,
 			std::span<BuildingSectionObservation> observations) const = 0;
+
+		/**
+		 * Optionally retains one immutable publication without acquiring new source data.
+		 * The default empty result keeps observation-only collectors source-compatible;
+		 * it means no retained source capability/publication is available, not empty content.
+		 * A producer may return an incomplete publication with known sprite requirements.
+		 *
+		 * To associate observations and numerical data, retain this result and call both
+		 * ObserveSections and BorrowSourceView on that publication. This collector's
+		 * separate ObserveSections call has no such association guarantee and must not
+		 * be combined with an independently acquired publication for rendering.
+		 * Call on the collector's calling thread, serialized with its lifecycle.
+		 *
+		 * @return Shared immutable source owner, or empty when unsupported/unavailable.
+		 */
+		virtual std::shared_ptr<const IBuildingSourcePublication> AcquireSourcePublication() const
+		{
+			return {};
+		}
 	};
 }
