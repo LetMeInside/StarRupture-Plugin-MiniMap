@@ -65,9 +65,7 @@ namespace
         PLUGIN_INTERFACE_VERSION,
         MINIMAP_EXPORTS_TARGET,
         PLUGIN_GAME_BUILT_CL,
-        // TODO: set PLUGIN_MAP_MIGRATED once the loader admits plugins by built CL and CI
-        // has checked the used set.
-        0
+        PLUGIN_MAP_MIGRATED
     };
 
     void ReleaseRuntime() noexcept

@@ -127,8 +127,10 @@ namespace MiniMapNative
         if (!addresses.retainObject || !addresses.releaseObject || !addresses.nameEqualsWide) return false;
 
         if (!addresses.objectArray) return false;
-        if (!addresses.buildingOnCreate || !addresses.buildingOnDestroy ||
-            !addresses.massOnSaveLoaded ||
+        // buildingOnCreate and buildingOnDestroy, like massOnPostSaveLoaded, belong
+        // to building-restore: null turns that feature off and MassLifecycle is
+        // not initialized.
+        if (!addresses.massOnSaveLoaded ||
             !addresses.textureCreateTransient || !addresses.bulkLock || !addresses.bulkUnlock ||
             !addresses.textureUpdateResource || !addresses.textureGetResource) return false;
 

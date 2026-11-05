@@ -4,7 +4,9 @@
 #include <utility>
 
 // Preserve the former input ABI/vocabulary review checks inside the adapter.
-static_assert(PLUGIN_INTERFACE_VERSION == 73, "Review the wheel ABI when updating the SDK");
+// v74 only appended two ImGui window-size calls; the wheel and key events are as in v73.
+static_assert(PLUGIN_INTERFACE_VERSION == 73 || PLUGIN_INTERFACE_VERSION == 74,
+    "Review the wheel ABI when updating the SDK");
 static_assert(std::size_t(EModKey::Unknown) == 101);
 
 namespace MiniMap::Adapters::AlienX

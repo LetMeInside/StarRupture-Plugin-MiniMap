@@ -47,6 +47,16 @@ namespace MiniMapNative::Keys
 
     // Building tracking across save loads
     inline constexpr const char* PostSaveLoaded      = "UCrMassSaveSubsystem::OnPostSaveLoaded";
+    inline constexpr const char* BuildingAdd         = "UCrBuildingStabilitySubsystem::OnCreateBuildingEntity";
+    inline constexpr const char* BuildingRemove      = "UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity";
+
+    // The texture the building pictures are published through (UpdateResource is a
+    // site of MiniMap's own, read by the loader as "MiniMap/UTexture::UpdateResource")
+    inline constexpr const char* CreateTransient     = "UTexture2D::CreateTransient";
+    inline constexpr const char* BulkLock            = "FBulkData::Lock";
+    inline constexpr const char* BulkUnlock          = "FBulkData::Unlock";
+    inline constexpr const char* UpdateResource      = "UTexture::UpdateResource";
+    inline constexpr const char* GetResource         = "UTexture::GetResource";
 
     // Mass entity queries
     inline constexpr const char* MassSubsystem       = "UWorld::GetSubsystem<UMassEntitySubsystem>";

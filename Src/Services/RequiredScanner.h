@@ -18,7 +18,8 @@ namespace MiniMap::Services
         std::optional<std::uint32_t> followRel32At;
         // True when name is a key in the loader's shared version map: the map's
         // row for the running game build answers first and idaPattern is the
-        // fallback. False when the name only labels a scan of MiniMap's own.
+        // fallback; it may then be empty, and the row is the only locator. False
+        // when the name only labels a scan of MiniMap's own, which needs a pattern.
         bool inMap = true;
     };
 

@@ -28,7 +28,10 @@ namespace MiniMap::Adapters::AlienX
 
         // Views are borrowed. Own NUL-terminated copies for the synchronous SDK
         // call; reject embedded NULs rather than silently scanning a prefix.
-        if (scan.name.empty() || scan.idaPattern.empty() ||
+        // A request for a map key may leave its pattern out: the loader's row is
+        // then the only locator, and no row for the running build fails the
+        // request, which turns off the feature that lists the key.
+        if (scan.name.empty() || (scan.idaPattern.empty() && !scan.inMap) ||
             scan.name.find('\0') != std::string_view::npos ||
             scan.idaPattern.find('\0') != std::string_view::npos)
         {
@@ -66,7 +69,8 @@ namespace MiniMap::Adapters::AlienX
         // the fallback (PluginMap::Request sets the key flag). Main executable
         // and required flags come from REQUEST_INIT; the host owns uniqueness,
         // transform/kind validation and detailed failure reports.
-        PluginScanRequest request = PluginMap::Request(name.c_str(), pattern.c_str(), kind, flags,
+        PluginScanRequest request = PluginMap::Request(name.c_str(),
+            pattern.empty() ? nullptr : pattern.c_str(), kind, flags,
             scan.resultOffset, followRel32At);
         if (!scan.inMap)
             request.flags &= ~static_cast<uint32_t>(PLUGIN_SCAN_FLAG_MAP_KEY);

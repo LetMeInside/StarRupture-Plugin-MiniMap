@@ -1135,17 +1135,16 @@ namespace MiniMapFingerprints
             if (!addresses.isGameThread) return false;
         }
 
-        // Stage 42G, CL-127004. Mandatory typed native functions, not hooks.
-        // The getter's generic forwarding body is not unique. Follow the call
-        // at +0x0C in SetActorPlacementPayloadData's unique numerical-copy site.
+        // The spline payload getter and the payload's StaticStruct have no
+        // pattern here: the CL-127004 patterns do not match on CL-128786, so the
+        // loader's map is the only locator. A build with no row for them turns off
+        // building-splines. The getter's generic forwarding body is not unique;
+        // its row is the call at +0x0C in SetActorPlacementPayloadData's
+        // numerical-copy site.
         RequiredScan splinePayloadRequest{};
         splinePayloadRequest.name = Keys::SplinePayloadGet;
-        splinePayloadRequest.idaPattern =
-            "48 8D 97 30 03 00 00 48 8D 4C 24 58 E8 ?? ?? ?? ?? "
-            "83 BC 24 D0 00 00 00 00 48 8B CF 7E ?? 48 8B 07";
         splinePayloadRequest.kind = AddressKind::FunctionEntry;
 
-        splinePayloadRequest.followRel32At = 0x0C;
         addresses.getSplineActorData = resolveRequired(splinePayloadRequest);
 
         RequiredScan splinePayloadDestroyRequest{};
@@ -1160,14 +1159,8 @@ namespace MiniMapFingerprints
         addresses.destroySplineActorPayloadData = resolveRequired(splinePayloadDestroyRequest);
 
         // Warm the exact type cache used by GetValue during NativeApi initialization.
-        // The fixed name-string LEA displacement distinguishes this generated
-        // StaticStruct body in CL-127004; no absolute runtime address is embedded.
         RequiredScan splinePayloadTypeRequest{};
         splinePayloadTypeRequest.name = Keys::SplinePayloadStaticStruct;
-        splinePayloadTypeRequest.idaPattern =
-            "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75 ?? E8 ?? ?? ?? ?? "
-            "48 8B D0 4C 8D 05 41 FF B5 05 48 8D 0D ?? ?? ?? ?? "
-            "E8 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 83 C4 28 C3";
         splinePayloadTypeRequest.kind = AddressKind::FunctionEntry;
 
         addresses.splineActorPayloadStaticStruct = resolveRequired(splinePayloadTypeRequest);
@@ -1268,15 +1261,9 @@ namespace MiniMapFingerprints
         foundableTagRequest.name =
             Keys::AddFoundableTag;
 
-        foundableTagRequest.idaPattern =
-            "40 53 48 83 EC 20 48 8B DA 33 D2 48 8B CB E8 ?? ?? ?? ?? "
-            "48 8B CB E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? "
-            "45 33 C0 B2 02 48 8B CB E8 ?? ?? ?? ?? "
-            "41 B0 03 B2 02 48 8B CB E8 ?? ?? ?? ?? "
-            "33 D2 48 8B CB 48 83 C4 20 5B E9 ?? ?? ?? ??";
-
-        foundableTagRequest.followRel32At = 0x0E;
-
+        // No pattern: the CL-127004 one does not match on CL-128786, so the
+        // loader's map is the only locator and a build with no row for it turns
+        // the foundables layer off.
         foundableTagRequest.kind =
             AddressKind::FunctionEntry;
 
@@ -1406,19 +1393,7 @@ namespace MiniMapFingerprints
         inventoryStaticStructRequest.name =
             Keys::InventoryStaticStruct;
 
-        inventoryStaticStructRequest.idaPattern =
-            "E8 ?? ?? ?? ?? "
-            "4C 8B C0 48 8B D3 48 8B CF "
-            "E8 ?? ?? ?? ?? "
-            "48 85 C0 74 ?? "
-            "48 8B 7C 24 48 "
-            "48 8D 88 20 01 00 00 "
-            "48 8B 57 30 "
-            "E8 ?? ?? ?? ?? "
-            "85 C0 7E ?? 8B 5F 38";
-
-        inventoryStaticStructRequest.followRel32At = 0x00;
-
+        // No pattern, as for the foundable tag: the map is the only locator.
         inventoryStaticStructRequest.kind =
             AddressKind::FunctionEntry;
 
@@ -1698,6 +1673,11 @@ namespace MiniMapFingerprints
             addresses.transitionResources = resolveRequired(request);
             if (!addresses.transitionResources) return false;
         }
+        // The two fence sites below keep the CL-127004 pattern text unchanged. The
+        // text is part of the fingerprint the loader reads a site's rows under, on
+        // both builds, so a new pattern would read none of them. The pattern does
+        // not match on CL-128786: the loader's row answers there and logs one
+        // warning that the own pattern matches 0 times.
         {
             RequiredScan request{};
             request.name = Keys::FenceConstruct;
@@ -1720,8 +1700,10 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
+            // No pattern for the next two: the CL-127004 ones do not match on
+            // CL-128786, so the loader's map is the only locator. A build with no
+            // row for them turns off building-sprites.
             request.name = Keys::FenceBegin;
-            request.idaPattern = "40 55 53 56 48 8D 6C 24 B9 48 81 EC 00 01 00 00 48 8B 05 39 49 6C 0A 48 33 C4 48 89 45 27 80 3D D3 6D 98 0A 00 8B DA 89 55 9F 48 8B F1 48 89 4D 87 0F 84 3F 08 00 00 E8 14 70 84 FD 84 C0 75 26";
             request.kind = AddressKind::FunctionEntry;
 
             request.resultOffset = 0;
@@ -1731,7 +1713,6 @@ namespace MiniMapFingerprints
         {
             RequiredScan request{};
             request.name = Keys::FencePoll;
-            request.idaPattern = "40 53 48 83 EC 30 80 3D 3B 1B 97 0A 00 48 8B D9 0F 84 8A 00 00 00 E8 85 1D 83 FD 84 C0 75 30 FF 15 EB 7B 4D 0A 84 C0 75 26 4C 8D 0D B4 10 3F 07 41 B8 5C 04 00 00 48 8D 15 E3 88 AC 07 48 8D 0D";
             request.kind = AddressKind::FunctionEntry;
 
             request.resultOffset = 0;
@@ -2074,26 +2055,36 @@ namespace MiniMapFingerprints
 #if defined(MODLOADER_CLIENT_BUILD)
         // BuildingComplex foundations are required native contracts, resolved
         // only here. No optional second pass or consumer-local scanner exists.
+        // inMap: the name is a key in the loader's version map (the map's row for
+        // the running build answers first and the pattern is the fallback); false
+        // for a scan of MiniMap's own that no row covers yet.
         auto foundation = [&](const char* name, const char* pattern, uintptr_t& out,
-            AddressKind kind = AddressKind::FunctionEntry)
+            AddressKind kind = AddressKind::FunctionEntry, bool inMap = false)
         {
             RequiredScan request{};
             request.name = name;
             request.idaPattern = pattern;
             request.kind = kind;
-            request.inMap = false; // Not in the version map yet.
+            request.inMap = inMap;
             out = resolveRequired(request);
             return out != 0;
         };
         // The two sinks have identical instruction shapes. Retain the matched
         // final call displacement to distinguish Add/Remove viewport work.
         // These are deliberately version-bound code signatures, never RVAs.
-        if (!foundation("MiniMap::BuildingComplex::OnCreateBuildingEntity",
+        // They belong to building-restore, so a miss turns that feature off and
+        // does not stop the scans below. CL-128786 resolves both by the loader's
+        // rows. CL-127004 has no row for them yet (it needs a CI scan of that
+        // build), so these 127004 patterns stay as the fallback there until the
+        // rows exist; on CL-128786 they match 0 times, the displacement being
+        // build-specific, and the loader logs a warning and uses the row. Remove
+        // them once CL-127004 has rows.
+        foundation(Keys::BuildingAdd,
             "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 D0 CA 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnCreate)) return false;
-        if (!foundation("MiniMap::BuildingComplex::OnDestroyBuildingEntity",
+            addresses.buildingOnCreate, AddressKind::FunctionEntry, true);
+        foundation(Keys::BuildingRemove,
             "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnDestroy)) return false;
+            addresses.buildingOnDestroy, AddressKind::FunctionEntry, true);
         if (!foundation("MiniMap::BuildingComplex::OnSaveLoaded",
             "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
             addresses.massOnSaveLoaded)) return false;
@@ -2109,28 +2100,30 @@ namespace MiniMapFingerprints
             request.kind = AddressKind::FunctionEntry;
             addresses.massOnPostSaveLoaded = resolveRequired(request);
         }
-        if (!foundation("MiniMap::BuildingComplex::CreateTransient",
+        if (!foundation(Keys::CreateTransient,
             "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
-            addresses.textureCreateTransient)) return false;
-        if (!foundation("MiniMap::BuildingComplex::BulkLock",
+            addresses.textureCreateTransient, AddressKind::FunctionEntry, true)) return false;
+        if (!foundation(Keys::BulkLock,
             "48 89 5C 24 08 57 48 83 EC 20 80 79 13 00 8B FA 48 8B D9 74 26 4C 8D 0D ?? ?? ?? ?? 41 B8 C0 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 48 8B CB E8 ?? ?? ?? ?? 40 F6 C7 02",
-            addresses.bulkLock)) return false;
-        if (!foundation("MiniMap::BuildingComplex::BulkUnlock",
+            addresses.bulkLock, AddressKind::FunctionEntry, true)) return false;
+        if (!foundation(Keys::BulkUnlock,
             "40 53 48 83 EC 20 80 79 13 00 48 8B D9 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 09 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC C6 43 13 00 8B 43 14 C1 E8 03 A8 01",
-            addresses.bulkUnlock)) return false;
+            addresses.bulkUnlock, AddressKind::FunctionEntry, true)) return false;
         // Folded UpdateResource wrapper: flags=0, virtual WithParams dispatch.
-        // A thunk with no unwind entry, so a code site and not a function start.
-        if (!foundation("MiniMap::BuildingComplex::UpdateResource",
+        // A thunk with no unwind entry, so a code site and not a function start:
+        // the loader reads it as "MiniMap/UTexture::UpdateResource", under a
+        // fingerprint of this request, so the pattern text must not change.
+        if (!foundation(Keys::UpdateResource,
             "48 8B 01 33 D2 48 FF A0 30 03 00 00",
-            addresses.textureUpdateResource, AddressKind::Code)) return false;
+            addresses.textureUpdateResource, AddressKind::Code, true)) return false;
         // UTexture::GetResource has two identical copies (the const overload) one
         // after the other. The pattern runs into the opening of the next one, which
         // the second copy does not have, so it matches the first only.
-        if (!foundation("MiniMap::BuildingComplex::GetResource",
+        if (!foundation(Keys::GetResource,
             "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D E8 ?? ?? ?? ?? 84 C0 75 44 E8 ?? ?? ?? ?? 84 C0 75 3B FF 15 ?? ?? ?? ?? 84 C0 75 31 E8 ?? ?? ?? ?? 84 C0 75 1B E8 ?? ?? ?? ?? 84 C0 75 12 48 8D 4C 24 38 "
             "E8 ?? ?? ?? ?? 33 C0 48 83 C4 20 5B C3 48 8B 83 28 01 00 00 48 83 C4 20 5B C3 48 8B 83 20 01 00 00 "
             "48 83 C4 20 5B C3 CC CC CC CC 40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 4D",
-            addresses.textureGetResource)) return false;
+            addresses.textureGetResource, AddressKind::FunctionEntry, true)) return false;
 #endif
         return true;
     }
