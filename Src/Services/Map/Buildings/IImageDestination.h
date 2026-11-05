@@ -3,9 +3,7 @@
 
 #include <array>
 #include <cstdint>
-#include <memory>
 #include <span>
-#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -19,10 +17,14 @@ namespace Services::Map::Buildings
 		Rejected
 	};
 
-	/** Retains immutable RGBA8 source pixels and the half-open pixel region used for sampling. */
+	/** Borrows immutable RGBA8 source pixels and the half-open pixel region used for sampling.
+	 * Pixel storage remains caller-owned and the view is valid only during synchronous consumption.
+	 * Producers must keep the underlying payload alive during submission; consumers must not retain
+	 * the view after the submission call returns.
+	 */
 	struct Rgba8ImageSource
 	{
-		std::shared_ptr<const std::vector<std::uint8_t>> Pixels;
+		std::span<const std::uint8_t> Pixels;
 		std::uint32_t Width = 0;
 		std::uint32_t Height = 0;
 		std::array<double, 4> PixelRegion{};
@@ -77,12 +79,14 @@ namespace Services::Map::Buildings
 		std::array<TexturedTriangleVertex, 3> Vertices{};
 	};
 
-	/** Borrows textured triangles and one shared immutable RGBA8 source synchronously. */
+	/** Borrows textured triangles and immutable RGBA8 pixels synchronously. */
 	struct TexturedTriangleBatch
 	{
 		/** Borrowed triangle order consumed synchronously. */
 		std::span<const TexturedTriangle> Triangles;
-		/** Shared immutable RGBA8 pixels, dimensions, and selected half-open source region. */
+		/** Borrowed immutable RGBA8 pixels, dimensions, and selected half-open region.
+		 * Pixel storage remains caller-owned and valid only during synchronous submission.
+		 */
 		Rgba8ImageSource Source;
 		/** Multiplies canonical surface UVs before addressing. */
 		std::array<double, 2> UvScale{1.0, 1.0};
@@ -107,7 +111,8 @@ namespace Services::Map::Buildings
 
 		/** Submits immutable RGBA8 pixels and their global world-space quad synchronously.
 		 * Implementations may report unavailable resources, invalid input, clipping, or rejection.
-		 * The command is borrowed for this call; its shared immutable pixel allocation remains owned by Source.Pixels.
+		 * The command and pixel view are borrowed for this call. The producer must keep the payload alive
+		 * until the call returns, and the consumer must not retain the view afterward.
 		 */
 		virtual ImageSubmission SubmitImage(const ImageSubmissionCommand& command) = 0;
 
@@ -117,9 +122,9 @@ namespace Services::Map::Buildings
 		 */
 		virtual ImageSubmission SubmitSolidTriangles(const SolidTriangleBatch& batch) = 0;
 
-		/** Submits textured world-space triangles synchronously with per-vertex UVs and shared immutable pixels.
+		/** Submits textured world-space triangles synchronously with per-vertex UVs and borrowed immutable pixels.
 		 * UV scale and offset are applied before U/V addressing; RGB modulation is sRGB 0xRRGGBB and opacity is straight alpha.
-		 * The triangle span is borrowed and must not be retained.
+		 * Triangle and pixel spans are borrowed; producers keep their storage alive through the call and consumers do not retain them.
 		 */
 		virtual ImageSubmission SubmitTexturedTriangles(const TexturedTriangleBatch& batch) = 0;
 	};

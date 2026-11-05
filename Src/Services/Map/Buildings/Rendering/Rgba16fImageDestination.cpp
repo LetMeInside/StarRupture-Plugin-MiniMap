@@ -176,14 +176,14 @@ namespace Services::Map::Buildings::Rendering
 		return true;
 	}
 
-	/** Validates image ownership, dimensions, exact RGBA8 byte count, and the half-open pixel region. */
+	/** Validates the borrowed image view, dimensions, exact RGBA8 byte count, and the half-open pixel region. */
 	bool Rgba16fImageDestination::IsValidImage(const ImageSubmissionCommand& command) noexcept
 	{
 		const auto& source = command.Source;
-		if (!source.Pixels || !source.Width || !source.Height) return false;
+		if (source.Pixels.empty() || !source.Width || !source.Height) return false;
 		const std::size_t pixels = std::size_t(source.Width) * std::size_t(source.Height);
 		if (pixels / source.Width != source.Height || pixels > (std::numeric_limits<std::size_t>::max)() / 4 ||
-			source.Pixels->size() != pixels * 4)
+			source.Pixels.size() != pixels * 4)
 		{
 			return false;
 		}
@@ -228,7 +228,7 @@ namespace Services::Map::Buildings::Rendering
 			minY = (std::min)(minY, static_cast<long double>(vertex[1]));
 			maxY = (std::max)(maxY, static_cast<long double>(vertex[1]));
 		}
-		return !(maxX < worldBounds_[0] || minX > worldBounds_[2] || minY < worldBounds_[1] || minY > worldBounds_[3]);
+		return !(maxX < worldBounds_[0] || minX > worldBounds_[2] || maxY < worldBounds_[1] || minY > worldBounds_[3]);
 	}
 
 	/** Rejects non-finite XY while deliberately leaving Z unused by 2D rasterization. */
@@ -267,7 +267,7 @@ namespace Services::Map::Buildings::Rendering
 		TextureAddressMode addressV,
 		LinearPixel& output) noexcept
 	{
-		if (!source.Pixels || !source.Width || !source.Height || !std::isfinite(u) || !std::isfinite(v)) return false;
+		if (source.Pixels.empty() || !source.Width || !source.Height || !std::isfinite(u) || !std::isfinite(v)) return false;
 		const double regionWidth = source.PixelRegion[2] - source.PixelRegion[0];
 		const double regionHeight = source.PixelRegion[3] - source.PixelRegion[1];
 		if (!std::isfinite(regionWidth) || !std::isfinite(regionHeight) || regionWidth <= 0.0 || regionHeight <= 0.0)
@@ -352,8 +352,8 @@ namespace Services::Map::Buildings::Rendering
 		pixelY = AddressPixel(pixelY, boundedMinimumY, boundedMaximumY, addressV);
 		if (pixelX < 0 || pixelY < 0) return false;
 		const std::size_t offset = (std::size_t(pixelY) * source.Width + std::size_t(pixelX)) * 4;
-		if (offset > source.Pixels->size() || source.Pixels->size() - offset < 4) return false;
-		const auto* bytes = source.Pixels->data() + offset;
+		if (offset > source.Pixels.size() || source.Pixels.size() - offset < 4) return false;
+		const auto* bytes = source.Pixels.data() + offset;
 		output = {float(SrgbToLinear(bytes[0])), float(SrgbToLinear(bytes[1])),
 			float(SrgbToLinear(bytes[2])), float(bytes[3]) / 255.0f};
 		return true;

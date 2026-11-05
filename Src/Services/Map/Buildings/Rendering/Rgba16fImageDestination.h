@@ -45,7 +45,7 @@ namespace Services::Map::Buildings::Rendering
 			float A = 0.0f;
 		};
 
-		/** Holds the immutable image command and quad coordinates shared by both image triangles. */
+		/** Holds a call-local borrowed image command and quad coordinates for both image triangles. */
 		struct ImageShadeContext
 		{
 			const ImageSubmissionCommand& Command;
@@ -67,13 +67,13 @@ namespace Services::Map::Buildings::Rendering
 		/** Creates and initializes the destination grid; allocation failure leaves it unavailable. */
 		explicit Rgba16fImageDestination(Rgba16fImageGrid grid) noexcept;
 
-		/** Rasterizes an immutable RGBA8 image source at its global world-space quad. */
+		/** Synchronously rasterizes borrowed RGBA8 pixels at their global world-space quad without retaining the pixel view. */
 		ImageSubmission SubmitImage(const ImageSubmissionCommand& command) override;
 
 		/** Rasterizes caller-owned XYZ triangles in span order without retaining or copying them. */
 		ImageSubmission SubmitSolidTriangles(const SolidTriangleBatch& batch) override;
 
-		/** Rasterizes caller-owned textured XYZ/UV triangles in span order using shared pixels. */
+		/** Synchronously rasterizes borrowed textured XYZ/UV triangles using caller-owned pixel storage. */
 		ImageSubmission SubmitTexturedTriangles(const TexturedTriangleBatch& batch) override;
 
 		/** Resolves the complete working buffer to row-major little-endian RGBA16F bytes. */
@@ -90,7 +90,7 @@ namespace Services::Map::Buildings::Rendering
 			const Rgba16fImageGrid& grid,
 			std::array<long double, 4>& bounds) noexcept;
 
-		/** Validates immutable RGBA8 ownership, exact byte size, and the half-open source region. */
+		/** Validates the borrowed RGBA8 view, exact byte size, and the half-open source region. */
 		static bool IsValidImage(const ImageSubmissionCommand& command) noexcept;
 
 		/** Tests strict XY separation between a world quad and this destination grid. */
