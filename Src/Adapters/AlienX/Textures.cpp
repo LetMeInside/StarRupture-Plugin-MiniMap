@@ -1,5 +1,6 @@
-#include "Textures.h"
 #if defined(MODLOADER_CLIENT_BUILD)
+
+#include "Textures.h"
 #include "Bootstrap.h"
 #include "Native/NativeApi.h"
 #include <objbase.h>

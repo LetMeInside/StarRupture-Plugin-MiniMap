@@ -1,16 +1,18 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements immutable map settings, sparse section ownership, viewport
-// registration and invalidation of non-owning viewport relationships.
+// Implements service-owned map sections, cache-first sprite scheduling, capture sessions, and viewports.
 #include "BuildingMapService.h"
-
-#include "BuildingMapSection.h"
-#include "BuildingMapViewport.h"
-#include "Capture/BuildingSpriteRenderer.h"
 
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 #include <vector>
+
+#include "BuildingMapSection.h"
+#include "BuildingMapViewport.h"
+#include "Cache/SpriteDiskCache.h"
+#include "Capture/BuildingSpriteRenderer.h"
+#include "Scheduling/BuildingScheduler.h"
 
 namespace Services::Map::Buildings
 {
@@ -18,7 +20,8 @@ namespace Services::Map::Buildings
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
-		double collectionMarginMapUnits)
+		double collectionMarginMapUnits,
+		std::filesystem::path buildingsCacheDirectory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
 		, collectionMarginMapUnits_(collectionMarginMapUnits)
@@ -29,6 +32,12 @@ namespace Services::Map::Buildings
 		{
 			throw std::invalid_argument("Building Map settings require a finite positive section size, positive resolution, and finite nonnegative margin.");
 		}
+		if (buildingsCacheDirectory.empty() || !buildingsCacheDirectory.is_absolute())
+		{
+			throw std::invalid_argument("Building Map requires an absolute Buildings cache directory.");
+		}
+		spriteDiskCache_.reset(new Cache::SpriteDiskCache(std::move(buildingsCacheDirectory)));
+		buildingScheduler_.reset(new Scheduling::BuildingScheduler(cpuSpriteSourceManager_, *spriteDiskCache_));
 	}
 
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */
@@ -50,6 +59,7 @@ namespace Services::Map::Buildings
 		}
 		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(sessionGeneration, GetPixelsPerMapUnit()));
 		lastCaptureSessionGeneration_ = sessionGeneration;
+		buildingScheduler_->BeginSession(sessionGeneration);
 		return true;
 	}
 
@@ -65,8 +75,84 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
+		buildingScheduler_->EndSession();
 		captureRenderer_.reset();
 		return true;
+	}
+
+	/** Resolves one Blueprint key from cache before submitting its correlated capture request. */
+	BuildingMapService::SpriteRequirementStatus BuildingMapService::EnsureBlueprintSprite(
+		std::string_view canonicalBlueprintName)
+	{
+		Cache::OwnedSpriteKey spriteKey;
+		if (!Cache::OwnedSpriteKey::TryCopy(canonicalBlueprintName, spriteKey))
+		{
+			return SpriteRequirementStatus::Unavailable;
+		}
+		const Scheduling::BuildingScheduler::LookupStatus lookup = buildingScheduler_->Lookup(spriteKey);
+		if (lookup == Scheduling::BuildingScheduler::LookupStatus::Ready)
+		{
+			return SpriteRequirementStatus::Ready;
+		}
+		if (lookup == Scheduling::BuildingScheduler::LookupStatus::Unavailable)
+		{
+			return SpriteRequirementStatus::Unavailable;
+		}
+		if (!captureRenderer_)
+		{
+			return SpriteRequirementStatus::Unavailable;
+		}
+
+		Capture::CaptureRequest request;
+		const Scheduling::BuildingScheduler::PreparationStatus preparation =
+			buildingScheduler_->PrepareCapture(spriteKey, request);
+		if (preparation == Scheduling::BuildingScheduler::PreparationStatus::Busy)
+		{
+			return SpriteRequirementStatus::Busy;
+		}
+		if (preparation != Scheduling::BuildingScheduler::PreparationStatus::Prepared)
+		{
+			return SpriteRequirementStatus::Unavailable;
+		}
+		const Capture::CaptureResult::Acceptance acceptance = captureRenderer_->Accept(request);
+		if (acceptance.Result != Capture::CaptureResult::Acceptance::Status::Accepted)
+		{
+			return SpriteRequirementStatus::Unavailable;
+		}
+		buildingScheduler_->RecordAccepted(std::move(request));
+		return SpriteRequirementStatus::CaptureScheduled;
+	}
+
+	/** Advances one accepted request and publishes only a matching completed payload. */
+	void BuildingMapService::AdvanceAdmittedCapture()
+	{
+		if (!captureRenderer_ || !buildingScheduler_)
+		{
+			return;
+		}
+		Cache::OwnedSpriteKey spriteKey;
+		Capture::CaptureRequest::Correlation correlation;
+		if (!buildingScheduler_->GetActiveRequest(spriteKey, correlation))
+		{
+			return;
+		}
+
+		captureRenderer_->Advance();
+		const Capture::CaptureResult::Completion completion = captureRenderer_->GetProgress(correlation);
+		if (completion.Correlation.SessionGeneration != correlation.SessionGeneration ||
+			completion.Correlation.RequestSequence != correlation.RequestSequence ||
+			completion.Error == Capture::CaptureResult::Completion::Failure::StaleRequest ||
+			completion.Result == Capture::CaptureResult::Completion::Status::Pending)
+		{
+			return;
+		}
+		if (completion.Result == Capture::CaptureResult::Completion::Status::Completed && completion.Payload)
+		{
+			cpuSpriteSourceManager_.Publish(spriteKey, completion.Payload);
+			spriteDiskCache_->TryWrite(spriteKey, *completion.Payload);
+		}
+		captureRenderer_->AcknowledgeCompletion(correlation);
+		buildingScheduler_->ClearActiveRequest(correlation);
 	}
 
 	/** Returns the configured square cell size in map units. */

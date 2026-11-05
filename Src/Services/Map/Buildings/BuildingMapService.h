@@ -1,5 +1,4 @@
-// Owns the shared sparse grid of Building Map sections and creates viewport
-// objects whose registrations and section references are scoped to the service.
+// Owns Building Map sections, sprite caches, scheduling and capture sessions, and creates scoped viewports.
 #pragma once
 
 #include "Cache/CpuSpriteSourceManager.h"
@@ -7,20 +6,30 @@
 #include "Coordination/IBuildingMapService.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
 	class BuildingMapViewport;
+	namespace Cache
+	{
+		class SpriteDiskCache;
+	}
+	namespace Scheduling
+	{
+		class BuildingScheduler;
+	}
 	namespace Capture
 	{
 		class BuildingSpriteRenderer;
 	}
 
-	/** Owns immutable map configuration, shared section and capture-renderer lifetimes, and viewport registrations.
+	/** Owns map configuration, sections, sprite sources and caches, scheduling, capture, and viewport registrations.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The capture
 	 * renderer pointer remains empty until future service-directed initialization.
@@ -28,18 +37,22 @@ namespace Services::Map::Buildings
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
 	public:
-		/** Creates a service whose immutable settings define the shared grid and tile resolution.
+		/** Creates a service whose settings define the shared grid and whose absolute cache directory serves sprite files.
 		 * Throws std::invalid_argument unless section size is finite and positive,
-		 * resolution is positive, and collection margin is finite and nonnegative.
+		 * resolution is positive, collection margin is finite and nonnegative, and
+		 * the Buildings cache directory is nonempty and absolute. Construction does
+		 * not require that directory to exist and performs no cache file operations.
 		 *
 		 * @param sectionSizeMapUnits Width and height of each square cell in map units.
 		 * @param sectionResolutionPixels Width and height of each future square image in pixels.
 		 * @param collectionMarginMapUnits Acquisition expansion around covered cells in map units.
+		 * @param buildingsCacheDirectory Already-resolved absolute Buildings sprite-cache directory.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
-			double collectionMarginMapUnits);
+			double collectionMarginMapUnits,
+			std::filesystem::path buildingsCacheDirectory);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
@@ -92,6 +105,15 @@ namespace Services::Map::Buildings
 	private:
 		friend class BuildingMapViewport;
 
+		/** Describes whether one Blueprint sprite is already usable or can be captured. */
+		enum class SpriteRequirementStatus
+		{
+			Ready,
+			CaptureScheduled,
+			Busy,
+			Unavailable
+		};
+
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		const BuildingMapSection* FindSectionAt(
 			std::int64_t gridX,
@@ -123,6 +145,10 @@ namespace Services::Map::Buildings
 		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
 		/** Advances session shutdown and releases the renderer only after native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Resolves one canonical Blueprint sprite from cache or admits its capture request. */
+		SpriteRequirementStatus EnsureBlueprintSprite(std::string_view canonicalBlueprintName);
+		/** Advances and consumes the one accepted capture request, preserving renderer retirement ownership. */
+		void AdvanceAdmittedCapture();
 
 		/**
 		 * Applies one cell result from a batch without creating a section for incomplete coverage.
@@ -145,6 +171,9 @@ namespace Services::Map::Buildings
 		std::uint64_t nextViewportHandle_ = 1;
 		std::uint64_t lastCaptureSessionGeneration_ = 0;
 		Cache::CpuSpriteSourceManager cpuSpriteSourceManager_;
+		// Declaration order keeps scheduler references valid until the scheduler is destroyed.
+		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
+		std::unique_ptr<Scheduling::BuildingScheduler> buildingScheduler_;
 		// Default-null inert owner; service teardown must retire request work, shared lights, and world first.
 		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;
 	};

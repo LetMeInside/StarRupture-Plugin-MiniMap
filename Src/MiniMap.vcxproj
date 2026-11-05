@@ -99,6 +99,7 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\BuildingScheduler.h" />
       <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\ReadbackFenceAccessor.h" />
     <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
@@ -219,30 +220,24 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Scheduling\BuildingScheduler.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.cpp">
       <ObjectFileName>$(IntDir)BuildingMapCaptureSpriteRenderer.obj</ObjectFileName>
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
       <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.cpp">
         <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-        <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
       </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapSection.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Cache\SpritePngCodec.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Cache\SpriteDiskCache.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Services\Runtime.cpp" />
     <ClCompile Include="Adapters\AlienX\Bootstrap.cpp" />
@@ -255,10 +250,8 @@
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
     <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Adapters\AlienX\Textures.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="$(StarRuptureSDKSourceDir)Basic.cpp">
     </ClCompile>
@@ -280,7 +273,6 @@
     </ClCompile>
     <ClCompile Include="Native\RHITextureAcquisition.cpp">
       <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
@@ -295,7 +287,9 @@
     <ClCompile Include="Map\Buildings\BuildingComplexApi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
     <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingScheduler.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingScheduler.cpp">
+      <ObjectFileName>$(IntDir)LegacyBuildingScheduler.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="Map\Buildings\BuildingSpriteRenderer.cpp" />
     <ClCompile Include="Map\Buildings\BuildingVisuals.cpp" />
     <ClCompile Include="Map\PointsOfInterest\PointsOfInterest.cpp" />
