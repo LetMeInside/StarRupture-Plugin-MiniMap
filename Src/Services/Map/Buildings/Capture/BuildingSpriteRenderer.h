@@ -84,7 +84,7 @@ namespace Services::Map::Buildings::Capture
 		BuildingSpriteRenderer& operator=(BuildingSpriteRenderer&&) = delete;
 
 		/** Copies and accepts one owned request or returns a synchronous rejection.
-		 * @param request Owned sprite identity, subject facts, and session correlation.
+		 * @param request Canonical sprite identity and internal session correlation.
 		 */
 		CaptureResult::Acceptance Accept(const CaptureRequest& request);
 		/** Advances at most one admitted game-thread operation or readback poll. */
@@ -104,14 +104,10 @@ namespace Services::Map::Buildings::Capture
 		/** Returns capture-space XYZ bounds owned by the active subject request. */
 		Visuals::SpriteCaptureBounds GetCaptureBounds() const;
 
-		/** Validates subject facts without interpreting game-specific names or policy. */
-		bool ValidateSubjectFacts(const CaptureSubjectFacts& subject) const;
 		/** Resolves and retains a copied class path using existing resident-object services. */
 		bool ResolveAndRetainActorClass(std::string_view objectPath);
 		/** Creates and initializes the independently owned private world. */
 		bool CreatePrivateWorld();
-		/** Confirms request-required subsystems and prepares/reuses the shared lighting rig. */
-		bool VerifyRequiredWorldSubsystems(const CaptureSubjectFacts& subject);
 		/** Creates the persistent lighting rig once and polls its nonblocking readiness fence. */
 		bool EnsureLightingRigReady();
 		/** Creates the deferred actor, finishes construction, and records native bounds. */
@@ -124,7 +120,7 @@ namespace Services::Map::Buildings::Capture
 		bool ConfigureCapture(bool finalColor);
 		/** Applies the selected capture source gamma and engine show flags. */
 		bool ConfigureShowFlagsAndTarget(bool finalColor);
-		/** Lazily creates the shared private world and verifies facts for the active subject. */
+		/** Lazily creates the shared private world and prepares its lighting rig. */
 		void PreparePrivateWorld();
 		/** Prepares the class, actor bounds, request capture component, and target. */
 		void PrepareSubject();

@@ -97,7 +97,6 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
-    <ClInclude Include="Services\Map\Buildings\Capture\CaptureSubjectFacts.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
       <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />

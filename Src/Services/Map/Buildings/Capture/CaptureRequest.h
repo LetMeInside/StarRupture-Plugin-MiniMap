@@ -1,14 +1,14 @@
-// Carries owned capture-subject facts and scheduler correlation into the
+// Carries the canonical sprite key and scheduler correlation into the
 // service-owned independent Building Map capture renderer.
 #pragma once
 
-#include "CaptureSubjectFacts.h"
+#include "../Cache/OwnedSpriteKey.h"
 
 #include <cstdint>
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Owns all value data needed to submit one sprite requirement for capture.
+	/** Owns the canonical Blueprint sprite key and correlation for one capture request.
 	 * It may be retained by the internal renderer after acceptance; it contains no borrowed
 	 * game object, view, or pixel span.
 	 */
@@ -25,7 +25,7 @@ namespace Services::Map::Buildings::Capture
 
 		/** Session/request identity used for acceptance, cancellation, and stale-result checks. */
 		Correlation RequestIdentity;
-		/** Subject class, sprite key, and host-supplied private-world isolation facts. */
-		CaptureSubjectFacts Subject;
+		/** Canonical Blueprint generated-class path used as the sole per-sprite input. */
+		Cache::OwnedSpriteKey SpriteRequirement;
 	};
 }

@@ -21,7 +21,6 @@ namespace Services::Map::Buildings::Capture
 			{
 				Accepted,
 				RejectedInvalidRequest,
-				RejectedIsolation,
 				RejectedStaleSession,
 				RejectedStaleRequest,
 				RejectedUnavailable
@@ -62,7 +61,6 @@ namespace Services::Map::Buildings::Capture
 			{
 				None,
 				SubjectUnavailable,
-				IsolationRejected,
 				EngineOperationFailed,
 				ReadbackFailed,
 				InvalidCapture,

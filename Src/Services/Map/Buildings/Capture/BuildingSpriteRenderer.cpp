@@ -37,8 +37,7 @@ namespace Services::Map::Buildings::Capture
 			return acceptance;
 		}
 		std::string spriteFileName;
-		if (!request.Subject.SpriteRequirement.TryGetFileName(spriteFileName) ||
-			request.Subject.ActorClassObjectPath.empty())
+		if (!request.SpriteRequirement.TryGetFileName(spriteFileName))
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
 			return acceptance;
@@ -46,11 +45,6 @@ namespace Services::Map::Buildings::Capture
 		if (request.RequestIdentity.SessionGeneration != activeGameWorldSessionGeneration_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleSession;
-			return acceptance;
-		}
-		if (!ValidateSubjectFacts(request.Subject))
-		{
-			acceptance.Result = CaptureResult::Acceptance::Status::RejectedIsolation;
 			return acceptance;
 		}
 		if (request.RequestIdentity.SessionGeneration == 0 || request.RequestIdentity.RequestSequence == 0)
@@ -293,25 +287,6 @@ namespace Services::Map::Buildings::Capture
 			{boundsCenter_[0] + boundsExtent_[0], boundsCenter_[1] + boundsExtent_[1], boundsCenter_[2] + boundsExtent_[2]}};
 	}
 
-	/** Rejects game-state dependencies while retaining all supplied values for the future scheduler. */
-	bool BuildingSpriteRenderer::ValidateSubjectFacts(const CaptureSubjectFacts& subject) const
-	{
-		if (!subject.Isolation.IsCompatibleWithPrivateCaptureWorld ||
-			subject.Isolation.RequiresGameplayWorldState || subject.Isolation.RequiresGameplayWorldTick ||
-			subject.Isolation.ReferencesGameplayWorldObjects)
-		{
-			return false;
-		}
-		for (const std::string& subsystemPath : subject.Isolation.RequiredWorldSubsystemClassPaths)
-		{
-			if (subsystemPath.empty())
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
 	/** Resolves and roots the generated class represented by the copied object path. */
 	bool BuildingSpriteRenderer::ResolveAndRetainActorClass(std::string_view objectPath)
 	{
@@ -326,7 +301,7 @@ namespace Services::Map::Buildings::Capture
 			return false;
 		}
 		const auto* nativeApi = MiniMapNative::Get();
-		if (!nativeApi || !nativeApi->asset.retainObject || !nativeApi->world.getSubsystemInternal)
+		if (!nativeApi || !nativeApi->asset.retainObject)
 		{
 			actorClass_ = nullptr;
 			return false;
@@ -362,36 +337,6 @@ namespace Services::Map::Buildings::Capture
 		nativeApi->world.initWorld(world, initializationValues);
 		nativeApi->world.updateWorldComponents(world, false, false, nullptr);
 		privateWorldInitialized_ = true;
-		return true;
-	}
-
-	/** Checks host-listed required subsystem classes against this new world's own collection. */
-	bool BuildingSpriteRenderer::VerifyRequiredWorldSubsystems(const CaptureSubjectFacts& subject)
-	{
-		const auto* nativeApi = MiniMapNative::Get();
-		if (!privateWorld_ || !nativeApi || !nativeApi->world.getSubsystemInternal || !IsGameThread())
-		{
-			return false;
-		}
-		static_assert(0x9f0 + 0xc0 == sizeof(SDK::UWorld));
-		const std::uintptr_t collection = reinterpret_cast<std::uintptr_t>(privateWorld_) + 0x9f0;
-		for (const std::string& subsystemPath : subject.Isolation.RequiredWorldSubsystemClassPaths)
-		{
-			std::wstring widePath;
-			if (!ConvertObjectPath(subsystemPath, widePath))
-			{
-				return false;
-			}
-			SDK::UClass* subsystemClass = FindResidentClass(widePath);
-			SDK::UClass* subsystemBaseClass = FindResidentClass(L"/Script/Engine.WorldSubsystem");
-			if (!subsystemClass || !subsystemBaseClass || !SDK::UKismetMathLibrary::ClassIsChildOf(
-				SDK::TSubclassOf<SDK::UObject>(subsystemClass),
-				SDK::TSubclassOf<SDK::UObject>(subsystemBaseClass)) || !nativeApi->world.getSubsystemInternal(
-				collection, reinterpret_cast<std::uintptr_t>(subsystemClass)))
-			{
-				return false;
-			}
-		}
 		return true;
 	}
 
@@ -1077,7 +1022,7 @@ namespace Services::Map::Buildings::Capture
 		return true;
 	}
 
-	/** Lazily prepares the persistent world/rig and verifies this request's required subsystems. */
+	/** Lazily prepares the persistent world and lighting rig for capture. */
 	void BuildingSpriteRenderer::PreparePrivateWorld()
 	{
 		if (!privateWorld_ && !CreatePrivateWorld())
@@ -1090,11 +1035,6 @@ namespace Services::Map::Buildings::Capture
 		{
 			sharedWorldUsable_ = false;
 			FailRequest(CaptureResult::Completion::Failure::EngineOperationFailed);
-			return;
-		}
-		if (!VerifyRequiredWorldSubsystems(activeRequest_.Subject))
-		{
-			FailRequest(CaptureResult::Completion::Failure::IsolationRejected);
 			return;
 		}
 		if (!EnsureLightingRigReady())
@@ -1113,7 +1053,7 @@ namespace Services::Map::Buildings::Capture
 	/** Resolves the subject, obtains bounds, and creates its capture rig without submission. */
 	void BuildingSpriteRenderer::PrepareSubject()
 	{
-		if (!ResolveAndRetainActorClass(activeRequest_.Subject.ActorClassObjectPath) ||
+		if (!ResolveAndRetainActorClass(activeRequest_.SpriteRequirement.Bytes()) ||
 			!SpawnSubjectAndAcquireBounds())
 		{
 			FailRequest(CaptureResult::Completion::Failure::SubjectUnavailable);
