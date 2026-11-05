@@ -100,6 +100,9 @@
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureSubjectFacts.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
+      <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\ReadbackFenceAccessor.h" />
+    <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingSourceView.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
@@ -173,6 +176,7 @@
     <ClInclude Include="Map\Buildings\BuildingAtlas.h" />
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\ReadbackNativeAdapter.h" />
+    <ClInclude Include="Native\RHITextureAcquisition.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
     <ClInclude Include="Native\FloatReadbackPixels.h" />
     <ClInclude Include="Map\Map.h" />
@@ -222,6 +226,10 @@
       <ObjectFileName>$(IntDir)BuildingMapCaptureSpriteRenderer.obj</ObjectFileName>
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
+      <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.cpp">
+        <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+        <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+      </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
     </ClCompile>
@@ -271,6 +279,10 @@
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="Native\RHITextureAcquisition.cpp">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
     <ClCompile Include="Map\FogOfWar\FogOfWar.cpp" />
@@ -309,6 +321,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="MiniMap.props" />
+    <None Include="..\Tools\Extract-RHIGPUReadbackCompat.py" />
   </ItemGroup>
+  <Target Name="GenerateUnrealReadbackCompatibility" BeforeTargets="ClCompile" Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
+    <Error Condition="!Exists('$(MiniMapUnrealEngineRoot)Engine\Build\Build.version')" Text="MiniMapUnrealEngineRoot must identify a UE 5.6.1 source tree before client compilation." />
+    <Exec Command="python &quot;$(ProjectDir)..\Tools\Extract-RHIGPUReadbackCompat.py&quot; --unreal-root &quot;$(MiniMapUnrealEngineRoot).&quot; --output &quot;$(ProjectDir)Generated\Unreal\RHIGPUReadbackCompat.h&quot;" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

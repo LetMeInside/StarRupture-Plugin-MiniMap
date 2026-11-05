@@ -9,9 +9,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
-
 # ============================================================
 # Plugin-specific configuration
 # ============================================================
@@ -30,6 +27,10 @@ jobs:
   build:
     name: Build Client
     runs-on: windows-latest
+    if: ${{ github.ref == 'refs/heads/develop' }}
+    environment: epic-ue-source
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout plugin
@@ -64,6 +65,73 @@ jobs:
           }
 
           Write-Host "SDK location verified."
+
+      - name: Checkout pinned Unreal Engine source
+        id: unreal-source
+        uses: actions/checkout@v4
+        with:
+          repository: EpicGames/UnrealEngine
+          ref: 6978b63c8951e57d97048d8424a0bebd637dde1d
+          token: ${{ secrets.EPIC_UNREAL_TOKEN }}
+          path: epic-unreal-source
+          sparse-checkout: |
+            Engine/Build
+            Engine/Source/Runtime/Core/Public
+            Engine/Source/Runtime/RHI/Public
+            Engine/Source/Runtime/TraceLog/Public
+            Engine/Source/Runtime/AutoRTFM/Public
+            Engine/Source/Runtime/RenderCore/Public
+          sparse-checkout-cone-mode: true
+          lfs: false
+          submodules: false
+          persist-credentials: false
+
+      - name: Validate pinned Unreal source version
+        shell: pwsh
+        env:
+          UNREAL_CHECKOUT_COMMIT: ${{ steps.unreal-source.outputs.commit }}
+        run: |
+          $expectedCommit = '6978b63c8951e57d97048d8424a0bebd637dde1d'
+          if ($env:UNREAL_CHECKOUT_COMMIT -ne $expectedCommit) {
+            throw "Unreal source revision mismatch: expected pinned UE 5.6.1 commit $expectedCommit."
+          }
+
+          $ueRoot = Join-Path $env:GITHUB_WORKSPACE 'epic-unreal-source'
+          $buildVersionPath = Join-Path $ueRoot 'Engine/Build/Build.version'
+          if (-not (Test-Path -LiteralPath $buildVersionPath -PathType Leaf)) {
+            throw 'Pinned Unreal source is missing Engine/Build/Build.version.'
+          }
+
+          $buildVersion = Get-Content -LiteralPath $buildVersionPath -Raw | ConvertFrom-Json
+          if (
+            $buildVersion.MajorVersion -ne 5 -or
+            $buildVersion.MinorVersion -ne 6 -or
+            $buildVersion.PatchVersion -ne 1 -or
+            $buildVersion.Changelist -ne 44394996 -or
+            $buildVersion.CompatibleChangelist -ne 43139311 -or
+            $buildVersion.BranchName -ne '++UE5+Release-5.6'
+          ) {
+            throw 'Pinned Unreal source Build.version does not match UE 5.6.1 changelist 44394996.'
+          }
+
+          "MINIMAP_UNREAL_ENGINE_ROOT=$ueRoot\" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append `
+            -Encoding utf8
+
+          Write-Host "Validated pinned Unreal revision and UE 5.6.1 Build.version at $ueRoot."
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate Unreal readback compatibility header
+        shell: pwsh
+        run: |
+          $generator = Join-Path $env:GITHUB_WORKSPACE 'Tools/Extract-RHIGPUReadbackCompat.py'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'Src/Generated/Unreal/RHIGPUReadbackCompat.h'
+          python $generator --unreal-root $env:MINIMAP_UNREAL_ENGINE_ROOT --output $output
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -200,6 +268,7 @@ jobs:
             /p:Platform=x64 `
             /p:ModLoaderBuildTag="$env:VERSION" `
             /p:StarRupturePluginSDKRoot="$env:GITHUB_WORKSPACE\plugin-sdk\" `
+            /p:MiniMapUnrealEngineRoot="$env:MINIMAP_UNREAL_ENGINE_ROOT" `
             /m `
             /v:minimal
 
@@ -326,13 +395,13 @@ jobs:
         shell: pwsh
         run: |
           $package = Join-Path $env:GITHUB_WORKSPACE `
-            "package\Client\Plugins"
+            "package\Client"
 
           $zip = Join-Path $env:GITHUB_WORKSPACE `
             "$env:PLUGIN_NAME-Client-v$env:VERSION.zip"
 
           Compress-Archive `
-            -Path $package `
+            -Path "$package\*" `
             -DestinationPath $zip `
             -Force
 

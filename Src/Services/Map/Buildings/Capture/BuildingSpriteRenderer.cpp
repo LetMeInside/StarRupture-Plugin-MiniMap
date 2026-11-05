@@ -1,9 +1,9 @@
-// Implements persistent-world setup and request-scoped sprite capture preparation and submissions.
-// HDR readback, processing, terminal success, and submitted-scene retirement belong to BM-07.
+// Implements the persistent capture world, two-pass sprite capture, asynchronous readback, and retirement.
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingSpriteRenderer.h"
 
+#include "../Cache/SpriteProcessing.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
 
@@ -14,10 +14,18 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <span>
 #include <type_traits>
 
 namespace Services::Map::Buildings::Capture
 {
+	/** Stores the service-owned session identity without preparing native resources. */
+	BuildingSpriteRenderer::BuildingSpriteRenderer(std::uint64_t sessionGeneration, double pixelsPerMapUnit)
+		: activeGameWorldSessionGeneration_(sessionGeneration)
+		, pixelsPerMapUnit_(pixelsPerMapUnit)
+	{
+	}
+
 	/** Copies an owned capture request or reports why it cannot be admitted. */
 	CaptureResult::Acceptance BuildingSpriteRenderer::Accept(const CaptureRequest& request)
 	{
@@ -35,9 +43,24 @@ namespace Services::Map::Buildings::Capture
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
 			return acceptance;
 		}
+		if (request.RequestIdentity.SessionGeneration != activeGameWorldSessionGeneration_)
+		{
+			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleSession;
+			return acceptance;
+		}
 		if (!ValidateSubjectFacts(request.Subject))
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedIsolation;
+			return acceptance;
+		}
+		if (request.RequestIdentity.SessionGeneration == 0 || request.RequestIdentity.RequestSequence == 0)
+		{
+			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
+			return acceptance;
+		}
+		if (request.RequestIdentity.RequestSequence <= lastAcceptedRequestSequence_)
+		{
+			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleRequest;
 			return acceptance;
 		}
 		activeRequest_ = request;
@@ -47,8 +70,13 @@ namespace Services::Map::Buildings::Capture
 		completion_.Result = CaptureResult::Completion::Status::Pending;
 		phase_ = Phase::PreparingWorld;
 		hasActiveRequest_ = true;
+		lastAcceptedRequestSequence_ = request.RequestIdentity.RequestSequence;
 		resultEligible_ = true;
 		finalColorPassSubmitted_ = false;
+		readbackStarted_ = false;
+		requestSceneRetirementFenceComplete_ = false;
+		pendingPayload_.reset();
+		hdrPixels_.clear();
 		preparedIteration_ = 0;
 		hdrWarmupIteration_ = 0;
 		requestRetirementFenceComplete_ = false;
@@ -63,9 +91,7 @@ namespace Services::Map::Buildings::Capture
 	/** Advances world preparation, subject setup, or one admitted capture submission. */
 	void BuildingSpriteRenderer::Advance()
 	{
-		if (!hasActiveRequest_ || !IsGameThread() || phase_ == Phase::Terminal ||
-			phase_ == Phase::AwaitingHdrReadback ||
-			phase_ == Phase::AwaitingFinalReadback)
+		if (!hasActiveRequest_ || !IsGameThread() || phase_ == Phase::Terminal)
 		{
 			return;
 		}
@@ -86,14 +112,28 @@ namespace Services::Map::Buildings::Capture
 	/** Retries pre-submission cleanup and records cancellation or failure after release. */
 	void BuildingSpriteRenderer::AdvanceRetirement()
 	{
-		if (sceneWorkSubmitted_ || !RetireRequestResources())
+		if (sceneWorkSubmitted_ && !RetireSubmittedSceneBehindFence())
+		{
+			return;
+		}
+		if (!RetireRequestResources())
 		{
 			return;
 		}
 		completion_.Error = pendingFailure_;
-		completion_.Result = pendingFailure_ == CaptureResult::Completion::Failure::None
-			? CaptureResult::Completion::Status::Cancelled
-			: CaptureResult::Completion::Status::Failed;
+		if (pendingFailure_ != CaptureResult::Completion::Failure::None)
+		{
+			completion_.Result = CaptureResult::Completion::Status::Failed;
+		}
+		else if (resultEligible_ && pendingPayload_)
+		{
+			completion_.Payload = std::move(pendingPayload_);
+			completion_.Result = CaptureResult::Completion::Status::Completed;
+		}
+		else
+		{
+			completion_.Result = CaptureResult::Completion::Status::Cancelled;
+		}
 		phase_ = Phase::Terminal;
 	}
 
@@ -129,12 +169,26 @@ namespace Services::Map::Buildings::Capture
 			}
 			finalColorPassSubmitted_ = true;
 			phase_ = Phase::AwaitingFinalReadback;
+			return;
+		}
+		if (phase_ == Phase::AwaitingHdrReadback || phase_ == Phase::AwaitingFinalReadback)
+		{
+			AdvanceReadbackPhase();
 		}
 	}
 
 	/** Returns the owned request's current pending or terminal completion value. */
-	CaptureResult::Completion BuildingSpriteRenderer::GetProgress() const
+	CaptureResult::Completion BuildingSpriteRenderer::GetProgress(CaptureRequest::Correlation correlation) const
 	{
+		if (!hasActiveRequest_ || correlation.SessionGeneration != completion_.Correlation.SessionGeneration ||
+			correlation.RequestSequence != completion_.Correlation.RequestSequence)
+		{
+			CaptureResult::Completion stale;
+			stale.Correlation = correlation;
+			stale.Result = CaptureResult::Completion::Status::Failed;
+			stale.Error = CaptureResult::Completion::Failure::StaleRequest;
+			return stale;
+		}
 		return completion_;
 	}
 
@@ -146,8 +200,19 @@ namespace Services::Map::Buildings::Capture
 		{
 			return;
 		}
+		if (phase_ == Phase::Terminal)
+		{
+			resultEligible_ = false;
+			if (completion_.Result == CaptureResult::Completion::Status::Completed)
+			{
+				completion_.Payload.reset();
+				completion_.Result = CaptureResult::Completion::Status::Cancelled;
+			}
+			return;
+		}
 		resultEligible_ = false;
 		pendingFailure_ = CaptureResult::Completion::Failure::None;
+		pendingPayload_.reset();
 		if (sceneWorkSubmitted_)
 		{
 			phase_ = Phase::RetirementRequired;
@@ -176,6 +241,10 @@ namespace Services::Map::Buildings::Capture
 		{
 			return;
 		}
+		hdrReadback_.Reset();
+		finalReadback_.Reset();
+		hdrPixels_.clear();
+		pendingPayload_.reset();
 		hasActiveRequest_ = false;
 		activeRequest_ = {};
 		completion_ = {};
@@ -214,41 +283,6 @@ namespace Services::Map::Buildings::Capture
 		nativeApi->texture.initRenderTarget(renderTarget_, 256, 256, 10, true);
 		phase_ = Phase::WaitingForFinalColor;
 		return true;
-	}
-
-	/** Releases a cancelled final-color request only after BM-07 confirms all submitted work retired. */
-	bool BuildingSpriteRenderer::AcknowledgeFinalPassRetirement(bool readbackAndSceneRetired)
-	{
-		if (!readbackAndSceneRetired || !sceneWorkSubmitted_ || !finalColorPassSubmitted_ ||
-			resultEligible_ || !IsGameThread() ||
-			(phase_ != Phase::AwaitingFinalReadback && phase_ != Phase::RetirementRequired))
-		{
-			return false;
-		}
-		sceneWorkSubmitted_ = false;
-		if (!RetireRequestResources())
-		{
-			return false;
-		}
-		completion_.Result = CaptureResult::Completion::Status::Cancelled;
-		phase_ = Phase::Terminal;
-		return true;
-	}
-
-	/** Supplies BM-07 a borrowed render-resource pointer while this renderer retains its target. */
-	void* BuildingSpriteRenderer::GetPendingReadbackResource()
-	{
-		if (!sceneWorkSubmitted_ || !renderTarget_ ||
-			(phase_ != Phase::AwaitingHdrReadback && phase_ != Phase::AwaitingFinalReadback))
-		{
-			return nullptr;
-		}
-		const auto* nativeApi = MiniMapNative::Get();
-		if (!nativeApi || !nativeApi->texture.getRenderTargetResource || !IsGameThread())
-		{
-			return nullptr;
-		}
-		return nativeApi->texture.getRenderTargetResource(renderTarget_);
 	}
 
 	/** Converts the retained center and extent into owned capture-space XYZ bounds. */
@@ -656,9 +690,19 @@ namespace Services::Map::Buildings::Capture
 	void BuildingSpriteRenderer::RequestServiceShutdown()
 	{
 		serviceShutdownRequested_ = true;
-		if (!hasActiveRequest_ || phase_ == Phase::Terminal) return;
+		if (!hasActiveRequest_) return;
 		resultEligible_ = false;
 		pendingFailure_ = CaptureResult::Completion::Failure::None;
+		pendingPayload_.reset();
+		completion_.Payload.reset();
+		if (phase_ == Phase::Terminal)
+		{
+			if (completion_.Result == CaptureResult::Completion::Status::Completed)
+			{
+				completion_.Result = CaptureResult::Completion::Status::Cancelled;
+			}
+			return;
+		}
 		phase_ = Phase::RetirementRequired;
 	}
 
@@ -673,7 +717,6 @@ namespace Services::Map::Buildings::Capture
 	/** Retires the active request, waiting for BM-07 after any submitted scene work. */
 	bool BuildingSpriteRenderer::AdvanceRequestShutdown()
 	{
-		if (sceneWorkSubmitted_) return false;
 		if (phase_ != Phase::Terminal)
 		{
 			phase_ = Phase::RetirementRequired;
@@ -882,7 +925,7 @@ namespace Services::Map::Buildings::Capture
 		phase_ = Phase::HdrWarmupSubmitted;
 	}
 
-	/** Submits HDR C10 after ten later admitted service iterations and stops at BM-07 readback. */
+	/** Submits HDR C10 after ten later admitted service iterations and waits for asynchronous readback. */
 	void BuildingSpriteRenderer::SubmitHdrCaptureAfterWarmup()
 	{
 		if (admittedServiceIterations_ - hdrWarmupIteration_ < 10)
@@ -895,6 +938,143 @@ namespace Services::Map::Buildings::Capture
 			return;
 		}
 		phase_ = Phase::AwaitingHdrReadback;
+	}
+
+	/** Starts or advances one readback and forwards pixels only after native retirement. */
+	void BuildingSpriteRenderer::AdvanceReadbackPhase()
+	{
+		const bool hdrPass = phase_ == Phase::AwaitingHdrReadback;
+		BuildingSpriteReadback& readback = hdrPass ? hdrReadback_ : finalReadback_;
+		if (!readbackStarted_)
+		{
+			if (!sceneWorkSubmitted_ || !renderTarget_ || !readback.Start(renderTarget_))
+			{
+				FailRequest(CaptureResult::Completion::Failure::ReadbackFailed);
+				return;
+			}
+			readbackStarted_ = true;
+		}
+		const BuildingSpriteReadback::Status status = readback.Advance();
+		if (status == BuildingSpriteReadback::Status::Pending || !readback.IsRetired())
+		{
+			return;
+		}
+		if (status != BuildingSpriteReadback::Status::Complete)
+		{
+			RetireFailedReadback(readback);
+			return;
+		}
+		if (hdrPass)
+		{
+			CompleteHdrReadback();
+			return;
+		}
+		CompleteFinalReadback();
+	}
+
+	/** Retires an unsuccessful pass only when the backend proves its resources are safe. */
+	void BuildingSpriteRenderer::RetireFailedReadback(BuildingSpriteReadback& readback)
+	{
+		if (!readback.Reset())
+		{
+			return;
+		}
+		readbackStarted_ = false;
+		FailRequest(CaptureResult::Completion::Failure::ReadbackFailed);
+	}
+
+	/** Saves HDR source pixels and reconfigures only after GPU copy and scene retirement. */
+	void BuildingSpriteRenderer::CompleteHdrReadback()
+	{
+		try
+		{
+			hdrPixels_ = hdrReadback_.Pixels();
+		}
+		catch (...)
+		{
+			RetireFailedReadback(hdrReadback_);
+			return;
+		}
+		if (!hdrReadback_.Reset())
+		{
+			return;
+		}
+		readbackStarted_ = false;
+		if (!AcknowledgeHdrPassRetirement(true, true))
+		{
+			FailRequest(CaptureResult::Completion::Failure::RetirementFailed);
+		}
+	}
+
+	/** Converts final samples to an immutable payload before request-specific retirement. */
+	void BuildingSpriteRenderer::CompleteFinalReadback()
+	{
+		sceneWorkSubmitted_ = false;
+		ProcessFinalCapture();
+		if (!finalReadback_.Reset())
+		{
+			return;
+		}
+		readbackStarted_ = false;
+		phase_ = Phase::RetirementRequired;
+	}
+
+	/** Uses the independent BM-02 processor to create the only successful capture payload. */
+	void BuildingSpriteRenderer::ProcessFinalCapture()
+	{
+		const auto& finalPixels = finalReadback_.Pixels();
+		Cache::SpriteCapturePixels pixels{
+			std::span<const std::uint16_t>(finalPixels.data(), finalPixels.size()),
+			std::span<const std::uint16_t>(hdrPixels_.data(), hdrPixels_.size())};
+		const double orthographicExtent = 2.0 * (std::max)(boundsExtent_[0], boundsExtent_[1]) * 1.1;
+		Cache::SpriteCaptureMetadata metadata{
+			GetCaptureBounds(),
+			orthographicExtent,
+			pixelsPerMapUnit_};
+		const Cache::SpriteProcessingResult result = Cache::SpriteProcessing::Process(pixels, metadata);
+		if (result.Result != Cache::SpriteProcessingResult::Status::Processed || !result.Payload)
+		{
+			pendingFailure_ = result.Result == Cache::SpriteProcessingResult::Status::EmptyCapture
+				? CaptureResult::Completion::Failure::InvalidCapture
+				: CaptureResult::Completion::Failure::ProcessingFailed;
+			return;
+		}
+		pendingPayload_ = result.Payload;
+	}
+
+	/** Detaches submitted capture resources, orders their release fence, and waits without blocking. */
+	bool BuildingSpriteRenderer::RetireSubmittedSceneBehindFence()
+	{
+		if (readbackStarted_)
+		{
+			BuildingSpriteReadback& readback = finalColorPassSubmitted_ ? finalReadback_ : hdrReadback_;
+			readback.Advance();
+			if (!readback.IsRetired())
+			{
+				return false;
+			}
+			readback.Reset();
+			readbackStarted_ = false;
+		}
+		if (!DestroyRequestContents())
+		{
+			return false;
+		}
+		if (!requestSceneRetirementFenceComplete_)
+		{
+			if (fencePurpose_ == FencePurpose::None && !StartFence(FencePurpose::RequestRetirement))
+			{
+				return false;
+			}
+			if (!PollFence(FencePurpose::RequestRetirement))
+			{
+				return false;
+			}
+			requestSceneRetirementFenceComplete_ = true;
+			requestRetirementFenceComplete_ = true;
+		}
+		sceneWorkSubmitted_ = false;
+		return true;
 	}
 
 	/** Lazily prepares the persistent world/rig and verifies this request's required subsystems. */
@@ -972,6 +1152,10 @@ namespace Services::Map::Buildings::Capture
 	bool BuildingSpriteRenderer::SubmitCaptureScene()
 	{
 		if (!captureComponent_ || !captureComponentRegistered_ || !IsGameThread())
+		{
+			return false;
+		}
+		if (!BuildingSpriteReadback::InitializeNativeCapture())
 		{
 			return false;
 		}

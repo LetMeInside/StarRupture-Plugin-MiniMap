@@ -48,7 +48,7 @@ namespace Services::Map::Buildings
 		BuildingMapService(BuildingMapService&&) = delete;
 		/** Prevents moves from invalidating non-owning viewport service references. */
 		BuildingMapService& operator=(BuildingMapService&&) = delete;
-		/** Invalidates viewports; any owned renderer must first finish AdvanceCaptureRendererShutdown(). */
+		/** Invalidates viewports; the owner must finish active game-world-session shutdown before destruction. */
 		~BuildingMapService();
 
 		/** Returns the configured square grid-cell width and height in map units. */
@@ -119,8 +119,10 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Advances renderer shutdown and releases its owner only after native retirement completes. */
-		bool AdvanceCaptureRendererShutdown();
+		/** Begins one inert renderer lifetime for the current game-world session. */
+		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
+		/** Advances session shutdown and releases the renderer only after native retirement completes. */
+		bool AdvanceCaptureGameWorldSessionShutdown();
 
 		/**
 		 * Applies one cell result from a batch without creating a section for incomplete coverage.
@@ -141,6 +143,7 @@ namespace Services::Map::Buildings
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
+		std::uint64_t lastCaptureSessionGeneration_ = 0;
 		Cache::CpuSpriteSourceManager cpuSpriteSourceManager_;
 		// Default-null inert owner; service teardown must retire request work, shared lights, and world first.
 		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;

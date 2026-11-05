@@ -319,6 +319,7 @@ namespace
                 command.GpuBinding,screen,0xFFFFFFFFu) ? MiniMap::Services::ImageSubmission::Submitted :
                     MiniMap::Services::ImageSubmission::Rejected;
         }
+
     private:
         MiniMap::Services::ICanvas& Canvas;
     };

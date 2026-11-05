@@ -4,7 +4,6 @@
 #define RENDERCORE_API
 #define WITH_MGPU 1
 #define WITH_RHI_BREADCRUMBS 0
-#define RHI_ENABLE_RESOURCE_INFO 0
 #include "RHIResources.h"
 #include "Containers/ResourceArray.h"
 #include "ReadbackNativeAdapter.h"

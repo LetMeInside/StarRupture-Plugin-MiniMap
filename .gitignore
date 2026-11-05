@@ -22,3 +22,7 @@ cmake-build-*/
 # Local backup/archive files
 *.rar
 *.zip
+
+# Ephemeral Unreal source and extracted licensed engine definitions
+/epic-unreal-source/
+/Src/Generated/Unreal/

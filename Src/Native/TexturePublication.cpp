@@ -30,8 +30,8 @@ namespace
         T::Generation Token;
         T::State Phase = T::State::Empty;
         SDK::UTexture2D* Texture = nullptr;
-        std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> Cell;
-        MiniMapBuildingComplexCellRasterizer::CellImageIdentity CellIdentity;
+        std::shared_ptr<const MiniMapBuildingComplexWorld::Cell::CellImage> Cell;
+        MiniMapBuildingComplexWorld::Cell::CellImageIdentity CellIdentity;
         std::shared_ptr<const MiniMapBuildingComplexWorld::GroupedTileImage> GroupedTile;
         MiniMapBuildingComplexWorld::TileIdentity GroupedIdentity;
         uint64_t CertificateId = 0, PublicationId = 0;
@@ -48,15 +48,15 @@ namespace
     // shutdown. Keep their owner storage at process lifetime so module static
     // destruction cannot free fence memory still reachable by the RHI thread.
     std::vector<std::unique_ptr<Owner>>& Owners = *new std::vector<std::unique_ptr<Owner>>();
-    std::map<uint64_t, std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage>> PendingCells;
+    std::map<uint64_t, std::shared_ptr<const MiniMapBuildingComplexWorld::Cell::CellImage>> PendingCells;
     struct GroupedPending
     {
         std::shared_ptr<const MiniMapBuildingComplexWorld::GroupedTileImage> Image;
         uint64_t CertificateId = 0;
     };
     std::map<uint64_t, GroupedPending> PendingGrouped;
-    std::map<MiniMapBuildingComplexIndex::CellKey, uint64_t> PendingByCell;
-    std::map<MiniMapBuildingComplexIndex::CellKey, uint64_t> CurrentByCell;
+    std::map<MiniMapBuildingComplexWorld::CellKey, uint64_t> PendingByCell;
+    std::map<MiniMapBuildingComplexWorld::CellKey, uint64_t> CurrentByCell;
     using GroupedKey = std::tuple<int64_t, int64_t, uint32_t>;
     std::map<GroupedKey, uint64_t> PendingGroupedByKey, CurrentGroupedByKey;
     std::map<uint64_t, uint64_t> LeaseOwners;
@@ -127,13 +127,13 @@ namespace
         }
         return true;
     }
-    bool SameCellIdentity(const MiniMapBuildingComplexCellRasterizer::CellImage& a,
-        const MiniMapBuildingComplexCellRasterizer::CellImage& b) noexcept
+    bool SameCellIdentity(const MiniMapBuildingComplexWorld::Cell::CellImage& a,
+        const MiniMapBuildingComplexWorld::Cell::CellImage& b) noexcept
     {
         const bool local = a.Validity.SafetyGeneration && a.Validity.LocalEpoch &&
             b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
-        return a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
-            b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
+        return a.Status == MiniMapBuildingComplexWorld::Cell::State::Complete &&
+            b.Status == MiniMapBuildingComplexWorld::Cell::State::Complete &&
             a.Key == b.Key && a.WorldGeneration == b.WorldGeneration &&
             a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
             a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
@@ -143,20 +143,20 @@ namespace
             a.CaptureAvailability == b.CaptureAvailability &&
             a.Rgba16F == b.Rgba16F;
     }
-    bool SameCellIdentity(const MiniMapBuildingComplexCellRasterizer::CellImageIdentity& a,
-        const MiniMapBuildingComplexCellRasterizer::CellImage& b) noexcept
+    bool SameCellIdentity(const MiniMapBuildingComplexWorld::Cell::CellImageIdentity& a,
+        const MiniMapBuildingComplexWorld::Cell::CellImage& b) noexcept
     {
         const bool local = a.Validity.SafetyGeneration && a.Validity.LocalEpoch &&
             b.Validity.SafetyGeneration && b.Validity.LocalEpoch;
-        return b.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
-            a.Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
+        return b.Status == MiniMapBuildingComplexWorld::Cell::State::Complete &&
+            a.Status == MiniMapBuildingComplexWorld::Cell::State::Complete &&
             a.Key == b.Key && a.WorldGeneration == b.WorldGeneration &&
             a.Origin.Valid && b.Origin.Valid && a.Origin.X == b.Origin.X && a.Origin.Y == b.Origin.Y &&
             a.Validity == b.Validity && (local || (a.SourceRevision == b.SourceRevision &&
                 a.CellRevision == b.CellRevision && a.DependencyRevision == b.DependencyRevision)) &&
             a.RenderDroneRails == b.RenderDroneRails &&
-            b.Width == MiniMapBuildingComplexIndex::kCellImageSizePixels &&
-            b.Height == MiniMapBuildingComplexIndex::kCellImageSizePixels &&
+            b.Width == MiniMapBuildingComplexWorld::kCellImageSizePixels &&
+            b.Height == MiniMapBuildingComplexWorld::kCellImageSizePixels &&
             a.CaptureRevisions == b.CaptureRevisions && a.CaptureAvailability == b.CaptureAvailability;
     }
     bool ValidCanonical(int32_t width, int32_t height, const uint8_t* bytes, size_t size) noexcept
@@ -384,11 +384,11 @@ namespace MiniMapTexturePublication
         image = Image{};
         return owner->Id;
     }
-    uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> image) noexcept
+    uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexWorld::Cell::CellImage> image) noexcept
     {
         namespace W = MiniMapBuildingComplexWorld;
-        namespace R = MiniMapBuildingComplexCellRasterizer;
-        namespace Bc = MiniMapBuildingComplexIndex;
+        namespace R = MiniMapBuildingComplexWorld::Cell;
+        namespace Bc = MiniMapBuildingComplexWorld;
         if (!GameThread() || Closed || !image || image->Status != R::State::Complete ||
             image->Width != Bc::kCellImageSizePixels || image->Height != Bc::kCellImageSizePixels ||
             !ValidCanonical(int32_t(image->Width), int32_t(image->Height),
@@ -551,7 +551,7 @@ namespace MiniMapTexturePublication
         if (pending != PendingCells.end())
         {
             const auto& image = pending->second;
-            if (image && image->Status == MiniMapBuildingComplexCellRasterizer::State::Complete &&
+            if (image && image->Status == MiniMapBuildingComplexWorld::Cell::State::Complete &&
                 W::ValidateCellImage(*image))
             {
                 const auto current = PendingByCell.find(image->Key);
@@ -577,7 +577,7 @@ namespace MiniMapTexturePublication
     void ProcessRequests() noexcept
     {
         namespace W = MiniMapBuildingComplexWorld;
-        namespace R = MiniMapBuildingComplexCellRasterizer;
+        namespace R = MiniMapBuildingComplexWorld::Cell;
         try
         {
             if (Closed || !NativeAdmission()) return;
@@ -784,7 +784,7 @@ namespace MiniMapTexturePublication
         }
         if (auto* owner = FindGroupedRequest(requestId); owner && !owner->PublicationId) Withdraw(*owner);
     }
-    void InvalidateCells(const std::vector<MiniMapBuildingComplexIndex::CellKey>& cells) noexcept
+    void InvalidateCells(const std::vector<MiniMapBuildingComplexWorld::CellKey>& cells) noexcept
     {
         if (!GameThread()) return;
         for (const auto key : cells)
@@ -822,56 +822,6 @@ namespace MiniMapTexturePublication
         }
         for (auto& owner : Owners)
             if (owner && owner->IsGrouped && affected(owner->GroupedIdentity)) Withdraw(*owner);
-    }
-    void InvalidateCapture(MiniMapBuildingComplexIndex::MassKey building) noexcept
-    {
-        if (!GameThread()) return;
-        for (auto it = PendingCells.begin(); it != PendingCells.end();)
-        {
-            const auto& image = it->second;
-            if (image && std::any_of(image->CaptureRevisions.begin(), image->CaptureRevisions.end(),
-                [&](const auto& capture) { return capture.Building == building; }))
-            {
-                const auto pending = PendingByCell.find(image->Key);
-                if (pending != PendingByCell.end() && pending->second == it->first) PendingByCell.erase(pending);
-                it = PendingCells.erase(it);
-            }
-            else ++it;
-        }
-        for (auto& owner : Owners)
-            if (owner && owner->RequestId && std::any_of(owner->CellIdentity.CaptureRevisions.begin(),
-                owner->CellIdentity.CaptureRevisions.end(),
-                [&](const auto& capture) { return capture.Building == building; }))
-                Withdraw(*owner);
-        for (auto it = PendingGrouped.begin(); it != PendingGrouped.end();)
-        {
-            const auto& image = it->second.Image;
-            const bool affected = image && std::any_of(image->Identity.Inputs.begin(), image->Identity.Inputs.end(),
-                [&](const auto& input) {
-                    const auto matches = [&](const auto& captures) {
-                        return std::any_of(captures.begin(), captures.end(),
-                            [&](const auto& capture) { return capture.Building == building; });
-                    };
-                    return matches(input.CaptureRevisions) || matches(input.CaptureAvailability);
-                });
-            if (affected)
-            {
-                const auto& id = image->Identity; const GroupedKey key{id.Key.X, id.Key.Y, id.ContentSide};
-                const auto queued = PendingGroupedByKey.find(key);
-                if (queued != PendingGroupedByKey.end() && queued->second == it->first) PendingGroupedByKey.erase(queued);
-                it = PendingGrouped.erase(it);
-            }
-            else ++it;
-        }
-        for (auto& owner : Owners)
-            if (owner && owner->IsGrouped && std::any_of(owner->GroupedIdentity.Inputs.begin(),
-                owner->GroupedIdentity.Inputs.end(), [&](const auto& input) {
-                    const auto matches = [&](const auto& captures) {
-                        return std::any_of(captures.begin(), captures.end(),
-                            [&](const auto& capture) { return capture.Building == building; });
-                    };
-                    return matches(input.CaptureRevisions) || matches(input.CaptureAvailability);
-                })) Withdraw(*owner);
     }
     void InvalidateAll() noexcept
     {
@@ -1018,3 +968,6 @@ namespace MiniMapTexturePublication
     }
 }
 #endif
+
+
+

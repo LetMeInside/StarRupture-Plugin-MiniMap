@@ -5,7 +5,6 @@
 #include <memory>
 #include <optional>
 #include <vector>
-#include "../Map/Buildings/BuildingComplexCellRasterizer.h"
 #include "../Map/Buildings/BuildingComplexWorld.h"
 namespace SDK { class UTexture2D; }
 
@@ -83,7 +82,7 @@ namespace MiniMapTexturePublication
     // BCB request/acquire/release/invalidation functions are GT-only. Requests
     // retain the immutable CPU image; native upload runs only in ProcessRequests
     // after its native game-thread and GC admission checks.
-    uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexCellRasterizer::CellImage> image) noexcept;
+    uint64_t RequestCell(std::shared_ptr<const MiniMapBuildingComplexWorld::Cell::CellImage> image) noexcept;
     RequestStatus InspectRequest(uint64_t requestId) noexcept;
     // Acquire and Release are GT-only. Each successful acquisition has its own
     // idempotently releasable lease. The texture pointer is valid only while
@@ -104,11 +103,14 @@ namespace MiniMapTexturePublication
     void WithdrawGroupedRequest(uint64_t requestId) noexcept;
     // Called by the existing BuildingComplex world service; native work remains gated internally.
     void ProcessRequests() noexcept;
-    void InvalidateCells(const std::vector<MiniMapBuildingComplexIndex::CellKey>& cells) noexcept;
-    void InvalidateCapture(MiniMapBuildingComplexIndex::MassKey building) noexcept;
+    void InvalidateCells(const std::vector<MiniMapBuildingComplexWorld::CellKey>& cells) noexcept;
     void InvalidateAll() noexcept;
     // Polls active owners; never waits, flushes, or does worker GPU IO.
     void Service();
     void Shutdown() noexcept; // No native work without safe GT/GC admission.
 }
 #endif
+
+
+
+

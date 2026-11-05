@@ -4,6 +4,7 @@
 
 #include "CaptureRequest.h"
 #include "CaptureResult.h"
+#include "BuildingSpriteReadback.h"
 #include "../Visuals/SpriteGeometry.h"
 
 #include <array>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace SDK
 {
@@ -34,8 +36,8 @@ namespace Services::Map::Buildings::Capture
 	/** Owns one persistent private world and shared lighting rig plus one active capture request.
 	 * Only BuildingMapService may submit, advance, cancel, or coordinate its retirement.
 	 * All methods that touch UObject or NativeApi state require the game thread. Native
-	 * resources must be explicitly retired before the service releases this object; the
-	 * BM-07 readback/retirement work is required after any scene submission.
+	 * resources must be explicitly retired before the service releases this object. Submitted
+	 * scene work remains owned until asynchronous readback or an ordered retirement fence proves safety.
 	 */
 	class BuildingSpriteRenderer final
 	{
@@ -70,8 +72,8 @@ namespace Services::Map::Buildings::Capture
 			ServiceRetirement
 		};
 
-		/** Creates an inert renderer with no world, actor, component, or render target. */
-		BuildingSpriteRenderer() = default;
+		/** Creates an inert renderer tied to one active game-world session generation. */
+		explicit BuildingSpriteRenderer(std::uint64_t sessionGeneration, double pixelsPerMapUnit);
 		/** Prevents copies from creating ambiguous native-resource ownership. */
 		BuildingSpriteRenderer(const BuildingSpriteRenderer&) = delete;
 		/** Prevents copies from creating ambiguous native-resource ownership. */
@@ -85,24 +87,20 @@ namespace Services::Map::Buildings::Capture
 		 * @param request Owned sprite identity, subject facts, and session correlation.
 		 */
 		CaptureResult::Acceptance Accept(const CaptureRequest& request);
-		/** Advances at most the current request's nonblocking game-thread work. */
+		/** Advances at most one admitted game-thread operation or readback poll. */
 		void Advance();
 		/** Retries safe cleanup after a pre-submission cancellation or failure. */
 		void AdvanceRetirement();
 		/** Runs the phase-specific world, subject, warm-up, or capture step. */
 		void AdvanceCurrentPhase();
-		/** Returns pending or terminal progress for the active request correlation. */
-		CaptureResult::Completion GetProgress() const;
+		/** Returns matching progress or a stale-request rejection for the supplied correlation. */
+		CaptureResult::Completion GetProgress(CaptureRequest::Correlation correlation) const;
 		/** Revokes result eligibility; submitted scene work remains owned until BM-07 retires it. */
 		void Cancel(CaptureRequest::Correlation correlation);
 		/** Releases a terminal value after the service has consumed its completion. */
 		void AcknowledgeCompletion(CaptureRequest::Correlation correlation);
 		/** Continues or cancels HDR work after BM-07 proves scene/readback retirement. */
 		bool AcknowledgeHdrPassRetirement(bool readbackWasSubmitted, bool readbackAndSceneRetired);
-		/** Retires a cancelled final pass after BM-07 proves scene/readback retirement. */
-		bool AcknowledgeFinalPassRetirement(bool readbackAndSceneRetired);
-		/** Returns the current retained target's render resource to service-internal BM-07 work. */
-		void* GetPendingReadbackResource();
 		/** Returns capture-space XYZ bounds owned by the active subject request. */
 		Visuals::SpriteCaptureBounds GetCaptureBounds() const;
 
@@ -134,6 +132,18 @@ namespace Services::Map::Buildings::Capture
 		void SubmitHdrWarmupWhenAdmitted();
 		/** Attempts the C10 submission after ten admitted iterations from C0. */
 		void SubmitHdrCaptureAfterWarmup();
+		/** Advances the current HDR or final-color asynchronous readback. */
+		void AdvanceReadbackPhase();
+		/** Saves completed HDR samples before allowing final-color target reconfiguration. */
+		void CompleteHdrReadback();
+		/** Processes final-color samples and begins request-resource retirement. */
+		void CompleteFinalReadback();
+		/** Fails a pass only after its readback backend reports safe native retirement. */
+		void RetireFailedReadback(BuildingSpriteReadback& readback);
+		/** Processes both packed captures into the immutable BM-02 payload. */
+		void ProcessFinalCapture();
+		/** Retires submitted scene work behind the renderer's nonblocking request fence. */
+		bool RetireSubmittedSceneBehindFence();
 		/** Marks a failed request terminal only after safe pre-submission cleanup. */
 		void FailRequest(CaptureResult::Completion::Failure failure);
 		/** Creates and registers one configured directional light. */
@@ -187,6 +197,10 @@ namespace Services::Map::Buildings::Capture
 
 		CaptureRequest activeRequest_;
 		CaptureResult::Completion completion_;
+		BuildingSpriteReadback hdrReadback_;
+		BuildingSpriteReadback finalReadback_;
+		std::vector<std::uint16_t> hdrPixels_;
+		std::shared_ptr<const Cache::ProcessedSpritePayload> pendingPayload_;
 		Phase phase_ = Phase::Idle;
 		SDK::UClass* actorClass_ = nullptr;
 		SDK::UWorld* privateWorld_ = nullptr;
@@ -196,7 +210,10 @@ namespace Services::Map::Buildings::Capture
 		SDK::UTextureRenderTarget2D* renderTarget_ = nullptr;
 		double boundsCenter_[3]{};
 		double boundsExtent_[3]{};
+		double pixelsPerMapUnit_ = 0.0;
 		std::uint64_t admittedServiceIterations_ = 0;
+		std::uint64_t lastAcceptedRequestSequence_ = 0;
+		std::uint64_t activeGameWorldSessionGeneration_ = 0;
 		std::uint64_t preparedIteration_ = 0;
 		std::uint64_t hdrWarmupIteration_ = 0;
 		alignas(8) unsigned char retirementFenceStorage_[8]{};
@@ -206,6 +223,8 @@ namespace Services::Map::Buildings::Capture
 		bool resultEligible_ = true;
 		bool sceneWorkSubmitted_ = false;
 		bool finalColorPassSubmitted_ = false;
+		bool readbackStarted_ = false;
+		bool requestSceneRetirementFenceComplete_ = false;
 		bool privateWorldInitialized_ = false;
 		bool lightingRigSetupStarted_ = false;
 		bool lightingRigReady_ = false;

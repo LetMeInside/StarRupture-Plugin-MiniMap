@@ -1,6 +1,6 @@
 # MiniMap Technical Documentation
 
-These technical references preserve findings about StarRupture, Unreal Engine, AlienX ModLoader, and MiniMap's implementation boundaries. They are primarily for MiniMap maintainers, mod developers, and developers investigating relevant StarRupture native interfaces and resource lifetimes. They are research references, not installation guides, user manuals, or specifications for new features.
+These references cover StarRupture engine interfaces, MiniMap rendering and resource lifetimes, lifecycle behavior, terrain acquisition, and AlienX integration. They are maintainer references, not installation guides or specifications for new features.
 
 ## Engine
 
@@ -18,6 +18,10 @@ These technical references preserve findings about StarRupture, Unreal Engine, A
 
 - [Texture Publication](ModLoader/Texture-Publication.md) — AlienX interface-70 texture APIs, ownership, atlas publication, upload timing, and retirement semantics.
 
+## External building-map API
+
+MiniMap exposes `MiniMap_GetBuildingComplexApi` (BCT1) for external building-map consumers. The former `MiniMap_GetBuildingSessionApi` canvas-rendering wrapper has been removed. MiniMap's own minimap renderer, shared capture and sprite-cache systems, and BCT1 composition/publication remain independent of external consumers.
+
 ## Evidence and version boundaries
 
-The references combine historical native/PDB/SDK research, historical runtime observations, current MiniMap source inspection, explicitly identified inferences, and unresolved questions. Findings are version-bound: historical executable RVAs, native layouts, and implementation observations are not universally portable contracts. Current-source descriptions do not substitute for runtime compatibility testing.
+The references combine historical native/PDB/SDK research, historical runtime observations, current-source descriptions, explicitly identified inferences, and unresolved questions. Findings are version-bound: historical executable RVAs, native layouts, and implementation observations are not universally portable contracts. Current-source descriptions do not substitute for runtime compatibility testing.

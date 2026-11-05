@@ -41,8 +41,20 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.clear();
 	}
 
-	/** Drives private renderer teardown without releasing its owner while NativeApi work is pending. */
-	bool BuildingMapService::AdvanceCaptureRendererShutdown()
+	/** Creates an inert, service-owned renderer for one active game-world session. */
+	bool BuildingMapService::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
+	{
+		if (captureRenderer_ || sessionGeneration == 0 || sessionGeneration <= lastCaptureSessionGeneration_)
+		{
+			return false;
+		}
+		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(sessionGeneration, GetPixelsPerMapUnit()));
+		lastCaptureSessionGeneration_ = sessionGeneration;
+		return true;
+	}
+
+	/** Drives renderer teardown without releasing its owner while NativeApi work is pending. */
+	bool BuildingMapService::AdvanceCaptureGameWorldSessionShutdown()
 	{
 		if (!captureRenderer_)
 		{

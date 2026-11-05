@@ -22,6 +22,8 @@ namespace Services::Map::Buildings::Capture
 				Accepted,
 				RejectedInvalidRequest,
 				RejectedIsolation,
+				RejectedStaleSession,
+				RejectedStaleRequest,
 				RejectedUnavailable
 			};
 
@@ -37,6 +39,15 @@ namespace Services::Map::Buildings::Capture
 		 */
 		struct Completion
 		{
+			/** Records disk persistence independently from CPU payload readiness. */
+			enum class PersistenceStatus : std::uint8_t
+			{
+				NotAttempted,
+				Persisted,
+				Failed,
+				Unavailable
+			};
+
 			/** Distinguishes pending work from each terminal outcome. */
 			enum class Status : std::uint8_t
 			{
@@ -56,7 +67,8 @@ namespace Services::Map::Buildings::Capture
 				ReadbackFailed,
 				InvalidCapture,
 				ProcessingFailed,
-				RetirementFailed
+				RetirementFailed,
+				StaleRequest
 			};
 
 			/** Original service/session correlation used to reject stale completion feedback. */
@@ -65,6 +77,8 @@ namespace Services::Map::Buildings::Capture
 			Status Result = Status::Pending;
 			/** Failure category; meaningful only when Result is Failed. */
 			Failure Error = Failure::None;
+			/** Disk-cache outcome; BM-07 leaves this NotAttempted until service cache initialization exists. */
+			PersistenceStatus Persistence = PersistenceStatus::NotAttempted;
 			/** Completed immutable sprite, shared with BM-03 without copying its pixel allocation. */
 			std::shared_ptr<const Cache::ProcessedSpritePayload> Payload;
 		};
