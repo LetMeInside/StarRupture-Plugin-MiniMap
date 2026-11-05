@@ -578,6 +578,9 @@ namespace MiniMap
             return false;
         }
 
+        // Point the SDK's GObjects and FName::AppendString at the loader's map for this build.
+        PluginSdkRuntime::Init(pluginSelf->hooks);
+
         if (!MiniMapConfig::Initialize())
         {
             LOG_ERROR(
@@ -836,7 +839,7 @@ namespace MiniMap
 #endif
         // Runtime reload does not replay lifecycle events. Attach through the same
         // guarded handlers, accepting the existing loading-screen edge case.
-        SDK::UWorld* currentWorld = SDK::UWorld::GetWorld();
+        SDK::UWorld* currentWorld = PluginSdkRuntime::GetWorld();
         if (currentWorld && currentWorld->GetName() == "ChimeraMain")
         {
             OnWorldBeginPlay(currentWorld);
