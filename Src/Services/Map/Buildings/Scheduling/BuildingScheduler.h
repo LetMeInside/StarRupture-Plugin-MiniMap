@@ -1,97 +1,118 @@
-// Coordinates cache-first Blueprint sprite retrieval and one accepted capture request.
+// Coordinates cache-aware sprite retrieval, per-key status, FIFO capture and renderer retirement.
 #pragma once
 
 #include "../Cache/CpuSpriteSourceManager.h"
+#include "../Capture/CaptureFeedback.h"
 #include "../Capture/CaptureRequest.h"
+#include "SpriteFeedbackQueue.h"
+#include "SpriteRequestQueue.h"
+#include "SpriteStatus.h"
 
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace Services::Map::Buildings::Cache
 {
 	class SpriteDiskCache;
 }
+namespace Services::Map::Buildings::Capture
+{
+	class BuildingSpriteRenderer;
+}
 
 namespace Services::Map::Buildings::Scheduling
 {
-	/** Uses service-owned caches and tracks at most one accepted Blueprint capture.
-	 * Cache and request operations are serialized by the owning BuildingMapService.
-	 * The service owns this scheduler and both referenced cache objects for its lifetime.
+	/** Owns per-session status, request/feedback queues and the private sprite renderer.
+	 * It borrows the CPU source manager and disk cache, which must outlive this scheduler.
+	 * Acquisition and payload borrowing are serialized on the designated game thread.
 	 */
 	class BuildingScheduler final
 	{
 	public:
-		/** Distinguishes a usable source, a confirmed cache miss, and an uncertain cache outcome. */
-		enum class LookupStatus
+		/** Reports per-key acquisition readiness without exposing SpriteStatus storage. */
+		enum class RequirementStatus
 		{
 			Ready,
-			CaptureRequired,
+			Pending,
+			Failed,
 			Unavailable
 		};
 
-		/** Distinguishes a prepared request from missing session or already active work. */
-		enum class PreparationStatus
-		{
-			Prepared,
-			Busy,
-			Unavailable
-		};
-
-		/** Retains service-owned cache references without resolving paths.
-		 * @param cpuSpriteSourceManager Service-owned in-memory source manager.
-		 * @param spriteDiskCache Service-owned disk cache using the injected Buildings directory.
+		/** Borrows the sibling cache and resident CPU source manager.
+		 * @param cpuSpriteSourceManager Owner of resident processed sprites.
+		 * @param spriteDiskCache Cache used for capture persistence and by CPU source retrieval.
 		 */
 		BuildingScheduler(
-			Cache::CpuSpriteSourceManager& cpuSpriteSourceManager,
-			Cache::SpriteDiskCache& spriteDiskCache) noexcept;
+			Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
+			Cache::SpriteDiskCache* spriteDiskCache) noexcept;
+		/** Releases renderer storage; callers must complete ordered session shutdown first. */
+		~BuildingScheduler();
 
-		/** Checks CPU first, then loads and publishes a disk payload when available.
+		/** Resolves one requirement through status, CPU source, disk cache, or request FIFO.
+		 * A current-session pending or terminal failure suppresses repeat cache work. Temporary
+		 * unavailability may be retried on a later call. A missing/invalid disk entry enqueues at
+		 * most one owned request for this key in the current session.
 		 * @param key Validated owned canonical Blueprint key.
-		 * @return Ready, CaptureRequired for a confirmed miss, or Unavailable for uncertain cache outcomes.
+		 * @return Ready, Pending, Failed for a session-local terminal failure, or Unavailable.
 		 */
-		LookupStatus Lookup(const Cache::OwnedSpriteKey& key);
+		RequirementStatus EnsureSpriteReady(const Cache::OwnedSpriteKey& key);
 
-		/** Starts a scheduler session and resets request sequencing to one.
-		 * @param sessionGeneration Renderer generation already accepted by BuildingMapService.
+		/** Creates a renderer for a strictly increasing nonzero session generation.
+		 * @param sessionGeneration New game-world session identity.
+		 * @param pixelsPerMapUnit Capture scale passed to the renderer.
+		 * @return True when a new renderer session is established.
 		 */
-		void BeginSession(std::uint64_t sessionGeneration) noexcept;
+		bool BeginSession(std::uint64_t sessionGeneration, double pixelsPerMapUnit);
 
-		/** Clears session and request state after renderer retirement completes. */
-		void EndSession() noexcept;
-
-		/** Prepares a correlated request unless the session is absent or work is active.
-		 * @param key Canonical Blueprint key copied into the request.
-		 * @param request Receives the session generation, next sequence, and sprite requirement.
-		 * @return Prepared, Busy when work is active, or Unavailable without a usable session.
+		/** Requests ordered shutdown and advances retirement until the renderer can be released.
+		 * @return True when renderer retirement completed and session-local state was cleared.
 		 */
-		PreparationStatus PrepareCapture(
-			const Cache::OwnedSpriteKey& key,
-			Capture::CaptureRequest& request);
+		bool AdvanceSessionShutdown();
 
-		/** Moves the accepted request's key and correlation into the one active slot.
-		 * @param request Prepared request whose submission the renderer accepted.
+		/** Advances the renderer once, then drains its available terminal feedback.
+		 * This internal acquisition operation is called on the serialized game thread.
 		 */
-		void RecordAccepted(Capture::CaptureRequest&& request) noexcept;
+		void AdvanceSpriteAcquisition();
 
-		/** Copies active request identity for service-owned advancement.
-		 * @param key Receives the accepted canonical Blueprint key.
-		 * @param correlation Receives its accepted renderer correlation.
-		 * @return True when an accepted request is active.
+	private:
+		/** Enqueues one owned correlated request after a confirmed cache miss or invalid entry. */
+		RequirementStatus EnqueueCaptureRequest(const Cache::OwnedSpriteKey& key);
+		/** Drains feedback after request values have left the independently locked FIFO. */
+		void ProcessCaptureFeedback();
+		/** Clears scheduler-only session values after renderer retirement has completed. */
+		void ClearSessionState() noexcept;
+
+		/** Finds status only when feedback exactly matches its pending current-session request.
+		 * @param feedback Dequeued terminal message to correlate by session and canonical key.
+		 * @return Mutable status entry, or null when the message is stale or unrelated.
 		 */
-		bool GetActiveRequest(
-			Cache::OwnedSpriteKey& key,
-			Capture::CaptureRequest::Correlation& correlation) const;
+		SpriteStatus* FindMatchingPendingStatus(
+			const Capture::CaptureFeedback& feedback) noexcept;
 
-		/** Clears only the active request matching the terminal correlation.
-		 * @param correlation Correlation reported by the terminal renderer result.
+		/** Applies one validated terminal message without retaining it in a second collection.
+		 * @param feedback Owned message removed from the feedback FIFO.
 		 */
-		void ClearActiveRequest(Capture::CaptureRequest::Correlation correlation) noexcept;
+		void ProcessOneCaptureFeedback(Capture::CaptureFeedback&& feedback);
 
-private:
-		Cache::CpuSpriteSourceManager& cpuSpriteSourceManager_;
-		Cache::SpriteDiskCache& spriteDiskCache_;
+		/** Adopts a validated payload, marks readiness, then attempts independent persistence.
+		 * @param feedback Matching successful message whose payload ownership transfers to the CPU manager.
+		 * @param status Matching pending per-key status updated after publication eligibility is confirmed.
+		 */
+		void ProcessSuccessfulCapture(
+			Capture::CaptureFeedback&& feedback,
+			SpriteStatus& status);
+
+		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager_ = nullptr;
+		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
 		std::uint64_t sessionGeneration_ = 0;
+		std::uint64_t lastSessionGeneration_ = 0;
 		std::uint64_t nextRequestSequence_ = 1;
-		Cache::OwnedSpriteKey activeSpriteKey_;
-		Capture::CaptureRequest::Correlation activeCorrelation_;
+		bool sessionShutdownRequested_ = false;
+		std::unordered_map<std::string, SpriteStatus> spriteStatusesByKey_;
+		SpriteRequestQueue spriteRequestQueue_;
+		SpriteFeedbackQueue spriteFeedbackQueue_;
+		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;
 	};
 }

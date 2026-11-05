@@ -45,7 +45,7 @@ namespace Services::Map::Buildings::Cache
 			ProcessingFailure
 		};
 		Status Result = Status::InvalidInput;
-		std::shared_ptr<const ProcessedSpritePayload> Payload;
+		std::unique_ptr<const ProcessedSpritePayload> Payload;
 	};
 
 	/** Converts authored capture samples to straight display RGBA8 and applies compatible crop/filtering. */
@@ -390,7 +390,7 @@ namespace Services::Map::Buildings::Cache
 		{
 			const Visuals::SpriteProjectionRectangle projection{
 				double(crop[0]), double(crop[1]), double(crop[0]) + width * step, double(crop[1]) + height * step};
-			std::shared_ptr<const ProcessedSpritePayload> payload;
+			std::unique_ptr<const ProcessedSpritePayload> payload;
 			if (!ProcessedSpritePayload::TryAdopt(std::move(output), width, height, {256, 256}, bounds, projection, payload))
 			{
 				return {SpriteProcessingResult::Status::InvalidInput, {}};

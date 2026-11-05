@@ -1,125 +1,259 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements CPU-first sprite lookup and minimal one-request capture scheduling.
+// Implements status-aware resident/cache retrieval, FIFO capture and terminal payload publication.
 #include "BuildingScheduler.h"
 
-#include <string>
 #include <utility>
 
 #include "../Cache/SpriteDiskCache.h"
+#include "../Capture/BuildingSpriteRenderer.h"
 
 namespace Services::Map::Buildings::Scheduling
 {
 	/** Retains references to the CPU source manager and configured disk cache. */
 	BuildingScheduler::BuildingScheduler(
-		Cache::CpuSpriteSourceManager& cpuSpriteSourceManager,
-		Cache::SpriteDiskCache& spriteDiskCache) noexcept
+		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
+		Cache::SpriteDiskCache* spriteDiskCache) noexcept
 		: cpuSpriteSourceManager_(cpuSpriteSourceManager)
 		, spriteDiskCache_(spriteDiskCache)
 	{
 	}
 
-	/** Returns CPU sources first, then loads and publishes a usable disk payload. */
-	BuildingScheduler::LookupStatus BuildingScheduler::Lookup(const Cache::OwnedSpriteKey& key)
-	{
-		std::string fileName;
-		if (!key.TryGetFileName(fileName))
-		{
-			return LookupStatus::Unavailable;
-		}
-		if (cpuSpriteSourceManager_.Lookup(key).Status == Cache::CpuSpriteSourceManager::Availability::Ready)
-		{
-			return LookupStatus::Ready;
-		}
+	/** Requires session shutdown to have retired every native renderer owner. */
+	BuildingScheduler::~BuildingScheduler() = default;
 
-		const Cache::SpriteDiskCache::LoadResult diskResult = spriteDiskCache_.TryLoad(key);
-		if (diskResult.Status == Cache::SpriteDiskCache::LoadStatus::Loaded)
+	/** Returns current readiness or queues one owned request after a confirmed disk miss. */
+	BuildingScheduler::RequirementStatus BuildingScheduler::EnsureSpriteReady(
+		const Cache::OwnedSpriteKey& key)
+	{
+		const auto statusEntry = spriteStatusesByKey_.find(key.Bytes());
+		if (statusEntry != spriteStatusesByKey_.end())
 		{
-			if (!diskResult.Payload || !diskResult.Payload->Pixels())
+			if (statusEntry->second.GetState() == SpriteStatus::State::CapturePending)
 			{
-				return LookupStatus::Unavailable;
+				return RequirementStatus::Pending;
 			}
-			return cpuSpriteSourceManager_.Publish(key, diskResult.Payload)
-				? LookupStatus::Ready
-				: LookupStatus::Unavailable;
+			if (statusEntry->second.GetState() == SpriteStatus::State::TerminalFailure)
+			{
+				return RequirementStatus::Failed;
+			}
 		}
-		if (diskResult.Status == Cache::SpriteDiskCache::LoadStatus::Missing ||
-			diskResult.Status == Cache::SpriteDiskCache::LoadStatus::Invalid)
+
+		if (cpuSpriteSourceManager_ == nullptr)
 		{
-			return LookupStatus::CaptureRequired;
+			return RequirementStatus::Unavailable;
 		}
-		return LookupStatus::Unavailable;
-	}
 
-	/** Starts a new renderer-correlated session and resets its first request sequence. */
-	void BuildingScheduler::BeginSession(std::uint64_t sessionGeneration) noexcept
-	{
-		sessionGeneration_ = sessionGeneration;
-		nextRequestSequence_ = 1;
-		activeSpriteKey_ = {};
-		activeCorrelation_ = {};
-	}
-
-	/** Clears the current session after renderer shutdown and native retirement complete. */
-	void BuildingScheduler::EndSession() noexcept
-	{
-		sessionGeneration_ = 0;
-		nextRequestSequence_ = 1;
-		activeSpriteKey_ = {};
-		activeCorrelation_ = {};
-	}
-
-	/** Prepares the canonical key and next session sequence without recording active work. */
-	BuildingScheduler::PreparationStatus BuildingScheduler::PrepareCapture(
-		const Cache::OwnedSpriteKey& key,
-		Capture::CaptureRequest& request)
-	{
-		if (sessionGeneration_ == 0 || nextRequestSequence_ == 0)
+		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult =
+			cpuSpriteSourceManager_->GetSprite(key);
+		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Ready &&
+			spriteResult.Payload != nullptr)
 		{
-			return PreparationStatus::Unavailable;
+			if (sessionGeneration_ != 0)
+			{
+				spriteStatusesByKey_.insert_or_assign(key.Bytes(), SpriteStatus(SpriteStatus::State::Ready));
+			}
+			return RequirementStatus::Ready;
 		}
-		if (activeCorrelation_.RequestSequence != 0)
+		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Unavailable)
 		{
-			return PreparationStatus::Busy;
+			if (sessionGeneration_ != 0)
+			{
+				spriteStatusesByKey_.insert_or_assign(
+					key.Bytes(),
+					SpriteStatus(SpriteStatus::State::TemporarilyUnavailable));
+			}
+			return RequirementStatus::Unavailable;
 		}
 
-		request.RequestIdentity.SessionGeneration = sessionGeneration_;
-		request.RequestIdentity.RequestSequence = nextRequestSequence_++;
-		request.SpriteRequirement = key;
-		return PreparationStatus::Prepared;
+		return EnqueueCaptureRequest(key);
 	}
 
-	/** Retains one accepted key and correlation after the renderer confirms acceptance. */
-	void BuildingScheduler::RecordAccepted(Capture::CaptureRequest&& request) noexcept
+	/** Creates an inert private renderer for a strictly increasing session generation. */
+	bool BuildingScheduler::BeginSession(std::uint64_t sessionGeneration, double pixelsPerMapUnit)
 	{
-		activeSpriteKey_ = std::move(request.SpriteRequirement);
-		activeCorrelation_ = request.RequestIdentity;
-	}
-
-	/** Copies active request identity for the service to advance and match with renderer progress. */
-	bool BuildingScheduler::GetActiveRequest(
-		Cache::OwnedSpriteKey& key,
-		Capture::CaptureRequest::Correlation& correlation) const
-	{
-		if (activeCorrelation_.RequestSequence == 0)
+		if (captureRenderer_ || sessionGeneration == 0 || sessionGeneration <= lastSessionGeneration_)
 		{
 			return false;
 		}
-		key = activeSpriteKey_;
-		correlation = activeCorrelation_;
+		ClearSessionState();
+		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(sessionGeneration, pixelsPerMapUnit));
+		sessionGeneration_ = sessionGeneration;
+		lastSessionGeneration_ = sessionGeneration;
 		return true;
 	}
 
-	/** Clears state only when the supplied terminal result belongs to the accepted request. */
-	void BuildingScheduler::ClearActiveRequest(Capture::CaptureRequest::Correlation correlation) noexcept
+	/** Advances ordered native shutdown and clears session values only after renderer retirement. */
+	bool BuildingScheduler::AdvanceSessionShutdown()
 	{
-		if (correlation.SessionGeneration != activeCorrelation_.SessionGeneration ||
-			correlation.RequestSequence != activeCorrelation_.RequestSequence)
+		if (!captureRenderer_)
+		{
+			return true;
+		}
+
+		if (!sessionShutdownRequested_)
+		{
+			captureRenderer_->RequestServiceShutdown();
+			sessionShutdownRequested_ = true;
+		}
+
+		if (!captureRenderer_->AdvanceServiceShutdown())
+		{
+			return false;
+		}
+		captureRenderer_.reset();
+		ClearSessionState();
+		return true;
+	}
+
+	/** Advances one renderer operation, then drains all terminal feedback now available. */
+	void BuildingScheduler::AdvanceSpriteAcquisition()
+	{
+		if (!captureRenderer_ || sessionShutdownRequested_)
 		{
 			return;
 		}
-		activeSpriteKey_ = {};
-		activeCorrelation_ = {};
+
+		captureRenderer_->AdvanceQueueDrivenCapture(spriteRequestQueue_, spriteFeedbackQueue_);
+		ProcessCaptureFeedback();
+	}
+
+	/** Drains feedback in FIFO order; each queue lock ends before message processing starts. */
+	void BuildingScheduler::ProcessCaptureFeedback()
+	{
+		Capture::CaptureFeedback feedback;
+		while (spriteFeedbackQueue_.TryDequeue(feedback))
+		{
+			ProcessOneCaptureFeedback(std::move(feedback));
+		}
+	}
+
+	/** Returns status only for an exact pending request in the active, non-shutting-down session. */
+	SpriteStatus* BuildingScheduler::FindMatchingPendingStatus(
+		const Capture::CaptureFeedback& feedback) noexcept
+	{
+		if (sessionGeneration_ == 0 || sessionShutdownRequested_ ||
+			feedback.RequestIdentity.SessionGeneration != sessionGeneration_)
+		{
+			return nullptr;
+		}
+
+		const auto statusEntry = spriteStatusesByKey_.find(feedback.SpriteRequirement.Bytes());
+		if (statusEntry == spriteStatusesByKey_.end() ||
+			!statusEntry->second.IsPendingFor(feedback.RequestIdentity))
+		{
+			return nullptr;
+		}
+
+		return &statusEntry->second;
+	}
+
+	/** Discards stale results and applies only a message matching current per-key pending state. */
+	void BuildingScheduler::ProcessOneCaptureFeedback(Capture::CaptureFeedback&& feedback)
+	{
+		SpriteStatus* const status = FindMatchingPendingStatus(feedback);
+		if (status == nullptr)
+		{
+			return;
+		}
+
+		switch (feedback.Result)
+		{
+		case Capture::CaptureFeedback::Outcome::Succeeded:
+			ProcessSuccessfulCapture(std::move(feedback), *status);
+			return;
+		case Capture::CaptureFeedback::Outcome::Failed:
+			if (feedback.Error == Capture::CaptureResult::Completion::Failure::StaleRequest ||
+				feedback.Error == Capture::CaptureResult::Completion::Failure::None)
+			{
+				status->MarkTemporarilyUnavailable();
+				return;
+			}
+			status->MarkTerminalFailure(feedback.RequestIdentity);
+			return;
+		case Capture::CaptureFeedback::Outcome::Cancelled:
+			status->MarkTemporarilyUnavailable();
+			return;
+		}
+	}
+
+	/** Publishes the exact shared payload, confirms current eligibility, then attempts independent persistence. */
+	void BuildingScheduler::ProcessSuccessfulCapture(
+		Capture::CaptureFeedback&& feedback,
+		SpriteStatus& status)
+	{
+		if (cpuSpriteSourceManager_ == nullptr || !feedback.Payload || feedback.Payload->Pixels().empty())
+		{
+			status.MarkTemporarilyUnavailable();
+			return;
+		}
+
+		if (!cpuSpriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
+		{
+			status.MarkTemporarilyUnavailable();
+			return;
+		}
+
+		const Cache::CpuSpriteSourceManager::SpriteResult publishedSource =
+			cpuSpriteSourceManager_->GetSprite(feedback.SpriteRequirement);
+		if (publishedSource.Result != Cache::CpuSpriteSourceManager::Status::Ready ||
+			publishedSource.Payload == nullptr)
+		{
+			status.MarkTemporarilyUnavailable();
+			return;
+		}
+
+		if (!status.IsPendingFor(feedback.RequestIdentity))
+		{
+			return;
+		}
+		status.MarkReady();
+		if (spriteDiskCache_ != nullptr)
+		{
+			(void)spriteDiskCache_->TryWrite(feedback.SpriteRequirement, *publishedSource.Payload);
+		}
+	}
+
+	/** Clears session-local requests, feedback and status without touching native renderer state. */
+	void BuildingScheduler::ClearSessionState() noexcept
+	{
+		spriteRequestQueue_.Clear();
+		spriteFeedbackQueue_.Clear();
+		spriteStatusesByKey_.clear();
+		sessionGeneration_ = 0;
+		nextRequestSequence_ = 1;
+		sessionShutdownRequested_ = false;
+	}
+
+	/** Creates one owned request after a confirmed cache miss and records it as pending.
+	 * @param key Canonical owned Blueprint key to enqueue.
+	 * @return Pending when queued, or Unavailable without an active session/sequence.
+	 */
+	BuildingScheduler::RequirementStatus BuildingScheduler::EnqueueCaptureRequest(
+		const Cache::OwnedSpriteKey& key)
+	{
+		if (sessionGeneration_ == 0 || nextRequestSequence_ == 0 || sessionShutdownRequested_)
+		{
+			if (sessionGeneration_ != 0)
+			{
+				spriteStatusesByKey_.insert_or_assign(
+					key.Bytes(),
+					SpriteStatus(SpriteStatus::State::TemporarilyUnavailable));
+			}
+			return RequirementStatus::Unavailable;
+		}
+
+		Capture::CaptureRequest request;
+		request.RequestIdentity.SessionGeneration = sessionGeneration_;
+		request.RequestIdentity.RequestSequence = nextRequestSequence_;
+		request.SpriteRequirement = key;
+
+		SpriteStatus pendingStatus(SpriteStatus::State::CapturePending);
+		pendingStatus.MarkPending(request.RequestIdentity);
+		spriteStatusesByKey_.insert_or_assign(key.Bytes(), std::move(pendingStatus));
+		spriteRequestQueue_.Enqueue(std::move(request));
+		++nextRequestSequence_;
+		return RequirementStatus::Pending;
 	}
 }
 

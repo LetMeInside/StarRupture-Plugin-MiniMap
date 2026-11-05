@@ -40,7 +40,6 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	{
 		try
 		{
-			std::lock_guard lock(m_operationMutex);
 			std::filesystem::path path;
 			if (!TryGetPath(key, path)) return {LoadStatus::Invalid, {}, 0};
 			return LoadFile(path);
@@ -66,11 +65,10 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	{
 		try
 		{
-			std::lock_guard lock(m_operationMutex);
 			std::filesystem::path path;
 			if (!TryGetPath(key, path) || !IsPayloadMappable(payload)) return WriteStatus::Invalid;
 			std::vector<std::uint8_t> png;
-			const auto encoded = SpritePngCodec::Encode(*payload.Pixels(), payload.Width(), payload.Height(), png);
+			const auto encoded = SpritePngCodec::Encode(payload.Pixels(), payload.Width(), payload.Height(), png);
 			if (encoded.Status == SpritePngCodec::ResultStatus::Unavailable) return WriteStatus::Unavailable;
 			if (encoded.Status != SpritePngCodec::ResultStatus::Complete ||
 				png.empty() || png.size() > kMaximumPngBytes) return WriteStatus::Invalid;
@@ -148,7 +146,7 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 		{
 			return {LoadStatus::Invalid, {}, ERROR_SUCCESS, decoded.Error};
 		}
-		std::shared_ptr<const ProcessedSpritePayload> payload;
+		std::unique_ptr<const ProcessedSpritePayload> payload;
 		if (!BuildPayload(header, std::move(rgba), payload)) return {LoadStatus::Invalid, {}, 0};
 		return {LoadStatus::Loaded, std::move(payload), 0};
 	}
@@ -222,7 +220,7 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	bool SpriteDiskCache::BuildPayload(
 		const SpriteHeaderFields& header,
 		std::vector<std::uint8_t>&& rgba,
-		std::shared_ptr<const ProcessedSpritePayload>& output) const
+		std::unique_ptr<const ProcessedSpritePayload>& output) const
 	{
 		const Visuals::SpriteProjectionRectangle projection{
 			double(header.SourceX), double(header.SourceY),

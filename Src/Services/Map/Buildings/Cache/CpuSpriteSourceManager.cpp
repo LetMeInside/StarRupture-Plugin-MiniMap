@@ -1,78 +1,78 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements keyed immutable sprite retention and permanent lease invalidation.
+// Implements serialized resident sprite ownership and transparent cache retrieval.
 #include "CpuSpriteSourceManager.h"
 
 #include <utility>
 
+#include "SpriteDiskCache.h"
+
 namespace Services::Map::Buildings::Cache
 {
-	/** Invalidates leases before releasing the manager's current source entries. */
-	CpuSpriteSourceManager::~CpuSpriteSourceManager()
+	/** Retains the cache pointer used for cache-aware lookup without taking ownership. */
+	CpuSpriteSourceManager::CpuSpriteSourceManager(SpriteDiskCache* spriteDiskCache) noexcept
+		: spriteDiskCache_(spriteDiskCache)
 	{
-		InvalidateAll();
 	}
 
-	/** Publishes a validated payload and permanently revokes any prior publication for its key. */
-	bool CpuSpriteSourceManager::Publish(
-		const OwnedSpriteKey& key,
-		std::shared_ptr<const ProcessedSpritePayload> payload)
+	/** Returns a resident payload or loads it once from the configured disk cache. */
+	CpuSpriteSourceManager::SpriteResult CpuSpriteSourceManager::GetSprite(const OwnedSpriteKey& key)
 	{
-		if (key.Bytes().empty() || !payload || !payload->Pixels())
+		const auto resident = payloadsByKey_.find(key.Bytes());
+		if (resident != payloadsByKey_.end())
+		{
+			return {Status::Ready, resident->second.get()};
+		}
+
+		if (spriteDiskCache_ == nullptr)
+		{
+			return {Status::Unavailable, nullptr};
+		}
+
+		SpriteDiskCache::LoadResult loaded = spriteDiskCache_->TryLoad(key);
+		if (loaded.Status == SpriteDiskCache::LoadStatus::Loaded && loaded.Payload)
+		{
+			if (!Adopt(key, std::move(loaded.Payload)))
+			{
+				return {Status::Unavailable, nullptr};
+			}
+			const auto adopted = payloadsByKey_.find(key.Bytes());
+			return adopted == payloadsByKey_.end()
+				? SpriteResult{Status::Unavailable, nullptr}
+				: SpriteResult{Status::Ready, adopted->second.get()};
+		}
+
+		if (loaded.Status == SpriteDiskCache::LoadStatus::Missing ||
+			loaded.Status == SpriteDiskCache::LoadStatus::Invalid)
+		{
+			return {Status::CaptureRequired, nullptr};
+		}
+		return {Status::Unavailable, nullptr};
+	}
+
+	/** Transfers a captured payload into the map without copying its image allocation. */
+	bool CpuSpriteSourceManager::Adopt(
+		const OwnedSpriteKey& key,
+		std::unique_ptr<const ProcessedSpritePayload>&& payload)
+	{
+		if (key.Bytes().empty() || !payload || payload->Pixels().empty())
 		{
 			return false;
 		}
-
-		std::shared_ptr<CpuSpriteSourceLease::CurrentnessState> currentness =
-			std::make_shared<CpuSpriteSourceLease::CurrentnessState>();
-		const auto source = sourcesByKey_.find(key.Bytes());
-		if (source != sourcesByKey_.end())
-		{
-			source->second.Currentness->Current = false;
-			source->second = {std::move(payload), std::move(currentness)};
-			return true;
-		}
-
-		sourcesByKey_.emplace(key.Bytes(), SourceEntry{std::move(payload), std::move(currentness)});
+		payloadsByKey_.insert_or_assign(key.Bytes(), std::move(payload));
 		return true;
 	}
 
-	/** Returns a lease to the current payload without copying its image allocation. */
-	CpuSpriteSourceManager::LookupResult CpuSpriteSourceManager::Lookup(const OwnedSpriteKey& key) const noexcept
-	{
-		const auto source = sourcesByKey_.find(key.Bytes());
-		if (source == sourcesByKey_.end())
-		{
-			return {};
-		}
-
-		return {
-			Availability::Ready,
-			CpuSpriteSourceLease(source->second.Payload, source->second.Currentness)};
-	}
-
-	/** Permanently revokes a source before removing the manager's ownership. */
+	/** Erases one resident payload and expires pointers borrowed from that entry. */
 	bool CpuSpriteSourceManager::Withdraw(const OwnedSpriteKey& key) noexcept
 	{
-		const auto source = sourcesByKey_.find(key.Bytes());
-		if (source == sourcesByKey_.end())
-		{
-			return false;
-		}
-
-		source->second.Currentness->Current = false;
-		sourcesByKey_.erase(source);
-		return true;
+		return payloadsByKey_.erase(key.Bytes()) != 0;
 	}
 
-	/** Revokes every outstanding publication token and releases current-entry ownership. */
-	void CpuSpriteSourceManager::InvalidateAll() noexcept
+	/** Releases all resident payloads and expires every borrowed payload pointer. */
+	void CpuSpriteSourceManager::Clear() noexcept
 	{
-		for (auto& source : sourcesByKey_)
-		{
-			source.second.Currentness->Current = false;
-		}
-		sourcesByKey_.clear();
+		payloadsByKey_.clear();
 	}
 }
 

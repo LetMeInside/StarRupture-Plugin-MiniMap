@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <system_error>
 #include <vector>
@@ -29,7 +28,7 @@ namespace Services::Map::Buildings::Cache
 		struct LoadResult
 		{
 			LoadStatus Status = LoadStatus::Invalid;
-			std::shared_ptr<const ProcessedSpritePayload> Payload;
+			std::unique_ptr<const ProcessedSpritePayload> Payload;
 			/** Native Win32 error returned by file operations, when applicable. */
 			DWORD Win32Error = ERROR_SUCCESS;
 			/** Original HRESULT returned by the WIC codec, when applicable. */
@@ -95,7 +94,7 @@ namespace Services::Map::Buildings::Cache
 		bool EncodeHeader(const ProcessedSpritePayload&, std::uint32_t, std::uint8_t*) const noexcept;
 		/** Reconstructs original-coordinate projection metadata from the version-1 header. */
 		bool BuildPayload(const SpriteHeaderFields&, std::vector<std::uint8_t>&&,
-			std::shared_ptr<const ProcessedSpritePayload>&) const;
+			std::unique_ptr<const ProcessedSpritePayload>&) const;
 		/** Joins encoded PNG and header bytes before any persistent file is opened. */
 		WriteStatus SerializeAndPersist(const std::filesystem::path&, const ProcessedSpritePayload&,
 			const std::vector<std::uint8_t>&);
@@ -117,6 +116,5 @@ namespace Services::Map::Buildings::Cache
 		static double ReadDouble(const std::uint8_t*) noexcept;
 
 		std::filesystem::path m_buildingsRoot;
-		mutable std::mutex m_operationMutex;
 	};
 }

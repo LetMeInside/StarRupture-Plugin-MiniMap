@@ -1,7 +1,6 @@
 // Owns Building Map sections, sprite caches, scheduling and capture sessions, and creates scoped viewports.
 #pragma once
 
-#include "Cache/CpuSpriteSourceManager.h"
 #include "IBuildingCollector.h"
 #include "Coordination/IBuildingMapService.h"
 
@@ -9,8 +8,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <string_view>
-#include <utility>
 
 namespace Services::Map::Buildings
 {
@@ -18,21 +15,18 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport;
 	namespace Cache
 	{
+		class CpuSpriteSourceManager;
 		class SpriteDiskCache;
 	}
 	namespace Scheduling
 	{
 		class BuildingScheduler;
 	}
-	namespace Capture
-	{
-		class BuildingSpriteRenderer;
-	}
 
-	/** Owns map configuration, sections, sprite sources and caches, scheduling, capture, and viewport registrations.
+	/** Owns map configuration, sections, temporary acquisition resources, and viewport registrations.
 	 * Service and viewport calls must be made on one calling thread; this
-	 * foundation does not provide concurrent access or synchronization. The capture
-	 * renderer pointer remains empty until future service-directed initialization.
+	 * foundation does not provide concurrent access or synchronization. The service
+	 * keeps cache/source/scheduler owners only until future SectionScheduler ownership exists.
 	 */
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
@@ -76,12 +70,6 @@ namespace Services::Map::Buildings
 		/** Returns the derived number of image pixels per map unit. */
 		double GetPixelsPerMapUnit() const noexcept;
 
-		/** Returns the inert service-owned manager for immutable CPU sprite sources.
-		 * It performs no startup work; callers publish sources only through an explicitly
-		 * authorized producer path and retain lookup leases across source use.
-		 */
-		Cache::CpuSpriteSourceManager& GetCpuSpriteSourceManager() noexcept;
-
 		/**
 		 * Opens a viewport with its own non-owning collector association. The caller
 		 * must supply a collector not already associated with another open viewport,
@@ -104,15 +92,6 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapViewport;
-
-		/** Describes whether one Blueprint sprite is already usable or can be captured. */
-		enum class SpriteRequirementStatus
-		{
-			Ready,
-			CaptureScheduled,
-			Busy,
-			Unavailable
-		};
 
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		const BuildingMapSection* FindSectionAt(
@@ -141,14 +120,10 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Begins one inert renderer lifetime for the current game-world session. */
+		/** Begins one scheduler-owned renderer lifetime for the current game-world session. */
 		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
-		/** Advances session shutdown and releases the renderer only after native retirement completes. */
+		/** Advances scheduler-owned shutdown and releases native state only after retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
-		/** Resolves one canonical Blueprint sprite from cache or admits its capture request. */
-		SpriteRequirementStatus EnsureBlueprintSprite(std::string_view canonicalBlueprintName);
-		/** Advances and consumes the one accepted capture request, preserving renderer retirement ownership. */
-		void AdvanceAdmittedCapture();
 
 		/**
 		 * Applies one cell result from a batch without creating a section for incomplete coverage.
@@ -170,11 +145,9 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
 		std::uint64_t lastCaptureSessionGeneration_ = 0;
-		Cache::CpuSpriteSourceManager cpuSpriteSourceManager_;
-		// Declaration order keeps scheduler references valid until the scheduler is destroyed.
 		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
+		std::unique_ptr<Cache::CpuSpriteSourceManager> cpuSpriteSourceManager_;
+		// Reverse destruction releases the scheduler and its renderer before borrowed resources.
 		std::unique_ptr<Scheduling::BuildingScheduler> buildingScheduler_;
-		// Default-null inert owner; service teardown must retire request work, shared lights, and world first.
-		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;
 	};
 }

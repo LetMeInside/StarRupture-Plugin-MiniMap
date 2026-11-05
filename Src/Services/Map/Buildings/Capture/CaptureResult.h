@@ -1,5 +1,4 @@
-// Defines capture acceptance, terminal outcomes, and immutable processed-payload
-// handoff from the internal capture implementation to BuildingMapService.
+// Defines queue-admission outcomes and private terminal capture state for the renderer.
 #pragma once
 
 #include "CaptureRequest.h"
@@ -10,10 +9,10 @@
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Groups the typed acceptance and completion values used by internal capture work. */
+	/** Groups renderer queue-admission and retained terminal-state values. */
 	struct CaptureResult final
 	{
-		/** Reports synchronous acceptance or rejection before the renderer retains request work. */
+		/** Classifies FIFO request admission before the renderer retains request work. */
 		struct Acceptance
 		{
 			/** Why the submitted request was accepted or rejected. */
@@ -32,21 +31,11 @@ namespace Services::Map::Buildings::Capture
 			Status Result = Status::RejectedInvalidRequest;
 		};
 
-		/** Reports pending, completed, or terminally failed work for one accepted request.
-		 * Successful results share the immutable BM-02 payload directly with BM-03; the
-		 * capture implementation retains no second CPU sprite store after handoff.
+		/** Retains internal pending or terminal state until safe feedback handoff.
+		 * The payload is move-only and remains renderer-owned until it enters CaptureFeedback.
 		 */
 		struct Completion
 		{
-			/** Records disk persistence independently from CPU payload readiness. */
-			enum class PersistenceStatus : std::uint8_t
-			{
-				NotAttempted,
-				Persisted,
-				Failed,
-				Unavailable
-			};
-
 			/** Distinguishes pending work from each terminal outcome. */
 			enum class Status : std::uint8_t
 			{
@@ -75,10 +64,8 @@ namespace Services::Map::Buildings::Capture
 			Status Result = Status::Pending;
 			/** Failure category; meaningful only when Result is Failed. */
 			Failure Error = Failure::None;
-			/** Disk-cache outcome; BM-07 leaves this NotAttempted until service cache initialization exists. */
-			PersistenceStatus Persistence = PersistenceStatus::NotAttempted;
-			/** Completed immutable sprite, shared with BM-03 without copying its pixel allocation. */
-			std::shared_ptr<const Cache::ProcessedSpritePayload> Payload;
+			/** Completed immutable sprite, owned until moved into terminal feedback. */
+			std::unique_ptr<const Cache::ProcessedSpritePayload> Payload;
 		};
 	};
 }

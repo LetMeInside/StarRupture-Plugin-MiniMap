@@ -99,7 +99,11 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\CaptureFeedback.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\BuildingScheduler.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteStatus.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteRequestQueue.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteFeedbackQueue.h" />
       <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\ReadbackFenceAccessor.h" />
     <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
@@ -110,7 +114,6 @@
     <ClInclude Include="Services\Map\Buildings\IImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\OwnedSpriteKey.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\ProcessedSpritePayload.h" />
-    <ClInclude Include="Services\Map\Buildings\Cache\CpuSpriteSourceLease.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpriteProcessing.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodec.h" />

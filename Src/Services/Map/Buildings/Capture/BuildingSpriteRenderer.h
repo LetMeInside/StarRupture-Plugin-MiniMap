@@ -1,5 +1,5 @@
 // Owns one persistent private world and lighting rig plus request-scoped sprite capture resources.
-// It is an internal BuildingMapService component with explicit service-directed retirement.
+// It is an internal BuildingScheduler component with explicit owner-directed retirement.
 #pragma once
 
 #include "CaptureRequest.h"
@@ -26,29 +26,32 @@ namespace SDK
 	class UWorld;
 }
 
-namespace Services::Map::Buildings
+namespace Services::Map::Buildings::Scheduling
 {
-	class BuildingMapService;
+	class BuildingScheduler;
+	class SpriteFeedbackQueue;
+	class SpriteRequestQueue;
 }
 
 namespace Services::Map::Buildings::Capture
 {
 	/** Owns one persistent private world and shared lighting rig plus one active capture request.
-	 * Only BuildingMapService may submit, advance, cancel, or coordinate its retirement.
+	 * Queue-driven advancement admits one moved request and reports terminal feedback through
+	 * the independent FIFOs. The renderer
+	 * never observes scheduler status or disk/cache ownership.
 	 * All methods that touch UObject or NativeApi state require the game thread. Native
-	 * resources must be explicitly retired before the service releases this object. Submitted
+	 * resources must be explicitly retired before BuildingScheduler releases this object. Submitted
 	 * scene work remains owned until asynchronous readback or an ordered retirement fence proves safety.
 	 */
 	class BuildingSpriteRenderer final
 	{
 	public:
-		/** Does not perform native cleanup; the service must retire resources explicitly. */
+		/** Does not perform native cleanup; BuildingScheduler must retire resources explicitly. */
 		~BuildingSpriteRenderer() = default;
 
 	private:
-		friend class Services::Map::Buildings::BuildingMapService;
+		friend class Scheduling::BuildingScheduler;
 
-	private:
 		/** Describes the point reached in the nonblocking HDR/final-color capture sequence. */
 		enum class Phase : std::uint8_t
 		{
@@ -83,21 +86,54 @@ namespace Services::Map::Buildings::Capture
 		/** Prevents moves from invalidating service-directed native-resource ownership. */
 		BuildingSpriteRenderer& operator=(BuildingSpriteRenderer&&) = delete;
 
-		/** Copies and accepts one owned request or returns a synchronous rejection.
-		 * @param request Canonical sprite identity and internal session correlation.
+		/** Validates and moves a request into the retained active slot.
+		 * @param request Owned request, left untouched when admission is rejected.
+		 * @return Accepted or the existing validation/session rejection classification.
 		 */
-		CaptureResult::Acceptance Accept(const CaptureRequest& request);
+		CaptureResult::Acceptance AcceptOwned(CaptureRequest&& request);
+		/** Advances one retained request or admits one FIFO request on the Unreal game thread.
+		 * A newly dequeued request is initialized only; native advancement begins on a later call.
+		 * @param requestQueue Scheduler-owned FIFO supplying owned capture requests.
+		 * @param feedbackQueue Scheduler-owned FIFO receiving retired terminal results.
+		 */
+		void AdvanceQueueDrivenCapture(
+			Scheduling::SpriteRequestQueue& requestQueue,
+			Scheduling::SpriteFeedbackQueue& feedbackQueue);
+		/** Moves an accepted request into existing retained state and resets its per-request fields.
+		 * @param request Validated owned request ready to enter the capture lifecycle.
+		 */
+		void RetainAcceptedRequest(CaptureRequest&& request);
+		/** Determines whether idle renderer state permits one FIFO dequeue.
+		 * @return True only when no active/native request work or shutdown blocks admission.
+		 */
+		bool CanAdmitQueuedRequest() const;
+		/** Reports whether the correlated terminal request is fully retired and can be released.
+		 * @param correlation Request identity that must match both retained request and completion.
+		 * @return True only when readbacks, scene work, native owners and request fence are retired.
+		 */
+		bool CanAcknowledgeCompletion(CaptureRequest::Correlation correlation) const;
+		/** Returns terminal rejection feedback for one dequeued request that could not be admitted.
+		 * @param request Dequeued owned value retained when AcceptOwned rejected it.
+		 * @param acceptance Existing admission rejection and matching request correlation.
+		 * @param feedbackQueue FIFO that takes ownership of the terminal feedback value.
+		 */
+		void EmitRejectedRequestFeedback(
+			CaptureRequest&& request,
+			const CaptureResult::Acceptance& acceptance,
+			Scheduling::SpriteFeedbackQueue& feedbackQueue);
+		/** Enqueues one safe terminal result and releases its request-local state.
+		 * @param feedbackQueue FIFO that takes move-only payload ownership before local release.
+		 */
+		void EmitTerminalFeedback(Scheduling::SpriteFeedbackQueue& feedbackQueue);
 		/** Advances at most one admitted game-thread operation or readback poll. */
 		void Advance();
 		/** Retries safe cleanup after a pre-submission cancellation or failure. */
 		void AdvanceRetirement();
 		/** Runs the phase-specific world, subject, warm-up, or capture step. */
 		void AdvanceCurrentPhase();
-		/** Returns matching progress or a stale-request rejection for the supplied correlation. */
-		CaptureResult::Completion GetProgress(CaptureRequest::Correlation correlation) const;
 		/** Revokes result eligibility; submitted scene work remains owned until BM-07 retires it. */
 		void Cancel(CaptureRequest::Correlation correlation);
-		/** Releases a terminal value after the service has consumed its completion. */
+		/** Releases terminal request state after its feedback value enters the FIFO. */
 		void AcknowledgeCompletion(CaptureRequest::Correlation correlation);
 		/** Continues or cancels HDR work after BM-07 proves scene/readback retirement. */
 		bool AcknowledgeHdrPassRetirement(bool readbackWasSubmitted, bool readbackAndSceneRetired);
@@ -170,7 +206,7 @@ namespace Services::Map::Buildings::Capture
 		bool StartFence(FencePurpose purpose);
 		/** Polls and destroys the expected render fence once its queued work completes. */
 		bool PollFence(FencePurpose purpose);
-		/** Begins service-directed shutdown without freeing resources still in use by BM-07. */
+		/** Begins scheduler-directed shutdown without freeing resources still in use by BM-07. */
 		void RequestServiceShutdown();
 		/** Advances request and shared-world retirement; true means the renderer can be released. */
 		bool AdvanceServiceShutdown();
@@ -196,7 +232,7 @@ namespace Services::Map::Buildings::Capture
 		BuildingSpriteReadback hdrReadback_;
 		BuildingSpriteReadback finalReadback_;
 		std::vector<std::uint16_t> hdrPixels_;
-		std::shared_ptr<const Cache::ProcessedSpritePayload> pendingPayload_;
+		std::unique_ptr<const Cache::ProcessedSpritePayload> pendingPayload_;
 		Phase phase_ = Phase::Idle;
 		SDK::UClass* actorClass_ = nullptr;
 		SDK::UWorld* privateWorld_ = nullptr;

@@ -1,93 +1,78 @@
-// Owns the currently eligible immutable processed sprites for one Building Map service.
+// Owns resident immutable sprites and retrieves cache misses through the configured disk cache.
 #pragma once
 
-#include "CpuSpriteSourceLease.h"
 #include "OwnedSpriteKey.h"
+#include "ProcessedSpritePayload.h"
 
 #include <memory>
 #include <string>
 #include <unordered_map>
 
-namespace Services::Map::Buildings
-{
-	class BuildingMapService;
-}
-
 namespace Services::Map::Buildings::Cache
 {
-	/** Retains one current processed payload per opaque canonical sprite key.
-	 * The manager performs no I/O, capture, scheduling, atlas work or synchronization.
-	 * Calls are serialized on the owning BuildingMapService calling thread.
+	class SpriteDiskCache;
+
+	/** Owns one move-only immutable CPU payload per key and loads absent entries from disk.
+	 * All calls are serialized on the designated game thread. Returned payload pointers are
+	 * borrowed and remain valid only until their entry is replaced, withdrawn or cleared.
 	 */
 	class CpuSpriteSourceManager final
 	{
 	public:
-		/** Distinguishes an absent source from a retained, currently eligible source. */
-		enum class Availability
+		/** Distinguishes resident/loaded sprites, confirmed cache misses, and uncertain access. */
+		enum class Status
 		{
-			Unavailable,
-			Ready
+			Ready,
+			CaptureRequired,
+			Unavailable
 		};
 
-		/** Returns availability and, when ready, a lease for that exact publication. */
-		struct LookupResult
+		/** Returns status and borrowed access to a resident payload when ready. */
+		struct SpriteResult
 		{
-			Availability Status = Availability::Unavailable;
-			CpuSpriteSourceLease Lease;
+			Status Result = Status::Unavailable;
+			const ProcessedSpritePayload* Payload = nullptr;
 		};
 
-		/** Invalidates all source leases before releasing the manager's current entries. */
-		~CpuSpriteSourceManager();
-		/** Prevents duplicate owners from mutating the same publication tokens. */
+		/** Borrows the disk cache for lazy retrieval; the cache must outlive this manager.
+		 * @param spriteDiskCache Cache used only when a key is not resident.
+		 */
+		explicit CpuSpriteSourceManager(SpriteDiskCache* spriteDiskCache) noexcept;
+		/** Prevents copies from duplicating resident payload ownership. */
 		CpuSpriteSourceManager(const CpuSpriteSourceManager&) = delete;
-		/** Prevents duplicate owners from mutating the same publication tokens. */
+		/** Prevents copies from duplicating resident payload ownership. */
 		CpuSpriteSourceManager& operator=(const CpuSpriteSourceManager&) = delete;
-		/** Keeps the unique source owner at its fixed service-owned address. */
+		/** Prevents moving the manager while borrowers may hold payload pointers. */
 		CpuSpriteSourceManager(CpuSpriteSourceManager&&) = delete;
-		/** Keeps the unique source owner at its fixed service-owned address. */
+		/** Prevents moving the manager while borrowers may hold payload pointers. */
 		CpuSpriteSourceManager& operator=(CpuSpriteSourceManager&&) = delete;
 
-		/** Publishes an already validated immutable payload under its owned opaque key.
-		 * Re-publishing a key revokes all leases to its previous publication first.
-		 * A null payload is rejected without disturbing an existing source.
-		 * @param key Canonical owned sprite identity.
-		 * @param payload Validated payload retained by shared immutable ownership.
-		 * @return True when the payload becomes the current source for this key.
+		/** Returns a resident payload or loads and adopts one through the disk cache.
+		 * @param key Canonical owned sprite identity to retrieve.
+		 * @return Ready with borrowed payload, CaptureRequired for Missing/Invalid, or Unavailable.
 		 */
-		bool Publish(
-			const OwnedSpriteKey& key,
-			std::shared_ptr<const ProcessedSpritePayload> payload);
+		SpriteResult GetSprite(const OwnedSpriteKey& key);
 
-		/** Acquires the currently eligible source and its metadata through one lease.
-		 * @param key Canonical owned sprite identity to find.
-		 * @return Ready with a lease, or Unavailable when no current source exists.
+		/** Adopts a captured immutable payload without copying its pixel vector.
+		 * Replacing the same key invalidates any borrowed pointer to its previous entry.
+		 * @param key Canonical owned sprite identity for the payload.
+		 * @param payload Exclusive payload ownership transferred into the resident map.
+		 * @return True when the payload is retained under a valid nonempty key.
 		 */
-		LookupResult Lookup(const OwnedSpriteKey& key) const noexcept;
+		bool Adopt(const OwnedSpriteKey& key, std::unique_ptr<const ProcessedSpritePayload>&& payload);
 
-		/** Revokes and removes one source while existing leases remain safely readable.
+		/** Erases one resident entry; any pointer borrowed from it immediately expires.
 		 * @param key Canonical owned sprite identity to withdraw.
-		 * @return True when a current source was removed.
+		 * @return True when a resident entry was removed.
 		 */
 		bool Withdraw(const OwnedSpriteKey& key) noexcept;
 
-		/** Revokes every current source for a session or world reset.
-		 * Existing leases keep their payloads readable but permanently stale.
+		/** Clears all resident sprites and invalidates all borrowed payload pointers.
 		 */
-		void InvalidateAll() noexcept;
+		void Clear() noexcept;
 
 	private:
-		friend class Services::Map::Buildings::BuildingMapService;
-
-		/** Creates the inert owner only as a subobject of BuildingMapService. */
-		CpuSpriteSourceManager() = default;
-
-		/** Associates one manager-owned payload with its publication-specific token. */
-		struct SourceEntry
-		{
-			std::shared_ptr<const ProcessedSpritePayload> Payload;
-			std::shared_ptr<CpuSpriteSourceLease::CurrentnessState> Currentness;
-		};
-
-		std::unordered_map<std::string, SourceEntry> sourcesByKey_;
+		SpriteDiskCache* spriteDiskCache_ = nullptr;
+		std::unordered_map<std::string, std::unique_ptr<const ProcessedSpritePayload>> payloadsByKey_;
 	};
 }

@@ -13,9 +13,9 @@
 
 namespace Services::Map::Buildings::Cache
 {
-	/** Shares immutable processed RGBA8 pixels and preserves their original capture mapping.
-	 * Construction adopts a pixel vector without copying it. Copies of this payload share
-	 * the same immutable allocation; original capture size is distinct from image size.
+	/** Exclusively owns processed RGBA8 pixels and preserves their original capture mapping.
+	 * Construction adopts a pixel vector without copying it. Consumers receive const pixel
+	 * access; original capture size is distinct from processed image size.
 	 */
 	class ProcessedSpritePayload final
 	{
@@ -25,39 +25,45 @@ namespace Services::Map::Buildings::Cache
 		{
 			StraightRgba8SrgbDisplay
 		};
+		/** Prevents copies from duplicating processed image ownership. */
+		ProcessedSpritePayload(const ProcessedSpritePayload&) = delete;
+		/** Prevents copies from duplicating processed image ownership. */
+		ProcessedSpritePayload& operator=(const ProcessedSpritePayload&) = delete;
+		/** Transfers the exclusively owned pixel vector and geometry. */
+		ProcessedSpritePayload(ProcessedSpritePayload&&) noexcept = default;
+		/** Transfers the exclusively owned pixel vector and geometry. */
+		ProcessedSpritePayload& operator=(ProcessedSpritePayload&&) noexcept = default;
 		/** Validates and adopts pixels plus source geometry without a second pixel copy.
 		 * @param pixels Processed straight RGBA8 bytes; ownership transfers on success.
-	 * @param width Processed image width in pixels.
-	 * @param height Processed image height in pixels.
-	 * @param captureSize Original square capture dimensions.
-	 * @param bounds Original capture-space XYZ bounds.
-	 * @param projection Processed image edges mapped into original capture pixels.
-	 * @param output Receives the shared immutable payload on success.
-	 * @return True when dimensions, byte count, bounds and projection are valid.
-	 */
-	static bool TryAdopt(
-		std::vector<std::uint8_t>&& pixels,
-		std::uint32_t width,
-		std::uint32_t height,
-		Visuals::SpriteSourceSize captureSize,
-		Visuals::SpriteCaptureBounds bounds,
-		Visuals::SpriteProjectionRectangle projection,
-		std::shared_ptr<const ProcessedSpritePayload>& output)
-	{
-		if (!HasValidSpriteData(width, height, captureSize, bounds, projection, pixels.size()))
+		 * @param width Processed image width in pixels.
+		 * @param height Processed image height in pixels.
+		 * @param captureSize Original square capture dimensions.
+		 * @param bounds Original capture-space XYZ bounds.
+		 * @param projection Processed image edges mapped into original capture pixels.
+		 * @param output Receives the exclusively owned immutable payload on success.
+		 * @return True when dimensions, byte count, bounds and projection are valid.
+		 */
+		static bool TryAdopt(
+			std::vector<std::uint8_t>&& pixels,
+			std::uint32_t width,
+			std::uint32_t height,
+			Visuals::SpriteSourceSize captureSize,
+			Visuals::SpriteCaptureBounds bounds,
+			Visuals::SpriteProjectionRectangle projection,
+			std::unique_ptr<const ProcessedSpritePayload>& output)
 		{
-			return false;
+			if (!HasValidSpriteData(width, height, captureSize, bounds, projection, pixels.size()))
+			{
+				return false;
+			}
+
+			output.reset(new ProcessedSpritePayload(
+				std::move(pixels), width, height, captureSize, bounds, projection));
+			return true;
 		}
 
-		std::shared_ptr<const std::vector<std::uint8_t>> immutablePixels =
-			std::make_shared<std::vector<std::uint8_t>>(std::move(pixels));
-		output = std::shared_ptr<const ProcessedSpritePayload>(new ProcessedSpritePayload(
-			std::move(immutablePixels), width, height, captureSize, bounds, projection));
-		return true;
-	}
-
-		/** Returns the immutable processed RGBA8 byte allocation. */
-		const std::shared_ptr<const std::vector<std::uint8_t>>& Pixels() const noexcept { return m_pixels; }
+		/** Returns borrowed immutable processed RGBA8 bytes, valid for this payload's lifetime. */
+		const std::vector<std::uint8_t>& Pixels() const noexcept { return m_pixels; }
 		/** Returns the processed image width. */
 		std::uint32_t Width() const noexcept { return m_width; }
 		/** Returns the processed image height. */
@@ -74,7 +80,7 @@ namespace Services::Map::Buildings::Cache
 	private:
 		/** Stores already validated immutable image and capture metadata. */
 		ProcessedSpritePayload(
-			std::shared_ptr<const std::vector<std::uint8_t>> pixels,
+			std::vector<std::uint8_t>&& pixels,
 			std::uint32_t width,
 			std::uint32_t height,
 			Visuals::SpriteSourceSize captureSize,
@@ -125,7 +131,7 @@ namespace Services::Map::Buildings::Cache
 				projection.Right > projection.Left && projection.Bottom > projection.Top;
 		}
 
-		std::shared_ptr<const std::vector<std::uint8_t>> m_pixels;
+		std::vector<std::uint8_t> m_pixels;
 		std::uint32_t m_width;
 		std::uint32_t m_height;
 		Visuals::SpriteSourceSize m_captureSize;

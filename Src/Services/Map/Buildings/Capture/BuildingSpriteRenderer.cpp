@@ -4,6 +4,9 @@
 #include "BuildingSpriteRenderer.h"
 
 #include "../Cache/SpriteProcessing.h"
+#include "../Scheduling/SpriteFeedbackQueue.h"
+#include "../Scheduling/SpriteRequestQueue.h"
+#include "CaptureFeedback.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
 
@@ -16,6 +19,7 @@
 #include <string>
 #include <span>
 #include <type_traits>
+#include <utility>
 
 namespace Services::Map::Buildings::Capture
 {
@@ -26,8 +30,8 @@ namespace Services::Map::Buildings::Capture
 	{
 	}
 
-	/** Copies an owned capture request or reports why it cannot be admitted. */
-	CaptureResult::Acceptance BuildingSpriteRenderer::Accept(const CaptureRequest& request)
+	/** Validates one request and moves it into the renderer's existing retained request state. */
+	CaptureResult::Acceptance BuildingSpriteRenderer::AcceptOwned(CaptureRequest&& request)
 	{
 		CaptureResult::Acceptance acceptance;
 		acceptance.Correlation = request.RequestIdentity;
@@ -57,14 +61,22 @@ namespace Services::Map::Buildings::Capture
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleRequest;
 			return acceptance;
 		}
-		activeRequest_ = request;
+		RetainAcceptedRequest(std::move(request));
+		acceptance.Result = CaptureResult::Acceptance::Status::Accepted;
+		return acceptance;
+	}
+
+	/** Moves one validated request into the existing private active slot and resets request state. */
+	void BuildingSpriteRenderer::RetainAcceptedRequest(CaptureRequest&& request)
+	{
+		activeRequest_ = std::move(request);
 		completion_ = {};
 		pendingFailure_ = CaptureResult::Completion::Failure::None;
-		completion_.Correlation = request.RequestIdentity;
+		completion_.Correlation = activeRequest_.RequestIdentity;
 		completion_.Result = CaptureResult::Completion::Status::Pending;
 		phase_ = Phase::PreparingWorld;
 		hasActiveRequest_ = true;
-		lastAcceptedRequestSequence_ = request.RequestIdentity.RequestSequence;
+		lastAcceptedRequestSequence_ = activeRequest_.RequestIdentity.RequestSequence;
 		resultEligible_ = true;
 		finalColorPassSubmitted_ = false;
 		readbackStarted_ = false;
@@ -78,8 +90,84 @@ namespace Services::Map::Buildings::Capture
 		captureComponentDestroyed_ = false;
 		subjectActorDestroyed_ = false;
 		actorDestroyFailed_ = false;
-		acceptance.Result = CaptureResult::Acceptance::Status::Accepted;
-		return acceptance;
+	}
+
+	/** Advances active work or admits exactly one request without holding a queue lock in capture code. */
+	void BuildingSpriteRenderer::AdvanceQueueDrivenCapture(
+		Scheduling::SpriteRequestQueue& requestQueue,
+		Scheduling::SpriteFeedbackQueue& feedbackQueue)
+	{
+		if (!IsGameThread())
+		{
+			return;
+		}
+		if (hasActiveRequest_)
+		{
+			Advance();
+			EmitTerminalFeedback(feedbackQueue);
+			return;
+		}
+		if (!CanAdmitQueuedRequest())
+		{
+			return;
+		}
+
+		CaptureRequest request;
+		if (!requestQueue.TryDequeue(request))
+		{
+			return;
+		}
+
+		const CaptureResult::Acceptance acceptance = AcceptOwned(std::move(request));
+		if (acceptance.Result != CaptureResult::Acceptance::Status::Accepted)
+		{
+			EmitRejectedRequestFeedback(std::move(request), acceptance, feedbackQueue);
+		}
+	}
+
+	/** Requires idle, game-thread admission with no outstanding native request retirement. */
+	bool BuildingSpriteRenderer::CanAdmitQueuedRequest() const
+	{
+		return !hasActiveRequest_ && phase_ == Phase::Idle && !serviceShutdownRequested_ &&
+			sharedWorldUsable_ && !sceneWorkSubmitted_ && !readbackStarted_ &&
+			fencePurpose_ == FencePurpose::None && hdrReadback_.IsRetired() && finalReadback_.IsRetired() &&
+			!actorClass_ && !subjectActor_ && !captureComponent_ && !renderTarget_;
+	}
+
+	/** Converts a rejected dequeued request into one terminal owned feedback value.
+	 * @param request Rejected request whose owned key and correlation enter the result.
+	 * @param acceptance Existing reason the renderer did not retain the request.
+	 * @param feedbackQueue Queue that takes ownership of the rejection result.
+	 */
+	void BuildingSpriteRenderer::EmitRejectedRequestFeedback(
+		CaptureRequest&& request,
+		const CaptureResult::Acceptance& acceptance,
+		Scheduling::SpriteFeedbackQueue& feedbackQueue)
+	{
+		CaptureFeedback feedback;
+		feedback.SpriteRequirement = std::move(request.SpriteRequirement);
+		feedback.RequestIdentity = request.RequestIdentity;
+		switch (acceptance.Result)
+		{
+		case CaptureResult::Acceptance::Status::RejectedStaleSession:
+			feedback.Result = CaptureFeedback::Outcome::Cancelled;
+			break;
+		case CaptureResult::Acceptance::Status::RejectedStaleRequest:
+			feedback.Result = CaptureFeedback::Outcome::Failed;
+			feedback.Error = CaptureResult::Completion::Failure::StaleRequest;
+			break;
+		case CaptureResult::Acceptance::Status::RejectedUnavailable:
+			feedback.Result = CaptureFeedback::Outcome::Failed;
+			feedback.Error = CaptureResult::Completion::Failure::EngineOperationFailed;
+			break;
+		case CaptureResult::Acceptance::Status::RejectedInvalidRequest:
+			feedback.Result = CaptureFeedback::Outcome::Failed;
+			feedback.Error = CaptureResult::Completion::Failure::InvalidCapture;
+			break;
+		case CaptureResult::Acceptance::Status::Accepted:
+			return;
+		}
+		feedbackQueue.Enqueue(std::move(feedback));
 	}
 
 	/** Advances world preparation, subject setup, or one admitted capture submission. */
@@ -171,21 +259,6 @@ namespace Services::Map::Buildings::Capture
 		}
 	}
 
-	/** Returns the owned request's current pending or terminal completion value. */
-	CaptureResult::Completion BuildingSpriteRenderer::GetProgress(CaptureRequest::Correlation correlation) const
-	{
-		if (!hasActiveRequest_ || correlation.SessionGeneration != completion_.Correlation.SessionGeneration ||
-			correlation.RequestSequence != completion_.Correlation.RequestSequence)
-		{
-			CaptureResult::Completion stale;
-			stale.Correlation = correlation;
-			stale.Result = CaptureResult::Completion::Status::Failed;
-			stale.Error = CaptureResult::Completion::Failure::StaleRequest;
-			return stale;
-		}
-		return completion_;
-	}
-
 	/** Cancels only the correlated request and keeps submitted resources until BM-07 retires them. */
 	void BuildingSpriteRenderer::Cancel(CaptureRequest::Correlation correlation)
 	{
@@ -223,15 +296,24 @@ namespace Services::Map::Buildings::Capture
 		}
 	}
 
-	/** Releases a terminal result only after the service has matched its request correlation. */
+	/** Reports whether the matching terminal request and every native owner are safely retired. */
+	bool BuildingSpriteRenderer::CanAcknowledgeCompletion(CaptureRequest::Correlation correlation) const
+	{
+		return hasActiveRequest_ && phase_ == Phase::Terminal &&
+			completion_.Result != CaptureResult::Completion::Status::Pending &&
+			correlation.SessionGeneration == activeRequest_.RequestIdentity.SessionGeneration &&
+			correlation.RequestSequence == activeRequest_.RequestIdentity.RequestSequence &&
+			correlation.SessionGeneration == completion_.Correlation.SessionGeneration &&
+			correlation.RequestSequence == completion_.Correlation.RequestSequence &&
+			!sceneWorkSubmitted_ && !readbackStarted_ && hdrReadback_.IsRetired() && finalReadback_.IsRetired() &&
+			!subjectActor_ && !captureComponent_ && !renderTarget_ && !actorClass_ &&
+			fencePurpose_ == FencePurpose::None;
+	}
+
+	/** Releases a fully retired terminal result after correlation and resource checks pass. */
 	void BuildingSpriteRenderer::AcknowledgeCompletion(CaptureRequest::Correlation correlation)
 	{
-		if (!hasActiveRequest_ || phase_ != Phase::Terminal ||
-			completion_.Result == CaptureResult::Completion::Status::Pending ||
-			correlation.SessionGeneration != completion_.Correlation.SessionGeneration ||
-			correlation.RequestSequence != completion_.Correlation.RequestSequence || sceneWorkSubmitted_ ||
-			subjectActor_ || captureComponent_ || renderTarget_ || actorClass_ ||
-			fencePurpose_ == FencePurpose::RequestRetirement)
+		if (!CanAcknowledgeCompletion(correlation))
 		{
 			return;
 		}
@@ -243,6 +325,51 @@ namespace Services::Map::Buildings::Capture
 		activeRequest_ = {};
 		completion_ = {};
 		phase_ = Phase::Idle;
+	}
+
+	/** Enqueues one terminal feedback value only after native request retirement is complete. */
+	void BuildingSpriteRenderer::EmitTerminalFeedback(Scheduling::SpriteFeedbackQueue& feedbackQueue)
+	{
+		const CaptureRequest::Correlation correlation = activeRequest_.RequestIdentity;
+		if (!CanAcknowledgeCompletion(correlation))
+		{
+			return;
+		}
+
+		CaptureFeedback feedback;
+		feedback.SpriteRequirement = std::move(activeRequest_.SpriteRequirement);
+		feedback.RequestIdentity = correlation;
+		if (correlation.SessionGeneration != activeGameWorldSessionGeneration_ ||
+			completion_.Result == CaptureResult::Completion::Status::Cancelled)
+		{
+			feedback.Result = CaptureFeedback::Outcome::Cancelled;
+		}
+		else if (completion_.Result == CaptureResult::Completion::Status::Failed)
+		{
+			feedback.Result = CaptureFeedback::Outcome::Failed;
+			feedback.Error = completion_.Error;
+		}
+		else if (completion_.Result == CaptureResult::Completion::Status::Completed && !resultEligible_)
+		{
+			feedback.Result = CaptureFeedback::Outcome::Cancelled;
+		}
+		else if (completion_.Result == CaptureResult::Completion::Status::Completed && completion_.Payload)
+		{
+			feedback.Result = CaptureFeedback::Outcome::Succeeded;
+			feedback.Payload = std::move(completion_.Payload);
+		}
+		else if (completion_.Result == CaptureResult::Completion::Status::Completed)
+		{
+			feedback.Result = CaptureFeedback::Outcome::Failed;
+			feedback.Error = CaptureResult::Completion::Failure::InvalidCapture;
+		}
+		else
+		{
+			return;
+		}
+
+		feedbackQueue.Enqueue(std::move(feedback));
+		AcknowledgeCompletion(correlation);
 	}
 
 	/** Advances HDR cancellation or final-color setup only after BM-07 confirms retirement. */
@@ -976,7 +1103,7 @@ namespace Services::Map::Buildings::Capture
 			GetCaptureBounds(),
 			orthographicExtent,
 			pixelsPerMapUnit_};
-		const Cache::SpriteProcessingResult result = Cache::SpriteProcessing::Process(pixels, metadata);
+		Cache::SpriteProcessingResult result = Cache::SpriteProcessing::Process(pixels, metadata);
 		if (result.Result != Cache::SpriteProcessingResult::Status::Processed || !result.Payload)
 		{
 			pendingFailure_ = result.Result == Cache::SpriteProcessingResult::Status::EmptyCapture
@@ -984,7 +1111,7 @@ namespace Services::Map::Buildings::Capture
 				: CaptureResult::Completion::Failure::ProcessingFailed;
 			return;
 		}
-		pendingPayload_ = result.Payload;
+		pendingPayload_ = std::move(result.Payload);
 	}
 
 	/** Detaches submitted capture resources, orders their release fence, and waits without blocking. */
