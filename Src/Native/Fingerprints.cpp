@@ -1673,15 +1673,12 @@ namespace MiniMapFingerprints
             addresses.transitionResources = resolveRequired(request);
             if (!addresses.transitionResources) return false;
         }
-        // The two fence sites below keep the CL-127004 pattern text unchanged. The
-        // text is part of the fingerprint the loader reads a site's rows under, on
-        // both builds, so a new pattern would read none of them. The pattern does
-        // not match on CL-128786: the loader's row answers there and logs one
-        // warning that the own pattern matches 0 times.
+        // The two fence sites: the lea of the vtable address is wildcarded, so one pattern
+        // matches once on every build; the loader map holds the rows for it.
         {
             RequiredScan request{};
             request.name = Keys::FenceConstruct;
-            request.idaPattern = "48 C7 01 00 00 00 00 48 8B C1 C3 CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D 05 82 42 7D 09 48 8B D9 48 89 01 48 8B 02 48 89 41 08 48 8B 42 08 48 89 41 10 48 85 C0 74 04";
+            request.idaPattern = "48 C7 01 00 00 00 00 48 8B C1 C3 CC CC CC CC CC 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 48 8B 02 48 89 41 08 48 8B 42 08 48 89 41 10 48 85 C0 74 04";
             request.kind = AddressKind::Code;
 
             request.resultOffset = 0;
@@ -1691,7 +1688,7 @@ namespace MiniMapFingerprints
         {
             RequiredScan request{};
             request.name = Keys::FenceDestroy;
-            request.idaPattern = "48 8B 09 48 85 C9 74 1A B8 FF FF FF FF F0 0F C1 41 08 83 F8 01 75 0B 48 8B 01 BA 01 00 00 00 48 FF 20 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8D 05 91 07 F3 0B 48 89 01 C3 CC CC CC CC CC";
+            request.idaPattern = "48 8B 09 48 85 C9 74 1A B8 FF FF FF FF F0 0F C1 41 08 83 F8 01 75 0B 48 8B 01 BA 01 00 00 00 48 FF 20 C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 8D 05 ?? ?? ?? ?? 48 89 01 C3 CC CC CC CC CC";
             request.kind = AddressKind::Code;
 
             request.resultOffset = 0;
