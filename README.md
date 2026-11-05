@@ -57,7 +57,7 @@ MiniMap is a **client-side plugin**.
 
 ### Game builds
 
-MiniMap declares itself map-migrated: the game functions and class members it reads come from the Mod Loader's version map, so one DLL runs on the public build (CL-127004) and on the Steam test branch (CL-128786). A layer whose functions the map cannot place on the running build (for example after a game update, until the map has rows for it) switches off in the Mod Loader's feature list, and the rest of MiniMap keeps running.
+MiniMap declares itself map-migrated: the game functions and class members it reads come from the Mod Loader's version map, so one DLL keeps working after a game update for every game build the Mod Loader knows. A layer whose functions the map cannot place on the running build (for example after a game update, until the map has rows for it) switches off in the Mod Loader's feature list, and the rest of MiniMap keeps running.
 
 ## Installation
 
