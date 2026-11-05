@@ -2072,9 +2072,9 @@ namespace MiniMapFingerprints
         // Building tracking across save loads is a feature of its own, so a miss on
         // one of its keys turns that feature off and does not stop the scans below.
         // All three are resolved by the loader's rows alone.
-        foundation(Keys::SaveLoaded, "", addresses.massOnSaveLoaded);
-        foundation(Keys::BuildingAdd, "", addresses.buildingOnCreate);
-        foundation(Keys::BuildingRemove, "", addresses.buildingOnDestroy);
+        foundation(Keys::SaveLoaded, "", addresses.massOnSaveLoaded, AddressKind::FunctionEntry, true);
+        foundation(Keys::BuildingAdd, "", addresses.buildingOnCreate, AddressKind::FunctionEntry, true);
+        foundation(Keys::BuildingRemove, "", addresses.buildingOnDestroy, AddressKind::FunctionEntry, true);
         // The pattern runs on past the opening it shares with a second function of
         // the same shape, which the shorter form also matched.
         {
