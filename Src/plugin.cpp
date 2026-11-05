@@ -816,8 +816,9 @@ namespace MiniMap
 
         // Registration replays events only during loader startup, never runtime reload.
         // Prepare every owner first; establish world identity before experience completion.
-        if (MiniMapFields::Features::BuildingRestore.On() && !MiniMapMassLifecycle::Initialize())
-            LOG_ERROR("MiniMap: BuildingComplex native observer admission unavailable; normal MiniMap services continue");
+        // Building-restore (MiniMapMassLifecycle::Initialize) is off on every game build: its
+        // BuildingComplex census runs on the game thread without a time budget and hangs
+        // the game when a large save loads.
         MiniMapTexturePublication::Initialize();
         Adapters::AlienX::CapturePluginInitHookBaseline(pluginSelf);
         if (!AcceptEventRegistration(g_afterEnd, events->OnWorld(S::WorldPhase::AfterEnd,
