@@ -59,8 +59,6 @@ MiniMap is a **client-side plugin**.
 
 MiniMap declares itself map-migrated: the game functions and class members it reads come from the Mod Loader's version map, so one DLL runs on the public build (CL-127004) and on the Steam test branch (CL-128786). A layer whose functions the map cannot place on the running build (for example after a game update, until the map has rows for it) switches off in the Mod Loader's feature list, and the rest of MiniMap keeps running.
 
-The building-tracking functions (`UCrBuildingStabilitySubsystem::OnCreateBuildingEntity` and `OnDestroyBuildingEntity`) have rows for CL-128786 only; on CL-127004 MiniMap still finds them with its own patterns until that build has rows.
-
 ## Installation
 
 1. Install the AlienX StarRupture Mod Loader.

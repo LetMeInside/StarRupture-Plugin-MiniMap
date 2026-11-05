@@ -2069,28 +2069,13 @@ namespace MiniMapFingerprints
             out = resolveRequired(request);
             return out != 0;
         };
-        // The two sinks have identical instruction shapes. Retain the matched
-        // final call displacement to distinguish Add/Remove viewport work.
-        // These are deliberately version-bound code signatures, never RVAs.
-        // They belong to building-restore, so a miss turns that feature off and
-        // does not stop the scans below. CL-128786 resolves both by the loader's
-        // rows. CL-127004 has no row for them yet (it needs a CI scan of that
-        // build), so these 127004 patterns stay as the fallback there until the
-        // rows exist; on CL-128786 they match 0 times, the displacement being
-        // build-specific, and the loader logs a warning and uses the row. Remove
-        // them once CL-127004 has rows.
-        foundation(Keys::BuildingAdd,
-            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 D0 CA 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnCreate, AddressKind::FunctionEntry, true);
-        foundation(Keys::BuildingRemove,
-            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnDestroy, AddressKind::FunctionEntry, true);
-        if (!foundation("MiniMap::BuildingComplex::OnSaveLoaded",
-            "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
-            addresses.massOnSaveLoaded)) return false;
-        // Building tracking across save loads is a feature of its own, so a miss
-        // here turns that feature off and does not stop the scans below. The
-        // pattern runs on past the opening it shares with a second function of
+        // Building tracking across save loads is a feature of its own, so a miss on
+        // one of its keys turns that feature off and does not stop the scans below.
+        // All three are resolved by the loader's rows alone.
+        foundation(Keys::SaveLoaded, "", addresses.massOnSaveLoaded);
+        foundation(Keys::BuildingAdd, "", addresses.buildingOnCreate);
+        foundation(Keys::BuildingRemove, "", addresses.buildingOnDestroy);
+        // The pattern runs on past the opening it shares with a second function of
         // the same shape, which the shorter form also matched.
         {
             RequiredScan request{};

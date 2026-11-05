@@ -99,10 +99,10 @@ namespace MiniMapFields
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the
 		// buildings are restored, and the Add and Remove of a building entity to follow
-		// them. Without one of the three it is not installed, and the pictures built on
+		// them. Without one of the four it is not installed, and the pictures built on
 		// it wait for a build that has the function.
 		inline PluginMap::Feature BuildingRestore{ "building-restore", "Building tracking across save loads",
-			KeysOf(Keys::PostSaveLoaded, Keys::BuildingAdd, Keys::BuildingRemove), {} };
+			KeysOf(Keys::SaveLoaded, Keys::PostSaveLoaded, Keys::BuildingAdd, Keys::BuildingRemove), {} };
 
 		// Rails and pipes are drawn from the spline payload of the building actor.
 		// Without it the buildings still draw, as boxes.

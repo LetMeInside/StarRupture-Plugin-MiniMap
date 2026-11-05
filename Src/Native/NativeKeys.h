@@ -46,6 +46,7 @@ namespace MiniMapNative::Keys
     inline constexpr const char* FoundableCategory   = "UCrMapMenuDevSettings::FindFoundableMarkerCateroryData";
 
     // Building tracking across save loads
+    inline constexpr const char* SaveLoaded          = "UCrMassSaveSubsystem::OnSaveLoaded";
     inline constexpr const char* PostSaveLoaded      = "UCrMassSaveSubsystem::OnPostSaveLoaded";
     inline constexpr const char* BuildingAdd         = "UCrBuildingStabilitySubsystem::OnCreateBuildingEntity";
     inline constexpr const char* BuildingRemove      = "UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity";
