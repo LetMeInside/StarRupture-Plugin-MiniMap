@@ -44,8 +44,9 @@ namespace MiniMapBuildingCollector
          */
         bool IsCurrent() const noexcept override;
 
-        /** Returns a conservative incomplete neutral view with validated snapshot coverage.
-         * @return Borrowed view with no numerical descriptors until a later adaptation stage.
+        /** Returns known frozen sprite requirements with conservative incomplete numerical readiness.
+         * Missing requirements remain unknown, and absent placement is not inferred from metadata.
+         * @return Borrowed view whose descriptor arrays and key bytes remain owned by the Snapshot.
          */
         Services::Map::Buildings::BuildingSourceView BorrowSourceView() const noexcept override;
 

@@ -5,6 +5,7 @@
 #include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
 #include "Services/Map/Buildings/IBuildingCollector.h"
+#include "Services/Map/Buildings/BuildingSourceView.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +60,8 @@ namespace MiniMapBuildingCollector
         // Copied object index for render tracing, never a native lifetime certificate.
         int32_t DefinitionObjectIndex = 0;
         bool TransformValid = false, DefinitionValid = false, HasSpline = false;
+        /** True only after the current Mass spline-fragment lookup established source kind. */
+        bool SplineClassificationKnown = false;
         bool InteriorKnown = false, InteriorOnly = false;
         std::array<double, 3> Position = {}, Scale = {};
         std::array<double, 4> Rotation = {};
@@ -67,6 +70,9 @@ namespace MiniMapBuildingCollector
         std::shared_ptr<const DefinitionGeometry> DefinitionShape;
         std::shared_ptr<const SplineGeometry> Curve;
     };
+    /** Retains one immutable acquisition result, its completed records and frozen source descriptors.
+     * Descriptor string_views are backed by shared immutable keys retained here for Snapshot lifetime.
+     */
     struct Snapshot
     {
         uint64_t Generation = 0;
@@ -75,6 +81,12 @@ namespace MiniMapBuildingCollector
         bool AcquisitionComplete = false; // No eligible pending work; included support extents are valid.
         bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
         std::vector<Record> Records;
+        /** Known ordinary sprite requirements in deterministic enumeration order. */
+        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OrdinarySprites;
+        /** Known overlay-last sprite requirements in deterministic enumeration order. */
+        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OverlayLastSprites;
+        /** Shared owners for every key referenced by the borrowed descriptor string_views. */
+        std::vector<std::shared_ptr<const std::string>> SpriteRequirementKeyOwners;
     };
     struct CollectorDiagnostics
     {

@@ -25,9 +25,11 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace
 {
@@ -60,6 +62,9 @@ namespace MiniMapBuildingCollector
         bool IsDroneRail=false;
         uint64_t SeenScan=0;
     };
+    /** Holds session-owned authored definition facts shared by matching incomplete Entries.
+     * The native root remains collector-owned; only immutable key/profile owners enter Snapshots.
+     */
     struct Definition
     {
         // A strong engine reference makes this engine-facing lookup key stable
@@ -67,7 +72,7 @@ namespace MiniMapBuildingCollector
         SDK::UAuActorPlacementData* Root=nullptr;
         std::shared_ptr<const std::string> Blueprint;
         std::shared_ptr<const DefinitionGeometry> Recipe;
-        bool Interior=false,Prepared=false;
+        bool InteriorKnown=false,Interior=false,Prepared=false;
         Definition()=default;
         Definition(const Definition&)=delete;
         Definition& operator=(const Definition&)=delete;
@@ -221,6 +226,92 @@ namespace MiniMapBuildingCollector
         entry.DroneRailClassificationKnown=true;
         entry.IsDroneRail=isDroneRail;
         InvalidateSourcePublication();
+    }
+    /** Adds one admitted sprite requirement and retains the immutable bytes behind its view.
+     * Completed and pending contributors each append an occurrence; equal Blueprint keys are
+     * deliberately not collapsed. Placement is copied only from a validated Record transform.
+     * @param target Snapshot receiving the descriptor and key owner.
+     * @param record Source facts whose canonical key and optional placement are published.
+     * @param canonicalBlueprint Shared immutable authored Blueprint key owner.
+     */
+    void AppendSpriteRequirement(
+        Snapshot& target,
+        const Record& record,
+        const std::shared_ptr<const std::string>& canonicalBlueprint)
+    {
+        if (!canonicalBlueprint || canonicalBlueprint->empty())
+        {
+            return;
+        }
+
+        const bool hasPlacement = record.TransformValid && record.SplineClassificationKnown && !record.HasSpline;
+        Services::Map::Buildings::Visuals::SpritePlacement placement{};
+        if (hasPlacement)
+        {
+            placement.Position = record.Position;
+            placement.SignedScale = record.Scale;
+            placement.Rotation = record.Rotation;
+        }
+
+        Services::Map::Buildings::BuildingSpriteSourceRecord descriptor{
+            *canonicalBlueprint, hasPlacement, placement};
+        constexpr std::string_view baseCoreKey = "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
+        auto& destination = *canonicalBlueprint == baseCoreKey ? target.OverlayLastSprites : target.OrdinarySprites;
+        target.SpriteRequirementKeyOwners.push_back(canonicalBlueprint);
+        destination.push_back(std::move(descriptor));
+    }
+    /** Appends one incomplete entry whose authored sprite source and policies are known.
+     * Unknown Blueprint, spline, interior, or drone-rail classification omits that occurrence.
+     * @param target Snapshot retaining the descriptor and its key storage.
+     * @param entry Incomplete authoritative collector entry being considered.
+     */
+    void AppendKnownPendingSpriteRequirement(Snapshot& target, const Entry& entry)
+    {
+        if (entry.Complete || entry.Data.Generation != generation || !entry.Data.DefinitionValid ||
+            !entry.Data.SplineClassificationKnown || entry.Data.HasSpline || !entry.DroneRailClassificationKnown ||
+            (!target.IncludedDroneRails && entry.IsDroneRail) || !entry.Definition)
+        {
+            return;
+        }
+
+        const auto definition = definitions.find(entry.Definition);
+        if (definition == definitions.end() || !definition->second->InteriorKnown || definition->second->Interior ||
+            !definition->second->Blueprint || definition->second->Blueprint->empty())
+        {
+            return;
+        }
+
+        AppendSpriteRequirement(target, entry.Data, definition->second->Blueprint);
+    }
+    /** Sorts reusable subject requirements deterministically while preserving contributor multiplicity.
+     * Equal descriptors remain repeated; this order enumerates requirements and does not certify draw order.
+     * @param requirements Frozen descriptors for one sprite pass.
+     */
+    static void SortSpriteRequirements(
+        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord>& requirements)
+    {
+        std::sort(requirements.begin(), requirements.end(), [](const auto& left, const auto& right)
+        {
+            if (left.SpriteRequirementKey != right.SpriteRequirementKey)
+            {
+                return left.SpriteRequirementKey < right.SpriteRequirementKey;
+            }
+            if (left.HasPlacement != right.HasPlacement)
+            {
+                return left.HasPlacement < right.HasPlacement;
+            }
+            return std::tie(left.Placement.Position, left.Placement.SignedScale, left.Placement.Rotation) <
+                std::tie(right.Placement.Position, right.Placement.SignedScale, right.Placement.Rotation);
+        });
+    }
+    /** Sorts already-selected sprite requirement spans within their separate deterministic passes.
+     * The Snapshot owns both descriptor arrays and every canonical string referenced by their views.
+     * @param target Snapshot being published.
+     */
+    void FreezeSpriteRequirements(Snapshot& target)
+    {
+        SortSpriteRequirements(target.OrdinarySprites);
+        SortSpriteRequirements(target.OverlayLastSprites);
     }
     bool Ensure(const Native& n)
     {
@@ -466,8 +557,15 @@ namespace MiniMapBuildingCollector
         }
         return true;
     }
-    // No Mass fragment borrow is live here. The definition root owns its
-    // properties; synchronous loading may run engine code before copying POD.
+    /** Establishes definition policy and prepares existing immutable Blueprint/profile facts.
+     * InteriorKnown is set only after the authored tag scan; Blueprint may be known while later
+     * spline profile preparation remains unavailable. Definition loading can reenter lifecycle code.
+     * @param n Native asset operations used by the existing preparation path.
+     * @param d Collector-owned definition facts being prepared.
+     * @param spline Whether the Mass source was positively classified as a spline.
+     * @param building Authored BuildingID used by existing spline policy.
+     * @return Whether all definition preparation required by this contributor completed.
+     */
     bool PrepareDefinition(const Native& n,Definition& d,bool spline,uint32_t building)
     {
         if(d.Prepared)return true;
@@ -476,6 +574,7 @@ namespace MiniMapBuildingCollector
         if(Is(placement,types.BuildingData))
             for(const auto tag:static_cast<const SDK::UCrBuildingData*>(placement)->Tags)
                 if(tag.Number==0 && n.asset.nameEqualsWide(tag,L"Interior"))d.Interior=true;
+        d.InteriorKnown=true;
         if(!d.Blueprint)d.Blueprint=MiniMapBuildingBlueprintIdentity::Copy(*placement);
         if(!d.Blueprint)return false;
         if(d.Interior){d.Prepared=true;return true;}
@@ -508,13 +607,63 @@ namespace MiniMapBuildingCollector
         if(profiles->Profiles.empty())return false;
         auto recipe=std::make_shared<DefinitionGeometry>();recipe->Profiles=std::move(profiles);d.Recipe=std::move(recipe);d.Prepared=true;return true;
     }
-    // This function never loads assets, yields, or retains a fragment/payload.
+    /** Copies spline source facts and establishes whether the Mass spline fragment exists.
+     * @param n Native access used for existing Mass fragment reads.
+     * @param id Private Mass handle for the incomplete contributor.
+     * @param record Owned copied record receiving classification and curve data.
+     * @return Whether existing spline or fallback payload acquisition produced valid geometry.
+     */
+    bool CopySplineSource(const Native& n, Id id, Record& record)
+    {
+        const auto* mass = static_cast<const SDK::FAuSplineConnectionFragment*>(
+            n.mass.getFragmentDataPtr(manager, id, types.Spline));
+        record.HasSpline = mass != nullptr;
+        record.SplineClassificationKnown = true;
+        if (!record.HasSpline || record.Curve)
+        {
+            return true;
+        }
+
+        auto curve = std::make_shared<SplineGeometry>();
+        G::CopySpline(*mass, *curve);
+        if (curve->Issue == GeometryIssue::None && !curve->Segments.empty())
+        {
+            record.Curve = std::move(curve);
+            record.Extent = record.Curve->CenterlineBounds;
+            return true;
+        }
+
+        if (mass->bSplineCurvesInitialized || mass->Data.SplineData.Num() > 1)
+        {
+            return false;
+        }
+
+        const auto* ap = static_cast<const SDK::FAuAPMassFragment*>(
+            n.mass.getFragmentDataPtr(manager, id, types.AP));
+        if (!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload, *curve) !=
+            MiniMapBuildingSplinePayload::CopyResult::Complete)
+        {
+            return false;
+        }
+
+        record.Curve = std::move(curve);
+        record.Extent = record.Curve->CenterlineBounds;
+        return true;
+    }
+    /** Copies one contributor's existing definition and transform facts before spline source data.
+     * It does not load assets or retain borrowed Mass fragments; spline kind becomes known only
+     * after CopySplineSource performs the existing fragment lookup.
+     * @param n Native Mass access for the existing acquisition path.
+     * @param entry Authoritative incomplete collector entry being copied.
+     * @param includeDroneRails Effective policy controlling early rail exclusion.
+     * @return Whether currently required initial and spline data are copied successfully.
+     */
     bool CopyInitial(const Native& n,Entry& entry,bool includeDroneRails)
     {
         auto& r=entry.Data;
         if(r.DefinitionValid)
             RecordDroneRailClassification(entry,MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,r.BuildingId));
-        if(r.DefinitionValid && r.TransformValid && (!r.HasSpline || r.Curve))return true;
+        if(r.DefinitionValid && r.TransformValid && r.SplineClassificationKnown && (!r.HasSpline || r.Curve))return true;
         const Id id{r.Index,r.Serial};
         if(!r.DefinitionValid)
         {
@@ -547,23 +696,7 @@ namespace MiniMapBuildingCollector
             for(auto& q:r.Rotation)q/=std::sqrt(norm);
             r.TransformValid=true;
         }
-        const auto* mass=static_cast<const SDK::FAuSplineConnectionFragment*>(n.mass.getFragmentDataPtr(manager,id,types.Spline));
-        r.HasSpline=mass!=nullptr;
-        if(r.HasSpline && !r.Curve)
-        {
-            auto curve=std::make_shared<SplineGeometry>();
-            if(mass)G::CopySpline(*mass,*curve);
-            if(!mass || curve->Issue!=GeometryIssue::None || curve->Segments.empty())
-            {
-                // A complete/unsupported Mass source is never silently
-                // replaced. Zero/one source point is initially incomplete.
-                if(mass && (mass->bSplineCurvesInitialized || mass->Data.SplineData.Num()>1))return false;
-                const auto* ap=static_cast<const SDK::FAuAPMassFragment*>(n.mass.getFragmentDataPtr(manager,id,types.AP));
-                if(!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload,*curve)!=MiniMapBuildingSplinePayload::CopyResult::Complete)return false;
-            }
-            r.Curve=std::move(curve);r.Extent=r.Curve->CenterlineBounds;
-        }
-        return true;
+        return CopySplineSource(n,id,r);
     }
     Bounds SplineBounds(const Record& r)
     {
@@ -659,18 +792,91 @@ namespace MiniMapBuildingCollector
             HashFingerprintDouble(hash,component);
         return hash;
     }
+    /** Detects a one-time change to facts that can admit a pending sprite descriptor.
+     * @param previous Record facts before CopyInitial ran.
+     * @param current Record facts after CopyInitial ran.
+     * @param previousDefinition Entry definition identity before copying.
+     * @param entry Current authoritative incomplete entry.
+     * @return Whether identity, sprite classification, or validated placement changed.
+     */
+    bool HasPendingSpriteFactsChanged(
+        const Record& previous,
+        const Record& current,
+        const SDK::UAuActorPlacementData* previousDefinition,
+        const Entry& entry) const
+    {
+        if (previousDefinition != entry.Definition || previous.DefinitionValid != current.DefinitionValid ||
+            previous.SplineClassificationKnown != current.SplineClassificationKnown ||
+            previous.HasSpline != current.HasSpline || previous.TransformValid != current.TransformValid)
+        {
+            return true;
+        }
+
+        return current.TransformValid &&
+            (previous.Position != current.Position || previous.Rotation != current.Rotation || previous.Scale != current.Scale);
+    }
+    /** Revokes the active publication when definition-owned sprite facts change.
+     * @param definition Shared prepared facts used by the incomplete entry.
+     * @param previousBlueprint Canonical key owner before preparation.
+     * @param previousInteriorKnown Whether interior policy was established before preparation.
+     * @param previousInterior Interior-only value before preparation.
+     */
+    void InvalidateChangedDefinitionFacts(
+        const Definition& definition,
+        const std::shared_ptr<const std::string>& previousBlueprint,
+        bool previousInteriorKnown,
+        bool previousInterior)
+    {
+        if (previousBlueprint != definition.Blueprint || previousInteriorKnown != definition.InteriorKnown ||
+            (definition.InteriorKnown && previousInterior != definition.Interior))
+        {
+            InvalidateSourcePublication();
+        }
+    }
+    /** Copies currently available Mass facts and revokes only on a real fact transition.
+     * @param native Serialized native access used by CopyInitial.
+     * @param entry Authoritative incomplete entry being advanced.
+     * @param includeDroneRails Effective Snapshot rail policy.
+     * @return Whether transform and source classification facts are ready for definition work.
+     */
+    bool CopyEntryFacts(const Native& native, Entry& entry, bool includeDroneRails)
+    {
+        const Record previousData = entry.Data;
+        const auto* previousDefinition = entry.Definition;
+        const bool ready = CopyInitial(native, entry, includeDroneRails);
+        if (HasPendingSpriteFactsChanged(previousData, entry.Data, previousDefinition, entry))
+        {
+            InvalidateSourcePublication();
+        }
+        return ready;
+    }
+    /** Advances one existing pending entry through the established acquisition sequence.
+     * Definition loading may reenter lifecycle code, so the entry is looked up again before commit.
+     * @param n Native services used by existing Mass and definition acquisition.
+     * @param key Collector-private key for the incomplete authoritative entry.
+     * @param attemptedDefinitions Definitions already attempted during this callback.
+     * @param includeDroneRails Effective policy captured for the next Snapshot.
+     * @return Whether the entry completed and was removed from pending acquisition.
+     */
     bool Acquire(const Native& n,uint64_t key,std::unordered_set<const Definition*>& attemptedDefinitions,bool includeDroneRails)
     {
         auto it=entities.find(key);if(it==entities.end() || it->second.Complete)return false;
         auto& e=it->second;
         if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId))return false;
-        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}) || !CopyInitial(n,e,includeDroneRails))return false;
+        if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}))return false;
+        if (!CopyEntryFacts(n, e, includeDroneRails))
+        {
+            return false;
+        }
         // CopyInitial has returned: no Mass borrow spans definition loading.
         // Loading may dispatch engine callbacks: keep the definition strongly
         // owned, and re-find the entity after returning instead of holding a
         // map entry/reference across that call.
         const auto definition=definitions.at(e.Definition);
         auto result=e.Data;const auto epoch=generation;
+        const auto previousBlueprint = definition->Blueprint;
+        const bool previousInteriorKnown = definition->InteriorKnown;
+        const bool previousInterior = definition->Interior;
         const bool definitionAttempted=!definition->Prepared;
         if(definitionAttempted && !attemptedDefinitions.insert(definition.get()).second)return false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -680,8 +886,9 @@ namespace MiniMapBuildingCollector
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(definitionAttempted){if(definitionReady)++measurements.DefinitionSuccesses;else ++measurements.DefinitionFailures;}
 #endif
-        if(!definitionReady)return false;
         if(epoch!=generation || world!=MiniMapMap::GetWorld())return false;
+        InvalidateChangedDefinitionFacts(*definition, previousBlueprint, previousInteriorKnown, previousInterior);
+        if(!definitionReady)return false;
         it=entities.find(key);
         if(it==entities.end() || it->second.Complete ||
             !n.mass.isEntityValid(manager,{result.Index,result.Serial}) || !n.mass.isEntityBuilt(manager,{result.Index,result.Serial}))return false;
@@ -703,6 +910,10 @@ namespace MiniMapBuildingCollector
     {
         return BuildingSourcePublication::HasValidSupportExtent(extent);
     }
+    /** Publishes current immutable records and known sprite requirements when source facts are dirty.
+     * Pending descriptors are frozen during the existing Entry traversal and do not affect completion.
+     * @param includeDroneRails Effective policy captured for this Snapshot publication.
+     */
     void Publish(bool includeDroneRails)
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -718,15 +929,23 @@ namespace MiniMapBuildingCollector
             if(!e.Complete)
             {
                 if(!excludedDroneRail)acquisitionComplete=false;
+                AppendKnownPendingSpriteRequirement(*value, e);
                 continue;
             }
             if(e.Data.InteriorOnly || excludedDroneRail)continue;
             if(!HasValidSupportExtent(e.Data.Extent))acquisitionComplete=false;
             if(!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region))
+            {
                 value->Records.push_back(e.Data);
+                if (e.Data.SplineClassificationKnown && !e.Data.HasSpline && e.Data.InteriorKnown && !e.Data.InteriorOnly)
+                {
+                    AppendSpriteRequirement(*value, e.Data, e.Data.CanonicalBlueprint);
+                }
+            }
         }
         value->AcquisitionComplete=acquisitionComplete;
         std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
+        FreezeSpriteRequirements(*value);
         auto eligibility=std::make_shared<BuildingSourcePublication::EligibilityToken>();
         if(publicationEligibility)
         {
