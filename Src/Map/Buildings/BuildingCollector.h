@@ -3,6 +3,7 @@
 // Declares the client-side StarRupture collector and immutable Snapshot source data.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
+#include "BuildingAcquisitionTypes.h"
 #include "BuildingGeometryTypes.h"
 #include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
@@ -18,34 +19,9 @@
 
 namespace MiniMapBuildingCollector
 {
-    struct Bounds
-    {
-        double MinX = 0, MinY = 0, MaxX = 0, MaxY = 0;
-        bool Valid = false;
-    };
-    enum class GeometryIssue : uint8_t
-    {
-        None, MissingSource, Uninitialized, Looped, InvalidArray, InvalidCurve,
-        UnsupportedMode, NonFinite, Oversized, InvalidTransform
-    };
-    using Point = std::array<double, 3>;
-    struct LocalBounds
-    {
-        Point Min = {}, Max = {};
-        bool Valid = false;
-        bool operator==(const LocalBounds&) const = default;
-    };
     struct DefinitionGeometry
     {
         std::shared_ptr<const MiniMapBuildingSplineProfiles::Set> Profiles;
-    };
-    struct CurveSegment
-    {
-        std::array<Point, 4> Controls = {}; // Copied world-space XYZ cubic Bezier, Unreal units; no entity transform applied.
-        // Initialized and reconstructed controls retain this verified world-space basis.
-        double StartKey = 0, EndKey = 1;
-        uint8_t Mode = 0; // Native EInterpCurveMode; constant jumps stay discontinuous.
-        bool operator==(const CurveSegment&) const = default;
     };
     /** Owns the neutral numerical arrays adapted from one completed Record.
      * BuildingSplineRenderInput spans are formed only after Snapshot construction
@@ -59,12 +35,6 @@ namespace MiniMapBuildingCollector
         Services::Map::Buildings::Visuals::SplineSurfaceTransform ComponentTransform{};
         Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode SelectionMode =
             Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode::DrawAllSurfaces;
-    };
-    struct SplineGeometry
-    {
-        std::vector<CurveSegment> Segments;
-        Bounds CenterlineBounds;
-        GeometryIssue Issue = GeometryIssue::None;
     };
     struct Record
     {

@@ -1,8 +1,10 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
-#include "BuildingCollector.h"
+#include "BuildingAcquisitionTypes.h"
+#include "SDK/CoreUObject_structs.hpp"
 #include "SDK/AuActorPlacement_structs.hpp"
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 
 namespace MiniMapBuildingGeometry
