@@ -125,6 +125,11 @@ namespace Services::Map::Buildings::Visuals
 		return SplineOcclusionGeometry::PrepareOccluders(context.occluders_, context.occlusionIndex_);
 	}
 
+	/** Samples each spline once, then follows its selected surface policy synchronously.
+	 * @param scene Borrowed spline records and ordered surface spans.
+	 * @param destination Destination used after numerical surface preparation.
+	 * @param context Caller-owned reusable samples, surface geometry and outcomes.
+	 */
 	void BuildingVisuals::DrawSplineSurfaces(
 		const BuildingRenderSceneInput& scene,
 		IImageDestination& destination,
@@ -140,12 +145,20 @@ namespace Services::Map::Buildings::Visuals
 		for (std::size_t splineIndex = 0; splineIndex < scene.Splines.size(); ++splineIndex)
 		{
 			const auto& spline = scene.Splines[splineIndex];
-			if (spline.Surfaces.empty())
+			if (spline.Surfaces.empty() &&
+				spline.SurfaceSelectionMode == BuildingSplineSurfaceSelectionMode::DrawAllSurfaces)
 			{
 				continue;
 			}
 			auto& preparedSpline = context.preparedSplines_[splineIndex];
 			SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy, preparedSpline);
+			if (spline.SurfaceSelectionMode ==
+				BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative)
+			{
+				DrawFirstDrawableSplineAlternative(spline, preparedSpline, splineIndex, context, destination);
+				continue;
+			}
+
 			for (std::size_t surfaceIndex = 0; surfaceIndex < spline.Surfaces.size(); ++surfaceIndex)
 			{
 				DrawSplineSurface(spline, preparedSpline, spline.Surfaces[surfaceIndex],
@@ -154,6 +167,15 @@ namespace Services::Map::Buildings::Visuals
 		}
 	}
 
+	/** Prepares one all-surfaces input and records its positional numerical/submission outcome.
+	 * @param spline Borrowed common source values and surface-selection policy.
+	 * @param preparedSpline Shared samples already prepared for this contributor.
+	 * @param surface Borrowed surface values and optional component-transform override.
+	 * @param splineIndex Positional contributor index in the input scene.
+	 * @param surfaceIndex Position in the supplied surface span.
+	 * @param context Reusable preparation, clipping and result storage.
+	 * @param destination Synchronous triangle destination.
+	 */
 	void BuildingVisuals::DrawSplineSurface(
 		const BuildingSplineRenderInput& spline,
 		const PreparedSpline& preparedSpline,
@@ -168,11 +190,97 @@ namespace Services::Map::Buildings::Visuals
 		outcome.SurfaceIndex = surfaceIndex;
 		outcome.SamplingIssue = preparedSpline.Issue;
 		outcome.SamplingComplete = preparedSpline.IsComplete();
+		outcome.AlternativeStatus = BuildingSplineAlternativeStatus::NotApplicable;
 		if (preparedSpline.Issue != SplineNumericalIssue::None || !outcome.SamplingComplete)
 		{
 			outcome.FailureStage = BuildingVisualsFailureStage::SplineSampling;
 		}
 		PrepareSplineSurfaceGeometry(spline, preparedSpline, surface, context, outcome);
+		DrawPreparedSplineSurface(surface, splineIndex, surfaceIndex, context, destination, outcome);
+	}
+
+	/** Tries ordered alternatives until preparation yields accepted indexed surface triangles.
+	 * Earlier candidate failures are recorded but do not affect aggregate completeness after selection.
+	 * @param spline Borrowed common curve, policy, transforms and ordered candidate span.
+	 * @param preparedSpline One centerline sampling result shared by all candidate preparations.
+	 * @param splineIndex Positional contributor index in the scene.
+	 * @param context Reusable candidate geometry and positional result storage.
+	 * @param destination Synchronous triangle destination used only after a candidate is selected.
+	 */
+	void BuildingVisuals::DrawFirstDrawableSplineAlternative(
+		const BuildingSplineRenderInput& spline,
+		const PreparedSpline& preparedSpline,
+		std::size_t splineIndex,
+		BuildingVisualsContext& context,
+		IImageDestination& destination)
+	{
+		for (std::size_t surfaceIndex = 0; surfaceIndex < spline.Surfaces.size(); ++surfaceIndex)
+		{
+			BuildingVisualsContributorOutcome outcome;
+			outcome.ContributorIndex = splineIndex;
+			outcome.SurfaceIndex = surfaceIndex;
+			outcome.AlternativeStatus = BuildingSplineAlternativeStatus::CandidateRejected;
+			outcome.SamplingIssue = preparedSpline.Issue;
+			outcome.SamplingComplete = preparedSpline.IsComplete();
+			if (preparedSpline.Issue != SplineNumericalIssue::None || !outcome.SamplingComplete)
+			{
+				outcome.FailureStage = BuildingVisualsFailureStage::SplineSampling;
+			}
+
+			const auto& surface = spline.Surfaces[surfaceIndex];
+			PrepareSplineSurfaceGeometry(spline, preparedSpline, surface, context, outcome);
+			if (!HasDrawableSplineSurface(context.preparedSurface_))
+			{
+				if (outcome.FailureStage == BuildingVisualsFailureStage::None)
+				{
+					outcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
+				}
+				context.result_.SplineSurfaces.push_back(outcome);
+				continue;
+			}
+
+			outcome.AlternativeStatus = BuildingSplineAlternativeStatus::Selected;
+			DrawPreparedSplineSurface(surface, splineIndex, surfaceIndex, context, destination, outcome);
+			return;
+		}
+
+		BuildingVisualsContributorOutcome noDrawableOutcome;
+		noDrawableOutcome.ContributorIndex = splineIndex;
+		noDrawableOutcome.HasSurfaceIndex = false;
+		noDrawableOutcome.AlternativeStatus = BuildingSplineAlternativeStatus::NoDrawableAlternative;
+		noDrawableOutcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
+		noDrawableOutcome.SamplingIssue = preparedSpline.Issue;
+		noDrawableOutcome.SamplingComplete = preparedSpline.IsComplete();
+		MarkIncompleteOnFailure(context.result_, noDrawableOutcome);
+		context.result_.SplineSurfaces.push_back(noDrawableOutcome);
+	}
+
+	/** Recognizes a cell already accepted and indexed by SplineSurfaceGeometry.
+	 * @param preparedSurface Reusable numerical candidate result.
+	 * @return Whether an accepted cell contributes at least one indexed triangle batch.
+	 */
+	bool BuildingVisuals::HasDrawableSplineSurface(const PreparedSplineSurface& preparedSurface) noexcept
+	{
+		return preparedSurface.Issue == SplineSurfaceIssue::None && !preparedSurface.Cells.empty() &&
+			preparedSurface.Indices.size() >= 3 && preparedSurface.Indices.size() % 3 == 0;
+	}
+
+	/** Clips and submits prepared geometry, then stores the selected or ordinary surface outcome.
+	 * @param surface Borrowed surface appearance and optional candidate transform.
+	 * @param splineIndex Positional contributor index in the scene.
+	 * @param surfaceIndex Input span position for this surface.
+	 * @param context Caller-owned clipping storage and positional outcomes.
+	 * @param destination Synchronous triangle destination.
+	 * @param outcome Numerical and selection data to complete with actual clipping/submission results.
+	 */
+	void BuildingVisuals::DrawPreparedSplineSurface(
+		const BuildingSplineSurfaceRenderInput& surface,
+		std::size_t splineIndex,
+		std::size_t surfaceIndex,
+		BuildingVisualsContext& context,
+		IImageDestination& destination,
+		BuildingVisualsContributorOutcome outcome)
+	{
 		if (outcome.GeometryPrepared)
 		{
 			ClipAndSubmitSurface(surface, context, destination, outcome);
@@ -182,10 +290,20 @@ namespace Services::Map::Buildings::Visuals
 			outcome.OcclusionStatus = context.occlusionIndex_.Status();
 			outcome.FailureStage = BuildingVisualsFailureStage::Occlusion;
 		}
+		outcome.ContributorIndex = splineIndex;
+		outcome.SurfaceIndex = surfaceIndex;
 		MarkIncompleteOnFailure(context.result_, outcome);
 		context.result_.SplineSurfaces.push_back(outcome);
 	}
 
+	/** Prepares one surface using its explicit component override or the spline-wide fallback.
+	 * The reusable context owns output geometry only until the next candidate preparation.
+	 * @param spline Borrowed common curve, root and fallback component transforms.
+	 * @param preparedSpline Shared sampled centerline for this spline contributor.
+	 * @param surface Borrowed profile dimensions and optional component transform.
+	 * @param context Receives prepared geometry in reusable caller-owned storage.
+	 * @param outcome Receives sampling-independent surface preparation details.
+	 */
 	void BuildingVisuals::PrepareSplineSurfaceGeometry(
 		const BuildingSplineRenderInput& spline,
 		const PreparedSpline& preparedSpline,
@@ -193,8 +311,11 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		BuildingVisualsContributorOutcome& outcome)
 	{
+		const auto& componentTransform = surface.ComponentTransformOverride.has_value()
+			? *surface.ComponentTransformOverride
+			: spline.ComponentTransform;
 		SplineSurfaceGeometry::Prepare(spline.Segments, preparedSpline, spline.RootTransform,
-			spline.ComponentTransform, surface.Bounds, surface.CrossSection, context.preparedSurface_);
+			componentTransform, surface.Bounds, surface.CrossSection, context.preparedSurface_);
 		outcome.SurfaceIssue = context.preparedSurface_.Issue;
 		outcome.RejectedCells = context.preparedSurface_.RejectedCells;
 		outcome.GeometryPrepared = context.preparedSurface_.Issue == SplineSurfaceIssue::None;

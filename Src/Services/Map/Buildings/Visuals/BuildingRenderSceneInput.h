@@ -8,6 +8,7 @@
 #include "../IImageDestination.h"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace Services::Map::Buildings::Visuals
@@ -57,15 +58,26 @@ namespace Services::Map::Buildings::Visuals
 		SpriteProjectionRectangle Projection{};
 	};
 
-	/** Holds one drawn surface's numerical dimensions and neutral presentation values. */
+	/** Holds one drawn surface's numerical dimensions, presentation values and optional component transform. */
 	struct BuildingSplineSurfaceRenderInput
 	{
 		SplineSurfaceBounds Bounds{};
 		SplineSurfaceCrossSection CrossSection{};
 		SplineSurfaceAppearance Appearance{};
+		/** Optional transform replacing the contributor-wide component transform for this surface. */
+		std::optional<SplineSurfaceTransform> ComponentTransformOverride;
 	};
 
-	/** Holds one spline contributor's borrowed curve and surface spans for a synchronous call. */
+	/** Selects whether a spline draws every surface or one first-drawable ordered alternative. */
+	enum class BuildingSplineSurfaceSelectionMode : std::uint8_t
+	{
+		DrawAllSurfaces,
+		FirstNumericallyDrawableAlternative
+	};
+
+	/** Holds one spline contributor's borrowed curve and surface spans for a synchronous call.
+	 * Sampling and root transforms are shared; alternatives use each surface's optional component override.
+	 */
 	struct BuildingSplineRenderInput
 	{
 		std::span<const SplineCurveSegment> Segments;
@@ -73,6 +85,9 @@ namespace Services::Map::Buildings::Visuals
 		SplineSurfaceTransform RootTransform{};
 		SplineSurfaceTransform ComponentTransform{};
 		std::span<const BuildingSplineSurfaceRenderInput> Surfaces;
+		/** Defaults to generic multi-surface drawing; alternatives retain the supplied span order. */
+		BuildingSplineSurfaceSelectionMode SurfaceSelectionMode =
+			BuildingSplineSurfaceSelectionMode::DrawAllSurfaces;
 	};
 
 	/** Borrows caller-owned source spans in deterministic pass order for one synchronous rendering call. */

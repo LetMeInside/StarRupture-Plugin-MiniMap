@@ -69,10 +69,10 @@ namespace Services::Map::Buildings::Visuals
 		 * @return The numerical index preparation status.
 		 */
 		static SplineOcclusionStatus PrepareOcclusionIndex(BuildingVisualsContext& context);
-		/** Samples each spline once, then processes all its surfaces in supplied order.
+		/** Samples each spline once, then processes all surfaces or its ordered alternatives.
 		 * @param scene Borrowed ordered spline and surface inputs.
 		 * @param destination Synchronous triangle destination.
-		 * @param context Receives sampled and surface numerical values plus outcomes.
+		 * @param context Reuses sampled and surface numerical storage plus positional outcomes.
 		 */
 		static void DrawSplineSurfaces(
 			const BuildingRenderSceneInput& scene,
@@ -95,10 +95,46 @@ namespace Services::Map::Buildings::Visuals
 			std::size_t surfaceIndex,
 			BuildingVisualsContext& context,
 			IImageDestination& destination);
+		/** Tries alternatives in input order and draws only the first with prepared indexed triangles.
+		 * Rejected candidate outcomes are retained without affecting aggregate completeness if a later
+		 * alternative is selected; clipping or submission after selection never causes fallback.
+		 * @param spline Borrowed common curve, sampling policy and root transform with ordered candidates.
+		 * @param preparedSpline One centerline sampling result shared by all candidates.
+		 * @param splineIndex Positional contributor index in the scene.
+		 * @param context Reusable candidate geometry, clipping storage and result owner.
+		 * @param destination Synchronous triangle destination.
+		 */
+		static void DrawFirstDrawableSplineAlternative(
+			const BuildingSplineRenderInput& spline,
+			const PreparedSpline& preparedSpline,
+			std::size_t splineIndex,
+			BuildingVisualsContext& context,
+			IImageDestination& destination);
+		/** Reports whether preparation produced at least one accepted indexed surface cell.
+		 * SplineSurfaceGeometry appends accepted cells only after its ribbon geometry checks.
+		 * @param preparedSurface Reusable candidate geometry to inspect.
+		 * @return True when the candidate contains geometry that can be clipped and submitted.
+		 */
+		static bool HasDrawableSplineSurface(const PreparedSplineSurface& preparedSurface) noexcept;
+		/** Clips/submits a prepared surface and stores its actual positional outcome.
+		 * @param surface Borrowed candidate appearance and numerical values.
+		 * @param splineIndex Positional contributor index in the scene.
+		 * @param surfaceIndex Candidate index, or all-surfaces position, in the input span.
+		 * @param context Reusable clipping storage and result owner.
+		 * @param destination Synchronous triangle destination.
+		 * @param outcome Actual sampled, preparation, selection and submission outcome.
+		 */
+		static void DrawPreparedSplineSurface(
+			const BuildingSplineSurfaceRenderInput& surface,
+			std::size_t splineIndex,
+			std::size_t surfaceIndex,
+			BuildingVisualsContext& context,
+			IImageDestination& destination,
+			BuildingVisualsContributorOutcome outcome);
 		/** Prepares one surface and preserves sampling, rejection and structural status separately.
-		 * @param spline Borrowed curve, policy and transform inputs.
+		 * @param spline Borrowed curve, policy and common root/component transforms.
 		 * @param preparedSpline Numerical samples for the same contributor.
-		 * @param surface Borrowed bounds and cross-section values.
+		 * @param surface Borrowed bounds, cross-section and optional component-transform override.
 		 * @param context Receives reusable prepared surface values.
 		 * @param outcome Receives actual preparation outcomes.
 		 */
