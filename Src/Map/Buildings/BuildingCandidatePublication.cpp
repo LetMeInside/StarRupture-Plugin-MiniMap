@@ -13,7 +13,7 @@ namespace MiniMap::BuildingAcquisition
 {
 	using ::Services::Map::Buildings::BuildingCandidateOccurrence;
 	using ::Services::Map::Buildings::BuildingCandidateObservation;
-	using ::Services::Map::Buildings::BuildingCandidateView;
+	using ::Services::Map::Buildings::BuildingCandidateData;
 	using ::Services::Map::Buildings::BuildingCollectionRegion;
 	using ::Services::Map::Buildings::BuildingSectionGrid;
 
@@ -37,16 +37,16 @@ namespace MiniMap::BuildingAcquisition
 	}
 
 	/** Borrows descriptor and coverage storage owned by this retained publication. */
-	BuildingCandidateView BuildingCandidatePublication::BorrowCandidateView() const noexcept
+	BuildingCandidateData BuildingCandidatePublication::BorrowCandidateData() const noexcept
 	{
-		BuildingCandidateView view;
-		view.hasRequestedCoverage = hasRequestedCoverage_;
-		view.requestedCoverage = requestedCoverage_;
-		view.hasCoverage = hasAcquiredCoverage_;
-		view.coverage = hasAcquiredCoverage_ ? requestedCoverage_ : BuildingCollectionRegion{};
-		view.evidence = evidence_;
-		view.occurrences = std::span<const BuildingCandidateOccurrence>(occurrences_);
-		return view;
+		BuildingCandidateData data;
+		data.hasRequestedCoverage = hasRequestedCoverage_;
+		data.requestedCoverage = requestedCoverage_;
+		data.hasCoverage = hasAcquiredCoverage_;
+		data.coverage = hasAcquiredCoverage_ ? requestedCoverage_ : BuildingCollectionRegion{};
+		data.evidence = evidence_;
+		data.occurrences = std::span<const BuildingCandidateOccurrence>(occurrences_);
+		return data;
 	}
 
 	/** Initializes every output first, then fills only valid row-major cells. */
@@ -83,7 +83,7 @@ namespace MiniMap::BuildingAcquisition
 		return factsOwner_;
 	}
 
-	/** Resolves the contiguous publication ordinal without exposing native Index/Serial in the neutral view. */
+	/** Resolves the contiguous publication ordinal without exposing native Index/Serial in neutral candidate data. */
 	const BuildingAcquiredFacts::Building*
 	BuildingCandidatePublication::FindBuildingFacts(
 		std::uint64_t publicationOrdinal) const noexcept

@@ -73,16 +73,16 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 
-		const BuildingSourceView sourceView = publicationOwner->BorrowSourceView();
-		output.SourceReadiness = sourceView.Readiness;
-		output.MayHaveUnknownRequirements = sourceView.Readiness != BuildingSourceReadiness::Complete;
+		const BuildingSourceData sourceData = publicationOwner->BorrowSourceData();
+		output.SourceReadiness = sourceData.Readiness;
+		output.MayHaveUnknownRequirements = sourceData.Readiness != BuildingSourceReadiness::Complete;
 		PrepareSpriteRequirementSpan(
-			sourceView.OrdinarySprites,
+			sourceData.OrdinarySprites,
 			output.OrdinarySprites,
 			output.OrdinarySpriteSupports,
 			output);
 		PrepareSpriteRequirementSpan(
-			sourceView.OverlayLastSprites,
+			sourceData.OverlayLastSprites,
 			output.OverlayLastSprites,
 			output.OverlayLastSpriteSupports,
 			output);

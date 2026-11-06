@@ -43,11 +43,11 @@ namespace Services::Map::Buildings
 	 * The publication must retain records, key bytes, curve segments, surfaces and
 	 * any adaptation storage for its entire shared lifetime. No mutable alias may
 	 * change them; a newer acquisition requires a new publication. Shared appearance
-	 * pixels keep their existing immutable owners. Copying this view copies descriptors,
+	 * pixels keep their existing immutable owners. Copying this data structure copies descriptors,
 	 * not source arrays or pixels. Numerical consumers borrow it synchronously and
 	 * must keep the publication alive through every access to a span or key.
 	 */
-	struct BuildingSourceView
+	struct BuildingSourceData
 	{
 		/** Source acquisition summary, not render-resource availability or revision evidence. */
 		BuildingSourceReadiness Readiness = BuildingSourceReadiness::Unavailable;

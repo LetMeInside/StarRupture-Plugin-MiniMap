@@ -1,7 +1,7 @@
 // Defines retained adapted rendering inputs for downstream sprite preparation.
 #pragma once
 
-#include "BuildingSourceView.h"
+#include "BuildingSourceData.h"
 
 namespace Services::Map::Buildings
 {
@@ -36,14 +36,14 @@ namespace Services::Map::Buildings
 
 		/** Returns descriptors borrowing this publication's immutable source and nested storage.
 		 * All borrowed memory remains valid until the publication's final owner is released,
-		 * including after another view/observation call or currentness revocation. Readiness
+		 * including after any later borrow/observation call or currentness revocation. Readiness
 		 * and coverage remain facts of this publication, not live acquisition progress.
 		 * Known sprite keys may be enumerated while source readiness is incomplete; empty
 		 * spans in incomplete adapted data never establish that a section has no contributors.
 		 * This operation acquires no assets/pixels, prepares no geometry and copies no arrays.
-		 * @return Neutral borrowed source view; caller retains the publication during use.
+		 * @return Neutral borrowed source data; caller retains the publication during use.
 		 */
-		virtual BuildingSourceView BorrowSourceView() const noexcept = 0;
+		virtual BuildingSourceData BorrowSourceData() const noexcept = 0;
 
 	};
 }

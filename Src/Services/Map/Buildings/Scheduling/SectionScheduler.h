@@ -1,7 +1,7 @@
 // Owns Building Map acquisition resources, session lifecycle and known-sprite preparation.
 #pragma once
 
-#include "../BuildingSourceView.h"
+#include "../BuildingSourceData.h"
 #include "../IBuildingSourcePublication.h"
 #include "../Visuals/BuildingRenderSceneInput.h"
 #include "../Cache/OwnedSpriteKey.h"

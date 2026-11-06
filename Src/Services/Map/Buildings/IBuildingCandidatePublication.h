@@ -1,7 +1,7 @@
 // Retains one immutable candidate source and observes batches against that same owner.
 #pragma once
 
-#include "BuildingCandidateView.h"
+#include "BuildingCandidateData.h"
 
 #include <span>
 
@@ -17,8 +17,8 @@ namespace Services::Map::Buildings
 		/** Reports independently revocable eligibility of this fixed retained source. */
 		virtual bool IsCurrent() const noexcept = 0;
 
-		/** Borrows candidate facts; the caller retains this publication while using the view. */
-		virtual BuildingCandidateView BorrowCandidateView() const noexcept = 0;
+		/** Borrows candidate facts; the caller retains this publication while using the data. */
+		virtual BuildingCandidateData BorrowCandidateData() const noexcept = 0;
 
 		/** Fills exactly one fully initialized output per row-major cell and preserves each exact requested cell.
 		 * Output index is row * columnCount + column. Cells are half-open, upper-left-origin,

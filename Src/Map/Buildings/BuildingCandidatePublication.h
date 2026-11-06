@@ -33,7 +33,7 @@ namespace MiniMap::BuildingAcquisition
 		bool IsCurrent() const noexcept override;
 
 		/** Borrows immutable occurrence descriptors while the publication owner is retained. */
-		::Services::Map::Buildings::BuildingCandidateView BorrowCandidateView() const noexcept override;
+		::Services::Map::Buildings::BuildingCandidateData BorrowCandidateData() const noexcept override;
 
 		/** Fills row-major observations without acquisition or temporary borrowed spans. */
 		void ObserveCandidates(

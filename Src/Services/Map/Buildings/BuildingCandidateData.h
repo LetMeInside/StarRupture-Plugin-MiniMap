@@ -59,7 +59,7 @@ namespace Services::Map::Buildings
 	/** Borrows immutable candidate occurrences and acquired coverage from its owner.
 	 * hasCoverage=false means unknown coverage and never means an empty certified area.
 	 */
-	struct BuildingCandidateView
+	struct BuildingCandidateData
 	{
 		/** Whether an exact accepted acquisition request is retained by this publication. */
 		bool hasRequestedCoverage = false;
