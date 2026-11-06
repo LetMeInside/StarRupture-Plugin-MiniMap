@@ -7,13 +7,10 @@
 #include "BuildingGeometryTypes.h"
 #include "BuildingSplineProfiles.h"
 #include "Map/MapTransform.h"
-#include "Services/Map/Buildings/IBuildingCollector.h"
-#include "Services/Map/Buildings/BuildingSourceView.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -23,23 +20,9 @@ namespace MiniMapBuildingCollector
     {
         std::shared_ptr<const MiniMapBuildingSplineProfiles::Set> Profiles;
     };
-    /** Owns the neutral numerical arrays adapted from one completed Record.
-     * BuildingSplineRenderInput spans are formed only after Snapshot construction
-     * finishes, and remain backed by these arrays for the Snapshot lifetime.
-     */
-    struct OwnedSplineAdaptation
-    {
-        std::vector<Services::Map::Buildings::Visuals::SplineCurveSegment> Segments;
-        std::vector<Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput> Surfaces;
-        Services::Map::Buildings::Visuals::SplineSurfaceTransform RootTransform{};
-        Services::Map::Buildings::Visuals::SplineSurfaceTransform ComponentTransform{};
-        Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode SelectionMode =
-            Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode::DrawAllSurfaces;
-    };
     struct Record
     {
         uint64_t Generation = 0;
-        uint64_t SourceFingerprint = 0;
         int32_t Index = 0, Serial = 0;
         uint32_t BuildingId = 0;
         // Copied object index for render tracing, never a native lifetime certificate.
@@ -55,31 +38,12 @@ namespace MiniMapBuildingCollector
         std::shared_ptr<const DefinitionGeometry> DefinitionShape;
         std::shared_ptr<const SplineGeometry> Curve;
     };
-    /** Retains one immutable acquisition result, its completed records and frozen source descriptors.
-     * Descriptor string_views are backed by shared immutable keys retained here for Snapshot lifetime.
-     */
+    /** Retains immutable legacy rendering records for one collector generation. */
     struct Snapshot
     {
         uint64_t Generation = 0;
-        Bounds Region;
         bool Complete = false; // Authoritative membership reconciliation succeeded.
-        bool AcquisitionComplete = false; // No eligible pending work; included support extents are valid.
-        bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
-        /** True only when every included completed spline Record had a faithful neutral adaptation.
-         * This does not certify sprite support, final sampling policy or complete source readiness.
-         */
-        bool SplineAdaptationComplete = false;
         std::vector<Record> Records;
-        /** Known ordinary sprite requirements in deterministic enumeration order. */
-        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OrdinarySprites;
-        /** Known overlay-last sprite requirements in deterministic enumeration order. */
-        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OverlayLastSprites;
-        /** Shared owners for every key referenced by the borrowed descriptor string_views. */
-        std::vector<std::shared_ptr<const std::string>> SpriteRequirementKeyOwners;
-        /** Owned nested curve/surface arrays backing Splines; no descriptor points into collector state. */
-        std::vector<OwnedSplineAdaptation> OwnedSplineAdaptations;
-        /** Borrowed nested spans backed only by the immutable Snapshot-owned adaptations. */
-        std::vector<Services::Map::Buildings::Visuals::BuildingSplineRenderInput> Splines;
     };
     struct CollectorDiagnostics
     {
@@ -95,11 +59,11 @@ namespace MiniMapBuildingCollector
     // Reusable, caller-scheduled collector. Each object owns its collection,
     // world session, region and publication state. MiniMap's current events
     // continue to use the namespace facade below.
-    class BuildingCollector final : public Services::Map::Buildings::IBuildingCollector
+    class BuildingCollector final
     {
     public:
         BuildingCollector();
-        ~BuildingCollector() override;
+        ~BuildingCollector();
         BuildingCollector(const BuildingCollector&) = delete;
         BuildingCollector& operator=(const BuildingCollector&) = delete;
         BuildingCollector(BuildingCollector&&) noexcept;
@@ -110,24 +74,11 @@ namespace MiniMapBuildingCollector
         void OnExperienceLoadComplete();
         bool BeginExplicitSession();
         void SetViewport(const MiniMapMap::Transform& transform);
-        /** Selects the explicit acquisition rectangle and revokes source eligibility when it changes.
+        /** Selects the explicit legacy collector rectangle when it changes.
          * @param region Map-space bounds used by the collector's explicit acquisition session.
          */
         void SetRegion(const Bounds& region);
-        /** Validates and stores a native-centimeter acquisition rectangle without conversion. */
-        bool SetAcquisitionRegion(
-            const Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
-        /** Fills row-major section observations from one immutable published snapshot. */
-        void ObserveSections(
-            const Services::Map::Buildings::BuildingSectionGrid& grid,
-            std::span<Services::Map::Buildings::BuildingSectionObservation> observations) const override;
-        /** Retains the currently exposed immutable snapshot without advancing acquisition.
-         * A stale but still exposed snapshot is returned with revoked currentness.
-         * @return Retained publication, or empty when no Snapshot is currently exposed.
-         */
-        std::shared_ptr<const Services::Map::Buildings::IBuildingSourcePublication>
-            AcquireSourcePublication() const override;
-        /** Changes the effective immutable-publication policy and revokes the old source synchronously.
+        /** Changes the effective legacy rendering policy and marks the current Snapshot dirty.
          * @param enabled Whether drone-rail contributors belong in the next Snapshot.
          */
         void SetRenderDroneRails(bool enabled);
@@ -135,7 +86,7 @@ namespace MiniMapBuildingCollector
         CollectorDiagnostics GetDiagnostics() const;
         void OnTick(float delta);
         void ShutdownResources();
-        /** Releases native definition metadata and revokes any publication still exposed. */
+        /** Releases native definition metadata after the current Snapshot is withdrawn. */
         void ShutdownMetadataResources();
 
     private:

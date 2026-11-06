@@ -1,7 +1,6 @@
-// Implements StarRupture acquisition and freezes immutable sprite and spline source snapshots.
+// Implements StarRupture acquisition and publishes immutable legacy rendering snapshots.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
-#include "BuildingSourcePublication.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
@@ -20,14 +19,11 @@
 #include "Services/RuntimeEvents.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
-#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <mutex>
-#include <string_view>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -49,8 +45,6 @@ namespace MiniMapBuildingCollector
     namespace G=MiniMapBuildingGeometry;
     struct BuildingCollector::State
     {
-    /** Empirical StarRupture discovery expansion, not a proven maximum contributor size. */
-    static constexpr double kStarRuptureAcquisitionExpansionNativeUnits = 5000.0;
 
     struct Types
     {
@@ -97,15 +91,11 @@ namespace MiniMapBuildingCollector
     Clock::time_point nextMembership{};
     std::mutex publicationMutex;
     std::shared_ptr<const Snapshot> snapshot;
-    std::shared_ptr<BuildingSourcePublication::EligibilityToken> publicationEligibility;
     double viewRadius=0;
     bool renderDroneRails=true;
     bool regionOverride=false;
-    /** Internal region for selection and local acquisition prioritization. */
+    /** Legacy region for selection and local acquisition prioritization. */
     Bounds region;
-    /** Exact caller-requested coverage in explicit Building Map acquisition mode. */
-    Bounds requestedRegion;
-    bool hasServiceRequestedRegion=false;
     enum class DiscoveryInput : uint8_t { MiniMapPresentation, ExplicitRegion };
     DiscoveryInput discoveryInput=DiscoveryInput::MiniMapPresentation;
     MiniMapBuildingVisuals::CollectorIntegration::DrawingBoundsVersion drawingBoundsVersion{};
@@ -202,8 +192,8 @@ namespace MiniMapBuildingCollector
         const auto address=(reinterpret_cast<uintptr_t>(storage)+sizeof(void*)+alignment-1)&~(alignment-1);
         return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
-    /** Revokes current use as soon as an existing source fact changes. */
-    void InvalidateSourcePublication() noexcept
+    /** Marks the immutable legacy Snapshot stale after a source fact changes. */
+    void MarkSnapshotDirty() noexcept
     {
         if(dirty)
         {
@@ -211,18 +201,13 @@ namespace MiniMapBuildingCollector
         }
 
         dirty=true;
-        if(publicationEligibility)
-        {
-            publicationEligibility->IsEligible=false;
-        }
     }
     /**
-     * Clears session-owned discovery state and revokes the current publication during reset.
-     * Both exact service request coverage and internal search bounds are reset for the next session.
+     * Clears session-owned discovery state and removes the current legacy Snapshot during reset.
      */
     void ClearSession()
     {
-        InvalidateSourcePublication();
+        MarkSnapshotDirty();
         if(const auto* n=MiniMapNative::Get())
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
@@ -231,8 +216,6 @@ namespace MiniMapBuildingCollector
         manager=nullptr;
         world=nullptr;
         region={};
-        requestedRegion={};
-        hasServiceRequestedRegion=false;
         regionOverride=false;
         discoveryInput=DiscoveryInput::MiniMapPresentation;
         drawingBoundsVersion={};
@@ -249,488 +232,13 @@ namespace MiniMapBuildingCollector
             snapshot.reset();
         }
     }
-    /**
-     * Validates the caller's exact rectangle and the collector-owned acquisition expansion.
-     * The exact output is future observation coverage; the expanded output remains internal
-     * to legacy contributor selection and local acquisition prioritization.
-     * @param request Exact caller-requested map rectangle.
-     * @param exact Output rectangle preserving the requested coverage.
-     * @param expanded Output internal rectangle after the empirical game-specific expansion.
-     * @return True only when both rectangles are finite, positive, and representable.
-     */
-    bool TryBuildExplicitAcquisitionRegions(
-        const Services::Map::Buildings::BuildingCollectionRegion& request,
-        Bounds& exact,
-        Bounds& expanded) const noexcept
-    {
-        if(!std::isfinite(request.xMapUnits) || !std::isfinite(request.yMapUnits) ||
-            !std::isfinite(request.widthMapUnits) || !std::isfinite(request.heightMapUnits) ||
-            request.widthMapUnits<=0 || request.heightMapUnits<=0)
-        {
-            return false;
-        }
-
-        const double right=request.xMapUnits+request.widthMapUnits;
-        const double bottom=request.yMapUnits+request.heightMapUnits;
-        if(!std::isfinite(right) || !std::isfinite(bottom) ||
-            right<=request.xMapUnits || bottom<=request.yMapUnits)
-        {
-            return false;
-        }
-
-        const double width=right-request.xMapUnits;
-        const double height=bottom-request.yMapUnits;
-        if(!std::isfinite(width) || !std::isfinite(height) ||
-            !std::isfinite(std::hypot(width,height)))
-        {
-            return false;
-        }
-
-        const Bounds exactCandidate{request.xMapUnits,request.yMapUnits,right,bottom,true};
-        Bounds expandedCandidate;
-        if(!TryExpandExplicitAcquisitionRegion(exactCandidate,expandedCandidate))
-        {
-            return false;
-        }
-
-        exact=exactCandidate;
-        expanded=expandedCandidate;
-        return true;
-    }
-    /**
-     * Applies and validates the concrete collector's empirical acquisition expansion.
-     * This region supports legacy discovery and selection but is not a proven size limit.
-     * @param exact Exact requested bounds to expand.
-     * @param expanded Output internal bounds after expansion.
-     * @return True only when expansion is finite, positive, and representable on every edge.
-     */
-    bool TryExpandExplicitAcquisitionRegion(const Bounds& exact,Bounds& expanded) const noexcept
-    {
-        const Bounds expandedCandidate=G::Inflate(
-            exact,
-            kStarRuptureAcquisitionExpansionNativeUnits);
-        if(!expandedCandidate.Valid || !std::isfinite(expandedCandidate.MinX) ||
-            !std::isfinite(expandedCandidate.MinY) || !std::isfinite(expandedCandidate.MaxX) ||
-            !std::isfinite(expandedCandidate.MaxY) ||
-            expandedCandidate.MinX>=exact.MinX ||
-            expandedCandidate.MinY>=exact.MinY ||
-            expandedCandidate.MaxX<=exact.MaxX ||
-            expandedCandidate.MaxY<=exact.MaxY)
-        {
-            return false;
-        }
-
-        const double expandedWidth=expandedCandidate.MaxX-expandedCandidate.MinX;
-        const double expandedHeight=expandedCandidate.MaxY-expandedCandidate.MinY;
-        if(!std::isfinite(expandedWidth) || !std::isfinite(expandedHeight) ||
-            expandedWidth<=0 || expandedHeight<=0 ||
-            !std::isfinite(std::hypot(expandedWidth,expandedHeight)))
-        {
-            return false;
-        }
-
-        expanded=expandedCandidate;
-        return true;
-    }
-    /**
-     * Commits the explicit request and internal expansion as one collector state change.
-     * Any changed exact coverage, expanded region, or input mode revokes the old publication.
-     * @param exact Exact caller-requested coverage for later source observation.
-     * @param expanded Internal region used by existing collector selection behavior.
-     */
-    void SetExplicitAcquisitionRegions(const Bounds& exact,const Bounds& expanded) noexcept
-    {
-        const bool exactChanged=!hasServiceRequestedRegion ||
-            requestedRegion.MinX!=exact.MinX || requestedRegion.MinY!=exact.MinY ||
-            requestedRegion.MaxX!=exact.MaxX || requestedRegion.MaxY!=exact.MaxY ||
-            requestedRegion.Valid!=exact.Valid;
-        const bool expandedChanged=region.MinX!=expanded.MinX || region.MinY!=expanded.MinY ||
-            region.MaxX!=expanded.MaxX || region.MaxY!=expanded.MaxY || region.Valid!=expanded.Valid;
-        const bool modeChanged=discoveryInput!=DiscoveryInput::ExplicitRegion || !regionOverride;
-
-        requestedRegion=exact;
-        hasServiceRequestedRegion=true;
-        region=expanded;
-        discoveryInput=DiscoveryInput::ExplicitRegion;
-        regionOverride=true;
-        if(exactChanged || expandedChanged || modeChanged)
-        {
-            InvalidateSourcePublication();
-        }
-    }
     /** Marks only positively classified drone-rail entries as policy-excluded. */
     void RecordDroneRailClassification(Entry& entry,bool isDroneRail)
     {
         if(entry.DroneRailClassificationKnown && entry.IsDroneRail==isDroneRail)return;
         entry.DroneRailClassificationKnown=true;
         entry.IsDroneRail=isDroneRail;
-        InvalidateSourcePublication();
-    }
-    /** Adds one admitted sprite requirement and retains the immutable bytes behind its view.
-     * Completed and pending contributors each append an occurrence; equal Blueprint keys are
-     * deliberately not collapsed. Placement is copied only from a validated Record transform.
-     * @param target Snapshot receiving the descriptor and key owner.
-     * @param record Source facts whose canonical key and optional placement are published.
-     * @param canonicalBlueprint Shared immutable authored Blueprint key owner.
-     */
-    void AppendSpriteRequirement(
-        Snapshot& target,
-        const Record& record,
-        const std::shared_ptr<const std::string>& canonicalBlueprint)
-    {
-        if (!canonicalBlueprint || canonicalBlueprint->empty())
-        {
-            return;
-        }
-
-        const bool hasPlacement = record.TransformValid && record.SplineClassificationKnown && !record.HasSpline;
-        Services::Map::Buildings::Visuals::SpritePlacement placement{};
-        if (hasPlacement)
-        {
-            placement.Position = record.Position;
-            placement.SignedScale = record.Scale;
-            placement.Rotation = record.Rotation;
-        }
-
-        Services::Map::Buildings::BuildingSpriteSourceRecord descriptor{
-            *canonicalBlueprint, hasPlacement, placement};
-        constexpr std::string_view baseCoreKey = "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
-        auto& destination = *canonicalBlueprint == baseCoreKey ? target.OverlayLastSprites : target.OrdinarySprites;
-        target.SpriteRequirementKeyOwners.push_back(canonicalBlueprint);
-        destination.push_back(std::move(descriptor));
-    }
-    /**
-     * Determines whether known reference-position or support facts establish request relevance.
-     * Invalid or unknown spatial facts do not establish overlap; non-service paths keep prior admission.
-     * @param record Contributor facts with optional validated placement and support bounds.
-     * @return Whether the record is relevant, or the legacy path does not spatially filter it.
-     */
-    bool IsRelevantToRequestedRegion(const Record& record) const noexcept
-    {
-        if (!hasServiceRequestedRegion)
-        {
-            return true;
-        }
-
-        if (!requestedRegion.Valid)
-        {
-            return false;
-        }
-
-        const bool hasValidatedReferencePosition = record.TransformValid &&
-            std::isfinite(record.Position[0]) && std::isfinite(record.Position[1]);
-        if (hasValidatedReferencePosition &&
-            record.Position[0] >= requestedRegion.MinX && record.Position[0] < requestedRegion.MaxX &&
-            record.Position[1] >= requestedRegion.MinY && record.Position[1] < requestedRegion.MaxY)
-        {
-            return true;
-        }
-
-        return BuildingSourcePublication::HasValidSupportExtent(record.Extent) &&
-            record.Extent.MaxX > requestedRegion.MinX &&
-            record.Extent.MinX < requestedRegion.MaxX &&
-            record.Extent.MaxY > requestedRegion.MinY &&
-            record.Extent.MinY < requestedRegion.MaxY;
-    }
-    /** Appends one incomplete entry whose authored sprite source and policies are known.
-     * Explicit service mode also requires established exact-request relevance; unknown area facts omit
-     * the early descriptor while Publish keeps the pending source incomplete.
-     * Unknown Blueprint, spline, interior, or drone-rail classification also omits that occurrence.
-     * @param target Snapshot retaining the descriptor and its key storage.
-     * @param entry Incomplete authoritative collector entry being considered.
-     */
-    void AppendKnownPendingSpriteRequirement(Snapshot& target, const Entry& entry)
-    {
-        if (entry.Complete || entry.Data.Generation != generation || !entry.Data.DefinitionValid ||
-            !entry.Data.SplineClassificationKnown || entry.Data.HasSpline || !entry.DroneRailClassificationKnown ||
-            (!target.IncludedDroneRails && entry.IsDroneRail) || !entry.Definition)
-        {
-            return;
-        }
-
-        if (!IsRelevantToRequestedRegion(entry.Data))
-        {
-            return;
-        }
-
-        const auto definition = definitions.find(entry.Definition);
-        if (definition == definitions.end() || !definition->second->InteriorKnown || definition->second->Interior ||
-            !definition->second->Blueprint || definition->second->Blueprint->empty())
-        {
-            return;
-        }
-
-        AppendSpriteRequirement(target, entry.Data, definition->second->Blueprint);
-    }
-    /** Sorts reusable subject requirements deterministically while preserving contributor multiplicity.
-     * Equal descriptors remain repeated; this order enumerates requirements and does not certify draw order.
-     * @param requirements Frozen descriptors for one sprite pass.
-     */
-    static void SortSpriteRequirements(
-        std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord>& requirements)
-    {
-        std::sort(requirements.begin(), requirements.end(), [](const auto& left, const auto& right)
-        {
-            if (left.SpriteRequirementKey != right.SpriteRequirementKey)
-            {
-                return left.SpriteRequirementKey < right.SpriteRequirementKey;
-            }
-            if (left.HasPlacement != right.HasPlacement)
-            {
-                return left.HasPlacement < right.HasPlacement;
-            }
-            return std::tie(left.Placement.Position, left.Placement.SignedScale, left.Placement.Rotation) <
-                std::tie(right.Placement.Position, right.Placement.SignedScale, right.Placement.Rotation);
-        });
-    }
-    /** Sorts already-selected sprite requirement spans within their separate deterministic passes.
-     * The Snapshot owns both descriptor arrays and every canonical string referenced by their views.
-     * @param target Snapshot being published.
-     */
-    void FreezeSpriteRequirements(Snapshot& target)
-    {
-        SortSpriteRequirements(target.OrdinarySprites);
-        SortSpriteRequirements(target.OverlayLastSprites);
-    }
-    /** Converts every accepted copied native interpolation mode without changing its key interval.
-     * The controls are already world-space XYZ Bezier values and receive no Record transform.
-     * @param source Completed immutable copied curve from one Snapshot Record.
-     * @param target Receives neutral segments in source order.
-     * @return Whether every source segment has a supported native interpolation mode.
-     */
-    static bool ConvertCurveSegments(
-        const SplineGeometry& source,
-        std::vector<Services::Map::Buildings::Visuals::SplineCurveSegment>& target)
-    {
-        using Interpolation = Services::Map::Buildings::Visuals::SplineInterpolation;
-        target.reserve(source.Segments.size());
-        for (const CurveSegment& sourceSegment : source.Segments)
-        {
-            Services::Map::Buildings::Visuals::SplineCurveSegment segment{};
-            segment.Controls = sourceSegment.Controls;
-            segment.StartKey = sourceSegment.StartKey;
-            segment.EndKey = sourceSegment.EndKey;
-            switch (static_cast<SDK::EInterpCurveMode>(sourceSegment.Mode))
-            {
-            case SDK::EInterpCurveMode::CIM_Constant:
-                segment.Interpolation = Interpolation::Constant;
-                break;
-            case SDK::EInterpCurveMode::CIM_Linear:
-                segment.Interpolation = Interpolation::Linear;
-                break;
-            case SDK::EInterpCurveMode::CIM_CurveAuto:
-            case SDK::EInterpCurveMode::CIM_CurveUser:
-            case SDK::EInterpCurveMode::CIM_CurveBreak:
-            case SDK::EInterpCurveMode::CIM_CurveAutoClamped:
-                segment.Interpolation = Interpolation::Cubic;
-                break;
-            default:
-                return false;
-            }
-            target.push_back(segment);
-        }
-        return !target.empty();
-    }
-    /** Converts a copied profile transform with the existing Unreal FRotator quaternion convention.
-     * Signed scale and relative translation are preserved; the caller stores the result per surface.
-     * @param source Immutable copied profile transform.
-     * @param target Receives the neutral quaternion transform.
-     * @return Whether the established converter accepts the source transform.
-     */
-    static bool ConvertProfileTransform(
-        const MiniMapBuildingSplineProfiles::RelativeTransform& source,
-        Services::Map::Buildings::Visuals::SplineSurfaceTransform& target)
-    {
-        MiniMapBuildingGeometryTypes::Transform converted{};
-        if (!MiniMapBuildingSplineEnvelope::ComponentTransform(source, converted))
-        {
-            return false;
-        }
-        target.Translation = converted.Translation;
-        target.Scale = converted.Scale;
-        target.Rotation = converted.Rotation;
-        return true;
-    }
-    /** Converts a positively supported copied mesh profile into one neutral alternative.
-     * Existing eligibility rejects non-X forward axes, varying endpoint values and nonzero rolls.
-     * @param profile Ordered immutable profile copied from the completed definition.
-     * @param appearanceRgb Established game-specific representative surface color.
-     * @param target Receives local bounds, fixed section values, appearance and component override.
-     * @return Whether this profile is representable by the current neutral projector.
-     */
-    static bool ConvertProfile(
-        const MiniMapBuildingSplineProfiles::Profile& profile,
-        uint32_t appearanceRgb,
-        Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput& target)
-    {
-        using namespace Services::Map::Buildings::Visuals;
-        if (MiniMapBuildingSplineEnvelope::Eligibility(profile) != MiniMapBuildingSplineEnvelope::None)
-        {
-            return false;
-        }
-        target.Bounds.Origin = profile.LocalBounds.Origin;
-        target.Bounds.Extent = profile.LocalBounds.Extent;
-        target.CrossSection.Scale = profile.Section.StartScale;
-        target.CrossSection.Offset = profile.Section.StartOffset;
-        target.CrossSection.Up = profile.Section.Up;
-        target.Appearance.Mode = SplineSurfaceAppearanceMode::SolidColor;
-        target.Appearance.SolidRgb = appearanceRgb;
-        // Legacy spline submission uses fixed alpha 255; neutral opacity is normalized.
-        target.Appearance.Opacity = 1.0;
-        SplineSurfaceTransform componentTransform{};
-        if (!ConvertProfileTransform(profile.Transform, componentTransform))
-        {
-            return false;
-        }
-        target.ComponentTransformOverride = componentTransform;
-        return true;
-    }
-    /** Builds an owned neutral adaptation for one included completed spline Record.
-     * Drone rails use the established fixed 10-unit thin ribbon; ordinary sources retain every
-     * ordered profile alternative. World-space controls are never transformed again.
-     * @param snapshot Fixed Snapshot whose effective inclusion policy is authoritative.
-     * @param record Completed Snapshot-owned contributor being adapted.
-     * @param target Receives all owned curve and surface arrays for this contributor.
-     * @return Whether all source facts required by this supported category were representable.
-     */
-    static bool BuildSplineAdaptation(
-        const Snapshot& snapshot,
-        const Record& record,
-        OwnedSplineAdaptation& target)
-    {
-        using namespace Services::Map::Buildings::Visuals;
-        const bool droneRail = MiniMapBuildingSplinePolicy::IsDroneRailDefinition(
-            record.DefinitionValid, record.BuildingId);
-        if (record.Generation != snapshot.Generation || !record.SplineClassificationKnown ||
-            !record.HasSpline || !record.TransformValid ||
-            !record.Curve || record.Curve->Issue != GeometryIssue::None ||
-            (droneRail && !snapshot.IncludedDroneRails))
-        {
-            return false;
-        }
-        if (!ConvertCurveSegments(*record.Curve, target.Segments))
-        {
-            return false;
-        }
-        if (droneRail)
-        {
-            return BuildDroneRailSurface(record, target);
-        }
-        target.SelectionMode = BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
-        return BuildProfileSurfaces(record, target);
-    }
-    /** Supplies the established projected thin ribbon for included drone-rail sources.
-     * Its curve is already world-space, so identity transforms preserve the fixed-width policy.
-     * @param record Completed drone-rail source and category appearance identity.
-     * @param target Owned adaptation receiving the one numerical thin-ribbon surface.
-     * @return Whether the category identity and copied geometry support this representation.
-     */
-    static bool BuildDroneRailSurface(const Record& record, OwnedSplineAdaptation& target)
-    {
-        using namespace Services::Map::Buildings::Visuals;
-        if (!record.DefinitionValid)
-        {
-            return false;
-        }
-        BuildingSplineSurfaceRenderInput surface{};
-        surface.Bounds.Origin = {0.0, 0.0, 0.0};
-        surface.Bounds.Extent = {0.0, MiniMapBuildingSplineEnvelope::ThinHalfWidth, 0.0};
-        surface.CrossSection.Scale = {1.0, 1.0};
-        surface.CrossSection.Offset = {0.0, 0.0};
-        surface.CrossSection.Up = {0.0, 0.0, 1.0};
-        surface.Appearance.Mode = SplineSurfaceAppearanceMode::SolidColor;
-        surface.Appearance.SolidRgb = MiniMapBuildingSplinePolicy::RepresentativeRgb(
-            record.DefinitionValid, record.BuildingId);
-        // Legacy spline submission uses fixed alpha 255; neutral opacity is normalized.
-        surface.Appearance.Opacity = 1.0;
-        target.Surfaces.push_back(surface);
-        return true;
-    }
-    /** Copies every source-ordered normal profile alternative without preselection or sorting.
-     * Each surface keeps its own relative component transform and established solid-color policy.
-     * @param record Completed normal spline with immutable copied profile alternatives.
-     * @param target Owned adaptation receiving all alternatives in their original order.
-     * @return Whether the complete ordered profile set is representable by the neutral contract.
-     */
-    static bool BuildProfileSurfaces(const Record& record, OwnedSplineAdaptation& target)
-    {
-        if (!record.DefinitionValid || !record.DefinitionShape || !record.DefinitionShape->Profiles ||
-            record.DefinitionShape->Profiles->Profiles.empty())
-        {
-            return false;
-        }
-        const uint32_t rgb = MiniMapBuildingSplinePolicy::RepresentativeRgb(
-            record.DefinitionValid, record.BuildingId);
-        const auto& profiles = record.DefinitionShape->Profiles->Profiles;
-        target.Surfaces.reserve(profiles.size());
-        for (const auto& profile : profiles)
-        {
-            Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput surface{};
-            if (!ConvertProfile(profile, rgb, surface))
-            {
-                return false;
-            }
-            target.Surfaces.push_back(surface);
-        }
-        return !target.Surfaces.empty();
-    }
-    /** Adapts eligible completed spline records and records whether any included spline was unsupported.
-     * Classification-unknown records remain unresolved; ordinary non-splines require no spline descriptor.
-     * @param target Snapshot being assembled from its own deterministic Record order.
-     * @return Whether every included completed spline was adapted or intentionally excluded.
-     */
-    static bool BuildSplineAdaptations(Snapshot& target)
-    {
-        target.OwnedSplineAdaptations.reserve(target.Records.size());
-        bool complete = true;
-        for (const Record& record : target.Records)
-        {
-            if (!record.SplineClassificationKnown)
-            {
-                complete = false;
-                continue;
-            }
-            if (!record.HasSpline || record.InteriorOnly)
-            {
-                continue;
-            }
-            OwnedSplineAdaptation adaptation{};
-            if (!BuildSplineAdaptation(target, record, adaptation))
-            {
-                complete = false;
-                continue;
-            }
-            if (!MiniMapBuildingSplinePolicy::IsDroneRailDefinition(record.DefinitionValid, record.BuildingId))
-            {
-                adaptation.RootTransform.Translation = record.Position;
-                adaptation.RootTransform.Scale = record.Scale;
-                adaptation.RootTransform.Rotation = record.Rotation;
-            }
-            target.OwnedSplineAdaptations.push_back(std::move(adaptation));
-        }
-        FreezeSplineDescriptors(target);
-        return complete;
-    }
-    /** Forms borrowed descriptors only after every nested vector has reached its final size.
-     * The zero pixel-density marker leaves resolution-dependent policy selection to the future coordinator.
-     * @param target Snapshot whose owned adaptation arrays back the descriptor spans.
-     */
-    static void FreezeSplineDescriptors(Snapshot& target)
-    {
-        using namespace Services::Map::Buildings::Visuals;
-        target.Splines.clear();
-        target.Splines.reserve(target.OwnedSplineAdaptations.size());
-        for (const OwnedSplineAdaptation& owned : target.OwnedSplineAdaptations)
-        {
-            BuildingSplineRenderInput input{};
-            input.Segments = owned.Segments;
-            input.Surfaces = owned.Surfaces;
-            input.RootTransform = owned.RootTransform;
-            input.ComponentTransform = owned.ComponentTransform;
-            input.SurfaceSelectionMode = owned.SelectionMode;
-            input.SamplingPolicy.PixelsPerUnit = 0.0;
-            target.Splines.push_back(input);
-        }
+        MarkSnapshotDirty();
     }
     bool Ensure(const Native& n)
     {
@@ -886,7 +394,7 @@ namespace MiniMapBuildingCollector
                     try {pending.insert(key);}
                     catch(...) {entities.erase(it);throw;}
                     auto& r=it->second.Data;r.Generation=capturedGeneration;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));
-                    InvalidateSourcePublication();
+                    MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++timing.Added;++changes;
 #endif
@@ -920,7 +428,7 @@ namespace MiniMapBuildingCollector
         for(auto it=entities.begin();it!=entities.end();)
             if(it->second.SeenScan!=scanEpoch)
             {
-                pending.erase(it->first);it=entities.erase(it);InvalidateSourcePublication();
+                pending.erase(it->first);it=entities.erase(it);MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++timing.Removed;++changes;
 #endif
@@ -1159,115 +667,10 @@ namespace MiniMapBuildingCollector
             ++measurements.AtlasBoundsRecalculations;
 #endif
         }
-        InvalidateSourcePublication();
+        MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.DirtyAtlas;
 #endif
-    }
-    /** Adds one byte to the deterministic FNV-1a source fingerprint. */
-    static void HashFingerprintByte(uint64_t& hash,uint8_t value)
-    {
-        hash^=value;
-        hash*=1099511628211ull;
-    }
-    /** Adds a 64-bit value in a platform-independent little-endian byte order. */
-    static void HashFingerprintUint64(uint64_t& hash,uint64_t value)
-    {
-        for(unsigned int shift=0;shift<64;shift+=8)
-            HashFingerprintByte(hash,static_cast<uint8_t>(value>>shift));
-    }
-    /** Adds an IEEE-754 value while representing either zero sign identically. */
-    static void HashFingerprintDouble(uint64_t& hash,double value)
-    {
-        const double canonicalValue=value==0.0 ? 0.0 : value;
-        HashFingerprintUint64(hash,std::bit_cast<uint64_t>(canonicalValue));
-    }
-    /** Hashes only the canonical blueprint name, world position and rotation. */
-    static uint64_t CalculateSourceFingerprint(const Record& record)
-    {
-        static_assert(sizeof(double)==sizeof(uint64_t));
-        static_assert(std::numeric_limits<double>::is_iec559);
-        uint64_t hash=14695981039346656037ull;
-        const std::string& blueprint=*record.CanonicalBlueprint;
-        HashFingerprintUint64(hash,static_cast<uint64_t>(blueprint.size()));
-        for(const unsigned char character:blueprint)
-            HashFingerprintByte(hash,character);
-        for(const double position:record.Position)
-            HashFingerprintDouble(hash,position);
-        auto rotation=record.Rotation;
-        constexpr std::array<size_t,4> signOrder{3,0,1,2};
-        bool negateRotation=false;
-        for(const size_t componentIndex:signOrder)
-        {
-            if(rotation[componentIndex]==0.0)
-                continue;
-            negateRotation=rotation[componentIndex]<0.0;
-            break;
-        }
-        if(negateRotation)
-            for(double& component:rotation)
-                component=-component;
-        for(const double component:rotation)
-            HashFingerprintDouble(hash,component);
-        return hash;
-    }
-    /** Detects a one-time change to facts that can admit a pending sprite descriptor.
-     * @param previous Record facts before CopyInitial ran.
-     * @param current Record facts after CopyInitial ran.
-     * @param previousDefinition Entry definition identity before copying.
-     * @param entry Current authoritative incomplete entry.
-     * @return Whether identity, sprite classification, or validated placement changed.
-     */
-    bool HasPendingSpriteFactsChanged(
-        const Record& previous,
-        const Record& current,
-        const SDK::UAuActorPlacementData* previousDefinition,
-        const Entry& entry) const
-    {
-        if (previousDefinition != entry.Definition || previous.DefinitionValid != current.DefinitionValid ||
-            previous.SplineClassificationKnown != current.SplineClassificationKnown ||
-            previous.HasSpline != current.HasSpline || previous.TransformValid != current.TransformValid)
-        {
-            return true;
-        }
-
-        return current.TransformValid &&
-            (previous.Position != current.Position || previous.Rotation != current.Rotation || previous.Scale != current.Scale);
-    }
-    /** Revokes the active publication when definition-owned sprite facts change.
-     * @param definition Shared prepared facts used by the incomplete entry.
-     * @param previousBlueprint Canonical key owner before preparation.
-     * @param previousInteriorKnown Whether interior policy was established before preparation.
-     * @param previousInterior Interior-only value before preparation.
-     */
-    void InvalidateChangedDefinitionFacts(
-        const Definition& definition,
-        const std::shared_ptr<const std::string>& previousBlueprint,
-        bool previousInteriorKnown,
-        bool previousInterior)
-    {
-        if (previousBlueprint != definition.Blueprint || previousInteriorKnown != definition.InteriorKnown ||
-            (definition.InteriorKnown && previousInterior != definition.Interior))
-        {
-            InvalidateSourcePublication();
-        }
-    }
-    /** Copies currently available Mass facts and revokes only on a real fact transition.
-     * @param native Serialized native access used by CopyInitial.
-     * @param entry Authoritative incomplete entry being advanced.
-     * @param includeDroneRails Effective Snapshot rail policy.
-     * @return Whether transform and source classification facts are ready for definition work.
-     */
-    bool CopyEntryFacts(const Native& native, Entry& entry, bool includeDroneRails)
-    {
-        const Record previousData = entry.Data;
-        const auto* previousDefinition = entry.Definition;
-        const bool ready = CopyInitial(native, entry, includeDroneRails);
-        if (HasPendingSpriteFactsChanged(previousData, entry.Data, previousDefinition, entry))
-        {
-            InvalidateSourcePublication();
-        }
-        return ready;
     }
     /** Advances one existing pending entry through the established acquisition sequence.
      * Definition loading may reenter lifecycle code, so the entry is looked up again before commit.
@@ -1283,7 +686,7 @@ namespace MiniMapBuildingCollector
         auto& e=it->second;
         if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(e.Data.DefinitionValid,e.Data.BuildingId))return false;
         if(!n.mass.isEntityValid(manager,{e.Data.Index,e.Data.Serial}) || !n.mass.isEntityBuilt(manager,{e.Data.Index,e.Data.Serial}))return false;
-        if (!CopyEntryFacts(n, e, includeDroneRails))
+        if (!CopyInitial(n, e, includeDroneRails))
         {
             return false;
         }
@@ -1293,9 +696,6 @@ namespace MiniMapBuildingCollector
         // map entry/reference across that call.
         const auto definition=definitions.at(e.Definition);
         auto result=e.Data;const auto epoch=generation;
-        const auto previousBlueprint = definition->Blueprint;
-        const bool previousInteriorKnown = definition->InteriorKnown;
-        const bool previousInterior = definition->Interior;
         const bool definitionAttempted=!definition->Prepared;
         if(definitionAttempted && !attemptedDefinitions.insert(definition.get()).second)return false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1306,7 +706,6 @@ namespace MiniMapBuildingCollector
         if(definitionAttempted){if(definitionReady)++measurements.DefinitionSuccesses;else ++measurements.DefinitionFailures;}
 #endif
         if(epoch!=generation || world!=MiniMapMap::GetWorld())return false;
-        InvalidateChangedDefinitionFacts(*definition, previousBlueprint, previousInteriorKnown, previousInterior);
         if(!definitionReady)return false;
         it=entities.find(key);
         if(it==entities.end() || it->second.Complete ||
@@ -1315,85 +714,42 @@ namespace MiniMapBuildingCollector
         result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
         if(result.HasSpline)result.Extent=SplineBounds(result);
         else MiniMapBuildingVisuals::CollectorIntegration::RefreshRecordBounds(result);
-        result.SourceFingerprint=CalculateSourceFingerprint(result);
         // Owned Record move and key erasure do not allocate or call native
         // code: completion and removal from scheduling commit together.
-        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);InvalidateSourcePublication();
+        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.DirtyAcquisition;
 #endif
         return true;
     }
-    /** Validates copied support bounds before they are used for certification. */
-    static bool HasValidSupportExtent(const Bounds& extent) noexcept
-    {
-        return BuildingSourcePublication::HasValidSupportExtent(extent);
-    }
-    /**
-     * Appends one eligible completed Record when its known facts establish publication relevance.
-     * Explicit service mode uses exact-request position/support evidence; legacy mode preserves its old filter.
-     * @param target Snapshot receiving the Record and any associated known sprite descriptor.
-     * @param entry Completed source facts being considered.
-     * @param excludedDroneRail Whether the active publication policy excludes this entry.
-     * @param acquisitionComplete Updated when the included or candidate support remains unresolved.
-     */
+    /** Appends one completed Record under the existing legacy region selection rule. */
     void AppendCompletedRecordIfRelevant(
         Snapshot& target,
         const Entry& entry,
-        bool excludedDroneRail,
-        bool& acquisitionComplete)
+        bool excludedDroneRail)
     {
         if (entry.Data.InteriorOnly || excludedDroneRail)
         {
             return;
         }
 
-        const bool hasValidSupport = HasValidSupportExtent(entry.Data.Extent);
-        if (!hasValidSupport)
-        {
-            acquisitionComplete = false;
-        }
-
-        const bool relevantToRequestedRegion = hasServiceRequestedRegion ?
-            IsRelevantToRequestedRegion(entry.Data) :
-            (!region.Valid || !entry.Data.Extent.Valid || G::Intersects(entry.Data.Extent, region));
-        if (!relevantToRequestedRegion)
+        if (region.Valid && entry.Data.Extent.Valid && !G::Intersects(entry.Data.Extent, region))
         {
             return;
         }
 
         target.Records.push_back(entry.Data);
-        if (entry.Data.SplineClassificationKnown && !entry.Data.HasSpline &&
-            entry.Data.InteriorKnown && !entry.Data.InteriorOnly)
-        {
-            AppendSpriteRequirement(target, entry.Data, entry.Data.CanonicalBlueprint);
-        }
     }
-    /**
-     * Sorts and freezes one prepared Snapshot before atomically publishing its retained owner.
-     * Replacing the Snapshot revokes the prior eligibility token without changing its retained bytes.
-     * @param value Mutable Snapshot assembled from the current collector state and transferred here.
-     * @param acquisitionComplete Whether required acquisition and support evidence is established.
-     */
-    void FinalizeAndPublishSnapshot(std::shared_ptr<Snapshot>&& value,bool acquisitionComplete)
+    /** Sorts completed Records and atomically replaces the retained legacy Snapshot. */
+    void FinalizeAndPublishSnapshot(std::shared_ptr<Snapshot>&& value)
     {
-        value->AcquisitionComplete = acquisitionComplete;
         std::sort(value->Records.begin(), value->Records.end(), [this](const auto& left, const auto& right)
         {
             return Key({left.Index, left.Serial}) < Key({right.Index, right.Serial});
         });
-        FreezeSpriteRequirements(*value);
-        value->SplineAdaptationComplete = BuildSplineAdaptations(*value);
-        auto eligibility = std::make_shared<BuildingSourcePublication::EligibilityToken>();
-        if (publicationEligibility)
-        {
-            publicationEligibility->IsEligible = false;
-        }
-
         {
             std::scoped_lock lock(publicationMutex);
             snapshot = std::move(value);
-            publicationEligibility = std::move(eligibility);
         }
 
         dirty = false;
@@ -1401,12 +757,7 @@ namespace MiniMapBuildingCollector
         ++measurements.Publications;
 #endif
     }
-    /**
-     * Publishes current immutable records and descriptors after source facts change.
-     * Explicit service publication filters exact-request relevance before freezing descriptors;
-     * non-service publication retains the legacy admission behavior.
-     * @param includeDroneRails Effective policy captured for this Snapshot publication.
-     */
+    /** Publishes current completed records after legacy source facts change. */
     void Publish(bool includeDroneRails)
     {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1420,49 +771,19 @@ namespace MiniMapBuildingCollector
         auto value = std::make_shared<Snapshot>();
         value->Generation = generation;
         value->Complete = membershipComplete;
-        value->Region = hasServiceRequestedRegion ? requestedRegion : region;
-        value->IncludedDroneRails = includeDroneRails;
-        bool acquisitionComplete = membershipComplete;
         for (const auto& [key, entry] : entities)
         {
             const bool excludedDroneRail = !includeDroneRails &&
                 entry.DroneRailClassificationKnown && entry.IsDroneRail;
             if (!entry.Complete)
             {
-                if (!excludedDroneRail)
-                {
-                    acquisitionComplete = false;
-                }
-                AppendKnownPendingSpriteRequirement(*value, entry);
                 continue;
             }
 
-            AppendCompletedRecordIfRelevant(*value, entry, excludedDroneRail, acquisitionComplete);
+            AppendCompletedRecordIfRelevant(*value, entry, excludedDroneRail);
         }
 
-        FinalizeAndPublishSnapshot(std::move(value), acquisitionComplete);
-    }
-    /** Obtains one immutable publication only while it belongs to this session. */
-    std::shared_ptr<const Snapshot> GetCurrentSnapshot()
-    {
-        std::scoped_lock lock(publicationMutex);
-        if(!snapshot || snapshot->Generation!=generation)return {};
-        return snapshot;
-    }
-    /** Observes the requested section grid from one immutable publication. */
-    void ObserveSections(
-        const Services::Map::Buildings::BuildingSectionGrid& grid,
-        std::span<Services::Map::Buildings::BuildingSectionObservation> observations)
-    {
-        const auto selectedSnapshot=GetCurrentSnapshot();
-        if(!selectedSnapshot)
-        {
-            std::fill(observations.begin(),observations.end(),
-                Services::Map::Buildings::BuildingSectionObservation{});
-            return;
-        }
-
-        BuildingSourcePublication::ObserveSnapshot(*selectedSnapshot, grid, observations);
+        FinalizeAndPublishSnapshot(std::move(value));
     }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     void MaybeReportMeasurements(Clock::time_point callbackBegin,uint64_t scanSerialAtEntry) noexcept
@@ -1556,7 +877,7 @@ namespace MiniMapBuildingCollector
 #endif
                 if(complete!=membershipComplete)
                 {
-                    membershipComplete=complete;InvalidateSourcePublication();
+                    membershipComplete=complete;MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++measurements.DirtyMembership;
 #endif
@@ -1598,7 +919,7 @@ namespace MiniMapBuildingCollector
                     const Bounds requested{centerX-radius,centerY-radius,centerX+radius,centerY+radius,true};
                     if(!regionOverride && (!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY))
                     {
-                        region=G::Inflate(requested,radius*0.5);InvalidateSourcePublication();
+                        region=G::Inflate(requested,radius*0.5);MarkSnapshotDirty();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++measurements.DirtyRegion;
 #endif
@@ -1744,15 +1065,10 @@ namespace MiniMapBuildingCollector
         const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
         std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=std::isfinite(radius)?radius:0;
     }
-    /**
-     * Sets the exact explicit collector region for existing direct callers.
-     * Direct region use retains its historical semantics and clears service request coverage.
-     * @param region Exact bounds used by existing collector selection behavior.
-     */
+    /** Sets the explicit region used by legacy selection and local acquisition. */
     void BuildingCollector::SetRegion(const Bounds& region)
     {
         const bool inputChanged=state_->discoveryInput!=State::DiscoveryInput::ExplicitRegion;
-        const bool requestModeChanged=state_->hasServiceRequestedRegion;
         const auto& current=state_->region;
         const bool boundsChanged=current.MinX!=region.MinX || current.MinY!=region.MinY ||
             current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid;
@@ -1760,52 +1076,12 @@ namespace MiniMapBuildingCollector
         {
             state_->region=region;
         }
-        state_->requestedRegion={};
-        state_->hasServiceRequestedRegion=false;
         state_->discoveryInput=State::DiscoveryInput::ExplicitRegion;
         state_->regionOverride=true;
-        if(boundsChanged || inputChanged || requestModeChanged)
+        if(boundsChanged || inputChanged)
         {
-            state_->InvalidateSourcePublication();
+            state_->MarkSnapshotDirty();
         }
-    }
-    /**
-     * Stores exact requested coverage while retaining collector-owned discovery expansion.
-     * The separate internal bounds preserve legacy record selection and local prioritization.
-     * @param requestedRegion Exact map rectangle requested by the service.
-     * @return True when the exact and expanded rectangles are both representable.
-     */
-    bool BuildingCollector::SetAcquisitionRegion(
-        const Services::Map::Buildings::BuildingCollectionRegion& requestedRegion) noexcept
-    {
-        Bounds exact;
-        Bounds expanded;
-        if(!state_->TryBuildExplicitAcquisitionRegions(requestedRegion,exact,expanded))
-        {
-            return false;
-        }
-
-        state_->SetExplicitAcquisitionRegions(exact,expanded);
-        return true;
-    }
-    /** Delegates batch observation to the collector's immutable snapshot state. */
-    void BuildingCollector::ObserveSections(
-        const Services::Map::Buildings::BuildingSectionGrid& grid,
-        std::span<Services::Map::Buildings::BuildingSectionObservation> observations) const
-    {
-        state_->ObserveSections(grid,observations);
-    }
-    std::shared_ptr<const Services::Map::Buildings::IBuildingSourcePublication>
-        BuildingCollector::AcquireSourcePublication() const
-    {
-        std::scoped_lock lock(state_->publicationMutex);
-        if(!state_->snapshot)
-        {
-            return {};
-        }
-
-        return std::make_shared<BuildingSourcePublication>(
-            state_->snapshot, state_->publicationEligibility);
     }
     void BuildingCollector::SetRenderDroneRails(bool enabled)
     {
@@ -1815,7 +1091,7 @@ namespace MiniMapBuildingCollector
         }
 
         state_->renderDroneRails=enabled;
-        state_->InvalidateSourcePublication();
+        state_->MarkSnapshotDirty();
     }
     std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}
     CollectorDiagnostics BuildingCollector::GetDiagnostics() const
@@ -1844,7 +1120,7 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::ShutdownMetadataResources()
     {
-        state_->InvalidateSourcePublication();
+        state_->MarkSnapshotDirty();
         if(const auto* n=MiniMapNative::Get())for(auto* root:state_->metadata)n->asset.releaseObject(root);
         state_->metadata.clear();state_->types={};
     }
