@@ -122,6 +122,9 @@
     <ClInclude Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingRenderSceneInput.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisuals.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisualsContext.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisualsResult.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineSurfaceGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionGeometry.h" />
@@ -253,6 +256,9 @@
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
     <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp">
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Visuals\BuildingVisuals.cpp">
+      <ObjectFileName>$(IntDir)BuildingMapSceneVisuals.obj</ObjectFileName>
     </ClCompile>
     <ClCompile Include="Adapters\AlienX\Textures.cpp">
     </ClCompile>

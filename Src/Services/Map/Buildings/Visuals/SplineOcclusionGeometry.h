@@ -1038,10 +1038,15 @@ namespace Services::Map::Buildings::Visuals
 					Require(std::isfinite(area) && area >= 0.0L, SplineOcclusionStatus::NumericalFailure);
 					if (area > 0.0L)
 					{
-						workspace.Visible.push_back({{
-							{first.Position, first.TextureCoordinates},
-							{second.Position, second.TextureCoordinates},
-							{third.Position, third.TextureCoordinates}}, key});
+						SplineOcclusionTriangle triangle;
+						triangle.Vertices[0].Position = first.Position;
+						triangle.Vertices[0].TextureCoordinates = first.TextureCoordinates;
+						triangle.Vertices[1].Position = second.Position;
+						triangle.Vertices[1].TextureCoordinates = second.TextureCoordinates;
+						triangle.Vertices[2].Position = third.Position;
+						triangle.Vertices[2].TextureCoordinates = third.TextureCoordinates;
+						triangle.Key = key;
+						workspace.Visible.push_back(triangle);
 					}
 				}
 			}
