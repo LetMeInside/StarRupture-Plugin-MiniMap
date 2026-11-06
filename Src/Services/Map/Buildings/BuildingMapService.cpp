@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "BuildingMapSection.h"
+#include "IBuildingSourcePublication.h"
 #include "BuildingMapViewport.h"
 #include "Scheduling/SectionScheduler.h"
 
@@ -198,25 +199,84 @@ namespace Services::Map::Buildings
 		const double sectionSize = sectionSizeMapUnits_;
 		const std::size_t columnCount = static_cast<std::size_t>(gridRange.endX - gridRange.firstX);
 		const std::size_t rowCount = static_cast<std::size_t>(gridRange.endY - gridRange.firstY);
-		std::vector<BuildingSectionObservation> observations;
-		if (rowCount != 0 && columnCount > observations.max_size() / rowCount)
-		{
-			throw std::length_error("Viewport section observation grid exceeds supported storage size.");
-		}
-		observations.resize(columnCount * rowCount);
 		const BuildingSectionGrid observationGrid{
 			static_cast<double>(gridRange.firstX) * sectionSize,
 			static_cast<double>(gridRange.firstY) * sectionSize,
 			sectionSize,
 			columnCount,
 			rowCount};
-		viewportEntry->second->buildingCollector_->ObserveSections(observationGrid, observations);
+		IBuildingCollector& buildingCollector = *viewportEntry->second->buildingCollector_;
+		return ObserveAndApplySectionBatch(
+			buildingCollector,
+			observationGrid,
+			gridRange.firstX,
+			gridRange.firstY,
+			columnCount,
+			rowCount);
+	}
+
+	/** Acquires, validates, observes and applies one batch under one optional publication owner. */
+	bool BuildingMapService::ObserveAndApplySectionBatch(
+		IBuildingCollector& buildingCollector,
+		const BuildingSectionGrid& observationGrid,
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::size_t columnCount,
+		std::size_t rowCount)
+	{
+		std::vector<BuildingSectionObservation> observations;
+		if (rowCount != 0 && columnCount > observations.max_size() / rowCount)
+		{
+			throw std::length_error("Viewport section observation grid exceeds supported storage size.");
+		}
+		observations.resize(columnCount * rowCount);
+		const std::shared_ptr<const IBuildingSourcePublication> publication =
+			buildingCollector.AcquireSourcePublication();
+		bool membershipObservationsAreCurrent = false;
+		if (publication)
+		{
+			if (publication->IsCurrent())
+			{
+				publication->ObserveSections(observationGrid, observations);
+				membershipObservationsAreCurrent = publication->IsCurrent();
+			}
+		}
+		else
+		{
+			buildingCollector.ObserveSections(observationGrid, observations);
+			membershipObservationsAreCurrent = true;
+		}
+		if (!membershipObservationsAreCurrent)
+		{
+			for (BuildingSectionObservation& observation : observations)
+			{
+				observation.isComplete = false;
+			}
+		}
+		return ApplySectionObservations(
+			firstGridX,
+			firstGridY,
+			columnCount,
+			rowCount,
+			observations);
+	}
+
+	/** Applies the complete batch in the same row-major order used by the collector. */
+	bool BuildingMapService::ApplySectionObservations(
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::size_t columnCount,
+		std::size_t rowCount,
+		const std::vector<BuildingSectionObservation>& observations)
+	{
 		bool anyMembershipFingerprintChanged = false;
 		std::size_t observationIndex = 0;
-		for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
+		for (std::size_t row = 0; row < rowCount; ++row)
 		{
-			for (std::int64_t gridX = gridRange.firstX; gridX < gridRange.endX; ++gridX)
+			for (std::size_t column = 0; column < columnCount; ++column)
 			{
+				const std::int64_t gridX = firstGridX + static_cast<std::int64_t>(column);
+				const std::int64_t gridY = firstGridY + static_cast<std::int64_t>(row);
 				if (ApplySectionObservation(gridX, gridY, observations[observationIndex]))
 				{
 					anyMembershipFingerprintChanged = true;

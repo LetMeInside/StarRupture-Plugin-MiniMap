@@ -4,10 +4,12 @@
 #include "IBuildingCollector.h"
 #include "Coordination/IBuildingMapService.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -132,6 +134,38 @@ namespace Services::Map::Buildings
 			std::int64_t gridX,
 			std::int64_t gridY,
 			const BuildingSectionObservation& observation);
+
+		/** Applies one row-major observation batch without creating Sections for incomplete cells.
+		 * @param firstGridX Leftmost signed grid coordinate.
+		 * @param firstGridY Topmost signed grid coordinate.
+		 * @param columnCount Number of rightward cells in each row.
+		 * @param rowCount Number of downward rows.
+		 * @param observations Batch results in row-major order.
+		 * @return True when a complete fingerprint is new or differs from its prior value.
+		 */
+		bool ApplySectionObservations(
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::size_t columnCount,
+			std::size_t rowCount,
+			const std::vector<BuildingSectionObservation>& observations);
+
+		/** Obtains one batch and applies it while retaining any publication owner.
+		 * @param buildingCollector Associated collector for this viewport.
+		 * @param observationGrid Requested row-major map-space grid.
+		 * @param firstGridX Leftmost signed grid coordinate.
+		 * @param firstGridY Topmost signed grid coordinate.
+		 * @param columnCount Number of rightward cells in each row.
+		 * @param rowCount Number of downward rows.
+		 * @return True when a complete fingerprint is new or differs from its prior value.
+		 */
+		bool ObserveAndApplySectionBatch(
+			IBuildingCollector& buildingCollector,
+			const BuildingSectionGrid& observationGrid,
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::size_t columnCount,
+			std::size_t rowCount);
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
