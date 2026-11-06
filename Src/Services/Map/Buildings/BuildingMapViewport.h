@@ -49,10 +49,9 @@ namespace Services::Map::Buildings
 		bool Move(double xMapUnits, double yMapUnits);
 
 		/**
-		 * Refreshes observations for the current cell range without changing the
-		 * collector's acquisition region. Returns true if a section's certified
-		 * membership fingerprint was first observed or changed; incomplete results
-		 * do not count as fingerprint changes.
+		 * Requests candidate observations for the current cells without changing the
+		 * collector's acquisition region. Returns true only when final scheduler-certified
+		 * membership is newly certified or changes; candidate signatures do not count.
 		 */
 		bool RefreshSections();
 

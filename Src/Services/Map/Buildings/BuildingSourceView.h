@@ -2,7 +2,7 @@
 // one retained publication, before sprite pixels or complete certification exist.
 #pragma once
 
-#include "IBuildingCollector.h"
+#include "BuildingMapRegion.h"
 #include "Visuals/BuildingRenderSceneInput.h"
 
 #include <cstdint>

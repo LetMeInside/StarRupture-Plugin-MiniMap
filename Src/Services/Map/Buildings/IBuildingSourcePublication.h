@@ -1,18 +1,13 @@
-// Defines one retained immutable source-publication boundary so observations and
-// borrowed numerical inputs cannot silently refer to different acquisitions.
+// Defines retained adapted rendering inputs for downstream sprite preparation.
 #pragma once
 
 #include "BuildingSourceView.h"
 
-#include <span>
-
 namespace Services::Map::Buildings
 {
-	/** Owns or shares one immutable source publication and its complete borrowed-storage graph.
-	 * Acquire through IBuildingCollector::AcquireSourcePublication and retain its shared
-	 * owner while observing/borrowing. Implementations must pin existing immutable source
-	 * and adaptation owners, not expose temporary scratch or copy an authoritative database.
-	 * Every method describes this fixed publication, never the collector's latest snapshot.
+	/** Owns or shares one immutable adapted rendering input graph for downstream consumers.
+	 * This is not the collector's candidate publication. Implementations retain the
+	 * adapted storage and any borrowed source owners for this publication's lifetime.
 	 *
 	 * Calls are serialized with source invalidation on the collector's calling thread;
 	 * this contract introduces no concurrent service or lifecycle synchronization.
@@ -43,30 +38,12 @@ namespace Services::Map::Buildings
 		 * All borrowed memory remains valid until the publication's final owner is released,
 		 * including after another view/observation call or currentness revocation. Readiness
 		 * and coverage remain facts of this publication, not live acquisition progress.
-		 * Known sprite keys may be enumerated while readiness/observations are incomplete;
-		 * empty spans in incomplete data never establish that a section has no contributors.
+		 * Known sprite keys may be enumerated while source readiness is incomplete; empty
+		 * spans in incomplete adapted data never establish that a section has no contributors.
 		 * This operation acquires no assets/pixels, prepares no geometry and copies no arrays.
 		 * @return Neutral borrowed source view; caller retains the publication during use.
 		 */
 		virtual BuildingSourceView BorrowSourceView() const noexcept = 0;
 
-		/** Observes sections from exactly the immutable source used by BorrowSourceView.
-		 * Preserve IBuildingCollector::ObserveSections batch semantics: caller supplies
-		 * exactly columnCount * rowCount slots in row-major order, with half-open cells,
-		 * rightward columns and downward rows. Unsupported/invalid grids, unknown coverage
-		 * or uncertified support yield incomplete results, never inferred empty membership.
-		 * Fingerprint zero remains valid when complete; incomplete fingerprints are ignored.
-		 * A fingerprint is neither a publication identity nor numerical rendering evidence.
-		 *
-		 * This method must not fetch a newer collector publication or mutate acquisition.
-		 * Results certify this publication's source only: even a complete historical result
-		 * requires IsCurrent before current use. Keep the owner alongside the grid/results
-		 * in any later transaction; do not pair them with a newly acquired source owner.
-		 * @param grid Top-left map position, square section size and grid dimensions.
-		 * @param observations Caller-owned output, completely filled for this publication.
-		 */
-		virtual void ObserveSections(
-			const BuildingSectionGrid& grid,
-			std::span<BuildingSectionObservation> observations) const = 0;
 	};
 }

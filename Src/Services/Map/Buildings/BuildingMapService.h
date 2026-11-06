@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -111,11 +110,10 @@ namespace Services::Map::Buildings
 			std::int64_t endGridY) override;
 
 		/**
-		 * Requests one batch observation for the current cell grid and updates each
-		 * corresponding shared section state.
+		 * Observes candidate evidence for the current grid without certifying Sections.
 		 *
 		 * @param viewportHandle Opaque registration handle owned by the viewport.
-		 * @return True if any complete fingerprint was first observed or differs from its prior one.
+		 * @return True only if scheduler-certified final membership changed.
 		 */
 		bool RefreshViewportSections(std::uint64_t viewportHandle) override;
 
@@ -126,48 +124,15 @@ namespace Services::Map::Buildings
 		/** Advances SectionScheduler-owned shutdown only until native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
 
-		/**
-		 * Applies one cell result from a batch without creating a section for incomplete coverage.
-		 *
-		 * @param gridX World-grid X coordinate of the observed section.
-		 * @param gridY World-grid Y coordinate of the observed section.
-		 * @param observation Complete or incomplete collector result for that cell.
-		 * @return True when a complete fingerprint is new or differs from its prior value.
-		 */
-		bool ApplySectionObservation(
-			std::int64_t gridX,
-			std::int64_t gridY,
-			const BuildingSectionObservation& observation);
-
-		/** Applies one row-major observation batch without creating Sections for incomplete cells.
-		 * @param firstGridX Leftmost signed grid coordinate.
-		 * @param firstGridY Topmost signed grid coordinate.
-		 * @param columnCount Number of rightward cells in each row.
-		 * @param rowCount Number of downward rows.
-		 * @param observations Batch results in row-major order.
-		 * @return True when a complete fingerprint is new or differs from its prior value.
-		 */
-		bool ApplySectionObservations(
-			std::int64_t firstGridX,
-			std::int64_t firstGridY,
-			std::size_t columnCount,
-			std::size_t rowCount,
-			const std::vector<BuildingSectionObservation>& observations);
-
-		/** Obtains one batch and applies it while retaining any publication owner.
+		/** Obtains one candidate batch from one retained publication without final certification.
 		 * @param buildingCollector Associated collector for this viewport.
 		 * @param observationGrid Requested row-major map-space grid.
-		 * @param firstGridX Leftmost signed grid coordinate.
-		 * @param firstGridY Topmost signed grid coordinate.
 		 * @param columnCount Number of rightward cells in each row.
 		 * @param rowCount Number of downward rows.
-		 * @return True when a complete fingerprint is new or differs from its prior value.
 		 */
-		bool ObserveAndApplySectionBatch(
+		void ObserveCandidateBatch(
 			IBuildingCollector& buildingCollector,
 			const BuildingSectionGrid& observationGrid,
-			std::int64_t firstGridX,
-			std::int64_t firstGridY,
 			std::size_t columnCount,
 			std::size_t rowCount);
 
