@@ -112,13 +112,11 @@ namespace Services::Map::Buildings::Scheduling
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.
 		 * @param sectionResolutionPixels Width and height of the future square image in pixels.
-		 * @param collectionMarginMapUnits Acquisition expansion in map units.
 		 * @param buildingsCacheDirectory Service-validated absolute Buildings cache directory.
 		 */
 		SectionScheduler(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
-			double collectionMarginMapUnits,
 			std::filesystem::path buildingsCacheDirectory);
 
 		/** Begins the existing BuildingScheduler session using the stored service image scale.
@@ -205,7 +203,6 @@ namespace Services::Map::Buildings::Scheduling
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
-		const double collectionMarginMapUnits_;
 		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
 		std::unique_ptr<Cache::CpuSpriteSourceManager> cpuSpriteSourceManager_;
 		std::unique_ptr<BuildingScheduler> buildingScheduler_;

@@ -30,19 +30,17 @@ namespace Services::Map::Buildings
 	public:
 		/** Creates a service whose settings define the shared grid and whose absolute cache directory serves sprite files.
 		 * Throws std::invalid_argument unless section size is finite and positive,
-		 * resolution is positive, collection margin is finite and nonnegative, and
-		 * the Buildings cache directory is nonempty and absolute. Construction does
-		 * not require that directory to exist and performs no cache file operations.
+		 * resolution is positive, and the Buildings cache directory is nonempty and
+		 * absolute. Construction does not require that directory to exist and performs
+		 * no cache file operations.
 		 *
 		 * @param sectionSizeMapUnits Width and height of each square cell in map units.
 		 * @param sectionResolutionPixels Width and height of each future square image in pixels.
-		 * @param collectionMarginMapUnits Acquisition expansion around covered cells in map units.
 		 * @param buildingsCacheDirectory Already-resolved absolute Buildings sprite-cache directory.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
-			double collectionMarginMapUnits,
 			std::filesystem::path buildingsCacheDirectory);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
@@ -60,9 +58,6 @@ namespace Services::Map::Buildings
 
 		/** Returns the configured square image dimension for future composition in pixels. */
 		std::uint32_t GetSectionResolutionPixels() const noexcept;
-
-		/** Returns the configured acquisition expansion in map units. */
-		double GetCollectionMarginMapUnits() const noexcept;
 
 		/** Returns the derived number of image pixels per map unit. */
 		double GetPixelsPerMapUnit() const noexcept;
@@ -98,7 +93,16 @@ namespace Services::Map::Buildings
 		/** Releases a live viewport handle without affecting shared section state. */
 		void CloseViewport(std::uint64_t viewportHandle) override;
 
-		/** Calculates and applies a map rectangle aligned to the supplied exclusive column and row range. */
+		/**
+		 * Sends the exact map-space rectangle covered by a half-open Section grid range.
+		 * No game-specific acquisition padding is added; the collector owns discovery policy.
+		 * @param viewportHandle Registered viewport whose collector receives the request.
+		 * @param firstGridX Inclusive first grid column.
+		 * @param firstGridY Inclusive first grid row.
+		 * @param endGridX Exclusive end grid column.
+		 * @param endGridY Exclusive end grid row.
+		 * @return True when the exact rectangle is representable and the collector accepts it.
+		 */
 		bool UpdateViewportGridRange(
 			std::uint64_t viewportHandle,
 			std::int64_t firstGridX,
@@ -169,7 +173,6 @@ namespace Services::Map::Buildings
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
-		const double collectionMarginMapUnits_;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;

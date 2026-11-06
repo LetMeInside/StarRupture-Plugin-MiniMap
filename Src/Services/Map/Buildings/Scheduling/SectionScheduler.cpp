@@ -17,11 +17,9 @@ namespace Services::Map::Buildings::Scheduling
 	SectionScheduler::SectionScheduler(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
-		double collectionMarginMapUnits,
 		std::filesystem::path buildingsCacheDirectory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
-		, collectionMarginMapUnits_(collectionMarginMapUnits)
 	{
 		spriteDiskCache_.reset(new Cache::SpriteDiskCache(std::move(buildingsCacheDirectory)));
 		cpuSpriteSourceManager_.reset(new Cache::CpuSpriteSourceManager(spriteDiskCache_.get()));

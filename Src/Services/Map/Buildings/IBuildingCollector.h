@@ -57,11 +57,13 @@ namespace Services::Map::Buildings
 		/** Supports destruction through the game-independent collector boundary. */
 		virtual ~IBuildingCollector() = default;
 
-		/**
-		 * Sets the 2D map acquisition rectangle in the service's map units. Returns false without changing
-		 * collector state when the requested region cannot be accepted.
-		 *
-		 * @param region Upper-left map position and positive dimensions in the owning service's map units.
+		/** Requests acquisition and future observation coverage for one exact map-space rectangle.
+		 * The collector is responsible for discovering contributors whose geometry overlaps the
+		 * requested area, including contributors whose reference positions lie outside it, and for
+		 * accounting for them when certifying observations. Discovery strategy and expansion policy
+		 * belong to the concrete collector. Returns false without changing collector state when
+		 * the requested region cannot be accepted.
+		 * @param region Exact requested map-space rectangle in the owning service's map units.
 		 */
 		virtual bool SetAcquisitionRegion(const BuildingCollectionRegion& region) noexcept = 0;
 

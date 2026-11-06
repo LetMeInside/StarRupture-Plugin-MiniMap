@@ -49,6 +49,9 @@ namespace MiniMapBuildingCollector
     namespace G=MiniMapBuildingGeometry;
     struct BuildingCollector::State
     {
+    /** Empirical StarRupture discovery expansion, not a proven maximum contributor size. */
+    static constexpr double kStarRuptureAcquisitionExpansionNativeUnits = 5000.0;
+
     struct Types
     {
         SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
@@ -98,7 +101,11 @@ namespace MiniMapBuildingCollector
     double viewRadius=0;
     bool renderDroneRails=true;
     bool regionOverride=false;
+    /** Internal region for selection and local acquisition prioritization. */
     Bounds region;
+    /** Exact caller-requested coverage in explicit Building Map acquisition mode. */
+    Bounds requestedRegion;
+    bool hasServiceRequestedRegion=false;
     enum class DiscoveryInput : uint8_t { MiniMapPresentation, ExplicitRegion };
     DiscoveryInput discoveryInput=DiscoveryInput::MiniMapPresentation;
     MiniMapBuildingVisuals::CollectorIntegration::DrawingBoundsVersion drawingBoundsVersion{};
@@ -209,6 +216,10 @@ namespace MiniMapBuildingCollector
             publicationEligibility->IsEligible=false;
         }
     }
+    /**
+     * Clears session-owned discovery state and revokes the current publication during reset.
+     * Both exact service request coverage and internal search bounds are reset for the next session.
+     */
     void ClearSession()
     {
         InvalidateSourcePublication();
@@ -216,9 +227,136 @@ namespace MiniMapBuildingCollector
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
-        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;drawingBoundsVersion={};
-        pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;remoteTurn=false;membershipComplete=false;
-        {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
+        queryConstructed=false;
+        manager=nullptr;
+        world=nullptr;
+        region={};
+        requestedRegion={};
+        hasServiceRequestedRegion=false;
+        regionOverride=false;
+        discoveryInput=DiscoveryInput::MiniMapPresentation;
+        drawingBoundsVersion={};
+        pending.clear();
+        entities.clear();
+        definitions.clear();
+        nextMembership={};
+        membershipScanEpoch=0;
+        remoteTurn=false;
+        membershipComplete=false;
+        {
+            std::scoped_lock lock(publicationMutex);
+            ++generation;
+            snapshot.reset();
+        }
+    }
+    /**
+     * Validates the caller's exact rectangle and the collector-owned acquisition expansion.
+     * The exact output is future observation coverage; the expanded output remains internal
+     * to legacy contributor selection and local acquisition prioritization.
+     * @param request Exact caller-requested map rectangle.
+     * @param exact Output rectangle preserving the requested coverage.
+     * @param expanded Output internal rectangle after the empirical game-specific expansion.
+     * @return True only when both rectangles are finite, positive, and representable.
+     */
+    bool TryBuildExplicitAcquisitionRegions(
+        const Services::Map::Buildings::BuildingCollectionRegion& request,
+        Bounds& exact,
+        Bounds& expanded) const noexcept
+    {
+        if(!std::isfinite(request.xMapUnits) || !std::isfinite(request.yMapUnits) ||
+            !std::isfinite(request.widthMapUnits) || !std::isfinite(request.heightMapUnits) ||
+            request.widthMapUnits<=0 || request.heightMapUnits<=0)
+        {
+            return false;
+        }
+
+        const double right=request.xMapUnits+request.widthMapUnits;
+        const double bottom=request.yMapUnits+request.heightMapUnits;
+        if(!std::isfinite(right) || !std::isfinite(bottom) ||
+            right<=request.xMapUnits || bottom<=request.yMapUnits)
+        {
+            return false;
+        }
+
+        const double width=right-request.xMapUnits;
+        const double height=bottom-request.yMapUnits;
+        if(!std::isfinite(width) || !std::isfinite(height) ||
+            !std::isfinite(std::hypot(width,height)))
+        {
+            return false;
+        }
+
+        const Bounds exactCandidate{request.xMapUnits,request.yMapUnits,right,bottom,true};
+        Bounds expandedCandidate;
+        if(!TryExpandExplicitAcquisitionRegion(exactCandidate,expandedCandidate))
+        {
+            return false;
+        }
+
+        exact=exactCandidate;
+        expanded=expandedCandidate;
+        return true;
+    }
+    /**
+     * Applies and validates the concrete collector's empirical acquisition expansion.
+     * This region supports legacy discovery and selection but is not a proven size limit.
+     * @param exact Exact requested bounds to expand.
+     * @param expanded Output internal bounds after expansion.
+     * @return True only when expansion is finite, positive, and representable on every edge.
+     */
+    bool TryExpandExplicitAcquisitionRegion(const Bounds& exact,Bounds& expanded) const noexcept
+    {
+        const Bounds expandedCandidate=G::Inflate(
+            exact,
+            kStarRuptureAcquisitionExpansionNativeUnits);
+        if(!expandedCandidate.Valid || !std::isfinite(expandedCandidate.MinX) ||
+            !std::isfinite(expandedCandidate.MinY) || !std::isfinite(expandedCandidate.MaxX) ||
+            !std::isfinite(expandedCandidate.MaxY) ||
+            expandedCandidate.MinX>=exact.MinX ||
+            expandedCandidate.MinY>=exact.MinY ||
+            expandedCandidate.MaxX<=exact.MaxX ||
+            expandedCandidate.MaxY<=exact.MaxY)
+        {
+            return false;
+        }
+
+        const double expandedWidth=expandedCandidate.MaxX-expandedCandidate.MinX;
+        const double expandedHeight=expandedCandidate.MaxY-expandedCandidate.MinY;
+        if(!std::isfinite(expandedWidth) || !std::isfinite(expandedHeight) ||
+            expandedWidth<=0 || expandedHeight<=0 ||
+            !std::isfinite(std::hypot(expandedWidth,expandedHeight)))
+        {
+            return false;
+        }
+
+        expanded=expandedCandidate;
+        return true;
+    }
+    /**
+     * Commits the explicit request and internal expansion as one collector state change.
+     * Any changed exact coverage, expanded region, or input mode revokes the old publication.
+     * @param exact Exact caller-requested coverage for later source observation.
+     * @param expanded Internal region used by existing collector selection behavior.
+     */
+    void SetExplicitAcquisitionRegions(const Bounds& exact,const Bounds& expanded) noexcept
+    {
+        const bool exactChanged=!hasServiceRequestedRegion ||
+            requestedRegion.MinX!=exact.MinX || requestedRegion.MinY!=exact.MinY ||
+            requestedRegion.MaxX!=exact.MaxX || requestedRegion.MaxY!=exact.MaxY ||
+            requestedRegion.Valid!=exact.Valid;
+        const bool expandedChanged=region.MinX!=expanded.MinX || region.MinY!=expanded.MinY ||
+            region.MaxX!=expanded.MaxX || region.MaxY!=expanded.MaxY || region.Valid!=expanded.Valid;
+        const bool modeChanged=discoveryInput!=DiscoveryInput::ExplicitRegion || !regionOverride;
+
+        requestedRegion=exact;
+        hasServiceRequestedRegion=true;
+        region=expanded;
+        discoveryInput=DiscoveryInput::ExplicitRegion;
+        regionOverride=true;
+        if(exactChanged || expandedChanged || modeChanged)
+        {
+            InvalidateSourcePublication();
+        }
     }
     /** Marks only positively classified drone-rail entries as policy-excluded. */
     void RecordDroneRailClassification(Entry& entry,bool isDroneRail)
@@ -261,8 +399,43 @@ namespace MiniMapBuildingCollector
         target.SpriteRequirementKeyOwners.push_back(canonicalBlueprint);
         destination.push_back(std::move(descriptor));
     }
+    /**
+     * Determines whether known reference-position or support facts establish request relevance.
+     * Invalid or unknown spatial facts do not establish overlap; non-service paths keep prior admission.
+     * @param record Contributor facts with optional validated placement and support bounds.
+     * @return Whether the record is relevant, or the legacy path does not spatially filter it.
+     */
+    bool IsRelevantToRequestedRegion(const Record& record) const noexcept
+    {
+        if (!hasServiceRequestedRegion)
+        {
+            return true;
+        }
+
+        if (!requestedRegion.Valid)
+        {
+            return false;
+        }
+
+        const bool hasValidatedReferencePosition = record.TransformValid &&
+            std::isfinite(record.Position[0]) && std::isfinite(record.Position[1]);
+        if (hasValidatedReferencePosition &&
+            record.Position[0] >= requestedRegion.MinX && record.Position[0] < requestedRegion.MaxX &&
+            record.Position[1] >= requestedRegion.MinY && record.Position[1] < requestedRegion.MaxY)
+        {
+            return true;
+        }
+
+        return BuildingSourcePublication::HasValidSupportExtent(record.Extent) &&
+            record.Extent.MaxX > requestedRegion.MinX &&
+            record.Extent.MinX < requestedRegion.MaxX &&
+            record.Extent.MaxY > requestedRegion.MinY &&
+            record.Extent.MinY < requestedRegion.MaxY;
+    }
     /** Appends one incomplete entry whose authored sprite source and policies are known.
-     * Unknown Blueprint, spline, interior, or drone-rail classification omits that occurrence.
+     * Explicit service mode also requires established exact-request relevance; unknown area facts omit
+     * the early descriptor while Publish keeps the pending source incomplete.
+     * Unknown Blueprint, spline, interior, or drone-rail classification also omits that occurrence.
      * @param target Snapshot retaining the descriptor and its key storage.
      * @param entry Incomplete authoritative collector entry being considered.
      */
@@ -271,6 +444,11 @@ namespace MiniMapBuildingCollector
         if (entry.Complete || entry.Data.Generation != generation || !entry.Data.DefinitionValid ||
             !entry.Data.SplineClassificationKnown || entry.Data.HasSpline || !entry.DroneRailClassificationKnown ||
             (!target.IncludedDroneRails && entry.IsDroneRail) || !entry.Definition)
+        {
+            return;
+        }
+
+        if (!IsRelevantToRequestedRegion(entry.Data))
         {
             return;
         }
@@ -1151,8 +1329,82 @@ namespace MiniMapBuildingCollector
     {
         return BuildingSourcePublication::HasValidSupportExtent(extent);
     }
-    /** Publishes current immutable records and known sprite requirements when source facts are dirty.
-     * Pending descriptors are frozen during the existing Entry traversal and do not affect completion.
+    /**
+     * Appends one eligible completed Record when its known facts establish publication relevance.
+     * Explicit service mode uses exact-request position/support evidence; legacy mode preserves its old filter.
+     * @param target Snapshot receiving the Record and any associated known sprite descriptor.
+     * @param entry Completed source facts being considered.
+     * @param excludedDroneRail Whether the active publication policy excludes this entry.
+     * @param acquisitionComplete Updated when the included or candidate support remains unresolved.
+     */
+    void AppendCompletedRecordIfRelevant(
+        Snapshot& target,
+        const Entry& entry,
+        bool excludedDroneRail,
+        bool& acquisitionComplete)
+    {
+        if (entry.Data.InteriorOnly || excludedDroneRail)
+        {
+            return;
+        }
+
+        const bool hasValidSupport = HasValidSupportExtent(entry.Data.Extent);
+        if (!hasValidSupport)
+        {
+            acquisitionComplete = false;
+        }
+
+        const bool relevantToRequestedRegion = hasServiceRequestedRegion ?
+            IsRelevantToRequestedRegion(entry.Data) :
+            (!region.Valid || !entry.Data.Extent.Valid || G::Intersects(entry.Data.Extent, region));
+        if (!relevantToRequestedRegion)
+        {
+            return;
+        }
+
+        target.Records.push_back(entry.Data);
+        if (entry.Data.SplineClassificationKnown && !entry.Data.HasSpline &&
+            entry.Data.InteriorKnown && !entry.Data.InteriorOnly)
+        {
+            AppendSpriteRequirement(target, entry.Data, entry.Data.CanonicalBlueprint);
+        }
+    }
+    /**
+     * Sorts and freezes one prepared Snapshot before atomically publishing its retained owner.
+     * Replacing the Snapshot revokes the prior eligibility token without changing its retained bytes.
+     * @param value Mutable Snapshot assembled from the current collector state and transferred here.
+     * @param acquisitionComplete Whether required acquisition and support evidence is established.
+     */
+    void FinalizeAndPublishSnapshot(std::shared_ptr<Snapshot>&& value,bool acquisitionComplete)
+    {
+        value->AcquisitionComplete = acquisitionComplete;
+        std::sort(value->Records.begin(), value->Records.end(), [this](const auto& left, const auto& right)
+        {
+            return Key({left.Index, left.Serial}) < Key({right.Index, right.Serial});
+        });
+        FreezeSpriteRequirements(*value);
+        value->SplineAdaptationComplete = BuildSplineAdaptations(*value);
+        auto eligibility = std::make_shared<BuildingSourcePublication::EligibilityToken>();
+        if (publicationEligibility)
+        {
+            publicationEligibility->IsEligible = false;
+        }
+
+        {
+            std::scoped_lock lock(publicationMutex);
+            snapshot = std::move(value);
+            publicationEligibility = std::move(eligibility);
+        }
+
+        dirty = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++measurements.Publications;
+#endif
+    }
+    /**
+     * Publishes current immutable records and descriptors after source facts change.
+     * Explicit service publication filters exact-request relevance before freezing descriptors;
+     * non-service publication retains the legacy admission behavior.
      * @param includeDroneRails Effective policy captured for this Snapshot publication.
      */
     void Publish(bool includeDroneRails)
@@ -1160,48 +1412,35 @@ namespace MiniMapBuildingCollector
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.PublicationAttempts;
 #endif
-        if(!dirty)return;
-        auto value=std::make_shared<Snapshot>();value->Generation=generation;value->Complete=membershipComplete;value->Region=region;
-        value->IncludedDroneRails=includeDroneRails;
-        bool acquisitionComplete=membershipComplete;
-        for(const auto& [key,e]:entities)
+        if (!dirty)
         {
-            const bool excludedDroneRail=!includeDroneRails && e.DroneRailClassificationKnown && e.IsDroneRail;
-            if(!e.Complete)
+            return;
+        }
+
+        auto value = std::make_shared<Snapshot>();
+        value->Generation = generation;
+        value->Complete = membershipComplete;
+        value->Region = hasServiceRequestedRegion ? requestedRegion : region;
+        value->IncludedDroneRails = includeDroneRails;
+        bool acquisitionComplete = membershipComplete;
+        for (const auto& [key, entry] : entities)
+        {
+            const bool excludedDroneRail = !includeDroneRails &&
+                entry.DroneRailClassificationKnown && entry.IsDroneRail;
+            if (!entry.Complete)
             {
-                if(!excludedDroneRail)acquisitionComplete=false;
-                AppendKnownPendingSpriteRequirement(*value, e);
+                if (!excludedDroneRail)
+                {
+                    acquisitionComplete = false;
+                }
+                AppendKnownPendingSpriteRequirement(*value, entry);
                 continue;
             }
-            if(e.Data.InteriorOnly || excludedDroneRail)continue;
-            if(!HasValidSupportExtent(e.Data.Extent))acquisitionComplete=false;
-            if(!region.Valid || !e.Data.Extent.Valid || G::Intersects(e.Data.Extent,region))
-            {
-                value->Records.push_back(e.Data);
-                if (e.Data.SplineClassificationKnown && !e.Data.HasSpline && e.Data.InteriorKnown && !e.Data.InteriorOnly)
-                {
-                    AppendSpriteRequirement(*value, e.Data, e.Data.CanonicalBlueprint);
-                }
-            }
+
+            AppendCompletedRecordIfRelevant(*value, entry, excludedDroneRail, acquisitionComplete);
         }
-        value->AcquisitionComplete=acquisitionComplete;
-        std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
-        FreezeSpriteRequirements(*value);
-        value->SplineAdaptationComplete = BuildSplineAdaptations(*value);
-        auto eligibility=std::make_shared<BuildingSourcePublication::EligibilityToken>();
-        if(publicationEligibility)
-        {
-            publicationEligibility->IsEligible=false;
-        }
-        {
-            std::scoped_lock lock(publicationMutex);
-            snapshot=std::move(value);
-            publicationEligibility=std::move(eligibility);
-        }
-        dirty=false;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        ++measurements.Publications;
-#endif
+
+        FinalizeAndPublishSnapshot(std::move(value), acquisitionComplete);
     }
     /** Obtains one immutable publication only while it belongs to this session. */
     std::shared_ptr<const Snapshot> GetCurrentSnapshot()
@@ -1505,10 +1744,15 @@ namespace MiniMapBuildingCollector
         const double radius=t.Valid && t.PixelsPerWorldUnit>0?std::hypot(t.Width,t.Height)*0.5/t.PixelsPerWorldUnit:0;
         std::scoped_lock lock(state_->publicationMutex);state_->viewRadius=std::isfinite(radius)?radius:0;
     }
+    /**
+     * Sets the exact explicit collector region for existing direct callers.
+     * Direct region use retains its historical semantics and clears service request coverage.
+     * @param region Exact bounds used by existing collector selection behavior.
+     */
     void BuildingCollector::SetRegion(const Bounds& region)
     {
         const bool inputChanged=state_->discoveryInput!=State::DiscoveryInput::ExplicitRegion;
-        state_->discoveryInput=State::DiscoveryInput::ExplicitRegion;
+        const bool requestModeChanged=state_->hasServiceRequestedRegion;
         const auto& current=state_->region;
         const bool boundsChanged=current.MinX!=region.MinX || current.MinY!=region.MinY ||
             current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid;
@@ -1516,28 +1760,32 @@ namespace MiniMapBuildingCollector
         {
             state_->region=region;
         }
+        state_->requestedRegion={};
+        state_->hasServiceRequestedRegion=false;
+        state_->discoveryInput=State::DiscoveryInput::ExplicitRegion;
         state_->regionOverride=true;
-        if(boundsChanged || inputChanged)
+        if(boundsChanged || inputChanged || requestModeChanged)
         {
             state_->InvalidateSourcePublication();
         }
     }
-    /** Validates the map rectangle before forwarding it to the existing region setter. */
+    /**
+     * Stores exact requested coverage while retaining collector-owned discovery expansion.
+     * The separate internal bounds preserve legacy record selection and local prioritization.
+     * @param requestedRegion Exact map rectangle requested by the service.
+     * @return True when the exact and expanded rectangles are both representable.
+     */
     bool BuildingCollector::SetAcquisitionRegion(
         const Services::Map::Buildings::BuildingCollectionRegion& requestedRegion) noexcept
     {
-        if(!std::isfinite(requestedRegion.xMapUnits) || !std::isfinite(requestedRegion.yMapUnits) ||
-            !std::isfinite(requestedRegion.widthMapUnits) || !std::isfinite(requestedRegion.heightMapUnits) ||
-            requestedRegion.widthMapUnits<=0 || requestedRegion.heightMapUnits<=0)return false;
-        const double right=requestedRegion.xMapUnits+requestedRegion.widthMapUnits;
-        const double bottom=requestedRegion.yMapUnits+requestedRegion.heightMapUnits;
-        if(!std::isfinite(right) || !std::isfinite(bottom) ||
-            right<=requestedRegion.xMapUnits || bottom<=requestedRegion.yMapUnits)return false;
-        const double width=right-requestedRegion.xMapUnits;
-        const double height=bottom-requestedRegion.yMapUnits;
-        if(!std::isfinite(width) || !std::isfinite(height) ||
-            !std::isfinite(std::hypot(width,height)))return false;
-        SetRegion(Bounds{requestedRegion.xMapUnits,requestedRegion.yMapUnits,right,bottom,true});
+        Bounds exact;
+        Bounds expanded;
+        if(!state_->TryBuildExplicitAcquisitionRegions(requestedRegion,exact,expanded))
+        {
+            return false;
+        }
+
+        state_->SetExplicitAcquisitionRegions(exact,expanded);
         return true;
     }
     /** Delegates batch observation to the collector's immutable snapshot state. */

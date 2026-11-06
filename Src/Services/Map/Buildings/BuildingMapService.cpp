@@ -19,17 +19,14 @@ namespace Services::Map::Buildings
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
-		double collectionMarginMapUnits,
 		std::filesystem::path buildingsCacheDirectory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
-		, collectionMarginMapUnits_(collectionMarginMapUnits)
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
-			sectionResolutionPixels_ == 0 || !std::isfinite(collectionMarginMapUnits_) ||
-			collectionMarginMapUnits_ < 0.0)
+			sectionResolutionPixels_ == 0)
 		{
-			throw std::invalid_argument("Building Map settings require a finite positive section size, positive resolution, and finite nonnegative margin.");
+			throw std::invalid_argument("Building Map settings require a finite positive section size and positive resolution.");
 		}
 		if (buildingsCacheDirectory.empty() || !buildingsCacheDirectory.is_absolute())
 		{
@@ -38,7 +35,6 @@ namespace Services::Map::Buildings
 		sectionScheduler_.reset(new Scheduling::SectionScheduler(
 			sectionSizeMapUnits_,
 			sectionResolutionPixels_,
-			collectionMarginMapUnits_,
 			std::move(buildingsCacheDirectory)));
 	}
 
@@ -84,12 +80,6 @@ namespace Services::Map::Buildings
 	std::uint32_t BuildingMapService::GetSectionResolutionPixels() const noexcept
 	{
 		return sectionResolutionPixels_;
-	}
-
-	/** Returns the configured acquisition margin in map units. */
-	double BuildingMapService::GetCollectionMarginMapUnits() const noexcept
-	{
-		return collectionMarginMapUnits_;
 	}
 
 	/** Derives image scale from the immutable resolution and cell-size settings. */
@@ -164,7 +154,7 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.erase(viewport);
 	}
 
-	/** Updates the collector to full map cells plus the support margin in every direction. */
+	/** Requests the exact tile-aligned rectangle covered by the supplied half-open grid range. */
 	bool BuildingMapService::UpdateViewportGridRange(
 		std::uint64_t viewportHandle,
 		std::int64_t firstGridX,
@@ -178,12 +168,25 @@ namespace Services::Map::Buildings
 			return false;
 		}
 		const double sectionSize = sectionSizeMapUnits_;
-		const double supportMargin = collectionMarginMapUnits_;
+		const double left = static_cast<double>(firstGridX) * sectionSize;
+		const double top = static_cast<double>(firstGridY) * sectionSize;
+		const double right = static_cast<double>(endGridX) * sectionSize;
+		const double bottom = static_cast<double>(endGridY) * sectionSize;
+		const double width = right - left;
+		const double height = bottom - top;
+		if (!std::isfinite(left) || !std::isfinite(top) ||
+			!std::isfinite(right) || !std::isfinite(bottom) ||
+			!std::isfinite(width) || !std::isfinite(height) ||
+			width <= 0.0 || height <= 0.0 ||
+			left + width != right || top + height != bottom)
+		{
+			return false;
+		}
 		const BuildingCollectionRegion collectionRegion{
-			static_cast<double>(firstGridX) * sectionSize - supportMargin,
-			static_cast<double>(firstGridY) * sectionSize - supportMargin,
-			static_cast<double>(endGridX - firstGridX) * sectionSize + supportMargin * 2.0,
-			static_cast<double>(endGridY - firstGridY) * sectionSize + supportMargin * 2.0};
+			left,
+			top,
+			width,
+			height};
 		return viewportEntry->second->buildingCollector_->SetAcquisitionRegion(collectionRegion);
 	}
 
