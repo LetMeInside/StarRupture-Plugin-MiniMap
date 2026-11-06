@@ -4,13 +4,31 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+
+namespace Services::Map::Buildings::Scheduling
+{
+	class SectionScheduler;
+}
+
+namespace Services::Map::Buildings::Visuals
+{
+	class BuildingVisualsContext;
+}
 
 namespace Services::Map::Buildings
 {
-	/** Identifies one fixed service-owned map cell; X columns and Y rows increase rightward and downward. */
+	/**
+	 * Identifies one fixed service-owned map cell and retains its private numerical
+	 * rendering context for the Section lifetime. X columns and Y rows increase
+	 * rightward and downward; the service remains the Section's lifetime owner.
+	 */
 	class BuildingMapSection
 	{
 	public:
+		/** Releases Section-owned rendering state when this service-owned Section is destroyed. */
+		~BuildingMapSection();
+
 		/** Returns the integer world-grid coordinate on the X axis. */
 		std::int64_t GetGridX() const;
 
@@ -31,6 +49,7 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapService;
+		friend class Scheduling::SectionScheduler;
 
 		/** Creates a section for the service-owned grid coordinate. */
 		BuildingMapSection(std::int64_t gridX, std::int64_t gridY);
@@ -44,10 +63,20 @@ namespace Services::Map::Buildings
 		 */
 		bool RecordMembershipObservation(bool isComplete, std::uint64_t membershipFingerprint);
 
+		/**
+		 * Returns this Section's private rendering context, allocating it on the
+		 * first explicit request. The returned reference is borrowed and remains
+		 * valid only while this Section and its owned context remain alive.
+		 *
+		 * @return The context exclusively owned by this Section.
+		 */
+		Visuals::BuildingVisualsContext& GetOrCreateVisualsContext();
+
 		std::int64_t gridX_;
 		std::int64_t gridY_;
 		bool hasCurrentMembershipObservation_ = false;
 		bool hasPreviousMembershipFingerprint_ = false;
 		std::uint64_t membershipFingerprint_ = 0;
+		std::unique_ptr<Visuals::BuildingVisualsContext> visualsContext_;
 	};
 }

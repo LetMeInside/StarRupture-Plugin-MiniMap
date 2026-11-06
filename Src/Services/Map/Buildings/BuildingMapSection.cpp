@@ -1,8 +1,12 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements grid identity and currentness tracking for one shared membership
-// fingerprint observation.
+// Implements Section identity, membership observation tracking, and lazy
+// ownership of private numerical rendering context.
 #include "BuildingMapSection.h"
+
+#include "Visuals/BuildingVisualsContext.h"
+
+#include <memory>
 
 namespace Services::Map::Buildings
 {
@@ -12,6 +16,9 @@ namespace Services::Map::Buildings
 		, gridY_(gridY)
 	{
 	}
+
+	/** Destroys the Section-owned numerical context with its service-owned Section. */
+	BuildingMapSection::~BuildingMapSection() = default;
 
 	/** Returns this section's world-grid X coordinate. */
 	std::int64_t BuildingMapSection::GetGridX() const
@@ -58,6 +65,16 @@ namespace Services::Map::Buildings
 		hasPreviousMembershipFingerprint_ = true;
 		hasCurrentMembershipObservation_ = true;
 		return fingerprintChanged;
+	}
+
+	/** Lazily creates and returns this Section's exclusively owned numerical context. */
+	Visuals::BuildingVisualsContext& BuildingMapSection::GetOrCreateVisualsContext()
+	{
+		if (!visualsContext_)
+		{
+			visualsContext_ = std::make_unique<Visuals::BuildingVisualsContext>();
+		}
+		return *visualsContext_;
 	}
 }
 
