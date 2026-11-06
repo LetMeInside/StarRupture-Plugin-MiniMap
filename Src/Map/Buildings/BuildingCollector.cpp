@@ -1,3 +1,4 @@
+// Implements StarRupture acquisition and freezes immutable sprite and spline source snapshots.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
 #include "BuildingSourcePublication.h"
@@ -312,6 +313,246 @@ namespace MiniMapBuildingCollector
     {
         SortSpriteRequirements(target.OrdinarySprites);
         SortSpriteRequirements(target.OverlayLastSprites);
+    }
+    /** Converts every accepted copied native interpolation mode without changing its key interval.
+     * The controls are already world-space XYZ Bezier values and receive no Record transform.
+     * @param source Completed immutable copied curve from one Snapshot Record.
+     * @param target Receives neutral segments in source order.
+     * @return Whether every source segment has a supported native interpolation mode.
+     */
+    static bool ConvertCurveSegments(
+        const SplineGeometry& source,
+        std::vector<Services::Map::Buildings::Visuals::SplineCurveSegment>& target)
+    {
+        using Interpolation = Services::Map::Buildings::Visuals::SplineInterpolation;
+        target.reserve(source.Segments.size());
+        for (const CurveSegment& sourceSegment : source.Segments)
+        {
+            Services::Map::Buildings::Visuals::SplineCurveSegment segment{};
+            segment.Controls = sourceSegment.Controls;
+            segment.StartKey = sourceSegment.StartKey;
+            segment.EndKey = sourceSegment.EndKey;
+            switch (static_cast<SDK::EInterpCurveMode>(sourceSegment.Mode))
+            {
+            case SDK::EInterpCurveMode::CIM_Constant:
+                segment.Interpolation = Interpolation::Constant;
+                break;
+            case SDK::EInterpCurveMode::CIM_Linear:
+                segment.Interpolation = Interpolation::Linear;
+                break;
+            case SDK::EInterpCurveMode::CIM_CurveAuto:
+            case SDK::EInterpCurveMode::CIM_CurveUser:
+            case SDK::EInterpCurveMode::CIM_CurveBreak:
+            case SDK::EInterpCurveMode::CIM_CurveAutoClamped:
+                segment.Interpolation = Interpolation::Cubic;
+                break;
+            default:
+                return false;
+            }
+            target.push_back(segment);
+        }
+        return !target.empty();
+    }
+    /** Converts a copied profile transform with the existing Unreal FRotator quaternion convention.
+     * Signed scale and relative translation are preserved; the caller stores the result per surface.
+     * @param source Immutable copied profile transform.
+     * @param target Receives the neutral quaternion transform.
+     * @return Whether the established converter accepts the source transform.
+     */
+    static bool ConvertProfileTransform(
+        const MiniMapBuildingSplineProfiles::RelativeTransform& source,
+        Services::Map::Buildings::Visuals::SplineSurfaceTransform& target)
+    {
+        MiniMapBuildingGeometryTypes::Transform converted{};
+        if (!MiniMapBuildingSplineEnvelope::ComponentTransform(source, converted))
+        {
+            return false;
+        }
+        target.Translation = converted.Translation;
+        target.Scale = converted.Scale;
+        target.Rotation = converted.Rotation;
+        return true;
+    }
+    /** Converts a positively supported copied mesh profile into one neutral alternative.
+     * Existing eligibility rejects non-X forward axes, varying endpoint values and nonzero rolls.
+     * @param profile Ordered immutable profile copied from the completed definition.
+     * @param appearanceRgb Established game-specific representative surface color.
+     * @param target Receives local bounds, fixed section values, appearance and component override.
+     * @return Whether this profile is representable by the current neutral projector.
+     */
+    static bool ConvertProfile(
+        const MiniMapBuildingSplineProfiles::Profile& profile,
+        uint32_t appearanceRgb,
+        Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput& target)
+    {
+        using namespace Services::Map::Buildings::Visuals;
+        if (MiniMapBuildingSplineEnvelope::Eligibility(profile) != MiniMapBuildingSplineEnvelope::None)
+        {
+            return false;
+        }
+        target.Bounds.Origin = profile.LocalBounds.Origin;
+        target.Bounds.Extent = profile.LocalBounds.Extent;
+        target.CrossSection.Scale = profile.Section.StartScale;
+        target.CrossSection.Offset = profile.Section.StartOffset;
+        target.CrossSection.Up = profile.Section.Up;
+        target.Appearance.Mode = SplineSurfaceAppearanceMode::SolidColor;
+        target.Appearance.SolidRgb = appearanceRgb;
+        // Legacy spline submission uses fixed alpha 255; neutral opacity is normalized.
+        target.Appearance.Opacity = 1.0;
+        SplineSurfaceTransform componentTransform{};
+        if (!ConvertProfileTransform(profile.Transform, componentTransform))
+        {
+            return false;
+        }
+        target.ComponentTransformOverride = componentTransform;
+        return true;
+    }
+    /** Builds an owned neutral adaptation for one included completed spline Record.
+     * Drone rails use the established fixed 10-unit thin ribbon; ordinary sources retain every
+     * ordered profile alternative. World-space controls are never transformed again.
+     * @param snapshot Fixed Snapshot whose effective inclusion policy is authoritative.
+     * @param record Completed Snapshot-owned contributor being adapted.
+     * @param target Receives all owned curve and surface arrays for this contributor.
+     * @return Whether all source facts required by this supported category were representable.
+     */
+    static bool BuildSplineAdaptation(
+        const Snapshot& snapshot,
+        const Record& record,
+        OwnedSplineAdaptation& target)
+    {
+        using namespace Services::Map::Buildings::Visuals;
+        const bool droneRail = MiniMapBuildingSplinePolicy::IsDroneRailDefinition(
+            record.DefinitionValid, record.BuildingId);
+        if (record.Generation != snapshot.Generation || !record.SplineClassificationKnown ||
+            !record.HasSpline || !record.TransformValid ||
+            !record.Curve || record.Curve->Issue != GeometryIssue::None ||
+            (droneRail && !snapshot.IncludedDroneRails))
+        {
+            return false;
+        }
+        if (!ConvertCurveSegments(*record.Curve, target.Segments))
+        {
+            return false;
+        }
+        if (droneRail)
+        {
+            return BuildDroneRailSurface(record, target);
+        }
+        target.SelectionMode = BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
+        return BuildProfileSurfaces(record, target);
+    }
+    /** Supplies the established projected thin ribbon for included drone-rail sources.
+     * Its curve is already world-space, so identity transforms preserve the fixed-width policy.
+     * @param record Completed drone-rail source and category appearance identity.
+     * @param target Owned adaptation receiving the one numerical thin-ribbon surface.
+     * @return Whether the category identity and copied geometry support this representation.
+     */
+    static bool BuildDroneRailSurface(const Record& record, OwnedSplineAdaptation& target)
+    {
+        using namespace Services::Map::Buildings::Visuals;
+        if (!record.DefinitionValid)
+        {
+            return false;
+        }
+        BuildingSplineSurfaceRenderInput surface{};
+        surface.Bounds.Origin = {0.0, 0.0, 0.0};
+        surface.Bounds.Extent = {0.0, MiniMapBuildingSplineEnvelope::ThinHalfWidth, 0.0};
+        surface.CrossSection.Scale = {1.0, 1.0};
+        surface.CrossSection.Offset = {0.0, 0.0};
+        surface.CrossSection.Up = {0.0, 0.0, 1.0};
+        surface.Appearance.Mode = SplineSurfaceAppearanceMode::SolidColor;
+        surface.Appearance.SolidRgb = MiniMapBuildingSplinePolicy::RepresentativeRgb(
+            record.DefinitionValid, record.BuildingId);
+        // Legacy spline submission uses fixed alpha 255; neutral opacity is normalized.
+        surface.Appearance.Opacity = 1.0;
+        target.Surfaces.push_back(surface);
+        return true;
+    }
+    /** Copies every source-ordered normal profile alternative without preselection or sorting.
+     * Each surface keeps its own relative component transform and established solid-color policy.
+     * @param record Completed normal spline with immutable copied profile alternatives.
+     * @param target Owned adaptation receiving all alternatives in their original order.
+     * @return Whether the complete ordered profile set is representable by the neutral contract.
+     */
+    static bool BuildProfileSurfaces(const Record& record, OwnedSplineAdaptation& target)
+    {
+        if (!record.DefinitionValid || !record.DefinitionShape || !record.DefinitionShape->Profiles ||
+            record.DefinitionShape->Profiles->Profiles.empty())
+        {
+            return false;
+        }
+        const uint32_t rgb = MiniMapBuildingSplinePolicy::RepresentativeRgb(
+            record.DefinitionValid, record.BuildingId);
+        const auto& profiles = record.DefinitionShape->Profiles->Profiles;
+        target.Surfaces.reserve(profiles.size());
+        for (const auto& profile : profiles)
+        {
+            Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput surface{};
+            if (!ConvertProfile(profile, rgb, surface))
+            {
+                return false;
+            }
+            target.Surfaces.push_back(surface);
+        }
+        return !target.Surfaces.empty();
+    }
+    /** Adapts eligible completed spline records and records whether any included spline was unsupported.
+     * Classification-unknown records remain unresolved; ordinary non-splines require no spline descriptor.
+     * @param target Snapshot being assembled from its own deterministic Record order.
+     * @return Whether every included completed spline was adapted or intentionally excluded.
+     */
+    static bool BuildSplineAdaptations(Snapshot& target)
+    {
+        target.OwnedSplineAdaptations.reserve(target.Records.size());
+        bool complete = true;
+        for (const Record& record : target.Records)
+        {
+            if (!record.SplineClassificationKnown)
+            {
+                complete = false;
+                continue;
+            }
+            if (!record.HasSpline || record.InteriorOnly)
+            {
+                continue;
+            }
+            OwnedSplineAdaptation adaptation{};
+            if (!BuildSplineAdaptation(target, record, adaptation))
+            {
+                complete = false;
+                continue;
+            }
+            if (!MiniMapBuildingSplinePolicy::IsDroneRailDefinition(record.DefinitionValid, record.BuildingId))
+            {
+                adaptation.RootTransform.Translation = record.Position;
+                adaptation.RootTransform.Scale = record.Scale;
+                adaptation.RootTransform.Rotation = record.Rotation;
+            }
+            target.OwnedSplineAdaptations.push_back(std::move(adaptation));
+        }
+        FreezeSplineDescriptors(target);
+        return complete;
+    }
+    /** Forms borrowed descriptors only after every nested vector has reached its final size.
+     * The zero pixel-density marker leaves resolution-dependent policy selection to the future coordinator.
+     * @param target Snapshot whose owned adaptation arrays back the descriptor spans.
+     */
+    static void FreezeSplineDescriptors(Snapshot& target)
+    {
+        using namespace Services::Map::Buildings::Visuals;
+        target.Splines.clear();
+        target.Splines.reserve(target.OwnedSplineAdaptations.size());
+        for (const OwnedSplineAdaptation& owned : target.OwnedSplineAdaptations)
+        {
+            BuildingSplineRenderInput input{};
+            input.Segments = owned.Segments;
+            input.Surfaces = owned.Surfaces;
+            input.RootTransform = owned.RootTransform;
+            input.ComponentTransform = owned.ComponentTransform;
+            input.SurfaceSelectionMode = owned.SelectionMode;
+            input.SamplingPolicy.PixelsPerUnit = 0.0;
+            target.Splines.push_back(input);
+        }
     }
     bool Ensure(const Native& n)
     {
@@ -946,6 +1187,7 @@ namespace MiniMapBuildingCollector
         value->AcquisitionComplete=acquisitionComplete;
         std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
         FreezeSpriteRequirements(*value);
+        value->SplineAdaptationComplete = BuildSplineAdaptations(*value);
         auto eligibility=std::make_shared<BuildingSourcePublication::EligibilityToken>();
         if(publicationEligibility)
         {

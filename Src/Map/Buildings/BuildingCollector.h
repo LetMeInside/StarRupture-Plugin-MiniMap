@@ -1,4 +1,6 @@
 #pragma once
+
+// Declares the client-side StarRupture collector and immutable Snapshot source data.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "plugin.h"
 #include "BuildingGeometryTypes.h"
@@ -45,6 +47,19 @@ namespace MiniMapBuildingCollector
         uint8_t Mode = 0; // Native EInterpCurveMode; constant jumps stay discontinuous.
         bool operator==(const CurveSegment&) const = default;
     };
+    /** Owns the neutral numerical arrays adapted from one completed Record.
+     * BuildingSplineRenderInput spans are formed only after Snapshot construction
+     * finishes, and remain backed by these arrays for the Snapshot lifetime.
+     */
+    struct OwnedSplineAdaptation
+    {
+        std::vector<Services::Map::Buildings::Visuals::SplineCurveSegment> Segments;
+        std::vector<Services::Map::Buildings::Visuals::BuildingSplineSurfaceRenderInput> Surfaces;
+        Services::Map::Buildings::Visuals::SplineSurfaceTransform RootTransform{};
+        Services::Map::Buildings::Visuals::SplineSurfaceTransform ComponentTransform{};
+        Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode SelectionMode =
+            Services::Map::Buildings::Visuals::BuildingSplineSurfaceSelectionMode::DrawAllSurfaces;
+    };
     struct SplineGeometry
     {
         std::vector<CurveSegment> Segments;
@@ -80,6 +95,10 @@ namespace MiniMapBuildingCollector
         bool Complete = false; // Authoritative membership reconciliation succeeded.
         bool AcquisitionComplete = false; // No eligible pending work; included support extents are valid.
         bool IncludedDroneRails = true; // Immutable policy provenance for this publication.
+        /** True only when every included completed spline Record had a faithful neutral adaptation.
+         * This does not certify sprite support, final sampling policy or complete source readiness.
+         */
+        bool SplineAdaptationComplete = false;
         std::vector<Record> Records;
         /** Known ordinary sprite requirements in deterministic enumeration order. */
         std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OrdinarySprites;
@@ -87,6 +106,10 @@ namespace MiniMapBuildingCollector
         std::vector<Services::Map::Buildings::BuildingSpriteSourceRecord> OverlayLastSprites;
         /** Shared owners for every key referenced by the borrowed descriptor string_views. */
         std::vector<std::shared_ptr<const std::string>> SpriteRequirementKeyOwners;
+        /** Owned nested curve/surface arrays backing Splines; no descriptor points into collector state. */
+        std::vector<OwnedSplineAdaptation> OwnedSplineAdaptations;
+        /** Borrowed nested spans backed only by the immutable Snapshot-owned adaptations. */
+        std::vector<Services::Map::Buildings::Visuals::BuildingSplineRenderInput> Splines;
     };
     struct CollectorDiagnostics
     {

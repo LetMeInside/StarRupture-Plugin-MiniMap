@@ -35,10 +35,10 @@ namespace MiniMapBuildingCollector
         return eligibility && eligibility->IsEligible;
     }
 
-    /** Borrows frozen known sprite requirements without allocating or retaining additional source.
-     * Optional placement appears only when its copied transform was validated; unknown facts stay
-     * omitted. Numerical scene and spline adaptation remain incomplete, and empty spans do not
-     * assert that the covered world contains no buildings. Only finite positive bounds become coverage.
+    /** Borrows frozen sprite requirements and supported spline adaptations without extra allocation.
+     * Optional sprite placement appears only when its copied transform was validated; unsupported
+     * spline facts remain absent. Readiness stays Incomplete, and empty spans do not certify no content.
+     * Only finite positive bounds become coverage.
      * @return Borrowed view whose source storage remains owned by this publication.
      */
     Services::Map::Buildings::BuildingSourceView BuildingSourcePublication::BorrowSourceView() const noexcept
@@ -51,6 +51,7 @@ namespace MiniMapBuildingCollector
 
         view.Readiness = Services::Map::Buildings::BuildingSourceReadiness::Incomplete;
         view.OrdinarySprites = snapshot_->OrdinarySprites;
+        view.Splines = snapshot_->Splines;
         view.OverlayLastSprites = snapshot_->OverlayLastSprites;
         const Bounds& region = snapshot_->Region;
         if (!HasValidSupportExtent(region) || region.MaxX <= region.MinX || region.MaxY <= region.MinY)

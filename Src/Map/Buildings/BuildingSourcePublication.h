@@ -1,5 +1,7 @@
 #pragma once
 
+// Declares the fixed-Snapshot adapter for the game-independent building source view.
+
 #if defined(MODLOADER_CLIENT_BUILD)
 
 // Retains one immutable StarRupture collector snapshot and adapts its section
@@ -44,9 +46,10 @@ namespace MiniMapBuildingCollector
          */
         bool IsCurrent() const noexcept override;
 
-        /** Returns known frozen sprite requirements with conservative incomplete numerical readiness.
-         * Missing requirements remain unknown, and absent placement is not inferred from metadata.
-         * @return Borrowed view whose descriptor arrays and key bytes remain owned by the Snapshot.
+        /** Returns frozen sprite requirements and supported Snapshot-owned spline adaptations.
+         * Missing source facts remain unknown; spline spans borrow nested arrays from the Snapshot,
+         * while readiness stays Incomplete for unsupported sources and consumer-owned sampling policy.
+         * @return Borrowed view whose arrays, nested spans and key bytes remain owned by the Snapshot.
          */
         Services::Map::Buildings::BuildingSourceView BorrowSourceView() const noexcept override;
 
