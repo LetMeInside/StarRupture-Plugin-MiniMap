@@ -1,5 +1,5 @@
-// Provides game-independent spline evaluation, sampling, and prepared curve data.
-// The caller owns source segments and reusable prepared-output storage.
+// Provides game-independent keyed conversion, spline evaluation, sampling, and prepared curve data.
+// The caller owns borrowed keyed input, source segments, and reusable prepared-output storage.
 #pragma once
 
 #include <algorithm>
@@ -28,6 +28,38 @@ namespace Services::Map::Buildings::Visuals
 		InvalidCurve,
 		UnsupportedInterpolation,
 		NonFinite
+	};
+
+	/** Represents supported neutral keyed semantics or an explicit unrecognized-mode marker. */
+	enum class KeyedSplineInterpolation : std::uint8_t
+	{
+		Linear,
+		Constant,
+		Cubic,
+		Unsupported
+	};
+
+	/** Supplies one neutral XYZ key with endpoint derivatives and its outgoing interpolation rule.
+ * Tangents are derivatives per source-key unit, in the same coordinate basis as Position.
+ * Conversion applies no transform to either values or tangents.
+	 * Interpolation on the final key is still validated but has no outgoing segment.
+	 */
+	struct KeyedSplinePoint
+	{
+		double Key = 0.0;
+		std::array<double, 3> Position{};
+		std::array<double, 3> ArriveTangent{};
+		std::array<double, 3> LeaveTangent{};
+		KeyedSplineInterpolation Interpolation = KeyedSplineInterpolation::Linear;
+	};
+
+	/** Borrows an ordered keyed curve for one conversion call and records loop state explicitly.
+	 * The point span remains caller-owned and is never retained by SplineGeometry.
+	 */
+	struct KeyedSplineCurve
+	{
+		std::span<const KeyedSplinePoint> Points;
+		bool IsLooped = false;
 	};
 
 	/** Holds four XYZ Bezier controls, their source-key interval, and interpolation semantics. */
@@ -145,6 +177,41 @@ namespace Services::Map::Buildings::Visuals
 			return true;
 		}
 
+		/** Converts ordered neutral keys to caller-owned Bezier segments synchronously.
+		 * The output is cleared on entry and remains empty when conversion fails. Source-key
+		 * intervals are preserved, cubic tangents are derivatives per source-key unit, and
+		 * looped curves or unsupported interpolation evidence are rejected explicitly.
+		 * @param curve Caller-owned ordered keyed values and loop state.
+		 * @param output Caller-owned segment vector receiving complete converted output.
+		 * @return None on success, otherwise the first supported numerical failure category.
+		 */
+		static SplineNumericalIssue ConvertKeyedCurve(
+			const KeyedSplineCurve& curve,
+			std::vector<SplineCurveSegment>& output)
+		{
+			output.clear();
+			const SplineNumericalIssue validation = ValidateKeyedCurve(curve);
+			if (validation != SplineNumericalIssue::None)
+			{
+				return validation;
+			}
+			output.reserve(curve.Points.size() - 1);
+			for (std::size_t index = 0; index + 1 < curve.Points.size(); ++index)
+			{
+				SplineCurveSegment segment = BuildKeyedSegment(
+					curve.Points[index],
+					curve.Points[index + 1]);
+				const SplineNumericalIssue issue = ValidateSegment(segment);
+				if (issue != SplineNumericalIssue::None)
+				{
+					output.clear();
+					return issue;
+				}
+				output.push_back(segment);
+			}
+			return SplineNumericalIssue::None;
+		}
+
 		/**
 		 * Samples a non-owning segment span into caller-owned output, retaining its vector capacities.
 		 * The source span must remain valid for this synchronous call and is never retained.
@@ -185,6 +252,90 @@ namespace Services::Map::Buildings::Visuals
 	private:
 		static constexpr unsigned MaximumDepth = 8;
 		static constexpr std::size_t MaximumLeavesPerSegment = 257;
+
+		/** Validates ordering, key intervals, borrowed values and neutral interpolation evidence. */
+		static SplineNumericalIssue ValidateKeyedCurve(const KeyedSplineCurve& curve) noexcept
+		{
+			if (curve.IsLooped || curve.Points.size() < 2)
+			{
+				return SplineNumericalIssue::InvalidCurve;
+			}
+			for (std::size_t index = 0; index < curve.Points.size(); ++index)
+			{
+				const KeyedSplinePoint& point = curve.Points[index];
+				if (!std::isfinite(point.Key) || !IsFinitePoint(point.Position) ||
+					!IsFinitePoint(point.ArriveTangent) || !IsFinitePoint(point.LeaveTangent))
+				{
+					return SplineNumericalIssue::NonFinite;
+				}
+				if (point.Interpolation != KeyedSplineInterpolation::Linear &&
+					point.Interpolation != KeyedSplineInterpolation::Constant &&
+					point.Interpolation != KeyedSplineInterpolation::Cubic)
+				{
+					return SplineNumericalIssue::UnsupportedInterpolation;
+				}
+				if (index + 1 < curve.Points.size())
+				{
+					const double keySpan = curve.Points[index + 1].Key - point.Key;
+					if (!std::isfinite(keySpan))
+					{
+						return SplineNumericalIssue::NonFinite;
+					}
+					if (keySpan <= 0.0)
+					{
+						return SplineNumericalIssue::InvalidCurve;
+					}
+				}
+			}
+			return SplineNumericalIssue::None;
+		}
+
+		/** Builds one key interval using the established constant, linear or Hermite controls. */
+		static SplineCurveSegment BuildKeyedSegment(
+			const KeyedSplinePoint& first,
+			const KeyedSplinePoint& last) noexcept
+		{
+			SplineCurveSegment segment;
+			segment.StartKey = first.Key;
+			segment.EndKey = last.Key;
+			if (first.Interpolation == KeyedSplineInterpolation::Constant)
+			{
+				segment.Interpolation = SplineInterpolation::Constant;
+			}
+			else if (first.Interpolation == KeyedSplineInterpolation::Linear)
+			{
+				segment.Interpolation = SplineInterpolation::Linear;
+			}
+			else
+			{
+				segment.Interpolation = SplineInterpolation::Cubic;
+			}
+			segment.Controls[0] = first.Position;
+			segment.Controls[3] = last.Position;
+			const double keySpan = last.Key - first.Key;
+			for (std::size_t axis = 0; axis < 3; ++axis)
+			{
+				if (segment.Interpolation == SplineInterpolation::Constant)
+				{
+					segment.Controls[1][axis] = first.Position[axis];
+					segment.Controls[2][axis] = last.Position[axis];
+				}
+				else if (segment.Interpolation == SplineInterpolation::Linear)
+				{
+					const double delta = last.Position[axis] - first.Position[axis];
+					segment.Controls[1][axis] = first.Position[axis] + delta / 3.0;
+					segment.Controls[2][axis] = first.Position[axis] + delta * 2.0 / 3.0;
+				}
+				else
+				{
+					segment.Controls[1][axis] = first.Position[axis] +
+						first.LeaveTangent[axis] * keySpan / 3.0;
+					segment.Controls[2][axis] = last.Position[axis] -
+						last.ArriveTangent[axis] * keySpan / 3.0;
+				}
+			}
+			return segment;
+		}
 
 		/** Tests whether all three coordinates of a point are finite. */
 		static bool IsFinitePoint(const std::array<double, 3>& point) noexcept
