@@ -105,6 +105,9 @@ namespace MiniMapBuildingCollector
         void OnExperienceLoadComplete();
         bool BeginExplicitSession();
         void SetViewport(const MiniMapMap::Transform& transform);
+        /** Selects the explicit acquisition rectangle and revokes source eligibility when it changes.
+         * @param region Map-space bounds used by the collector's explicit acquisition session.
+         */
         void SetRegion(const Bounds& region);
         /** Validates and stores a native-centimeter acquisition rectangle without conversion. */
         bool SetAcquisitionRegion(
@@ -113,11 +116,21 @@ namespace MiniMapBuildingCollector
         void ObserveSections(
             const Services::Map::Buildings::BuildingSectionGrid& grid,
             std::span<Services::Map::Buildings::BuildingSectionObservation> observations) const override;
+        /** Retains the currently exposed immutable snapshot without advancing acquisition.
+         * A stale but still exposed snapshot is returned with revoked currentness.
+         * @return Retained publication, or empty when no Snapshot is currently exposed.
+         */
+        std::shared_ptr<const Services::Map::Buildings::IBuildingSourcePublication>
+            AcquireSourcePublication() const override;
+        /** Changes the effective immutable-publication policy and revokes the old source synchronously.
+         * @param enabled Whether drone-rail contributors belong in the next Snapshot.
+         */
         void SetRenderDroneRails(bool enabled);
         std::shared_ptr<const Snapshot> GetSnapshot();
         CollectorDiagnostics GetDiagnostics() const;
         void OnTick(float delta);
         void ShutdownResources();
+        /** Releases native definition metadata and revokes any publication still exposed. */
         void ShutdownMetadataResources();
 
     private:

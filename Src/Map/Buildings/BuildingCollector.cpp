@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollector.h"
+#include "BuildingSourcePublication.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
@@ -59,21 +60,6 @@ namespace MiniMapBuildingCollector
         bool IsDroneRail=false;
         uint64_t SeenScan=0;
     };
-    /** Holds commutative contributor data for one requested section. */
-    struct SectionAccumulator
-    {
-        uint64_t Sum=0;
-        uint64_t Xor=0;
-        uint64_t Count=0;
-    };
-    /** Stores a clipped half-open range in the requested section grid. */
-    struct SectionIndexRange
-    {
-        size_t FirstColumn=0;
-        size_t EndColumn=0;
-        size_t FirstRow=0;
-        size_t EndRow=0;
-    };
     struct Definition
     {
         // A strong engine reference makes this engine-facing lookup key stable
@@ -102,6 +88,7 @@ namespace MiniMapBuildingCollector
     Clock::time_point nextMembership{};
     std::mutex publicationMutex;
     std::shared_ptr<const Snapshot> snapshot;
+    std::shared_ptr<BuildingSourcePublication::EligibilityToken> publicationEligibility;
     double viewRadius=0;
     bool renderDroneRails=true;
     bool regionOverride=false;
@@ -202,14 +189,29 @@ namespace MiniMapBuildingCollector
         const auto address=(reinterpret_cast<uintptr_t>(storage)+sizeof(void*)+alignment-1)&~(alignment-1);
         return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
     }
+    /** Revokes current use as soon as an existing source fact changes. */
+    void InvalidateSourcePublication() noexcept
+    {
+        if(dirty)
+        {
+            return;
+        }
+
+        dirty=true;
+        if(publicationEligibility)
+        {
+            publicationEligibility->IsEligible=false;
+        }
+    }
     void ClearSession()
     {
+        InvalidateSourcePublication();
         if(const auto* n=MiniMapNative::Get())
         {
             if(queryConstructed)n->mass.queryDestruct(query.data());
         }
         queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;drawingBoundsVersion={};
-        pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
+        pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
     /** Marks only positively classified drone-rail entries as policy-excluded. */
@@ -218,7 +220,7 @@ namespace MiniMapBuildingCollector
         if(entry.DroneRailClassificationKnown && entry.IsDroneRail==isDroneRail)return;
         entry.DroneRailClassificationKnown=true;
         entry.IsDroneRail=isDroneRail;
-        dirty=true;
+        InvalidateSourcePublication();
     }
     bool Ensure(const Native& n)
     {
@@ -374,7 +376,7 @@ namespace MiniMapBuildingCollector
                     try {pending.insert(key);}
                     catch(...) {entities.erase(it);throw;}
                     auto& r=it->second.Data;r.Generation=capturedGeneration;r.Index=int32_t(uint32_t(key));r.Serial=int32_t(uint32_t(key>>32));
-                    dirty=true;
+                    InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++timing.Added;++changes;
 #endif
@@ -408,7 +410,7 @@ namespace MiniMapBuildingCollector
         for(auto it=entities.begin();it!=entities.end();)
             if(it->second.SeenScan!=scanEpoch)
             {
-                pending.erase(it->first);it=entities.erase(it);dirty=true;
+                pending.erase(it->first);it=entities.erase(it);InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++timing.Removed;++changes;
 #endif
@@ -605,7 +607,7 @@ namespace MiniMapBuildingCollector
             ++measurements.AtlasBoundsRecalculations;
 #endif
         }
-        dirty=true;
+        InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.DirtyAtlas;
 #endif
@@ -690,7 +692,7 @@ namespace MiniMapBuildingCollector
         result.SourceFingerprint=CalculateSourceFingerprint(result);
         // Owned Record move and key erasure do not allocate or call native
         // code: completion and removal from scheduling commit together.
-        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);dirty=true;
+        it->second.Data=std::move(result);it->second.Complete=true;it->second.Definition=nullptr;pending.erase(key);InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.DirtyAcquisition;
 #endif
@@ -699,102 +701,7 @@ namespace MiniMapBuildingCollector
     /** Validates copied support bounds before they are used for certification. */
     static bool HasValidSupportExtent(const Bounds& extent) noexcept
     {
-        return extent.Valid && std::isfinite(extent.MinX) && std::isfinite(extent.MinY) &&
-            std::isfinite(extent.MaxX) && std::isfinite(extent.MaxY) &&
-            extent.MinX<=extent.MaxX && extent.MinY<=extent.MaxY;
-    }
-    /** Computes the clipped candidate section range for one support extent. */
-    static bool GetSectionIndexRange(
-        const Record& record,
-        const Services::Map::Buildings::BuildingSectionGrid& grid,
-        long double gridRight,
-        long double gridBottom,
-        SectionIndexRange& range)
-    {
-        const Bounds& extent=record.Extent;
-        if(!HasValidSupportExtent(extent))return false;
-        if(extent.MaxX<=grid.xMapUnits || extent.MinX>=gridRight ||
-            extent.MaxY<=grid.yMapUnits || extent.MinY>=gridBottom)return true;
-        const long double originX=grid.xMapUnits;
-        const long double originY=grid.yMapUnits;
-        const long double sectionSize=grid.sectionSizeMapUnits;
-        const long double columns=grid.columnCount;
-        const long double rows=grid.rowCount;
-        const long double firstColumn=std::clamp(
-            std::floor((static_cast<long double>(extent.MinX)-originX)/sectionSize),0.0L,columns);
-        const long double endColumn=std::clamp(
-            std::ceil((static_cast<long double>(extent.MaxX)-originX)/sectionSize),0.0L,columns);
-        const long double firstRow=std::clamp(
-            std::floor((static_cast<long double>(extent.MinY)-originY)/sectionSize),0.0L,rows);
-        const long double endRow=std::clamp(
-            std::ceil((static_cast<long double>(extent.MaxY)-originY)/sectionSize),0.0L,rows);
-        range={static_cast<size_t>(firstColumn),static_cast<size_t>(endColumn),
-            static_cast<size_t>(firstRow),static_cast<size_t>(endRow)};
-        return true;
-    }
-    /** Adds one record signature to every requested cell touched by its extent. */
-    static bool AccumulateRecordSections(
-        const Record& record,
-        const Services::Map::Buildings::BuildingSectionGrid& grid,
-        long double gridRight,
-        long double gridBottom,
-        std::vector<SectionAccumulator>& accumulators)
-    {
-        SectionIndexRange range{};
-        if(!GetSectionIndexRange(record,grid,gridRight,gridBottom,range))return false;
-        const long double originX=grid.xMapUnits;
-        const long double originY=grid.yMapUnits;
-        const long double sectionSize=grid.sectionSizeMapUnits;
-        for(size_t row=range.FirstRow;row<range.EndRow;++row)
-        {
-            const long double sectionTop=originY+static_cast<long double>(row)*sectionSize;
-            const long double sectionBottom=sectionTop+sectionSize;
-            if(record.Extent.MaxY<=sectionTop || record.Extent.MinY>=sectionBottom)continue;
-            for(size_t column=range.FirstColumn;column<range.EndColumn;++column)
-            {
-                const long double sectionLeft=originX+static_cast<long double>(column)*sectionSize;
-                const long double sectionRight=sectionLeft+sectionSize;
-                if(record.Extent.MaxX<=sectionLeft || record.Extent.MinX>=sectionRight)continue;
-                auto& accumulator=accumulators[row*grid.columnCount+column];
-                accumulator.Sum+=record.SourceFingerprint;
-                accumulator.Xor^=record.SourceFingerprint;
-                ++accumulator.Count;
-            }
-        }
-        return true;
-    }
-    /** Finalizes an order-independent multiset accumulator as a stable 64-bit value. */
-    static uint64_t FinalizeSectionFingerprint(const SectionAccumulator& accumulator) noexcept
-    {
-        uint64_t value=accumulator.Sum^std::rotl(accumulator.Xor,23);
-        value+=accumulator.Count*0x9E3779B97F4A7C15ull;
-        value^=value>>30;
-        value*=0xBF58476D1CE4E5B9ull;
-        value^=value>>27;
-        value*=0x94D049BB133111EBull;
-        value^=value>>31;
-        return value;
-    }
-    /** Validates section-grid geometry and derives its half-open outer bounds. */
-    static bool GetSectionGridBounds(
-        const Services::Map::Buildings::BuildingSectionGrid& grid,
-        size_t observationCount,
-        size_t& sectionCount,
-        long double& gridRight,
-        long double& gridBottom)
-    {
-        if(!std::isfinite(grid.xMapUnits) || !std::isfinite(grid.yMapUnits) ||
-            !std::isfinite(grid.sectionSizeMapUnits) || grid.sectionSizeMapUnits<=0 ||
-            grid.columnCount==0 || grid.rowCount==0 ||
-            grid.rowCount>(std::numeric_limits<size_t>::max)()/grid.columnCount)return false;
-        sectionCount=grid.columnCount*grid.rowCount;
-        if(sectionCount!=observationCount)return false;
-        gridRight=static_cast<long double>(grid.xMapUnits)+
-            static_cast<long double>(grid.sectionSizeMapUnits)*grid.columnCount;
-        gridBottom=static_cast<long double>(grid.yMapUnits)+
-            static_cast<long double>(grid.sectionSizeMapUnits)*grid.rowCount;
-        return std::isfinite(gridRight) && std::isfinite(gridBottom) &&
-            gridRight>grid.xMapUnits && gridBottom>grid.yMapUnits;
+        return BuildingSourcePublication::HasValidSupportExtent(extent);
     }
     void Publish(bool includeDroneRails)
     {
@@ -820,7 +727,17 @@ namespace MiniMapBuildingCollector
         }
         value->AcquisitionComplete=acquisitionComplete;
         std::sort(value->Records.begin(),value->Records.end(),[this](const auto& a,const auto& b){return Key({a.Index,a.Serial})<Key({b.Index,b.Serial});});
-        {std::scoped_lock lock(publicationMutex);snapshot=std::move(value);}dirty=false;
+        auto eligibility=std::make_shared<BuildingSourcePublication::EligibilityToken>();
+        if(publicationEligibility)
+        {
+            publicationEligibility->IsEligible=false;
+        }
+        {
+            std::scoped_lock lock(publicationMutex);
+            snapshot=std::move(value);
+            publicationEligibility=std::move(eligibility);
+        }
+        dirty=false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ++measurements.Publications;
 #endif
@@ -837,24 +754,15 @@ namespace MiniMapBuildingCollector
         const Services::Map::Buildings::BuildingSectionGrid& grid,
         std::span<Services::Map::Buildings::BuildingSectionObservation> observations)
     {
-        for(auto& observation:observations)observation={};
-        size_t sectionCount=0;
-        long double gridRight=0;
-        long double gridBottom=0;
-        if(!GetSectionGridBounds(grid,observations.size(),sectionCount,gridRight,gridBottom))return;
         const auto selectedSnapshot=GetCurrentSnapshot();
-        if(!selectedSnapshot || !selectedSnapshot->Complete || !selectedSnapshot->AcquisitionComplete)return;
-        const Bounds& acquiredRegion=selectedSnapshot->Region;
-        if(!HasValidSupportExtent(acquiredRegion) || acquiredRegion.MinX>grid.xMapUnits ||
-            acquiredRegion.MinY>grid.yMapUnits || acquiredRegion.MaxX<gridRight || acquiredRegion.MaxY<gridBottom)return;
-        std::vector<SectionAccumulator> accumulators(sectionCount);
-        for(const Record& record:selectedSnapshot->Records)
-            if(!AccumulateRecordSections(record,grid,gridRight,gridBottom,accumulators))return;
-        for(size_t index=0;index<sectionCount;++index)
+        if(!selectedSnapshot)
         {
-            observations[index].isComplete=true;
-            observations[index].membershipFingerprint=FinalizeSectionFingerprint(accumulators[index]);
+            std::fill(observations.begin(),observations.end(),
+                Services::Map::Buildings::BuildingSectionObservation{});
+            return;
         }
+
+        BuildingSourcePublication::ObserveSnapshot(*selectedSnapshot, grid, observations);
     }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     void MaybeReportMeasurements(Clock::time_point callbackBegin,uint64_t scanSerialAtEntry) noexcept
@@ -926,12 +834,6 @@ namespace MiniMapBuildingCollector
 #endif
         if(!ready)return;
         const bool includeDroneRails=renderDroneRails;
-        // Provenance belongs to immutable output, not to mutable preferences.
-        // A policy change must republish even when membership is unchanged.
-        {
-            std::scoped_lock lock(publicationMutex);
-            if(snapshot && snapshot->Generation==generation && snapshot->IncludedDroneRails!=includeDroneRails)dirty=true;
-        }
         const auto* n=MiniMapNative::Get();if(!n || !n->player.isGameThread() || !Ensure(*n))return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if(measurementGeneration!=generation){measurements.Reset();measurementGeneration=generation;measurementIntervalStart=Clock::now();}
@@ -954,7 +856,7 @@ namespace MiniMapBuildingCollector
 #endif
                 if(complete!=membershipComplete)
                 {
-                    membershipComplete=complete;dirty=true;
+                    membershipComplete=complete;InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++measurements.DirtyMembership;
 #endif
@@ -996,7 +898,7 @@ namespace MiniMapBuildingCollector
                     const Bounds requested{centerX-radius,centerY-radius,centerX+radius,centerY+radius,true};
                     if(!regionOverride && (!region.Valid || requested.MinX<region.MinX || requested.MinY<region.MinY || requested.MaxX>region.MaxX || requested.MaxY>region.MaxY))
                     {
-                        region=G::Inflate(requested,radius*0.5);dirty=true;
+                        region=G::Inflate(requested,radius*0.5);InvalidateSourcePublication();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         ++measurements.DirtyRegion;
 #endif
@@ -1144,11 +1046,20 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::SetRegion(const Bounds& region)
     {
+        const bool inputChanged=state_->discoveryInput!=State::DiscoveryInput::ExplicitRegion;
         state_->discoveryInput=State::DiscoveryInput::ExplicitRegion;
         const auto& current=state_->region;
-        if(current.MinX!=region.MinX || current.MinY!=region.MinY || current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid)
-        {state_->region=region;state_->regionOverride=true;state_->dirty=true;}
-        else state_->regionOverride=true;
+        const bool boundsChanged=current.MinX!=region.MinX || current.MinY!=region.MinY ||
+            current.MaxX!=region.MaxX || current.MaxY!=region.MaxY || current.Valid!=region.Valid;
+        if(boundsChanged)
+        {
+            state_->region=region;
+        }
+        state_->regionOverride=true;
+        if(boundsChanged || inputChanged)
+        {
+            state_->InvalidateSourcePublication();
+        }
     }
     /** Validates the map rectangle before forwarding it to the existing region setter. */
     bool BuildingCollector::SetAcquisitionRegion(
@@ -1175,7 +1086,28 @@ namespace MiniMapBuildingCollector
     {
         state_->ObserveSections(grid,observations);
     }
-    void BuildingCollector::SetRenderDroneRails(bool enabled){state_->renderDroneRails=enabled;}
+    std::shared_ptr<const Services::Map::Buildings::IBuildingSourcePublication>
+        BuildingCollector::AcquireSourcePublication() const
+    {
+        std::scoped_lock lock(state_->publicationMutex);
+        if(!state_->snapshot)
+        {
+            return {};
+        }
+
+        return std::make_shared<BuildingSourcePublication>(
+            state_->snapshot, state_->publicationEligibility);
+    }
+    void BuildingCollector::SetRenderDroneRails(bool enabled)
+    {
+        if(state_->renderDroneRails==enabled)
+        {
+            return;
+        }
+
+        state_->renderDroneRails=enabled;
+        state_->InvalidateSourcePublication();
+    }
     std::shared_ptr<const Snapshot> BuildingCollector::GetSnapshot(){std::scoped_lock lock(state_->publicationMutex);return state_->snapshot;}
     CollectorDiagnostics BuildingCollector::GetDiagnostics() const
     {
@@ -1203,6 +1135,7 @@ namespace MiniMapBuildingCollector
     }
     void BuildingCollector::ShutdownMetadataResources()
     {
+        state_->InvalidateSourcePublication();
         if(const auto* n=MiniMapNative::Get())for(auto* root:state_->metadata)n->asset.releaseObject(root);
         state_->metadata.clear();state_->types={};
     }
