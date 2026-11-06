@@ -8,6 +8,7 @@
 #include "../Cache/SpriteDiskCache.h"
 #include "../Visuals/SpriteGeometry.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace Services::Map::Buildings::Scheduling
@@ -58,9 +59,12 @@ namespace Services::Map::Buildings::Scheduling
 		output.FailedCount = 0;
 		output.UnavailableCount = 0;
 		output.ReadyWithoutPlacementCount = 0;
+		output.UnresolvedSpriteGeometryCount = 0;
 		output.InvalidRequirementCount = 0;
 		output.OrdinarySprites.clear();
 		output.OverlayLastSprites.clear();
+		output.OrdinarySpriteSupports.clear();
+		output.OverlayLastSpriteSupports.clear();
 		if (publicationOwner == nullptr)
 		{
 			return;
@@ -74,8 +78,16 @@ namespace Services::Map::Buildings::Scheduling
 		const BuildingSourceView sourceView = publicationOwner->BorrowSourceView();
 		output.SourceReadiness = sourceView.Readiness;
 		output.MayHaveUnknownRequirements = sourceView.Readiness != BuildingSourceReadiness::Complete;
-		PrepareSpriteRequirementSpan(sourceView.OrdinarySprites, output.OrdinarySprites, output);
-		PrepareSpriteRequirementSpan(sourceView.OverlayLastSprites, output.OverlayLastSprites, output);
+		PrepareSpriteRequirementSpan(
+			sourceView.OrdinarySprites,
+			output.OrdinarySprites,
+			output.OrdinarySpriteSupports,
+			output);
+		PrepareSpriteRequirementSpan(
+			sourceView.OverlayLastSprites,
+			output.OverlayLastSprites,
+			output.OverlayLastSpriteSupports,
+			output);
 		if (!RevalidatePreparedPublication(publicationOwner, output))
 		{
 			return;
@@ -84,6 +96,8 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			output.OrdinarySprites.clear();
 			output.OverlayLastSprites.clear();
+			output.OrdinarySpriteSupports.clear();
+			output.OverlayLastSpriteSupports.clear();
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidSourceRequirement;
 			return;
 		}
@@ -94,6 +108,7 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionScheduler::PrepareSpriteRequirementSpan(
 		std::span<const BuildingSpriteSourceRecord> requirements,
 		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 		KnownSpritePreparationResult& output)
 	{
 		for (const BuildingSpriteSourceRecord& requirement : requirements)
@@ -104,7 +119,7 @@ namespace Services::Map::Buildings::Scheduling
 				++output.InvalidRequirementCount;
 				continue;
 			}
-			PrepareSpriteRequirement(requirement, ownedKey, outputSprites, output);
+			PrepareSpriteRequirement(requirement, ownedKey, outputSprites, outputSupports, output);
 		}
 	}
 
@@ -113,6 +128,7 @@ namespace Services::Map::Buildings::Scheduling
 		const BuildingSpriteSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
 		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 		KnownSpritePreparationResult& output)
 	{
 		if (buildingScheduler_ == nullptr || cpuSpriteSourceManager_ == nullptr)
@@ -137,7 +153,27 @@ namespace Services::Map::Buildings::Scheduling
 			++output.UnavailableCount;
 			return;
 		}
+		PrepareReadySpriteRequirement(
+			requirement,
+			ownedKey,
+			outputSprites,
+			outputSupports,
+			output);
+	}
 
+	/** Borrows the resident payload and appends an input only after its support has been established. */
+	void SectionScheduler::PrepareReadySpriteRequirement(
+		const BuildingSpriteSourceRecord& requirement,
+		const Cache::OwnedSpriteKey& ownedKey,
+		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
+		KnownSpritePreparationResult& output)
+	{
+		if (cpuSpriteSourceManager_ == nullptr)
+		{
+			++output.UnavailableCount;
+			return;
+		}
 		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult =
 			cpuSpriteSourceManager_->GetSprite(ownedKey);
 		if (spriteResult.Result != Cache::CpuSpriteSourceManager::Status::Ready ||
@@ -163,7 +199,46 @@ namespace Services::Map::Buildings::Scheduling
 		renderInput.ProjectionSourceSize = payload.CaptureSize();
 		renderInput.CaptureBounds = payload.Bounds();
 		renderInput.Projection = payload.Projection();
+		KnownSpritePreparationResult::PreparedSpriteSupport support;
+		if (!TryBuildPreparedSpriteSupport(renderInput, support))
+		{
+			++output.UnresolvedSpriteGeometryCount;
+			return;
+		}
 		outputSprites.push_back(renderInput);
+		outputSupports.push_back(support);
+	}
+
+	/** Uses the independent renderer's projected corners to derive one world-space XY envelope. */
+	bool SectionScheduler::TryBuildPreparedSpriteSupport(
+		const Visuals::BuildingSpriteRenderInput& renderInput,
+		KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept
+	{
+		Visuals::SpriteWorldQuad worldQuad;
+		if (!Visuals::SpriteGeometry::BuildWorldQuad(
+			renderInput.Placement,
+			renderInput.ProjectionSourceSize,
+			renderInput.CaptureBounds,
+			renderInput.Projection,
+			worldQuad))
+		{
+			return false;
+		}
+
+		KnownSpritePreparationResult::PreparedSpriteSupport support;
+		support.MinimumX = worldQuad.Corners[0][0];
+		support.MinimumY = worldQuad.Corners[0][1];
+		support.MaximumX = worldQuad.Corners[0][0];
+		support.MaximumY = worldQuad.Corners[0][1];
+		for (const auto& corner : worldQuad.Corners)
+		{
+			support.MinimumX = (std::min)(support.MinimumX, corner[0]);
+			support.MinimumY = (std::min)(support.MinimumY, corner[1]);
+			support.MaximumX = (std::max)(support.MaximumX, corner[0]);
+			support.MaximumY = (std::max)(support.MaximumY, corner[1]);
+		}
+		output = support;
+		return true;
 	}
 
 	/** Withdraws both pass arrays if the fixed publication lost eligibility during processing. */
@@ -177,6 +252,8 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		output.OrdinarySprites.clear();
 		output.OverlayLastSprites.clear();
+		output.OrdinarySpriteSupports.clear();
+		output.OverlayLastSpriteSupports.clear();
 		output.PreparationStatus = KnownSpritePreparationResult::Status::StalePublication;
 		return false;
 	}

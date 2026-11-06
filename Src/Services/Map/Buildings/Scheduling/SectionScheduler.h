@@ -67,8 +67,28 @@ namespace Services::Map::Buildings::Scheduling
 			std::size_t UnavailableCount = 0;
 			/** Number of ready CPU sprites that cannot draw because their placement is unknown. */
 			std::size_t ReadyWithoutPlacementCount = 0;
+			/** Number of ready placed sprites whose independent numerical quad could not be built. */
+			std::size_t UnresolvedSpriteGeometryCount = 0;
 			/** Number of malformed or unrepresentable source keys. */
 			std::size_t InvalidRequirementCount = 0;
+			/** Describes one short-lived half-open world-space XY envelope derived from a sprite quad.
+			 * X increases rightward and Y downward. This bound does not certify Section membership.
+			 */
+			struct PreparedSpriteSupport
+			{
+				/** Inclusive left edge, the minimum world-space X of the quad corners. */
+				double MinimumX = 0.0;
+				/** Inclusive top edge, the minimum world-space Y of the quad corners. */
+				double MinimumY = 0.0;
+				/** Exclusive right edge, the maximum world-space X of the quad corners. */
+				double MaximumX = 0.0;
+				/** Exclusive bottom edge, the maximum world-space Y of the quad corners. */
+				double MaximumY = 0.0;
+			};
+			/** Caller-owned supports positionally corresponding to OrdinarySprites, in source order. */
+			std::vector<PreparedSpriteSupport> OrdinarySpriteSupports;
+			/** Caller-owned supports positionally corresponding to OverlayLastSprites, in source order. */
+			std::vector<PreparedSpriteSupport> OverlayLastSpriteSupports;
 			/** Caller-owned borrowed render inputs for ordinary contributors, in source order. */
 			std::vector<Visuals::BuildingSpriteRenderInput> OrdinarySprites;
 			/** Caller-owned borrowed render inputs for overlay-last contributors, in source order. */
@@ -116,10 +136,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * The caller retains publicationOwner for this operation; its borrowed spans and keys are
 		 * never retained. Repeated descriptors are processed independently, while BuildingScheduler
 		 * suppresses duplicate acquisition by canonical key. Ready pixels are borrowed from the CPU manager;
-		 * callers must consume output arrays synchronously before manager mutation or shutdown.
+		 * callers must consume input/support arrays synchronously before manager mutation or shutdown.
 		 * Unknown source requirements remain unknown, and no result certifies a Section or scene.
 		 * @param publicationOwner Shared owner of the one fixed source publication.
-		 * @param output Receives per-pass prepared inputs and individual readiness counts.
+		 * @param output Receives per-pass prepared inputs/supports and individual outcome counts.
 		 */
 		void PrepareKnownSpriteRequirements(
 			const std::shared_ptr<const IBuildingSourcePublication>& publicationOwner,
@@ -128,24 +148,51 @@ namespace Services::Map::Buildings::Scheduling
 		/** Resolves every occurrence in one borrowed pass without collapsing equal keys.
 		 * @param requirements Publication-owned known descriptors in deterministic source order.
 		 * @param outputSprites Receives only ready, placed descriptors in the same order.
+		 * @param outputSupports Receives one corresponding support for each appended sprite.
 		 * @param output Accumulates per-requirement readiness and validation outcomes.
 		 */
 		void PrepareSpriteRequirementSpan(
 			std::span<const BuildingSpriteSourceRecord> requirements,
 			std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+			std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 			KnownSpritePreparationResult& output);
 
 		/** Acquires one valid sprite subject and appends a drawable input when placement is known.
 		 * @param requirement Borrowed source key and optional validated placement.
 		 * @param ownedKey Validated owned copy of the canonical sprite subject.
 		 * @param outputSprites Destination pass vector, preserving contributor occurrence order.
+		 * @param outputSupports Destination supports aligned with outputSprites.
 		 * @param output Accumulates the outcome for this known requirement.
 		 */
 		void PrepareSpriteRequirement(
 			const BuildingSpriteSourceRecord& requirement,
 			const Cache::OwnedSpriteKey& ownedKey,
 			std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+			std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 			KnownSpritePreparationResult& output);
+
+		/** Borrows the ready payload, validates placement geometry and appends paired outputs.
+		 * @param requirement Borrowed known descriptor with its optional validated placement.
+		 * @param ownedKey Validated key whose payload is ready through BuildingScheduler.
+		 * @param outputSprites Destination inputs, preserving contributor order.
+		 * @param outputSupports Destination supports positionally aligned with outputSprites.
+		 * @param output Accumulates temporary payload and geometry outcomes.
+		 */
+		void PrepareReadySpriteRequirement(
+			const BuildingSpriteSourceRecord& requirement,
+			const Cache::OwnedSpriteKey& ownedKey,
+			std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
+			std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
+			KnownSpritePreparationResult& output);
+
+		/** Derives the independent world-space XY envelope from the prepared projected quad.
+		 * @param renderInput Prepared placement, capture metadata and projected image edges.
+		 * @param output Receives the minimum and maximum world-space XY corner coordinates.
+		 * @return True when SpriteGeometry builds all finite projected world-space corners.
+		 */
+		bool TryBuildPreparedSpriteSupport(
+			const Visuals::BuildingSpriteRenderInput& renderInput,
+			KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept;
 
 		/** Rechecks currentness and withdraws all borrowed render inputs if the source went stale.
 		 * @param publicationOwner Retained owner of the source used for this preparation.
