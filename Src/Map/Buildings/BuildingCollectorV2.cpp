@@ -2,7 +2,7 @@
 // stays here; no rendering, legacy collector, service interface or runtime caller is used.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollectorV2.h"
-#include "BuildingCandidatePublication.h"
+#include "Services/Map/Buildings/BuildingCandidatePublication.h"
 #include "BuildingDefinitionAcquisition.h"
 #include "BuildingSplineSource.h"
 #include "Native/NativeApi.h"
@@ -12,12 +12,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <new>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -137,7 +139,7 @@ namespace MiniMap::BuildingAcquisition
         bool HasRegion = false;
         Facts::Region RequestedRegion;
         std::shared_ptr<const Facts> Published;
-        std::shared_ptr<const BuildingCandidatePublication> PublishedCandidates;
+        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> PublishedCandidates;
         std::shared_ptr<std::atomic<bool>> PublicationEligibility;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
@@ -594,6 +596,69 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
+        /** Converts the frozen V2 fact sequence into neutral records without changing correspondence. */
+        std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>
+        BuildCandidateOccurrences(const Facts& facts)
+        {
+            using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
+            std::vector<CandidateOccurrence> occurrences;
+            occurrences.reserve(facts.Buildings.size());
+            for (const Facts::Building& building : facts.Buildings)
+            {
+                CandidateOccurrence occurrence;
+                occurrence.hasMapPosition = BuildingCollectorV2::HasValidMapPosition(building);
+                if (occurrence.hasMapPosition)
+                {
+                    occurrence.xMapUnits = building.Position[0];
+                    occurrence.yMapUnits = building.Position[1];
+                }
+                occurrence.nativeFactsComplete = building.Complete;
+                occurrence.isPendingOrUnresolved = !building.Complete;
+                occurrence.contentSignature = BuildingCollectorV2::ComputeOccurrenceSignature(building);
+                occurrences.push_back(occurrence);
+            }
+            return occurrences;
+        }
+
+        /** Produces neutral candidate occurrences and explicit coverage evidence from one fact owner. */
+        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
+        CreateCandidatePublication(
+            const std::shared_ptr<const Facts>& facts,
+            std::shared_ptr<std::atomic<bool>>& eligibility)
+        {
+            using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
+            using CandidateEvidence = ::Services::Map::Buildings::BuildingCandidateEvidence;
+            using CandidateRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
+            std::vector<CandidateOccurrence> occurrences = BuildCandidateOccurrences(*facts);
+            CandidateEvidence evidence;
+            for (const CandidateOccurrence& occurrence : occurrences)
+            {
+                evidence.hasPendingOrUnresolvedOccurrences |= occurrence.isPendingOrUnresolved;
+            }
+            evidence.membershipEnumerationComplete = facts->MembershipComplete;
+            evidence.nativeAcquisitionComplete = facts->AcquisitionComplete &&
+                !evidence.hasPendingOrUnresolvedOccurrences;
+            const bool allAuthoritativeOccurrencesRetained =
+                occurrences.size() == facts->Buildings.size();
+            // V2 maps every frozen fact and applies no spatial exclusion to its candidate set.
+            evidence.candidateCoverageComplete = facts->HasRequestedRegion &&
+                facts->MembershipComplete && allAuthoritativeOccurrencesRetained;
+            const CandidateRegion requestedCoverage{
+                facts->RequestedRegion.X,
+                facts->RequestedRegion.Y,
+                facts->RequestedRegion.Width,
+                facts->RequestedRegion.Height};
+            eligibility = std::make_shared<std::atomic<bool>>(true);
+            return std::make_shared<::Services::Map::Buildings::BuildingCandidatePublication>(
+                std::move(occurrences),
+                evidence,
+                true,
+                requestedCoverage,
+                evidence.candidateCoverageComplete,
+                requestedCoverage,
+                eligibility);
+        }
+
         /** Freezes all occurrences only when relevant acquisition/request evidence changed. */
         void Publish()
         {
@@ -614,11 +679,10 @@ namespace MiniMap::BuildingAcquisition
                 return Key({left.Index, left.Serial}) < Key({right.Index, right.Serial});
             });
             std::shared_ptr<std::atomic<bool>> eligibility;
-            std::shared_ptr<const BuildingCandidatePublication> candidates;
+            std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> candidates;
             if (facts->HasRequestedRegion)
             {
-                eligibility = std::make_shared<std::atomic<bool>>(true);
-                candidates = std::make_shared<BuildingCandidatePublication>(facts, eligibility);
+                candidates = CreateCandidatePublication(facts, eligibility);
             }
             Published = std::move(facts);
             PublishedCandidates = std::move(candidates);
@@ -655,6 +719,77 @@ namespace MiniMap::BuildingAcquisition
                 Publish();
         }
     };
+
+    /** Hashes the exact approved class-path and ready transform bytes for one occurrence. */
+    std::uint64_t BuildingCollectorV2::ComputeOccurrenceSignature(
+        const BuildingAcquiredFacts::Building& building) noexcept
+    {
+        std::uint64_t hash = 14695981039346656037ULL;
+        std::string_view classPath;
+        if (building.DefinitionFacts != nullptr)
+            classPath = building.DefinitionFacts->CanonicalClassPath;
+        AppendHashInteger(hash, static_cast<std::uint64_t>(classPath.size()));
+        for (unsigned char value : classPath)
+            AppendHashByte(hash, value);
+        if (building.TransformStatus == BuildingAcquiredFacts::Status::Ready)
+        {
+            for (double value : building.Position)
+                AppendHashDouble(hash, value);
+            AppendCanonicalQuaternion(hash, building.Rotation);
+        }
+        return hash;
+    }
+
+    /** Canonicalizes quaternion sign in W/X/Y/Z order without renormalizing the stored value. */
+    void BuildingCollectorV2::AppendCanonicalQuaternion(
+        std::uint64_t& hash,
+        const BuildingAcquiredFacts::Quaternion& rotation) noexcept
+    {
+        bool negate = false;
+        const std::size_t signCheckOrder[] = {3, 0, 1, 2};
+        for (std::size_t componentIndex : signCheckOrder)
+        {
+            const double value = rotation[componentIndex];
+            if (value != 0.0)
+            {
+                negate = std::signbit(value);
+                break;
+            }
+        }
+        for (double value : rotation)
+            AppendHashDouble(hash, negate ? -value : value);
+    }
+
+    /** Applies the fixed FNV-1a byte step used by the placement-content signature. */
+    void BuildingCollectorV2::AppendHashByte(std::uint64_t& hash, std::uint8_t value) noexcept
+    {
+        hash = (hash ^ value) * 1099511628211ULL;
+    }
+
+    /** Serializes one integer using the established little-endian hash input. */
+    void BuildingCollectorV2::AppendHashInteger(std::uint64_t& hash, std::uint64_t value) noexcept
+    {
+        for (std::size_t byteIndex = 0; byteIndex < sizeof(value); ++byteIndex)
+        {
+            AppendHashByte(hash, static_cast<std::uint8_t>(value & 0xff));
+            value >>= 8;
+        }
+    }
+
+    /** Hashes one floating value after canonicalizing either sign of zero. */
+    void BuildingCollectorV2::AppendHashDouble(std::uint64_t& hash, double value) noexcept
+    {
+        if (value == 0.0)
+            value = 0.0;
+        AppendHashInteger(hash, std::bit_cast<std::uint64_t>(value));
+    }
+
+    /** Exposes map position only when native transform facts are ready and finite. */
+    bool BuildingCollectorV2::HasValidMapPosition(const BuildingAcquiredFacts::Building& building) noexcept
+    {
+        return building.TransformStatus == BuildingAcquiredFacts::Status::Ready &&
+            std::isfinite(building.Position[0]) && std::isfinite(building.Position[1]);
+    }
 
     /** Creates inert CPU state; no native resource is acquired here. */
     BuildingCollectorV2::BuildingCollectorV2() : state_(std::make_unique<State>()) {}
@@ -714,7 +849,7 @@ namespace MiniMap::BuildingAcquisition
     }
 
     /** Returns only the current candidate owner; stale publications never fall back to another observation path. */
-    std::shared_ptr<const ::Services::Map::Buildings::IBuildingCandidatePublication>
+    std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
     BuildingCollectorV2::AcquireCandidatePublication() const
     {
         if (state_->Dirty || state_->PublishedCandidates == nullptr ||

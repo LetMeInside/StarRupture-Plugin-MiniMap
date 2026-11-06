@@ -2,7 +2,9 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingAcquiredFacts.h"
+#include "Services/Map/Buildings/BuildingCandidateData.h"
 #include "Services/Map/Buildings/IBuildingCollector.h"
+#include <cstdint>
 #include <memory>
 
 namespace SDK { class UWorld; }
@@ -31,7 +33,7 @@ namespace MiniMap::BuildingAcquisition
         bool SetAcquisitionRegion(
             const ::Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
         /** Retains the current immutable candidate source, or returns null when unavailable or stale. */
-        std::shared_ptr<const ::Services::Map::Buildings::IBuildingCandidatePublication>
+        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
             AcquireCandidatePublication() const override;
         /** Advances native acquisition using caller-supplied live-world facts.
          * Caller must keep world/native facilities alive throughout this call and notify
@@ -48,6 +50,26 @@ namespace MiniMap::BuildingAcquisition
         bool IsCurrent(const std::shared_ptr<const BuildingAcquiredFacts>& facts) const noexcept;
 
     private:
+        /** Creates the unchanged placement-content signature from one exact acquired occurrence. */
+        static std::uint64_t ComputeOccurrenceSignature(const BuildingAcquiredFacts::Building& building) noexcept;
+
+        /** Appends the canonical quaternion bytes using the established sign and component order. */
+        static void AppendCanonicalQuaternion(
+            std::uint64_t& hash,
+            const BuildingAcquiredFacts::Quaternion& rotation) noexcept;
+
+        /** Applies one FNV-1a byte step to the placement-content hash. */
+        static void AppendHashByte(std::uint64_t& hash, std::uint8_t value) noexcept;
+
+        /** Serializes an unsigned integer in little-endian order into the placement hash. */
+        static void AppendHashInteger(std::uint64_t& hash, std::uint64_t value) noexcept;
+
+        /** Serializes a floating component while canonicalizing signed zero. */
+        static void AppendHashDouble(std::uint64_t& hash, double value) noexcept;
+
+        /** Requires ready transform evidence and finite native map X/Y coordinates. */
+        static bool HasValidMapPosition(const BuildingAcquiredFacts::Building& building) noexcept;
+
         struct State;
         std::unique_ptr<State> state_;
     };

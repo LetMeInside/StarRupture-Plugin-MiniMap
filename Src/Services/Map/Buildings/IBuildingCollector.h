@@ -2,7 +2,7 @@
 #pragma once
 
 #include "BuildingMapRegion.h"
-#include "IBuildingCandidatePublication.h"
+#include "BuildingCandidatePublication.h"
 
 #include <memory>
 
@@ -26,6 +26,6 @@ namespace Services::Map::Buildings
 		virtual bool SetAcquisitionRegion(const BuildingCollectionRegion& region) noexcept = 0;
 
 		/** Retains one candidate source; null means no current candidate source is available. */
-		virtual std::shared_ptr<const IBuildingCandidatePublication> AcquireCandidatePublication() const = 0;
+		virtual std::shared_ptr<const BuildingCandidatePublication> AcquireCandidatePublication() const = 0;
 	};
 }

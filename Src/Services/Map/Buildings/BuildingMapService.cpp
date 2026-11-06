@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "BuildingMapSection.h"
-#include "IBuildingCandidatePublication.h"
 #include "BuildingMapViewport.h"
 #include "Scheduling/SectionScheduler.h"
 
@@ -230,7 +229,7 @@ namespace Services::Map::Buildings
 			throw std::length_error("Viewport candidate observation grid exceeds supported storage size.");
 		}
 		observations.resize(columnCount * rowCount);
-		const std::shared_ptr<const IBuildingCandidatePublication> publication =
+		const std::shared_ptr<const BuildingCandidatePublication> publication =
 			buildingCollector.AcquireCandidatePublication();
 		if (publication == nullptr || !publication->IsCurrent())
 		{

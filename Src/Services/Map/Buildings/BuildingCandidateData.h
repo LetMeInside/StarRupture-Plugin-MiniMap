@@ -29,7 +29,7 @@ namespace Services::Map::Buildings
 	 */
 	struct BuildingCandidateOccurrence
 	{
-		/** Publication-scoped ordinal for associating borrowed adapted facts. */
+		/** Publication-scoped ordinal for correlating neutral records from this transaction. */
 		std::uint64_t publicationOrdinal = 0;
 		/** Whether X/Y identify a conservatively useful map position. */
 		bool hasMapPosition = false;
@@ -41,6 +41,8 @@ namespace Services::Map::Buildings
 		bool nativeFactsComplete = false;
 		/** Whether this occurrence is pending or otherwise unresolved. */
 		bool isPendingOrUnresolved = false;
+		/** Producer-supplied placement-content signature used only for multiset aggregation. */
+		std::uint64_t contentSignature = 0;
 	};
 
 	/** Reports candidate accounting separately from native fact readiness. */
