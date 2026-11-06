@@ -193,6 +193,10 @@
     <ClInclude Include="Map\Foundables\Foundables.h" />
     <ClInclude Include="Map\AlienActors\AlienActors.h" />
     <ClInclude Include="Map\Buildings\BuildingCollector.h" />
+    <ClInclude Include="Map\Buildings\BuildingCollectorV2.h" />
+    <ClInclude Include="Map\Buildings\BuildingAcquiredFacts.h" />
+    <ClInclude Include="Map\Buildings\BuildingDefinitionAcquisition.h" />
+    <ClInclude Include="Map\Buildings\BuildingSplineSource.h" />
     <ClInclude Include="Map\Buildings\BuildingSourcePublication.h" />
     <ClInclude Include="Map\Buildings\BuildingScheduler.h" />
     <ClInclude Include="Map\Buildings\BuildingSpriteRenderer.h" />
@@ -296,6 +300,9 @@
     <ClCompile Include="Map\Foundables\Foundables.cpp" />
     <ClCompile Include="Map\AlienActors\AlienActors.cpp" />
     <ClCompile Include="Map\Buildings\BuildingCollector.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingCollectorV2.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingDefinitionAcquisition.cpp" />
+    <ClCompile Include="Map\Buildings\BuildingSplineSource.cpp" />
     <ClCompile Include="Map\Buildings\BuildingSourcePublication.cpp" />
     <ClCompile Include="Services\Rgba16fImageDestination.cpp">
       <ObjectFileName>$(IntDir)LegacyRgba16fImageDestination.obj</ObjectFileName>
