@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements service-owned map sections, cache-first sprite scheduling, capture sessions, and viewports.
+// Implements service-owned sections, viewport access, and SectionScheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
 #include <cmath>
@@ -10,8 +10,7 @@
 
 #include "BuildingMapSection.h"
 #include "BuildingMapViewport.h"
-#include "Cache/SpriteDiskCache.h"
-#include "Scheduling/BuildingScheduler.h"
+#include "Scheduling/SectionScheduler.h"
 
 namespace Services::Map::Buildings
 {
@@ -35,10 +34,11 @@ namespace Services::Map::Buildings
 		{
 			throw std::invalid_argument("Building Map requires an absolute Buildings cache directory.");
 		}
-		spriteDiskCache_.reset(new Cache::SpriteDiskCache(std::move(buildingsCacheDirectory)));
-		cpuSpriteSourceManager_.reset(new Cache::CpuSpriteSourceManager(spriteDiskCache_.get()));
-		buildingScheduler_.reset(new Scheduling::BuildingScheduler(
-			cpuSpriteSourceManager_.get(), spriteDiskCache_.get()));
+		sectionScheduler_.reset(new Scheduling::SectionScheduler(
+			sectionSizeMapUnits_,
+			sectionResolutionPixels_,
+			collectionMarginMapUnits_,
+			std::move(buildingsCacheDirectory)));
 	}
 
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */
@@ -51,15 +51,15 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.clear();
 	}
 
-	/** Starts one renderer session through BuildingScheduler without activating runtime callbacks. */
+	/** Starts one renderer session through SectionScheduler without activating runtime callbacks. */
 	bool BuildingMapService::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
 	{
-		if (!buildingScheduler_ || sessionGeneration == 0 ||
+		if (!sectionScheduler_ || sessionGeneration == 0 ||
 			sessionGeneration <= lastCaptureSessionGeneration_)
 		{
 			return false;
 		}
-		if (!buildingScheduler_->BeginSession(sessionGeneration, GetPixelsPerMapUnit()))
+		if (!sectionScheduler_->BeginCaptureGameWorldSession(sessionGeneration))
 		{
 			return false;
 		}
@@ -67,10 +67,10 @@ namespace Services::Map::Buildings
 		return true;
 	}
 
-	/** Advances scheduler-owned renderer teardown without releasing pending native owners. */
+	/** Advances SectionScheduler-owned renderer teardown without releasing pending native owners. */
 	bool BuildingMapService::AdvanceCaptureGameWorldSessionShutdown()
 	{
-		return buildingScheduler_ == nullptr || buildingScheduler_->AdvanceSessionShutdown();
+		return sectionScheduler_ == nullptr || sectionScheduler_->AdvanceCaptureGameWorldSessionShutdown();
 	}
 
 	/** Returns the configured square cell size in map units. */

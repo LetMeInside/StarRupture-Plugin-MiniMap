@@ -1,4 +1,4 @@
-// Owns Building Map sections, sprite caches, scheduling and capture sessions, and creates scoped viewports.
+// Owns Building Map sections, SectionScheduler, and viewport registrations.
 #pragma once
 
 #include "IBuildingCollector.h"
@@ -13,20 +13,15 @@ namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
 	class BuildingMapViewport;
-	namespace Cache
-	{
-		class CpuSpriteSourceManager;
-		class SpriteDiskCache;
-	}
 	namespace Scheduling
 	{
-		class BuildingScheduler;
+		class SectionScheduler;
 	}
 
-	/** Owns map configuration, sections, temporary acquisition resources, and viewport registrations.
+	/** Owns map configuration, sections, SectionScheduler, and viewport registrations.
 	 * Service and viewport calls must be made on one calling thread; this
-	 * foundation does not provide concurrent access or synchronization. The service
-	 * keeps cache/source/scheduler owners only until future SectionScheduler ownership exists.
+	 * foundation does not provide concurrent access or synchronization. The
+	 * SectionScheduler owns cache-aware acquisition resources and their borrowing dependencies.
 	 */
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
@@ -120,9 +115,9 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Begins one scheduler-owned renderer lifetime for the current game-world session. */
+		/** Begins one SectionScheduler-owned renderer lifetime for the current game-world session. */
 		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
-		/** Advances scheduler-owned shutdown and releases native state only after retirement completes. */
+		/** Advances SectionScheduler-owned shutdown only until native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
 
 		/**
@@ -145,9 +140,6 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
 		std::uint64_t lastCaptureSessionGeneration_ = 0;
-		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
-		std::unique_ptr<Cache::CpuSpriteSourceManager> cpuSpriteSourceManager_;
-		// Reverse destruction releases the scheduler and its renderer before borrowed resources.
-		std::unique_ptr<Scheduling::BuildingScheduler> buildingScheduler_;
+		std::unique_ptr<Scheduling::SectionScheduler> sectionScheduler_;
 	};
 }

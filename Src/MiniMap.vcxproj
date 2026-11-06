@@ -101,6 +101,7 @@
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureFeedback.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\BuildingScheduler.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\SectionScheduler.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteStatus.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteRequestQueue.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteFeedbackQueue.h" />
@@ -229,6 +230,8 @@
     <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Scheduling\BuildingScheduler.cpp">
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Scheduling\SectionScheduler.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.cpp">
       <ObjectFileName>$(IntDir)BuildingMapCaptureSpriteRenderer.obj</ObjectFileName>
