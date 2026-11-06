@@ -2,6 +2,7 @@
 // stays here; no rendering, legacy collector, service interface or runtime caller is used.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollectorV2.h"
+#include "BuildingCandidatePublication.h"
 #include "BuildingDefinitionAcquisition.h"
 #include "BuildingSplineSource.h"
 #include "Native/NativeApi.h"
@@ -9,6 +10,7 @@
 #include "Services/Runtime.h"
 #include <SDK/Chimera_classes.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -135,6 +137,8 @@ namespace MiniMap::BuildingAcquisition
         bool HasRegion = false;
         Facts::Region RequestedRegion;
         std::shared_ptr<const Facts> Published;
+        std::shared_ptr<const BuildingCandidatePublication> PublishedCandidates;
+        std::shared_ptr<std::atomic<bool>> PublicationEligibility;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
         static std::uint64_t Key(EntityId id) noexcept
@@ -153,6 +157,10 @@ namespace MiniMap::BuildingAcquisition
         void Invalidate() noexcept
         {
             Dirty = true;
+            if (PublicationEligibility)
+                PublicationEligibility->store(false, std::memory_order_release);
+            PublicationEligibility.reset();
+            PublishedCandidates.reset();
         }
 
         /** Obtains existing native shared-pointer storage; never fabricates shared ownership.
@@ -203,6 +211,7 @@ namespace MiniMap::BuildingAcquisition
             MembershipComplete = false;
             RemoteTurn = false;
             Published.reset();
+            PublishedCandidates.reset();
             if (clearRequest)
             {
                 HasRegion = false;
@@ -604,7 +613,16 @@ namespace MiniMap::BuildingAcquisition
             {
                 return Key({left.Index, left.Serial}) < Key({right.Index, right.Serial});
             });
+            std::shared_ptr<std::atomic<bool>> eligibility;
+            std::shared_ptr<const BuildingCandidatePublication> candidates;
+            if (facts->HasRequestedRegion)
+            {
+                eligibility = std::make_shared<std::atomic<bool>>(true);
+                candidates = std::make_shared<BuildingCandidatePublication>(facts, eligibility);
+            }
             Published = std::move(facts);
+            PublishedCandidates = std::move(candidates);
+            PublicationEligibility = std::move(eligibility);
             Dirty = false;
         }
 
@@ -644,6 +662,7 @@ namespace MiniMap::BuildingAcquisition
     /** Explicit lifecycle is mandatory; native retirement is never initiated from this destructor. */
     BuildingCollectorV2::~BuildingCollectorV2()
     {
+        state_->Invalidate();
         assert(!state_->QueryConstructed && !state_->Types && state_->Definitions.empty());
     }
 
@@ -680,6 +699,30 @@ namespace MiniMap::BuildingAcquisition
             state_->Invalidate();
         }
         return true;
+    }
+
+    /** Maps service units directly to native centimetres and reuses the accepted-request transaction. */
+    bool BuildingCollectorV2::SetAcquisitionRegion(
+        const ::Services::Map::Buildings::BuildingCollectionRegion& region) noexcept
+    {
+        const Facts::Region nativeRegion{
+            region.xMapUnits,
+            region.yMapUnits,
+            region.widthMapUnits,
+            region.heightMapUnits};
+        return SetAcquisitionRegion(nativeRegion);
+    }
+
+    /** Returns only the current candidate owner; stale publications never fall back to another observation path. */
+    std::shared_ptr<const ::Services::Map::Buildings::IBuildingCandidatePublication>
+    BuildingCollectorV2::AcquireCandidatePublication() const
+    {
+        if (state_->Dirty || state_->PublishedCandidates == nullptr ||
+            !state_->PublishedCandidates->IsCurrent())
+        {
+            return {};
+        }
+        return state_->PublishedCandidates;
     }
 
     /** Progresses the sole native query and pending work without registering any caller. */
