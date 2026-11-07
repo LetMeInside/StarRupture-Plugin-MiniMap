@@ -4,8 +4,9 @@
 #include <utility>
 
 // Preserve the former input ABI/vocabulary review checks inside the adapter.
-// v74 only appended two ImGui window-size calls; the wheel and key events are as in v73.
-static_assert(PLUGIN_INTERFACE_VERSION == 73 || PLUGIN_INTERFACE_VERSION == 74,
+// v74 only appended two ImGui window-size calls and v75 panel title-bar calls and
+// window flags; the wheel and key events are as in v73.
+static_assert(PLUGIN_INTERFACE_VERSION >= 73 && PLUGIN_INTERFACE_VERSION <= 75,
     "Review the wheel ABI when updating the SDK");
 static_assert(std::size_t(EModKey::Unknown) == 101);
 

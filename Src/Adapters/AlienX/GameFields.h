@@ -61,16 +61,55 @@ namespace MiniMapFields
 		{ 127004, 0x100, static_cast<uint32_t>(sizeof(RawTArray)), 0, nullptr },
 	};
 
+	// Native members of the Mass enemy and transform fragments and of UTexture.
+	// Like FogData they have a row per game build in the loader's map; the
+	// compiled offset is used only on the build the plugin was compiled for.
+	// The enemy state is the fragment's initialisation state, the translation
+	// the first three doubles of an FTransform, and SRGB a bit of the texture's
+	// flags byte.
+	inline auto EnemyState = PluginField<uint8_t>{ { "FMassEnemyStateFragment::State",
+		"FMassEnemyStateFragment", "State", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x1 } };
+	inline const PluginFieldCandidate kEnemyStateRows[] = {
+		{ 127004, 0x1, static_cast<uint32_t>(sizeof(uint8_t)), 0, nullptr },
+	};
+	inline auto TransformTranslation = SR_FIELD(SDK::FVector, FTransform, Translation, PLUGIN_FIELD_NATIVE);
+	inline auto TextureSRGB = PluginBitField{ { "UTexture::SRGB", "UTexture", "SRGB",
+		PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_BITFIELD, sizeof(uint8_t), -1 } };
+	inline const PluginFieldCandidate kTextureSRGBRows[] = {
+		{ 127004, 0x106, static_cast<uint32_t>(sizeof(uint8_t)), 0x01, nullptr },
+	};
+
+	// FMassEntityQuery is a plain C++ struct, so the game does not reflect its
+	// size: the map holds it per build (a row keyed by the class name), the
+	// compiled one is used only on the build the plugin was compiled for. Code
+	// that holds a query takes a PluginMap::StructBuffer of this size, never a
+	// fixed array, so a build with a bigger query cannot be overrun. Needs a
+	// loader that serves unreflected struct sizes; on an older one the layers
+	// that build a query are off.
+	inline auto MassQuerySize = PluginFieldSpec{ "FMassEntityQuery", "FMassEntityQuery", nullptr,
+		PLUGIN_FIELD_FLAG_NONE, 0x350, -1 };
+	inline const PluginFieldCandidate kMassQuerySizeRows[] = {
+		{ 127004, 0, 0x350, 0, nullptr },
+	};
+
+	// The Mass entity manager of a subsystem is the SDK's own native field,
+	// PluginMap::MassEntityManagerField, with its 127004 row; it is resolved below.
+
 	// Asks the loader for every row above. False when any did not resolve; the
 	// loader has then recorded the failure and refuses the plugin or turns off
 	// the feature that lists it.
 	inline bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
-		const bool fog = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows,
-			static_cast<uint32_t>(sizeof(kFogDataRows) / sizeof(kFogDataRows[0])));
+		const auto rowCount = [](const auto& rows) { return static_cast<uint32_t>(sizeof(rows) / sizeof(rows[0])); };
+		bool all = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows, rowCount(kFogDataRows));
+		all = PluginMap::ResolveField(scanner, self, EnemyState, kEnemyStateRows, rowCount(kEnemyStateRows)) && all;
+		all = PluginMap::ResolveField(scanner, self, TextureSRGB, kTextureSRGBRows, rowCount(kTextureSRGBRows)) && all;
+		all = PluginMap::ResolveField(scanner, self, MassQuerySize, kMassQuerySizeRows, rowCount(kMassQuerySizeRows)) && all;
+		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
-			AbandonBaseInfoReplicator, BuildingTags, PlacementEntityType, WalkwaySplineMesh) && fog;
+			AbandonBaseInfoReplicator, BuildingTags, PlacementEntityType, WalkwaySplineMesh,
+			TransformTranslation) && all;
 	}
 
 	using PluginMap::KeysOf;
@@ -98,21 +137,24 @@ namespace MiniMapFields
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddInventoryRequirement,
 				Keys::AddTransformRequirement, Keys::AddFoundableParameters, Keys::AddFoundableTag,
 				Keys::AddTagRequirement, Keys::TransformStaticStruct, Keys::InventoryStaticStruct,
-				Keys::FoundableStaticStruct, AbandonBaseInfoReplicator),
+				Keys::FoundableStaticStruct, AbandonBaseInfoReplicator,
+				PluginMap::MassEntityManagerField, MassQuerySize),
 			{ "Foundables.ShowLayer", "Foundables.ShowLootInBases", "Foundables.MarkerScale" } };
 
 		inline PluginMap::Feature AlienActors{ "alien-actors", "Alien actors on the minimap",
 			KeysOf(Keys::MassSubsystem, Keys::QueryConstruct, Keys::QueryDestruct, Keys::MatchingHandles,
 				Keys::FragmentDataPtr, Keys::AddTransformRequirement, Keys::AddEnemyStateRequirement,
 				Keys::AddTagRequirement, Keys::TransformStaticStruct, Keys::EnemyStateStaticStruct,
-				Keys::EnemyTagStaticStruct, Keys::NeutralTagStaticStruct),
+				Keys::EnemyTagStaticStruct, Keys::NeutralTagStaticStruct,
+				PluginMap::MassEntityManagerField, MassQuerySize, EnemyState, TransformTranslation),
 			{ "Alien Actors.ShowLayer" } };
 
 		inline PluginMap::Feature Buildings{ "buildings", "Buildings on the minimap",
 			KeysOf(Keys::MassSubsystem, Keys::QueryConstruct, Keys::QueryDestruct, Keys::MatchingHandles,
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddTransformRequirement,
 				Keys::AddTagRequirement, Keys::IsEntityBuilt, Keys::IsEntityValid, Keys::GridSubsystem,
-				Keys::GridForEachCell, BuildingTags, PlacementEntityType, WalkwaySplineMesh),
+				Keys::GridForEachCell, BuildingTags, PlacementEntityType, WalkwaySplineMesh,
+				PluginMap::MassEntityManagerField, MassQuerySize),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the

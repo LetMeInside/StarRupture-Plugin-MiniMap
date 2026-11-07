@@ -73,7 +73,7 @@ namespace MiniMapBuildingCollector
     std::unordered_set<uint64_t> pending;
     std::unordered_map<const SDK::UAuActorPlacementData*,std::shared_ptr<Definition>> definitions;
     std::vector<SDK::UObject*> metadata;
-    alignas(16) std::array<std::byte,0x350> query{};
+    PluginMap::StructBuffer query;
     bool queryConstructed=false,ready=false,dirty=false,remoteTurn=false,membershipComplete=false;
     const void* manager=nullptr;
     SDK::UWorld* world=nullptr;
@@ -186,9 +186,9 @@ namespace MiniMapBuildingCollector
     {
         if(const auto* n=MiniMapNative::Get())
         {
-            if(queryConstructed)n->mass.queryDestruct(query.data());
+            if(queryConstructed)n->mass.queryDestruct(query.Data());
         }
-        queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;atlasSession=atlasRevision=0;
+        query={};queryConstructed=false;manager=nullptr;world=nullptr;region={};regionOverride=false;discoveryInput=DiscoveryInput::MiniMapPresentation;atlasSession=atlasRevision=0;
         pending.clear();entities.clear();definitions.clear();nextMembership={};membershipScanEpoch=0;dirty=true;remoteTurn=false;membershipComplete=false;
         {std::scoped_lock lock(publicationMutex);++generation;snapshot.reset();}
     }
@@ -196,15 +196,16 @@ namespace MiniMapBuildingCollector
     {
         auto* current=MiniMapMap::GetWorld();
         auto* subsystem=current?n.mass.getMassEntitySubsystem(current):nullptr;
-        const void* currentManager=nullptr;
-        if(subsystem)std::memcpy(&currentManager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(currentManager));
+        const void* currentManager=PluginMap::MassEntityManagerOf(subsystem);
         if(world && (world!=current || manager!=currentManager))ClearSession();
         if(!currentManager || !types.Building)return false;
         if(queryConstructed)return true;
+        query=PluginMap::StructBuffer(MiniMapFields::MassQuerySize);
+        if(!query)return false;
         world=current;manager=currentManager;
-        n.mass.queryConstruct(query.data(),reinterpret_cast<const uint8_t*>(subsystem)+0x38);queryConstructed=true;
-        n.mass.addTagRequirement(query.data(),types.Building,SDK::EMassFragmentPresence::All);
-        n.mass.addTransformRequirement(query.data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
+        n.mass.queryConstruct(query.Data(),PluginMap::MassEntityManagerField.In(subsystem));queryConstructed=true;
+        n.mass.addTagRequirement(query.Data(),types.Building,SDK::EMassFragmentPresence::All);
+        n.mass.addTransformRequirement(query.Data(),uint8_t(SDK::EMassFragmentAccess::ReadOnly),uint8_t(SDK::EMassFragmentPresence::Optional));
         return true;
     }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -266,9 +267,7 @@ namespace MiniMapBuildingCollector
         if(!queryConstructed || generation!=capturedGeneration || world!=capturedWorld || manager!=capturedManager ||
             MiniMapMap::GetWorld()!=capturedWorld)return false;
         auto* subsystem=capturedWorld?n.mass.getMassEntitySubsystem(capturedWorld):nullptr;
-        const void* currentManager=nullptr;
-        if(subsystem)std::memcpy(&currentManager,reinterpret_cast<const uint8_t*>(subsystem)+0x38,sizeof(currentManager));
-        return currentManager==capturedManager;
+        return PluginMap::MassEntityManagerOf(subsystem)==capturedManager;
     }
     bool Reconcile(const Native& n
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -291,7 +290,7 @@ namespace MiniMapBuildingCollector
         const auto nativeBegin=Clock::now();
 #endif
         MiniMapNative::MassEntityHandleArray* returned=nullptr;
-        try {returned=n.mass.getMatchingEntityHandles(query.data(),&handles);}
+        try {returned=n.mass.getMatchingEntityHandles(query.Data(),&handles);}
         catch(...)
         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

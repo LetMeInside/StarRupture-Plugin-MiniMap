@@ -55,11 +55,6 @@ namespace
     constexpr uint8_t kDroneType = static_cast<uint8_t>(SDK::ECrFoundableType::Drone);
     constexpr uint8_t kUndefinedType = static_cast<uint8_t>(SDK::ECrFoundableType::Undefined);
 
-    constexpr std::ptrdiff_t kMassSubsystemManagerOffset = 0x38;
-
-    constexpr std::size_t kMassQuerySize = 0x350;
-    constexpr std::size_t kMassQueryAlignment = 0x10;
-
     struct FoundableRecord
     {
         uint8_t Type = 0;
@@ -94,8 +89,7 @@ namespace
     SDK::UMassEntitySubsystem* g_massSubsystem = nullptr;
     const void* g_massManager = nullptr;
 
-    alignas(kMassQueryAlignment)
-        std::array<std::byte, kMassQuerySize> g_queryStorage = {};
+    PluginMap::StructBuffer g_queryStorage;
 
     bool g_queryConstructed = false;
 
@@ -354,10 +348,10 @@ namespace
             if (native != nullptr &&
                 native->mass.queryDestruct != nullptr)
             {
-                native->mass.queryDestruct(g_queryStorage.data());
+                native->mass.queryDestruct(g_queryStorage.Data());
             }
 
-            g_queryStorage.fill(std::byte{ 0 });
+            g_queryStorage = {};
         }
 
         g_queryConstructed = false;
@@ -424,14 +418,7 @@ namespace
             return false;
         }
 
-        const uint8_t* subsystemBytes =
-            reinterpret_cast<const uint8_t*>(subsystem);
-
-        const void* manager = nullptr;
-        std::memcpy(
-            &manager,
-            subsystemBytes + kMassSubsystemManagerOffset,
-            sizeof(manager));
+        const void* manager = PluginMap::MassEntityManagerOf(subsystem);
 
         if (manager == nullptr)
         {
@@ -455,14 +442,16 @@ namespace
 
         DestroyQuery();
 
-        const void* sharedPtrStorage =
-            subsystemBytes + kMassSubsystemManagerOffset;
+        g_queryStorage = PluginMap::StructBuffer(MiniMapFields::MassQuerySize);
 
-        g_queryStorage.fill(std::byte{ 0 });
+        if (!g_queryStorage)
+        {
+            return false;
+        }
 
         native->mass.queryConstruct(
-            g_queryStorage.data(),
-            sharedPtrStorage);
+            g_queryStorage.Data(),
+            PluginMap::MassEntityManagerField.In(subsystem));
 
         g_queryConstructed = true;
 
@@ -471,25 +460,25 @@ namespace
         constexpr uint8_t kPresenceAny = 1;
 
         native->mass.addInventoryRequirement(
-            g_queryStorage.data(),
+            g_queryStorage.Data(),
             kReadOnlyAccess,
             kPresenceAll);
 
         native->mass.addTransformRequirement(
-            g_queryStorage.data(),
+            g_queryStorage.Data(),
             kReadOnlyAccess,
             kPresenceAll);
 
         native->mass.addFoundableParametersRequirement(
-            g_queryStorage.data(),
+            g_queryStorage.Data(),
             kPresenceAll);
 
         native->mass.addFoundableTagRequirement(
-            g_queryStorage.data(),
+            g_queryStorage.Data(),
             kPresenceAny);
 
         native->mass.addTagRequirement(
-            g_queryStorage.data(),
+            g_queryStorage.Data(),
             droppedItemsTag,
             SDK::EMassFragmentPresence::None);
 
@@ -1086,7 +1075,7 @@ namespace
         }
 
         MiniMapNative::MassEntityHandleArray handles = {};
-        native->mass.getMatchingEntityHandles(g_queryStorage.data(), &handles);
+        native->mass.getMatchingEntityHandles(g_queryStorage.Data(), &handles);
         struct HandleArrayOwner
         {
             MiniMapNative::MassEntityHandleArray& Handles;

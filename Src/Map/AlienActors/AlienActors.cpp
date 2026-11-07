@@ -8,6 +8,7 @@
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Native/NativeApi.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
 #include "Services/RuntimeEvents.h"
@@ -42,10 +43,6 @@ namespace
     constexpr uint32_t kHostileColor = 0xF04040FFu; // ImGui ABGR
     constexpr std::size_t kMaximumRecords = 512;
     constexpr int32_t kMaximumReasonableHandleCount = 1000000;
-    constexpr std::ptrdiff_t kManagerOffset = 0x38;
-    constexpr std::ptrdiff_t kStateOffset = 0x01;
-    constexpr std::ptrdiff_t kTranslationOffset = 0x20;
-    constexpr std::size_t kQuerySize = 0x350;
 
     struct AlienRecord
     {
@@ -70,7 +67,7 @@ namespace
     SDK::UWorld* g_queryWorld = nullptr;
     SDK::UMassEntitySubsystem* g_subsystem = nullptr;
     const void* g_manager = nullptr;
-    alignas(0x10) std::array<std::byte, kQuerySize> g_queryStorage = {};
+    PluginMap::StructBuffer g_queryStorage;
 
     std::mutex g_snapshotMutex;
     uint64_t g_worldGeneration = 0;
@@ -151,9 +148,9 @@ namespace
             const auto* native = MiniMapNative::Get();
             if (native != nullptr && native->mass.queryDestruct != nullptr)
             {
-                native->mass.queryDestruct(g_queryStorage.data());
+                native->mass.queryDestruct(g_queryStorage.Data());
             }
-            g_queryStorage.fill(std::byte{ 0 });
+            g_queryStorage = {};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_DEBUG("MiniMap: Alien Actors query destroyed");
 #endif
@@ -173,13 +170,7 @@ namespace
             return false;
         }
         auto* subsystem = native.mass.getMassEntitySubsystem(world);
-        const void* manager = nullptr;
-        if (subsystem != nullptr)
-        {
-            std::memcpy(&manager,
-                reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset,
-                sizeof(manager));
-        }
+        const void* manager = PluginMap::MassEntityManagerOf(subsystem);
         if (g_queryConstructed && world == g_queryWorld &&
             subsystem == g_subsystem && manager == g_manager)
         {
@@ -201,18 +192,23 @@ namespace
         {
             return false;
         }
+        g_queryStorage = PluginMap::StructBuffer(MiniMapFields::MassQuerySize);
+        if (!g_queryStorage)
+        {
+            return false;
+        }
         // Same shared-manager constructor and requirements base as Foundables.
-        native.mass.queryConstruct(g_queryStorage.data(),
-            reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset);
+        native.mass.queryConstruct(g_queryStorage.Data(),
+            PluginMap::MassEntityManagerField.In(subsystem));
         g_queryConstructed = true;
-        native.mass.addTransformRequirement(g_queryStorage.data(),
+        native.mass.addTransformRequirement(g_queryStorage.Data(),
             static_cast<uint8_t>(SDK::EMassFragmentAccess::ReadOnly),
             static_cast<uint8_t>(SDK::EMassFragmentPresence::All));
-        native.mass.addEnemyStateRequirement(g_queryStorage.data(),
+        native.mass.addEnemyStateRequirement(g_queryStorage.Data(),
             SDK::EMassFragmentAccess::ReadOnly, SDK::EMassFragmentPresence::All);
-        native.mass.addTagRequirement(g_queryStorage.data(), enemyTag,
+        native.mass.addTagRequirement(g_queryStorage.Data(), enemyTag,
             SDK::EMassFragmentPresence::All);
-        native.mass.addTagRequirement(g_queryStorage.data(), neutralTag,
+        native.mass.addTagRequirement(g_queryStorage.Data(), neutralTag,
             SDK::EMassFragmentPresence::None);
         g_queryWorld = world;
         g_subsystem = subsystem;
@@ -266,7 +262,7 @@ namespace
         }
 
         MiniMapNative::MassEntityHandleArray handles = {};
-        native->mass.getMatchingEntityHandles(g_queryStorage.data(), &handles);
+        native->mass.getMatchingEntityHandles(g_queryStorage.Data(), &handles);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         measurement.Matching = handles.Num;
 #endif
@@ -299,7 +295,8 @@ namespace
             const auto id = handles.Data[i];
             const auto* state = static_cast<const uint8_t*>(
                 native->mass.getFragmentDataPtr(g_manager, id, stateType));
-            if (state == nullptr || state[kStateOffset] !=
+            const uint8_t* initState = MiniMapFields::EnemyState.In(state);
+            if (initState == nullptr || *initState !=
                 static_cast<uint8_t>(SDK::EMassEnemyInitializationState::Active))
             {
                 continue;
@@ -316,8 +313,13 @@ namespace
             AlienRecord record = {};
             record.WorldGeneration = generation;
             record.Id = id;
-            std::memcpy(&record.WorldX, transform + kTranslationOffset, sizeof(double));
-            std::memcpy(&record.WorldY, transform + kTranslationOffset + sizeof(double), sizeof(double));
+            const SDK::FVector* translation = MiniMapFields::TransformTranslation.In(transform);
+            if (translation == nullptr)
+            {
+                continue;
+            }
+            record.WorldX = translation->X;
+            record.WorldY = translation->Y;
             const double dx = record.WorldX - pose.WorldX;
             const double dy = record.WorldY - pose.WorldY;
             if (!std::isfinite(record.WorldX) || !std::isfinite(record.WorldY) ||

@@ -11,6 +11,7 @@
 #include "Map/Terrain/TerrainSource.h"
 #include "Native/MassLifecycle.h"
 #include "Native/NativeApi.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "Native/TexturePublication.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -43,8 +44,6 @@ namespace
     namespace L = MiniMapMassLifecycle;
     using Event = L::Event;
     using Handle = MiniMapNative::MassEntityHandle;
-    constexpr size_t kQuerySize = 0x350;
-    constexpr size_t kQueryAlignment = 0x10;
     constexpr size_t kEventBatch = 256;
 
     struct MassKeyHash
@@ -546,10 +545,10 @@ namespace
 
     struct Query
     {
-        alignas(kQueryAlignment) std::array<std::byte, kQuerySize> Storage{};
+        PluginMap::StructBuffer Storage;
         bool Constructed = false;
         const MiniMapNative::NativeApi* Native = nullptr;
-        ~Query() { if (Constructed && Native && Native->mass.queryDestruct) Native->mass.queryDestruct(Storage.data()); }
+        ~Query() { if (Constructed && Native && Native->mass.queryDestruct) Native->mass.queryDestruct(Storage.Data()); }
     };
 
     bool BuildCensus(uint64_t generation, L::SeedToken token)
@@ -567,18 +566,19 @@ namespace
         origin.Valid = true;
 
         auto* subsystem = native->mass.getMassEntitySubsystem(world);
-        const void* manager = nullptr;
         // Match the established MiniMap Mass query contract: the subsystem's
         // manager shared-pointer storage is supplied to the typed query API.
-        if (subsystem) std::memcpy(&manager, reinterpret_cast<const uint8_t*>(subsystem) + 0x38, sizeof(manager));
+        const void* manager = PluginMap::MassEntityManagerOf(subsystem);
         if (!manager) return false;
 
         Query query; query.Native = native;
+        query.Storage = PluginMap::StructBuffer(MiniMapFields::MassQuerySize);
+        if (!query.Storage) return false;
         try
         {
-            native->mass.queryConstruct(query.Storage.data(), reinterpret_cast<const uint8_t*>(subsystem) + 0x38);
+            native->mass.queryConstruct(query.Storage.Data(), PluginMap::MassEntityManagerField.In(subsystem));
             query.Constructed = true;
-            native->mass.addTagRequirement(query.Storage.data(), BuildingTag, SDK::EMassFragmentPresence::All);
+            native->mass.addTagRequirement(query.Storage.Data(), BuildingTag, SDK::EMassFragmentPresence::All);
         }
         catch (...) { return false; }
 
@@ -591,7 +591,7 @@ namespace
         } handlesOwner{*native, handles};
 
         MiniMapNative::MassEntityHandleArray* returned = nullptr;
-        try { returned = native->mass.getMatchingEntityHandles(query.Storage.data(), &handles); }
+        try { returned = native->mass.getMatchingEntityHandles(query.Storage.Data(), &handles); }
         catch (...) { return false; }
         if (returned != &handles || handles.Num < 0 || handles.Max < handles.Num ||
             (handles.Num && !handles.Data)) return false;
@@ -640,9 +640,7 @@ namespace
                     // recheck only liveness so a stale Add cannot resurrect a
                     // removed handle. Visual fragments may still be absent.
                     auto* currentSubsystem = native->mass.getMassEntitySubsystem(world);
-                    const void* currentManager = nullptr;
-                    if (currentSubsystem) std::memcpy(&currentManager,
-                        reinterpret_cast<const uint8_t*>(currentSubsystem) + 0x38, sizeof(currentManager));
+                    const void* currentManager = PluginMap::MassEntityManagerOf(currentSubsystem);
                     if (currentManager != manager || !native->mass.isEntityValid(manager, event.Entity))
                         continue;
                     if (!EnsureMembershipRecord({event.Entity.Index, event.Entity.SerialNumber}, generation))
@@ -694,8 +692,7 @@ namespace
         {
             auto* world = MiniMapMap::GetWorld();
             auto* subsystem = native.mass.getMassEntitySubsystem ? native.mass.getMassEntitySubsystem(world) : nullptr;
-            const void* manager = nullptr;
-            if (subsystem) std::memcpy(&manager, reinterpret_cast<const uint8_t*>(subsystem) + 0x38, sizeof(manager));
+            const void* manager = PluginMap::MassEntityManagerOf(subsystem);
             if (!manager || !native.mass.isEntityValid || !native.mass.isEntityValid(manager, event.Entity))
             {
                 // A candidate Add that is no longer live invalidates the
@@ -903,8 +900,7 @@ namespace
         if (!world || MiniMapMap::GetWorldGeneration() != generation ||
             !native.mass.getMassEntitySubsystem) { retry(); return; }
         auto* subsystem = native.mass.getMassEntitySubsystem(world);
-        const void* manager = nullptr;
-        if (subsystem) std::memcpy(&manager, reinterpret_cast<const uint8_t*>(subsystem) + 0x38, sizeof(manager));
+        const void* manager = PluginMap::MassEntityManagerOf(subsystem);
         if (!manager) { retry(); return; }
 
         B::SourcePayload candidate;
@@ -914,9 +910,7 @@ namespace
             generation, candidate, complete)) { retry(); return; }
 
         auto* currentSubsystem = native.mass.getMassEntitySubsystem(world);
-        const void* currentManager = nullptr;
-        if (currentSubsystem) std::memcpy(&currentManager,
-            reinterpret_cast<const uint8_t*>(currentSubsystem) + 0x38, sizeof(currentManager));
+        const void* currentManager = PluginMap::MassEntityManagerOf(currentSubsystem);
         if (MiniMapMap::GetWorldGeneration() != generation || MiniMapMap::GetWorld() != world ||
             currentManager != manager || !native.mass.isEntityValid(manager, entity) ||
             !native.mass.isEntityBuilt(manager, entity))

@@ -2,6 +2,7 @@
 
 #include "TextureAccess.h"
 #include "NativeApi.h"
+#include "Adapters/AlienX/GameFields.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -65,13 +66,6 @@ namespace
     static_assert(
         sizeof(
             NativeTexture2DMipMapLayout) == 0x50);
-
-
-    constexpr size_t kUTextureSRGBFlagsOffset =
-        0x106;
-
-    constexpr uint8_t kUTextureSRGBFlag =
-        0x01;
 }
 
 
@@ -111,12 +105,6 @@ namespace MiniMapNative::TextureAccess
             const NativeTexturePlatformDataLayout*>(
                 nativePlatformData);
 
-        const uint8_t textureFlags =
-            *reinterpret_cast<const uint8_t*>(
-                reinterpret_cast<const uint8_t*>(
-                    texture) +
-                kUTextureSRGBFlagsOffset);
-
         outPlatformData.SizeX =
             platformData->SizeX;
 
@@ -148,7 +136,7 @@ namespace MiniMapNative::TextureAccess
             platformData->CPUCopy;
 
         outPlatformData.SRGB =
-            (textureFlags & kUTextureSRGBFlag) != 0;
+            MiniMapFields::TextureSRGB.Get(texture);
 
         outPlatformData.NativeData =
             nativePlatformData;
