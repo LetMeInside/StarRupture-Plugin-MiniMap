@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Native/EngineFields.h"
 #include "Native/NativeKeys.h"
 
 #include "SDK/Engine_classes.hpp"
@@ -106,6 +107,7 @@ namespace MiniMapFields
 		all = PluginMap::ResolveField(scanner, self, TextureSRGB, kTextureSRGBRows, rowCount(kTextureSRGBRows)) && all;
 		all = PluginMap::ResolveField(scanner, self, MassQuerySize, kMassQuerySizeRows, rowCount(kMassQuerySizeRows)) && all;
 		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
+		all = MiniMapEngineFields::Resolve(self, scanner) && all;
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
 			AbandonBaseInfoReplicator, BuildingTags, PlacementEntityType, WalkwaySplineMesh,
@@ -186,7 +188,12 @@ namespace MiniMapFields
 				Keys::CleanupWorld, Keys::WorldContext, Keys::GetSubsystemInternal,
 				Keys::GarbageCollectingLocking, Keys::PurgePending, Keys::ReachabilityPending,
 				Keys::TickableTickType, Keys::VisibilityPending, Keys::DestroyActor,
-				Keys::ActiveGarbageCollection, Keys::EngineStorage),
+				Keys::ActiveGarbageCollection, Keys::EngineStorage,
+				MiniMapEngineFields::WorldType, MiniMapEngineFields::WorldInitialized,
+				MiniMapEngineFields::ActorsInitialized, MiniMapEngineFields::TearingDown,
+				MiniMapEngineFields::BegunPlay, MiniMapEngineFields::EverInitialized,
+				MiniMapEngineFields::WorldList, MiniMapEngineFields::ContextWorld,
+				MiniMapEngineFields::NeedsTwoCopies),
 			{ "Buildings.CaptureSprites" } };
 
 		// Declares every layer; call before any key is resolved.

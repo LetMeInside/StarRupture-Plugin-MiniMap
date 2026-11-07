@@ -7,6 +7,7 @@
 #include "Config/Config.h"
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
+#include "Native/EngineFields.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
 #include "Native/UObjectAbi.h"
@@ -44,6 +45,10 @@ namespace
 {
     namespace N = MiniMapNative;
     namespace Slots = MiniMapDefinitionAcquisition;
+    namespace EF = MiniMapEngineFields;
+
+    // EWorldType::GamePreview, the type of the world a capture owns.
+    constexpr uint8_t kGamePreviewWorld = 5;
 
     // These offsets and native arguments are the existing CL-127004 world contract.
     static_assert(sizeof(SDK::UWorld) == 0xab0);
@@ -107,6 +112,24 @@ namespace
     {
         const bool succeeded = Read(address, value);
         return !diagnostic ? succeeded : diagnostic->Observe(succeeded, "memory read", "read_failed", address);
+    }
+    // An engine member the loader's map placed (EngineFields.h), read from `object`. False, with the
+    // diagnostic naming it, when the map has no row for the running build.
+    template<class T> bool ReadMember(uintptr_t object, const PluginFieldSpec& field, T& value, ReadinessDiagnostic* diagnostic)
+    {
+        if (field.offset < 0)
+        {
+            if (diagnostic) diagnostic->Observe(false, field.key, "facility_unavailable", object);
+            return false;
+        }
+        return Read(object + static_cast<uintptr_t>(field.offset), value, diagnostic);
+    }
+    // The bits of a world flag that are set: the flag's byte masked, so non-zero means the flag is set.
+    bool ReadFlag(uintptr_t object, const PluginBitField& flag, uint8_t& bits, ReadinessDiagnostic* diagnostic)
+    {
+        if (!ReadMember(object, flag, bits, diagnostic)) return false;
+        bits &= flag.boolMask;
+        return true;
     }
     // UWorld::OwningGameInstance, found by name in the running game's reflection. The world was
     // identified by the caller; game thread only. False when the loader cannot place the member.
@@ -265,7 +288,7 @@ namespace
             case Operation::Create:
                 {
                     N::WorldInitializationValues values;
-                    *result = api->world.createWorld(5, false, SDK::FName{}, 0, false, 5, &values, true);
+                    *result = api->world.createWorld(kGamePreviewWorld, false, SDK::FName{}, 0, false, 5, &values, true);
                 } break;
             case Operation::Retain: api->asset.retainObject(reinterpret_cast<SDK::UObject*>(object)); break;
             case Operation::Initialize: api->world.initWorld(object, N::WorldInitializationValues{}); break;
@@ -538,29 +561,30 @@ namespace
         bool ObserveGameplay(Baseline& baseline, ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto game = reinterpret_cast<uintptr_t>(MiniMapMap::GetWorld());
-            uintptr_t engine{}, instance{}, contexts{}, current{}; int32_t capacity{}; uint8_t flags{};
+            uintptr_t engine{}, instance{}, current{}; EF::WorldContextArray contexts; uint8_t flags{};
             const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
             { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
             const auto observe = [&](bool succeeded, const char* detail)
             { return !diagnostic ? succeeded : diagnostic->Observe(succeeded, detail); };
             if (!Read(reinterpret_cast<uintptr_t>(N::Get()->player.engineStorage), engine, diagnostic) ||
-                !Is(engine, Engine, diagnostic) || !Is(game, World, diagnostic) || !Read(game + 0x18d, flags, diagnostic) || !check(!(flags & 0x20), "gameplay flags 0x18d mask", 0, flags & 0x20) ||
-                !Read(game + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40), "gameplay initialized flag", 0x40, flags & 0x40) ||
+                !Is(engine, Engine, diagnostic) || !Is(game, World, diagnostic) || !ReadFlag(game, EF::TearingDown, flags, diagnostic) || !check(!flags, "gameplay tearing-down flag", 0, flags) ||
+                !ReadFlag(game, EF::WorldInitialized, flags, diagnostic) || !check(bool(flags), "gameplay initialized flag", EF::WorldInitialized.boolMask, flags) ||
                 !Identify(game, baseline.Gameplay, 0x28, diagnostic) || !Identify(engine, baseline.EngineObject, 0x28, diagnostic) ||
                 !ReadWorldGameInstance(game, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
                 !observe(Invoke(Operation::Context, engine, game, &baseline.Context), "gameplay context lookup interrupted/unavailable") || !check(bool(baseline.Context), "gameplay context presence") ||
-                !Read(baseline.Context + 0x2c0, current, diagnostic) || !check(current == game, "context gameplay world", game, current) ||
-                !Read(engine + 0x11c8, contexts, diagnostic) || !Read(engine + 0x11d0, baseline.ContextCount, diagnostic) ||
-                !Read(engine + 0x11d4, capacity, diagnostic) || !check(baseline.ContextCount >= 1, "context count >= 1", 1, uint64_t(baseline.ContextCount)) ||
-                !check(capacity >= baseline.ContextCount, "context capacity >= count", uint64_t(baseline.ContextCount), uint64_t(capacity)) ||
-                !check(capacity <= 4096, "context capacity <= 4096", 4096, uint64_t(capacity)) ||
-                !observe(N::IsMemoryRangeReadable(contexts, size_t(baseline.ContextCount) * 8, 8), "context array unreadable")) return false;
+                !ReadMember(baseline.Context, EF::ContextWorld, current, diagnostic) || !check(current == game, "context gameplay world", game, current) ||
+                !ReadMember(engine, EF::WorldList, contexts, diagnostic) || !check(contexts.Num >= 1, "context count >= 1", 1, uint64_t(contexts.Num)) ||
+                !check(contexts.Max >= contexts.Num, "context capacity >= count", uint64_t(contexts.Num), uint64_t(contexts.Max)) ||
+                !check(contexts.Max <= 4096, "context capacity <= 4096", 4096, uint64_t(contexts.Max)) ||
+                !observe(N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(contexts.Data), size_t(contexts.Num) * 8, 8), "context array unreadable")) return false;
+            baseline.ContextCount = contexts.Num;
             baseline.ContextHash = 1469598103934665603ULL;
             for (int32_t i = 0; i < baseline.ContextCount; ++i)
             {
                 uintptr_t context{};
-                if (!Read(contexts + size_t(i) * 8, context, diagnostic) || !observe(N::IsMemoryRangeReadable(context, 0x2c8, 8), "context unreadable") ||
-                    !Read(context + 0x2c0, current, diagnostic)) return false;
+                if (!Read(reinterpret_cast<uintptr_t>(contexts.Data) + size_t(i) * 8, context, diagnostic) ||
+                    !observe(N::IsMemoryRangeReadable(context, size_t(EF::ContextWorld.offset) + sizeof(current), 8), "context unreadable") ||
+                    !ReadMember(context, EF::ContextWorld, current, diagnostic)) return false;
                 baseline.ContextHash = ((baseline.ContextHash ^ context) * 1099511628211ULL ^ current) * 1099511628211ULL;
             }
             return true;
@@ -617,7 +641,7 @@ namespace
         {
             const auto world = Private.Object.Bits;
             uintptr_t package{}, gameplayPackage{}, level{}, owner{}, settings{}, type{}, scene{}, gameplayScene{}, instance{}, net{}, context{};
-            uint8_t worldType{}, a{}, b{}, c{}, ever{};
+            uint8_t worldType{}, initializedBit{}, actorsBit{}, tearingBit{}, begunBit{}, everBit{};
             const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
             { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
             const auto observe = [&](bool succeeded, const char* detail)
@@ -626,12 +650,15 @@ namespace
                 !NoForeignRoot(Private, diagnostic) || !CheckOwned(Package, diagnostic) || !NoForeignRoot(Package, diagnostic) ||
                 !Read(world + 0x20, package, diagnostic) || !check(package == Package.Object.Bits, "private package", Package.Object.Bits, package) ||
                 !Read(Before.Gameplay.Bits + 0x20, gameplayPackage, diagnostic) || !check(package != gameplayPackage, "private/gameplay packages must differ", gameplayPackage, package) ||
-                !Read(world + 0x18a, worldType, diagnostic) || !check(worldType == 5, "private world type", 5, worldType) || !Read(world + 0x18b, a, diagnostic) ||
-                !Read(world + 0x18c, b, diagnostic) || !Read(world + 0x18d, c, diagnostic) || !Read(world + 0x18f, ever, diagnostic) ||
-                !check(bool(a & 0x40) == initialized, "private initialized flag", initialized, bool(a & 0x40)) ||
-                !check(!(b & 0x80), "private flags 0x18c mask", 0, b & 0x80) ||
-                !check(!(c & 0x21), "private flags 0x18d mask", 0, c & 0x21) ||
-                !check(bool(ever & 2) == initialized, "private ever-initialized flag", initialized, bool(ever & 2)) ||
+                !ReadMember(world, EF::WorldType, worldType, diagnostic) || !check(worldType == kGamePreviewWorld, "private world type", kGamePreviewWorld, worldType) ||
+                !ReadFlag(world, EF::WorldInitialized, initializedBit, diagnostic) || !ReadFlag(world, EF::ActorsInitialized, actorsBit, diagnostic) ||
+                !ReadFlag(world, EF::TearingDown, tearingBit, diagnostic) || !ReadFlag(world, EF::BegunPlay, begunBit, diagnostic) ||
+                !ReadFlag(world, EF::EverInitialized, everBit, diagnostic) ||
+                !check(bool(initializedBit) == initialized, "private initialized flag", initialized, bool(initializedBit)) ||
+                !check(!actorsBit, "private actors-initialized flag", 0, actorsBit) ||
+                !check(!tearingBit, "private tearing-down flag", 0, tearingBit) ||
+                !check(!begunBit, "private begun-play flag", 0, begunBit) ||
+                !check(bool(everBit) == initialized, "private ever-initialized flag", initialized, bool(everBit)) ||
                 !Read(world + 0x258, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
                 !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
                 !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
@@ -679,8 +706,8 @@ namespace
                 !check(bool(IsolatedGameplayPackage) && bool(IsolatedGameplayScene) && bool(Scene), "verified active isolation evidence present") ||
                 !Read(world + 0x20, package, diagnostic) || !check(package == Package.Object.Bits, "private package", Package.Object.Bits, package) ||
                 !check(package != IsolatedGameplayPackage, "private/baseline gameplay packages must differ", IsolatedGameplayPackage, package) ||
-                !Read(world + 0x18a, worldType, diagnostic) || !check(worldType == 5, "private world type", 5, worldType) ||
-                !Read(world + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40) == initialized, "private initialized flag", initialized, bool(flags & 0x40)) ||
+                !ReadMember(world, EF::WorldType, worldType, diagnostic) || !check(worldType == kGamePreviewWorld, "private world type", kGamePreviewWorld, worldType) ||
+                !ReadFlag(world, EF::WorldInitialized, flags, diagnostic) || !check(bool(flags) == initialized, "private initialized flag", initialized, bool(flags)) ||
                 !Read(world + 0x258, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
                 !check(scene != IsolatedGameplayScene, "private/baseline gameplay scenes must differ", IsolatedGameplayScene, scene) ||
                 !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
@@ -694,9 +721,10 @@ namespace
                 !Collection(world, initialized, diagnostic)) return false;
             if (initialized)
             {
-                if (!Read(world + 0x18c, flags, diagnostic) || !check(!(flags & 0x80), "private flags 0x18c mask", 0, flags & 0x80) ||
-                    !Read(world + 0x18d, flags, diagnostic) || !check(!(flags & 0x21), "private flags 0x18d mask", 0, flags & 0x21) ||
-                    !Read(world + 0x18f, flags, diagnostic) || !check(bool(flags & 2), "private ever-initialized flag", 2, flags & 2) ||
+                if (!ReadFlag(world, EF::ActorsInitialized, flags, diagnostic) || !check(!flags, "private actors-initialized flag", 0, flags) ||
+                    !ReadFlag(world, EF::TearingDown, flags, diagnostic) || !check(!flags, "private tearing-down flag", 0, flags) ||
+                    !ReadFlag(world, EF::BegunPlay, flags, diagnostic) || !check(!flags, "private begun-play flag", 0, flags) ||
+                    !ReadFlag(world, EF::EverInitialized, flags, diagnostic) || !check(bool(flags), "private ever-initialized flag", EF::EverInitialized.boolMask, flags) ||
                     !observe(N::IsMemoryRangeReadable(scene, 8, 8), "private scene unreadable")) return false;
             }
             constexpr std::array<ClassId, 3> required{Electricity, Grid, Names};
@@ -1311,10 +1339,7 @@ namespace
             target->TargetGamma = finalColor ? 2.2f : 1.f;
             target->bAutoGenerateMips = false;
             target->bSupportsUAV = false;
-            uint32_t targetFlags{};
-            if (!Read(reinterpret_cast<uintptr_t>(target) + 0x144, targetFlags)) return false;
-            targetFlags &= ~uint32_t(1);
-            std::memcpy(reinterpret_cast<uint8_t*>(target) + 0x144, &targetFlags, sizeof(targetFlags));
+            if (!EF::NeedsTwoCopies.Set(target, false)) return false;
             target->ClearColor = SDK::FLinearColor(0, 0, 0, 1);
             return true;
         }
