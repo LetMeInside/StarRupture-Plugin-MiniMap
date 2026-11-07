@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace Services::Map::Buildings
 {
@@ -154,6 +155,7 @@ namespace Services::Map::Buildings
 	/** Releases the registered handle once and clears the service relationship. */
 	void BuildingMapViewport::Close()
 	{
+		sectionImageChangedHandler_ = {};
 		if (service_ == nullptr)
 		{
 			return;
@@ -167,8 +169,29 @@ namespace Services::Map::Buildings
 	/** Clears the non-owning pointer before its service is destroyed. */
 	void BuildingMapViewport::InvalidateService()
 	{
+		sectionImageChangedHandler_ = {};
 		service_ = nullptr;
 		buildingCollector_ = nullptr;
+	}
+
+	/** Replaces the sole handler or removes it when the supplied function is empty. */
+	void BuildingMapViewport::SetSectionImageChangedHandler(SectionImageChangedHandler handler)
+	{
+		if (service_ == nullptr)
+		{
+			sectionImageChangedHandler_ = {};
+			return;
+		}
+		sectionImageChangedHandler_ = std::move(handler);
+	}
+
+	/** Delivers only the signed global coordinate to the installed viewport handler. */
+	void BuildingMapViewport::NotifySectionImageChanged(std::int64_t gridX, std::int64_t gridY)
+	{
+		if (sectionImageChangedHandler_)
+		{
+			sectionImageChangedHandler_(gridX, gridY);
+		}
 	}
 
 	/** Validates map-unit bounds and maps the half-open rectangle to grid columns and rows. */

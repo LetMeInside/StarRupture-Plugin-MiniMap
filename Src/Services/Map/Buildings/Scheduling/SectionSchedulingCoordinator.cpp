@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns shared viewport demand while delegating all per-Section work to SectionScheduler.
+// Owns shared viewport demand, delegates per-Section work to SectionScheduler, and reports committed images to the service.
 #include "SectionSchedulingCoordinator.h"
 
 #include "../BuildingMapSection.h"
@@ -171,6 +171,9 @@ namespace Services::Map::Buildings::Scheduling
 		if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed)
 		{
 			RecordSectionCompleted(coordinate);
+			buildingMapService.NotifySectionImageChangedToViewports(
+				coordinate.GridX,
+				coordinate.GridY);
 		}
 	}
 

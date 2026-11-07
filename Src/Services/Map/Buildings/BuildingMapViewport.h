@@ -1,4 +1,4 @@
-// Represents one caller-owned viewport over service-owned Building Map cells.
+// Represents one caller-owned viewport over service-owned Building Map cells and owns its optional image-change handler.
 // Its unit-agnostic 2D rectangle uses an upper-left origin, positive X rightward,
 // positive Y downward, and half-open bounds [x, right) by [y, bottom).
 #pragma once
@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace Services::Map::Buildings
 {
@@ -18,7 +19,7 @@ namespace Services::Map::Buildings
 		class IBuildingMapService;
 	}
 
-	/** Tracks a 2D map rectangle and exposes nullable references to its sections.
+	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, and owns one optional synchronous image-change handler.
 	 * Local (0, 0) is the top-left cell; columns increase rightward and rows
 	 * increase downward with the corresponding grid coordinates. Its collector
 	 * pointer is non-owning and remains valid only while the caller keeps that
@@ -27,6 +28,9 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport
 	{
 	public:
+		/** Receives the signed global grid coordinate of an adopted Section image. */
+		using SectionImageChangedHandler = std::function<void(std::int64_t, std::int64_t)>;
+
 		/** Prevents copies from duplicating one service-owned viewport registration. */
 		BuildingMapViewport(const BuildingMapViewport&) = delete;
 		/** Prevents copies from duplicating one service-owned viewport registration. */
@@ -86,6 +90,17 @@ namespace Services::Map::Buildings
 		/** Ends this viewport session; repeated calls have no effect. */
 		void Close();
 
+		/**
+		 * Installs this viewport's sole synchronous same-module image-change handler;
+		 * passing an empty handler removes it. The handler remains owned by this
+		 * viewport only while it is associated with its service. It should do immediate
+		 * consumer-local work, such as marking a Section dirty or recording its
+		 * coordinate for later processing. During dispatch it must not destroy the
+		 * service, change viewport registrations, or recursively advance scheduling.
+		 * @param handler Replacement callback receiving signed global Section X and Y.
+		 */
+		void SetSectionImageChangedHandler(SectionImageChangedHandler handler);
+
 	private:
 		friend class BuildingMapService;
 
@@ -127,6 +142,9 @@ namespace Services::Map::Buildings
 		/** Invalidates the non-owning service relationship during service destruction. */
 		void InvalidateService();
 
+		/** Delivers one coordinate-only event when a complete Section image is adopted. */
+		void NotifySectionImageChanged(std::int64_t gridX, std::int64_t gridY);
+
 		Coordination::IBuildingMapService* service_;
 		IBuildingCollector* buildingCollector_;
 		std::uint64_t viewportHandle_;
@@ -135,5 +153,6 @@ namespace Services::Map::Buildings
 		double widthMapUnits_;
 		double heightMapUnits_;
 		GridRange gridRange_;
+		SectionImageChangedHandler sectionImageChangedHandler_;
 	};
 }

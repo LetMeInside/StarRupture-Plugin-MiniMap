@@ -1,4 +1,4 @@
-// Owns the shared Section grid, viewport registrations and source selection, and forwards demand to its coordinator.
+// Owns the shared Section grid and viewport registrations, routes image changes, and forwards demand to its coordinator.
 #pragma once
 
 #include "IBuildingCollector.h"
@@ -22,7 +22,7 @@ namespace Services::Map::Buildings
 		class SectionSchedulingCoordinator;
 	}
 
-	/** Owns map configuration, shared Sections, viewport registrations, source selection and the scheduling coordinator.
+	/** Owns map configuration, shared Sections, viewport registrations, source selection, image-change routing and the scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
 	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
@@ -116,6 +116,13 @@ namespace Services::Map::Buildings
 
 		/** Releases a live viewport handle without affecting shared section state. */
 		void CloseViewport(std::uint64_t viewportHandle) override;
+
+		/** Routes one post-commit coordinate event to registered subscribed viewports that contain it.
+		 * Delivery follows handle registration order and carries no Section or image ownership.
+		 * @param gridX Signed global Section column whose image was adopted.
+		 * @param gridY Signed global Section row whose image was adopted.
+		 */
+		void NotifySectionImageChangedToViewports(std::int64_t gridX, std::int64_t gridY);
 
 		/**
 		 * Sends the exact map-space rectangle covered by a half-open Section grid range.

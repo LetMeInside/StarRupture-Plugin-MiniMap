@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements service-owned Sections, viewport registration/source selection, and scheduler lifecycle delegation.
+// Implements service-owned Sections, viewport registration/source selection, post-commit image-change routing, and scheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
 #include <array>
@@ -203,6 +203,26 @@ namespace Services::Map::Buildings
 				gridRange.endY);
 		}
 		viewportsByHandle_.erase(viewport);
+	}
+
+	/** Delivers one adopted-image coordinate to each live subscribed viewport in range. */
+	void BuildingMapService::NotifySectionImageChangedToViewports(
+		std::int64_t gridX,
+		std::int64_t gridY)
+	{
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			BuildingMapViewport* viewport = viewportEntry.second;
+			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+				viewport->viewportHandle_ != viewportEntry.first ||
+				!viewport->sectionImageChangedHandler_ ||
+				gridX < viewport->gridRange_.firstX || gridX >= viewport->gridRange_.endX ||
+				gridY < viewport->gridRange_.firstY || gridY >= viewport->gridRange_.endY)
+			{
+				continue;
+			}
+			viewport->NotifySectionImageChanged(gridX, gridY);
+		}
 	}
 
 	/** Requests the exact tile-aligned rectangle covered by the supplied half-open grid range. */
