@@ -69,6 +69,17 @@ namespace Services::Map::Buildings
 		Complete
 	};
 
+	/** Describes the neutral sprite drawing pass without assigning game-specific policy meaning. */
+	enum class BuildingCandidateSpritePass : std::uint8_t
+	{
+		/** Pass classification is unresolved and authorizes no default rendering pass. */
+		Unknown,
+		/** Ordinary sprites; eligible successful submissions may contribute spline occluders. */
+		FirstPass,
+		/** Sprites drawn after spline surfaces; never included in the spline occlusion index. */
+		SecondPass
+	};
+
 	/** Identifies the immutable source used to produce one neutral keyed spline curve. */
 	enum class BuildingCandidateSplineProvenance : std::uint8_t
 	{
@@ -123,6 +134,8 @@ namespace Services::Map::Buildings
 	{
 		/** Known neutral source shape, or Unknown while source classification is unresolved. */
 		BuildingCandidateSourceKind kind = BuildingCandidateSourceKind::Unknown;
+		/** Sprite pass supplied by the game-specific producer; Unknown authorizes no default pass. */
+		BuildingCandidateSpritePass spritePass = BuildingCandidateSpritePass::Unknown;
 		/** Acquisition state of the retained neutral values, independent of resource readiness. */
 		BuildingCandidateSourceStatus status = BuildingCandidateSourceStatus::Unknown;
 		/** Owned canonical generated-class identity bytes when acquired. */

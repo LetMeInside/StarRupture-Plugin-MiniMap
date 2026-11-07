@@ -120,6 +120,10 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				output.MayHaveUnknownRequirements = true;
 			}
+			if (requirement->spritePass == BuildingCandidateSpritePass::Unknown)
+			{
+				output.MayHaveUnknownRequirements = true;
+			}
 			Cache::OwnedSpriteKey ownedKey;
 			if (!Cache::OwnedSpriteKey::TryCopy(requirement->canonicalClassPath, ownedKey))
 			{
@@ -211,6 +215,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		KnownSpritePreparationResult::PreparedSpriteOccurrence prepared;
 		prepared.PublicationOrdinal = publicationOrdinal;
+		prepared.SpritePass = requirement.spritePass;
 		prepared.RenderInput = renderInput;
 		prepared.Support = support;
 		output.PreparedSprites.push_back(std::move(prepared));

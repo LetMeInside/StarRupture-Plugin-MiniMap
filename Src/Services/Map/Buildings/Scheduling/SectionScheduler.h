@@ -89,6 +89,8 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				/** Ordinal of the corresponding occurrence in the retained candidate publication. */
 				std::uint64_t PublicationOrdinal = 0;
+				/** Neutral pass designation; Unknown remains unresolved for later scene eligibility. */
+				BuildingCandidateSpritePass SpritePass = BuildingCandidateSpritePass::Unknown;
 				/** Render input borrowing pixels from CpuSpriteSourceManager. */
 				Visuals::BuildingSpriteRenderInput RenderInput{};
 				/** Independent projected XY support paired with RenderInput. */

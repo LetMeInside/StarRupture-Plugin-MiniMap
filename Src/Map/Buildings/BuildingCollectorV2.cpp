@@ -8,6 +8,7 @@
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
+#include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
 #include <algorithm>
@@ -138,6 +139,7 @@ namespace MiniMap::BuildingAcquisition
         bool Dirty = true;
         bool RemoteTurn = false;
         bool HasRegion = false;
+        bool IncludeDroneRails = true;
         Facts::Region RequestedRegion;
         std::shared_ptr<const Facts> Published;
         std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> PublishedCandidates;
@@ -616,6 +618,42 @@ namespace MiniMap::BuildingAcquisition
             return SourceStatus::Unknown;
         }
 
+        /** Positively recognizes the legacy renderer's exact non-spline Base Core identity. */
+        static ::Services::Map::Buildings::BuildingCandidateSpritePass ClassifySpritePass(
+            const Facts::Building& building)
+        {
+            using SpritePass = ::Services::Map::Buildings::BuildingCandidateSpritePass;
+            if (!building.DefinitionFacts || building.DefinitionFacts->ClassStatus != Status::Ready ||
+                building.DefinitionFacts->CanonicalClassPath.empty() ||
+                building.SplineClassificationStatus != Status::Ready || building.HasSpline)
+            {
+                return SpritePass::Unknown;
+            }
+            constexpr std::string_view baseCoreClassPath =
+                "/Game/Chimera/Buildings/BaseCore/BP_BaseCore.BP_BaseCore_C";
+            if (building.DefinitionFacts->CanonicalClassPath == baseCoreClassPath)
+                return SpritePass::SecondPass;
+            return SpritePass::FirstPass;
+        }
+
+        /** Recognizes only the established StarRupture drone-rail BuildingID values. */
+        static bool IsDroneRail(const Facts::Building& building)
+        {
+            if (!building.DefinitionFacts)
+                return false;
+            switch (static_cast<SDK::ECrBuildingID>(building.DefinitionFacts->BuildingId))
+            {
+            case SDK::ECrBuildingID::DroneRailT1:
+            case SDK::ECrBuildingID::DroneRailT2:
+            case SDK::ECrBuildingID::DroneRailT3:
+            case SDK::ECrBuildingID::DroneRailT4:
+            case SDK::ECrBuildingID::DroneRailT5:
+                return true;
+            default:
+                return false;
+            }
+        }
+
         /** Combines required source facts while retaining the strongest unresolved evidence. */
         static ::Services::Map::Buildings::BuildingCandidateSourceStatus CombineSourceStatus(
             ::Services::Map::Buildings::BuildingCandidateSourceStatus first,
@@ -777,7 +815,10 @@ namespace MiniMap::BuildingAcquisition
 
             source.kind = building.HasSpline ? SourceKind::Spline : SourceKind::Sprite;
             if (source.kind == SourceKind::Sprite)
+            {
+                source.spritePass = ClassifySpritePass(building);
                 source.status = CombineSourceStatus(definitionStatus, transformStatus);
+            }
             else
                 source.status = CombineSourceStatus(
                     CombineSourceStatus(definitionStatus, transformStatus),
@@ -788,14 +829,17 @@ namespace MiniMap::BuildingAcquisition
         /** Builds candidate and source vectors in one pass over the exact same frozen facts. */
         static void BuildCandidateRecords(
             const Facts& facts,
+            bool includeDroneRails,
             std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>& occurrences,
             std::vector<::Services::Map::Buildings::BuildingCandidateSourceRecord>& sourceRecords,
-            std::size_t& excludedInteriorOnlyCount)
+            std::size_t& excludedInteriorOnlyCount,
+            std::size_t& excludedDroneRailCount)
         {
             using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
             occurrences.reserve(facts.Buildings.size());
             sourceRecords.reserve(facts.Buildings.size());
             excludedInteriorOnlyCount = 0;
+            excludedDroneRailCount = 0;
             for (const Facts::Building& building : facts.Buildings)
             {
                 if (building.DefinitionFacts &&
@@ -803,6 +847,11 @@ namespace MiniMap::BuildingAcquisition
                     building.DefinitionFacts->InteriorOnly)
                 {
                     ++excludedInteriorOnlyCount;
+                    continue;
+                }
+                if (!includeDroneRails && IsDroneRail(building))
+                {
+                    ++excludedDroneRailCount;
                     continue;
                 }
                 CandidateOccurrence occurrence;
@@ -833,7 +882,14 @@ namespace MiniMap::BuildingAcquisition
             std::vector<CandidateOccurrence> occurrences;
             std::vector<CandidateSourceRecord> sourceRecords;
             std::size_t excludedInteriorOnlyCount = 0;
-            BuildCandidateRecords(*facts, occurrences, sourceRecords, excludedInteriorOnlyCount);
+            std::size_t excludedDroneRailCount = 0;
+            BuildCandidateRecords(
+                *facts,
+                IncludeDroneRails,
+                occurrences,
+                sourceRecords,
+                excludedInteriorOnlyCount,
+                excludedDroneRailCount);
             CandidateEvidence evidence;
             for (const CandidateOccurrence& occurrence : occurrences)
             {
@@ -843,8 +899,9 @@ namespace MiniMap::BuildingAcquisition
             evidence.nativeAcquisitionComplete = facts->AcquisitionComplete &&
                 !evidence.hasPendingOrUnresolvedOccurrences;
             const bool allAuthoritativeOccurrencesAccounted =
-                occurrences.size() + excludedInteriorOnlyCount == facts->Buildings.size();
-            // Only positively classified interior-only occurrences are omitted from candidates.
+                occurrences.size() + excludedInteriorOnlyCount + excludedDroneRailCount ==
+                facts->Buildings.size();
+            // Only positively classified policy exclusions are omitted from candidates.
             evidence.candidateCoverageComplete = facts->HasRequestedRegion &&
                 facts->MembershipComplete && allAuthoritativeOccurrencesAccounted;
             const CandidateRegion requestedCoverage{
@@ -1051,6 +1108,15 @@ namespace MiniMap::BuildingAcquisition
             region.widthMapUnits,
             region.heightMapUnits};
         return SetAcquisitionRegion(nativeRegion);
+    }
+
+    /** Invalidates only the candidate selection when the caller changes rail visibility policy. */
+    void BuildingCollectorV2::SetRenderDroneRails(bool enabled) noexcept
+    {
+        if (state_->IncludeDroneRails == enabled)
+            return;
+        state_->IncludeDroneRails = enabled;
+        state_->Invalidate();
     }
 
     /** Returns only the current candidate owner; stale publications never fall back to another observation path. */

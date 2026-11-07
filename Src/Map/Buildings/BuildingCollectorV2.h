@@ -29,6 +29,12 @@ namespace MiniMap::BuildingAcquisition
         bool InitializeResources();
         /** Accepts an exact finite positive request without excluding any entity; false leaves it unchanged. */
         bool SetAcquisitionRegion(const BuildingAcquiredFacts::Region& region) noexcept;
+        /** Sets the policy for publishing positively classified drone-rail occurrences.
+         * The default is enabled; a changed value invalidates the current publication and is
+         * applied by the next ordinary publication pass without initiating native acquisition.
+         * @param enabled Whether known drone rails remain eligible for candidate publication.
+         */
+        void SetRenderDroneRails(bool enabled) noexcept;
         /** Converts neutral map units directly to StarRupture native centimetres and applies the common validator. */
         bool SetAcquisitionRegion(
             const ::Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
