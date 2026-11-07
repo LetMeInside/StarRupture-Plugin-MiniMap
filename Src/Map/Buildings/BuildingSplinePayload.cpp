@@ -14,12 +14,6 @@ namespace
 
     static_assert(sizeof(NativeValue) == 0xE8 && alignof(NativeValue) == 8);
     static_assert(offsetof(NativeValue, Data) == 0x68);
-    static_assert(offsetof(SDK::FAuAPSplineData, SplineData) == 8);
-    static_assert(offsetof(NativeValue, Data) + offsetof(SDK::FAuAPSplineData, SplineData) == 0x70);
-    static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineData)) == 0x10);
-    static_assert(sizeof(SDK::FAuAPSplinePointData) == 0x40);
-    static_assert(offsetof(SDK::FAuAPSplinePointData, Position) == 0x10);
-    static_assert(offsetof(SDK::FAuAPSplinePointData, Tangent) == 0x28);
 
     struct alignas(8) PayloadStorage { std::byte Bytes[0xE8]; };
     static_assert(sizeof(PayloadStorage) == 0xE8 && alignof(PayloadStorage) == 8);
@@ -48,18 +42,21 @@ namespace
 
     Result Convert(const SDK::FAuAPSplineData& data, G::SplineGeometry& output)
     {
-        const auto& points = data.SplineData;
-        const auto count = points.Num();
+        const auto* authored = G::AuthoredPoints(data);
+        if (!authored) { output.Issue = G::GeometryIssue::InvalidArray; return Result::InvalidData; }
+        const auto& points = *authored;
+        const auto count = points.Num;
         // Array-shape/numerical checks on the owned native result, not pointer probing.
-        if (count < 0 || points.Max() < count || (count && !points.GetDataPtr()))
+        if (count < 0 || points.Max < count || (count && !points.Data))
         { output.Issue = G::GeometryIssue::InvalidArray; return Result::InvalidData; }
         if (count < 2)
         { output.Issue = G::GeometryIssue::Uninitialized; return Result::NotReady; }
         if (count > 2)
         { output.Issue = G::GeometryIssue::InvalidCurve; return Result::UnsupportedPointCount; }
 
-        const auto p0 = G::Copy(points[0].Position), p1 = G::Copy(points[1].Position);
-        const auto t0 = G::Copy(points[0].Tangent), t1 = G::Copy(points[1].Tangent);
+        G::Point p0, t0, p1, t1;
+        if (!G::AuthoredPoint(points, 0, p0, t0) || !G::AuthoredPoint(points, 1, p1, t1))
+        { output.Issue = G::GeometryIssue::InvalidArray; return Result::InvalidData; }
         if (!G::Finite(p0) || !G::Finite(p1) || !G::Finite(t0) || !G::Finite(t1))
         { output.Issue = G::GeometryIssue::NonFinite; return Result::InvalidData; }
 

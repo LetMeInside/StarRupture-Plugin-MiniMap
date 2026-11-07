@@ -454,9 +454,12 @@ namespace MiniMapBuildingCollector
         std::vector<Candidate> candidates;
         auto* entityType=MiniMapFields::PlacementEntityType.In(placement);
         if(!entityType)return false;
-        auto* config=entityType->EntityConfigPtr;
-        if(!config)config=static_cast<SDK::UMassEntityConfigAsset*>(n.asset.loadSynchronous(&entityType->EntityConfig));
-        if(!config && entityType->EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex!=0)return false;
+        const auto* configPtr=MiniMapFields::EntityConfigPtr.In(entityType);
+        auto* softConfig=MiniMapFields::EntityConfig.In(entityType);
+        if(!configPtr || !softConfig)return false;
+        auto* config=*configPtr;
+        if(!config)config=static_cast<SDK::UMassEntityConfigAsset*>(n.asset.loadSynchronous(softConfig));
+        if(!config && softConfig->ObjectID.AssetPath.PackageName.ComparisonIndex!=0)return false;
         std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
         for(;config;config=config->Config.Parent)
         {
@@ -465,14 +468,24 @@ namespace MiniMapBuildingCollector
             {
                 SDK::UClass *high=nullptr,*low=nullptr;
                 if(Is(trait,types.Cosmetic))
-                {const auto* v=static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);high=v->HighResTemplateActor;low=v->LowResTemplateActor;}
+                {
+                    const auto* h=MiniMapFields::CosmeticHighResActor.In(trait);const auto* l=MiniMapFields::CosmeticLowResActor.In(trait);
+                    if(!h || !l)return false;
+                    high=*h;low=*l;
+                }
                 else if(Is(trait,types.Visual))
-                {const auto* v=static_cast<const SDK::UMassVisualizationTrait*>(trait);high=v->HighResTemplateActor;low=v->LowResTemplateActor;}
+                {
+                    const auto* h=MiniMapFields::VisualHighResActor.In(trait);const auto* l=MiniMapFields::VisualLowResActor.In(trait);
+                    if(!h || !l)return false;
+                    high=*h;low=*l;
+                }
                 if(high && !Profiles(high,0,candidates))return false;
                 if(low && !Profiles(low,1,candidates))return false;
             }
         }
-        auto* authored=static_cast<SDK::UClass*>(n.asset.loadSynchronous(&placement->ActorClass));
+        auto* authoredClass=MiniMapFields::PlacementActorClass.In(placement);
+        if(!authoredClass)return false;
+        auto* authored=static_cast<SDK::UClass*>(n.asset.loadSynchronous(authoredClass));
         if(!authored || !Profiles(authored,2,candidates))return false;
         std::stable_sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.Order<b.Order;});
         auto profiles=std::make_shared<P::Set>();
@@ -488,11 +501,15 @@ namespace MiniMapBuildingCollector
         const Id id{r.Index,r.Serial};
         if(!r.DefinitionValid)
         {
-            const auto* parameters=Parameters(n,id);auto* placement=parameters?parameters->PlacementData:nullptr;
+            const auto* parameters=Parameters(n,id);
+            const auto* placementField=MiniMapFields::BuildingPlacementData.In(parameters);
+            auto* placement=placementField?*placementField:nullptr;
             if(!placement)return false;
             // Exact validated definition admission precedes rooting, transform
             // and spline/payload copying. Leave the identity pending on exclusion.
-            if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(placement->BuildingID)))return false;
+            const auto* buildingId=MiniMapFields::PlacementBuildingID.In(placement);
+            if(!buildingId)return false;
+            if(!includeDroneRails && MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,uint32_t(*buildingId)))return false;
             auto it=definitions.find(placement);
             if(it==definitions.end())
             {
@@ -501,7 +518,7 @@ namespace MiniMapBuildingCollector
                 it=definitions.emplace(placement,std::move(definition)).first;
             }
             entry.Definition=placement;
-            r.BuildingId=uint32_t(placement->BuildingID);r.DefinitionObjectIndex=placement->Index;
+            r.BuildingId=uint32_t(*buildingId);r.DefinitionObjectIndex=placement->Index;
             r.DefinitionValid=true;
         }
         if(!r.TransformValid)
@@ -525,11 +542,12 @@ namespace MiniMapBuildingCollector
             {
                 // A complete/unsupported Mass source is never silently
                 // replaced. Zero/one source point is initially incomplete.
-                if(mass && (mass->bSplineCurvesInitialized || mass->Data.SplineData.Num()>1))return false;
+                if(mass && G::HasOwnSpline(*mass))return false;
                 // Rails and pipes off: the payload is not read, the building draws as a box.
                 if(!MiniMapFields::Features::BuildingSplines.On()){r.HasSpline=false;return true;}
                 const auto* ap=static_cast<const SDK::FAuAPMassFragment*>(n.mass.getFragmentDataPtr(manager,id,types.AP));
-                if(!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload,*curve)!=MiniMapBuildingSplinePayload::CopyResult::Complete)return false;
+                const auto* handle=MiniMapFields::SplinePayloadHandle.In(ap);
+                if(!handle || MiniMapBuildingSplinePayload::Copy(*handle,*curve)!=MiniMapBuildingSplinePayload::CopyResult::Complete)return false;
             }
             r.Curve=std::move(curve);r.Extent=r.Curve->CenterlineBounds;
         }

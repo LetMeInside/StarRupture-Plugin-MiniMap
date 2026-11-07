@@ -1,5 +1,6 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "Adapters/AlienX/GameFields.h"
 #include "BuildingCollector.h"
 #include "SDK/AuActorPlacement_structs.hpp"
 #include <algorithm>
@@ -51,6 +52,28 @@ namespace MiniMapBuildingGeometry
         const auto e=Midpoint(a,c),f=Midpoint(c,d),m=Midpoint(e,f);
         CurveHull(b,{p[0],a,e,m},depth-1); CurveHull(b,{m,f,d,p[3]},depth-1);
     }
+    // The authored points of a spline data block, and point `index` of them as a
+    // position and a tangent. Both go through the map: null and false when a
+    // member did not resolve on the running build, or the index is outside.
+    inline const MiniMapFields::RawTArray* AuthoredPoints(const SDK::FAuAPSplineData& data)
+    { return MiniMapFields::SplineDataPoints.In(&data); }
+    inline bool AuthoredPoint(const MiniMapFields::RawTArray& points,int32_t index,Point& position,Point& tangent)
+    {
+        const auto* element=PluginMap::ElementAt(points.Data,points.Num,index,MiniMapFields::SplinePointSize);
+        const auto* p=MiniMapFields::SplinePointPosition.In(element);
+        const auto* t=MiniMapFields::SplinePointTangent.In(element);
+        if(!p || !t)return false;
+        position=Copy(*p);tangent=Copy(*t);return true;
+    }
+    // True when the fragment carries a spline of its own: the curves are built, or
+    // more than one point is authored.
+    inline bool HasOwnSpline(const SDK::FAuSplineConnectionFragment& s)
+    {
+        const auto* built=MiniMapFields::SplineFragmentBuilt.In(&s);
+        const auto* data=MiniMapFields::SplineFragmentData.In(&s);
+        const auto* points=data?AuthoredPoints(*data):nullptr;
+        return (built && *built) || (points && points->Num>1);
+    }
     inline void CopySpline(const SDK::FAuSplineConnectionFragment& s,SplineGeometry& out)
     {
         out.Segments.clear(); out.CenterlineBounds={}; out.Issue=GeometryIssue::None;
@@ -71,21 +94,29 @@ namespace MiniMapBuildingGeometry
             CurveHull(out.CenterlineBounds,segment.Controls,2);
             out.Segments.push_back(segment); return true;
         };
-        if(!s.bSplineCurvesInitialized)
+        const auto* built=MiniMapFields::SplineFragmentBuilt.In(&s);
+        if(!built) { fail(GeometryIssue::InvalidArray); return; }
+        if(!*built)
         {
-            const auto& p=s.Data.SplineData;
-            if(p.Num()!=2) { fail(GeometryIssue::Uninitialized); return; }
-            if(p.Max()<p.Num() || !p.GetDataPtr()) { fail(GeometryIssue::InvalidArray); return; }
+            const auto* data=MiniMapFields::SplineFragmentData.In(&s);
+            const auto* p=data?AuthoredPoints(*data):nullptr;
+            if(!p) { fail(GeometryIssue::InvalidArray); return; }
+            if(p->Num!=2) { fail(GeometryIssue::Uninitialized); return; }
+            if(p->Max<p->Num || !p->Data) { fail(GeometryIssue::InvalidArray); return; }
+            Point p0,t0,p1,t1;
+            if(!AuthoredPoint(*p,0,p0,t0) || !AuthoredPoint(*p,1,p1,t1)) { fail(GeometryIssue::InvalidArray); return; }
             CurveSegment segment; segment.Mode=uint8_t(SDK::EInterpCurveMode::CIM_CurveUser);
-            segment.Controls[0]=Copy(p[0].Position); segment.Controls[3]=Copy(p[1].Position);
-            const auto a=Copy(p[0].Tangent),b=Copy(p[1].Tangent);
+            segment.Controls[0]=p0; segment.Controls[3]=p1;
+            const auto a=t0,b=t1;
             for(size_t axis=0;axis<3;++axis)
             { segment.Controls[1][axis]=segment.Controls[0][axis]+a[axis]/3; segment.Controls[2][axis]=segment.Controls[3][axis]-b[axis]/3; }
             if(!append(segment)) return;
         }
         else
         {
-            const auto& c=s.SplineCurves.Position; const auto& p=c.Points;
+            const auto* curves=MiniMapFields::SplineFragmentCurves.In(&s);
+            if(!curves) { fail(GeometryIssue::InvalidArray); return; }
+            const auto& c=curves->Position; const auto& p=c.Points;
             if(c.bIsLooped) { fail(GeometryIssue::Looped); return; }
             if(p.Num()<2 || p.Max()<p.Num() || !p.GetDataPtr()) { fail(GeometryIssue::InvalidArray); return; }
             for(int i=0;i+1<p.Num();++i)

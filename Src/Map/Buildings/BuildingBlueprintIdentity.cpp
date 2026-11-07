@@ -1,5 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingBlueprintIdentity.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -42,7 +43,9 @@ namespace MiniMapBuildingBlueprintIdentity
         auto* objects=MiniMap::Services::TryObjects();
         if(!library || !conversion || !objects)return {};
         using Params=SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString;
-        Params params{};params.SoftClassReference=definition.ActorClass;
+        const auto* actorClass=MiniMapFields::PlacementActorClass.In(&definition);
+        if(!actorClass)return {};
+        Params params{};params.SoftClassReference=*actorClass;
         // The engine owns the input soft path; the returned FString owns a new
         // allocation and must be freed even if UTF-8 allocation throws.
         struct StringOwner

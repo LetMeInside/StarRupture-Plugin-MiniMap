@@ -43,7 +43,6 @@ namespace MiniMapFields
 	// What the Buildings layer reads off a building's placement data and the
 	// walkway's class default object. All three moved on a newer game build.
 	inline auto BuildingTags         = SR_FIELD(SDK::TArray<SDK::FName>, UCrBuildingData, Tags, 0);
-	inline auto PlacementEntityType  = SR_FIELD(SDK::FAuAPMassSpawnedEntityType, UAuActorPlacementData, EntityType, 0);
 	inline auto WalkwaySplineMesh    = SR_FIELD(SDK::UStaticMesh*, ACrModularRampWalkway, SplineMesh, 0);
 
 	// UCrPlayerMapMenuDataComponent::FOWData, the fog segments' TArray. The
@@ -61,31 +60,54 @@ namespace MiniMapFields
 		{ 127004, 0x100, static_cast<uint32_t>(sizeof(RawTArray)), 0, nullptr },
 	};
 
-	// Native members of the Mass enemy and transform fragments and of UTexture.
-	// Like FogData they have a row per game build in the loader's map; the
-	// compiled offset is used only on the build the plugin was compiled for.
-	// The enemy state is the fragment's initialisation state, the translation
-	// the first three doubles of an FTransform, and SRGB a bit of the texture's
-	// flags byte.
+	// The rest of what the Buildings layer reads off a building: the building's
+	// parameters hold its placement data, the placement data the Mass entity config
+	// and the actor class, the config's traits the template actors, and the Mass
+	// spline fragment and the spline payload the shape of a rail or a pipe. A
+	// member that is a game struct held by value (the entity type, the spline data,
+	// the payload handle) is requested at any size, since only its own members are
+	// read, each through its own key. A TArray of the point struct is read through
+	// RawTArray and stepped by the point's size (PluginMap::ElementAt).
+	inline auto BuildingPlacementData  = SR_FIELD(SDK::UAuActorPlacementData*, FCrBuildingParameters, PlacementData, 0);
+	inline auto PlacementBuildingID    = SR_FIELD(SDK::ECrBuildingID, UAuActorPlacementData, BuildingID, 0);
+	inline auto PlacementActorClass    = SR_FIELD(SDK::TSoftClassPtr<SDK::UClass>, UAuActorPlacementData, ActorClass, 0);
+	inline auto PlacementEntityType    = PluginField<SDK::FAuAPMassSpawnedEntityType>{ SR_FIELD_ANY_SIZE(UAuActorPlacementData, EntityType, 0) };
+	inline auto EntityConfig           = SR_FIELD(SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>, FAuAPMassSpawnedEntityType, EntityConfig, 0);
+	inline auto EntityConfigPtr        = SR_FIELD(SDK::UMassEntityConfigAsset*, FAuAPMassSpawnedEntityType, EntityConfigPtr, 0);
+	inline auto CosmeticHighResActor   = SR_FIELD(SDK::TSubclassOf<SDK::AActor>, UCrMassRepVisCosmeticsTrait, HighResTemplateActor, 0);
+	inline auto CosmeticLowResActor    = SR_FIELD(SDK::TSubclassOf<SDK::AActor>, UCrMassRepVisCosmeticsTrait, LowResTemplateActor, 0);
+	inline auto VisualHighResActor     = SR_FIELD(SDK::TSubclassOf<SDK::AActor>, UMassVisualizationTrait, HighResTemplateActor, 0);
+	inline auto VisualLowResActor      = SR_FIELD(SDK::TSubclassOf<SDK::AActor>, UMassVisualizationTrait, LowResTemplateActor, 0);
+	inline auto SplineFragmentData     = PluginField<SDK::FAuAPSplineData>{ SR_FIELD_ANY_SIZE(FAuSplineConnectionFragment, Data, 0) };
+	inline auto SplineFragmentCurves   = SR_FIELD(SDK::FSplineCurves, FAuSplineConnectionFragment, SplineCurves, 0);
+	inline auto SplineFragmentBuilt    = SR_FIELD(bool, FAuSplineConnectionFragment, bSplineCurvesInitialized, 0);
+	inline auto SplineDataPoints       = SR_FIELD(RawTArray, FAuAPSplineData, SplineData, 0);
+	inline auto SplinePointPosition    = SR_FIELD(SDK::FVector_NetQuantize, FAuAPSplinePointData, Position, 0);
+	inline auto SplinePointTangent     = SR_FIELD(SDK::FVector_NetQuantize10, FAuAPSplinePointData, Tangent, 0);
+	inline auto SplinePointSize        = SR_SIZE(FAuAPSplinePointData);
+	inline auto SplinePayloadHandle    = PluginField<SDK::FAuAPPayloadDataHandle>{ SR_FIELD_ANY_SIZE(FAuAPMassFragment, Payload, 0) };
+
+	// The Mass enemy state (the fragment's initialisation state). The game does not
+	// reflect it (the Game-SDK folds the fragment into padding), so it is a native
+	// row, with CL-127004's offset for when the loader's map has none for the
+	// running build.
 	inline auto EnemyState = PluginField<uint8_t>{ { "FMassEnemyStateFragment::State",
 		"FMassEnemyStateFragment", "State", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x1 } };
 	inline const PluginFieldCandidate kEnemyStateRows[] = {
 		{ 127004, 0x1, static_cast<uint32_t>(sizeof(uint8_t)), 0, nullptr },
 	};
-	inline auto TransformTranslation = SR_FIELD(SDK::FVector, FTransform, Translation, PLUGIN_FIELD_NATIVE);
-	inline auto TextureSRGB = PluginBitField{ { "UTexture::SRGB", "UTexture", "SRGB",
-		PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_BITFIELD, sizeof(uint8_t), -1 } };
-	inline const PluginFieldCandidate kTextureSRGBRows[] = {
-		{ 127004, 0x106, static_cast<uint32_t>(sizeof(uint8_t)), 0x01, nullptr },
-	};
 
-	// FMassEntityQuery is a plain C++ struct, so the game does not reflect its
-	// size: the map holds it per build (a row keyed by the class name), the
-	// compiled one is used only on the build the plugin was compiled for. Code
-	// that holds a query takes a PluginMap::StructBuffer of this size, never a
-	// fixed array, so a build with a bigger query cannot be overrun. Needs a
-	// loader that serves unreflected struct sizes; on an older one the layers
-	// that build a query are off.
+	// Reflected, so the game's own metadata gives them on every build: the first
+	// three doubles of an FTransform and a bit of a texture's flags byte.
+	inline auto TransformTranslation = SR_FIELD(SDK::FVector, FTransform, Translation, 0);
+	inline auto TextureSRGB = SR_BITFIELD(UTexture, SRGB);
+
+	// FMassEntityQuery is a plain C++ struct. Code that holds a query takes a
+	// PluginMap::StructBuffer of this size, never a fixed array, so a build with a
+	// bigger query cannot be overrun. The loader serves the size from the game's
+	// own metadata where the struct is reflected, and from this row where it is
+	// not; a loader that serves neither refuses the request, and the layers that
+	// build a query are off.
 	inline auto MassQuerySize = PluginFieldSpec{ "FMassEntityQuery", "FMassEntityQuery", nullptr,
 		PLUGIN_FIELD_FLAG_NONE, 0x350, -1 };
 	inline const PluginFieldCandidate kMassQuerySizeRows[] = {
@@ -103,13 +125,16 @@ namespace MiniMapFields
 		const auto rowCount = [](const auto& rows) { return static_cast<uint32_t>(sizeof(rows) / sizeof(rows[0])); };
 		bool all = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows, rowCount(kFogDataRows));
 		all = PluginMap::ResolveField(scanner, self, EnemyState, kEnemyStateRows, rowCount(kEnemyStateRows)) && all;
-		all = PluginMap::ResolveField(scanner, self, TextureSRGB, kTextureSRGBRows, rowCount(kTextureSRGBRows)) && all;
 		all = PluginMap::ResolveField(scanner, self, MassQuerySize, kMassQuerySizeRows, rowCount(kMassQuerySizeRows)) && all;
 		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
-			AbandonBaseInfoReplicator, BuildingTags, PlacementEntityType, WalkwaySplineMesh,
-			TransformTranslation) && all;
+			AbandonBaseInfoReplicator, BuildingTags, WalkwaySplineMesh,
+			TransformTranslation, TextureSRGB,
+			BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
+			CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
+			SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
+			SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle) && all;
 	}
 
 	using PluginMap::KeysOf;
@@ -153,8 +178,12 @@ namespace MiniMapFields
 			KeysOf(Keys::MassSubsystem, Keys::QueryConstruct, Keys::QueryDestruct, Keys::MatchingHandles,
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddTransformRequirement,
 				Keys::AddTagRequirement, Keys::IsEntityBuilt, Keys::IsEntityValid, Keys::GridSubsystem,
-				Keys::GridForEachCell, BuildingTags, PlacementEntityType, WalkwaySplineMesh,
-				PluginMap::MassEntityManagerField, MassQuerySize),
+				Keys::GridForEachCell, BuildingTags, WalkwaySplineMesh,
+				PluginMap::MassEntityManagerField, MassQuerySize,
+				BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
+				CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
+				SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
+				SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the
@@ -167,7 +196,8 @@ namespace MiniMapFields
 		// Rails and pipes are drawn from the spline payload of the building actor.
 		// Without it the buildings still draw, as boxes.
 		inline PluginMap::Feature BuildingSplines{ "building-splines", "Rails and pipes on the minimap",
-			KeysOf(Keys::SplinePayloadGet, Keys::SplinePayloadDestroy, Keys::SplinePayloadStaticStruct),
+			KeysOf(Keys::SplinePayloadGet, Keys::SplinePayloadDestroy, Keys::SplinePayloadStaticStruct,
+				SplinePayloadHandle, SplineDataPoints, SplinePointPosition, SplinePointTangent, SplinePointSize),
 			{ "Buildings.RenderDroneRails" } };
 
 		// ReadbackGlobals and ReleaseGuard are not requests: they name the checks that

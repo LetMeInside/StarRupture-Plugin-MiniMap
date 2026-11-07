@@ -78,7 +78,7 @@ namespace
         G::CopySpline(*spline, copied);
         if (copied.Issue != MiniMapBuildingCollector::GeometryIssue::None || copied.Segments.empty())
         {
-            if (spline->bSplineCurvesInitialized || spline->Data.SplineData.Num() > 1)
+            if (G::HasOwnSpline(*spline))
                 return false;
             // Rails and pipes off: the payload is not read, the building draws as a box.
             if (!MiniMapFields::Features::BuildingSplines.On())
@@ -88,7 +88,8 @@ namespace
             }
             const auto* ap = static_cast<const SDK::FAuAPMassFragment*>(
                 native.mass.getFragmentDataPtr(manager, id, Types.AP));
-            if (!ap || MiniMapBuildingSplinePayload::Copy(ap->Payload, copied) !=
+            const auto* handle = MiniMapFields::SplinePayloadHandle.In(ap);
+            if (!handle || MiniMapBuildingSplinePayload::Copy(*handle, copied) !=
                 MiniMapBuildingSplinePayload::CopyResult::Complete)
             {
                 known = false;
@@ -217,9 +218,12 @@ namespace
         if (MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true, buildingType)) return true;
         auto* entityType = MiniMapFields::PlacementEntityType.In(&placement);
         if (!entityType) return false;
-        auto* config = entityType->EntityConfigPtr;
-        if (!config && entityType->EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
-            config = static_cast<SDK::UMassEntityConfigAsset*>(native.asset.loadSynchronous(&entityType->EntityConfig));
+        const auto* configPtr = MiniMapFields::EntityConfigPtr.In(entityType);
+        auto* softConfig = MiniMapFields::EntityConfig.In(entityType);
+        if (!configPtr || !softConfig) return false;
+        auto* config = *configPtr;
+        if (!config && softConfig->ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
+            config = static_cast<SDK::UMassEntityConfigAsset*>(native.asset.loadSynchronous(softConfig));
         std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
         for (; config; config = config->Config.Parent)
         {
@@ -229,19 +233,25 @@ namespace
                 SDK::UClass *high = nullptr, *low = nullptr;
                 if (Is(trait, Types.Cosmetic))
                 {
-                    const auto* value = static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
-                    high = value->HighResTemplateActor; low = value->LowResTemplateActor;
+                    const auto* h = MiniMapFields::CosmeticHighResActor.In(trait);
+                    const auto* l = MiniMapFields::CosmeticLowResActor.In(trait);
+                    if (!h || !l) return false;
+                    high = *h; low = *l;
                 }
                 else if (Is(trait, Types.Visual))
                 {
-                    const auto* value = static_cast<const SDK::UMassVisualizationTrait*>(trait);
-                    high = value->HighResTemplateActor; low = value->LowResTemplateActor;
+                    const auto* h = MiniMapFields::VisualHighResActor.In(trait);
+                    const auto* l = MiniMapFields::VisualLowResActor.In(trait);
+                    if (!h || !l) return false;
+                    high = *h; low = *l;
                 }
                 if ((high && !CopyProfilesFromClass(high, 0, output)) ||
                     (low && !CopyProfilesFromClass(low, 1, output))) return false;
             }
         }
-        auto* authored = static_cast<SDK::UClass*>(native.asset.loadSynchronous(&placement.ActorClass));
+        auto* authoredClass = MiniMapFields::PlacementActorClass.In(&placement);
+        if (!authoredClass) return false;
+        auto* authored = static_cast<SDK::UClass*>(native.asset.loadSynchronous(authoredClass));
         return authored && CopyProfilesFromClass(authored, 2, output) && !output.empty();
     }
 
@@ -588,7 +598,8 @@ namespace MiniMapBuildingComplexSourceAcquisition
         {
             if (!native.mass.isEntityValid(manager, entity) || !native.mass.isEntityBuilt(manager, entity)) return false;
             const auto* parameters = GetParameters(native, manager, entity);
-            auto* placement = parameters ? parameters->PlacementData : nullptr;
+            const auto* placementField = MiniMapFields::BuildingPlacementData.In(parameters);
+            auto* placement = placementField ? *placementField : nullptr;
             if (!placement || !native.asset.retainObject || !native.asset.releaseObject) return false;
             struct PlacementRoot
             {
@@ -598,7 +609,9 @@ namespace MiniMapBuildingComplexSourceAcquisition
                     : Native(nativeApi), Object(object) { Native.asset.retainObject(Object); }
                 ~PlacementRoot() { Native.asset.releaseObject(Object); }
             } placementRoot{native, placement};
-            const uint32_t buildingType = uint32_t(placement->BuildingID);
+            const auto* buildingId = MiniMapFields::PlacementBuildingID.In(placement);
+            if (!buildingId) return false;
+            const uint32_t buildingType = uint32_t(*buildingId);
             auto blueprint = MiniMapBuildingBlueprintIdentity::Copy(*placement);
             if (!blueprint) return false;
             if (!native.mass.isEntityValid(manager, entity) || !native.mass.isEntityBuilt(manager, entity)) return false;
