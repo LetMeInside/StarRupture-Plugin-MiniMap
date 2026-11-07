@@ -117,10 +117,10 @@ namespace Services::Map::Buildings
 		/** Releases a live viewport handle without affecting shared section state. */
 		void CloseViewport(std::uint64_t viewportHandle) override;
 
-		/** Routes one post-commit coordinate event to registered subscribed viewports that contain it.
+		/** Routes one completed-image availability change to registered subscribed viewports that contain it.
 		 * Delivery follows handle registration order and carries no Section or image ownership.
-		 * @param gridX Signed global Section column whose image was adopted.
-		 * @param gridY Signed global Section row whose image was adopted.
+		 * @param gridX Signed global Section column whose completed-image state changed.
+		 * @param gridY Signed global Section row whose completed-image state changed.
 		 */
 		void NotifySectionImageChangedToViewports(std::int64_t gridX, std::int64_t gridY);
 

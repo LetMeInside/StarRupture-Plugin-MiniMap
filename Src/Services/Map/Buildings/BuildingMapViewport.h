@@ -30,7 +30,7 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport
 	{
 	public:
-		/** Receives the signed global grid coordinate of an adopted Section image. */
+		/** Receives the signed global grid coordinate whose completed-image availability changed. */
 		using SectionImageChangedHandler = std::function<void(std::int64_t, std::int64_t)>;
 
 		/** Prevents copies from duplicating one service-owned viewport registration. */
@@ -144,7 +144,7 @@ namespace Services::Map::Buildings
 		/** Invalidates the non-owning service relationship during service destruction. */
 		void InvalidateService();
 
-		/** Delivers one coordinate-only event when a complete Section image is adopted. */
+		/** Delivers one coordinate-only event when completed-image availability changes. */
 		void NotifySectionImageChanged(std::int64_t gridX, std::int64_t gridY);
 
 		Coordination::IBuildingMapService* service_;

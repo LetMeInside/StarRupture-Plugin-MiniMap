@@ -247,7 +247,7 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.erase(viewport);
 	}
 
-	/** Delivers one adopted-image coordinate to each live subscribed viewport in range. */
+	/** Delivers one completed-image availability change to each live subscribed viewport in range. */
 	void BuildingMapService::NotifySectionImageChangedToViewports(
 		std::int64_t gridX,
 		std::int64_t gridY)

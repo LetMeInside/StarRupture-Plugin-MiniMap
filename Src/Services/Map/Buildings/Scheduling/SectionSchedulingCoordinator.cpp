@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns shared viewport demand, delegates per-Section work to SectionScheduler, and reports committed images to the service.
+// Owns shared viewport demand, delegates per-Section work to SectionScheduler, and reports completed-image changes to the service.
 #include "SectionSchedulingCoordinator.h"
 
 #include "../BuildingMapSection.h"
@@ -168,9 +168,16 @@ namespace Services::Map::Buildings::Scheduling
 			spritePreparation,
 			buildingMapService.splinePolicies_,
 			commitResult);
-		if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed)
+		const bool imageCommitted =
+			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed;
+		const bool emptyCommitted =
+			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::CommittedEmpty;
+		if (imageCommitted || emptyCommitted)
 		{
 			RecordSectionCompleted(coordinate);
+		}
+		if (imageCommitted || (emptyCommitted && commitResult.CompletedImageRemoved))
+		{
 			buildingMapService.NotifySectionImageChangedToViewports(
 				coordinate.GridX,
 				coordinate.GridY);

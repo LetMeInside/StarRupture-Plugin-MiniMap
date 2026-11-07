@@ -57,6 +57,7 @@ namespace Services::Map::Buildings::Scheduling
 		CommitStatus = Status::InvalidOrIncompleteInput;
 		SceneReadiness.reset();
 		NumericalStatus.reset();
+		CompletedImageRemoved = false;
 	}
 
 	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
@@ -107,7 +108,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Prepares a complete scene, renders it once and move-adopts its bytes into the same Section. */
+	/** Commits certified empty observations without rendering; otherwise renders and adopts complete bytes. */
 	void SectionScheduler::RenderAndCommitSectionImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
@@ -129,6 +130,11 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		if (publicationOwner == nullptr || scenePreparation.PreparationReadiness != Readiness::CompleteSceneInputs) return;
+		if (observation.candidateOrdinals.empty())
+		{
+			CommitConfirmedEmptySection(section, publicationOwner, output);
+			return;
+		}
 		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
 		Visuals::BuildingRenderSceneInput sceneInput;
 		if (!scenePreparation.BorrowRenderSceneInput(publicationOwner, splineViewScratch, sceneInput))
@@ -164,6 +170,36 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		output.CommitStatus = SectionImageCommitResult::Status::Committed;
+	}
+
+	/** Completes an empty publication observation without generating a pixel image. */
+	void SectionScheduler::CommitConfirmedEmptySection(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		SectionImageCommitResult& output) const
+	{
+		if (publicationOwner == nullptr)
+		{
+			output.CommitStatus = SectionImageCommitResult::Status::InvalidOrIncompleteInput;
+			return;
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			return;
+		}
+		const bool completedImageRemoved = section.HasCompletedImage();
+		if (!publicationOwner->IsCurrent())
+		{
+			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			return;
+		}
+		if (completedImageRemoved)
+		{
+			section.InvalidateCompletedImage();
+		}
+		output.CompletedImageRemoved = completedImageRemoved;
+		output.CommitStatus = SectionImageCommitResult::Status::CommittedEmpty;
 	}
 
 	/** Renders into the numerical context exclusively owned by the supplied Section. */
