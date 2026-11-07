@@ -45,13 +45,13 @@ namespace Services::Map::Buildings::Scheduling
 		return buildingScheduler_ == nullptr || buildingScheduler_->AdvanceSessionShutdown();
 	}
 
-	/** Processes both known passes from one fixed publication without claiming unknown content is absent. */
+	/** Processes known sprites from one fixed publication without assigning a rendering pass. */
 	void SectionScheduler::PrepareKnownSpriteRequirements(
-		const std::shared_ptr<const IBuildingSourcePublication>& publicationOwner,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		KnownSpritePreparationResult& output)
 	{
 		output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
-		output.SourceReadiness = BuildingSourceReadiness::Unavailable;
+		output.CandidateEvidence = {};
 		output.MayHaveUnknownRequirements = true;
 		output.PendingCount = 0;
 		output.FailedCount = 0;
@@ -59,10 +59,7 @@ namespace Services::Map::Buildings::Scheduling
 		output.ReadyWithoutPlacementCount = 0;
 		output.UnresolvedSpriteGeometryCount = 0;
 		output.InvalidRequirementCount = 0;
-		output.OrdinarySprites.clear();
-		output.OverlayLastSprites.clear();
-		output.OrdinarySpriteSupports.clear();
-		output.OverlayLastSpriteSupports.clear();
+		output.PreparedSprites.clear();
 		if (publicationOwner == nullptr)
 		{
 			return;
@@ -73,60 +70,71 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 
-		const BuildingSourceData sourceData = publicationOwner->BorrowSourceData();
-		output.SourceReadiness = sourceData.Readiness;
-		output.MayHaveUnknownRequirements = sourceData.Readiness != BuildingSourceReadiness::Complete;
-		PrepareSpriteRequirementSpan(
-			sourceData.OrdinarySprites,
-			output.OrdinarySprites,
-			output.OrdinarySpriteSupports,
-			output);
-		PrepareSpriteRequirementSpan(
-			sourceData.OverlayLastSprites,
-			output.OverlayLastSprites,
-			output.OverlayLastSpriteSupports,
-			output);
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		output.CandidateEvidence = candidateData.evidence;
+		output.MayHaveUnknownRequirements = !candidateData.hasCoverage ||
+			!candidateData.evidence.candidateCoverageComplete ||
+			!candidateData.evidence.membershipEnumerationComplete ||
+			!candidateData.evidence.nativeAcquisitionComplete ||
+			candidateData.evidence.hasPendingOrUnresolvedOccurrences;
+		if (sourceData.records.size() != candidateData.occurrences.size())
+		{
+			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
+			return;
+		}
+		PrepareSpriteRequirementSpan(candidateData.occurrences, *publicationOwner, output);
 		if (!RevalidatePreparedPublication(publicationOwner, output))
 		{
 			return;
 		}
 		if (output.InvalidRequirementCount != 0)
 		{
-			output.OrdinarySprites.clear();
-			output.OverlayLastSprites.clear();
-			output.OrdinarySpriteSupports.clear();
-			output.OverlayLastSpriteSupports.clear();
+			output.PreparedSprites.clear();
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidSourceRequirement;
 			return;
 		}
 		output.PreparationStatus = KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
 	}
 
-	/** Validates and resolves each descriptor in source order, retaining repeated contributor occurrences. */
+	/** Resolves source records by publication ordinal and retains repeated sprite occurrences. */
 	void SectionScheduler::PrepareSpriteRequirementSpan(
-		std::span<const BuildingSpriteSourceRecord> requirements,
-		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
-		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
+		std::span<const BuildingCandidateOccurrence> candidates,
+		const BuildingCandidatePublication& publication,
 		KnownSpritePreparationResult& output)
 	{
-		for (const BuildingSpriteSourceRecord& requirement : requirements)
+		for (const BuildingCandidateOccurrence& candidate : candidates)
 		{
-			Cache::OwnedSpriteKey ownedKey;
-			if (!Cache::OwnedSpriteKey::TryCopy(requirement.SpriteRequirementKey, ownedKey))
+			const BuildingCandidateSourceRecord* requirement = nullptr;
+			if (!publication.TryGetSourceRecord(candidate.publicationOrdinal, requirement) || requirement == nullptr)
 			{
 				++output.InvalidRequirementCount;
 				continue;
 			}
-			PrepareSpriteRequirement(requirement, ownedKey, outputSprites, outputSupports, output);
+			if (requirement->kind != BuildingCandidateSourceKind::Sprite)
+			{
+				output.MayHaveUnknownRequirements = true;
+				continue;
+			}
+			if (requirement->status != BuildingCandidateSourceStatus::Complete)
+			{
+				output.MayHaveUnknownRequirements = true;
+			}
+			Cache::OwnedSpriteKey ownedKey;
+			if (!Cache::OwnedSpriteKey::TryCopy(requirement->canonicalClassPath, ownedKey))
+			{
+				++output.InvalidRequirementCount;
+				continue;
+			}
+			PrepareSpriteRequirement(candidate.publicationOrdinal, *requirement, ownedKey, output);
 		}
 	}
 
 	/** Preserves acquisition outcomes and borrows actual payload metadata only for placed ready sprites. */
 	void SectionScheduler::PrepareSpriteRequirement(
-		const BuildingSpriteSourceRecord& requirement,
+		std::uint64_t publicationOrdinal,
+		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
-		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
-		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 		KnownSpritePreparationResult& output)
 	{
 		if (buildingScheduler_ == nullptr || cpuSpriteSourceManager_ == nullptr)
@@ -152,19 +160,17 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		PrepareReadySpriteRequirement(
+			publicationOrdinal,
 			requirement,
 			ownedKey,
-			outputSprites,
-			outputSupports,
 			output);
 	}
 
 	/** Borrows the resident payload and appends an input only after its support has been established. */
 	void SectionScheduler::PrepareReadySpriteRequirement(
-		const BuildingSpriteSourceRecord& requirement,
+		std::uint64_t publicationOrdinal,
+		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
-		std::vector<Visuals::BuildingSpriteRenderInput>& outputSprites,
-		std::vector<KnownSpritePreparationResult::PreparedSpriteSupport>& outputSupports,
 		KnownSpritePreparationResult& output)
 	{
 		if (cpuSpriteSourceManager_ == nullptr)
@@ -181,7 +187,7 @@ namespace Services::Map::Buildings::Scheduling
 			++output.UnavailableCount;
 			return;
 		}
-		if (!requirement.HasPlacement)
+		if (!requirement.hasPlacement)
 		{
 			++output.ReadyWithoutPlacementCount;
 			return;
@@ -193,7 +199,7 @@ namespace Services::Map::Buildings::Scheduling
 		renderInput.PixelWidth = payload.Width();
 		renderInput.PixelHeight = payload.Height();
 		renderInput.PixelRegion = {{0.0, 0.0, double(payload.Width()), double(payload.Height())}};
-		renderInput.Placement = requirement.Placement;
+		renderInput.Placement = requirement.placement;
 		renderInput.ProjectionSourceSize = payload.CaptureSize();
 		renderInput.CaptureBounds = payload.Bounds();
 		renderInput.Projection = payload.Projection();
@@ -203,8 +209,11 @@ namespace Services::Map::Buildings::Scheduling
 			++output.UnresolvedSpriteGeometryCount;
 			return;
 		}
-		outputSprites.push_back(renderInput);
-		outputSupports.push_back(support);
+		KnownSpritePreparationResult::PreparedSpriteOccurrence prepared;
+		prepared.PublicationOrdinal = publicationOrdinal;
+		prepared.RenderInput = renderInput;
+		prepared.Support = support;
+		output.PreparedSprites.push_back(std::move(prepared));
 	}
 
 	/** Uses the independent renderer's projected corners to derive one world-space XY envelope. */
@@ -239,19 +248,16 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Withdraws both pass arrays if the fixed publication lost eligibility during processing. */
+	/** Withdraws borrowed prepared inputs if the fixed publication lost eligibility during processing. */
 	bool SectionScheduler::RevalidatePreparedPublication(
-		const std::shared_ptr<const IBuildingSourcePublication>& publicationOwner,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		KnownSpritePreparationResult& output) const noexcept
 	{
 		if (publicationOwner != nullptr && publicationOwner->IsCurrent())
 		{
 			return true;
 		}
-		output.OrdinarySprites.clear();
-		output.OverlayLastSprites.clear();
-		output.OrdinarySpriteSupports.clear();
-		output.OverlayLastSpriteSupports.clear();
+		output.PreparedSprites.clear();
 		output.PreparationStatus = KnownSpritePreparationResult::Status::StalePublication;
 		return false;
 	}

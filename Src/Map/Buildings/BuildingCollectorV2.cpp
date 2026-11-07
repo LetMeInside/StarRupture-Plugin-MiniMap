@@ -789,13 +789,22 @@ namespace MiniMap::BuildingAcquisition
         static void BuildCandidateRecords(
             const Facts& facts,
             std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>& occurrences,
-            std::vector<::Services::Map::Buildings::BuildingCandidateSourceRecord>& sourceRecords)
+            std::vector<::Services::Map::Buildings::BuildingCandidateSourceRecord>& sourceRecords,
+            std::size_t& excludedInteriorOnlyCount)
         {
             using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
             occurrences.reserve(facts.Buildings.size());
             sourceRecords.reserve(facts.Buildings.size());
+            excludedInteriorOnlyCount = 0;
             for (const Facts::Building& building : facts.Buildings)
             {
+                if (building.DefinitionFacts &&
+                    building.DefinitionFacts->InteriorStatus == Status::Ready &&
+                    building.DefinitionFacts->InteriorOnly)
+                {
+                    ++excludedInteriorOnlyCount;
+                    continue;
+                }
                 CandidateOccurrence occurrence;
                 occurrence.hasMapPosition = BuildingCollectorV2::HasValidMapPosition(building);
                 if (occurrence.hasMapPosition)
@@ -823,7 +832,8 @@ namespace MiniMap::BuildingAcquisition
             using CandidateRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
             std::vector<CandidateOccurrence> occurrences;
             std::vector<CandidateSourceRecord> sourceRecords;
-            BuildCandidateRecords(*facts, occurrences, sourceRecords);
+            std::size_t excludedInteriorOnlyCount = 0;
+            BuildCandidateRecords(*facts, occurrences, sourceRecords, excludedInteriorOnlyCount);
             CandidateEvidence evidence;
             for (const CandidateOccurrence& occurrence : occurrences)
             {
@@ -832,11 +842,11 @@ namespace MiniMap::BuildingAcquisition
             evidence.membershipEnumerationComplete = facts->MembershipComplete;
             evidence.nativeAcquisitionComplete = facts->AcquisitionComplete &&
                 !evidence.hasPendingOrUnresolvedOccurrences;
-            const bool allAuthoritativeOccurrencesRetained =
-                occurrences.size() == facts->Buildings.size();
-            // V2 maps every frozen fact and applies no spatial exclusion to its candidate set.
+            const bool allAuthoritativeOccurrencesAccounted =
+                occurrences.size() + excludedInteriorOnlyCount == facts->Buildings.size();
+            // Only positively classified interior-only occurrences are omitted from candidates.
             evidence.candidateCoverageComplete = facts->HasRequestedRegion &&
-                facts->MembershipComplete && allAuthoritativeOccurrencesRetained;
+                facts->MembershipComplete && allAuthoritativeOccurrencesAccounted;
             const CandidateRegion requestedCoverage{
                 facts->RequestedRegion.X,
                 facts->RequestedRegion.Y,

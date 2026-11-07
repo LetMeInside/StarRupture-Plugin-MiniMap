@@ -109,12 +109,10 @@
     <ClInclude Include="Services\Map\Buildings\Capture\ReadbackFenceAccessor.h" />
     <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.h" />
-    <ClInclude Include="Services\Map\Buildings\BuildingSourceData.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingCandidateData.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapRegion.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingCandidatePublication.h" />
-    <ClInclude Include="Services\Map\Buildings\IBuildingSourcePublication.h" />
     <ClInclude Include="Services\Map\Buildings\IImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\OwnedSpriteKey.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\ProcessedSpritePayload.h" />
