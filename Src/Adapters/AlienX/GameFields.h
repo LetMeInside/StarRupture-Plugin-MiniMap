@@ -197,6 +197,13 @@ namespace MiniMapFields
 	// never a fixed array, so a build with a bigger query cannot be overrun.
 	inline auto MassQuerySize = SR_SIZE(FMassEntityQuery);
 
+	// The two subsystems of the sprite capture's world whose members it reads at
+	// the SDK's compiled offsets (a manager and a controller pointer the SDK folds
+	// into padding). Their size is checked on the running build, so a build that
+	// resized one turns the capture off and does not read the wrong bytes.
+	inline auto ElectricitySubsystemSize = SR_SIZE_CHECK(UCrElectricityGraphSubsystem);
+	inline auto EntityGridSubsystemSize  = SR_SIZE_CHECK(UCrEntityGridSubsystem);
+
 	// The Mass entity manager of a subsystem is the SDK's own native field,
 	// PluginMap::MassEntityManagerField, with its 127004 row; it is resolved below.
 
@@ -213,7 +220,7 @@ namespace MiniMapFields
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
 			AbandonBaseInfoReplicator, BuildingTags, WalkwaySplineMesh,
-			TransformTranslation, TextureSRGB, MassQuerySize,
+			TransformTranslation, TextureSRGB, MassQuerySize, ElectricitySubsystemSize, EntityGridSubsystemSize,
 			BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
 			CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 			SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
@@ -326,7 +333,7 @@ namespace MiniMapFields
 				MiniMapEngineFields::ActorsInitialized, MiniMapEngineFields::TearingDown,
 				MiniMapEngineFields::BegunPlay, MiniMapEngineFields::EverInitialized,
 				MiniMapEngineFields::WorldList, MiniMapEngineFields::ContextWorld,
-				MiniMapEngineFields::NeedsTwoCopies),
+				MiniMapEngineFields::NeedsTwoCopies, ElectricitySubsystemSize, EntityGridSubsystemSize),
 			{ "Buildings.CaptureSprites" } };
 
 		// Declares every layer; call before any key is resolved.

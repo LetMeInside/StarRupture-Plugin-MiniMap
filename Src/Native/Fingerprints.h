@@ -57,12 +57,10 @@ namespace MiniMapFingerprints
         uintptr_t getMassFragmentDataPtr = 0;
         uintptr_t getMassConstSharedFragmentPtr = 0;
         uintptr_t transformFragmentStaticStruct = 0;
-        uintptr_t inventoryFragmentStaticStruct = 0;
         uintptr_t foundableParametersStaticStruct = 0;
         // Mandatory Client spline-payload value-copy, cleanup and initialization metadata.
         uintptr_t getSplineActorData = 0;
         uintptr_t destroySplineActorPayloadData = 0;
-        uintptr_t splineActorPayloadStaticStruct = 0;
 
         // Mandatory collector grid subsystem resolution.
         uintptr_t getEntityGridSubsystem = 0;

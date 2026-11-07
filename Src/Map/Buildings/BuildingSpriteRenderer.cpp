@@ -58,7 +58,6 @@ namespace
     static_assert(offsetof(SDK::UStruct, SuperStruct) == 0x40);
     static_assert(sizeof(SDK::UCrElectricityGraphSubsystem) == 0x358);
     static_assert(sizeof(SDK::UCrEntityGridSubsystem) == 0x150);
-    static_assert(sizeof(SDK::UCrBuildingCustomNameSubsystem) == 0x1a8);
     static_assert(sizeof(SDK::UTickableWorldSubsystem) == 0x40);
     static_assert(sizeof(SDK::USubsystem) == 0x30);
     static_assert(0x9f0 + 0xc0 == sizeof(SDK::UWorld));
@@ -378,21 +377,23 @@ namespace
     struct NativeWorldOwner
     {
         enum ClassId { Class, World, Engine, Level, Settings, GameInstance, Electricity, Grid, Names, Mass, Replication, Wave, DirectionalLight, ClassCount };
+        // Size is the size the class must have, or 0 when none of its members are read: only the
+        // classes whose members are read at a compiled offset (Electricity, Grid) are pinned, and
+        // the loader checks the same size for them (SR_SIZE_CHECK in the building-sprites layer).
         struct Metadata { const wchar_t* Path; size_t Size; NativeReference Ref; };
         std::array<Metadata, ClassCount> MetadataClasses{{
             {L"/Script/CoreUObject.Class", sizeof(SDK::UClass)},
             {L"/Script/Engine.World", sizeof(SDK::UWorld)},
             {L"/Script/Engine.Engine", sizeof(SDK::UEngine)},
             {L"/Script/Engine.Level", sizeof(SDK::ULevel)},
-            {L"/Script/Chimera.CrWorldSettings", sizeof(SDK::ACrWorldSettings)},
+            {L"/Script/Chimera.CrWorldSettings", 0},
             {L"/Script/Engine.GameInstance", sizeof(SDK::UGameInstance)},
             {L"/Script/Chimera.CrElectricityGraphSubsystem", sizeof(SDK::UCrElectricityGraphSubsystem)},
             {L"/Script/Chimera.CrEntityGridSubsystem", sizeof(SDK::UCrEntityGridSubsystem)},
-            {L"/Script/Chimera.CrBuildingCustomNameSubsystem", sizeof(SDK::UCrBuildingCustomNameSubsystem)},
+            {L"/Script/Chimera.CrBuildingCustomNameSubsystem", 0},
             {L"/Script/MassEntity.MassEntitySubsystem", sizeof(SDK::UMassEntitySubsystem)},
-            {L"/Script/MassReplication.MassReplicationSubsystem", sizeof(SDK::UMassReplicationSubsystem)},
-            // Only its class is needed (no instance may exist in the capture world), none of its
-            // members are read, so its size, which changes between game builds, is not pinned.
+            // Only the class of these two is needed (no instance may exist in the capture world).
+            {L"/Script/MassReplication.MassReplicationSubsystem", 0},
             {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", 0},
             {L"/Script/Engine.DirectionalLightComponent", sizeof(SDK::UDirectionalLightComponent)}
         }};

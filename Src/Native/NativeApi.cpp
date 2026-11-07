@@ -262,10 +262,6 @@ namespace MiniMapNative
             reinterpret_cast<MassApi::StaticStructFn>(
                 addresses.transformFragmentStaticStruct);
 
-        g_nativeApi.mass.inventoryFragmentStaticStruct =
-            reinterpret_cast<MassApi::StaticStructFn>(
-                addresses.inventoryFragmentStaticStruct);
-
         g_nativeApi.mass.foundableParametersStaticStruct =
             reinterpret_cast<MassApi::StaticStructFn>(
                 addresses.foundableParametersStaticStruct);
@@ -382,15 +378,6 @@ namespace MiniMapNative
         g_nativeApi.player.isGameThread = reinterpret_cast<PlayerApi::IsGameThreadFn>(addresses.isGameThread);
         g_nativeApi.splinePayload.get = reinterpret_cast<SplinePayloadApi::GetFn>(addresses.getSplineActorData);
         g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);
-        // This populates the same static type cache used by the native typed getter.
-        // No script-struct discovery belongs in the gameplay numerical adapter.
-        // A null type is not fatal: the payload copy reports Unavailable and the rails
-        // and pipes are skipped (building-splines).
-        if (addresses.splineActorPayloadStaticStruct)
-        {
-            g_nativeApi.splinePayload.payloadType =
-                reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
-        }
 
         g_initialized = true;
 

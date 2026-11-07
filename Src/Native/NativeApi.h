@@ -318,7 +318,6 @@ namespace MiniMapNative
         GetConstSharedFragmentPtrFn getConstSharedFragmentPtr = nullptr;
 
         StaticStructFn transformFragmentStaticStruct = nullptr;
-        StaticStructFn inventoryFragmentStaticStruct = nullptr;
         StaticStructFn foundableParametersStaticStruct = nullptr;
     };
 
@@ -564,7 +563,6 @@ namespace MiniMapNative
         using DestroyFn = void (__fastcall*)(SDK::FAuAPSplineActorPayloadData*);
         GetFn get = nullptr;
         DestroyFn destroy = nullptr;
-        SDK::UScriptStruct* payloadType = nullptr; // Engine static metadata, warmed only at initialization.
     };
 
     struct NativeApi
