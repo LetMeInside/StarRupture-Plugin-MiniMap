@@ -1,4 +1,4 @@
-// Owns the shared Section grid and viewport registrations, routes image changes, and forwards demand to its coordinator.
+// Owns the shared Section grid, viewport registrations and image residency, and forwards demand to its coordinator.
 #pragma once
 
 #include "IBuildingCollector.h"
@@ -22,7 +22,7 @@ namespace Services::Map::Buildings
 		class SectionSchedulingCoordinator;
 	}
 
-	/** Owns map configuration, shared Sections, viewport registrations, source selection, image-change routing and the scheduling coordinator.
+	/** Owns map configuration, shared Sections and their image residency, viewport registrations, source selection, image-change routing and the scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
 	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
@@ -166,6 +166,16 @@ namespace Services::Map::Buildings
 		 */
 		void ObserveViewportCandidatePublicationChanges();
 
+		/** Checks whether any valid active viewport's one-cell-expanded range contains a Section coordinate.
+		 * @param gridX Signed global Section column to check.
+		 * @param gridY Signed global Section row to check.
+		 * @return True when at least one current viewport keeps the coordinate resident.
+		 */
+		bool IsSectionWithinAnyViewportResidencyRange(std::int64_t gridX, std::int64_t gridY) const;
+
+		/** Releases completed images outside all active viewport residency ranges without erasing Sections. */
+		void ReconcileSectionImageResidency();
+
 		/** Obtains one candidate batch from one retained publication without final certification.
 		 * @param buildingCollector Associated collector for this viewport.
 		 * @param observationGrid Requested row-major map-space grid.
@@ -228,6 +238,7 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
 		std::uint64_t lastCaptureSessionGeneration_ = 0;
+		bool sectionImageResidencyReconciliationPending_ = false;
 		std::unique_ptr<Scheduling::SectionSchedulingCoordinator> sectionSchedulingCoordinator_;
 	};
 }

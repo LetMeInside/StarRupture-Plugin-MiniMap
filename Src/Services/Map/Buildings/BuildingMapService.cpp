@@ -1,10 +1,11 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements service-owned Sections, viewport registration/source selection, post-commit image-change routing, and scheduler lifecycle delegation.
+// Implements service-owned Sections and image residency, viewport source selection, image-change routing, and scheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -80,13 +81,65 @@ namespace Services::Map::Buildings
 			sectionSchedulingCoordinator_->AdvanceCaptureGameWorldSessionShutdown();
 	}
 
-	/** Delegates one internal Section-processing tick without connecting a runtime callback. */
+	/** Reconciles pending image residency before publication observation and one normal scheduling tick. */
 	void BuildingMapService::AdvanceSectionScheduling()
 	{
+		if (sectionImageResidencyReconciliationPending_)
+		{
+			ReconcileSectionImageResidency();
+			sectionImageResidencyReconciliationPending_ = false;
+		}
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
 			ObserveViewportCandidatePublicationChanges();
 			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this);
+		}
+	}
+
+	/** Tests one coordinate against every valid viewport's overflow-safe expanded grid range. */
+	bool BuildingMapService::IsSectionWithinAnyViewportResidencyRange(
+		std::int64_t gridX,
+		std::int64_t gridY) const
+	{
+		const std::int64_t minimumGridCoordinate = (std::numeric_limits<std::int64_t>::min)();
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			const BuildingMapViewport* viewport = viewportEntry.second;
+			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+				viewport->viewportHandle_ != viewportEntry.first)
+			{
+				continue;
+			}
+			const BuildingMapViewport::GridRange& range = viewport->gridRange_;
+			const std::int64_t firstXWithMargin = range.firstX == minimumGridCoordinate
+				? range.firstX
+				: range.firstX - 1;
+			const std::int64_t firstYWithMargin = range.firstY == minimumGridCoordinate
+				? range.firstY
+				: range.firstY - 1;
+			if (gridX >= firstXWithMargin && gridX <= range.endX &&
+				gridY >= firstYWithMargin && gridY <= range.endY)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Invalidates only completed image bytes for Sections outside the current viewport union. */
+	void BuildingMapService::ReconcileSectionImageResidency()
+	{
+		for (const auto& sectionEntry : sections_)
+		{
+			BuildingMapSection* section = sectionEntry.second.get();
+			if (section == nullptr || !section->HasCompletedImage())
+			{
+				continue;
+			}
+			if (!IsSectionWithinAnyViewportResidencyRange(sectionEntry.first.first, sectionEntry.first.second))
+			{
+				section->InvalidateCompletedImage();
+			}
 		}
 	}
 
@@ -245,6 +298,8 @@ namespace Services::Map::Buildings
 				gridRange.endY);
 		}
 		viewportsByHandle_.erase(viewport);
+		ReconcileSectionImageResidency();
+		sectionImageResidencyReconciliationPending_ = false;
 	}
 
 	/** Delivers one completed-image availability change to each live subscribed viewport in range. */
@@ -308,8 +363,8 @@ namespace Services::Map::Buildings
 		if (previousRange.firstX != firstGridX || previousRange.firstY != firstGridY ||
 			previousRange.endX != endGridX || previousRange.endY != endGridY)
 		{
-			return sectionSchedulingCoordinator_ != nullptr &&
-				sectionSchedulingCoordinator_->ChangeViewportDemand(
+			if (sectionSchedulingCoordinator_ == nullptr ||
+				!sectionSchedulingCoordinator_->ChangeViewportDemand(
 					previousRange.firstX,
 					previousRange.firstY,
 					previousRange.endX,
@@ -317,7 +372,11 @@ namespace Services::Map::Buildings
 					firstGridX,
 					firstGridY,
 					endGridX,
-					endGridY);
+					endGridY))
+			{
+				return false;
+			}
+			sectionImageResidencyReconciliationPending_ = true;
 		}
 		return true;
 	}
