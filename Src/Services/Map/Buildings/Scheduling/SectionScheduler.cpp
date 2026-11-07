@@ -1,12 +1,13 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns acquisition resources, delegates session lifecycle and prepares known sprite render inputs.
+// Owns acquisition resources, delegates session lifecycle and prepares neutral source values.
 #include "SectionScheduler.h"
 
 #include "BuildingScheduler.h"
 #include "../Cache/CpuSpriteSourceManager.h"
 #include "../Cache/SpriteDiskCache.h"
 #include "../Visuals/SpriteGeometry.h"
+#include "../Visuals/SplineGeometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -224,6 +225,83 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		output.Rotation = rotation;
 		return true;
+	}
+
+	/** Converts acquired keyed values without changing their coordinate basis or source status. */
+	void SectionScheduler::PrepareSplineCurve(
+		const BuildingCandidateSourceRecord& source,
+		SplineCurvePreparationResult& output) const
+	{
+		output.SourceStatus = source.status;
+		output.ProfileStatus = source.splineProfileStatus;
+		output.Provenance = source.spline.provenance;
+		output.CoordinateSpace = source.spline.coordinateSpace;
+		output.ConversionIssue = Visuals::SplineNumericalIssue::None;
+		output.PreparationStatus = SplineCurvePreparationResult::CurveStatus::NotPrepared;
+		output.RootStatus = SplineCurvePreparationResult::RootTransformStatus::NotApplicable;
+		output.RootTransform.reset();
+		output.Segments.clear();
+		if (source.kind != BuildingCandidateSourceKind::Spline)
+		{
+			output.PreparationStatus = SplineCurvePreparationResult::CurveStatus::NotSpline;
+			return;
+		}
+
+		PrepareSplineRootTransform(source, output);
+		if (!source.spline.hasKeyedCurve)
+		{
+			output.PreparationStatus = SplineCurvePreparationResult::CurveStatus::MissingKeyedCurve;
+			return;
+		}
+
+		const Visuals::KeyedSplineCurve curve{
+			std::span<const Visuals::KeyedSplinePoint>(source.spline.points),
+			source.spline.isLooped};
+		output.ConversionIssue = Visuals::SplineGeometry::ConvertKeyedCurve(curve, output.Segments);
+		if (output.ConversionIssue != Visuals::SplineNumericalIssue::None)
+		{
+			return;
+		}
+		if (source.spline.coordinateSpace != BuildingCandidateSplineCoordinateSpace::WorldSpace)
+		{
+			output.PreparationStatus = SplineCurvePreparationResult::CurveStatus::UnsupportedCoordinateSpace;
+			return;
+		}
+		output.PreparationStatus = SplineCurvePreparationResult::CurveStatus::ConvertedWorldSpace;
+	}
+
+	/** Validates copied placement values without normalizing or replacing missing data. */
+	void SectionScheduler::PrepareSplineRootTransform(
+		const BuildingCandidateSourceRecord& source,
+		SplineCurvePreparationResult& output)
+	{
+		using RootStatus = SplineCurvePreparationResult::RootTransformStatus;
+		output.RootStatus = RootStatus::MissingPlacement;
+		if (!source.hasPlacement)
+		{
+			return;
+		}
+
+		Visuals::SplineSurfaceTransform rootTransform;
+		for (std::size_t axis = 0; axis < 3; ++axis)
+		{
+			const double scale = source.placement.SignedScale[axis];
+			if (!std::isfinite(source.placement.Position[axis]) || !std::isfinite(scale) || scale == 0.0 ||
+				!std::isfinite(1.0 / scale))
+			{
+				output.RootStatus = RootStatus::InvalidPlacement;
+				return;
+			}
+			rootTransform.Translation[axis] = source.placement.Position[axis];
+			rootTransform.Scale[axis] = scale;
+		}
+		if (!CopySplineSurfaceRotation(source.placement.Rotation, rootTransform))
+		{
+			output.RootStatus = RootStatus::InvalidPlacement;
+			return;
+		}
+		output.RootTransform = rootTransform;
+		output.RootStatus = RootStatus::Prepared;
 	}
 
 	/** Resolves source records by publication ordinal and retains repeated sprite occurrences. */

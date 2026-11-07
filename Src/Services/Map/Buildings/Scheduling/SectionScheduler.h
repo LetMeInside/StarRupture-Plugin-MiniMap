@@ -1,4 +1,4 @@
-// Owns Building Map acquisition resources, session lifecycle and known-sprite preparation.
+// Owns Building Map acquisition resources, session lifecycle and neutral source preparation.
 #pragma once
 
 #include "../BuildingCandidatePublication.h"
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -132,6 +133,53 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<Alternative> Alternatives;
 		};
 
+		/** Owns numerical curve inputs while preserving independent source and profile evidence.
+		 * Prepared segments contain only converted source coordinates. The root transform is a
+		 * separate optional value for surface projection and is never applied to those coordinates.
+		 */
+		struct SplineCurvePreparationResult
+		{
+			/** Describes keyed conversion and coordinate eligibility of segments only.
+			 * RootTransformStatus remains independent; neither status certifies a complete contributor.
+			 */
+			enum class CurveStatus
+			{
+				NotPrepared,
+				ConvertedWorldSpace,
+				NotSpline,
+				MissingKeyedCurve,
+				UnsupportedCoordinateSpace
+			};
+			/** Describes whether the copied placement can serve as the surface root transform. */
+			enum class RootTransformStatus
+			{
+				NotApplicable,
+				Prepared,
+				MissingPlacement,
+				InvalidPlacement
+			};
+
+			/** Original acquisition state; numerical conversion never promotes this value. */
+			BuildingCandidateSourceStatus SourceStatus = BuildingCandidateSourceStatus::Unknown;
+			/** Independent authored-profile acquisition state retained for the future assembler. */
+			SplineProfileAcquisitionStatus ProfileStatus = SplineProfileAcquisitionStatus::Unknown;
+			/** Original source selection evidence for the curve values. */
+			BuildingCandidateSplineProvenance Provenance = BuildingCandidateSplineProvenance::Unknown;
+			/** Original coordinate basis; only WorldSpace is currently eligible for scene inputs. */
+			BuildingCandidateSplineCoordinateSpace CoordinateSpace =
+				BuildingCandidateSplineCoordinateSpace::Unknown;
+			/** Keyed conversion outcome returned by the existing SplineGeometry operation. */
+			Visuals::SplineNumericalIssue ConversionIssue = Visuals::SplineNumericalIssue::None;
+			/** Curve-input eligibility, separate from acquisition and profile status. */
+			CurveStatus PreparationStatus = CurveStatus::NotPrepared;
+			/** Independent placement-to-root conversion result. */
+			RootTransformStatus RootStatus = RootTransformStatus::NotApplicable;
+			/** Present only for a finite, invertible placement with a unit XYZW quaternion. */
+			std::optional<Visuals::SplineSurfaceTransform> RootTransform;
+			/** Caller-owned converted curve segments; no view into publication-owned points remains. */
+			std::vector<Visuals::SplineCurveSegment> Segments;
+		};
+
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
 		SectionScheduler(const SectionScheduler&) = delete;
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
@@ -190,6 +238,24 @@ namespace Services::Map::Buildings::Scheduling
 			const BuildingCandidateSourceRecord& source,
 			SplineProfilePreparationResult& output) const;
 
+		/** Converts one borrowed keyed curve and prepares its separate placement root transform.
+		 * The caller retains the publication owner through this call; all returned segments and
+		 * transform values are owned by output. World-space curve points are never transformed.
+		 * @param source Borrowed immutable neutral source record from a retained publication.
+		 * @param output Receives source evidence, numerical conversion outcome and owned values.
+		 */
+		void PrepareSplineCurve(
+			const BuildingCandidateSourceRecord& source,
+			SplineCurvePreparationResult& output) const;
+
+		/** Copies placement into a validated transform used only for surface projection.
+		 * @param source Borrowed neutral source record.
+		 * @param output Receives an optional root transform and its independent status.
+		 */
+		static void PrepareSplineRootTransform(
+			const BuildingCandidateSourceRecord& source,
+			SplineCurvePreparationResult& output);
+
 		/** Maps one authored alternative's evidence and fixed parameters to generic surface values.
 		 * @param source One neutral profile alternative borrowed for this call.
 		 * @param output Receives an owned numerical surface input when representable.
@@ -207,7 +273,7 @@ namespace Services::Map::Buildings::Scheduling
 			const SplineProfileAlternative& source,
 			Visuals::BuildingSplineSurfaceRenderInput& output);
 
-		/** Copies a valid neutral XYZW quaternion into a generic component transform.
+		/** Copies a valid neutral XYZW quaternion into a generic numerical transform.
 		 * @param rotation Preconverted component quaternion from game-specific acquisition.
 		 * @param output Receives the numerical component transform rotation.
 		 * @return True when the quaternion is finite and unit length within renderer tolerance.
