@@ -88,7 +88,7 @@ namespace MiniMapMouseWheel
             return false;
         }
 
-        const auto settings = MiniMapConfig::GetMouseWheelSettings();
+        const MiniMapConfig::MouseWheelSettings settings = MiniMapConfig::GetMouseWheelSettings();
         {
             std::lock_guard lock(g_inputMutex);
             g_accepting = true;

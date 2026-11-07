@@ -52,7 +52,8 @@ namespace MiniMapBuildingCollector
     {
         SDK::UScriptStruct *Building=nullptr,*Transform=nullptr,*Parameters=nullptr,*Spline=nullptr,*AP=nullptr;
         SDK::UClass *BuildingData=nullptr,*Visual=nullptr,*Cosmetic=nullptr,*Walkway=nullptr,*Blueprint=nullptr,*SplineMesh=nullptr;
-    } types;
+    };
+    Types types;
     struct Entry {Record Data;const SDK::UAuActorPlacementData* Definition=nullptr;bool Complete=false;uint64_t SeenScan=0;};
     struct Definition
     {
@@ -637,8 +638,9 @@ namespace MiniMapBuildingCollector
         it=entities.find(key);
         if(it==entities.end() || it->second.Complete ||
             !n.mass.isEntityValid(manager,{result.Index,result.Serial}) || !n.mass.isEntityBuilt(manager,{result.Index,result.Serial}))return false;
-        result.CanonicalBlueprint=definition->Blueprint;result.DefinitionShape=definition->Recipe;
-        result.InteriorKnown=true;result.InteriorOnly=definition->Interior;
+        const Definition& prepared=*definition;
+        result.CanonicalBlueprint=prepared.Blueprint;result.DefinitionShape=prepared.Recipe;
+        result.InteriorKnown=true;result.InteriorOnly=prepared.Interior;
         if(result.HasSpline)result.Extent=SplineBounds(result);
         else {std::scoped_lock lock(MiniMapBuildingSchedulerInternal::LifecycleMutex);SpriteBounds(result);}
         // Owned Record move and key erasure do not allocate or call native

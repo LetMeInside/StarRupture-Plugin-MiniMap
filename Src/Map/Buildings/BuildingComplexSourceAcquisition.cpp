@@ -50,7 +50,8 @@ namespace
         SDK::UClass* Blueprint = nullptr;
         SDK::UClass* SplineMesh = nullptr;
         std::vector<SDK::UObject*> Roots;
-    } Types;
+    };
+    Metadata Types;
 
     const SDK::FCrBuildingParameters* GetParameters(const MiniMapNative::NativeApi& native,
         const void* manager, Id id)
