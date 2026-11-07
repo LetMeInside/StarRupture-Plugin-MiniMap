@@ -3,12 +3,15 @@
 
 #include "IBuildingCollector.h"
 #include "Coordination/IBuildingMapService.h"
+#include "SplinePolicy.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <span>
+#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -31,16 +34,19 @@ namespace Services::Map::Buildings
 		 * Throws std::invalid_argument unless section size is finite and positive,
 		 * resolution is positive, and the Buildings cache directory is nonempty and
 		 * absolute. Construction does not require that directory to exist and performs
-		 * no cache file operations.
+		 * no cache file operations. The spline policy span is copied; its index-zero entry
+		 * is reserved and cannot be resolved by TryGetSplinePolicy.
 		 *
 		 * @param sectionSizeMapUnits Width and height of each square cell in map units.
 		 * @param sectionResolutionPixels Width and height of each future square image in pixels.
 		 * @param buildingsCacheDirectory Already-resolved absolute Buildings sprite-cache directory.
+		 * @param splinePolicies Direct-indexed policies with reserved entry zero.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
-			std::filesystem::path buildingsCacheDirectory);
+			std::filesystem::path buildingsCacheDirectory,
+			std::span<const SplinePolicy> splinePolicies);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
@@ -60,6 +66,10 @@ namespace Services::Map::Buildings
 
 		/** Returns the derived number of image pixels per map unit. */
 		double GetPixelsPerMapUnit() const noexcept;
+		/** Returns an immutable policy pointer, or null for reserved/unknown/out-of-range indexes.
+		 * @param splinePolicyIndex Direct numeric index supplied by a neutral source record.
+		 */
+		const SplinePolicy* TryGetSplinePolicy(std::uint16_t splinePolicyIndex) const noexcept;
 
 		/**
 		 * Opens a viewport with its own non-owning collector association. The caller
@@ -138,6 +148,7 @@ namespace Services::Map::Buildings
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
+		const std::vector<SplinePolicy> splinePolicies_;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;

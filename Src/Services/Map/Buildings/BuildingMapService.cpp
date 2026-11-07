@@ -14,13 +14,15 @@
 
 namespace Services::Map::Buildings
 {
-	/** Validates and stores immutable map-grid and image-resolution settings. */
+	/** Validates immutable map settings and copies the caller's spline policy span. */
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
-		std::filesystem::path buildingsCacheDirectory)
+		std::filesystem::path buildingsCacheDirectory,
+		std::span<const SplinePolicy> splinePolicies)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
+		, splinePolicies_(splinePolicies.begin(), splinePolicies.end())
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
 			sectionResolutionPixels_ == 0)
@@ -79,6 +81,17 @@ namespace Services::Map::Buildings
 	std::uint32_t BuildingMapService::GetSectionResolutionPixels() const noexcept
 	{
 		return sectionResolutionPixels_;
+	}
+
+	/** Resolves direct indexes without selecting a fallback for reserved or missing entries. */
+	const SplinePolicy* BuildingMapService::TryGetSplinePolicy(
+		std::uint16_t splinePolicyIndex) const noexcept
+	{
+		if (splinePolicyIndex == 0 || splinePolicyIndex >= splinePolicies_.size())
+		{
+			return nullptr;
+		}
+		return &splinePolicies_[splinePolicyIndex];
 	}
 
 	/** Derives image scale from the immutable resolution and cell-size settings. */

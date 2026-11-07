@@ -2,6 +2,7 @@
 // stays here; no rendering, legacy collector, service interface or runtime caller is used.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollectorV2.h"
+#include "SplinePolicyId.h"
 #include "Services/Map/Buildings/BuildingCandidatePublication.h"
 #include "BuildingDefinitionAcquisition.h"
 #include "BuildingSplineSource.h"
@@ -654,6 +655,51 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
+        /** Classifies only spline occurrences with a ready acquired definition ID. */
+        static SplinePolicyId ClassifySplinePolicyId(const Facts::Building& building)
+        {
+            if (building.SplineClassificationStatus != Status::Ready || !building.HasSpline ||
+                !building.DefinitionFacts ||
+                building.DefinitionFacts->ClassStatus != Status::Ready)
+            {
+                return SplinePolicyId::Unknown;
+            }
+
+            switch (static_cast<SDK::ECrBuildingID>(building.DefinitionFacts->BuildingId))
+            {
+            case SDK::ECrBuildingID::DroneRailT1:
+            case SDK::ECrBuildingID::DroneRailT2:
+            case SDK::ECrBuildingID::DroneRailT3:
+            case SDK::ECrBuildingID::DroneRailT4:
+            case SDK::ECrBuildingID::DroneRailT5:
+                return SplinePolicyId::DroneRail;
+            case SDK::ECrBuildingID::Zipline:
+            case SDK::ECrBuildingID::Zipline_250:
+            case SDK::ECrBuildingID::Zipline_320:
+            case SDK::ECrBuildingID::Zipline_390:
+            case SDK::ECrBuildingID::Zipline_460:
+            case SDK::ECrBuildingID::Zipline_530:
+            case SDK::ECrBuildingID::Zipline_600:
+            case SDK::ECrBuildingID::Zipline_2x2:
+            case SDK::ECrBuildingID::Zipline_2x2_250:
+            case SDK::ECrBuildingID::Zipline_2x2_320:
+            case SDK::ECrBuildingID::Zipline_2x2_390:
+            case SDK::ECrBuildingID::Zipline_2x2_460:
+            case SDK::ECrBuildingID::Zipline_2x2_530:
+            case SDK::ECrBuildingID::Zipline_2x2_600:
+            case SDK::ECrBuildingID::ZipLine_OLD:
+            case SDK::ECrBuildingID::ZiplineSupport:
+            case SDK::ECrBuildingID::ZiplineSupport_2x2:
+            case SDK::ECrBuildingID::ZipRail:
+                return SplinePolicyId::Zipline;
+            case SDK::ECrBuildingID::Walkway:
+            case SDK::ECrBuildingID::RailingWalkway:
+                return SplinePolicyId::Walkway;
+            default:
+                return SplinePolicyId::Unknown;
+            }
+        }
+
         /** Combines required source facts while retaining the strongest unresolved evidence. */
         static ::Services::Map::Buildings::BuildingCandidateSourceStatus CombineSourceStatus(
             ::Services::Map::Buildings::BuildingCandidateSourceStatus first,
@@ -820,9 +866,12 @@ namespace MiniMap::BuildingAcquisition
                 source.status = CombineSourceStatus(definitionStatus, transformStatus);
             }
             else
+            {
+                source.splinePolicyIndex = static_cast<std::uint16_t>(ClassifySplinePolicyId(building));
                 source.status = CombineSourceStatus(
                     CombineSourceStatus(definitionStatus, transformStatus),
                     CopySplineSource(building, source.spline));
+            }
             return source;
         }
 

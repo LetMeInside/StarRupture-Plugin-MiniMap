@@ -95,6 +95,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
+    <ClInclude Include="Services\Map\Buildings\SplinePolicy.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
@@ -195,6 +196,7 @@
     <ClInclude Include="Map\AlienActors\AlienActors.h" />
     <ClInclude Include="Map\Buildings\BuildingCollector.h" />
     <ClInclude Include="Map\Buildings\BuildingCollectorV2.h" />
+    <ClInclude Include="Map\Buildings\SplinePolicyId.h" />
     <ClInclude Include="Map\Buildings\BuildingAcquiredFacts.h" />
     <ClInclude Include="Map\Buildings\BuildingDefinitionAcquisition.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineSource.h" />

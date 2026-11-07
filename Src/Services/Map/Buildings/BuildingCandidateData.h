@@ -136,6 +136,8 @@ namespace Services::Map::Buildings
 		BuildingCandidateSourceKind kind = BuildingCandidateSourceKind::Unknown;
 		/** Sprite pass supplied by the game-specific producer; Unknown authorizes no default pass. */
 		BuildingCandidateSpritePass spritePass = BuildingCandidateSpritePass::Unknown;
+		/** Neutral direct policy-table index for a positively classified spline; zero is unresolved. */
+		std::uint16_t splinePolicyIndex = 0;
 		/** Acquisition state of the retained neutral values, independent of resource readiness. */
 		BuildingCandidateSourceStatus status = BuildingCandidateSourceStatus::Unknown;
 		/** Owned canonical generated-class identity bytes when acquired. */
