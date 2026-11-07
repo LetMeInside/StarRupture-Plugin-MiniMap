@@ -51,8 +51,28 @@ namespace Services::Map::Buildings
 		 *
 		 * @param xMapUnits New upper-left map X coordinate.
 		 * @param yMapUnits New upper-left map Y coordinate.
+		 * @return True when the moved rectangle is accepted and stored.
 		 */
 		bool Move(double xMapUnits, double yMapUnits);
+
+		/**
+		 * Replaces the complete upper-left-origin rectangle in service map units.
+		 * Returns false without changing stored rectangle values or grid range when
+		 * the viewport is closed or the service rejects a changed grid range.
+		 * Invalid coordinates, nonpositive or nonfinite dimensions, and unsupported
+		 * coordinates retain the existing CalculateGridRange exception behavior.
+		 *
+		 * @param xMapUnits New upper-left map X coordinate.
+		 * @param yMapUnits New upper-left map Y coordinate.
+		 * @param widthMapUnits New strictly positive rectangle width.
+		 * @param heightMapUnits New strictly positive rectangle height.
+		 * @return True when the rectangle is accepted and stored.
+		 */
+		bool SetRectangle(
+			double xMapUnits,
+			double yMapUnits,
+			double widthMapUnits,
+			double heightMapUnits);
 
 		/**
 		 * Requests candidate observations for the current cells without changing the

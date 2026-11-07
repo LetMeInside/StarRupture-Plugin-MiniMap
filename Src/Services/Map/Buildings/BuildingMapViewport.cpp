@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements 2D map-rectangle movement and read-only access to service-owned
-// sparse Building Map sections.
+// Implements 2D map-rectangle movement and resizing plus read-only access to
+// service-owned sparse Building Map sections.
 #include "BuildingMapViewport.h"
 
 #include "Coordination/IBuildingMapService.h"
@@ -13,7 +13,7 @@
 
 namespace Services::Map::Buildings
 {
-	/** Registers the viewport's fixed-size rectangle and initial grid coverage. */
+	/** Registers the viewport's initial rectangle and grid coverage. */
 	BuildingMapViewport::BuildingMapViewport(
 		Coordination::IBuildingMapService& service,
 		IBuildingCollector& buildingCollector,
@@ -44,8 +44,18 @@ namespace Services::Map::Buildings
 		Close();
 	}
 
-	/** Moves after the collector accepts any required grid-aligned region update. */
+	/** Moves the upper-left corner while retaining the current rectangle dimensions. */
 	bool BuildingMapViewport::Move(double xMapUnits, double yMapUnits)
+	{
+		return SetRectangle(xMapUnits, yMapUnits, widthMapUnits_, heightMapUnits_);
+	}
+
+	/** Commits a complete rectangle only after any changed grid range is accepted. */
+	bool BuildingMapViewport::SetRectangle(
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
 	{
 		if (service_ == nullptr || buildingCollector_ == nullptr)
 		{
@@ -54,8 +64,8 @@ namespace Services::Map::Buildings
 		const GridRange nextRange = CalculateGridRange(
 			xMapUnits,
 			yMapUnits,
-			widthMapUnits_,
-			heightMapUnits_,
+			widthMapUnits,
+			heightMapUnits,
 			service_->GetSectionSizeMapUnits());
 		if (nextRange.firstX != gridRange_.firstX || nextRange.firstY != gridRange_.firstY ||
 			nextRange.endX != gridRange_.endX || nextRange.endY != gridRange_.endY)
@@ -72,6 +82,8 @@ namespace Services::Map::Buildings
 		}
 		xMapUnits_ = xMapUnits;
 		yMapUnits_ = yMapUnits;
+		widthMapUnits_ = widthMapUnits;
+		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;
 		return true;
 	}

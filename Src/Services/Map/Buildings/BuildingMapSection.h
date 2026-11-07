@@ -51,6 +51,35 @@ namespace Services::Map::Buildings
 		 */
 		bool TryGetCurrentMembershipFingerprint(std::uint64_t& fingerprint) const;
 
+		/**
+		 * Describes the actual dimensions and borrowed immutable bytes of a stored
+		 * completed RGBA16F Section image. The Section owns the storage; this view
+		 * does not extend its lifetime and is usable only under the borrowing
+		 * restrictions documented by TryBorrowCompletedImage.
+		 */
+		struct CompletedImageView
+		{
+			std::uint32_t PixelWidth = 0;
+			std::uint32_t PixelHeight = 0;
+			std::span<const std::uint8_t> Rgba16fBytes;
+		};
+
+		/**
+		 * Borrows immutable metadata and RGBA16F bytes from the completed image.
+		 * The borrowed span is valid only while this Section remains alive, its
+		 * completed image remains unchanged, and the service's serialized
+		 * calling-thread contract is respected. Consume the bytes synchronously;
+		 * do not retain the span across image replacement or removal, residency
+		 * eviction, service destruction, or any other image-ownership mutation.
+		 * A caller may immediately convert the bytes into independently owned
+		 * presentation storage.
+		 *
+		 * @param image Receives actual pixel dimensions and a const borrowed byte span.
+		 *               It is reset to an empty view when no completed image exists.
+		 * @return True only when a completed image is stored.
+		 */
+		bool TryBorrowCompletedImage(CompletedImageView& image) const;
+
 	private:
 		friend class BuildingMapService;
 		friend class Scheduling::SectionScheduler;
@@ -72,18 +101,6 @@ namespace Services::Map::Buildings
 		};
 
 		/**
-		 * Borrows immutable bytes from the currently stored completed image.
-		 * The span remains valid only while this Section and its stored image
-		 * remain alive and unchanged.
-		 */
-		struct CompletedImageView
-		{
-			std::uint32_t PixelWidth = 0;
-			std::uint32_t PixelHeight = 0;
-			std::span<const std::uint8_t> Rgba16fBytes;
-		};
-
-		/**
 		 * Records a complete fingerprint or revokes current certification when incomplete.
 		 *
 		 * @param isComplete Whether the collector certified complete source coverage.
@@ -94,16 +111,6 @@ namespace Services::Map::Buildings
 
 		/** Reports whether this Section currently owns a completed image. */
 		bool HasCompletedImage() const;
-
-		/**
-		 * Borrows the current image metadata and bytes without copying pixels.
-		 * The view remains valid only while the Section and image remain alive
-		 * and unchanged.
-		 *
-		 * @param image Receives an immutable borrowed view when available.
-		 * @return True only when a completed image is stored.
-		 */
-		bool TryBorrowCompletedImage(CompletedImageView& image) const;
 
 		/** Releases only the completed image, preserving this Section and its rendering context. */
 		void InvalidateCompletedImage();
