@@ -108,7 +108,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Commits certified empty observations without rendering; otherwise renders and adopts complete bytes. */
+	/** Completes zero-candidate or fully transparent Sections, otherwise adopts the complete rendered image. */
 	void SectionScheduler::RenderAndCommitSectionImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
@@ -118,21 +118,18 @@ namespace Services::Map::Buildings::Scheduling
 		SectionImageCommitResult& output) const
 	{
 		output.Reset();
-		if (!IsObservationForSection(section, observation)) return;
 		SectionScenePreparationResult scenePreparation;
-		PrepareSectionSceneInputs(publicationOwner, observation, knownSpritePreparation, splinePolicies, scenePreparation);
-		output.SceneReadiness = scenePreparation.PreparationReadiness;
-		using Readiness = SectionScenePreparationResult::Readiness;
-		if (scenePreparation.PreparationReadiness == Readiness::StalePublication ||
-			(publicationOwner != nullptr && !publicationOwner->IsCurrent()))
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
-			return;
-		}
-		if (publicationOwner == nullptr || scenePreparation.PreparationReadiness != Readiness::CompleteSceneInputs) return;
+		if (!TryPrepareSectionSceneForCommit(
+			section,
+			publicationOwner,
+			observation,
+			knownSpritePreparation,
+			splinePolicies,
+			scenePreparation,
+			output)) return;
 		if (observation.candidateOrdinals.empty())
 		{
-			CommitConfirmedEmptySection(section, publicationOwner, output);
+			CommitEmptySection(section, publicationOwner, output);
 			return;
 		}
 		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
@@ -147,16 +144,11 @@ namespace Services::Map::Buildings::Scheduling
 		const Rendering::Rgba16fImageGrid grid =
 			CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
 		std::vector<std::uint8_t> imageBytes;
-		output.NumericalStatus = RenderIntoSectionContext(
-			section, sceneInput, grid, imageBytes);
-		if (!publicationOwner->IsCurrent())
+		output.NumericalStatus = RenderIntoSectionContext(section, sceneInput, grid, imageBytes);
+		if (!IsCompletedRenderCurrentAndComplete(publicationOwner, output)) return;
+		if (IsFullyTransparentRgba16fImage(std::span<const std::uint8_t>(imageBytes)))
 		{
-			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
-			return;
-		}
-		if (*output.NumericalStatus != Rendering::SectionRendering::Status::Complete || imageBytes.empty())
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
+			CommitEmptySection(section, publicationOwner, output);
 			return;
 		}
 		if (!publicationOwner->IsCurrent())
@@ -172,8 +164,50 @@ namespace Services::Map::Buildings::Scheduling
 		output.CommitStatus = SectionImageCommitResult::Status::Committed;
 	}
 
-	/** Completes an empty publication observation without generating a pixel image. */
-	void SectionScheduler::CommitConfirmedEmptySection(
+	/** Runs exact-cell validation, existing scene preparation and final readiness checks once. */
+	bool SectionScheduler::TryPrepareSectionSceneForCommit(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const BuildingCandidateObservation& observation,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		SectionScenePreparationResult& output,
+		SectionImageCommitResult& commitResult) const
+	{
+		if (!IsObservationForSection(section, observation)) return false;
+		PrepareSectionSceneInputs(publicationOwner, observation, knownSpritePreparation, splinePolicies, output);
+		commitResult.SceneReadiness = output.PreparationReadiness;
+		using Readiness = SectionScenePreparationResult::Readiness;
+		if (output.PreparationReadiness == Readiness::StalePublication ||
+			(publicationOwner != nullptr && !publicationOwner->IsCurrent()))
+		{
+			commitResult.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			return false;
+		}
+		return publicationOwner != nullptr && output.PreparationReadiness == Readiness::CompleteSceneInputs;
+	}
+
+	/** Preserves currentness and complete numerical evidence before output inspection or adoption. */
+	bool SectionScheduler::IsCompletedRenderCurrentAndComplete(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		SectionImageCommitResult& commitResult) const
+	{
+		if (!publicationOwner->IsCurrent())
+		{
+			commitResult.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			return false;
+		}
+		if (!commitResult.NumericalStatus.has_value() ||
+			*commitResult.NumericalStatus != Rendering::SectionRendering::Status::Complete)
+		{
+			commitResult.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
+			return false;
+		}
+		return true;
+	}
+
+	/** Completes an empty Section without adopting pixel bytes. */
+	void SectionScheduler::CommitEmptySection(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		SectionImageCommitResult& output) const
@@ -200,6 +234,35 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		output.CompletedImageRemoved = completedImageRemoved;
 		output.CommitStatus = SectionImageCommitResult::Status::CommittedEmpty;
+	}
+
+	/** Compares each validated pixel with the exact little-endian transparent RGBA16F clear value. */
+	bool SectionScheduler::IsFullyTransparentRgba16fImage(
+		std::span<const std::uint8_t> imageBytes) const noexcept
+	{
+		constexpr std::size_t bytesPerPixel = 8;
+		constexpr std::array<std::uint8_t, bytesPerPixel> transparentPixelBytes{
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C};
+		std::size_t expectedImageByteCount = 0;
+		if (!::Services::Map::Buildings::BuildingMapSection::TryGetCompletedImageByteCount(
+			sectionResolutionPixels_,
+			sectionResolutionPixels_,
+			expectedImageByteCount) ||
+			imageBytes.size() != expectedImageByteCount)
+		{
+			return false;
+		}
+		for (std::size_t pixelByteOffset = 0; pixelByteOffset < imageBytes.size(); pixelByteOffset += bytesPerPixel)
+		{
+			for (std::size_t channelByteOffset = 0; channelByteOffset < bytesPerPixel; ++channelByteOffset)
+			{
+				if (imageBytes[pixelByteOffset + channelByteOffset] != transparentPixelBytes[channelByteOffset])
+				{
+					return false;
+				}
+			}
+		}
+		return !imageBytes.empty();
 	}
 
 	/** Renders into the numerical context exclusively owned by the supplied Section. */

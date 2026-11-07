@@ -346,11 +346,12 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Reports successful image adoption or confirmed-empty completion without owning image bytes.
 		 * Readiness and numerical status preserve the underlying render evidence. Committed means
-		 * the Section adopted an image; CommittedEmpty means complete evidence proved no candidates.
+		 * the Section adopted an image; CommittedEmpty means the complete scene was empty before
+		 * rendering or its successfully finalized image contained only transparent clear pixels.
 		 */
 		struct SectionImageCommitResult
 		{
-			/** Distinguishes incomplete work, rendering failure, image adoption and confirmed emptiness. */
+			/** Distinguishes incomplete work, rendering failure, image adoption and empty completion. */
 			enum class Status
 			{
 				InvalidOrIncompleteInput,
@@ -443,11 +444,39 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			SectionScenePreparationResult& output) const;
 
-		/** Prepares complete inputs, commits a certified empty candidate set without rendering,
-		 * or renders once and move-adopts complete bytes into the same Section. CompleteSceneInputs
-		 * and publication currentness gate either successful outcome. Failed attempts preserve any
-		 * previously stored Section image. The caller retains the publication and borrowed inputs
-		 * through this synchronous operation.
+		/** Validates and prepares one exact Section observation before rendering or empty completion.
+		 * @param section Service-owned Section that the observation must describe.
+		 * @param publicationOwner Retained candidate publication used for preparation.
+		 * @param observation Candidate observation to validate and prepare.
+		 * @param knownSpritePreparation Existing same-publication sprite outcomes.
+		 * @param splinePolicies Borrowed immutable service policy span.
+		 * @param output Receives the complete prepared scene when readiness permits.
+		 * @param commitResult Receives readiness and stale-publication evidence.
+		 * @return True only for a valid exact-cell observation with a current complete scene.
+		 */
+		bool TryPrepareSectionSceneForCommit(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			const BuildingCandidateObservation& observation,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			SectionScenePreparationResult& output,
+			SectionImageCommitResult& commitResult) const;
+
+		/** Validates currentness and completion after the existing numerical render call.
+		 * @param publicationOwner Retained publication whose currentness gates completed output.
+		 * @param commitResult Result containing the numerical status and receiving validation failure.
+		 * @return True only for a Complete numerical result from a still-current publication.
+		 */
+		bool IsCompletedRenderCurrentAndComplete(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			SectionImageCommitResult& commitResult) const;
+
+		/** Prepares complete inputs, commits a zero-candidate Section without rendering, or renders
+		 * once and classifies the finalized image before either completing empty or move-adopting it.
+		 * CompleteSceneInputs and publication currentness gate either successful outcome. Failed
+		 * attempts preserve any previously stored Section image. The caller retains the publication
+		 * and borrowed inputs through this synchronous operation.
 		 * @param section Service-owned Section rendered and updated on success.
 		 * @param publicationOwner Retained publication used for rendering and final currentness check.
 		 * @param observation Candidate observation matching the Section cell.
@@ -463,16 +492,23 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			SectionImageCommitResult& output) const;
 
-		/** Removes a prior image only after complete empty evidence and a final currentness check.
-		 * The caller has validated the exact Section observation and CompleteSceneInputs readiness.
+		/** Completes an empty Section after validated pre-render or post-render evidence.
+		 * The caller has validated the exact Section observation and CompleteSceneInputs readiness;
+		 * this operation rechecks publication currentness before releasing any stored image.
 		 * @param section Service-owned Section whose optional image may be removed.
 		 * @param publicationOwner Retained publication whose currentness gates image removal.
 		 * @param output Receives CommittedEmpty and whether image storage changed.
 		 */
-		void CommitConfirmedEmptySection(
+		void CommitEmptySection(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			SectionImageCommitResult& output) const;
+
+		/** Validates the expected image byte count and checks exact transparent RGBA16F clear bytes.
+		 * @param imageBytes Borrowed completed row-major RGBA16F pixel bytes.
+		 * @return True only for a correctly sized image whose every pixel is exactly transparent.
+		 */
+		bool IsFullyTransparentRgba16fImage(std::span<const std::uint8_t> imageBytes) const noexcept;
 
 		/** Validates that the requested half-open cell corresponds to the supplied Section coordinates.
 		 * @param section Service-owned Section whose signed grid location is authoritative.
