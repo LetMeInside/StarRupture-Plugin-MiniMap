@@ -9,6 +9,7 @@
 #include "Map/MapTransform.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
+#include "Native/UObjectAbi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
 #include "Native/DefinitionAcquisitionCore.h"
@@ -17,6 +18,7 @@
 #include "Map/Buildings/CapturePng.h"
 #include "Map/Buildings/SceneCaptureConfiguration.h"
 #include "plugin_helpers.h"
+#include <plugin_map.h>
 
 #include <Engine_classes.hpp>
 #include <SDK/Chimera_classes.hpp>
@@ -46,7 +48,6 @@ namespace
     // These offsets and native arguments are the existing CL-127004 world contract.
     static_assert(sizeof(SDK::UWorld) == 0xab0);
     static_assert(offsetof(SDK::UWorld, PersistentLevel) == 0x30);
-    static_assert(offsetof(SDK::UWorld, OwningGameInstance) == 0x230);
     static_assert(offsetof(SDK::ULevel, OwningWorld) == 0xc0);
     static_assert(offsetof(SDK::ULevel, WorldSettings) == 0x2c8);
     static_assert(offsetof(SDK::UStruct, SuperStruct) == 0x40);
@@ -106,6 +107,19 @@ namespace
     {
         const bool succeeded = Read(address, value);
         return !diagnostic ? succeeded : diagnostic->Observe(succeeded, "memory read", "read_failed", address);
+    }
+    // UWorld::OwningGameInstance, found by name in the running game's reflection. The world was
+    // identified by the caller; game thread only. False when the loader cannot place the member.
+    bool ReadWorldGameInstance(uintptr_t world, uintptr_t& instance, ReadinessDiagnostic* diagnostic)
+    {
+        static PluginLazyField<SDK::UGameInstance*> field{"OwningGameInstance"};
+        const auto* at = field.In(PluginSdkRuntime::ObjectProperties(), reinterpret_cast<SDK::UWorld*>(world));
+        if (!at)
+        {
+            if (diagnostic) diagnostic->Observe(false, "world game instance member", "facility_unavailable", world);
+            return false;
+        }
+        return Read(reinterpret_cast<uintptr_t>(at), instance, diagnostic);
     }
     struct SlotReader
     {
@@ -402,7 +416,7 @@ namespace
                 return false;
             }
             int32_t index{}; Slots::Slot slot; SlotReader reader{diagnostic};
-            if (!Read(object + 0xc, index, diagnostic) ||
+            if (!Read(MiniMapUObjectAbi::IndexAddress(object), index, diagnostic) ||
                 !SlotObserved(Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(api->asset.objectArray), index, slot), diagnostic) ||
                 (!diagnostic ? slot.Object != object : !diagnostic->Check(slot.Object == object, "identity slot object", object, slot.Object)) ||
                 (!diagnostic ? bool(slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags) : !diagnostic->Check(!(slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags), "identity slot flags", 0, slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags))) return false;
@@ -533,7 +547,7 @@ namespace
                 !Is(engine, Engine, diagnostic) || !Is(game, World, diagnostic) || !Read(game + 0x18d, flags, diagnostic) || !check(!(flags & 0x20), "gameplay flags 0x18d mask", 0, flags & 0x20) ||
                 !Read(game + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40), "gameplay initialized flag", 0x40, flags & 0x40) ||
                 !Identify(game, baseline.Gameplay, 0x28, diagnostic) || !Identify(engine, baseline.EngineObject, 0x28, diagnostic) ||
-                !Read(game + 0x230, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
+                !ReadWorldGameInstance(game, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
                 !observe(Invoke(Operation::Context, engine, game, &baseline.Context), "gameplay context lookup interrupted/unavailable") || !check(bool(baseline.Context), "gameplay context presence") ||
                 !Read(baseline.Context + 0x2c0, current, diagnostic) || !check(current == game, "context gameplay world", game, current) ||
                 !Read(engine + 0x11c8, contexts, diagnostic) || !Read(engine + 0x11d0, baseline.ContextCount, diagnostic) ||
@@ -619,7 +633,7 @@ namespace
                 !check(!(c & 0x21), "private flags 0x18d mask", 0, c & 0x21) ||
                 !check(bool(ever & 2) == initialized, "private ever-initialized flag", initialized, bool(ever & 2)) ||
                 !Read(world + 0x258, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
-                !Read(world + 0x230, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
                 !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, Before.EngineObject.Bits, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) ||
@@ -669,7 +683,7 @@ namespace
                 !Read(world + 0x18b, flags, diagnostic) || !check(bool(flags & 0x40) == initialized, "private initialized flag", initialized, bool(flags & 0x40)) ||
                 !Read(world + 0x258, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
                 !check(scene != IsolatedGameplayScene, "private/baseline gameplay scenes must differ", IsolatedGameplayScene, scene) ||
-                !Read(world + 0x230, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
                 !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, engine, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) || !CheckOwned(MetadataClasses[Settings].Ref, diagnostic) ||
@@ -967,9 +981,9 @@ namespace
                 !diagnostic.Check(bool(slot.Flags & 0x20000000), "slot retained mask", 0x20000000, slot.Flags & 0x20000000) ||
                 !diagnostic.Check(bool(slot.Flags & 0x00200000), "slot garbage mask", 0x00200000, slot.Flags & 0x00200000) ||
                 !diagnostic.Observe(N::IsMemoryRangeReadable(bits, 0x28, 8), "destroyed light header unreadable", "read_failed", bits) ||
-                !Read(bits + 0xc, index, &diagnostic) || !diagnostic.Check(index == ref.Object.Index, "object index", uint64_t(ref.Object.Index), uint64_t(index)) ||
+                !Read(MiniMapUObjectAbi::IndexAddress(bits), index, &diagnostic) || !diagnostic.Check(index == ref.Object.Index, "object index", uint64_t(ref.Object.Index), uint64_t(index)) ||
                 !Read(bits + 8, flags, &diagnostic) || !diagnostic.Check(!(flags & 0x1b400), "object flags mask", 0, flags & 0x1b400) ||
-                !Read(slot.Item + 0x14, count, &diagnostic) || !diagnostic.Check(count >= 1, "reference count >= 1", 1, uint64_t(count))) return false;
+                !Read(MiniMapUObjectAbi::RefCountAddress(slot.Item), count, &diagnostic) || !diagnostic.Check(count >= 1, "reference count >= 1", 1, uint64_t(count))) return false;
             if (slot.Serial != ref.Object.Serial)
             {
                 if (!diagnostic.Check(ref.Object.Serial == 0, "serial adoption requires retained zero serial", 0, uint64_t(ref.Object.Serial)) ||
@@ -1587,8 +1601,8 @@ namespace
             if (ref.State != Ownership::Held || !QuietGC() ||
                 Slots::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), ref.Object.Index, slot) != Slots::Status::Success ||
                 slot.Object != bits || (slot.Flags & 0x10000000) || !(slot.Flags & 0x20000000) || !(slot.Flags & 0x00200000) ||
-                !N::IsMemoryRangeReadable(bits, 0x28, 8) || !Read(bits + 0xc, index) || index != ref.Object.Index ||
-                !Read(bits + 8, flags) || (flags & 0x1b400) || !Read(slot.Item + 0x14, count) || count < 1) return false;
+                !N::IsMemoryRangeReadable(bits, 0x28, 8) || !Read(MiniMapUObjectAbi::IndexAddress(bits), index) || index != ref.Object.Index ||
+                !Read(bits + 8, flags) || (flags & 0x1b400) || !Read(MiniMapUObjectAbi::RefCountAddress(slot.Item), count) || count < 1) return false;
             if (slot.Serial != ref.Object.Serial)
             {
                 if (ref.Object.Serial != 0 || slot.Serial <= 0) return false;
