@@ -4,6 +4,7 @@
 #include "../BuildingCandidatePublication.h"
 #include "../Visuals/BuildingRenderSceneInput.h"
 #include "../Cache/OwnedSpriteKey.h"
+#include "../SplinePolicy.h"
 
 #include <array>
 #include <cstddef>
@@ -180,6 +181,73 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<Visuals::SplineCurveSegment> Segments;
 		};
 
+		/** Owns one occurrence's composed spline inputs and all source/profile eligibility evidence.
+		 * PublicationOrdinal distinguishes duplicate occurrences. Surface indexes map accepted inputs
+		 * back to profile alternatives. BorrowRenderInput creates spans only on request; this object
+		 * must remain alive and unchanged for their full synchronous use. Composed means inputs are
+		 * available for a numerical rendering attempt; it does not certify candidate completeness.
+		 */
+		struct SplineRenderInputPreparationResult
+		{
+			/** Describes why a complete neutral render input was or was not composed. */
+			enum class Status
+			{
+				NotAttempted,
+				Composed,
+				StalePublication,
+				InvalidOccurrence,
+				NotSpline,
+				SourceNotComplete,
+				ProfilesNotComplete,
+				CurveNotEligible,
+				RootTransformUnavailable,
+				PolicyUnresolved,
+				PolicyIndexMismatch,
+				InvalidPolicy,
+				InvalidSamplingDensity,
+				MalformedPreparedSurface,
+				NoPreparedSurface
+			};
+
+			/** Exact publication-local identity for this one occurrence, including duplicates. */
+			std::uint64_t PublicationOrdinal = 0;
+			/** Source-supplied direct policy index, preserved even when resolution fails. */
+			std::uint16_t SplinePolicyIndex = 0;
+			/** R2Q curve, root, acquisition, provenance and coordinate evidence owned by this result. */
+			SplineCurvePreparationResult CurvePreparation;
+			/** Per-alternative outcomes in original source order, including each accepted surface index. */
+			struct AlternativeOutcome
+			{
+				/** Zero-based index in the original immutable profile alternative list. */
+				std::size_t SourceAlternativeIndex = 0;
+				/** Original R2P result for this profile value. */
+				SplineProfilePreparationResult::Alternative::Status PreparationStatus =
+					SplineProfilePreparationResult::Alternative::Status::Unsupported;
+				/** Index into SurfaceInputs, or empty when the alternative was not included. */
+				std::optional<std::size_t> SurfaceIndex;
+			};
+			std::vector<AlternativeOutcome> Alternatives;
+			/** Eligible surfaces in source-relative order with copied solid policy appearance. */
+			std::vector<Visuals::BuildingSplineSurfaceRenderInput> SurfaceInputs;
+			/** Existing renderer sampling defaults with service-derived pixel density. */
+			Visuals::SplineSamplingPolicy SamplingPolicy{};
+			/** Limited input-composition outcome; Composed does not certify geometry or rendering. */
+			Status PreparationStatus = Status::NotAttempted;
+
+			/** Clears values while retaining caller-owned vector capacities for a later preparation.
+			 * Any previously borrowed render-input view becomes invalid after this call.
+			 */
+			void Reset() noexcept;
+
+			/** Creates borrowed render spans only for a composed result.
+			 * The spans remain valid while this result stays alive and unchanged; obtain a fresh view
+			 * after moving or modifying the result. On failure, output is reset to default values.
+			 * @param output Receives spans borrowing this result's segment and surface vectors.
+			 * @return True when a complete neutral input was composed and its owned arrays are available.
+			 */
+			bool BorrowRenderInput(Visuals::BuildingSplineRenderInput& output) const noexcept;
+		};
+
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
 		SectionScheduler(const SectionScheduler&) = delete;
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
@@ -247,6 +315,74 @@ namespace Services::Map::Buildings::Scheduling
 		void PrepareSplineCurve(
 			const BuildingCandidateSourceRecord& source,
 			SplineCurvePreparationResult& output) const;
+
+		/** Composes numerical inputs for one ordinal in a retained publication.
+		 * The resolved policy must be the service-owned value returned for resolvedPolicyIndex;
+		 * that index must equal the source record's policy index. The publication and policy are
+		 * borrowed only during this synchronous call. Output owns all resulting values.
+		 * @param publicationOwner Retained owner of the immutable source publication.
+		 * @param publicationOrdinal Exact occurrence ordinal in that publication.
+		 * @param resolvedPolicyIndex Index used by the service's policy lookup.
+		 * @param resolvedPolicy Service-owned policy pointer matching the resolved index, or null.
+		 * @param output Receives composition status and caller-owned render-input values.
+		 */
+		void ComposeSplineRenderInput(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			std::uint64_t publicationOrdinal,
+			std::uint16_t resolvedPolicyIndex,
+			const SplinePolicy* resolvedPolicy,
+			SplineRenderInputPreparationResult& output) const;
+
+		/** Checks independent source, curve, profile, transform, policy and scale prerequisites.
+		 * @param source Borrowed occurrence source record.
+		 * @param resolvedPolicyIndex Index used by the service policy lookup.
+		 * @param resolvedPolicy Borrowed service-owned policy value.
+		 * @param output Receives the validated existing sampling defaults and pixel density.
+		 * @return The first composition failure, or NotAttempted when surface preparation may proceed.
+		 */
+		bool CheckSplineRenderInputPrerequisites(
+			const BuildingCandidateSourceRecord& source,
+			std::uint16_t resolvedPolicyIndex,
+			const SplinePolicy* resolvedPolicy,
+			SplineRenderInputPreparationResult& output) const;
+
+		/** Preserves source/profile/curve/root distinctions and rejects incomplete prerequisites.
+		 * @param source Borrowed occurrence source record.
+		 * @param output Receives the precise first source or geometry composition status.
+		 * @return True when source, profiles, converted world curve and root are all eligible.
+		 */
+		static bool CheckSplineSourcePrerequisites(
+			const BuildingCandidateSourceRecord& source,
+			SplineRenderInputPreparationResult& output);
+
+		/** Validates the caller-resolved service policy against the occurrence's source index.
+		 * @param source Borrowed occurrence source record.
+		 * @param resolvedPolicyIndex Index used for the service-owned lookup.
+		 * @param resolvedPolicy Borrowed service-owned policy value.
+		 * @param output Receives the precise policy failure status.
+		 * @return True when the policy is present, matches the source index and contains valid values.
+		 */
+		static bool CheckSplinePolicyPrerequisites(
+			const BuildingCandidateSourceRecord& source,
+			std::uint16_t resolvedPolicyIndex,
+			const SplinePolicy* resolvedPolicy,
+			SplineRenderInputPreparationResult& output);
+
+		/** Derives PixelsPerUnit and preserves every other existing sampling-policy default.
+		 * @param output Receives the configured policy only after finite positive density validation.
+		 * @return True when the immutable Section configuration yields finite positive pixel density.
+		 */
+		bool TryPrepareSplineSamplingPolicy(SplineRenderInputPreparationResult& output) const;
+
+		/** Moves compatible profile values into ordered surface inputs and records source indexes.
+		 * @param policy Validated service-owned solid appearance policy copied into each surface.
+		 * @param output Owns surfaces and alternative-to-surface correspondence.
+		 * @return True when at least one compatible surface was available.
+		 */
+		static bool AppendSplineRenderSurfaces(
+			const SplinePolicy& policy,
+			SplineProfilePreparationResult& profiles,
+			SplineRenderInputPreparationResult& output);
 
 		/** Copies placement into a validated transform used only for surface projection.
 		 * @param source Borrowed neutral source record.

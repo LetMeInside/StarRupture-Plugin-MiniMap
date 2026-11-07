@@ -15,6 +15,52 @@
 
 namespace Services::Map::Buildings::Scheduling
 {
+	/** Clears one owned result while preserving vector capacities for reuse. */
+	void SectionScheduler::SplineRenderInputPreparationResult::Reset() noexcept
+	{
+		PublicationOrdinal = 0;
+		SplinePolicyIndex = 0;
+		CurvePreparation.SourceStatus = BuildingCandidateSourceStatus::Unknown;
+		CurvePreparation.ProfileStatus = SplineProfileAcquisitionStatus::Unknown;
+		CurvePreparation.Provenance = BuildingCandidateSplineProvenance::Unknown;
+		CurvePreparation.CoordinateSpace = BuildingCandidateSplineCoordinateSpace::Unknown;
+		CurvePreparation.ConversionIssue = Visuals::SplineNumericalIssue::None;
+		CurvePreparation.PreparationStatus = SplineCurvePreparationResult::CurveStatus::NotPrepared;
+		CurvePreparation.RootStatus = SplineCurvePreparationResult::RootTransformStatus::NotApplicable;
+		CurvePreparation.RootTransform.reset();
+		CurvePreparation.Segments.clear();
+		Alternatives.clear();
+		SurfaceInputs.clear();
+		SamplingPolicy = {};
+		PreparationStatus = Status::NotAttempted;
+	}
+
+	/** Creates temporary render spans only when this result owns complete compatible values. */
+	bool SectionScheduler::SplineRenderInputPreparationResult::BorrowRenderInput(
+		Visuals::BuildingSplineRenderInput& output) const noexcept
+	{
+		output = {};
+		if (PreparationStatus != Status::Composed ||
+			CurvePreparation.SourceStatus != BuildingCandidateSourceStatus::Complete ||
+			CurvePreparation.ProfileStatus != SplineProfileAcquisitionStatus::Complete ||
+			CurvePreparation.PreparationStatus != SplineCurvePreparationResult::CurveStatus::ConvertedWorldSpace ||
+			CurvePreparation.ConversionIssue != Visuals::SplineNumericalIssue::None ||
+			CurvePreparation.RootStatus != SplineCurvePreparationResult::RootTransformStatus::Prepared ||
+			CurvePreparation.Segments.empty() || SurfaceInputs.empty() ||
+			!CurvePreparation.RootTransform.has_value() || !std::isfinite(SamplingPolicy.PixelsPerUnit) ||
+			SamplingPolicy.PixelsPerUnit <= 0.0)
+		{
+			return false;
+		}
+
+		output.Segments = std::span<const Visuals::SplineCurveSegment>(CurvePreparation.Segments);
+		output.SamplingPolicy = SamplingPolicy;
+		output.RootTransform = *CurvePreparation.RootTransform;
+		output.Surfaces = std::span<const Visuals::BuildingSplineSurfaceRenderInput>(SurfaceInputs);
+		output.SurfaceSelectionMode = Visuals::BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
+		return true;
+	}
+
 	/** Stores service configuration, then creates each owner before its borrowing dependents. */
 	SectionScheduler::SectionScheduler(
 		double sectionSizeMapUnits,
@@ -302,6 +348,208 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		output.RootTransform = rootTransform;
 		output.RootStatus = RootStatus::Prepared;
+	}
+
+	/** Checks publication currentness before reading and after composing one ordinal-bound spline input.
+	 * The publication and policy are borrowed only during this call and are not retained in output.
+	 */
+	void SectionScheduler::ComposeSplineRenderInput(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		std::uint64_t publicationOrdinal,
+		std::uint16_t resolvedPolicyIndex,
+		const SplinePolicy* resolvedPolicy,
+		SplineRenderInputPreparationResult& output) const
+	{
+		output.Reset();
+		const BuildingCandidateSourceRecord* source = nullptr;
+		if (publicationOwner == nullptr)
+		{
+			output.PreparationStatus = SplineRenderInputPreparationResult::Status::InvalidOccurrence;
+			return;
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			output.PreparationStatus = SplineRenderInputPreparationResult::Status::StalePublication;
+			return;
+		}
+		if (!publicationOwner->TryGetSourceRecord(publicationOrdinal, source) || source == nullptr)
+		{
+			output.PreparationStatus = SplineRenderInputPreparationResult::Status::InvalidOccurrence;
+			return;
+		}
+		output.PublicationOrdinal = publicationOrdinal;
+		output.SplinePolicyIndex = source->splinePolicyIndex;
+		PrepareSplineCurve(*source, output.CurvePreparation);
+		SplineProfilePreparationResult profilePreparation;
+		PrepareSplineProfileAlternatives(*source, profilePreparation);
+		output.Alternatives.reserve(profilePreparation.Alternatives.size());
+		for (std::size_t alternativeIndex = 0;
+			alternativeIndex < profilePreparation.Alternatives.size();
+			++alternativeIndex)
+		{
+			SplineRenderInputPreparationResult::AlternativeOutcome outcome;
+			outcome.SourceAlternativeIndex = alternativeIndex;
+			outcome.PreparationStatus = profilePreparation.Alternatives[alternativeIndex].PreparationStatus;
+			output.Alternatives.push_back(outcome);
+		}
+		if (!CheckSplineRenderInputPrerequisites(*source, resolvedPolicyIndex, resolvedPolicy, output))
+		{
+			return;
+		}
+		if (!AppendSplineRenderSurfaces(*resolvedPolicy, profilePreparation, output))
+		{
+			return;
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			output.PreparationStatus = SplineRenderInputPreparationResult::Status::StalePublication;
+			return;
+		}
+		output.PreparationStatus = SplineRenderInputPreparationResult::Status::Composed;
+	}
+
+	/** Blocks composition until each independent source, transform, policy and scale requirement is valid. */
+	bool SectionScheduler::CheckSplineRenderInputPrerequisites(
+		const BuildingCandidateSourceRecord& source,
+		std::uint16_t resolvedPolicyIndex,
+		const SplinePolicy* resolvedPolicy,
+		SplineRenderInputPreparationResult& output) const
+	{
+		return CheckSplineSourcePrerequisites(source, output) &&
+			CheckSplinePolicyPrerequisites(source, resolvedPolicyIndex, resolvedPolicy, output) &&
+			TryPrepareSplineSamplingPolicy(output);
+	}
+
+	/** Rejects incomplete acquisition or unsupported curve/root values without promoting status. */
+	bool SectionScheduler::CheckSplineSourcePrerequisites(
+		const BuildingCandidateSourceRecord& source,
+		SplineRenderInputPreparationResult& output)
+	{
+		using Status = SplineRenderInputPreparationResult::Status;
+		if (source.kind != BuildingCandidateSourceKind::Spline)
+		{
+			output.PreparationStatus = Status::NotSpline;
+			return false;
+		}
+		if (source.status != BuildingCandidateSourceStatus::Complete)
+		{
+			output.PreparationStatus = Status::SourceNotComplete;
+			return false;
+		}
+		if (output.CurvePreparation.ProfileStatus != SplineProfileAcquisitionStatus::Complete)
+		{
+			output.PreparationStatus = Status::ProfilesNotComplete;
+			return false;
+		}
+		if (output.CurvePreparation.PreparationStatus != SplineCurvePreparationResult::CurveStatus::ConvertedWorldSpace ||
+			output.CurvePreparation.ConversionIssue != Visuals::SplineNumericalIssue::None)
+		{
+			output.PreparationStatus = Status::CurveNotEligible;
+			return false;
+		}
+		if (output.CurvePreparation.RootStatus != SplineCurvePreparationResult::RootTransformStatus::Prepared ||
+			!output.CurvePreparation.RootTransform.has_value())
+		{
+			output.PreparationStatus = Status::RootTransformUnavailable;
+			return false;
+		}
+		return true;
+	}
+
+	/** Requires the service-resolved policy to match the occurrence's nonzero source index. */
+	bool SectionScheduler::CheckSplinePolicyPrerequisites(
+		const BuildingCandidateSourceRecord& source,
+		std::uint16_t resolvedPolicyIndex,
+		const SplinePolicy* resolvedPolicy,
+		SplineRenderInputPreparationResult& output)
+	{
+		using Status = SplineRenderInputPreparationResult::Status;
+		if (source.splinePolicyIndex == 0 || resolvedPolicyIndex == 0 || resolvedPolicy == nullptr)
+		{
+			output.PreparationStatus = Status::PolicyUnresolved;
+			return false;
+		}
+		if (resolvedPolicyIndex != source.splinePolicyIndex)
+		{
+			output.PreparationStatus = Status::PolicyIndexMismatch;
+			return false;
+		}
+		if (resolvedPolicy->SolidRgb > 0xFFFFFF || !std::isfinite(resolvedPolicy->Opacity) ||
+			resolvedPolicy->Opacity < 0.0 || resolvedPolicy->Opacity > 1.0)
+		{
+			output.PreparationStatus = Status::InvalidPolicy;
+			return false;
+		}
+		return true;
+	}
+
+	/** Uses configured image resolution and leaves XY, height, depth and sample-limit defaults intact. */
+	bool SectionScheduler::TryPrepareSplineSamplingPolicy(
+		SplineRenderInputPreparationResult& output) const
+	{
+		using Status = SplineRenderInputPreparationResult::Status;
+		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
+			sectionResolutionPixels_ == 0)
+		{
+			output.PreparationStatus = Status::InvalidSamplingDensity;
+			return false;
+		}
+		const double pixelsPerUnit =
+			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
+		if (!std::isfinite(pixelsPerUnit) || pixelsPerUnit <= 0.0)
+		{
+			output.PreparationStatus = Status::InvalidSamplingDensity;
+			return false;
+		}
+		output.SamplingPolicy = Visuals::SplineSamplingPolicy{};
+		output.SamplingPolicy.PixelsPerUnit = pixelsPerUnit;
+		return true;
+	}
+
+	/** Moves only prepared surfaces and keeps their source alternative positions addressable. */
+	bool SectionScheduler::AppendSplineRenderSurfaces(
+		const SplinePolicy& policy,
+		SplineProfilePreparationResult& profiles,
+		SplineRenderInputPreparationResult& output)
+	{
+		using AlternativeStatus = SplineProfilePreparationResult::Alternative::Status;
+		using Status = SplineRenderInputPreparationResult::Status;
+		if (profiles.Alternatives.size() != output.Alternatives.size())
+		{
+			output.PreparationStatus = Status::MalformedPreparedSurface;
+			return false;
+		}
+		for (const auto& alternative : profiles.Alternatives)
+		{
+			if (alternative.PreparationStatus == AlternativeStatus::PreparedNumericalInput &&
+				!alternative.SurfaceInput.ComponentTransformOverride.has_value())
+			{
+				output.PreparationStatus = Status::MalformedPreparedSurface;
+				return false;
+			}
+		}
+		for (std::size_t alternativeIndex = 0;
+			alternativeIndex < profiles.Alternatives.size();
+			++alternativeIndex)
+		{
+			auto& alternative = profiles.Alternatives[alternativeIndex];
+			if (alternative.PreparationStatus != AlternativeStatus::PreparedNumericalInput)
+			{
+				continue;
+			}
+			auto surface = std::move(alternative.SurfaceInput);
+			surface.Appearance.Mode = Visuals::SplineSurfaceAppearanceMode::SolidColor;
+			surface.Appearance.SolidRgb = policy.SolidRgb;
+			surface.Appearance.Opacity = policy.Opacity;
+			output.Alternatives[alternativeIndex].SurfaceIndex = output.SurfaceInputs.size();
+			output.SurfaceInputs.push_back(std::move(surface));
+		}
+		if (output.SurfaceInputs.empty())
+		{
+			output.PreparationStatus = Status::NoPreparedSurface;
+			return false;
+		}
+		return true;
 	}
 
 	/** Resolves source records by publication ordinal and retains repeated sprite occurrences. */
