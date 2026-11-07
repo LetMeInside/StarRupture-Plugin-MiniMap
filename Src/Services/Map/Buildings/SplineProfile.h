@@ -37,11 +37,13 @@ namespace Services::Map::Buildings
 		bool operator==(const SplineProfileBounds&) const = default;
 	};
 
-	/** Stores authored component translation, Euler rotation in degrees, and scale. */
+	/** Stores authored component translation, source Euler rotation, its established Unreal quaternion, and signed scale. */
 	struct SplineProfileTransform
 	{
 		std::array<double, 3> Translation{};
 		std::array<double, 3> RotationDegrees{};
+		/** Neutral XYZW quaternion using the legacy Unreal Pitch/Yaw/Roll convention. */
+		std::array<double, 4> Rotation{0.0, 0.0, 0.0, 1.0};
 		std::array<double, 3> Scale{1.0, 1.0, 1.0};
 		bool operator==(const SplineProfileTransform&) const = default;
 	};

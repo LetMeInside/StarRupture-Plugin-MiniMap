@@ -9,6 +9,7 @@
 #include "../Visuals/SpriteGeometry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace Services::Map::Buildings::Scheduling
@@ -95,6 +96,134 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		output.PreparationStatus = KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
+	}
+
+	/** Copies acquired profile values without selecting alternatives or assigning appearance policy. */
+	void SectionScheduler::PrepareSplineProfileAlternatives(
+		const BuildingCandidateSourceRecord& source,
+		SplineProfilePreparationResult& output) const
+	{
+		output.SourceStatus = source.splineProfileStatus;
+		output.Alternatives.clear();
+		if (source.splineProfiles == nullptr)
+		{
+			return;
+		}
+		output.Alternatives.reserve(source.splineProfiles->Alternatives.size());
+		for (const SplineProfileAlternative& sourceAlternative : source.splineProfiles->Alternatives)
+		{
+			SplineProfilePreparationResult::Alternative prepared;
+			PrepareSplineProfileAlternative(sourceAlternative, prepared);
+			output.Alternatives.push_back(std::move(prepared));
+		}
+	}
+
+	/** Retains unsupported evidence and copies only parameters represented by fixed surface inputs. */
+	void SectionScheduler::PrepareSplineProfileAlternative(
+		const SplineProfileAlternative& source,
+		SplineProfilePreparationResult::Alternative& output)
+	{
+		using AlternativeStatus = SplineProfilePreparationResult::Alternative::Status;
+		if (source.Status != SplineProfileAlternativeStatus::Complete)
+		{
+			output.PreparationStatus = source.Status == SplineProfileAlternativeStatus::MissingMesh
+				? AlternativeStatus::MissingMesh
+				: source.Status == SplineProfileAlternativeStatus::InvalidBounds
+				? AlternativeStatus::InvalidBounds
+				: source.Status == SplineProfileAlternativeStatus::InvalidValues
+				? AlternativeStatus::InvalidValues
+				: AlternativeStatus::Unsupported;
+			return;
+		}
+		if (!source.HasBounds)
+		{
+			output.PreparationStatus = AlternativeStatus::InvalidBounds;
+			return;
+		}
+		if (!CopySplineSurfaceValues(source, output.SurfaceInput))
+		{
+			output.SurfaceInput = {};
+			output.PreparationStatus = AlternativeStatus::InvalidValues;
+			return;
+		}
+		if (source.ForwardAxis != 0 || source.CrossSection.StartRoll != 0.0 ||
+			source.CrossSection.EndRoll != 0.0 ||
+			source.CrossSection.StartScale != source.CrossSection.EndScale ||
+			source.CrossSection.StartOffset != source.CrossSection.EndOffset)
+		{
+			output.SurfaceInput = {};
+			output.PreparationStatus = AlternativeStatus::Unsupported;
+			return;
+		}
+		output.PreparationStatus = AlternativeStatus::PreparedNumericalInput;
+	}
+
+	/** Copies bounds, fixed section values and preconverted Unreal component transform. */
+	bool SectionScheduler::CopySplineSurfaceValues(
+		const SplineProfileAlternative& source,
+		Visuals::BuildingSplineSurfaceRenderInput& output)
+	{
+		output.ComponentTransformOverride.emplace();
+		double upLength = 0.0;
+		if (!std::isfinite(source.CrossSection.StartRoll) || !std::isfinite(source.CrossSection.EndRoll))
+		{
+			return false;
+		}
+		for (std::size_t axis = 0; axis < 3; ++axis)
+		{
+			if (!std::isfinite(source.Bounds.Origin[axis]) || !std::isfinite(source.Bounds.Extent[axis]) ||
+				source.Bounds.Extent[axis] < 0.0 || !std::isfinite(source.Transform.Translation[axis]) ||
+				!std::isfinite(source.Transform.Scale[axis]) || source.Transform.Scale[axis] == 0.0 ||
+				!std::isfinite(1.0 / source.Transform.Scale[axis]) || !std::isfinite(source.CrossSection.Up[axis]))
+			{
+				return false;
+			}
+			upLength += source.CrossSection.Up[axis] * source.CrossSection.Up[axis];
+			output.Bounds.Origin[axis] = source.Bounds.Origin[axis];
+			output.Bounds.Extent[axis] = source.Bounds.Extent[axis];
+			output.ComponentTransformOverride->Translation[axis] = source.Transform.Translation[axis];
+			output.ComponentTransformOverride->Scale[axis] = source.Transform.Scale[axis];
+			output.CrossSection.Up[axis] = source.CrossSection.Up[axis];
+		}
+		for (std::size_t axis = 0; axis < 2; ++axis)
+		{
+			if (!std::isfinite(source.CrossSection.StartScale[axis]) ||
+				!std::isfinite(source.CrossSection.EndScale[axis]) ||
+				!std::isfinite(source.CrossSection.StartOffset[axis]) ||
+				!std::isfinite(source.CrossSection.EndOffset[axis]))
+			{
+				return false;
+			}
+			output.CrossSection.Scale[axis] = source.CrossSection.StartScale[axis];
+			output.CrossSection.Offset[axis] = source.CrossSection.StartOffset[axis];
+		}
+		if (!std::isfinite(upLength) || upLength == 0.0)
+		{
+			return false;
+		}
+		return CopySplineSurfaceRotation(source.Transform.Rotation, *output.ComponentTransformOverride);
+	}
+
+	/** Rejects malformed quaternion data instead of normalizing or approximating it. */
+	bool SectionScheduler::CopySplineSurfaceRotation(
+		const std::array<double, 4>& rotation,
+		Visuals::SplineSurfaceTransform& output)
+	{
+		double norm = 0.0;
+		for (std::size_t axis = 0; axis < rotation.size(); ++axis)
+		{
+			if (!std::isfinite(rotation[axis]))
+			{
+				return false;
+			}
+			norm += rotation[axis] * rotation[axis];
+		}
+		if (!std::isfinite(norm) || std::abs(norm - 1.0) > 1.0e-6)
+		{
+			return false;
+		}
+		output.Rotation = rotation;
+		return true;
 	}
 
 	/** Resolves source records by publication ordinal and retains repeated sprite occurrences. */

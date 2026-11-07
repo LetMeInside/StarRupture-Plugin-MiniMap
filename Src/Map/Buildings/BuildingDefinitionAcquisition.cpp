@@ -1,5 +1,5 @@
 // Copies rooted authored definition and spline-profile values with per-instance metadata.
-// It retains no legacy identity globals and performs no numerical rendering preparation.
+// It converts profile FRotator values to the established neutral quaternion convention.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingDefinitionAcquisition.h"
 #include "Native/NativeApi.h"
@@ -158,7 +158,7 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
-        /** Copies component transform, spline parameters and axis without interpreting them. */
+        /** Copies component values and converts FRotator with the established legacy convention. */
         static ::Services::Map::Buildings::SplineProfileAlternativeStatus CopyComponent(
             const SDK::USplineMeshComponent& component,
             ::Services::Map::Buildings::SplineProfileAlternative& output)
@@ -166,6 +166,21 @@ namespace MiniMap::BuildingAcquisition
             output.Transform.Translation = CopyVector(component.RelativeLocation);
             output.Transform.RotationDegrees = {component.RelativeRotation.Pitch,
                 component.RelativeRotation.Yaw, component.RelativeRotation.Roll};
+            constexpr double halfRadians = 3.14159265358979323846 / 360.0;
+            const double pitch = std::remainder(output.Transform.RotationDegrees[0], 360.0) * halfRadians;
+            const double yaw = std::remainder(output.Transform.RotationDegrees[1], 360.0) * halfRadians;
+            const double roll = std::remainder(output.Transform.RotationDegrees[2], 360.0) * halfRadians;
+            const double sinPitch = std::sin(pitch);
+            const double cosPitch = std::cos(pitch);
+            const double sinYaw = std::sin(yaw);
+            const double cosYaw = std::cos(yaw);
+            const double sinRoll = std::sin(roll);
+            const double cosRoll = std::cos(roll);
+            output.Transform.Rotation = {
+                cosRoll * sinPitch * sinYaw - sinRoll * cosPitch * cosYaw,
+                -cosRoll * sinPitch * cosYaw - sinRoll * cosPitch * sinYaw,
+                cosRoll * cosPitch * sinYaw - sinRoll * sinPitch * cosYaw,
+                cosRoll * cosPitch * cosYaw + sinRoll * sinPitch * sinYaw};
             output.Transform.Scale = CopyVector(component.RelativeScale3D);
             const auto& params = component.SplineParams;
             output.CrossSection.StartScale = {params.StartScale.X, params.StartScale.Y};
@@ -180,6 +195,8 @@ namespace MiniMap::BuildingAcquisition
             for (const double value : output.Transform.Translation)
                 if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
             for (const double value : output.Transform.RotationDegrees)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.Transform.Rotation)
                 if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
             for (const double value : output.Transform.Scale)
                 if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;

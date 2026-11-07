@@ -5,6 +5,7 @@
 #include "../Visuals/BuildingRenderSceneInput.h"
 #include "../Cache/OwnedSpriteKey.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -100,6 +101,37 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<PreparedSpriteOccurrence> PreparedSprites;
 		};
 
+		/** Owns ordered numerical profile values prepared from one retained source record.
+		 * SourceStatus preserves acquisition evidence. PreparedNumericalInput means only that one
+		 * profile maps to the generic surface input; it does not establish drawable geometry,
+		 * appearance policy, render readiness, or Section membership.
+		 */
+		struct SplineProfilePreparationResult
+		{
+			/** Retains the producer's independent profile acquisition result. */
+			SplineProfileAcquisitionStatus SourceStatus = SplineProfileAcquisitionStatus::Unknown;
+			/** One result per source alternative, with source order and cardinality preserved. */
+			struct Alternative
+			{
+				/** Numerical compatibility of this individual acquired alternative. */
+				enum class Status
+				{
+					PreparedNumericalInput,
+					MissingMesh,
+					InvalidBounds,
+					InvalidValues,
+					Unsupported
+				};
+
+				/** Per-alternative result, separate from the overall acquisition status. */
+				Status PreparationStatus = Status::Unsupported;
+				/** Geometry values only; callers apply appearance policy in a later stage. */
+				Visuals::BuildingSplineSurfaceRenderInput SurfaceInput{};
+			};
+			/** Caller-owned values; contains no view into the publication or profile set. */
+			std::vector<Alternative> Alternatives;
+		};
+
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
 		SectionScheduler(const SectionScheduler&) = delete;
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
@@ -147,6 +179,42 @@ namespace Services::Map::Buildings::Scheduling
 		void PrepareKnownSpriteRequirements(
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			KnownSpritePreparationResult& output);
+
+		/** Copies compatible authored profiles into caller-owned generic numerical inputs.
+		 * The caller retains the publication owner for the borrowed record; output owns every value.
+		 * Source alternatives remain in exact order and are never selected here.
+		 * @param source Borrowed immutable neutral candidate source record.
+		 * @param output Receives source acquisition state and ordered per-alternative results.
+		 */
+		void PrepareSplineProfileAlternatives(
+			const BuildingCandidateSourceRecord& source,
+			SplineProfilePreparationResult& output) const;
+
+		/** Maps one authored alternative's evidence and fixed parameters to generic surface values.
+		 * @param source One neutral profile alternative borrowed for this call.
+		 * @param output Receives an owned numerical surface input when representable.
+		 */
+		static void PrepareSplineProfileAlternative(
+			const SplineProfileAlternative& source,
+			SplineProfilePreparationResult::Alternative& output);
+
+		/** Copies validated profile dimensions and fixed cross-section parameters.
+		 * @param source Neutral acquired alternative values.
+		 * @param output Receives generic numerical geometry fields.
+		 * @return True when every copied geometry value is finite and bounds are valid.
+		 */
+		static bool CopySplineSurfaceValues(
+			const SplineProfileAlternative& source,
+			Visuals::BuildingSplineSurfaceRenderInput& output);
+
+		/** Copies a valid neutral XYZW quaternion into a generic component transform.
+		 * @param rotation Preconverted component quaternion from game-specific acquisition.
+		 * @param output Receives the numerical component transform rotation.
+		 * @return True when the quaternion is finite and unit length within renderer tolerance.
+		 */
+		static bool CopySplineSurfaceRotation(
+			const std::array<double, 4>& rotation,
+			Visuals::SplineSurfaceTransform& output);
 
 		/** Resolves every occurrence in one borrowed pass without collapsing equal keys.
 		 * @param candidates Candidate occurrences whose ordinals resolve records in this publication.
