@@ -11,17 +11,20 @@
 
 namespace Services::Map::Buildings
 {
-	/** Retains immutable neutral candidates and independently revocable publication eligibility.
-	 * The object owns all occurrence and ordinal storage borrowed by its output views. Historical
-	 * data remains readable after the producer revokes the weak eligibility token.
+	/** Retains immutable neutral candidates and matching source records under one eligibility token.
+	 * The object owns all occurrence, source and ordinal storage borrowed by its output views.
+	 * Historical data remains readable after the producer revokes the weak eligibility token.
 	 */
 	class BuildingCandidatePublication final
 	{
 	public:
-		/** Takes ownership of complete producer records and explicit coverage evidence.
+		/** Takes ownership of candidate/source records and explicit coverage evidence.
 		 * Ordinals are reassigned contiguously in input order. The weak token is observed for
-		 * currentness only; the producer retains control of its lifetime and revocation.
+		 * currentness only; the producer retains control of its lifetime and revocation. Source
+		 * records must have exactly one entry per occurrence and remain in the same input order.
+		 * A cardinality mismatch throws std::invalid_argument before the object can be published.
 		 * @param occurrences Neutral candidate records, preserving one entry per occurrence.
+		 * @param sourceRecords Matching neutral source records, preserving occurrence order.
 		 * @param evidence Producer-certified enumeration, coverage and acquisition evidence.
 		 * @param hasRequestedCoverage Whether an accepted request rectangle is supplied.
 		 * @param requestedCoverage The exact accepted request rectangle.
@@ -31,6 +34,7 @@ namespace Services::Map::Buildings
 		 */
 		BuildingCandidatePublication(
 			std::vector<BuildingCandidateOccurrence> occurrences,
+			std::vector<BuildingCandidateSourceRecord> sourceRecords,
 			BuildingCandidateEvidence evidence,
 			bool hasRequestedCoverage,
 			BuildingCollectionRegion requestedCoverage,
@@ -43,6 +47,18 @@ namespace Services::Map::Buildings
 
 		/** Borrows immutable occurrence and coverage data while this owner is retained. */
 		BuildingCandidateData BorrowCandidateData() const noexcept;
+
+		/** Borrows immutable source records aligned with candidate occurrence order. */
+		BuildingCandidateSourceData BorrowSourceData() const noexcept;
+
+		/** Resolves one publication-local ordinal to its borrowed immutable source record.
+		 * @param publicationOrdinal Ordinal assigned to the matching candidate occurrence.
+		 * @param output Receives a publication-owned record pointer on success, otherwise null.
+		 * @return True when the ordinal addresses a source record in this publication.
+		 */
+		bool TryGetSourceRecord(
+			std::uint64_t publicationOrdinal,
+			const BuildingCandidateSourceRecord*& output) const noexcept;
 
 		/** Fills valid row-major cells with every candidate ordinal, without spatial filtering. */
 		void ObserveCandidates(
@@ -84,6 +100,7 @@ namespace Services::Map::Buildings
 			std::span<BuildingCandidateObservation> observations) const;
 
 		std::vector<BuildingCandidateOccurrence> occurrences_;
+		std::vector<BuildingCandidateSourceRecord> sourceRecords_;
 		std::vector<std::uint64_t> ordinals_;
 		BuildingCandidateEvidence evidence_{};
 		std::weak_ptr<const std::atomic<bool>> eligibility_;

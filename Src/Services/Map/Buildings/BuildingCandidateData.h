@@ -1,11 +1,16 @@
-// Defines neutral candidate evidence retained by one immutable acquisition publication.
+// Defines neutral candidate evidence and per-occurrence source values retained by one publication.
 #pragma once
 
 #include "BuildingMapRegion.h"
+#include "Visuals/SpriteGeometry.h"
+#include "Visuals/SplineGeometry.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -43,6 +48,98 @@ namespace Services::Map::Buildings
 		bool isPendingOrUnresolved = false;
 		/** Producer-supplied placement-content signature used only for multiset aggregation. */
 		std::uint64_t contentSignature = 0;
+	};
+
+	/** Identifies the neutral source shape known for one candidate occurrence. */
+	enum class BuildingCandidateSourceKind : std::uint8_t
+	{
+		Unknown,
+		Sprite,
+		Spline
+	};
+
+	/** Records neutral source acquisition without implying resource or render readiness. */
+	enum class BuildingCandidateSourceStatus : std::uint8_t
+	{
+		Unknown,
+		Incomplete,
+		Unavailable,
+		Invalid,
+		Unsupported,
+		Complete
+	};
+
+	/** Identifies the immutable source used to produce one neutral keyed spline curve. */
+	enum class BuildingCandidateSplineProvenance : std::uint8_t
+	{
+		Unknown,
+		InitializedCurve,
+		FragmentPoints,
+		PayloadFallback
+	};
+
+	/** Describes the coordinate basis of the retained keyed spline values. */
+	enum class BuildingCandidateSplineCoordinateSpace : std::uint8_t
+	{
+		Unknown,
+		WorldSpace,
+		LocalSpace
+	};
+
+	/** Retains fallback spline values when the source has no supported implicit key interval. */
+	struct BuildingCandidateUnkeyedSplinePoint
+	{
+		/** XYZ source position in original point order and the enclosing curve's coordinate space. */
+		std::array<double, 3> position{};
+		/** Source derivative/tangent paired with this point in the same coordinate space. */
+		std::array<double, 3> tangent{};
+	};
+
+	/** Owns one neutral keyed spline curve and preserves its source interpretation evidence. */
+	struct BuildingCandidateSplineSource
+	{
+		/** Ordered neutral keys and derivatives copied from the acquired source. */
+		std::vector<Visuals::KeyedSplinePoint> points;
+		/** Ordered original fallback values when no valid two-point key mapping exists. */
+		std::vector<BuildingCandidateUnkeyedSplinePoint> unkeyedPoints;
+		/** Source provenance; fallback values use the established implicit [0, 1] interval. */
+		BuildingCandidateSplineProvenance provenance = BuildingCandidateSplineProvenance::Unknown;
+		/** Coordinate basis retained without applying an additional placement transform. */
+		BuildingCandidateSplineCoordinateSpace coordinateSpace =
+			BuildingCandidateSplineCoordinateSpace::Unknown;
+		/** Preserves loop evidence for explicit rejection by later numerical conversion. */
+		bool isLooped = false;
+		/** Distinguishes an acquired keyed curve from unavailable or unsupported spline data. */
+		bool hasKeyedCurve = false;
+	};
+
+	/** Owns immutable, game-independent source values for one candidate occurrence.
+	 * Records are positionally aligned with the publication's candidate occurrences. Empty
+	 * identity or absent placement remains distinguishable through Kind and Status; neither
+	 * means that the occurrence is absent from a Section. Complete means source values were
+	 * copied, not that resources, spline profiles, prepared geometry or rendering are ready.
+	 */
+	struct BuildingCandidateSourceRecord
+	{
+		/** Known neutral source shape, or Unknown while source classification is unresolved. */
+		BuildingCandidateSourceKind kind = BuildingCandidateSourceKind::Unknown;
+		/** Acquisition state of the retained neutral values, independent of resource readiness. */
+		BuildingCandidateSourceStatus status = BuildingCandidateSourceStatus::Unknown;
+		/** Owned canonical generated-class identity bytes when acquired. */
+		std::string canonicalClassPath;
+		/** Whether the full neutral world placement is available. */
+		bool hasPlacement = false;
+		/** World position, XYZW rotation and signed scale when hasPlacement is true. */
+		Visuals::SpritePlacement placement{};
+		/** Owned keyed values and source provenance for known spline occurrences. */
+		BuildingCandidateSplineSource spline;
+	};
+
+	/** Borrows the publication-owned source records in candidate occurrence order. */
+	struct BuildingCandidateSourceData
+	{
+		/** Record N corresponds to candidate occurrence N in the same retained publication. */
+		std::span<const BuildingCandidateSourceRecord> records;
 	};
 
 	/** Reports candidate accounting separately from native fact readiness. */

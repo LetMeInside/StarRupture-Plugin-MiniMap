@@ -9,6 +9,7 @@
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
 #include <SDK/Chimera_classes.hpp>
+#include <SDK/CoreUObject_structs.hpp>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -596,13 +597,203 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
-        /** Converts the frozen V2 fact sequence into neutral records without changing correspondence. */
-        std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>
-        BuildCandidateOccurrences(const Facts& facts)
+        /** Maps copied native acquisition outcomes without exposing native status values. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceStatus MapSourceStatus(Status status)
+        {
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            switch (status)
+            {
+            case Status::Ready:
+                return SourceStatus::Complete;
+            case Status::Unavailable:
+                return SourceStatus::Unavailable;
+            case Status::Invalid:
+                return SourceStatus::Invalid;
+            case Status::Unknown:
+            case Status::Missing:
+                return SourceStatus::Incomplete;
+            }
+            return SourceStatus::Unknown;
+        }
+
+        /** Combines required source facts while retaining the strongest unresolved evidence. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceStatus CombineSourceStatus(
+            ::Services::Map::Buildings::BuildingCandidateSourceStatus first,
+            ::Services::Map::Buildings::BuildingCandidateSourceStatus second)
+        {
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            if (first == SourceStatus::Invalid || second == SourceStatus::Invalid)
+                return SourceStatus::Invalid;
+            if (first == SourceStatus::Unsupported || second == SourceStatus::Unsupported)
+                return SourceStatus::Unsupported;
+            if (first == SourceStatus::Unavailable || second == SourceStatus::Unavailable)
+                return SourceStatus::Unavailable;
+            if (first != SourceStatus::Complete || second != SourceStatus::Complete)
+                return SourceStatus::Incomplete;
+            return SourceStatus::Complete;
+        }
+
+        /** Maps established native position-curve modes and retains unknown modes explicitly. */
+        static ::Services::Map::Buildings::Visuals::KeyedSplineInterpolation MapInterpolationMode(
+            std::uint8_t mode)
+        {
+            using Interpolation = ::Services::Map::Buildings::Visuals::KeyedSplineInterpolation;
+            switch (static_cast<SDK::EInterpCurveMode>(mode))
+            {
+            case SDK::EInterpCurveMode::CIM_Linear:
+                return Interpolation::Linear;
+            case SDK::EInterpCurveMode::CIM_Constant:
+                return Interpolation::Constant;
+            case SDK::EInterpCurveMode::CIM_CurveAuto:
+            case SDK::EInterpCurveMode::CIM_CurveUser:
+            case SDK::EInterpCurveMode::CIM_CurveBreak:
+            case SDK::EInterpCurveMode::CIM_CurveAutoClamped:
+                return Interpolation::Cubic;
+            }
+            return Interpolation::Unsupported;
+        }
+
+        /** Copies initialized position keys without applying placement to their world-space values. */
+        static void CopyInitializedSplineKeys(
+            const Facts::Spline& nativeSpline,
+            ::Services::Map::Buildings::BuildingCandidateSplineSource& spline)
+        {
+            spline.isLooped = nativeSpline.Position.IsLooped;
+            spline.points.reserve(nativeSpline.Position.Points.size());
+            for (const Facts::CurvePoint<Facts::Point>& point : nativeSpline.Position.Points)
+            {
+                spline.points.push_back({
+                    point.Key,
+                    point.ValueAtKey,
+                    point.ArriveTangent,
+                    point.LeaveTangent,
+                    MapInterpolationMode(point.Mode)});
+            }
+            spline.hasKeyedCurve = spline.points.size() >= 2;
+        }
+
+        /** Converts only the established two-point fallback to its implicit [0, 1] keyed form. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceStatus CopyFallbackSplineKeys(
+            const Facts::SplineData& data,
+            ::Services::Map::Buildings::BuildingCandidateSplineSource& spline)
+        {
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            if (data.Points.size() != 2)
+            {
+                spline.unkeyedPoints.reserve(data.Points.size());
+                for (const Facts::SplinePoint& point : data.Points)
+                    spline.unkeyedPoints.push_back({point.Position, point.Tangent});
+                return data.Points.size() > 2 ? SourceStatus::Unsupported : SourceStatus::Incomplete;
+            }
+
+            const Facts::SplinePoint& first = data.Points[0];
+            const Facts::SplinePoint& last = data.Points[1];
+            spline.points.reserve(2);
+            spline.points.push_back({0.0, first.Position, {}, first.Tangent,
+                ::Services::Map::Buildings::Visuals::KeyedSplineInterpolation::Cubic});
+            spline.points.push_back({1.0, last.Position, last.Tangent, {},
+                ::Services::Map::Buildings::Visuals::KeyedSplineInterpolation::Cubic});
+            spline.hasKeyedCurve = true;
+            return SourceStatus::Complete;
+        }
+
+        /** Copies native spline values and provenance into the neutral publication record. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceStatus CopySplineSource(
+            const Facts::Building& building,
+            ::Services::Map::Buildings::BuildingCandidateSplineSource& spline)
+        {
+            using Provenance = ::Services::Map::Buildings::BuildingCandidateSplineProvenance;
+            using CoordinateSpace = ::Services::Map::Buildings::BuildingCandidateSplineCoordinateSpace;
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            if (!building.SplineFacts)
+            {
+                return building.SplineStatus == Status::Ready
+                    ? SourceStatus::Incomplete
+                    : MapSourceStatus(building.SplineStatus);
+            }
+
+            const Facts::Spline& nativeSpline = *building.SplineFacts;
+            spline.coordinateSpace = CoordinateSpace::WorldSpace;
+            // Provenance describes the value source selected below, not a fallback attempt.
+            if (nativeSpline.CurvesInitialized)
+            {
+                spline.provenance = Provenance::InitializedCurve;
+            }
+            else if (nativeSpline.Provenance == Facts::SplineProvenance::Payload &&
+                nativeSpline.PayloadData)
+            {
+                spline.provenance = Provenance::PayloadFallback;
+            }
+            else
+            {
+                spline.provenance = Provenance::FragmentPoints;
+            }
+            SourceStatus sourceStatus = MapSourceStatus(nativeSpline.SourceStatus);
+            if (nativeSpline.CurvesInitialized)
+            {
+                CopyInitializedSplineKeys(nativeSpline, spline);
+                if (!spline.hasKeyedCurve)
+                    sourceStatus = CombineSourceStatus(sourceStatus, SourceStatus::Incomplete);
+            }
+            else if (nativeSpline.Provenance == Facts::SplineProvenance::Payload && nativeSpline.PayloadData)
+            {
+                sourceStatus = CombineSourceStatus(sourceStatus,
+                    CopyFallbackSplineKeys(*nativeSpline.PayloadData, spline));
+            }
+            else
+            {
+                sourceStatus = CombineSourceStatus(sourceStatus,
+                    CopyFallbackSplineKeys(nativeSpline.FragmentData, spline));
+                if (nativeSpline.Provenance == Facts::SplineProvenance::Payload)
+                    sourceStatus = CombineSourceStatus(sourceStatus, SourceStatus::Incomplete);
+            }
+            return sourceStatus;
+        }
+
+        /** Copies known neutral source facts while preserving classification and acquisition gaps. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceRecord BuildCandidateSourceRecord(
+            const Facts::Building& building)
+        {
+            using SourceKind = ::Services::Map::Buildings::BuildingCandidateSourceKind;
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            using CandidateSource = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
+            CandidateSource source;
+            const auto definitionStatus = building.DefinitionFacts
+                ? MapSourceStatus(building.DefinitionFacts->ClassStatus)
+                : SourceStatus::Incomplete;
+            const auto transformStatus = MapSourceStatus(building.TransformStatus);
+            if (building.DefinitionFacts && building.DefinitionFacts->ClassStatus == Status::Ready)
+                source.canonicalClassPath = building.DefinitionFacts->CanonicalClassPath;
+            if (building.TransformStatus == Status::Ready)
+            {
+                source.hasPlacement = true;
+                source.placement = {building.Position, building.SignedScale, building.Rotation};
+            }
+            if (building.SplineClassificationStatus != Status::Ready)
+            {
+                source.status = SourceStatus::Unknown;
+                return source;
+            }
+
+            source.kind = building.HasSpline ? SourceKind::Spline : SourceKind::Sprite;
+            if (source.kind == SourceKind::Sprite)
+                source.status = CombineSourceStatus(definitionStatus, transformStatus);
+            else
+                source.status = CombineSourceStatus(
+                    CombineSourceStatus(definitionStatus, transformStatus),
+                    CopySplineSource(building, source.spline));
+            return source;
+        }
+
+        /** Builds candidate and source vectors in one pass over the exact same frozen facts. */
+        static void BuildCandidateRecords(
+            const Facts& facts,
+            std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>& occurrences,
+            std::vector<::Services::Map::Buildings::BuildingCandidateSourceRecord>& sourceRecords)
         {
             using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
-            std::vector<CandidateOccurrence> occurrences;
             occurrences.reserve(facts.Buildings.size());
+            sourceRecords.reserve(facts.Buildings.size());
             for (const Facts::Building& building : facts.Buildings)
             {
                 CandidateOccurrence occurrence;
@@ -615,9 +806,9 @@ namespace MiniMap::BuildingAcquisition
                 occurrence.nativeFactsComplete = building.Complete;
                 occurrence.isPendingOrUnresolved = !building.Complete;
                 occurrence.contentSignature = BuildingCollectorV2::ComputeOccurrenceSignature(building);
-                occurrences.push_back(occurrence);
+                occurrences.push_back(std::move(occurrence));
+                sourceRecords.push_back(BuildCandidateSourceRecord(building));
             }
-            return occurrences;
         }
 
         /** Produces neutral candidate occurrences and explicit coverage evidence from one fact owner. */
@@ -627,9 +818,12 @@ namespace MiniMap::BuildingAcquisition
             std::shared_ptr<std::atomic<bool>>& eligibility)
         {
             using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
+            using CandidateSourceRecord = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
             using CandidateEvidence = ::Services::Map::Buildings::BuildingCandidateEvidence;
             using CandidateRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
-            std::vector<CandidateOccurrence> occurrences = BuildCandidateOccurrences(*facts);
+            std::vector<CandidateOccurrence> occurrences;
+            std::vector<CandidateSourceRecord> sourceRecords;
+            BuildCandidateRecords(*facts, occurrences, sourceRecords);
             CandidateEvidence evidence;
             for (const CandidateOccurrence& occurrence : occurrences)
             {
@@ -651,6 +845,7 @@ namespace MiniMap::BuildingAcquisition
             eligibility = std::make_shared<std::atomic<bool>>(true);
             return std::make_shared<::Services::Map::Buildings::BuildingCandidatePublication>(
                 std::move(occurrences),
+                std::move(sourceRecords),
                 evidence,
                 true,
                 requestedCoverage,

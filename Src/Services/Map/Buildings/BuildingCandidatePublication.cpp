@@ -1,10 +1,11 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements generic immutable candidate retention and conservative grid observations.
+// Implements owned candidate/source retention and conservative generic grid observations.
 #include "BuildingCandidatePublication.h"
 
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace Services::Map::Buildings
@@ -12,6 +13,7 @@ namespace Services::Map::Buildings
 	/** Takes completed producer evidence and initializes owned contiguous occurrence storage. */
 	BuildingCandidatePublication::BuildingCandidatePublication(
 		std::vector<BuildingCandidateOccurrence> occurrences,
+		std::vector<BuildingCandidateSourceRecord> sourceRecords,
 		BuildingCandidateEvidence evidence,
 		bool hasRequestedCoverage,
 		BuildingCollectionRegion requestedCoverage,
@@ -19,6 +21,7 @@ namespace Services::Map::Buildings
 		BuildingCollectionRegion coverage,
 		std::weak_ptr<const std::atomic<bool>> eligibility)
 		: occurrences_(std::move(occurrences))
+		, sourceRecords_(std::move(sourceRecords))
 		, evidence_(evidence)
 		, eligibility_(std::move(eligibility))
 		, requestedCoverage_(requestedCoverage)
@@ -27,6 +30,12 @@ namespace Services::Map::Buildings
 		, hasCoverage_(hasCoverage)
 		, hasValidRequestedCoverage_(hasRequestedCoverage && IsValidRegion(requestedCoverage))
 	{
+		if (sourceRecords_.size() != occurrences_.size())
+		{
+			throw std::invalid_argument(
+				"Candidate and source records must have matching occurrence cardinality.");
+		}
+
 		if (!hasValidRequestedCoverage_)
 		{
 			hasRequestedCoverage_ = false;
@@ -35,6 +44,7 @@ namespace Services::Map::Buildings
 		{
 			hasCoverage_ = false;
 			coverage_ = {};
+			evidence_.candidateCoverageComplete = false;
 		}
 		if (!hasRequestedCoverage_)
 		{
@@ -62,6 +72,27 @@ namespace Services::Map::Buildings
 		data.evidence = evidence_;
 		data.occurrences = std::span<const BuildingCandidateOccurrence>(occurrences_);
 		return data;
+	}
+
+	/** Returns borrowed source descriptors whose nested storage is owned by this publication. */
+	BuildingCandidateSourceData BuildingCandidatePublication::BorrowSourceData() const noexcept
+	{
+		return {std::span<const BuildingCandidateSourceRecord>(sourceRecords_)};
+	}
+
+	/** Resolves the contiguous publication ordinal without a separate lookup structure. */
+	bool BuildingCandidatePublication::TryGetSourceRecord(
+		std::uint64_t publicationOrdinal,
+		const BuildingCandidateSourceRecord*& output) const noexcept
+	{
+		output = nullptr;
+		if (publicationOrdinal >= sourceRecords_.size())
+		{
+			return false;
+		}
+
+		output = &sourceRecords_[static_cast<std::size_t>(publicationOrdinal)];
+		return true;
 	}
 
 	/** Clears outputs first and fills them only after complete grid validation. */
