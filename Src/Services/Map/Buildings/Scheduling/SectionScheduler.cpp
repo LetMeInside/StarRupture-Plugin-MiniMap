@@ -1,16 +1,20 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns acquisition resources, session lifecycle, and neutral inputs for one Section scene.
+// Owns acquisition resources, session lifecycle, and synchronous one-Section image construction.
 #include "SectionScheduler.h"
 
 #include "BuildingScheduler.h"
+#include "../BuildingMapSection.h"
 #include "../Cache/CpuSpriteSourceManager.h"
 #include "../Cache/SpriteDiskCache.h"
+#include "../Rendering/Rgba16fImageDestination.h"
+#include "../Rendering/SectionRendering.h"
 #include "../Visuals/SpriteGeometry.h"
 #include "../Visuals/SplineGeometry.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace Services::Map::Buildings::Scheduling
@@ -45,6 +49,15 @@ namespace Services::Map::Buildings::Scheduling
 		CandidateEvidence = {};
 		PublicationIdentity = nullptr;
 		PreparationReadiness = Readiness::InvalidPublication;
+	}
+
+	/** Clears image bytes and prior attempt evidence before reusing the caller-owned result. */
+	void SectionScheduler::SectionImageRenderResult::Reset() noexcept
+	{
+		RenderStatus = Status::NoAttempt;
+		SceneReadiness.reset();
+		NumericalStatus.reset();
+		ImageBytes.clear();
 	}
 
 	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
@@ -93,6 +106,181 @@ namespace Services::Map::Buildings::Scheduling
 		output.Splines = std::span<const Visuals::BuildingSplineRenderInput>(scratch);
 		output.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(OverlayLastSprites);
 		return true;
+	}
+
+	/** Validates the exact Section cell, reuses prepared inputs, and renders one caller-owned image. */
+	void SectionScheduler::RenderSectionImage(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const BuildingCandidateObservation& observation,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		SectionImageRenderResult& output) const
+	{
+		output.Reset();
+		if (!IsObservationForSection(section, observation))
+		{
+			output.RenderStatus = SectionImageRenderResult::Status::InvalidInput;
+			return;
+		}
+		SectionScenePreparationResult scenePreparation;
+		PrepareSectionSceneInputs(publicationOwner, observation, knownSpritePreparation, splinePolicies, scenePreparation);
+		output.SceneReadiness = scenePreparation.PreparationReadiness;
+		if (!CanRenderPreparedScene(publicationOwner, scenePreparation, output))
+		{
+			return;
+		}
+		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
+		Visuals::BuildingRenderSceneInput sceneInput;
+		if (!scenePreparation.BorrowRenderSceneInput(publicationOwner, splineViewScratch, sceneInput))
+		{
+			SetSceneBorrowFailureStatus(publicationOwner, output);
+			return;
+		}
+		const Rendering::Rgba16fImageGrid grid = CreateSectionRenderingGrid(
+			section,
+			sectionSizeMapUnits_,
+			sectionResolutionPixels_);
+		output.NumericalStatus = RenderIntoSectionContext(
+			section,
+			sceneInput,
+			grid,
+			output.ImageBytes);
+		SetCompletedRenderOutcome(publicationOwner, output);
+	}
+
+	/** Revalidates the source and exposes image bytes only after complete numerical rendering. */
+	void SectionScheduler::SetCompletedRenderOutcome(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		SectionImageRenderResult& output)
+	{
+		if (publicationOwner == nullptr || !publicationOwner->IsCurrent())
+		{
+			output.ImageBytes.clear();
+			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
+			return;
+		}
+		if (!output.NumericalStatus.has_value() ||
+			*output.NumericalStatus != Rendering::SectionRendering::Status::Complete)
+		{
+			output.ImageBytes.clear();
+			output.RenderStatus = SectionImageRenderResult::Status::NumericalRenderingFailed;
+			return;
+		}
+		if (output.ImageBytes.empty())
+		{
+			output.ImageBytes.clear();
+			output.RenderStatus = SectionImageRenderResult::Status::NumericalRenderingFailed;
+			return;
+		}
+		output.RenderStatus = SectionImageRenderResult::Status::RenderedImageAvailable;
+	}
+
+	/** Renders into the numerical context exclusively owned by the supplied Section. */
+	Rendering::SectionRendering::Status SectionScheduler::RenderIntoSectionContext(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		const Visuals::BuildingRenderSceneInput& sceneInput,
+		const Rendering::Rgba16fImageGrid& grid,
+		std::vector<std::uint8_t>& imageBytes)
+	{
+		Visuals::BuildingVisualsContext& context = section.GetOrCreateVisualsContext();
+		return Rendering::SectionRendering::RenderSection(sceneInput, context, grid, imageBytes);
+	}
+
+	/** Allows the renderer only for complete scene inputs and preserves readiness failures. */
+	bool SectionScheduler::CanRenderPreparedScene(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const SectionScenePreparationResult& scenePreparation,
+		SectionImageRenderResult& output)
+	{
+		using Readiness = SectionScenePreparationResult::Readiness;
+		if (scenePreparation.PreparationReadiness == Readiness::StalePublication)
+		{
+			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
+			return false;
+		}
+		if (publicationOwner == nullptr ||
+			scenePreparation.PreparationReadiness == Readiness::InvalidPublication ||
+			scenePreparation.PreparationReadiness == Readiness::InvalidObservation)
+		{
+			output.RenderStatus = SectionImageRenderResult::Status::InvalidInput;
+			return false;
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
+			return false;
+		}
+		if (scenePreparation.PreparationReadiness != Readiness::CompleteSceneInputs)
+		{
+			output.RenderStatus = SectionImageRenderResult::Status::IncompleteSceneInputs;
+			return false;
+		}
+		return true;
+	}
+
+	/** Distinguishes a revoked publication from malformed scene borrowing without attempting rendering. */
+	void SectionScheduler::SetSceneBorrowFailureStatus(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		SectionImageRenderResult& output)
+	{
+		output.RenderStatus = publicationOwner == nullptr || !publicationOwner->IsCurrent()
+			? SectionImageRenderResult::Status::StalePublication
+			: SectionImageRenderResult::Status::InvalidInput;
+	}
+
+	/** Matches one half-open observation rectangle to the supplied Section's grid coordinate. */
+	bool SectionScheduler::IsObservationForSection(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		const BuildingCandidateObservation& observation) const
+	{
+		const double expectedX = static_cast<double>(section.GetGridX()) * sectionSizeMapUnits_;
+		const double expectedY = static_cast<double>(section.GetGridY()) * sectionSizeMapUnits_;
+		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
+		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
+		return std::isfinite(right) && std::isfinite(bottom) &&
+			right > observation.requestedRegion.xMapUnits && bottom > observation.requestedRegion.yMapUnits &&
+			observation.requestedRegion.widthMapUnits == sectionSizeMapUnits_ &&
+			observation.requestedRegion.heightMapUnits == sectionSizeMapUnits_ &&
+			IsSectionRegionCoordinateMatch(observation.requestedRegion.xMapUnits, expectedX, sectionSizeMapUnits_) &&
+			IsSectionRegionCoordinateMatch(observation.requestedRegion.yMapUnits, expectedY, sectionSizeMapUnits_);
+	}
+
+	/** Allows rounding differences only when they remain well below adjacent-cell separation. */
+	bool SectionScheduler::IsSectionRegionCoordinateMatch(
+		double actual,
+		double expected,
+		double sectionSize) noexcept
+	{
+		if (!std::isfinite(actual) || !std::isfinite(expected) || !std::isfinite(sectionSize) || sectionSize <= 0.0)
+		{
+			return false;
+		}
+		const double coordinateScale = (std::max)(std::abs(actual), (std::max)(std::abs(expected), sectionSize));
+		const double roundingTolerance = std::numeric_limits<double>::epsilon() * coordinateScale * 4.0;
+		const double maximumTolerance = sectionSize * 0.25;
+		if (roundingTolerance >= maximumTolerance)
+		{
+			return actual == expected;
+		}
+		return std::abs(actual - expected) <= roundingTolerance;
+	}
+
+	/** Creates the existing zero-origin global grid for one Section destination. */
+	Rendering::Rgba16fImageGrid SectionScheduler::CreateSectionRenderingGrid(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		double sectionSizeMapUnits,
+		std::uint32_t sectionResolutionPixels)
+	{
+		Rendering::Rgba16fImageGrid grid;
+		grid.WorldOriginX = 0.0;
+		grid.WorldOriginY = 0.0;
+		grid.CellX = section.GetGridX();
+		grid.CellY = section.GetGridY();
+		grid.Width = sectionResolutionPixels;
+		grid.Height = sectionResolutionPixels;
+		grid.WorldUnitsPerPixel = sectionSizeMapUnits / static_cast<double>(sectionResolutionPixels);
+		return grid;
 	}
 
 	/** Creates temporary render spans only when this result owns complete compatible values. */

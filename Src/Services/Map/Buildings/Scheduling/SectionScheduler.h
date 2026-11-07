@@ -1,7 +1,8 @@
-// Owns Building Map acquisition resources, session lifecycle, and single-Section neutral scene preparation.
+// Owns Building Map acquisition, single-Section scene preparation, and synchronous image attempts.
 #pragma once
 
 #include "../BuildingCandidatePublication.h"
+#include "../Rendering/SectionRendering.h"
 #include "../Visuals/BuildingRenderSceneInput.h"
 #include "../Cache/OwnedSpriteKey.h"
 #include "../SplinePolicy.h"
@@ -15,6 +16,11 @@
 #include <span>
 #include <vector>
 
+namespace Services::Map::Buildings
+{
+	class BuildingMapSection;
+}
+
 namespace Services::Map::Buildings::Cache
 {
 	class CpuSpriteSourceManager;
@@ -27,10 +33,11 @@ namespace Services::Map::Buildings::Scheduling
 	class BuildingScheduler;
 	class SectionSchedulingCoordinator;
 
-	/** Owns acquisition resources and prepares one Section's neutral scene inputs from explicit publications.
+	/** Owns acquisition resources and synchronously prepares/renders one Section from explicit publications.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
 	 * The coordinator delegates session lifetime and shutdown progression. Construction is inert; session
-	 * shutdown must finish before this owner is destroyed. Scene preparation never schedules or renders.
+	 * shutdown must finish before this owner is destroyed. Image output remains caller-owned and is not
+	 * retained by this scheduler or promoted to final Section completion.
 	 */
 	class SectionScheduler final
 	{
@@ -337,6 +344,36 @@ namespace Services::Map::Buildings::Scheduling
 				Visuals::BuildingRenderSceneInput& output) const;
 		};
 
+		/** Owns only complete numerical image bytes and non-owning outcome evidence for one attempt.
+		 * It retains no Section, publication owner, scene span or rendering context. Complete image
+		 * availability is not final Section completion, image publication or coordinator completion.
+		 */
+		struct SectionImageRenderResult
+		{
+			/** Distinguishes an attempt outcome from final Section-processing completion. */
+			enum class Status
+			{
+				NoAttempt,
+				InvalidInput,
+				IncompleteSceneInputs,
+				StalePublication,
+				NumericalRenderingFailed,
+				RenderedImageAvailable
+			};
+
+			/** High-level synchronous rendering outcome. */
+			Status RenderStatus = Status::NoAttempt;
+			/** R2S.B readiness retained when scene preparation was invoked. */
+			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
+			/** Existing numerical renderer status, populated only when rendering was called. */
+			std::optional<Rendering::SectionRendering::Status> NumericalStatus;
+			/** Caller-owned row-major little-endian RGBA16F bytes, populated only on success. */
+			std::vector<std::uint8_t> ImageBytes;
+
+			/** Clears previous attempt evidence and image bytes for safe result reuse. */
+			void Reset() noexcept;
+		};
+
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
 		SectionScheduler(const SectionScheduler&) = delete;
 		/** Prevents copies from duplicating acquisition resources or borrowed dependencies. */
@@ -401,6 +438,86 @@ namespace Services::Map::Buildings::Scheduling
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionScenePreparationResult& output) const;
+
+		/** Synchronously attempts one complete numerical image for the matching Section cell.
+		 * Reuses R2S.B preparation, borrows its scene only across the SectionRendering call, and
+		 * returns caller-owned bytes without storing or publishing an image or reporting final completion.
+		 * @param section Service-owned Section whose grid coordinate and private context are used.
+		 * @param publicationOwner Retained publication for the observation and all borrowed pixels.
+		 * @param observation Candidate observation that must describe this Section's exact cell.
+		 * @param knownSpritePreparation Existing same-publication result; no sprite acquisition is repeated.
+		 * @param splinePolicies Borrowed immutable service-owned policy values.
+		 * @param output Reusable caller-owned attempt result; old bytes are cleared before processing.
+		 */
+		void RenderSectionImage(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			const BuildingCandidateObservation& observation,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			SectionImageRenderResult& output) const;
+
+		/** Validates that the requested half-open cell corresponds to the supplied Section coordinates.
+		 * @param section Service-owned Section whose signed grid location is authoritative.
+		 * @param observation Borrowed candidate observation to match against the Section cell.
+		 * @return True for the same square cell under the service's map-unit scale.
+		 */
+		bool IsObservationForSection(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			const BuildingCandidateObservation& observation) const;
+		/** Compares coordinates within floating-point rounding tolerance, capped below cell separation.
+		 * @param actual Observation coordinate.
+		 * @param expected Coordinate derived from the Section grid index.
+		 * @param sectionSize Positive map-space cell dimension.
+		 * @return True only when the coordinates match the same cell location.
+		 */
+		static bool IsSectionRegionCoordinateMatch(double actual, double expected, double sectionSize) noexcept;
+		/** Constructs the renderer's established zero-origin global-cell grid.
+		 * @param section Section supplying signed global cell coordinates.
+		 * @param sectionSizeMapUnits Square world-space cell size.
+		 * @param sectionResolutionPixels Square destination dimension.
+		 * @return Grid configuration with complementary world-units-per-pixel scale.
+		 */
+		static Rendering::Rgba16fImageGrid CreateSectionRenderingGrid(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			double sectionSizeMapUnits,
+			std::uint32_t sectionResolutionPixels);
+		/** Applies the complete-only gate and maps R2S.B readiness to the attempt result.
+		 * @param publicationOwner Retained owner whose currentness is rechecked before rendering.
+		 * @param scenePreparation R2S.B result that must be CompleteSceneInputs.
+		 * @param output Receives invalid, stale, incomplete, or render-permitted status.
+		 * @return True only when SectionRendering may be called.
+		 */
+		static bool CanRenderPreparedScene(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			const SectionScenePreparationResult& scenePreparation,
+			SectionImageRenderResult& output);
+		/** Reports whether failed borrowing is caused by revocation or malformed prepared data.
+		 * @param publicationOwner Retained publication checked for currentness.
+		 * @param output Receives StalePublication or InvalidInput.
+		 */
+		static void SetSceneBorrowFailureStatus(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			SectionImageRenderResult& output);
+		/** Invokes the existing renderer with the Section's privately owned numerical context.
+		 * @param section Section that owns the reusable context.
+		 * @param sceneInput Borrowed complete neutral scene valid for the synchronous call.
+		 * @param grid Existing zero-origin destination grid.
+		 * @param imageBytes Receives finalized bytes only on numerical success.
+		 * @return The exact existing SectionRendering outcome.
+		 */
+		static Rendering::SectionRendering::Status RenderIntoSectionContext(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			const Visuals::BuildingRenderSceneInput& sceneInput,
+			const Rendering::Rgba16fImageGrid& grid,
+			std::vector<std::uint8_t>& imageBytes);
+		/** Rechecks currentness and maps renderer success/failure without retaining failed bytes.
+		 * @param publicationOwner Explicit source publication checked after numerical rendering.
+		 * @param output Attempt result retaining readiness, renderer status and successful bytes.
+		 */
+		static void SetCompletedRenderOutcome(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			SectionImageRenderResult& output);
 
 		/** Validates one well-formed observation and its exact source-relative ordinal sequence.
 		 * @param publication Retained publication whose candidate occurrence order is authoritative.
