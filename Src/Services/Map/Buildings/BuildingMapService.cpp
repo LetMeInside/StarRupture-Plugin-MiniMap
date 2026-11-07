@@ -10,7 +10,7 @@
 
 #include "BuildingMapSection.h"
 #include "BuildingMapViewport.h"
-#include "Scheduling/SectionScheduler.h"
+#include "Scheduling/SectionSchedulingCoordinator.h"
 
 namespace Services::Map::Buildings
 {
@@ -33,7 +33,7 @@ namespace Services::Map::Buildings
 		{
 			throw std::invalid_argument("Building Map requires an absolute Buildings cache directory.");
 		}
-		sectionScheduler_.reset(new Scheduling::SectionScheduler(
+		sectionSchedulingCoordinator_.reset(new Scheduling::SectionSchedulingCoordinator(
 			sectionSizeMapUnits_,
 			sectionResolutionPixels_,
 			std::move(buildingsCacheDirectory)));
@@ -49,15 +49,15 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.clear();
 	}
 
-	/** Starts one renderer session through SectionScheduler without activating runtime callbacks. */
+	/** Starts one renderer session through the coordinator without activating runtime callbacks. */
 	bool BuildingMapService::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
 	{
-		if (!sectionScheduler_ || sessionGeneration == 0 ||
+		if (!sectionSchedulingCoordinator_ || sessionGeneration == 0 ||
 			sessionGeneration <= lastCaptureSessionGeneration_)
 		{
 			return false;
 		}
-		if (!sectionScheduler_->BeginCaptureGameWorldSession(sessionGeneration))
+		if (!sectionSchedulingCoordinator_->BeginCaptureGameWorldSession(sessionGeneration))
 		{
 			return false;
 		}
@@ -65,10 +65,11 @@ namespace Services::Map::Buildings
 		return true;
 	}
 
-	/** Advances SectionScheduler-owned renderer teardown without releasing pending native owners. */
+	/** Advances coordinator-delegated renderer teardown without releasing pending native owners. */
 	bool BuildingMapService::AdvanceCaptureGameWorldSessionShutdown()
 	{
-		return sectionScheduler_ == nullptr || sectionScheduler_->AdvanceCaptureGameWorldSessionShutdown();
+		return sectionSchedulingCoordinator_ == nullptr ||
+			sectionSchedulingCoordinator_->AdvanceCaptureGameWorldSessionShutdown();
 	}
 
 	/** Returns the configured square cell size in map units. */
@@ -140,7 +141,19 @@ namespace Services::Map::Buildings
 			viewport->gridRange_.endX,
 			viewport->gridRange_.endY))
 		{
-			viewport->Close();
+			viewportsByHandle_.erase(viewportHandle);
+			viewport->InvalidateService();
+			return nullptr;
+		}
+		if (sectionSchedulingCoordinator_ == nullptr ||
+			!sectionSchedulingCoordinator_->AddViewportDemand(
+				viewport->gridRange_.firstX,
+				viewport->gridRange_.firstY,
+				viewport->gridRange_.endX,
+				viewport->gridRange_.endY))
+		{
+			viewportsByHandle_.erase(viewportHandle);
+			viewport->InvalidateService();
 			return nullptr;
 		}
 		return viewport;
@@ -162,6 +175,15 @@ namespace Services::Map::Buildings
 		if (viewport == viewportsByHandle_.end())
 		{
 			return;
+		}
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			const auto& gridRange = viewport->second->gridRange_;
+			sectionSchedulingCoordinator_->WithdrawViewportDemand(
+				gridRange.firstX,
+				gridRange.firstY,
+				gridRange.endX,
+				gridRange.endY);
 		}
 		viewportsByHandle_.erase(viewport);
 	}
@@ -199,7 +221,26 @@ namespace Services::Map::Buildings
 			top,
 			width,
 			height};
-		return viewportEntry->second->buildingCollector_->SetAcquisitionRegion(collectionRegion);
+		if (!viewportEntry->second->buildingCollector_->SetAcquisitionRegion(collectionRegion))
+		{
+			return false;
+		}
+		const auto& previousRange = viewportEntry->second->gridRange_;
+		if (previousRange.firstX != firstGridX || previousRange.firstY != firstGridY ||
+			previousRange.endX != endGridX || previousRange.endY != endGridY)
+		{
+			return sectionSchedulingCoordinator_ != nullptr &&
+				sectionSchedulingCoordinator_->ChangeViewportDemand(
+					previousRange.firstX,
+					previousRange.firstY,
+					previousRange.endX,
+					previousRange.endY,
+					firstGridX,
+					firstGridY,
+					endGridX,
+					endGridY);
+		}
+		return true;
 	}
 
 	/** Observes candidate evidence for the requested grid without updating Section state. */

@@ -15,11 +15,6 @@
 #include <span>
 #include <vector>
 
-namespace Services::Map::Buildings
-{
-	class BuildingMapService;
-}
-
 namespace Services::Map::Buildings::Cache
 {
 	class CpuSpriteSourceManager;
@@ -29,8 +24,9 @@ namespace Services::Map::Buildings::Cache
 namespace Services::Map::Buildings::Scheduling
 {
 	class BuildingScheduler;
+	class SectionSchedulingCoordinator;
 
-	/** Owns sibling acquisition resources; the service controls session lifetime and shutdown progression.
+	/** Owns sibling acquisition resources; its coordinator delegates session lifetime and shutdown progression.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
 	 * Construction is inert; session shutdown must finish before this owner is destroyed.
 	 */
@@ -260,7 +256,7 @@ namespace Services::Map::Buildings::Scheduling
 		~SectionScheduler();
 
 	private:
-		friend class Services::Map::Buildings::BuildingMapService;
+		friend class SectionSchedulingCoordinator;
 
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.

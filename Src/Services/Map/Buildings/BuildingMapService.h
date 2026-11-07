@@ -1,4 +1,4 @@
-// Owns Building Map sections, SectionScheduler, and viewport registrations.
+// Owns the shared Section grid and viewport registrations, and forwards demand to its coordinator.
 #pragma once
 
 #include "IBuildingCollector.h"
@@ -19,13 +19,13 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport;
 	namespace Scheduling
 	{
-		class SectionScheduler;
+		class SectionSchedulingCoordinator;
 	}
 
-	/** Owns map configuration, sections, SectionScheduler, and viewport registrations.
+	/** Owns map configuration, shared Sections, viewport registrations, and the scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
-	 * SectionScheduler owns cache-aware acquisition resources and their borrowing dependencies.
+	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
 	 */
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
@@ -129,9 +129,9 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Begins one SectionScheduler-owned renderer lifetime for the current game-world session. */
+		/** Begins one coordinator-owned SectionScheduler session for the current game-world session. */
 		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
-		/** Advances SectionScheduler-owned shutdown only until native retirement completes. */
+		/** Advances coordinator-delegated shutdown only until native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
 
 		/** Obtains one candidate batch from one retained publication without final certification.
@@ -153,6 +153,6 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
 		std::uint64_t lastCaptureSessionGeneration_ = 0;
-		std::unique_ptr<Scheduling::SectionScheduler> sectionScheduler_;
+		std::unique_ptr<Scheduling::SectionSchedulingCoordinator> sectionSchedulingCoordinator_;
 	};
 }
