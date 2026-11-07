@@ -1,8 +1,9 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements service-owned sections, viewport access, and SectionScheduler lifecycle delegation.
+// Implements service-owned Sections, viewport registration/source selection, and scheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -14,6 +15,13 @@
 
 namespace Services::Map::Buildings
 {
+	/** Clears borrowed views before releasing the publication that owns their storage. */
+	void BuildingMapService::SectionCandidateSource::Reset() noexcept
+	{
+		Observation = {};
+		PublicationOwner.reset();
+	}
+
 	/** Validates immutable map settings and copies the caller's spline policy span. */
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
@@ -289,11 +297,145 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
+		publication->ObserveCandidates(
+			observationGrid,
+			std::span<BuildingCandidateObservation>(observations));
+		if (!publication->IsCurrent())
+		{
+			return;
+		}
+	}
+
+	/** Chooses the best current publication among live viewports covering one Section cell. */
+	bool BuildingMapService::TrySelectCandidatePublicationForSection(
+		std::int64_t gridX,
+		std::int64_t gridY,
+		SectionCandidateSource& output) const
+	{
+		output.Reset();
+		const double xMapUnits = static_cast<double>(gridX) * sectionSizeMapUnits_;
+		const double yMapUnits = static_cast<double>(gridY) * sectionSizeMapUnits_;
+		const double rightMapUnits = xMapUnits + sectionSizeMapUnits_;
+		const double bottomMapUnits = yMapUnits + sectionSizeMapUnits_;
+		if (!std::isfinite(xMapUnits) || !std::isfinite(yMapUnits) ||
+			!std::isfinite(rightMapUnits) || !std::isfinite(bottomMapUnits) ||
+			rightMapUnits <= xMapUnits || bottomMapUnits <= yMapUnits)
+		{
+			return false;
+		}
+		const BuildingCollectionRegion sectionRegion{
+			xMapUnits,
+			yMapUnits,
+			sectionSizeMapUnits_,
+			sectionSizeMapUnits_};
+		const BuildingSectionGrid observationGrid{xMapUnits, yMapUnits, sectionSizeMapUnits_, 1, 1};
+		SectionCandidateSource selectedCandidate;
+		int selectedEvidenceRank = -1;
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			ConsiderViewportCandidateForSection(
+				viewportEntry.first,
+				viewportEntry.second,
+				gridX,
+				gridY,
+				sectionRegion,
+				observationGrid,
+				selectedCandidate,
+				selectedEvidenceRank);
+		}
+		if (selectedCandidate.PublicationOwner == nullptr || !selectedCandidate.PublicationOwner->IsCurrent())
+		{
+			return false;
+		}
+		output = std::move(selectedCandidate);
+		return true;
+	}
+
+	/** Inspects one current viewport publication and retains it only when it improves evidence quality. */
+	void BuildingMapService::ConsiderViewportCandidateForSection(
+		std::uint64_t viewportHandle,
+		BuildingMapViewport* viewport,
+		std::int64_t gridX,
+		std::int64_t gridY,
+		const BuildingCollectionRegion& sectionRegion,
+		const BuildingSectionGrid& observationGrid,
+		SectionCandidateSource& selectedCandidate,
+		int& selectedEvidenceRank) const
+	{
+		if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+			viewport->viewportHandle_ != viewportHandle || gridX < viewport->gridRange_.firstX ||
+			gridX >= viewport->gridRange_.endX || gridY < viewport->gridRange_.firstY ||
+			gridY >= viewport->gridRange_.endY)
+		{
+			return;
+		}
+		std::shared_ptr<const BuildingCandidatePublication> publication =
+			viewport->buildingCollector_->AcquireCandidatePublication();
+		if (publication == nullptr || !publication->IsCurrent())
+		{
+			return;
+		}
+		const BuildingCandidateData candidateData = publication->BorrowCandidateData();
+		if (!HasRequestedCoverageForSection(candidateData, sectionRegion))
+		{
+			return;
+		}
+		std::array<BuildingCandidateObservation, 1> observations{};
 		publication->ObserveCandidates(observationGrid, observations);
 		if (!publication->IsCurrent())
 		{
 			return;
 		}
+		const BuildingCandidateObservation& observation = observations.front();
+		if (!IsObservationForSection(observation, sectionRegion))
+		{
+			return;
+		}
+		const BuildingCandidateEvidence& evidence = observation.evidence;
+		const int evidenceRank = evidence.membershipEnumerationComplete && evidence.candidateCoverageComplete
+			? (evidence.nativeAcquisitionComplete && !evidence.hasPendingOrUnresolvedOccurrences ? 2 : 1)
+			: 0;
+		if (evidenceRank <= selectedEvidenceRank)
+		{
+			return;
+		}
+		selectedCandidate.Observation = observation;
+		selectedCandidate.PublicationOwner = std::move(publication);
+		selectedEvidenceRank = evidenceRank;
+	}
+
+	/** Requires valid accepted request bounds to contain the entire target cell. */
+	bool BuildingMapService::HasRequestedCoverageForSection(
+		const BuildingCandidateData& candidateData,
+		const BuildingCollectionRegion& sectionRegion) noexcept
+	{
+		if (!candidateData.hasRequestedCoverage)
+		{
+			return false;
+		}
+		const BuildingCollectionRegion& requested = candidateData.requestedCoverage;
+		const double requestedRight = requested.xMapUnits + requested.widthMapUnits;
+		const double requestedBottom = requested.yMapUnits + requested.heightMapUnits;
+		const double sectionRight = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
+		const double sectionBottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
+		return std::isfinite(requested.xMapUnits) && std::isfinite(requested.yMapUnits) &&
+			std::isfinite(requested.widthMapUnits) && std::isfinite(requested.heightMapUnits) &&
+			requested.widthMapUnits > 0.0 && requested.heightMapUnits > 0.0 &&
+			std::isfinite(requestedRight) && std::isfinite(requestedBottom) &&
+			requestedRight > requested.xMapUnits && requestedBottom > requested.yMapUnits &&
+			sectionRegion.xMapUnits >= requested.xMapUnits && sectionRegion.yMapUnits >= requested.yMapUnits &&
+			sectionRight <= requestedRight && sectionBottom <= requestedBottom;
+	}
+
+	/** Accepts only the exact finite square cell requested from the selected publication. */
+	bool BuildingMapService::IsObservationForSection(
+		const BuildingCandidateObservation& observation,
+		const BuildingCollectionRegion& sectionRegion) noexcept
+	{
+		return observation.requestedRegion.xMapUnits == sectionRegion.xMapUnits &&
+			observation.requestedRegion.yMapUnits == sectionRegion.yMapUnits &&
+			observation.requestedRegion.widthMapUnits == sectionRegion.widthMapUnits &&
+			observation.requestedRegion.heightMapUnits == sectionRegion.heightMapUnits;
 	}
 
 	/** Returns the existing section or creates one owned by the sparse service grid. */

@@ -1,4 +1,4 @@
-// Owns the shared Section grid and viewport registrations, and forwards demand to its coordinator.
+// Owns the shared Section grid, viewport registrations and source selection, and forwards demand to its coordinator.
 #pragma once
 
 #include "IBuildingCollector.h"
@@ -22,7 +22,7 @@ namespace Services::Map::Buildings
 		class SectionSchedulingCoordinator;
 	}
 
-	/** Owns map configuration, shared Sections, viewport registrations, and the scheduling coordinator.
+	/** Owns map configuration, shared Sections, viewport registrations, source selection and the scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
 	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
@@ -94,6 +94,20 @@ namespace Services::Map::Buildings
 	private:
 		friend class BuildingMapViewport;
 
+		/** Retains one publication with an observation borrowing its ordinal storage.
+		 * Observation spans remain valid only while PublicationOwner remains retained.
+		 */
+		struct SectionCandidateSource
+		{
+			/** Owner of the publication that stores the observation's borrowed ordinals. */
+			std::shared_ptr<const BuildingCandidatePublication> PublicationOwner;
+			/** Exact Section observation borrowing only from PublicationOwner. */
+			BuildingCandidateObservation Observation{};
+
+			/** Clears the owner and all borrowed observation views. */
+			void Reset() noexcept;
+		};
+
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		const BuildingMapSection* FindSectionAt(
 			std::int64_t gridX,
@@ -145,6 +159,49 @@ namespace Services::Map::Buildings
 			const BuildingSectionGrid& observationGrid,
 			std::size_t columnCount,
 			std::size_t rowCount);
+
+		/** Selects one live viewport publication for the requested signed Section coordinate.
+		 * Prefers complete source evidence and keeps first registration order for ties. Incomplete
+		 * evidence remains visible in the borrowed observation for later readiness decisions.
+		 * @param gridX Signed Section column to select.
+		 * @param gridY Signed Section row to select.
+		 * @param output Receives a retained publication and its same-publication observation.
+		 * @return True when a current eligible publication covers the exact target cell.
+		 */
+		bool TrySelectCandidatePublicationForSection(
+			std::int64_t gridX,
+			std::int64_t gridY,
+			SectionCandidateSource& output) const;
+
+		/** Considers one registered viewport without combining its publication with another.
+		 * @param viewportHandle Registration key used as the deterministic tie order.
+		 * @param viewport Live service registration to inspect.
+		 * @param gridX Signed target Section column.
+		 * @param gridY Signed target Section row.
+		 * @param sectionRegion Exact target map-space cell.
+		 * @param observationGrid One-cell grid requested from the publication.
+		 * @param selectedCandidate Retains the best same-publication owner and observation so far.
+		 * @param selectedEvidenceRank Quality tier of the retained candidate.
+		 */
+		void ConsiderViewportCandidateForSection(
+			std::uint64_t viewportHandle,
+			BuildingMapViewport* viewport,
+			std::int64_t gridX,
+			std::int64_t gridY,
+			const BuildingCollectionRegion& sectionRegion,
+			const BuildingSectionGrid& observationGrid,
+			SectionCandidateSource& selectedCandidate,
+			int& selectedEvidenceRank) const;
+
+		/** Checks that accepted requested coverage contains one complete half-open Section cell. */
+		static bool HasRequestedCoverageForSection(
+			const BuildingCandidateData& candidateData,
+			const BuildingCollectionRegion& sectionRegion) noexcept;
+
+		/** Confirms that a generated observation describes the exact selected Section cell. */
+		static bool IsObservationForSection(
+			const BuildingCandidateObservation& observation,
+			const BuildingCollectionRegion& sectionRegion) noexcept;
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
