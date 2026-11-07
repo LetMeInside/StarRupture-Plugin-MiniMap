@@ -1,12 +1,14 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements Section identity, membership observation tracking, and lazy
-// ownership of private numerical rendering context.
+// Implements Section identity, membership observation tracking, private
+// completed-image storage, and lazy ownership of numerical rendering context.
 #include "BuildingMapSection.h"
 
 #include "Visuals/BuildingVisualsContext.h"
 
+#include <limits>
 #include <memory>
+#include <utility>
 
 namespace Services::Map::Buildings
 {
@@ -65,6 +67,85 @@ namespace Services::Map::Buildings
 		hasPreviousMembershipFingerprint_ = true;
 		hasCurrentMembershipObservation_ = true;
 		return fingerprintChanged;
+	}
+
+	/** Reports whether this Section currently owns a completed image. */
+	bool BuildingMapSection::HasCompletedImage() const
+	{
+		return completedImage_.has_value();
+	}
+
+	/** Borrows immutable metadata and bytes from the stored image when available. */
+	bool BuildingMapSection::TryBorrowCompletedImage(CompletedImageView& image) const
+	{
+		image = {};
+		if (!completedImage_)
+		{
+			return false;
+		}
+		image.PixelWidth = completedImage_->PixelWidth;
+		image.PixelHeight = completedImage_->PixelHeight;
+		image.Rgba16fBytes = completedImage_->Rgba16fBytes;
+		return true;
+	}
+
+	/** Releases the image without changing Section identity or numerical context. */
+	void BuildingMapSection::InvalidateCompletedImage()
+	{
+		completedImage_.reset();
+	}
+
+	/** Validates image dimensions and replaces storage by moving the byte vector. */
+	bool BuildingMapSection::TryAdoptCompletedImage(
+		std::uint32_t pixelWidth,
+		std::uint32_t pixelHeight,
+		std::vector<std::uint8_t>&& rgba16fBytes)
+	{
+		std::size_t expectedByteCount = 0;
+		if (!TryGetCompletedImageByteCount(pixelWidth, pixelHeight, expectedByteCount))
+		{
+			return false;
+		}
+		if (rgba16fBytes.size() != expectedByteCount)
+		{
+			return false;
+		}
+
+		CompletedImage replacement;
+		replacement.PixelWidth = pixelWidth;
+		replacement.PixelHeight = pixelHeight;
+		replacement.Rgba16fBytes = std::move(rgba16fBytes);
+		completedImage_ = std::move(replacement);
+		return true;
+	}
+
+	/** Computes the exact byte count while rejecting zero dimensions and overflow. */
+	bool BuildingMapSection::TryGetCompletedImageByteCount(
+		std::uint32_t pixelWidth,
+		std::uint32_t pixelHeight,
+		std::size_t& byteCount)
+	{
+		if (pixelWidth == 0 || pixelHeight == 0)
+		{
+			return false;
+		}
+
+		const std::size_t width = static_cast<std::size_t>(pixelWidth);
+		const std::size_t height = static_cast<std::size_t>(pixelHeight);
+		const std::size_t maximum = (std::numeric_limits<std::size_t>::max)();
+		if (width > maximum / height)
+		{
+			return false;
+		}
+
+		const std::size_t pixelCount = width * height;
+		constexpr std::size_t bytesPerPixel = 8;
+		if (pixelCount > maximum / bytesPerPixel)
+		{
+			return false;
+		}
+		byteCount = pixelCount * bytesPerPixel;
+		return true;
 	}
 
 	/** Lazily creates and returns this Section's exclusively owned numerical context. */
