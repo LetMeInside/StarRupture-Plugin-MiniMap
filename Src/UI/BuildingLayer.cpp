@@ -1,40 +1,64 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns one V2 viewport and prepares coalesced CPU-side RGBA8 Section images.
+// Owns the V2 viewport presentation lifecycle and draws published Section textures.
 #include "BuildingLayer.h"
 
 #include "../Services/Map/Buildings/BuildingMapSection.h"
 #include "../Services/Map/Buildings/BuildingMapViewport.h"
+#include "../Map/MapTransform.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace MiniMapUI
 {
-	/** Creates an unattached CPU presentation layer. */
-	BuildingLayer::BuildingLayer() = default;
+	/** Stores the caller-owned texture service and validates the configured Section size. */
+	BuildingLayer::BuildingLayer(
+		MiniMap::Services::ITextures& textures,
+		double sectionSizeMapUnits)
+		: textures_(&textures)
+		, sectionSizeMapUnits_(sectionSizeMapUnits)
+	{
+		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0)
+		{
+			throw std::invalid_argument("BuildingLayer Section size must be positive finite map units.");
+		}
+	}
 
-	/** Removes the callback before the owned viewport closes. */
+	/** Removes the callback and closes the viewport without backend resource calls. */
 	BuildingLayer::~BuildingLayer()
 	{
-		SetViewport(nullptr);
+		DetachViewportAndClearCpuState();
 	}
 
 	/** Replaces the viewport subscription and discovers its current cells. */
 	void BuildingLayer::SetViewport(
 		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport)
 	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return;
+			}
+		}
 		if (viewport_ != nullptr)
 		{
 			viewport_->SetSectionImageChangedHandler({});
 		}
+		WithdrawAllPublishedTextures();
 		dirtyCoordinates_.clear();
 		pendingUpdates_.clear();
 		lastConversionFailureCoordinate_.reset();
 		viewport_.reset();
 		if (viewport == nullptr)
 		{
+			ReleasePendingTextures();
 			return;
 		}
 		viewport_ = std::move(viewport);
@@ -44,6 +68,7 @@ namespace MiniMapUI
 				dirtyCoordinates_.emplace(gridX, gridY);
 			});
 		MarkVisibleCoordinatesDirty();
+		ReleasePendingTextures();
 	}
 
 	/** Updates the rectangle and reconciles CPU work only after acceptance. */
@@ -53,6 +78,13 @@ namespace MiniMapUI
 		double widthMapUnits,
 		double heightMapUnits)
 	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return false;
+			}
+		}
 		if (viewport_ == nullptr)
 		{
 			return false;
@@ -71,12 +103,114 @@ namespace MiniMapUI
 			}
 		}
 		DiscardCoordinatesOutside(visibleCoordinates);
+		WithdrawDepartedTextures(visibleCoordinates);
+		ReleasePendingTextures();
 		return true;
+	}
+
+	/** Uploads one snapshot of pending updates and releases withdrawn receipts. */
+	void BuildingLayer::PublishGpuImages()
+	{
+		if (publishPassActive_)
+		{
+			return;
+		}
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (activeTextureOperations_ != 0)
+			{
+				return;
+			}
+		}
+		publishPassActive_ = true;
+		bool shuttingDown = false;
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			shuttingDown = shutdownRequested_;
+		}
+		if (!shuttingDown)
+		{
+			std::vector<std::pair<Coordinate, std::uint64_t>> updateSnapshot;
+			updateSnapshot.reserve(pendingUpdates_.size());
+			for (const auto& [coordinate, update] : pendingUpdates_)
+			{
+				updateSnapshot.emplace_back(coordinate, update.Revision);
+			}
+			for (const auto& [coordinate, revision] : updateSnapshot)
+			{
+				PublishPendingUpdate(coordinate, revision);
+			}
+		}
+		ReleasePendingTextures();
+		publishPassActive_ = false;
+	}
+
+	/** Draws only coherent, currently published texture identities. */
+	void BuildingLayer::Render(
+		MiniMap::Services::ICanvas& ui,
+		const MiniMapMap::Transform& transform,
+		bool showLayer)
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		MiniMap::Services::Vec2 clipMinimum{};
+		MiniMap::Services::Vec2 clipMaximum{};
+		if (!showLayer || shutdownRequested_ ||
+			!TryGetClipRectangle(transform, clipMinimum, clipMaximum))
+		{
+			return;
+		}
+		ui.PushClip(MiniMap::Services::DrawLayer::Window, clipMinimum, clipMaximum, true);
+		const MiniMap::Services::Quad textureCoordinates{{
+			{0.0f, 0.0f},
+			{1.0f, 0.0f},
+			{1.0f, 1.0f},
+			{0.0f, 1.0f}}};
+		for (const auto& [coordinate, entry] : publishedTextures_)
+		{
+			if (entry == nullptr || entry->DrawIdentity.id == 0)
+			{
+				continue;
+			}
+			MiniMap::Services::Quad positions{};
+			if (!TryProjectSectionQuad(coordinate, sectionSizeMapUnits_, transform, positions) ||
+				!IntersectsClipRectangle(positions, clipMinimum, clipMaximum))
+			{
+				continue;
+			}
+			ui.ImageQuad(
+				MiniMap::Services::DrawLayer::Window,
+				entry->DrawIdentity,
+				positions,
+				textureCoordinates,
+				0xFFFFFFFFu);
+		}
+		ui.PopClip(MiniMap::Services::DrawLayer::Window);
+	}
+
+	/** Stops publication and drawing, withdraws receipts, and attempts backend release. */
+	bool BuildingLayer::Shutdown()
+	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			shutdownRequested_ = true;
+		}
+		DetachViewportAndClearCpuState();
+		WithdrawAllPublishedTextures();
+		ReleasePendingTextures();
+		const bool complete = HasCompletedResourceShutdown();
+		return complete;
 	}
 
 	/** Converts each accumulated coordinate against the viewport's latest image state. */
 	void BuildingLayer::PrepareCpuImages()
 	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return;
+			}
+		}
 		if (viewport_ == nullptr)
 		{
 			return;
@@ -137,6 +271,19 @@ namespace MiniMapUI
 		}
 	}
 
+	/** Assigns a new supersession revision before replacing a coordinate's CPU update. */
+	void BuildingLayer::StorePendingUpdate(
+		const Coordinate& coordinate,
+		PendingPresentationUpdate update)
+	{
+		update.Revision = nextPendingRevision_++;
+		if (nextPendingRevision_ == 0)
+		{
+			nextPendingRevision_ = 1;
+		}
+		pendingUpdates_.insert_or_assign(coordinate, std::move(update));
+	}
+
 	/** Resolves one dirty coordinate and records its current image or absence. */
 	void BuildingLayer::PrepareCoordinate(const Coordinate& coordinate)
 	{
@@ -171,7 +318,7 @@ namespace MiniMapUI
 			lastConversionFailureCoordinate_ = coordinate;
 			return;
 		}
-		pendingUpdates_.insert_or_assign(coordinate, std::move(replacement));
+		StorePendingUpdate(coordinate, std::move(replacement));
 		ClearConversionFailureFor(coordinate);
 	}
 
@@ -179,7 +326,7 @@ namespace MiniMapUI
 	void BuildingLayer::RecordImageRemoval(const Coordinate& coordinate)
 	{
 		PendingPresentationUpdate removal;
-		pendingUpdates_.insert_or_assign(coordinate, std::move(removal));
+		StorePendingUpdate(coordinate, std::move(removal));
 		ClearConversionFailureFor(coordinate);
 	}
 
@@ -190,6 +337,155 @@ namespace MiniMapUI
 		{
 			lastConversionFailureCoordinate_.reset();
 		}
+	}
+
+	/** Uploads one pending replacement with the fresh-name RGBA8 service operation. */
+	void BuildingLayer::UploadPendingReplacement(
+		const Coordinate& coordinate,
+		PendingPresentationUpdate update)
+	{
+		if (!IsCurrentUploadEligible(coordinate))
+		{
+			return;
+		}
+		const MiniMap::Services::TextureSize size{update.PixelWidth, update.PixelHeight};
+		const MiniMap::Services::TextureRequest request{
+			std::string_view{},
+			std::optional<MiniMap::Services::TextureSize>{size}};
+		TextureEntry* entry = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			textureResources_.emplace_back();
+			entry = &textureResources_.back();
+			entry->GridCoordinate = coordinate;
+			entry->State = TextureResourceState::Acquiring;
+			++activeTextureOperations_;
+		}
+		const MiniMap::Services::UploadState result = textures_->UploadRGBA(
+			update.Rgba8Bytes,
+			size,
+			request,
+			entry->Owner);
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			--activeTextureOperations_;
+		}
+		HandleUploadResult(coordinate, std::move(update), result, *entry);
+	}
+
+	/** Revalidates a returned receipt and preserves retryable CPU data on ordinary failure. */
+	void BuildingLayer::HandleUploadResult(
+		const Coordinate& coordinate,
+		PendingPresentationUpdate update,
+		MiniMap::Services::UploadState result,
+		TextureEntry& entry)
+	{
+		const MiniMap::Services::TextureSize expectedSize{update.PixelWidth, update.PixelHeight};
+		if (result == MiniMap::Services::UploadState::Complete &&
+			IsUsableTextureReceipt(entry.Owner, expectedSize))
+		{
+			if (!IsCurrentUploadEligible(coordinate))
+			{
+				std::lock_guard<std::mutex> lock(presentationMutex_);
+				entry.State = TextureResourceState::PendingRelease;
+				return;
+			}
+			if (!PublishValidatedTexture(coordinate, expectedSize, entry))
+			{
+				if (entry.State == TextureResourceState::Acquiring)
+				{
+					std::lock_guard<std::mutex> lock(presentationMutex_);
+					entry.State = TextureResourceState::PendingRelease;
+				}
+				RestorePendingUpdateIfEligible(coordinate, std::move(update));
+			}
+			return;
+		}
+		if (entry.Owner.HasRecord())
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			entry.State = TextureResourceState::Unresolved;
+			return;
+		}
+		if (result == MiniMap::Services::UploadState::Rejected ||
+			result == MiniMap::Services::UploadState::Unavailable)
+		{
+			{
+				std::lock_guard<std::mutex> lock(presentationMutex_);
+				auto owned = std::find_if(
+					textureResources_.begin(), textureResources_.end(),
+					[&entry](TextureEntry& candidate) { return &candidate == &entry; });
+				if (owned != textureResources_.end())
+				{
+					textureResources_.erase(owned);
+				}
+			}
+			RestorePendingUpdateIfEligible(coordinate, std::move(update));
+			return;
+		}
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		entry.State = TextureResourceState::Unresolved;
+	}
+
+	/** Requires a complete validated receipt whose actual size matches the CPU image. */
+	bool BuildingLayer::IsUsableTextureReceipt(
+		const MiniMap::Services::OwnedTexture& owner,
+		MiniMap::Services::TextureSize expectedSize) noexcept
+	{
+		if (!owner.HasRecord() || !owner.IsValidated())
+		{
+			return false;
+		}
+		const MiniMap::Services::Texture identity = owner.View();
+		const auto actualSize = owner.Size();
+		return identity.id != 0 && actualSize.has_value() &&
+			actualSize->width == expectedSize.width && actualSize->height == expectedSize.height;
+	}
+
+	/** Rechecks current viewport coverage and pending changes after backend re-entry. */
+	bool BuildingLayer::IsCurrentUploadEligible(const Coordinate& coordinate) const
+	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return false;
+			}
+		}
+		if (viewport_ == nullptr || dirtyCoordinates_.find(coordinate) != dirtyCoordinates_.end() ||
+			pendingUpdates_.find(coordinate) != pendingUpdates_.end())
+		{
+			return false;
+		}
+		std::size_t localX = 0;
+		std::size_t localY = 0;
+		return TryFindLocalCoordinate(coordinate, localX, localY);
+	}
+
+	/** Restores a failed upload buffer only while its coordinate remains current and visible. */
+	void BuildingLayer::RestorePendingUpdateIfEligible(
+		const Coordinate& coordinate,
+		PendingPresentationUpdate update)
+	{
+		if (viewport_ == nullptr || dirtyCoordinates_.find(coordinate) != dirtyCoordinates_.end() ||
+			pendingUpdates_.find(coordinate) != pendingUpdates_.end())
+		{
+			return;
+		}
+		std::size_t localX = 0;
+		std::size_t localY = 0;
+		if (!TryFindLocalCoordinate(coordinate, localX, localY))
+		{
+			return;
+		}
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return;
+			}
+		}
+		pendingUpdates_.emplace(coordinate, std::move(update));
 	}
 
 	/** Maps a signed grid coordinate to a local offset in the contiguous viewport range. */
@@ -377,6 +673,300 @@ namespace MiniMapUI
 	std::uint8_t BuildingLayer::ToRgba8(double normalizedComponent) noexcept
 	{
 		return static_cast<std::uint8_t>(std::lround(ClampUnit(normalizedComponent) * 255.0));
+	}
+
+	/** Removes one matching snapshot and applies its latest replacement or removal. */
+	void BuildingLayer::PublishPendingUpdate(const Coordinate& coordinate, std::uint64_t revision)
+	{
+		auto pending = pendingUpdates_.find(coordinate);
+		if (pending == pendingUpdates_.end() || pending->second.Revision != revision)
+		{
+			return;
+		}
+		PendingPresentationUpdate update = std::move(pending->second);
+		pendingUpdates_.erase(pending);
+		if (!IsCurrentUploadEligible(coordinate))
+		{
+			return;
+		}
+		if (update.Kind == PendingUpdateKind::Removal)
+		{
+			WithdrawPublishedTexture(coordinate);
+			return;
+		}
+		UploadPendingReplacement(coordinate, std::move(update));
+	}
+
+	/** Withdraws every draw identity while retaining each receipt for backend release. */
+	void BuildingLayer::WithdrawAllPublishedTextures()
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		for (const auto& [coordinate, entry] : publishedTextures_)
+		{
+			static_cast<void>(coordinate);
+			if (entry != nullptr)
+			{
+				entry->State = TextureResourceState::PendingRelease;
+			}
+		}
+		publishedTextures_.clear();
+	}
+
+	/** Withdraws only published Sections outside the newly accepted viewport grid. */
+	void BuildingLayer::WithdrawDepartedTextures(const std::set<Coordinate>& visibleCoordinates)
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		for (auto iterator = publishedTextures_.begin(); iterator != publishedTextures_.end();)
+		{
+			if (visibleCoordinates.find(iterator->first) == visibleCoordinates.end())
+			{
+				TextureEntry* entry = iterator->second;
+				if (entry != nullptr)
+				{
+					entry->State = TextureResourceState::PendingRelease;
+				}
+				iterator = publishedTextures_.erase(iterator);
+			}
+			else
+			{
+				++iterator;
+			}
+		}
+	}
+
+	/** Withdraws one coordinate while retaining its receipt for deferred release. */
+	void BuildingLayer::WithdrawPublishedTexture(const Coordinate& coordinate)
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		auto published = publishedTextures_.find(coordinate);
+		if (published == publishedTextures_.end())
+		{
+			return;
+		}
+		TextureEntry* entry = published->second;
+		if (entry != nullptr)
+		{
+			entry->State = TextureResourceState::PendingRelease;
+		}
+		publishedTextures_.erase(published);
+	}
+
+	/** Releases withdrawn receipts outside the mutex and retains unresolved ownership. */
+	void BuildingLayer::ReleasePendingTextures()
+	{
+		std::vector<TextureEntry*> eligible;
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (activeTextureOperations_ != 0)
+			{
+				return;
+			}
+			eligible.reserve(textureResources_.size());
+			for (TextureEntry& entry : textureResources_)
+			{
+				if (entry.State == TextureResourceState::PendingRelease)
+				{
+					entry.State = TextureResourceState::Releasing;
+					eligible.push_back(&entry);
+				}
+			}
+			activeTextureOperations_ += eligible.size();
+		}
+		for (TextureEntry* entry : eligible)
+		{
+			const MiniMap::Services::ReleaseState result = textures_->Release(entry->Owner);
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			--activeTextureOperations_;
+			if ((result == MiniMap::Services::ReleaseState::Empty ||
+				result == MiniMap::Services::ReleaseState::Returned) && !entry->Owner.HasRecord())
+			{
+				auto owned = std::find_if(
+					textureResources_.begin(), textureResources_.end(),
+					[entry](TextureEntry& candidate) { return &candidate == entry; });
+				if (owned != textureResources_.end())
+				{
+					textureResources_.erase(owned);
+				}
+				continue;
+			}
+			entry->State = result == MiniMap::Services::ReleaseState::UnavailableRetained &&
+				entry->Owner.HasRecord() ? TextureResourceState::PendingRelease : TextureResourceState::Unresolved;
+		}
+	}
+
+	/** Publishes a complete receipt atomically and then defers its predecessor's retirement. */
+	bool BuildingLayer::PublishValidatedTexture(
+		const Coordinate& coordinate,
+		MiniMap::Services::TextureSize size,
+		TextureEntry& replacement)
+	{
+		if (!IsCurrentUploadEligible(coordinate) || !IsUsableTextureReceipt(replacement.Owner, size))
+		{
+			return false;
+		}
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		if (shutdownRequested_ || dirtyCoordinates_.find(coordinate) != dirtyCoordinates_.end() ||
+			pendingUpdates_.find(coordinate) != pendingUpdates_.end())
+		{
+			return false;
+		}
+		std::size_t localX = 0;
+		std::size_t localY = 0;
+		if (!TryFindLocalCoordinate(coordinate, localX, localY))
+		{
+			return false;
+		}
+		replacement.DrawIdentity = replacement.Owner.View();
+		replacement.State = TextureResourceState::Published;
+		auto previous = publishedTextures_.find(coordinate);
+		if (previous == publishedTextures_.end())
+		{
+			try
+			{
+				publishedTextures_.emplace(coordinate, &replacement);
+			}
+			catch (...)
+			{
+				replacement.State = TextureResourceState::PendingRelease;
+				return false;
+			}
+			return true;
+		}
+		TextureEntry* oldEntry = previous->second;
+		previous->second = &replacement;
+		if (oldEntry != nullptr)
+		{
+			oldEntry->State = TextureResourceState::PendingRelease;
+		}
+		return true;
+	}
+
+	/** Removes viewport callbacks and discards only CPU-side preparation state. */
+	void BuildingLayer::DetachViewportAndClearCpuState()
+	{
+		if (viewport_ != nullptr)
+		{
+			viewport_->SetSectionImageChangedHandler({});
+		}
+		viewport_.reset();
+		dirtyCoordinates_.clear();
+		pendingUpdates_.clear();
+		lastConversionFailureCoordinate_.reset();
+	}
+
+	/** Checks that no publication, receipt or backend operation remains outstanding. */
+	bool BuildingLayer::HasCompletedResourceShutdown() const
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		return publishedTextures_.empty() && textureResources_.empty() &&
+			activeTextureOperations_ == 0;
+	}
+
+	/** Computes finite Section bounds without overflowing signed grid multiplication. */
+	bool BuildingLayer::TryGetSectionBounds(
+		const Coordinate& coordinate,
+		double sectionSizeMapUnits,
+		double& left,
+		double& top,
+		double& right,
+		double& bottom) noexcept
+	{
+		const long double size = static_cast<long double>(sectionSizeMapUnits);
+		const long double wideLeft = static_cast<long double>(coordinate.first) * size;
+		const long double wideTop = static_cast<long double>(coordinate.second) * size;
+		const long double wideRight = wideLeft + size;
+		const long double wideBottom = wideTop + size;
+		const long double limit = static_cast<long double>((std::numeric_limits<double>::max)());
+		if (!std::isfinite(wideLeft) || !std::isfinite(wideTop) ||
+			!std::isfinite(wideRight) || !std::isfinite(wideBottom) ||
+			std::abs(wideLeft) > limit || std::abs(wideTop) > limit ||
+			std::abs(wideRight) > limit || std::abs(wideBottom) > limit)
+		{
+			return false;
+		}
+		left = static_cast<double>(wideLeft);
+		top = static_cast<double>(wideTop);
+		right = static_cast<double>(wideRight);
+		bottom = static_cast<double>(wideBottom);
+		return std::isfinite(left) && std::isfinite(top) && std::isfinite(right) &&
+			std::isfinite(bottom) && right > left && bottom > top;
+	}
+
+	/** Projects Section corners through the established map transform and validates float output. */
+	bool BuildingLayer::TryProjectSectionQuad(
+		const Coordinate& coordinate,
+		double sectionSizeMapUnits,
+		const MiniMapMap::Transform& transform,
+		MiniMap::Services::Quad& positions) noexcept
+	{
+		double left = 0.0;
+		double top = 0.0;
+		double right = 0.0;
+		double bottom = 0.0;
+		if (!TryGetSectionBounds(coordinate, sectionSizeMapUnits, left, top, right, bottom))
+		{
+			return false;
+		}
+		const std::array<std::pair<double, double>, 4> corners{{
+			{left, top}, {right, top}, {right, bottom}, {left, bottom}}};
+		for (std::size_t index = 0; index < corners.size(); ++index)
+		{
+			MiniMapMap::ScreenPoint point{};
+			if (!transform.WorldToScreen(corners[index].first, corners[index].second, point) ||
+				!std::isfinite(point.X) || !std::isfinite(point.Y))
+			{
+				return false;
+			}
+			positions[index] = {point.X, point.Y};
+		}
+		return true;
+	}
+
+	/** Derives the positive visible map rectangle used by Terrain's canvas clip. */
+	bool BuildingLayer::TryGetClipRectangle(
+		const MiniMapMap::Transform& transform,
+		MiniMap::Services::Vec2& clipMinimum,
+		MiniMap::Services::Vec2& clipMaximum) noexcept
+	{
+		if (!transform.Valid || !std::isfinite(transform.CenterX) || !std::isfinite(transform.CenterY) ||
+			!std::isfinite(transform.Width) || !std::isfinite(transform.Height) ||
+			transform.Width <= 0.0f || transform.Height <= 0.0f)
+		{
+			return false;
+		}
+		const double left = static_cast<double>(transform.CenterX) - transform.Width * 0.5;
+		const double top = static_cast<double>(transform.CenterY) - transform.Height * 0.5;
+		const double right = static_cast<double>(transform.CenterX) + transform.Width * 0.5;
+		const double bottom = static_cast<double>(transform.CenterY) + transform.Height * 0.5;
+		if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right) || !std::isfinite(bottom))
+		{
+			return false;
+		}
+		clipMinimum = {static_cast<float>(left), static_cast<float>(top)};
+		clipMaximum = {static_cast<float>(right), static_cast<float>(bottom)};
+		return std::isfinite(clipMinimum.x) && std::isfinite(clipMinimum.y) &&
+			std::isfinite(clipMaximum.x) && std::isfinite(clipMaximum.y);
+	}
+
+	/** Skips a quad whose axis-aligned projected bounds miss the visible clipping rectangle. */
+	bool BuildingLayer::IntersectsClipRectangle(
+		const MiniMap::Services::Quad& positions,
+		MiniMap::Services::Vec2 clipMinimum,
+		MiniMap::Services::Vec2 clipMaximum) noexcept
+	{
+		float left = positions[0].x;
+		float top = positions[0].y;
+		float right = positions[0].x;
+		float bottom = positions[0].y;
+		for (const MiniMap::Services::Vec2 point : positions)
+		{
+			left = (std::min)(left, point.x);
+			top = (std::min)(top, point.y);
+			right = (std::max)(right, point.x);
+			bottom = (std::max)(bottom, point.y);
+		}
+		return right > clipMinimum.x && left < clipMaximum.x &&
+			bottom > clipMinimum.y && top < clipMaximum.y;
 	}
 }
 

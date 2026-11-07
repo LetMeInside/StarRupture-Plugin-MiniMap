@@ -1,11 +1,16 @@
-// Owns one V2 Building Map viewport and prepares coalesced CPU presentation
-// updates without creating or managing GPU textures.
+// Owns V2 viewport presentation state, converts Section images, publishes GPU
+// texture receipts, retires resources and submits rotated Section quads.
 #pragma once
+
+#include "../Services/Textures.h"
+#include "../Services/Viewport.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <span>
@@ -17,18 +22,32 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport;
 }
 
+namespace MiniMap::Services
+{
+	class ICanvas;
+}
+
+namespace MiniMapMap
+{
+	struct Transform;
+}
+
 namespace MiniMapUI
 {
 	/**
-	 * Owns one caller-created V2 viewport and converts its completed Section images
-	 * into independently owned RGBA8 pending updates. All operations run on the
-	 * service's serialized calling thread. The service and associated collector
-	 * remain caller-owned and must outlive this layer's attached viewport.
+	 * Owns one caller-created V2 viewport, CPU image updates and validated texture
+	 * receipts. The caller owns the service, collector, texture service and world
+	 * session; those owners must outlive this layer's viewport and resources.
+	 * Non-render operations use the serialized game thread. Render accesses only
+	 * the mutex-protected texture publication and supplied transform.
 	 */
 	class BuildingLayer final
 	{
 	public:
-		/** Releases the image-change handler and closes the owned viewport. */
+		/**
+		 * Removes the callback and closes the viewport without backend resource calls.
+		 * The caller must complete Shutdown and keep this layer alive while it returns false.
+		 */
 		~BuildingLayer();
 
 		/** Prevents copies from duplicating ownership of one viewport subscription. */
@@ -40,12 +59,18 @@ namespace MiniMapUI
 		/** Keeps the callback's captured this pointer stable for the viewport lifetime. */
 		BuildingLayer& operator=(BuildingLayer&&) = delete;
 
-		/** Creates an unattached CPU presentation layer. */
-		BuildingLayer();
+		/**
+		 * Creates a layer using caller-owned texture service and configured Section size.
+		 * @param textures Texture service that must remain alive through resource shutdown.
+		 * @param sectionSizeMapUnits Positive service-configured width and height of each Section.
+		 * @throws std::invalid_argument when the Section size is nonfinite or nonpositive.
+		 */
+		BuildingLayer(MiniMap::Services::ITextures& textures, double sectionSizeMapUnits);
 
 		/**
 		 * Replaces the owned viewport, clearing prior CPU updates and discovering the
-		 * new viewport's existing Sections. A null viewport detaches the current one.
+		 * new viewport's existing Sections. A null viewport detaches the current one;
+		 * after Shutdown begins, attachment requests are ignored.
 		 * The caller remains responsible for keeping the service and collector alive.
 		 *
 		 * @param viewport Viewport previously created by its caller-owned service.
@@ -76,6 +101,35 @@ namespace MiniMapUI
 		 */
 		void PrepareCpuImages();
 
+		/**
+		 * Uploads each pending coordinate at most once, publishes validated receipts,
+		 * then releases withdrawn receipts through the texture backend.
+		 * Must run on the texture service's permitted game thread outside rendering.
+		 */
+		void PublishGpuImages();
+
+		/**
+		 * Draws the current coherent texture publication as clipped rotated Section quads.
+		 * Must run only from the supplied synchronous UI render callback.
+		 *
+		 * @param ui Callback-scoped canvas used only for clipping and quad submission.
+		 * @param transform Current map-to-screen transform supplied by MiniMapMap.
+		 * @param showLayer False suppresses all BuildingLayer drawing.
+		 */
+		void Render(
+			MiniMap::Services::ICanvas& ui,
+			const MiniMapMap::Transform& transform,
+			bool showLayer);
+
+		/**
+		 * Stops publication and drawing, closes the viewport, withdraws entries and
+		 * attempts backend releases. Repeat after UnavailableRetained; keep this layer
+		 * and the texture service alive while any receipt or operation remains.
+		 *
+		 * @return True when no published entry, receipt or backend operation remains.
+		 */
+		bool Shutdown();
+
 	private:
 		using Coordinate = std::pair<std::int64_t, std::int64_t>;
 
@@ -92,7 +146,27 @@ namespace MiniMapUI
 			PendingUpdateKind Kind = PendingUpdateKind::Removal;
 			std::uint32_t PixelWidth = 0;
 			std::uint32_t PixelHeight = 0;
+			std::uint64_t Revision = 0;
 			std::vector<std::uint8_t> Rgba8Bytes;
+		};
+
+		/** Tracks whether a receipt is published, awaiting release, or unresolved. */
+		enum class TextureResourceState
+		{
+			Acquiring,
+			Published,
+			PendingRelease,
+			Releasing,
+			Unresolved
+		};
+
+		/** Owns one move-only receipt; its Texture value is only a render-facing identity. */
+		struct TextureEntry
+		{
+			Coordinate GridCoordinate{};
+			MiniMap::Services::OwnedTexture Owner;
+			MiniMap::Services::Texture DrawIdentity{};
+			TextureResourceState State = TextureResourceState::Acquiring;
 		};
 
 		/**
@@ -103,6 +177,9 @@ namespace MiniMapUI
 
 		/** Adds every current viewport coordinate to the coalesced dirty set. */
 		void MarkVisibleCoordinatesDirty();
+
+		/** Stores a newer owned CPU update and assigns its supersession revision. */
+		void StorePendingUpdate(const Coordinate& coordinate, PendingPresentationUpdate update);
 
 		/**
 		 * Resolves one coordinate against the attached viewport and stores its latest
@@ -197,10 +274,99 @@ namespace MiniMapUI
 		/** Rounds one normalized display channel to an eight-bit value. */
 		static std::uint8_t ToRgba8(double normalizedComponent) noexcept;
 
+		/** Withdraws all draw identities while retaining their owned receipts for release. */
+		void WithdrawAllPublishedTextures();
+
+		/** Withdraws published entries outside the accepted visible coordinate set. */
+		void WithdrawDepartedTextures(const std::set<Coordinate>& visibleCoordinates);
+
+		/** Withdraws one published coordinate and retains its receipt for later release. */
+		void WithdrawPublishedTexture(const Coordinate& coordinate);
+
+		/** Releases withdrawn receipts outside the mutex and retains unresolved ownership. */
+		void ReleasePendingTextures();
+
+		/** Processes one snapshot of a pending CPU update without repeating a coordinate. */
+		void PublishPendingUpdate(const Coordinate& coordinate, std::uint64_t revision);
+
+		/** Uploads one replacement without holding the publication mutex. */
+		void UploadPendingReplacement(
+			const Coordinate& coordinate,
+			PendingPresentationUpdate update);
+
+		/** Revalidates an upload result and either publishes, retains or retries its CPU data. */
+		void HandleUploadResult(
+			const Coordinate& coordinate,
+			PendingPresentationUpdate update,
+			MiniMap::Services::UploadState result,
+			TextureEntry& entry);
+
+		/** Checks receipt identity and dimensions before a texture can enter the draw map. */
+		static bool IsUsableTextureReceipt(
+			const MiniMap::Services::OwnedTexture& owner,
+			MiniMap::Services::TextureSize expectedSize) noexcept;
+
+		/** Checks whether upload work is still current, visible and not superseded. */
+		bool IsCurrentUploadEligible(const Coordinate& coordinate) const;
+
+		/** Restores retryable CPU image data when no newer update has superseded it. */
+		void RestorePendingUpdateIfEligible(
+			const Coordinate& coordinate,
+			PendingPresentationUpdate update);
+
+		/** Publishes a validated stored receipt and withdraws its previous texture atomically. */
+		bool PublishValidatedTexture(
+			const Coordinate& coordinate,
+			MiniMap::Services::TextureSize size,
+			TextureEntry& entry);
+
+		/** Completes explicit viewport and CPU-state shutdown without backend calls. */
+		void DetachViewportAndClearCpuState();
+
+		/** Tests whether publications, receipts and active backend operations are all discharged. */
+		bool HasCompletedResourceShutdown() const;
+
+		/** Calculates checked map-space bounds for one signed Section coordinate. */
+		static bool TryGetSectionBounds(
+			const Coordinate& coordinate,
+			double sectionSizeMapUnits,
+			double& left,
+			double& top,
+			double& right,
+			double& bottom) noexcept;
+
+		/** Projects the four Section corners into full-image screen-space quad order. */
+		static bool TryProjectSectionQuad(
+			const Coordinate& coordinate,
+			double sectionSizeMapUnits,
+			const MiniMapMap::Transform& transform,
+			MiniMap::Services::Quad& positions) noexcept;
+
+		/** Computes the visible transform rectangle used for canvas clipping. */
+		static bool TryGetClipRectangle(
+			const MiniMapMap::Transform& transform,
+			MiniMap::Services::Vec2& clipMinimum,
+			MiniMap::Services::Vec2& clipMaximum) noexcept;
+
+		/** Rejects projected quads whose screen bounds miss the visible rectangle. */
+		static bool IntersectsClipRectangle(
+			const MiniMap::Services::Quad& positions,
+			MiniMap::Services::Vec2 clipMinimum,
+			MiniMap::Services::Vec2 clipMaximum) noexcept;
+
+		MiniMap::Services::ITextures* textures_;
+		double sectionSizeMapUnits_;
 		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport_;
 		std::set<Coordinate> dirtyCoordinates_;
 		std::map<Coordinate, PendingPresentationUpdate> pendingUpdates_;
+		std::uint64_t nextPendingRevision_ = 1;
 		/** Retains only the most recent malformed/nonfinite coordinate for diagnostics. */
 		std::optional<Coordinate> lastConversionFailureCoordinate_;
+		mutable std::mutex presentationMutex_;
+		std::map<Coordinate, TextureEntry*> publishedTextures_;
+		std::list<TextureEntry> textureResources_;
+		std::size_t activeTextureOperations_ = 0;
+		bool shutdownRequested_ = false;
+		bool publishPassActive_ = false;
 	};
 }
