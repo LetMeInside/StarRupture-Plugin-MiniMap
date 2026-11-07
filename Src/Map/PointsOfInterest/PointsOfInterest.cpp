@@ -2,6 +2,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "PointsOfInterest.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "DiagnosticExports.h"
 #include "UI/MiniMapUI.h"
 #include "Config/Config.h"
@@ -319,11 +320,10 @@ namespace
         }
 
         /*
-         * These two generated fields are verified against the current PDB
-         * and native UpdatePOIMarkers path:
-         *
-         *   UWorld::GameState                         +0x1B0
-         *   ACrGameStateBase::AbandonBaseInfoReplicator +0x3A8
+         * UWorld::GameState is an engine field, verified against the current
+         * PDB and native UpdatePOIMarkers path (+0x1B0).
+         * ACrGameStateBase::AbandonBaseInfoReplicator is placed by the
+         * loader's version map for the running game build.
          *
          * The tracked MiniMap world is the gameplay world. We do not retain
          * either pointer across polls.
@@ -341,8 +341,9 @@ namespace
                 baseGameState);
 
         SDK::ACrAbandonBaseInfoReplicator* replicator =
-            gameState->
-                AbandonBaseInfoReplicator;
+            PluginMap::ValueOr(
+                MiniMapFields::AbandonBaseInfoReplicator,
+                gameState);
 
         if (replicator == nullptr)
         {

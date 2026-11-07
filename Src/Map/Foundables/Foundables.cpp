@@ -3,6 +3,7 @@
 
 #include "Foundables.h"
 #include "plugin.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "DiagnosticExports.h"
 #include "UI/MiniMapUI.h"
 #include "Config/Config.h"
@@ -787,6 +788,15 @@ namespace
                 return type && type->Class == Core && size_t(type->Size) == size ? type : nullptr;
             }
 
+            // A native class MiniMap reads only through members the map places, so
+            // its compiled size means nothing: the class has to reach past them.
+            SDK::UClass* FindNativeReaching(const wchar_t* path, const PluginFieldSpec& member, size_t memberSize) const
+            {
+                if (member.offset < 0) return nullptr;
+                auto* type = FindClass(path, size_t(member.offset) + memberSize);
+                return type && type->Class == Core ? type : nullptr;
+            }
+
             bool Initialize()
             {
                 if (!MiniMapResidentMetadata::Available() || !Native.asset.nameEqualsWide) return false;
@@ -798,7 +808,8 @@ namespace
                 World = FindNative(L"/Script/Engine.World", sizeof(SDK::UWorld));
                 Level = FindNative(L"/Script/Engine.Level", sizeof(SDK::ULevel));
                 Scene = FindNative(L"/Script/Engine.SceneComponent", sizeof(SDK::USceneComponent));
-                GameState = FindNative(L"/Script/Chimera.CrGameStateBase", sizeof(SDK::ACrGameStateBase));
+                GameState = FindNativeReaching(L"/Script/Chimera.CrGameStateBase",
+                    MiniMapFields::AbandonBaseInfoReplicator, sizeof(SDK::ACrAbandonBaseInfoReplicator*));
                 Replicator = FindNative(L"/Script/Chimera.CrAbandonBaseInfoReplicator", sizeof(SDK::ACrAbandonBaseInfoReplicator));
                 POI = FindNative(L"/Script/Chimera.CrPointOfInterestMarkerActor", sizeof(SDK::ACrPointOfInterestMarkerActor));
                 Blueprint = FindNative(L"/Script/Engine.BlueprintGeneratedClass", sizeof(SDK::UBlueprintGeneratedClass));
@@ -869,7 +880,8 @@ namespace
             bool Matches(const SDK::UWorld* world) const
             {
                 return world && World && GameState && Replicator && world == World &&
-                    world->GameState == GameState && GameState->AbandonBaseInfoReplicator == Replicator;
+                    world->GameState == GameState &&
+                    PluginMap::ValueOr(MiniMapFields::AbandonBaseInfoReplicator, GameState) == Replicator;
             }
         };
 
@@ -878,10 +890,10 @@ namespace
             if (!world || !types.Derives(world->Class, types.World)) return false;
             scope.World = world;
             auto* baseGameState = world->GameState;
-            if (!types.Actor(baseGameState, types.GameState, sizeof(SDK::ACrGameStateBase), world)) return false;
+            if (!types.Actor(baseGameState, types.GameState, 0, world)) return false;
             auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
             scope.GameState = gameState;
-            auto* replicator = gameState->AbandonBaseInfoReplicator;
+            auto* replicator = PluginMap::ValueOr(MiniMapFields::AbandonBaseInfoReplicator, gameState);
             if (!types.Actor(replicator, types.Replicator, sizeof(*replicator), world)) return false;
             scope.Replicator = replicator;
 

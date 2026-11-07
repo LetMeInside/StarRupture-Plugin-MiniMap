@@ -3,6 +3,7 @@
 #include "TerrainSource.h"
 #include "TerrainProfile.h"
 #include "Map/Map.h"
+#include "Adapters/AlienX/GameFields.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -129,7 +130,9 @@ namespace
                 baseGameState);
 
         SDK::ACrMapMenuDataReplicationHelper* helper =
-            gameState->MapMenuDataReplicationHelper;
+            PluginMap::ValueOr(
+                MiniMapFields::MapMenuDataReplicationHelper,
+                gameState);
 
         if (helper == nullptr)
         {

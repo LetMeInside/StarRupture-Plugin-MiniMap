@@ -411,7 +411,7 @@ namespace MiniMapBuildingCollector
         if(Is(cdo,types.Walkway))
         {
             Candidate p;p.Order={rank,0,type==types.Walkway?0:1,type->Index,0,0,0,0,0,cdo->Index,0,int64_t(result.size())};
-            if(Mesh(static_cast<const SDK::ACrModularRampWalkway*>(cdo)->SplineMesh,p.Numbers))result.push_back(std::move(p));
+            if(Mesh(PluginMap::ValueOr(MiniMapFields::WalkwaySplineMesh,cdo),p.Numbers))result.push_back(std::move(p));
         }
         for(auto* current=type;current;current=static_cast<SDK::UClass*>(current->SuperStruct))
         {
@@ -444,17 +444,20 @@ namespace MiniMapBuildingCollector
         auto* placement=d.Root;
         d.Interior=false;
         if(Is(placement,types.BuildingData))
-            for(const auto tag:static_cast<const SDK::UCrBuildingData*>(placement)->Tags)
-                if(tag.Number==0 && n.asset.nameEqualsWide(tag,L"Interior"))d.Interior=true;
+            if(const auto* tags=MiniMapFields::BuildingTags.In(placement))
+                for(const auto tag:*tags)
+                    if(tag.Number==0 && n.asset.nameEqualsWide(tag,L"Interior"))d.Interior=true;
         if(d.Interior){d.Prepared=true;return true;}
         if(!d.Blueprint)d.Blueprint=MiniMapBuildingBlueprintIdentity::Copy(*placement);
         if(!d.Blueprint)return false;
         if(!spline || MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true,building))
         {d.Prepared=true;return true;}
         std::vector<Candidate> candidates;
-        auto* config=placement->EntityType.EntityConfigPtr;
-        if(!config)config=static_cast<SDK::UMassEntityConfigAsset*>(n.asset.loadSynchronous(&placement->EntityType.EntityConfig));
-        if(!config && placement->EntityType.EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex!=0)return false;
+        auto* entityType=MiniMapFields::PlacementEntityType.In(placement);
+        if(!entityType)return false;
+        auto* config=entityType->EntityConfigPtr;
+        if(!config)config=static_cast<SDK::UMassEntityConfigAsset*>(n.asset.loadSynchronous(&entityType->EntityConfig));
+        if(!config && entityType->EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex!=0)return false;
         std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
         for(;config;config=config->Config.Parent)
         {

@@ -126,9 +126,10 @@ namespace
         interiorOnly = false;
         if (!Types.BuildingData || !native.asset.nameEqualsWide) return false;
         if (Is(&placement, Types.BuildingData))
-            for (const auto tag : static_cast<const SDK::UCrBuildingData*>(&placement)->Tags)
-                if (tag.Number == 0 && native.asset.nameEqualsWide(tag, L"Interior"))
-                    interiorOnly = true;
+            if (const auto* tags = MiniMapFields::BuildingTags.In(&placement))
+                for (const auto tag : *tags)
+                    if (tag.Number == 0 && native.asset.nameEqualsWide(tag, L"Interior"))
+                        interiorOnly = true;
         known = true;
         return true;
     }
@@ -178,14 +179,14 @@ namespace
         const auto* cdo = type->ClassDefaultObject;
         if (Is(cdo, Types.Walkway))
         {
-            const auto* walkway = static_cast<const SDK::ACrModularRampWalkway*>(cdo);
+            const auto* splineMesh = PluginMap::ValueOr(MiniMapFields::WalkwaySplineMesh, cdo);
             // The mesh reference is optional in the walkway source. Preserve
             // that absence, but do not treat an existing malformed mesh as if
             // the walkway profile were absent.
-            if (walkway->SplineMesh)
+            if (splineMesh)
             {
                 B::SplineProfileSource profile;
-                if (!CopyMeshProfile(walkway->SplineMesh, nullptr, rank, profile)) return false;
+                if (!CopyMeshProfile(splineMesh, nullptr, rank, profile)) return false;
                 profile.SelectionOrder = {rank, 0, type == Types.Walkway ? 0 : 1, type->Index, 0, 0, 0, 0, 0,
                     cdo->Index, 0, int64_t(output.size())};
                 output.push_back(std::move(profile));
@@ -214,9 +215,11 @@ namespace
         std::vector<B::SplineProfileSource>& output)
     {
         if (MiniMapBuildingSplinePolicy::IsDroneRailDefinition(true, buildingType)) return true;
-        auto* config = placement.EntityType.EntityConfigPtr;
-        if (!config && placement.EntityType.EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
-            config = static_cast<SDK::UMassEntityConfigAsset*>(native.asset.loadSynchronous(&placement.EntityType.EntityConfig));
+        auto* entityType = MiniMapFields::PlacementEntityType.In(&placement);
+        if (!entityType) return false;
+        auto* config = entityType->EntityConfigPtr;
+        if (!config && entityType->EntityConfig.ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
+            config = static_cast<SDK::UMassEntityConfigAsset*>(native.asset.loadSynchronous(&entityType->EntityConfig));
         std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
         for (; config; config = config->Config.Parent)
         {

@@ -354,7 +354,9 @@ namespace
             {L"/Script/Chimera.CrBuildingCustomNameSubsystem", sizeof(SDK::UCrBuildingCustomNameSubsystem)},
             {L"/Script/MassEntity.MassEntitySubsystem", sizeof(SDK::UMassEntitySubsystem)},
             {L"/Script/MassReplication.MassReplicationSubsystem", sizeof(SDK::UMassReplicationSubsystem)},
-            {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", sizeof(SDK::UCrEnviroWaveVisualsWorldSubsystem)},
+            // Only its class is needed (no instance may exist in the capture world), none of its
+            // members are read, so its size, which changes between game builds, is not pinned.
+            {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", 0},
             {L"/Script/Engine.DirectionalLightComponent", sizeof(SDK::UDirectionalLightComponent)}
         }};
         struct Baseline
@@ -503,7 +505,7 @@ namespace
                 { Quarantine("resident metadata lookup interrupted"); return false; }
                 if (!object || !Identify(object, identity, sizeof(SDK::UClass)) ||
                     !Read(object + 0x10, type) || type != (i ? filter : object) ||
-                    !Read(object + offsetof(SDK::UStruct, Size), size) || size != int32_t(metadata.Size)) return false;
+                    !Read(object + offsetof(SDK::UStruct, Size), size) || (metadata.Size && size != int32_t(metadata.Size))) return false;
                 if (!Hold(object, metadata.Ref)) return false;
             }
             return true;

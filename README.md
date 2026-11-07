@@ -59,6 +59,8 @@ MiniMap is a **client-side plugin**.
 
 MiniMap declares itself map-migrated: the game functions and class members it reads come from the Mod Loader's version map, so one DLL keeps working after a game update for every game build the Mod Loader knows. A layer whose functions the map cannot place on the running build (for example after a game update, until the map has rows for it) switches off in the Mod Loader's feature list, and the rest of MiniMap keeps running.
 
+MiniMap no longer depends on the compiled size of the game's `ACrGameStateBase` or the layout of the building data classes: the members it reads from them (the map replicators, building tags, walkway spline mesh and placement entity type) are resolved from the running game through the Mod Loader, so the same DLL runs on both the public and the test branch builds. A member the game does not expose switches off only the layer that needs it. This needs Mod Loader v1.23.1 or newer.
+
 ## Installation
 
 1. Install the AlienX StarRupture Mod Loader.

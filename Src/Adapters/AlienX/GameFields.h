@@ -5,6 +5,8 @@
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Chimera_structs.hpp"
+#include "SDK/AuActorPlacement_classes.hpp"
+#include "SDK/AuActorPlacement_structs.hpp"
 #include <plugin_interface.h>
 #include <plugin_map.h>
 
@@ -29,6 +31,21 @@ namespace MiniMapFields
 	inline auto IsDead              = SR_FIELD(bool, ACrCharacterPlayerBase, bDead, 0);
 	inline auto DroneOwner          = SR_FIELD(SDK::ACrCharacterPlayerBase*, ACrCharacterDroneBase, OwnerPlayer, 0);
 
+	// Members of game classes that sit at different offsets from one game build
+	// to the next (a class grows, a member moves), so MiniMap reads them through
+	// the map and not at the SDK's compiled offset. The world's game state holds
+	// the abandoned-base replicator and the map-menu data helper; the replicator
+	// feeds the Foundables and Points Of Interest layers, the helper the terrain.
+	// ACrGameStateBase itself grew on a newer game build, so its size is not used anywhere.
+	inline auto AbandonBaseInfoReplicator    = SR_FIELD(SDK::ACrAbandonBaseInfoReplicator*, ACrGameStateBase, AbandonBaseInfoReplicator, 0);
+	inline auto MapMenuDataReplicationHelper = SR_FIELD(SDK::ACrMapMenuDataReplicationHelper*, ACrGameStateBase, MapMenuDataReplicationHelper, 0);
+
+	// What the Buildings layer reads off a building's placement data and the
+	// walkway's class default object. All three moved on a newer game build.
+	inline auto BuildingTags         = SR_FIELD(SDK::TArray<SDK::FName>, UCrBuildingData, Tags, 0);
+	inline auto PlacementEntityType  = SR_FIELD(SDK::FAuAPMassSpawnedEntityType, UAuActorPlacementData, EntityType, 0);
+	inline auto WalkwaySplineMesh    = SR_FIELD(SDK::UStaticMesh*, ACrModularRampWalkway, SplineMesh, 0);
+
 	// UCrPlayerMapMenuDataComponent::FOWData, the fog segments' TArray. The
 	// Game-SDK folds it into padding, so it has no SDK name: a native row, with
 	// CL-127004's offset for when the loader's map has none for the running build.
@@ -52,7 +69,8 @@ namespace MiniMapFields
 		const bool fog = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows,
 			static_cast<uint32_t>(sizeof(kFogDataRows) / sizeof(kFogDataRows[0])));
 		return PluginMap::ResolveFields(scanner, self,
-			PlayerMainCharacter, IsDead, DroneOwner) && fog;
+			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
+			AbandonBaseInfoReplicator, BuildingTags, PlacementEntityType, WalkwaySplineMesh) && fog;
 	}
 
 	using PluginMap::KeysOf;
@@ -71,7 +89,7 @@ namespace MiniMapFields
 
 		inline PluginMap::Feature PointsOfInterest{ "points-of-interest", "Points of interest on the minimap",
 			KeysOf(Keys::GetAllActorsOfClass, Keys::PoiStaticClass, Keys::PoiCategory, Keys::MarkerFilter,
-				Keys::AbandonBaseCompleted),
+				Keys::AbandonBaseCompleted, AbandonBaseInfoReplicator),
 			{ "Points Of Interest.ShowLayer", "Points Of Interest.MarkerScale" } };
 
 		inline PluginMap::Feature Foundables{ "foundables", "Foundables on the minimap",
@@ -80,7 +98,7 @@ namespace MiniMapFields
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddInventoryRequirement,
 				Keys::AddTransformRequirement, Keys::AddFoundableParameters, Keys::AddFoundableTag,
 				Keys::AddTagRequirement, Keys::TransformStaticStruct, Keys::InventoryStaticStruct,
-				Keys::FoundableStaticStruct),
+				Keys::FoundableStaticStruct, AbandonBaseInfoReplicator),
 			{ "Foundables.ShowLayer", "Foundables.ShowLootInBases", "Foundables.MarkerScale" } };
 
 		inline PluginMap::Feature AlienActors{ "alien-actors", "Alien actors on the minimap",
@@ -94,7 +112,7 @@ namespace MiniMapFields
 			KeysOf(Keys::MassSubsystem, Keys::QueryConstruct, Keys::QueryDestruct, Keys::MatchingHandles,
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddTransformRequirement,
 				Keys::AddTagRequirement, Keys::IsEntityBuilt, Keys::IsEntityValid, Keys::GridSubsystem,
-				Keys::GridForEachCell),
+				Keys::GridForEachCell, BuildingTags, PlacementEntityType, WalkwaySplineMesh),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the
