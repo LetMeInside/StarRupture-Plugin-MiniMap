@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns acquisition resources, delegates session lifecycle and prepares neutral source values.
+// Owns acquisition resources, session lifecycle, and neutral inputs for one Section scene.
 #include "SectionScheduler.h"
 
 #include "BuildingScheduler.h"
@@ -33,6 +33,66 @@ namespace Services::Map::Buildings::Scheduling
 		SurfaceInputs.clear();
 		SamplingPolicy = {};
 		PreparationStatus = Status::NotAttempted;
+	}
+
+	/** Clears scene-owned values without retaining publication or observation storage. */
+	void SectionScheduler::SectionScenePreparationResult::Reset() noexcept
+	{
+		OccurrenceOutcomes.clear();
+		OrdinarySprites.clear();
+		SplinePreparations.clear();
+		OverlayLastSprites.clear();
+		CandidateEvidence = {};
+		PublicationIdentity = nullptr;
+		PreparationReadiness = Readiness::InvalidPublication;
+	}
+
+	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
+	bool SectionScheduler::SectionScenePreparationResult::BorrowRenderSceneInput(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		std::vector<Visuals::BuildingSplineRenderInput>& scratch,
+		Visuals::BuildingRenderSceneInput& output) const
+	{
+		output = {};
+		scratch.clear();
+		if (publicationOwner == nullptr || !publicationOwner->IsCurrent() ||
+			PublicationIdentity != publicationOwner.get() ||
+			PreparationReadiness != Readiness::CompleteSceneInputs)
+		{
+			return false;
+		}
+		scratch.reserve(SplinePreparations.size());
+		for (const SplineRenderInputPreparationResult& splinePreparation : SplinePreparations)
+		{
+			const auto occurrence = std::find_if(
+				OccurrenceOutcomes.begin(),
+				OccurrenceOutcomes.end(),
+				[&splinePreparation](const auto& value)
+				{
+					return value.PublicationOrdinal == splinePreparation.PublicationOrdinal;
+				});
+			if (occurrence != OccurrenceOutcomes.end() &&
+				occurrence->PreparationStatus == KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSourceFailure)
+			{
+				continue;
+			}
+			Visuals::BuildingSplineRenderInput splineInput;
+			if (!splinePreparation.BorrowRenderInput(splineInput))
+			{
+				scratch.clear();
+				return false;
+			}
+			scratch.push_back(splineInput);
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			scratch.clear();
+			return false;
+		}
+		output.OrdinarySprites = std::span<const Visuals::BuildingSpriteRenderInput>(OrdinarySprites);
+		output.Splines = std::span<const Visuals::BuildingSplineRenderInput>(scratch);
+		output.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(OverlayLastSprites);
+		return true;
 	}
 
 	/** Creates temporary render spans only when this result owns complete compatible values. */
@@ -98,16 +158,7 @@ namespace Services::Map::Buildings::Scheduling
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		KnownSpritePreparationResult& output)
 	{
-		output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
-		output.CandidateEvidence = {};
-		output.MayHaveUnknownRequirements = true;
-		output.PendingCount = 0;
-		output.FailedCount = 0;
-		output.UnavailableCount = 0;
-		output.ReadyWithoutPlacementCount = 0;
-		output.UnresolvedSpriteGeometryCount = 0;
-		output.InvalidRequirementCount = 0;
-		output.PreparedSprites.clear();
+		ResetKnownSpritePreparationResult(output);
 		if (publicationOwner == nullptr)
 		{
 			return;
@@ -117,6 +168,7 @@ namespace Services::Map::Buildings::Scheduling
 			output.PreparationStatus = KnownSpritePreparationResult::Status::StalePublication;
 			return;
 		}
+		output.PublicationIdentity = publicationOwner.get();
 
 		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
 		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
@@ -131,6 +183,7 @@ namespace Services::Map::Buildings::Scheduling
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
 			return;
 		}
+		InitializeKnownSpriteOccurrences(candidateData, sourceData, output);
 		PrepareSpriteRequirementSpan(candidateData.occurrences, *publicationOwner, output);
 		if (!RevalidatePreparedPublication(publicationOwner, output))
 		{
@@ -138,11 +191,464 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (output.InvalidRequirementCount != 0)
 		{
-			output.PreparedSprites.clear();
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidSourceRequirement;
 			return;
 		}
 		output.PreparationStatus = KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
+	}
+
+	/** Resets per-publication counters, identity and short-lived borrowed pixel views. */
+	void SectionScheduler::ResetKnownSpritePreparationResult(KnownSpritePreparationResult& output)
+	{
+		output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
+		output.PublicationIdentity = nullptr;
+		output.CandidateEvidence = {};
+		output.MayHaveUnknownRequirements = true;
+		output.PendingCount = 0;
+		output.FailedCount = 0;
+		output.UnavailableCount = 0;
+		output.ReadyWithoutPlacementCount = 0;
+		output.UnresolvedSpriteGeometryCount = 0;
+		output.InvalidRequirementCount = 0;
+		output.OccurrenceOutcomes.clear();
+		output.PreparedSprites.clear();
+	}
+
+	/** Copies candidate/source correspondence into one owned outcome for every ordinal. */
+	void SectionScheduler::InitializeKnownSpriteOccurrences(
+		const BuildingCandidateData& candidateData,
+		const BuildingCandidateSourceData& sourceData,
+		KnownSpritePreparationResult& output)
+	{
+		output.OccurrenceOutcomes.reserve(candidateData.occurrences.size());
+		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
+		{
+			KnownSpritePreparationResult::OccurrenceOutcome outcome;
+			outcome.PublicationOrdinal = candidateData.occurrences[index].publicationOrdinal;
+			outcome.SourceKind = sourceData.records[index].kind;
+			outcome.SourceStatus = sourceData.records[index].status;
+			outcome.SpritePass = sourceData.records[index].spritePass;
+			outcome.NativeFactsComplete = candidateData.occurrences[index].nativeFactsComplete;
+			outcome.IsPendingOrUnresolved = candidateData.occurrences[index].isPendingOrUnresolved;
+			output.OccurrenceOutcomes.push_back(outcome);
+		}
+	}
+
+	/** Prepares ordered neutral inputs for exactly one explicitly supplied publication observation. */
+	void SectionScheduler::PrepareSectionSceneInputs(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const BuildingCandidateObservation& observation,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		SectionScenePreparationResult& output) const
+	{
+		output.Reset();
+		if (!ValidateSectionPreparationInputs(
+			publicationOwner,
+			observation,
+			knownSpritePreparation,
+			output.PreparationReadiness))
+		{
+			return;
+		}
+		output.PublicationIdentity = publicationOwner.get();
+		output.CandidateEvidence = GetSectionCandidateEvidence(*publicationOwner, observation);
+		output.OccurrenceOutcomes.reserve(observation.candidateOrdinals.size());
+		for (const std::uint64_t ordinal : observation.candidateOrdinals)
+		{
+			ProcessSectionOccurrence(
+				publicationOwner,
+				ordinal,
+				knownSpritePreparation,
+				splinePolicies,
+				output);
+		}
+		if (!publicationOwner->IsCurrent())
+		{
+			output.PreparationReadiness = SectionScenePreparationResult::Readiness::StalePublication;
+			return;
+		}
+		const SectionScenePreparationResult::Readiness readiness = DetermineSceneReadiness(output);
+		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
+			!publicationOwner->IsCurrent())
+		{
+			output.PreparationReadiness = SectionScenePreparationResult::Readiness::StalePublication;
+			return;
+		}
+		output.PreparationReadiness = readiness;
+	}
+
+	/** Preserves invalid, stale and mismatched input outcomes before scene preparation starts. */
+	bool SectionScheduler::ValidateSectionPreparationInputs(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const BuildingCandidateObservation& observation,
+		const KnownSpritePreparationResult& spritePreparation,
+		SectionScenePreparationResult::Readiness& readiness)
+	{
+		using Readiness = SectionScenePreparationResult::Readiness;
+		if (publicationOwner == nullptr ||
+			spritePreparation.PreparationStatus == KnownSpritePreparationResult::Status::InvalidPublication)
+		{
+			readiness = Readiness::InvalidPublication;
+			return false;
+		}
+		if (!publicationOwner->IsCurrent() ||
+			spritePreparation.PreparationStatus == KnownSpritePreparationResult::Status::StalePublication)
+		{
+			readiness = Readiness::StalePublication;
+			return false;
+		}
+		if (spritePreparation.PublicationIdentity != publicationOwner.get() ||
+			(spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::KnownRequirementsProcessed &&
+				spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::InvalidSourceRequirement) ||
+			!IsValidSectionObservation(*publicationOwner, observation) ||
+			!IsCompatibleSpritePreparation(*publicationOwner, spritePreparation))
+		{
+			readiness = Readiness::InvalidObservation;
+			return false;
+		}
+		return true;
+	}
+
+	/** Validates that one observation exactly corresponds to source-relative publication ordinals. */
+	bool SectionScheduler::IsValidSectionObservation(
+		const BuildingCandidatePublication& publication,
+		const BuildingCandidateObservation& observation)
+	{
+		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
+		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
+		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
+		if (!std::isfinite(observation.requestedRegion.xMapUnits) ||
+			!std::isfinite(observation.requestedRegion.yMapUnits) ||
+			!std::isfinite(observation.requestedRegion.widthMapUnits) ||
+			!std::isfinite(observation.requestedRegion.heightMapUnits) ||
+			observation.requestedRegion.widthMapUnits <= 0.0 || observation.requestedRegion.heightMapUnits <= 0.0 ||
+			!std::isfinite(right) || !std::isfinite(bottom) || right <= observation.requestedRegion.xMapUnits ||
+			bottom <= observation.requestedRegion.yMapUnits ||
+			observation.candidateOrdinals.size() != candidateData.occurrences.size())
+		{
+			return false;
+		}
+		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
+		{
+			if (observation.candidateOrdinals[index] != candidateData.occurrences[index].publicationOrdinal)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Requires exact source-ordered sprite outcomes from the same publication owner. */
+	bool SectionScheduler::IsCompatibleSpritePreparation(
+		const BuildingCandidatePublication& publication,
+		const KnownSpritePreparationResult& spritePreparation)
+	{
+		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publication.BorrowSourceData();
+		if (candidateData.occurrences.size() != spritePreparation.OccurrenceOutcomes.size() ||
+			sourceData.records.size() != candidateData.occurrences.size())
+		{
+			return false;
+		}
+		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
+		{
+			if (spritePreparation.OccurrenceOutcomes[index].PublicationOrdinal !=
+				candidateData.occurrences[index].publicationOrdinal)
+			{
+				return false;
+			}
+		}
+		for (const auto& prepared : spritePreparation.PreparedSprites)
+		{
+			const std::size_t index = static_cast<std::size_t>(prepared.PublicationOrdinal);
+			if (index >= sourceData.records.size() ||
+				sourceData.records[index].kind != BuildingCandidateSourceKind::Sprite ||
+				sourceData.records[index].spritePass != prepared.SpritePass ||
+				(spritePreparation.OccurrenceOutcomes[index].PreparationStatus !=
+					KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
+					spritePreparation.OccurrenceOutcomes[index].PreparationStatus !=
+					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSpritePass))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Prevents one observation from promoting weaker publication evidence or uncovered regions. */
+	BuildingCandidateEvidence SectionScheduler::GetSectionCandidateEvidence(
+		const BuildingCandidatePublication& publication,
+		const BuildingCandidateObservation& observation)
+	{
+		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
+		BuildingCandidateEvidence evidence = observation.evidence;
+		evidence.membershipEnumerationComplete = evidence.membershipEnumerationComplete &&
+			candidateData.evidence.membershipEnumerationComplete;
+		evidence.nativeAcquisitionComplete = evidence.nativeAcquisitionComplete &&
+			candidateData.evidence.nativeAcquisitionComplete;
+		evidence.hasPendingOrUnresolvedOccurrences = evidence.hasPendingOrUnresolvedOccurrences ||
+			candidateData.evidence.hasPendingOrUnresolvedOccurrences;
+		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
+		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
+		const double coverageRight = candidateData.coverage.xMapUnits + candidateData.coverage.widthMapUnits;
+		const double coverageBottom = candidateData.coverage.yMapUnits + candidateData.coverage.heightMapUnits;
+		const bool regionCovered = candidateData.hasCoverage &&
+			observation.requestedRegion.xMapUnits >= candidateData.coverage.xMapUnits &&
+			observation.requestedRegion.yMapUnits >= candidateData.coverage.yMapUnits &&
+			right <= coverageRight && bottom <= coverageBottom;
+		evidence.candidateCoverageComplete = evidence.candidateCoverageComplete &&
+			candidateData.evidence.candidateCoverageComplete && regionCovered;
+		return evidence;
+	}
+
+	/** Accounts for one candidate occurrence and appends only already prepared eligible inputs. */
+	void SectionScheduler::ProcessSectionOccurrence(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		std::uint64_t ordinal,
+		const KnownSpritePreparationResult& spritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		SectionScenePreparationResult& output) const
+	{
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		if (ordinal >= candidateData.occurrences.size() || ordinal >= sourceData.records.size())
+		{
+			KnownSpritePreparationResult::OccurrenceOutcome invalid;
+			invalid.PublicationOrdinal = ordinal;
+			output.OccurrenceOutcomes.push_back(invalid);
+			return;
+		}
+		const auto& candidate = candidateData.occurrences[static_cast<std::size_t>(ordinal)];
+		const auto& source = sourceData.records[static_cast<std::size_t>(ordinal)];
+		KnownSpritePreparationResult::OccurrenceOutcome outcome;
+		InitializeSectionOccurrenceOutcome(ordinal, candidate, source, spritePreparation, outcome);
+		const bool sourceBlocked = ProcessTerminalOrPendingSource(source, candidate, outcome);
+		if (source.kind == BuildingCandidateSourceKind::Spline)
+		{
+			ProcessPreparedSpline(publicationOwner, ordinal, source, splinePolicies, outcome, output);
+		}
+		else if (sourceBlocked)
+		{
+			output.OccurrenceOutcomes.push_back(outcome);
+			return;
+		}
+		else if (source.kind == BuildingCandidateSourceKind::Sprite)
+		{
+			ProcessPreparedSprite(ordinal, spritePreparation, outcome, output);
+		}
+		else
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSource;
+		}
+		output.OccurrenceOutcomes.push_back(outcome);
+	}
+
+	/** Copies all independent publication, native and sprite evidence into one scene outcome. */
+	void SectionScheduler::InitializeSectionOccurrenceOutcome(
+		std::uint64_t ordinal,
+		const BuildingCandidateOccurrence& candidate,
+		const BuildingCandidateSourceRecord& source,
+		const KnownSpritePreparationResult& spritePreparation,
+		KnownSpritePreparationResult::OccurrenceOutcome& outcome)
+	{
+		outcome.PublicationOrdinal = ordinal;
+		outcome.SourceKind = source.kind;
+		outcome.SourceStatus = source.status;
+		outcome.SpritePass = source.spritePass;
+		outcome.NativeFactsComplete = candidate.nativeFactsComplete;
+		outcome.IsPendingOrUnresolved = candidate.isPendingOrUnresolved;
+		if (source.kind != BuildingCandidateSourceKind::Sprite)
+		{
+			return;
+		}
+		const auto spriteOutcome = std::find_if(
+			spritePreparation.OccurrenceOutcomes.begin(),
+			spritePreparation.OccurrenceOutcomes.end(),
+			[ordinal](const auto& value) { return value.PublicationOrdinal == ordinal; });
+		if (spriteOutcome != spritePreparation.OccurrenceOutcomes.end())
+		{
+			outcome.SpritePreparationStatus = spriteOutcome->PreparationStatus;
+		}
+	}
+
+	/** Preserves source acquisition distinctions before resource preparation is considered. */
+	bool SectionScheduler::ProcessTerminalOrPendingSource(
+		const BuildingCandidateSourceRecord& source,
+		const BuildingCandidateOccurrence& candidate,
+		KnownSpritePreparationResult::OccurrenceOutcome& outcome)
+	{
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		if (!candidate.nativeFactsComplete || candidate.isPendingOrUnresolved)
+		{
+			outcome.PreparationStatus = Status::PendingNativeSourceAcquisition;
+			return true;
+		}
+		if (source.kind == BuildingCandidateSourceKind::Unknown)
+		{
+			outcome.PreparationStatus = Status::UnknownSource;
+			return true;
+		}
+		if (source.status == BuildingCandidateSourceStatus::Invalid ||
+			source.status == BuildingCandidateSourceStatus::Unsupported)
+		{
+			outcome.PreparationStatus = Status::TerminalSourceFailure;
+			return true;
+		}
+		if (source.status == BuildingCandidateSourceStatus::Unavailable)
+		{
+			outcome.PreparationStatus = Status::TemporarilyUnavailableSource;
+			return true;
+		}
+		if (source.status == BuildingCandidateSourceStatus::Unknown ||
+			source.status == BuildingCandidateSourceStatus::Incomplete)
+		{
+			outcome.PreparationStatus = Status::PendingNativeSourceAcquisition;
+			return true;
+		}
+		return false;
+	}
+
+	/** Reuses the publication-level sprite result without repeating cache or geometry preparation. */
+	void SectionScheduler::ProcessPreparedSprite(
+		std::uint64_t ordinal,
+		const KnownSpritePreparationResult& spritePreparation,
+		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
+		SectionScenePreparationResult& output)
+	{
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		const auto result = std::find_if(
+			spritePreparation.OccurrenceOutcomes.begin(),
+			spritePreparation.OccurrenceOutcomes.end(),
+			[ordinal](const auto& value) { return value.PublicationOrdinal == ordinal; });
+		if (result == spritePreparation.OccurrenceOutcomes.end())
+		{
+			outcome.PreparationStatus = Status::InvalidSpriteRequirement;
+			return;
+		}
+		outcome.PreparationStatus = result->PreparationStatus;
+		outcome.SpritePreparationStatus = result->PreparationStatus;
+		if (outcome.PreparationStatus != Status::ReadySprite)
+		{
+			return;
+		}
+		const auto prepared = std::find_if(
+			spritePreparation.PreparedSprites.begin(),
+			spritePreparation.PreparedSprites.end(),
+			[ordinal](const auto& value) { return value.PublicationOrdinal == ordinal; });
+		if (prepared == spritePreparation.PreparedSprites.end())
+		{
+			outcome.PreparationStatus = Status::UnresolvedSpriteGeometry;
+			return;
+		}
+		if (prepared->SpritePass == BuildingCandidateSpritePass::FirstPass)
+		{
+			output.OrdinarySprites.push_back(prepared->RenderInput);
+		}
+		else if (prepared->SpritePass == BuildingCandidateSpritePass::SecondPass)
+		{
+			output.OverlayLastSprites.push_back(prepared->RenderInput);
+		}
+		else
+		{
+			outcome.PreparationStatus = Status::UnknownSpritePass;
+		}
+	}
+
+	/** Reuses R2R composition with the direct immutable service policy index. */
+	void SectionScheduler::ProcessPreparedSpline(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		std::uint64_t ordinal,
+		const BuildingCandidateSourceRecord& source,
+		std::span<const SplinePolicy> splinePolicies,
+		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
+		SectionScenePreparationResult& output) const
+	{
+		const std::uint16_t policyIndex = source.splinePolicyIndex;
+		const SplinePolicy* policy = policyIndex != 0 && policyIndex < splinePolicies.size()
+			? &splinePolicies[policyIndex]
+			: nullptr;
+		SplineRenderInputPreparationResult preparation;
+		ComposeSplineRenderInput(publicationOwner, ordinal, policyIndex, policy, preparation);
+		if (outcome.PreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed)
+		{
+			output.SplinePreparations.push_back(std::move(preparation));
+			return;
+		}
+		if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::Composed)
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySpline;
+		}
+		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::StalePublication)
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingNativeSourceAcquisition;
+		}
+		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::ProfilesNotComplete &&
+			source.splineProfileStatus == SplineProfileAcquisitionStatus::Unavailable)
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSource;
+		}
+		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::ProfilesNotComplete &&
+			(source.splineProfileStatus == SplineProfileAcquisitionStatus::Invalid ||
+				source.splineProfileStatus == SplineProfileAcquisitionStatus::Unsupported))
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSourceFailure;
+		}
+		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::SourceNotComplete ||
+			preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::ProfilesNotComplete)
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingNativeSourceAcquisition;
+		}
+		else
+		{
+			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedInputs;
+		}
+		output.SplinePreparations.push_back(std::move(preparation));
+	}
+
+	/** Requires certified coverage and rejects all unresolved or temporarily unavailable occurrence outcomes. */
+	SectionScheduler::SectionScenePreparationResult::Readiness
+	SectionScheduler::DetermineSceneReadiness(const SectionScenePreparationResult& output)
+	{
+		using Readiness = SectionScenePreparationResult::Readiness;
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		if (!output.CandidateEvidence.candidateCoverageComplete ||
+			!output.CandidateEvidence.membershipEnumerationComplete)
+		{
+			return Readiness::IncompleteCandidateCoverage;
+		}
+		if (!output.CandidateEvidence.nativeAcquisitionComplete ||
+			output.CandidateEvidence.hasPendingOrUnresolvedOccurrences)
+		{
+			return Readiness::PendingNativeSourceAcquisition;
+		}
+		for (const auto& outcome : output.OccurrenceOutcomes)
+		{
+			switch (outcome.PreparationStatus)
+			{
+			case Status::PendingNativeSourceAcquisition:
+				return Readiness::PendingNativeSourceAcquisition;
+			case Status::PendingSpriteAcquisition:
+				return Readiness::PendingSpriteAcquisition;
+			case Status::TemporarilyUnavailableSource:
+			case Status::TemporarilyUnavailableSprite:
+				return Readiness::TemporarilyUnavailableResources;
+			case Status::InvalidSpriteRequirement:
+			case Status::NotProcessed:
+			case Status::UnknownSource:
+			case Status::MissingSpritePlacement:
+			case Status::UnresolvedSpriteGeometry:
+			case Status::UnknownSpritePass:
+			case Status::UnresolvedInputs:
+				return Readiness::UnresolvedInputs;
+			case Status::TerminalSourceFailure:
+			case Status::TerminalSpriteCaptureFailure:
+			case Status::ReadySprite:
+			case Status::ReadySpline:
+				break;
+			}
+		}
+		return Readiness::CompleteSceneInputs;
 	}
 
 	/** Copies acquired profile values without selecting alternatives or assigning appearance policy. */
@@ -560,32 +1066,60 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		for (const BuildingCandidateOccurrence& candidate : candidates)
 		{
-			const BuildingCandidateSourceRecord* requirement = nullptr;
-			if (!publication.TryGetSourceRecord(candidate.publicationOrdinal, requirement) || requirement == nullptr)
+			PrepareSpriteOccurrence(candidate, publication, output);
+		}
+	}
+
+	/** Resolves and prepares one Sprite occurrence while retaining its exact per-ordinal outcome. */
+	void SectionScheduler::PrepareSpriteOccurrence(
+		const BuildingCandidateOccurrence& candidate,
+		const BuildingCandidatePublication& publication,
+		KnownSpritePreparationResult& output)
+	{
+		auto outcome = std::find_if(
+			output.OccurrenceOutcomes.begin(),
+			output.OccurrenceOutcomes.end(),
+			[&candidate](const auto& occurrence)
 			{
-				++output.InvalidRequirementCount;
-				continue;
-			}
-			if (requirement->kind != BuildingCandidateSourceKind::Sprite)
-			{
-				output.MayHaveUnknownRequirements = true;
-				continue;
-			}
-			if (requirement->status != BuildingCandidateSourceStatus::Complete)
-			{
-				output.MayHaveUnknownRequirements = true;
-			}
-			if (requirement->spritePass == BuildingCandidateSpritePass::Unknown)
-			{
-				output.MayHaveUnknownRequirements = true;
-			}
-			Cache::OwnedSpriteKey ownedKey;
-			if (!Cache::OwnedSpriteKey::TryCopy(requirement->canonicalClassPath, ownedKey))
-			{
-				++output.InvalidRequirementCount;
-				continue;
-			}
-			PrepareSpriteRequirement(candidate.publicationOrdinal, *requirement, ownedKey, output);
+				return occurrence.PublicationOrdinal == candidate.publicationOrdinal;
+			});
+		if (outcome == output.OccurrenceOutcomes.end())
+		{
+			++output.InvalidRequirementCount;
+			return;
+		}
+		const BuildingCandidateSourceRecord* requirement = nullptr;
+		if (!publication.TryGetSourceRecord(candidate.publicationOrdinal, requirement) || requirement == nullptr)
+		{
+			++output.InvalidRequirementCount;
+			outcome->PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::InvalidSpriteRequirement;
+			return;
+		}
+		if (requirement->kind != BuildingCandidateSourceKind::Sprite)
+		{
+			output.MayHaveUnknownRequirements = true;
+			return;
+		}
+		RecordSpriteSourceUncertainty(*requirement, output);
+		Cache::OwnedSpriteKey ownedKey;
+		if (!Cache::OwnedSpriteKey::TryCopy(requirement->canonicalClassPath, ownedKey))
+		{
+			++output.InvalidRequirementCount;
+			outcome->PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::InvalidSpriteRequirement;
+			return;
+		}
+		PrepareSpriteRequirement(candidate.publicationOrdinal, *requirement, ownedKey, output, *outcome);
+	}
+
+	/** Records source uncertainty while preserving the existing cache-preparation path. */
+	void SectionScheduler::RecordSpriteSourceUncertainty(
+		const BuildingCandidateSourceRecord& requirement,
+		KnownSpritePreparationResult& output)
+	{
+		if (requirement.status != BuildingCandidateSourceStatus::Complete ||
+			requirement.spritePass == BuildingCandidateSpritePass::Unknown)
+		{
+			output.MayHaveUnknownRequirements = true;
 		}
 	}
 
@@ -594,11 +1128,14 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t publicationOrdinal,
 		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
-		KnownSpritePreparationResult& output)
+		KnownSpritePreparationResult& output,
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
 	{
 		if (buildingScheduler_ == nullptr || cpuSpriteSourceManager_ == nullptr)
 		{
 			++output.UnavailableCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
 		const BuildingScheduler::RequirementStatus readiness =
@@ -606,23 +1143,30 @@ namespace Services::Map::Buildings::Scheduling
 		if (readiness == BuildingScheduler::RequirementStatus::Pending)
 		{
 			++output.PendingCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingSpriteAcquisition;
 			return;
 		}
 		if (readiness == BuildingScheduler::RequirementStatus::Failed)
 		{
 			++output.FailedCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteCaptureFailure;
 			return;
 		}
 		if (readiness == BuildingScheduler::RequirementStatus::Unavailable)
 		{
 			++output.UnavailableCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
 		PrepareReadySpriteRequirement(
 			publicationOrdinal,
 			requirement,
 			ownedKey,
-			output);
+			output,
+			occurrenceOutcome);
 	}
 
 	/** Borrows the resident payload and appends an input only after its support has been established. */
@@ -630,11 +1174,14 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t publicationOrdinal,
 		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
-		KnownSpritePreparationResult& output)
+		KnownSpritePreparationResult& output,
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
 	{
 		if (cpuSpriteSourceManager_ == nullptr)
 		{
 			++output.UnavailableCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
 		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult =
@@ -644,15 +1191,28 @@ namespace Services::Map::Buildings::Scheduling
 			spriteResult.Payload->Format() != Cache::ProcessedSpritePayload::PixelFormat::StraightRgba8SrgbDisplay)
 		{
 			++output.UnavailableCount;
+		occurrenceOutcome.PreparationStatus =
+			KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
 		if (!requirement.hasPlacement)
 		{
 			++output.ReadyWithoutPlacementCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::MissingSpritePlacement;
 			return;
 		}
+		AppendReadySpriteInput(publicationOrdinal, requirement, *spriteResult.Payload, output, occurrenceOutcome);
+	}
 
-		const Cache::ProcessedSpritePayload& payload = *spriteResult.Payload;
+	/** Converts an already acquired payload through the existing placement path and appends its input. */
+	void SectionScheduler::AppendReadySpriteInput(
+		std::uint64_t publicationOrdinal,
+		const BuildingCandidateSourceRecord& requirement,
+		const Cache::ProcessedSpritePayload& payload,
+		KnownSpritePreparationResult& output,
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
+	{
 		Visuals::BuildingSpriteRenderInput renderInput;
 		renderInput.Pixels = payload.Pixels();
 		renderInput.PixelWidth = payload.Width();
@@ -666,6 +1226,8 @@ namespace Services::Map::Buildings::Scheduling
 		if (!TryBuildPreparedSpriteSupport(renderInput, support))
 		{
 			++output.UnresolvedSpriteGeometryCount;
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
 			return;
 		}
 		KnownSpritePreparationResult::PreparedSpriteOccurrence prepared;
@@ -674,6 +1236,10 @@ namespace Services::Map::Buildings::Scheduling
 		prepared.RenderInput = renderInput;
 		prepared.Support = support;
 		output.PreparedSprites.push_back(std::move(prepared));
+		occurrenceOutcome.PreparationStatus =
+			requirement.spritePass == BuildingCandidateSpritePass::Unknown
+			? KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSpritePass
+			: KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite;
 	}
 
 	/** Uses the independent renderer's projected corners to derive one world-space XY envelope. */
