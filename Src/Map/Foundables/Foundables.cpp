@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <mutex>
 #include <span>
@@ -357,7 +358,9 @@ namespace
         g_massManager = nullptr;
     }
 
-    SDK::UScriptStruct* ResolveDroppedItemsTag()
+    // The game's UScriptStruct at an object path ("/Script/Chimera.CrInventoryFragment"),
+    // looked up by name each time and borrowed for the current poll.
+    SDK::UScriptStruct* ResolveScriptStruct(const wchar_t* path)
     {
         if (!MiniMapResidentMetadata::Available())
         {
@@ -375,18 +378,18 @@ namespace
             return nullptr;
         }
 
-        uintptr_t droppedItemsTag = 0;
+        uintptr_t found = 0;
         if (!MiniMapResidentMetadata::FindResident(
                 reinterpret_cast<SDK::UClass*>(scriptStructClass),
-                L"/Script/Chimera.CrMassDroppedItemsTag",
+                path,
                 true,
-                droppedItemsTag) ||
-            droppedItemsTag == 0)
+                found) ||
+            found == 0)
         {
             return nullptr;
         }
 
-        return reinterpret_cast<SDK::UScriptStruct*>(droppedItemsTag);
+        return reinterpret_cast<SDK::UScriptStruct*>(found);
     }
 
     bool EnsureQuery()
@@ -431,7 +434,7 @@ namespace
         }
 
         SDK::UScriptStruct* droppedItemsTag =
-            ResolveDroppedItemsTag();
+            ResolveScriptStruct(L"/Script/Chimera.CrMassDroppedItemsTag");
         if (droppedItemsTag == nullptr)
         {
             return false;
@@ -810,12 +813,20 @@ namespace
                 return type && type->Class == Core && size_t(type->Size) == size ? type : nullptr;
             }
 
-            // A native class MiniMap reads only through members the map places, so
-            // its compiled size means nothing: the class has to reach past them.
-            SDK::UClass* FindNativeReaching(const wchar_t* path, const PluginFieldSpec& member, size_t memberSize) const
+            // A native game class MiniMap reads only through members the map places,
+            // so its compiled size means nothing: the class has to reach past them.
+            SDK::UClass* FindNativeReaching(const wchar_t* path,
+                std::initializer_list<const PluginFieldSpec*> members) const
             {
-                if (member.offset < 0) return nullptr;
-                auto* type = FindClass(path, size_t(member.offset) + memberSize);
+                size_t reach = 0;
+                for (const auto* member : members)
+                {
+                    if (member->offset < 0) return nullptr;
+                    const size_t end = size_t(member->offset) +
+                        (member->resolvedSize ? member->resolvedSize : member->size);
+                    if (end > reach) reach = end;
+                }
+                auto* type = FindClass(path, reach);
                 return type && type->Class == Core ? type : nullptr;
             }
 
@@ -831,23 +842,26 @@ namespace
                 Level = FindNative(L"/Script/Engine.Level", sizeof(SDK::ULevel));
                 Scene = FindNative(L"/Script/Engine.SceneComponent", sizeof(SDK::USceneComponent));
                 GameState = FindNativeReaching(L"/Script/Chimera.CrGameStateBase",
-                    MiniMapFields::AbandonBaseInfoReplicator, sizeof(SDK::ACrAbandonBaseInfoReplicator*));
-                Replicator = FindNative(L"/Script/Chimera.CrAbandonBaseInfoReplicator", sizeof(SDK::ACrAbandonBaseInfoReplicator));
-                POI = FindNative(L"/Script/Chimera.CrPointOfInterestMarkerActor", sizeof(SDK::ACrPointOfInterestMarkerActor));
+                    {&MiniMapFields::AbandonBaseInfoReplicator});
+                Replicator = FindNativeReaching(L"/Script/Chimera.CrAbandonBaseInfoReplicator",
+                    {&MiniMapFields::AbandonBaseContainer});
+                POI = FindNativeReaching(L"/Script/Chimera.CrPointOfInterestMarkerActor",
+                    {&MiniMapFields::PoiType, &MiniMapFields::PoiGuid, &MiniMapFields::PoiStoryItems});
                 Blueprint = FindNative(L"/Script/Engine.BlueprintGeneratedClass", sizeof(SDK::UBlueprintGeneratedClass));
-                Datapad = FindNative(L"/Script/Chimera.CrDatapadBase", sizeof(SDK::ACrDatapadBase));
-                Audiolog = FindNative(L"/Script/Chimera.CrAudiologBase", sizeof(SDK::ACrAudiologBase));
+                Datapad = FindNativeReaching(L"/Script/Chimera.CrDatapadBase", {&MiniMapFields::DatapadGuid});
+                Audiolog = FindNativeReaching(L"/Script/Chimera.CrAudiologBase", {&MiniMapFields::AudiologGuid});
                 return World && Level && Scene && GameState && Replicator && POI && Blueprint;
             }
 
-            SDK::UClass* FindFamily(const wchar_t* path, SDK::UClass* nativeBase, size_t size) const
+            // A Blueprint class derived from the native family: as large as its native base.
+            SDK::UClass* FindFamily(const wchar_t* path, SDK::UClass* nativeBase) const
             {
-                if (!nativeBase) return nullptr;
-                auto* type = FindClass(path, size);
+                if (!nativeBase || nativeBase->Size < 0) return nullptr;
+                auto* type = FindClass(path, size_t(nativeBase->Size));
                 return type && Derives(type, nativeBase) && Derives(type->Class, Blueprint) ? type : nullptr;
             }
 
-            bool Actor(const SDK::AActor* actor, const SDK::UClass* base, size_t,
+            bool Actor(const SDK::AActor* actor, const SDK::UClass* base,
                 const SDK::UWorld* world) const
             {
                 if (!actor || actor->bActorIsBeingDestroyed ||
@@ -912,11 +926,11 @@ namespace
             if (!world || !types.Derives(world->Class, types.World)) return false;
             scope.World = world;
             auto* baseGameState = world->GameState;
-            if (!types.Actor(baseGameState, types.GameState, 0, world)) return false;
+            if (!types.Actor(baseGameState, types.GameState, world)) return false;
             auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
             scope.GameState = gameState;
             auto* replicator = PluginMap::ValueOr(MiniMapFields::AbandonBaseInfoReplicator, gameState);
-            if (!types.Actor(replicator, types.Replicator, sizeof(*replicator), world)) return false;
+            if (!types.Actor(replicator, types.Replicator, world)) return false;
             scope.Replicator = replicator;
 
             ActorArray actors(types.Native);
@@ -926,7 +940,7 @@ namespace
             for (int32_t index = 0; index < actors.Values.Num; ++index)
             {
                 auto* actor = actors.Values.Data[index];
-                if (!types.Actor(actor, types.POI, sizeof(SDK::ACrPointOfInterestMarkerActor), world)) continue;
+                if (!types.Actor(actor, types.POI, world)) continue;
                 auto* poi = static_cast<SDK::ACrPointOfInterestMarkerActor*>(actor);
                 const auto* poiType = MiniMapFields::PoiType.In(poi);
                 const auto* poiGuid = MiniMapFields::PoiGuid.In(poi);
@@ -999,14 +1013,14 @@ namespace
         }
 
         bool ReadPosition(const Types& types, SDK::AActor* actor, SDK::UWorld* world,
-            SDK::UClass* family, size_t extent, SDK::FVector& location)
+            SDK::UClass* family, SDK::FVector& location)
         {
             if (!actor) return false;
             auto* root = actor->RootComponent;
             if (!root || root->Outer != actor ||
                 !types.Derives(root->Class, types.Scene)) return false;
             types.Native.player.getComponentLocation(root, &location);
-            return types.Actor(actor, family, extent, world) &&
+            return types.Actor(actor, family, world) &&
                 actor->RootComponent == root && root->Outer == actor &&
                 std::isfinite(location.X) && std::isfinite(location.Y) && std::isfinite(location.Z);
         }
@@ -1024,33 +1038,33 @@ namespace
             ProgressScope scope;
             if (!ReadProgress(types, world, progress, scope)) return false;
 
-            struct Family { const wchar_t* Path; SDK::UClass* Base; size_t Extent; bool Audio; };
+            struct Family { const wchar_t* Path; SDK::UClass* Base; bool Audio; };
             const Family families[] = {
                 {L"/Game/Chimera/Environment/Datapads/BP_DatapadComputer.BP_DatapadComputer_C",
-                    types.Datapad, sizeof(SDK::ACrDatapadBase), false},
+                    types.Datapad, false},
                 {L"/Game/Chimera/Environment/Datapads/BP_DatapadPersonal.BP_DatapadPersonal_C",
-                    types.Datapad, sizeof(SDK::ACrDatapadBase), false},
+                    types.Datapad, false},
                 {L"/Game/Chimera/Environment/Audiologs/BP_Audiolog.BP_Audiolog_C",
-                    types.Audiolog, sizeof(SDK::ACrAudiologBase), true}
+                    types.Audiolog, true}
             };
             struct Candidate { ContainerDotRecord Dot; bool Ambiguous = false; };
             std::unordered_map<Guid, Candidate, GuidHash> candidates;
             for (const auto& family : families)
             {
-                auto* type = types.FindFamily(family.Path, family.Base, family.Extent);
+                auto* type = types.FindFamily(family.Path, family.Base);
                 if (!type) continue; // Unresolved resident family is UNKNOWN; retry next poll.
                 ActorArray actors(native);
                 if (!actors.Collect(native, world, type)) continue;
                 for (int32_t index = 0; index < actors.Values.Num; ++index)
                 {
                     auto* actor = actors.Values.Data[index];
-                    if (!types.Actor(actor, type, family.Extent, world)) continue;
+                    if (!types.Actor(actor, type, world)) continue;
                     const auto guid = StoryGuid(actor, family.Audio);
                     const auto found = progress.find(guid);
                     if (!ValidGuid(guid) || found == progress.end() || found->second.Ambiguous ||
                         found->second.Records != 1 || found->second.Status != 0) continue;
                     SDK::FVector location{};
-                    if (!ReadPosition(types, actor, world, type, family.Extent, location)) continue;
+                    if (!ReadPosition(types, actor, world, type, location)) continue;
                     const auto currentGuid = StoryGuid(actor, family.Audio);
                     if (guid != currentGuid) continue;
                     Candidate candidate{{location.X, location.Y, ContainerContents::Ordinary}};
@@ -1090,7 +1104,6 @@ namespace
             native->mass.getFragmentDataPtr == nullptr ||
             native->mass.getConstSharedFragmentPtr == nullptr ||
             native->mass.transformFragmentStaticStruct == nullptr ||
-            native->mass.inventoryFragmentStaticStruct == nullptr ||
             native->mass.foundableParametersStaticStruct == nullptr ||
             native->texture.memoryFree == nullptr)
         {
@@ -1107,7 +1120,7 @@ namespace
         BuildTypeState(mapData, kDroneType, drone);
 
         auto* transformStruct = native->mass.transformFragmentStaticStruct();
-        auto* inventoryStruct = native->mass.inventoryFragmentStaticStruct();
+        auto* inventoryStruct = ResolveScriptStruct(L"/Script/Chimera.CrInventoryFragment");
         auto* parametersStruct = native->mass.foundableParametersStaticStruct();
         if (transformStruct == nullptr || inventoryStruct == nullptr || parametersStruct == nullptr)
         {

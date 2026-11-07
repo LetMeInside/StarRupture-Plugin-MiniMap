@@ -1135,10 +1135,10 @@ namespace MiniMapFingerprints
             if (!addresses.isGameThread) return false;
         }
 
-        // The spline payload getter and the payload's StaticStruct have no
-        // pattern here: the CL-127004 patterns do not match on CL-128786, so the
-        // loader's map is the only locator. A build with no row for them turns off
-        // building-splines. The getter's generic forwarding body is not unique;
+        // The spline payload getter has no pattern here: the CL-127004 pattern
+        // does not match on CL-128786, so the loader's map is the only locator.
+        // A build with no row for it turns off building-splines. The getter's
+        // generic forwarding body is not unique;
         // its row is the call at +0x0C in SetActorPlacementPayloadData's
         // numerical-copy site.
         RequiredScan splinePayloadRequest{};
@@ -1157,13 +1157,6 @@ namespace MiniMapFingerprints
         splinePayloadDestroyRequest.kind = AddressKind::FunctionEntry;
 
         addresses.destroySplineActorPayloadData = resolveRequired(splinePayloadDestroyRequest);
-
-        // Warm the exact type cache used by GetValue during NativeApi initialization.
-        RequiredScan splinePayloadTypeRequest{};
-        splinePayloadTypeRequest.name = Keys::SplinePayloadStaticStruct;
-        splinePayloadTypeRequest.kind = AddressKind::FunctionEntry;
-
-        addresses.splineActorPayloadStaticStruct = resolveRequired(splinePayloadTypeRequest);
 #endif
 
         RequiredScan massSubsystemRequest{};
@@ -1386,23 +1379,6 @@ namespace MiniMapFingerprints
 
         addresses.getMassConstSharedFragmentPtr =
             constSharedDataAddress;
-
-
-        RequiredScan inventoryStaticStructRequest{};
-
-        inventoryStaticStructRequest.name =
-            Keys::InventoryStaticStruct;
-
-        // No pattern, as for the foundable tag: the map is the only locator.
-        inventoryStaticStructRequest.kind =
-            AddressKind::FunctionEntry;
-
-        const uintptr_t inventoryStaticStructAddress =
-            resolveRequired(inventoryStaticStructRequest);
-
-
-        addresses.inventoryFragmentStaticStruct =
-            inventoryStaticStructAddress;
 
 
         RequiredScan foundableParametersStructRequest{};

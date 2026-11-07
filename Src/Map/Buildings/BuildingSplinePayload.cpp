@@ -2,7 +2,7 @@
 #include "BuildingSplinePayload.h"
 #include "BuildingGeometry.h"
 #include "Native/NativeApi.h"
-#include <cstddef>
+#include "Adapters/AlienX/GameFields.h"
 #include <utility>
 
 namespace
@@ -12,21 +12,19 @@ namespace
     using NativeValue = SDK::FAuAPSplineActorPayloadData;
     using Result = MiniMapBuildingSplinePayload::CopyResult;
 
-    static_assert(sizeof(NativeValue) == 0xE8 && alignof(NativeValue) == 8);
-    static_assert(offsetof(NativeValue, Data) == 0x68);
-
-    struct alignas(8) PayloadStorage { std::byte Bytes[0xE8]; };
-    static_assert(sizeof(PayloadStorage) == 0xE8 && alignof(PayloadStorage) == 8);
-
+    // The block the game constructs the payload in is the payload's size on the
+    // running build, and its spline data sits where the map places it.
     class ScopedPayload final
     {
-        PayloadStorage storage;
+        PluginMap::StructBuffer storage;
         Api::DestroyFn destroy;
         NativeValue* constructed = nullptr;
     public:
-        ScopedPayload(const Api& api, const SDK::FAuAPPayloadDataHandle& handle) : destroy(api.destroy)
+        ScopedPayload(const Api& api, const SDK::FAuAPPayloadDataHandle& handle)
+            : storage(MiniMapFields::SplinePayloadSize), destroy(api.destroy)
         {
-            auto* value = reinterpret_cast<NativeValue*>(storage.Bytes);
+            if (!storage) return;
+            auto* value = reinterpret_cast<NativeValue*>(storage.Data());
             api.get(value, &handle);
             // Mark constructed only after the native constructor/getter returns.
             // If it throws before returning, do not destroy unconstructed storage.
@@ -37,7 +35,8 @@ namespace
         ScopedPayload& operator=(const ScopedPayload&) = delete;
         ScopedPayload(ScopedPayload&&) = delete;
         ScopedPayload& operator=(ScopedPayload&&) = delete;
-        const NativeValue& Value() const { return *constructed; }
+        // Null when the block or the member did not resolve on this build.
+        const SDK::FAuAPSplineData* Data() const { return MiniMapFields::SplinePayloadData.In(constructed); }
     };
 
     Result Convert(const SDK::FAuAPSplineData& data, G::SplineGeometry& output)
@@ -103,10 +102,12 @@ namespace MiniMapBuildingSplinePayload
         output.Issue = G::GeometryIssue::MissingSource;
         const auto* api = MiniMapNative::Get();
         if (!api || !api->splinePayload.get || !api->splinePayload.destroy ||
-            !api->splinePayload.payloadType || !api->player.isGameThread) return CopyResult::Unavailable;
+            !api->player.isGameThread) return CopyResult::Unavailable;
         if (!api->player.isGameThread()) return CopyResult::WrongThread;
         const ScopedPayload value(api->splinePayload, handle);
-        return Convert(value.Value().Data, output);
+        const auto* data = value.Data();
+        if (!data) return CopyResult::Unavailable;
+        return Convert(*data, output);
     }
 }
 #endif

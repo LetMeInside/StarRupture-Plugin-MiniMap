@@ -91,6 +91,8 @@ namespace MiniMapFields
 	inline auto SplinePointTangent     = SR_FIELD(SDK::FVector_NetQuantize10, FAuAPSplinePointData, Tangent, 0);
 	inline auto SplinePointSize        = SR_SIZE(FAuAPSplinePointData);
 	inline auto SplinePayloadHandle    = PluginField<SDK::FAuAPPayloadDataHandle>{ SR_FIELD_ANY_SIZE(FAuAPMassFragment, Payload, 0) };
+	inline auto SplinePayloadSize      = SR_SIZE(FAuAPSplineActorPayloadData);
+	inline auto SplinePayloadData      = PluginField<SDK::FAuAPSplineData>{ SR_FIELD_ANY_SIZE(FAuAPSplineActorPayloadData, Data, 0) };
 
 	// What the map layers read off the game's map-menu data. The player character holds
 	// the data component the filters and the fog live on; a marker category holds the
@@ -214,6 +216,7 @@ namespace MiniMapFields
 			CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 			SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
 			SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle,
+			SplinePayloadSize, SplinePayloadData,
 			BuildingDrone, PlayerMapData, CategoryIcon, CategoryBlocked, CategoryLegendFilter, CategoryFogHidable,
 			PoiUnknownIcon, PoiCompletedIcon, DevSettingsTerrainData, TerrainPivot, TerrainSegmentSize,
 			TerrainSegments, TerrainSegmentStride, TerrainSegmentGrid, TerrainSegmentTexture,
@@ -253,7 +256,7 @@ namespace MiniMapFields
 				Keys::MassSubsystem, Keys::QueryConstruct, Keys::QueryDestruct, Keys::MatchingHandles,
 				Keys::FragmentDataPtr, Keys::ConstSharedPtr, Keys::AddInventoryRequirement,
 				Keys::AddTransformRequirement, Keys::AddFoundableParameters, Keys::AddFoundableTag,
-				Keys::AddTagRequirement, Keys::TransformStaticStruct, Keys::InventoryStaticStruct,
+				Keys::AddTagRequirement, Keys::TransformStaticStruct,
 				Keys::FoundableStaticStruct, AbandonBaseInfoReplicator,
 				PluginMap::MassEntityManagerField, MassQuerySize,
 				PlayerMapData, CategoryIcon, CategoryBlocked, CategoryLegendFilter, FoundableType,
@@ -281,7 +284,8 @@ namespace MiniMapFields
 				BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
 				CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 				SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
-				SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle),
+				SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle,
+				SplinePayloadSize, SplinePayloadData),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the
@@ -294,8 +298,9 @@ namespace MiniMapFields
 		// Rails and pipes are drawn from the spline payload of the building actor.
 		// Without it the buildings still draw, as boxes.
 		inline PluginMap::Feature BuildingSplines{ "building-splines", "Rails and pipes on the minimap",
-			KeysOf(Keys::SplinePayloadGet, Keys::SplinePayloadDestroy, Keys::SplinePayloadStaticStruct,
-				SplinePayloadHandle, SplineDataPoints, SplinePointPosition, SplinePointTangent, SplinePointSize),
+			KeysOf(Keys::SplinePayloadGet, Keys::SplinePayloadDestroy,
+				SplinePayloadHandle, SplineDataPoints, SplinePointPosition, SplinePointTangent, SplinePointSize,
+				SplinePayloadSize, SplinePayloadData),
 			{ "Buildings.RenderDroneRails" } };
 
 		// ReadbackGlobals and ReleaseGuard are not requests: they name the checks that

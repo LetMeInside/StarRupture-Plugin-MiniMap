@@ -75,7 +75,6 @@ namespace MiniMapNative::Keys
     inline constexpr const char* IsEntityBuilt       = "FMassEntityManager::IsEntityBuilt";
     inline constexpr const char* IsEntityValid       = "FMassEntityManager::IsEntityValid";
     inline constexpr const char* TransformStaticStruct = "FTransformFragment::StaticStruct";
-    inline constexpr const char* InventoryStaticStruct = "FCrInventoryFragment::StaticStruct";
     inline constexpr const char* FoundableStaticStruct = "FCrMassFoundableParameters::StaticStruct";
     inline constexpr const char* EnemyStateStaticStruct = "FMassEnemyStateFragment::StaticStruct";
     inline constexpr const char* EnemyTagStaticStruct = "FMassEnemyTag::StaticStruct";
@@ -86,7 +85,6 @@ namespace MiniMapNative::Keys
     inline constexpr const char* GridForEachCell     = "UCrEntityGridSubsystem::ForEachCellInRadius";
     inline constexpr const char* SplinePayloadGet    = "SplinePayload::GetSplineActorData";
     inline constexpr const char* SplinePayloadDestroy = "FAuAPSplineActorPayloadData::~FAuAPSplineActorPayloadData";
-    inline constexpr const char* SplinePayloadStaticStruct = "FAuAPSplineActorPayloadData::StaticStruct";
 
     // Building sprites: the private capture world, the render target and the readback
     inline constexpr const char* SpawnObject         = "StaticConstructObject (TSubclassOf)";
