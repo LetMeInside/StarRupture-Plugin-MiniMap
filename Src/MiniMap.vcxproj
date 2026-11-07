@@ -218,8 +218,10 @@
     <ClCompile Include="Native\ReadbackNativeAdapter.cpp">
       <!-- Keep this native boundary inspectable as ordinary COFF, not LTCG IR. -->
       <WholeProgramOptimization>false</WholeProgramOptimization>
-      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ExcludedFromBuild Condition="'$(MiniMapKeyScanOnly)' == 'true'">true</ExcludedFromBuild>
+      <AdditionalIncludeDirectories Condition="'$(MiniMapKeyScanOnly)' != 'true' And ('$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug')">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="Native\ReadbackNativeKeyScanStub.cpp" Condition="'$(MiniMapKeyScanOnly)' == 'true'" />
     <ClCompile Include="Config\Config.cpp" />
     <ClCompile Include="Map\Map.cpp" />
     <ClCompile Include="Map\FogOfWar\FogOfWar.cpp" />

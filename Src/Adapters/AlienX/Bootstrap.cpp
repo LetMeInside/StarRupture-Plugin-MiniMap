@@ -59,7 +59,11 @@ namespace
 
     PluginInfo g_pluginInfo = {
         "MiniMap",
+#if defined(MINIMAP_KEY_SCAN_ONLY)
+        MODLOADER_BUILD_TAG "-keyscan",
+#else
         MODLOADER_BUILD_TAG,
+#endif
         "Kian369",
         "A configurable on-screen minimap for StarRupture",
         PLUGIN_INTERFACE_VERSION,
@@ -187,6 +191,12 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
 
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 {
+#if defined(MINIMAP_KEY_SCAN_ONLY)
+    // A key-scan build only carries the map keys for the update pipeline.
+    if (self && self->logger && self->logger->Log)
+        self->logger->Log(PluginLogLevel::Error, self, "MiniMap: key-scan build: not for use in game");
+    return false;
+#endif
     // First, before any early return: off its game build the loader refuses a
     // plugin whose PluginInit did not take the globals.
     PluginSdkRuntime::Init(self->hooks);

@@ -2,7 +2,10 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
-    <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <StarRupturePluginSDKRoot Condition="'$(StarRupturePluginSDKRoot)' == ''">$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <!-- Opt-in key-scan build for CI: no Unreal Engine headers, the readback adapter is a stub,
+         and the DLL refuses to initialise. It only carries the map keys for the update pipeline's scan. -->
+    <MiniMapKeyScanOnly Condition="'$(MiniMapKeyScanOnly)' == ''">false</MiniMapKeyScanOnly>
     <!-- The game build (CL) the Game-SDK was generated from, stored in PluginInfo::gameBuiltCL. -->
     <PluginGameBuiltCL Condition="'$(PluginGameBuiltCL)' == ''">127004</PluginGameBuiltCL>
   </PropertyGroup>
@@ -22,6 +25,9 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MiniMapKeyScanOnly)' == 'true'">
+    <ClCompile><PreprocessorDefinitions>MINIMAP_KEY_SCAN_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
