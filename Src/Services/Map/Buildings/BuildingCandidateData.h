@@ -1,13 +1,16 @@
 // Defines neutral candidate evidence and per-occurrence source values retained by one publication.
+// Defines neutral candidate evidence and immutable per-occurrence source records.
 #pragma once
 
 #include "BuildingMapRegion.h"
+#include "SplineProfile.h"
 #include "Visuals/SpriteGeometry.h"
 #include "Visuals/SplineGeometry.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -148,6 +151,10 @@ namespace Services::Map::Buildings
 		Visuals::SpritePlacement placement{};
 		/** Owned keyed values and source provenance for known spline occurrences. */
 		BuildingCandidateSplineSource spline;
+		/** Acquired ordered geometry alternatives shared by occurrences of one definition. */
+		std::shared_ptr<const SplineProfileSet> splineProfiles;
+		/** Acquisition state remains separate from curve completeness and renderability. */
+		SplineProfileAcquisitionStatus splineProfileStatus = SplineProfileAcquisitionStatus::Unknown;
 	};
 
 	/** Borrows the publication-owned source records in candidate occurrence order. */

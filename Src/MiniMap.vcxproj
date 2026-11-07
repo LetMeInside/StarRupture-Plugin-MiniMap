@@ -111,6 +111,7 @@
     <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingCandidateData.h" />
+    <ClInclude Include="Services\Map\Buildings\SplineProfile.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapRegion.h" />
     <ClInclude Include="Services\Map\Buildings\IBuildingCollector.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingCandidatePublication.h" />

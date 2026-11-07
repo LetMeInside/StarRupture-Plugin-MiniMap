@@ -8,7 +8,7 @@ namespace SDK { class UAuActorPlacementData; }
 
 namespace MiniMap::BuildingAcquisition
 {
-    /** Copies native definition facts without profiles. Collector owns the sole definition cache. */
+    /** Copies core definition and authored profile facts using the collector's sole definition cache. */
     class BuildingDefinitionAcquisition final
     {
     public:
@@ -41,7 +41,13 @@ namespace MiniMap::BuildingAcquisition
         /** Copies authored facts; local root/metadata owners survive reflection reentry. */
         std::shared_ptr<const BuildingAcquiredFacts::Definition> Copy(
             const std::shared_ptr<DefinitionOwner>& definition) const;
-        /** Reports whether every required native definition value was acquired. */
+        /** Acquires profile alternatives from already rooted definition references and returns immutable CPU facts.
+         * The caller retains the DefinitionOwner across this potentially reentrant asset operation and validates
+         * its world/session context before storing the returned facts.
+         */
+        std::shared_ptr<const BuildingAcquiredFacts::Definition> CopySplineProfiles(
+            const std::shared_ptr<DefinitionOwner>& definition) const;
+        /** Reports whether the core class, Interior and optional config-reference facts are acquired. */
         static bool IsComplete(const BuildingAcquiredFacts::Definition& facts) noexcept;
 
     private:

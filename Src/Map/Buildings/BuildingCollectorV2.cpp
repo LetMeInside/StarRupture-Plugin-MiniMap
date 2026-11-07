@@ -467,18 +467,77 @@ namespace MiniMap::BuildingAcquisition
                 result.SplineFacts = std::make_shared<const Facts::Spline>(std::move(source));
         }
 
-        /** Attempts shared definition conversion once per callback, without entry references across reflection. */
+        /** Acquires shared core/profile facts once per callback without retaining entry references across reentry. */
         void CopyDefinition(const Native& native, const Context& context,
             const std::shared_ptr<DefinitionOwner>& definition,
-            std::unordered_set<const DefinitionOwner*>& attempted)
+            std::unordered_set<const DefinitionOwner*>& attempted, bool hasSpline)
         {
-            if (definition->Facts && BuildingDefinitionAcquisition::IsComplete(*definition->Facts))
+            const bool coreComplete = definition->Facts && BuildingDefinitionAcquisition::IsComplete(*definition->Facts);
+            const bool profilesTerminal = !hasSpline || (definition->Facts && IsSplineProfileTerminal(
+                definition->Facts->SplineProfileStatus));
+            if (coreComplete && profilesTerminal)
                 return;
             if (!attempted.insert(definition.get()).second)
                 return;
-            auto facts = DefinitionAcquisition.Copy(definition);
-            if (IsContextCurrent(native, context))
+            if (!coreComplete)
+            {
+                auto facts = DefinitionAcquisition.Copy(definition);
+                if (!IsContextCurrent(native, context))
+                    return;
                 definition->Facts = std::move(facts);
+            }
+            if (!hasSpline || !definition->Facts || !BuildingDefinitionAcquisition::IsComplete(*definition->Facts))
+                return;
+            if (IsDroneRailDefinitionId(definition->Facts->BuildingId))
+            {
+                auto facts = std::make_shared<Facts::Definition>(*definition->Facts);
+                facts->SplineProfileStatus = ::Services::Map::Buildings::SplineProfileAcquisitionStatus::NotApplicable;
+                definition->Facts = std::move(facts);
+                return;
+            }
+            if (IsSplineProfileTerminal(definition->Facts->SplineProfileStatus))
+                return;
+            auto facts = DefinitionAcquisition.CopySplineProfiles(definition);
+            if (facts && IsContextCurrent(native, context))
+                definition->Facts = std::move(facts);
+        }
+
+        /** Identifies profile outcomes that need no further acquisition retry. */
+        static bool IsSplineProfileTerminal(::Services::Map::Buildings::SplineProfileAcquisitionStatus status)
+        {
+            using ProfileStatus = ::Services::Map::Buildings::SplineProfileAcquisitionStatus;
+            return status == ProfileStatus::Complete || status == ProfileStatus::NotApplicable ||
+                status == ProfileStatus::Invalid || status == ProfileStatus::Unsupported;
+        }
+
+        /** Preserves the exact legacy drone-rail definition family without profile acquisition. */
+        static bool IsDroneRailDefinitionId(std::uint32_t buildingId)
+        {
+            switch (static_cast<SDK::ECrBuildingID>(buildingId))
+            {
+            case SDK::ECrBuildingID::DroneRailT1:
+            case SDK::ECrBuildingID::DroneRailT2:
+            case SDK::ECrBuildingID::DroneRailT3:
+            case SDK::ECrBuildingID::DroneRailT4:
+            case SDK::ECrBuildingID::DroneRailT5:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        /** Requires applicable definition profiles before an occurrence leaves pending acquisition. */
+        static bool AreRequiredSplineProfilesResolved(
+            const std::shared_ptr<const Facts::Definition>& definition, bool hasSpline)
+        {
+            if (!hasSpline)
+                return true;
+            if (!definition || !BuildingDefinitionAcquisition::IsComplete(*definition))
+                return false;
+            if (IsDroneRailDefinitionId(definition->BuildingId))
+                return definition->SplineProfileStatus ==
+                    ::Services::Map::Buildings::SplineProfileAcquisitionStatus::NotApplicable;
+            return IsSplineProfileTerminal(definition->SplineProfileStatus);
         }
 
         /** Summarizes missing/invalid definition evidence without relabelling pending data as invalid. */
@@ -546,13 +605,15 @@ namespace MiniMap::BuildingAcquisition
                 if (!IsContextCurrent(native, context))
                     return;
                 if (definition)
-                    CopyDefinition(native, context, definition, attempted);
+                    CopyDefinition(native, context, definition, attempted,
+                        result.SplineClassificationStatus == Status::Ready && result.HasSpline);
                 if (!IsContextCurrent(native, context))
                     return;
                 result.DefinitionFacts = definition ? definition->Facts : nullptr;
                 result.DefinitionStatus = DefinitionStatus(result.DefinitionFacts);
                 result.Complete = result.DefinitionStatus == Status::Ready &&
-                    result.TransformStatus == Status::Ready && result.SplineStatus == Status::Ready;
+                    result.TransformStatus == Status::Ready && result.SplineStatus == Status::Ready &&
+                    AreRequiredSplineProfilesResolved(result.DefinitionFacts, result.HasSpline);
             }
             Commit(native, context, key, std::move(result), definition);
         }
@@ -614,6 +675,29 @@ namespace MiniMap::BuildingAcquisition
                 return SourceStatus::Invalid;
             case Status::Unknown:
             case Status::Missing:
+                return SourceStatus::Incomplete;
+            }
+            return SourceStatus::Unknown;
+        }
+
+        /** Maps definition profile evidence independently from curve and render readiness. */
+        static ::Services::Map::Buildings::BuildingCandidateSourceStatus MapSplineProfileStatus(
+            ::Services::Map::Buildings::SplineProfileAcquisitionStatus status)
+        {
+            using ProfileStatus = ::Services::Map::Buildings::SplineProfileAcquisitionStatus;
+            using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
+            switch (status)
+            {
+            case ProfileStatus::Complete:
+            case ProfileStatus::NotApplicable:
+                return SourceStatus::Complete;
+            case ProfileStatus::Unavailable:
+                return SourceStatus::Unavailable;
+            case ProfileStatus::Invalid:
+                return SourceStatus::Invalid;
+            case ProfileStatus::Unsupported:
+                return SourceStatus::Unsupported;
+            case ProfileStatus::Unknown:
                 return SourceStatus::Incomplete;
             }
             return SourceStatus::Unknown;
@@ -862,15 +946,23 @@ namespace MiniMap::BuildingAcquisition
             source.kind = building.HasSpline ? SourceKind::Spline : SourceKind::Sprite;
             if (source.kind == SourceKind::Sprite)
             {
+                source.splineProfileStatus =
+                    ::Services::Map::Buildings::SplineProfileAcquisitionStatus::NotApplicable;
                 source.spritePass = ClassifySpritePass(building);
                 source.status = CombineSourceStatus(definitionStatus, transformStatus);
             }
             else
             {
                 source.splinePolicyIndex = static_cast<std::uint16_t>(ClassifySplinePolicyId(building));
+                if (building.DefinitionFacts)
+                {
+                    source.splineProfiles = building.DefinitionFacts->SplineProfiles;
+                    source.splineProfileStatus = building.DefinitionFacts->SplineProfileStatus;
+                }
                 source.status = CombineSourceStatus(
                     CombineSourceStatus(definitionStatus, transformStatus),
-                    CopySplineSource(building, source.spline));
+                    CombineSourceStatus(CopySplineSource(building, source.spline),
+                        MapSplineProfileStatus(source.splineProfileStatus)));
             }
             return source;
         }

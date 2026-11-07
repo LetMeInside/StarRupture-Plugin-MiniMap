@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "Services/Map/Buildings/SplineProfile.h"
+
 namespace MiniMap::BuildingAcquisition
 {
     /** Immutable after publication; nested owners contain CPU values only. */
@@ -31,7 +33,7 @@ namespace MiniMap::BuildingAcquisition
             bool operator==(const Region&) const = default;
         };
 
-        /** Copied authored definition facts; no engine root or rendering profile. */
+        /** Copied authored definition facts and immutable pointer-free spline profiles. */
         struct Definition
         {
             std::int32_t ObjectIndex = 0;
@@ -42,8 +44,20 @@ namespace MiniMap::BuildingAcquisition
             Status ConfigReferenceStatus = Status::Unknown;
             Status InteriorStatus = Status::Unknown;
             bool InteriorOnly = false;
+            ::Services::Map::Buildings::SplineProfileAcquisitionStatus SplineProfileStatus =
+                ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Unknown;
+            std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet> SplineProfiles;
             /** Compares copied values to avoid publishing unchanged retry results. */
-            bool operator==(const Definition&) const = default;
+            bool operator==(const Definition& other) const
+            {
+                const bool profilesMatch = SplineProfiles == other.SplineProfiles ||
+                    (SplineProfiles && other.SplineProfiles && *SplineProfiles == *other.SplineProfiles);
+                return ObjectIndex == other.ObjectIndex && BuildingId == other.BuildingId &&
+                    CanonicalClassPath == other.CanonicalClassPath && EntityConfigPath == other.EntityConfigPath &&
+                    ClassStatus == other.ClassStatus && ConfigReferenceStatus == other.ConfigReferenceStatus &&
+                    InteriorStatus == other.InteriorStatus && InteriorOnly == other.InteriorOnly &&
+                    SplineProfileStatus == other.SplineProfileStatus && profilesMatch;
+            }
         };
 
         /** One authored source point in native order, before curve conversion. */

@@ -1,15 +1,26 @@
-// Copies rooted authored definition values with per-instance reflection metadata.
-// No legacy identity globals, asset loading, profiles or rendering policy are used.
+// Copies rooted authored definition and spline-profile values with per-instance metadata.
+// It retains no legacy identity globals and performs no numerical rendering preparation.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingDefinitionAcquisition.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
 #include <SDK/Chimera_classes.hpp>
+#include <SDK/Engine_classes.hpp>
 #include <SDK/Engine_parameters.hpp>
+#include <SDK/MassRepresentation_classes.hpp>
+#include <SDK/MassSpawner_classes.hpp>
+#include <SDK/MassSpawner_structs.hpp>
 #include <Windows.h>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace MiniMap::BuildingAcquisition
 {
@@ -22,6 +33,12 @@ namespace MiniMap::BuildingAcquisition
         std::vector<SDK::UObject*> Roots;
         SDK::UObject* Library = nullptr;
         SDK::UClass* BuildingData = nullptr;
+        SDK::UClass* ConfigAsset = nullptr;
+        SDK::UClass* Blueprint = nullptr;
+        SDK::UClass* SplineMesh = nullptr;
+        SDK::UClass* Walkway = nullptr;
+        SDK::UClass* CosmeticTrait = nullptr;
+        SDK::UClass* VisualizationTrait = nullptr;
         SDK::UFunction* ClassConversion = nullptr;
         SDK::UFunction* ObjectConversion = nullptr;
 
@@ -55,7 +72,14 @@ namespace MiniMap::BuildingAcquisition
             auto* libraryType = static_cast<SDK::UClass*>(Lookup(L"/Script/Engine.KismetSystemLibrary"));
             auto* functionType = static_cast<SDK::UClass*>(Lookup(L"/Script/CoreUObject.Function"));
             BuildingData = static_cast<SDK::UClass*>(Lookup(L"/Script/Chimera.CrBuildingData"));
-            if (!libraryType || !functionType || !BuildingData || !libraryType->ClassDefaultObject)
+            ConfigAsset = static_cast<SDK::UClass*>(Lookup(L"/Script/MassSpawner.MassEntityConfigAsset"));
+            Blueprint = static_cast<SDK::UClass*>(Lookup(L"/Script/Engine.BlueprintGeneratedClass"));
+            SplineMesh = static_cast<SDK::UClass*>(Lookup(L"/Script/Engine.SplineMeshComponent"));
+            Walkway = static_cast<SDK::UClass*>(Lookup(L"/Script/Chimera.CrModularRampWalkway"));
+            CosmeticTrait = static_cast<SDK::UClass*>(Lookup(L"/Script/Chimera.CrMassRepVisCosmeticsTrait"));
+            VisualizationTrait = static_cast<SDK::UClass*>(Lookup(L"/Script/MassRepresentation.MassVisualizationTrait"));
+            if (!libraryType || !functionType || !BuildingData || !ConfigAsset || !Blueprint || !SplineMesh ||
+                !Walkway || !CosmeticTrait || !VisualizationTrait || !libraryType->ClassDefaultObject)
                 return false;
             Library = libraryType->ClassDefaultObject;
             Roots.push_back(Library);
@@ -65,6 +89,284 @@ namespace MiniMap::BuildingAcquisition
             ObjectConversion = static_cast<SDK::UFunction*>(Lookup(
                 L"Conv_SoftObjectReferenceToString", functionType, libraryType));
             return ClassConversion && ObjectConversion;
+        }
+
+        /** Balances temporary asset roots across profile traversal and any nested loads. */
+        struct TemporaryRoots
+        {
+            std::vector<SDK::UObject*> Values;
+            /** Releases temporary authored assets before the caller returns to collector state. */
+            ~TemporaryRoots()
+            {
+                const auto* native = MiniMapNative::Get();
+                assert(Values.empty() || native);
+                if (native)
+                    for (auto value = Values.rbegin(); value != Values.rend(); ++value)
+                        native->asset.releaseObject(*value);
+            }
+            /** Retains a loaded object after allocation-safe ownership bookkeeping. */
+            void Retain(SDK::UObject* value)
+            {
+                Values.push_back(value);
+                MiniMapNative::Get()->asset.retainObject(value);
+            }
+        };
+
+        /** Orders profile candidates exactly as the legacy definition preparation does. */
+        struct ProfileCandidate
+        {
+            ::Services::Map::Buildings::SplineProfileAlternative Values;
+            std::array<std::int64_t, 12> Order{};
+        };
+
+        /** Validates an array before reading class templates or Mass traits. */
+        template<class Array>
+        static bool IsArrayReadable(const Array& values)
+        {
+            return values.Num() >= 0 && values.Max() >= values.Num() &&
+                (values.Num() == 0 || values.GetDataPtr() != nullptr);
+        }
+
+        /** Copies a native vector into a neutral XYZ value. */
+        static std::array<double, 3> CopyVector(const SDK::FVector& value)
+        {
+            return {value.X, value.Y, value.Z};
+        }
+
+        /** Copies valid StaticMesh bounds while preserving invalid authored values for reporting. */
+        static bool CopyBounds(SDK::UStaticMesh* mesh,
+            ::Services::Map::Buildings::SplineProfileAlternative& output)
+        {
+            if (!mesh)
+            {
+                output.Status = ::Services::Map::Buildings::SplineProfileAlternativeStatus::MissingMesh;
+                return false;
+            }
+            const auto& bounds = mesh->ExtendedBounds;
+            output.HasBounds = true;
+            output.Bounds.Origin = CopyVector(bounds.Origin);
+            output.Bounds.Extent = CopyVector(bounds.BoxExtent);
+            output.Bounds.SphereRadius = bounds.SphereRadius;
+            for (const double extent : output.Bounds.Extent)
+                if (!std::isfinite(extent) || extent < 0.0)
+                    return false;
+            if (!std::isfinite(output.Bounds.SphereRadius) || output.Bounds.SphereRadius < 0.0)
+                return false;
+            for (const double coordinate : output.Bounds.Origin)
+                if (!std::isfinite(coordinate))
+                    return false;
+            return true;
+        }
+
+        /** Copies component transform, spline parameters and axis without interpreting them. */
+        static ::Services::Map::Buildings::SplineProfileAlternativeStatus CopyComponent(
+            const SDK::USplineMeshComponent& component,
+            ::Services::Map::Buildings::SplineProfileAlternative& output)
+        {
+            output.Transform.Translation = CopyVector(component.RelativeLocation);
+            output.Transform.RotationDegrees = {component.RelativeRotation.Pitch,
+                component.RelativeRotation.Yaw, component.RelativeRotation.Roll};
+            output.Transform.Scale = CopyVector(component.RelativeScale3D);
+            const auto& params = component.SplineParams;
+            output.CrossSection.StartScale = {params.StartScale.X, params.StartScale.Y};
+            output.CrossSection.EndScale = {params.EndScale.X, params.EndScale.Y};
+            output.CrossSection.StartOffset = {params.StartOffset.X, params.StartOffset.Y};
+            output.CrossSection.EndOffset = {params.EndOffset.X, params.EndOffset.Y};
+            output.CrossSection.StartRoll = params.StartRoll;
+            output.CrossSection.EndRoll = params.EndRoll;
+            output.CrossSection.Up = CopyVector(component.SplineUpDir);
+            output.ForwardAxis = static_cast<std::uint8_t>(component.ForwardAxis);
+            const auto finite = [](double value) { return std::isfinite(value); };
+            for (const double value : output.Transform.Translation)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.Transform.RotationDegrees)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.Transform.Scale)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.CrossSection.StartScale)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.CrossSection.EndScale)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.CrossSection.StartOffset)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.CrossSection.EndOffset)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            for (const double value : output.CrossSection.Up)
+                if (!finite(value)) return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            if (!finite(output.CrossSection.StartRoll) || !finite(output.CrossSection.EndRoll))
+                return ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidValues;
+            if (output.ForwardAxis > 2)
+                return ::Services::Map::Buildings::SplineProfileAlternativeStatus::Unsupported;
+            return ::Services::Map::Buildings::SplineProfileAlternativeStatus::Complete;
+        }
+
+        /** Reads the walkway class-default spline mesh before its Blueprint component templates. */
+        bool AppendWalkwayDefault(SDK::UClass* type, int rank, std::vector<ProfileCandidate>& candidates) const
+        {
+            auto* cdo = type ? type->ClassDefaultObject : nullptr;
+            if (!cdo || !cdo->IsA(Walkway))
+                return true;
+            const auto* walkway = static_cast<const SDK::ACrModularRampWalkway*>(cdo);
+            ProfileCandidate candidate;
+            candidate.Order = {rank, 0, type == Walkway ? 0 : 1, type->Index, 0, 0, 0, 0, 0,
+                cdo->Index, 0, static_cast<std::int64_t>(candidates.size())};
+            if (!CopyBounds(walkway->SplineMesh, candidate.Values))
+            {
+                candidate.Values.Status = walkway->SplineMesh
+                    ? ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidBounds
+                    : ::Services::Map::Buildings::SplineProfileAlternativeStatus::MissingMesh;
+            }
+            candidates.push_back(std::move(candidate));
+            return true;
+        }
+
+        /** Copies ordered spline mesh templates throughout a class's Blueprint superclass chain. */
+        bool AppendBlueprintTemplates(SDK::UClass* type, int rank,
+            std::vector<ProfileCandidate>& candidates) const
+        {
+            auto* cdo = type ? type->ClassDefaultObject : nullptr;
+            if (!type || !cdo)
+                return false;
+            for (auto* current = type; current; current = static_cast<SDK::UClass*>(current->SuperStruct))
+            {
+                if (!current->IsA(Blueprint))
+                    continue;
+                const auto& components = static_cast<SDK::UBlueprintGeneratedClass*>(current)->ComponentTemplates;
+                if (!IsArrayReadable(components))
+                    return false;
+                for (auto* component : components)
+                {
+                    if (!component || !component->IsA(SplineMesh))
+                        continue;
+                    const auto* spline = static_cast<const SDK::USplineMeshComponent*>(component);
+                    ProfileCandidate candidate;
+                    candidate.Order = {rank, 1, 1, type->Index, 0, current->Index, 0,
+                        component->Index, 0, cdo->Index, 0, static_cast<std::int64_t>(candidates.size())};
+                    const bool validBounds = CopyBounds(spline->StaticMesh, candidate.Values);
+                    const auto componentStatus = CopyComponent(*spline, candidate.Values);
+                    if (!validBounds)
+                        candidate.Values.Status = spline->StaticMesh
+                            ? ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidBounds
+                            : ::Services::Map::Buildings::SplineProfileAlternativeStatus::MissingMesh;
+                    else if (componentStatus != ::Services::Map::Buildings::SplineProfileAlternativeStatus::Complete)
+                        candidate.Values.Status = componentStatus;
+                    candidates.push_back(std::move(candidate));
+                }
+            }
+            return true;
+        }
+
+        /** Appends one actor class using the legacy CDO-then-template ordering. */
+        bool AppendActorProfiles(SDK::UClass* type, int rank,
+            std::vector<ProfileCandidate>& candidates) const
+        {
+            if (!type || !type->ClassDefaultObject)
+                return false;
+            return AppendWalkwayDefault(type, rank, candidates) &&
+                AppendBlueprintTemplates(type, rank, candidates);
+        }
+
+        /** Walks one rooted entity-config parent chain and appends recognized visualization templates. */
+        ::Services::Map::Buildings::SplineProfileAcquisitionStatus AppendConfigProfiles(
+            SDK::UMassEntityConfigAsset* config, std::vector<ProfileCandidate>& candidates) const
+        {
+            std::unordered_set<const SDK::UMassEntityConfigAsset*> visited;
+            for (; config; config = config->Config.Parent)
+            {
+                if (!visited.insert(config).second || !IsArrayReadable(config->Config.Traits))
+                    return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Invalid;
+                for (auto* trait : config->Config.Traits)
+                {
+                    if (!trait)
+                        continue;
+                    SDK::UClass* high = nullptr;
+                    SDK::UClass* low = nullptr;
+                    if (trait->IsA(CosmeticTrait))
+                    {
+                        const auto* visual = static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
+                        high = visual->HighResTemplateActor;
+                        low = visual->LowResTemplateActor;
+                    }
+                    else if (trait->IsA(VisualizationTrait))
+                    {
+                        const auto* visual = static_cast<const SDK::UMassVisualizationTrait*>(trait);
+                        high = visual->HighResTemplateActor;
+                        low = visual->LowResTemplateActor;
+                    }
+                    if ((high && !AppendActorProfiles(high, 0, candidates)) ||
+                        (low && !AppendActorProfiles(low, 1, candidates)))
+                        return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Invalid;
+                }
+            }
+            return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Complete;
+        }
+
+        /** Loads the copied authored-class reference and appends its rank-two profile candidates. */
+        ::Services::Map::Buildings::SplineProfileAcquisitionStatus AppendAuthoredProfiles(
+            SDK::TSoftClassPtr<SDK::UClass> reference, TemporaryRoots& roots,
+            std::vector<ProfileCandidate>& candidates) const
+        {
+            const auto* native = MiniMapNative::Get();
+            auto* authored = static_cast<SDK::UClass*>(native->asset.loadSynchronous(&reference));
+            if (!authored)
+                return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Unavailable;
+            roots.Retain(authored);
+            if (!AppendActorProfiles(authored, 2, candidates))
+                return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Invalid;
+            return ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Complete;
+        }
+
+        /** Stable-sorts and freezes profile alternatives while preserving the established selector order. */
+        static std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet> FreezeProfiles(
+            std::vector<ProfileCandidate>& candidates)
+        {
+            std::stable_sort(candidates.begin(), candidates.end(),
+                [](const ProfileCandidate& first, const ProfileCandidate& second)
+                {
+                    return first.Order < second.Order;
+                });
+            auto profiles = std::make_shared<::Services::Map::Buildings::SplineProfileSet>();
+            profiles->Alternatives.reserve(candidates.size());
+            for (auto& candidate : candidates)
+                profiles->Alternatives.push_back(std::move(candidate.Values));
+            return profiles;
+        }
+
+        /** Acquires config and authored-class profiles using temporary roots and copied soft references. */
+        std::pair<::Services::Map::Buildings::SplineProfileAcquisitionStatus,
+            std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet>> CopyProfiles(
+                const DefinitionOwner& definition) const
+        {
+            const auto& placement = *definition.Root;
+            auto configReference = placement.EntityType.EntityConfig;
+            auto authoredReference = placement.ActorClass;
+            auto* config = placement.EntityType.EntityConfigPtr;
+            TemporaryRoots roots;
+            if (!config && configReference.ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
+            {
+                config = static_cast<SDK::UMassEntityConfigAsset*>(
+                    MiniMapNative::Get()->asset.loadSynchronous(&configReference));
+                if (!config)
+                    return {::Services::Map::Buildings::SplineProfileAcquisitionStatus::Unavailable, {}};
+            }
+            if (config && !config->IsA(ConfigAsset))
+                return {::Services::Map::Buildings::SplineProfileAcquisitionStatus::Invalid, {}};
+            if (config)
+                roots.Retain(config);
+            std::vector<ProfileCandidate> candidates;
+            if (config)
+            {
+                const auto configStatus = AppendConfigProfiles(config, candidates);
+                if (configStatus != ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Complete)
+                    return {configStatus, FreezeProfiles(candidates)};
+            }
+            const auto authoredStatus = AppendAuthoredProfiles(authoredReference, roots, candidates);
+            if (authoredStatus != ::Services::Map::Buildings::SplineProfileAcquisitionStatus::Complete)
+                return {authoredStatus, FreezeProfiles(candidates)};
+            auto profiles = FreezeProfiles(candidates);
+            if (profiles->Alternatives.empty())
+                return {::Services::Map::Buildings::SplineProfileAcquisitionStatus::Unsupported, profiles};
+            return {::Services::Map::Buildings::SplineProfileAcquisitionStatus::Complete, profiles};
         }
 
         /** Converts engine text to owned UTF-8; empty/None represents a missing reference. */
@@ -216,6 +518,22 @@ namespace MiniMap::BuildingAcquisition
             return {};
         auto facts = metadata->Copy(*definition);
         if (definition->Facts && *definition->Facts == *facts)
+            return definition->Facts;
+        return facts;
+    }
+
+    /** Copies definition-cached spline alternatives into immutable pointer-free facts. */
+    std::shared_ptr<const Facts::Definition> BuildingDefinitionAcquisition::CopySplineProfiles(
+        const std::shared_ptr<DefinitionOwner>& definition) const
+    {
+        const auto metadata = metadata_;
+        if (!metadata || !definition || !definition->Facts)
+            return {};
+        const auto [status, profiles] = metadata->CopyProfiles(*definition);
+        auto facts = std::make_shared<Facts::Definition>(*definition->Facts);
+        facts->SplineProfileStatus = status;
+        facts->SplineProfiles = profiles;
+        if (*definition->Facts == *facts)
             return definition->Facts;
         return facts;
     }
