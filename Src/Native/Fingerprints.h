@@ -104,7 +104,6 @@ namespace MiniMapFingerprints
         uintptr_t readbackPoll = 0;
         uintptr_t readbackMarkForDelete = 0;
         uintptr_t readbackMalloc = 0;
-        uintptr_t readbackFree = 0;
         uintptr_t readbackDynamicRHI = 0;
         uintptr_t readbackPipe = 0;
         uintptr_t readbackThreaded = 0;

@@ -120,7 +120,7 @@ namespace MiniMapFields
 				Keys::FencePoll, Keys::FromValidEName, Keys::SubmitRenderCommand, Keys::ImmediateCommandList,
 				Keys::CreateRHITexture, Keys::ReadbackConstruct, Keys::ReadbackDestroy, Keys::ReadbackCopy,
 				Keys::ReadbackLock, Keys::ReadbackUnlock, Keys::GpuFencePoll, Keys::MarkForDelete,
-				Keys::MemoryMalloc, Keys::ReadbackFree, Keys::DynamicRHI, Keys::RenderCommandPipe,
+				Keys::MemoryMalloc, Keys::DynamicRHI, Keys::RenderCommandPipe,
 				Keys::ThreadedRendering, Keys::RHIMultithreading, Keys::GpuCount, Keys::ReadbackGlobals,
 				Keys::ReleaseGuard, Keys::CreateWorld, Keys::InitWorld, Keys::UpdateWorldComponents,
 				Keys::CleanupWorld, Keys::WorldContext, Keys::GetSubsystemInternal,

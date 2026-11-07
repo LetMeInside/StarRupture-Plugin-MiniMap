@@ -1839,24 +1839,6 @@ namespace MiniMapFingerprints
             addresses.readbackMalloc = resolveRequired(request);
             if (!addresses.readbackMalloc) return false;
         }
-        {
-            RequiredScan request{};
-            request.name = Keys::ReadbackFree;
-            request.idaPattern = "48 85 C9 74 ?? 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3 CC CC CC CC";
-            request.kind = AddressKind::FunctionEntry;
-
-            request.resultOffset = 0;
-            addresses.readbackFree = resolveRequired(request);
-            if (!addresses.readbackFree) return false;
-        }
-        // The readback pattern extends the existing FMemory::Free fingerprint.
-        // Keep both mandatory contracts, but publish one NativeApi callable.
-        if (addresses.readbackFree != addresses.memoryFree)
-        {
-            scanner.Fail(Keys::ReadbackFree, "FMemory::Free fingerprints resolved to different entries");
-            return false;
-        }
-
         const uintptr_t readbackImage = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
         IMAGE_DOS_HEADER readbackDos{};
         IMAGE_NT_HEADERS64 readbackNt{};

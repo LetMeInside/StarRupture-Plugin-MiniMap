@@ -113,7 +113,6 @@ namespace MiniMapNative::Keys
     inline constexpr const char* GpuFencePoll        = "FRHIGPUFence::Poll";
     inline constexpr const char* MarkForDelete       = "FRHIResource::MarkForDelete";
     inline constexpr const char* MemoryMalloc        = "FMemory::Malloc";
-    inline constexpr const char* ReadbackFree        = "FMemory::Free (readback)";
     inline constexpr const char* DynamicRHI          = "GDynamicRHI (anchor)";
     inline constexpr const char* RenderCommandPipe   = "GRenderCommandPipe (anchor)";
     inline constexpr const char* ThreadedRendering   = "GIsThreadedRendering (anchor)";
