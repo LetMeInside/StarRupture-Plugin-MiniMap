@@ -3,9 +3,12 @@
 // Owns shared viewport demand while delegating all per-Section work to SectionScheduler.
 #include "SectionSchedulingCoordinator.h"
 
+#include "../BuildingMapSection.h"
+#include "../BuildingMapService.h"
 #include "SectionScheduler.h"
 
 #include <utility>
+#include <vector>
 
 namespace Services::Map::Buildings::Scheduling
 {
@@ -118,6 +121,57 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionSchedulingCoordinator::RecordSectionCompleted(const SectionCoordinate& coordinate)
 	{
 		waitingSections_.erase(coordinate);
+	}
+
+	/** Advances sprite acquisition once and attempts every initially waiting coordinate once. */
+	void SectionSchedulingCoordinator::AdvanceWaitingSections(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService)
+	{
+		if (sectionScheduler_ == nullptr)
+		{
+			return;
+		}
+		const std::vector<SectionCoordinate> waitingSnapshot(waitingSections_.begin(), waitingSections_.end());
+		sectionScheduler_->AdvanceSpriteAcquisition();
+		for (const SectionCoordinate& coordinate : waitingSnapshot)
+		{
+			ProcessWaitingSection(buildingMapService, coordinate);
+		}
+	}
+
+	/** Processes one still-demanded waiting coordinate from the current tick snapshot. */
+	void SectionSchedulingCoordinator::ProcessWaitingSection(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionCoordinate& coordinate)
+	{
+		if (!IsDemanded(coordinate) || waitingSections_.find(coordinate) == waitingSections_.end())
+		{
+			return;
+		}
+		::Services::Map::Buildings::BuildingMapService::SectionCandidateSource candidateSource;
+		if (!buildingMapService.TrySelectCandidatePublicationForSection(
+			coordinate.GridX,
+			coordinate.GridY,
+			candidateSource))
+		{
+			return;
+		}
+		::Services::Map::Buildings::BuildingMapSection& section =
+			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
+		SectionScheduler::KnownSpritePreparationResult spritePreparation;
+		sectionScheduler_->PrepareKnownSpriteRequirements(candidateSource.PublicationOwner, spritePreparation);
+		SectionScheduler::SectionImageCommitResult commitResult;
+		sectionScheduler_->RenderAndCommitSectionImage(
+			section,
+			candidateSource.PublicationOwner,
+			candidateSource.Observation,
+			spritePreparation,
+			buildingMapService.splinePolicies_,
+			commitResult);
+		if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed)
+		{
+			RecordSectionCompleted(coordinate);
+		}
 	}
 
 	/** Delegates acquisition-session creation to the owned SectionScheduler. */

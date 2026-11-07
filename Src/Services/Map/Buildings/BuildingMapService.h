@@ -93,6 +93,7 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapViewport;
+		friend class Scheduling::SectionSchedulingCoordinator;
 
 		/** Retains one publication with an observation borrowing its ordinal storage.
 		 * Observation spans remain valid only while PublicationOwner remains retained.
@@ -147,6 +148,11 @@ namespace Services::Map::Buildings
 		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
 		/** Advances coordinator-delegated shutdown only until native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Advances one internal coordinator Section-processing tick.
+		 * A future runtime caller must invoke this only during an admitted active capture session;
+		 * no host runtime caller is connected yet.
+		 */
+		void AdvanceSectionScheduling();
 
 		/** Obtains one candidate batch from one retained publication without final certification.
 		 * @param buildingCollector Associated collector for this viewport.

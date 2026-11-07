@@ -290,6 +290,15 @@ namespace Services::Map::Buildings::Scheduling
 		return buildingScheduler_ == nullptr || buildingScheduler_->AdvanceSessionShutdown();
 	}
 
+	/** Advances the existing renderer acquisition path without changing its session behavior. */
+	void SectionScheduler::AdvanceSpriteAcquisition()
+	{
+		if (buildingScheduler_ != nullptr)
+		{
+			buildingScheduler_->AdvanceSpriteAcquisition();
+		}
+	}
+
 	/** Processes known sprites from one fixed publication without assigning a rendering pass. */
 	void SectionScheduler::PrepareKnownSpriteRequirements(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,

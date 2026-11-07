@@ -80,6 +80,15 @@ namespace Services::Map::Buildings
 			sectionSchedulingCoordinator_->AdvanceCaptureGameWorldSessionShutdown();
 	}
 
+	/** Delegates one internal Section-processing tick without connecting a runtime callback. */
+	void BuildingMapService::AdvanceSectionScheduling()
+	{
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this);
+		}
+	}
+
 	/** Returns the configured square cell size in map units. */
 	double BuildingMapService::GetSectionSizeMapUnits() const noexcept
 	{

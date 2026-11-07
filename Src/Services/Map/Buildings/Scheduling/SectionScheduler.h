@@ -405,6 +405,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return True when native retirement is complete and session state is released.
 		 */
 		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Advances one existing sprite renderer operation and drains available feedback.
+		 * Called once by the coordinator per scheduling tick on the serialized game thread.
+		 */
+		void AdvanceSpriteAcquisition();
 
 		/** Processes known sprites from exactly one retained, current source publication.
 		 * The caller retains publicationOwner for this operation; its borrowed spans and keys are

@@ -8,6 +8,11 @@
 #include <memory>
 #include <set>
 
+namespace Services::Map::Buildings
+{
+	class BuildingMapService;
+}
+
 namespace Services::Map::Buildings::Scheduling
 {
 	class SectionScheduler;
@@ -15,8 +20,8 @@ namespace Services::Map::Buildings::Scheduling
 	/** Tracks deduplicated Section work required by active viewports.
 	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
 	 * Waiting coordinates persist until demand is withdrawn or an explicit completed-work report
-	 * removes them. This foundation intentionally has no scheduling tick until SectionScheduler
-	 * provides a real single-Section processing operation.
+	 * removes them. Its internal tick synchronously processes waiting Sections, but no host runtime
+	 * caller is connected; service and acquisition lifecycle remain externally controlled.
 	 */
 	class SectionSchedulingCoordinator final
 	{
@@ -112,6 +117,21 @@ namespace Services::Map::Buildings::Scheduling
 		bool AdvanceCaptureGameWorldSessionShutdown();
 
 	private:
+		friend class ::Services::Map::Buildings::BuildingMapService;
+
+		/** Advances acquisition once and processes each coordinate in the initial waiting snapshot.
+		 * @param buildingMapService Service-owned Section/source provider for synchronous attempts.
+		 */
+		void AdvanceWaitingSections(::Services::Map::Buildings::BuildingMapService& buildingMapService);
+
+		/** Processes one snapshot coordinate only while it remains demanded and waiting.
+		 * @param buildingMapService Service that selects and owns the Section/source.
+		 * @param coordinate Signed grid coordinate from the initial tick snapshot.
+		 */
+		void ProcessWaitingSection(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate);
+
 		/** Tests whether one signed coordinate belongs to a half-open rectangular range.
 		 * @param firstGridX Inclusive first grid column.
 		 * @param firstGridY Inclusive first grid row.
@@ -157,8 +177,9 @@ namespace Services::Map::Buildings::Scheduling
 		/** Reports whether any active viewport currently requires this coordinate. */
 		bool IsDemanded(const SectionCoordinate& coordinate) const noexcept;
 
-		/** Removes completed work only after a future SectionScheduler operation reports success.
-		 * @param coordinate Signed service-grid coordinate reported complete by SectionScheduler.
+		/** Removes completed work after a SectionScheduler commit reports success.
+		 * Aggregate demand remains intact.
+		 * @param coordinate Signed service-grid coordinate whose image was committed.
 		 */
 		void RecordSectionCompleted(const SectionCoordinate& coordinate);
 
