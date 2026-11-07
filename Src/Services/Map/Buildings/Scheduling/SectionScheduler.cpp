@@ -51,13 +51,12 @@ namespace Services::Map::Buildings::Scheduling
 		PreparationReadiness = Readiness::InvalidPublication;
 	}
 
-	/** Clears image bytes and prior attempt evidence before reusing the caller-owned result. */
-	void SectionScheduler::SectionImageRenderResult::Reset() noexcept
+	/** Clears commit evidence while retaining any caller-owned result capacity. */
+	void SectionScheduler::SectionImageCommitResult::Reset() noexcept
 	{
-		RenderStatus = Status::NoAttempt;
+		CommitStatus = Status::InvalidOrIncompleteInput;
 		SceneReadiness.reset();
 		NumericalStatus.reset();
-		ImageBytes.clear();
 	}
 
 	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
@@ -108,72 +107,63 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Validates the exact Section cell, reuses prepared inputs, and renders one caller-owned image. */
-	void SectionScheduler::RenderSectionImage(
+	/** Prepares a complete scene, renders it once and move-adopts its bytes into the same Section. */
+	void SectionScheduler::RenderAndCommitSectionImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		const BuildingCandidateObservation& observation,
 		const KnownSpritePreparationResult& knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
-		SectionImageRenderResult& output) const
+		SectionImageCommitResult& output) const
 	{
 		output.Reset();
-		if (!IsObservationForSection(section, observation))
-		{
-			output.RenderStatus = SectionImageRenderResult::Status::InvalidInput;
-			return;
-		}
+		if (!IsObservationForSection(section, observation)) return;
 		SectionScenePreparationResult scenePreparation;
 		PrepareSectionSceneInputs(publicationOwner, observation, knownSpritePreparation, splinePolicies, scenePreparation);
 		output.SceneReadiness = scenePreparation.PreparationReadiness;
-		if (!CanRenderPreparedScene(publicationOwner, scenePreparation, output))
+		using Readiness = SectionScenePreparationResult::Readiness;
+		if (scenePreparation.PreparationReadiness == Readiness::StalePublication ||
+			(publicationOwner != nullptr && !publicationOwner->IsCurrent()))
 		{
+			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
+		if (publicationOwner == nullptr || scenePreparation.PreparationReadiness != Readiness::CompleteSceneInputs) return;
 		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
 		Visuals::BuildingRenderSceneInput sceneInput;
 		if (!scenePreparation.BorrowRenderSceneInput(publicationOwner, splineViewScratch, sceneInput))
 		{
-			SetSceneBorrowFailureStatus(publicationOwner, output);
+			output.CommitStatus = publicationOwner->IsCurrent()
+				? SectionImageCommitResult::Status::InvalidOrIncompleteInput
+				: SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
-		const Rendering::Rgba16fImageGrid grid = CreateSectionRenderingGrid(
-			section,
-			sectionSizeMapUnits_,
-			sectionResolutionPixels_);
+		const Rendering::Rgba16fImageGrid grid =
+			CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
+		std::vector<std::uint8_t> imageBytes;
 		output.NumericalStatus = RenderIntoSectionContext(
-			section,
-			sceneInput,
-			grid,
-			output.ImageBytes);
-		SetCompletedRenderOutcome(publicationOwner, output);
-	}
-
-	/** Revalidates the source and exposes image bytes only after complete numerical rendering. */
-	void SectionScheduler::SetCompletedRenderOutcome(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		SectionImageRenderResult& output)
-	{
-		if (publicationOwner == nullptr || !publicationOwner->IsCurrent())
+			section, sceneInput, grid, imageBytes);
+		if (!publicationOwner->IsCurrent())
 		{
-			output.ImageBytes.clear();
-			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
+			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
-		if (!output.NumericalStatus.has_value() ||
-			*output.NumericalStatus != Rendering::SectionRendering::Status::Complete)
+		if (*output.NumericalStatus != Rendering::SectionRendering::Status::Complete || imageBytes.empty())
 		{
-			output.ImageBytes.clear();
-			output.RenderStatus = SectionImageRenderResult::Status::NumericalRenderingFailed;
+			output.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
 			return;
 		}
-		if (output.ImageBytes.empty())
+		if (!publicationOwner->IsCurrent())
 		{
-			output.ImageBytes.clear();
-			output.RenderStatus = SectionImageRenderResult::Status::NumericalRenderingFailed;
+			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
-		output.RenderStatus = SectionImageRenderResult::Status::RenderedImageAvailable;
+		if (!section.TryAdoptCompletedImage(sectionResolutionPixels_, sectionResolutionPixels_, std::move(imageBytes)))
+		{
+			output.CommitStatus = SectionImageCommitResult::Status::ImageAdoptionRejected;
+			return;
+		}
+		output.CommitStatus = SectionImageCommitResult::Status::Committed;
 	}
 
 	/** Renders into the numerical context exclusively owned by the supplied Section. */
@@ -187,47 +177,6 @@ namespace Services::Map::Buildings::Scheduling
 		return Rendering::SectionRendering::RenderSection(sceneInput, context, grid, imageBytes);
 	}
 
-	/** Allows the renderer only for complete scene inputs and preserves readiness failures. */
-	bool SectionScheduler::CanRenderPreparedScene(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const SectionScenePreparationResult& scenePreparation,
-		SectionImageRenderResult& output)
-	{
-		using Readiness = SectionScenePreparationResult::Readiness;
-		if (scenePreparation.PreparationReadiness == Readiness::StalePublication)
-		{
-			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
-			return false;
-		}
-		if (publicationOwner == nullptr ||
-			scenePreparation.PreparationReadiness == Readiness::InvalidPublication ||
-			scenePreparation.PreparationReadiness == Readiness::InvalidObservation)
-		{
-			output.RenderStatus = SectionImageRenderResult::Status::InvalidInput;
-			return false;
-		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.RenderStatus = SectionImageRenderResult::Status::StalePublication;
-			return false;
-		}
-		if (scenePreparation.PreparationReadiness != Readiness::CompleteSceneInputs)
-		{
-			output.RenderStatus = SectionImageRenderResult::Status::IncompleteSceneInputs;
-			return false;
-		}
-		return true;
-	}
-
-	/** Distinguishes a revoked publication from malformed scene borrowing without attempting rendering. */
-	void SectionScheduler::SetSceneBorrowFailureStatus(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		SectionImageRenderResult& output)
-	{
-		output.RenderStatus = publicationOwner == nullptr || !publicationOwner->IsCurrent()
-			? SectionImageRenderResult::Status::StalePublication
-			: SectionImageRenderResult::Status::InvalidInput;
-	}
 
 	/** Matches one half-open observation rectangle to the supplied Section's grid coordinate. */
 	bool SectionScheduler::IsObservationForSection(
