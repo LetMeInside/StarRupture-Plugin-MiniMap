@@ -197,12 +197,21 @@ namespace MiniMapFields
 	// never a fixed array, so a build with a bigger query cannot be overrun.
 	inline auto MassQuerySize = SR_SIZE(FMassEntityQuery);
 
-	// The two subsystems of the sprite capture's world whose members it reads at
-	// the SDK's compiled offsets (a manager and a controller pointer the SDK folds
-	// into padding). Their size is checked on the running build, so a build that
-	// resized one turns the capture off and does not read the wrong bytes.
-	inline auto ElectricitySubsystemSize = SR_SIZE_CHECK(UCrElectricityGraphSubsystem);
-	inline auto EntityGridSubsystemSize  = SR_SIZE_CHECK(UCrEntityGridSubsystem);
+	// The Mass entity manager (a TSharedPtr: the object and its reference
+	// controller) of the two subsystems of the sprite capture's world. The
+	// Game-SDK folds both into padding, so each is a native row, with CL-127004's
+	// offset for when the loader's map has none for the running build. The
+	// capture checks that both are still empty in its private world.
+	inline auto ElectricityEntityManager = PluginField<PluginMap::SharedRef>{ { "UCrElectricityGraphSubsystem::EntityManager",
+		"UCrElectricityGraphSubsystem", "EntityManager", PLUGIN_FIELD_NATIVE, sizeof(PluginMap::SharedRef), 0x290 } };
+	inline auto GridEntityManager        = PluginField<PluginMap::SharedRef>{ { "UCrEntityGridSubsystem::EntityManager",
+		"UCrEntityGridSubsystem", "EntityManager", PLUGIN_FIELD_NATIVE, sizeof(PluginMap::SharedRef), 0xf0 } };
+	inline const PluginFieldCandidate kElectricityEntityManagerRows[] = {
+		{ 127004, 0x290, static_cast<uint32_t>(sizeof(PluginMap::SharedRef)), 0, nullptr },
+	};
+	inline const PluginFieldCandidate kGridEntityManagerRows[] = {
+		{ 127004, 0xf0, static_cast<uint32_t>(sizeof(PluginMap::SharedRef)), 0, nullptr },
+	};
 
 	// The Mass entity manager of a subsystem is the SDK's own native field,
 	// PluginMap::MassEntityManagerField, with its 127004 row; it is resolved below.
@@ -215,12 +224,14 @@ namespace MiniMapFields
 		const auto rowCount = [](const auto& rows) { return static_cast<uint32_t>(sizeof(rows) / sizeof(rows[0])); };
 		bool all = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows, rowCount(kFogDataRows));
 		all = PluginMap::ResolveField(scanner, self, EnemyState, kEnemyStateRows, rowCount(kEnemyStateRows)) && all;
+		all = PluginMap::ResolveField(scanner, self, ElectricityEntityManager, kElectricityEntityManagerRows, rowCount(kElectricityEntityManagerRows)) && all;
+		all = PluginMap::ResolveField(scanner, self, GridEntityManager, kGridEntityManagerRows, rowCount(kGridEntityManagerRows)) && all;
 		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
 		all = MiniMapEngineFields::Resolve(self, scanner) && all;
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
 			AbandonBaseInfoReplicator, BuildingTags, WalkwaySplineMesh,
-			TransformTranslation, TextureSRGB, MassQuerySize, ElectricitySubsystemSize, EntityGridSubsystemSize,
+			TransformTranslation, TextureSRGB, MassQuerySize,
 			BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
 			CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 			SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
@@ -333,7 +344,8 @@ namespace MiniMapFields
 				MiniMapEngineFields::ActorsInitialized, MiniMapEngineFields::TearingDown,
 				MiniMapEngineFields::BegunPlay, MiniMapEngineFields::EverInitialized,
 				MiniMapEngineFields::WorldList, MiniMapEngineFields::ContextWorld,
-				MiniMapEngineFields::NeedsTwoCopies, ElectricitySubsystemSize, EntityGridSubsystemSize),
+				MiniMapEngineFields::NeedsTwoCopies, MiniMapEngineFields::TickableInitialized,
+				ElectricityEntityManager, GridEntityManager),
 			{ "Buildings.CaptureSprites" } };
 
 		// Declares every layer; call before any key is resolved.

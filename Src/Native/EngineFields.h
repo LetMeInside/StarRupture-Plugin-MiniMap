@@ -9,7 +9,8 @@
 // Engine members the building-sprite capture reads that the Game-SDK folds into
 // padding (they are not reflected), so each is a native row of the loader's
 // map: the world's flag bytes, the engine's world list and the world a context
-// holds, and one flag of a render target. The engine moves them with its
+// holds, one flag of a render target and the flag byte of a tickable world
+// subsystem. The engine moves them with its
 // version or build configuration, not only with a game build. The loader holds
 // a row per game build; the compiled one below is used only on the build the
 // plugin was compiled for. All of them belong to the building-sprites layer,
@@ -50,6 +51,11 @@ namespace MiniMapEngineFields
 	// after TargetGamma.
 	inline auto NeedsTwoCopies = FlagOf("UTextureRenderTarget::bNeedsTwoCopies", "UTextureRenderTarget", "bNeedsTwoCopies");
 
+	// UTickableWorldSubsystem::bInitialized, one byte: set once the subsystem is
+	// initialised, clear after it is cleaned up.
+	inline auto TickableInitialized = PluginField<uint8_t>{ { "UTickableWorldSubsystem::bInitialized",
+		"UTickableWorldSubsystem", "bInitialized", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x38 } };
+
 	// The rows for the build the plugin was compiled for: offset, size and, for
 	// a flag, the bit's mask in its byte.
 	inline const PluginFieldCandidate kWorldTypeRows[]         = { { 127004, 0x18a, 1, 0x00, nullptr } };
@@ -61,6 +67,7 @@ namespace MiniMapEngineFields
 	inline const PluginFieldCandidate kWorldListRows[]         = { { 127004, 0x11c8, static_cast<uint32_t>(sizeof(WorldContextArray)), 0x00, nullptr } };
 	inline const PluginFieldCandidate kContextWorldRows[]      = { { 127004, 0x2c0, static_cast<uint32_t>(sizeof(uintptr_t)), 0x00, nullptr } };
 	inline const PluginFieldCandidate kNeedsTwoCopiesRows[]    = { { 127004, 0x144, 1, 0x01, nullptr } };
+	inline const PluginFieldCandidate kTickableInitializedRows[] = { { 127004, 0x38, 1, 0x00, nullptr } };
 
 	// Asks the loader for every row above. False when any did not resolve; the
 	// loader has then recorded the failure and turned off the layer that lists it.
@@ -77,6 +84,7 @@ namespace MiniMapEngineFields
 		all = ask(WorldList, kWorldListRows) && all;
 		all = ask(ContextWorld, kContextWorldRows) && all;
 		all = ask(NeedsTwoCopies, kNeedsTwoCopiesRows) && all;
+		all = ask(TickableInitialized, kTickableInitializedRows) && all;
 		return all;
 	}
 }

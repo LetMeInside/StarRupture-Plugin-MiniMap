@@ -4,6 +4,7 @@
 #include "Map/Buildings/BuildingScheduler.h"
 #include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingComplexIndex.h"
+#include "Adapters/AlienX/GameFields.h"
 #include "Config/Config.h"
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
@@ -56,9 +57,6 @@ namespace
     static_assert(offsetof(SDK::ULevel, OwningWorld) == 0xc0);
     static_assert(offsetof(SDK::ULevel, WorldSettings) == 0x2c8);
     static_assert(offsetof(SDK::UStruct, SuperStruct) == 0x40);
-    static_assert(sizeof(SDK::UCrElectricityGraphSubsystem) == 0x358);
-    static_assert(sizeof(SDK::UCrEntityGridSubsystem) == 0x150);
-    static_assert(sizeof(SDK::UTickableWorldSubsystem) == 0x40);
     static_assert(sizeof(SDK::USubsystem) == 0x30);
     static_assert(0x9f0 + 0xc0 == sizeof(SDK::UWorld));
     static_assert(sizeof(SDK::FName) == 8 && std::is_trivially_destructible_v<SDK::FName>);
@@ -377,9 +375,8 @@ namespace
     struct NativeWorldOwner
     {
         enum ClassId { Class, World, Engine, Level, Settings, GameInstance, Electricity, Grid, Names, Mass, Replication, Wave, DirectionalLight, ClassCount };
-        // Size is the size the class must have, or 0 when none of its members are read: only the
-        // classes whose members are read at a compiled offset (Electricity, Grid) are pinned, and
-        // the loader checks the same size for them (SR_SIZE_CHECK in the building-sprites layer).
+        // Size is the size the class must have, or 0 when none of its members are read at a
+        // compiled offset. The subsystems' members come from the loader's map, so no size is pinned.
         struct Metadata { const wchar_t* Path; size_t Size; NativeReference Ref; };
         std::array<Metadata, ClassCount> MetadataClasses{{
             {L"/Script/CoreUObject.Class", sizeof(SDK::UClass)},
@@ -388,8 +385,8 @@ namespace
             {L"/Script/Engine.Level", sizeof(SDK::ULevel)},
             {L"/Script/Chimera.CrWorldSettings", 0},
             {L"/Script/Engine.GameInstance", sizeof(SDK::UGameInstance)},
-            {L"/Script/Chimera.CrElectricityGraphSubsystem", sizeof(SDK::UCrElectricityGraphSubsystem)},
-            {L"/Script/Chimera.CrEntityGridSubsystem", sizeof(SDK::UCrEntityGridSubsystem)},
+            {L"/Script/Chimera.CrElectricityGraphSubsystem", 0},
+            {L"/Script/Chimera.CrEntityGridSubsystem", 0},
             {L"/Script/Chimera.CrBuildingCustomNameSubsystem", 0},
             {L"/Script/MassEntity.MassEntitySubsystem", sizeof(SDK::UMassEntitySubsystem)},
             // Only the class of these two is needed (no instance may exist in the capture world).
@@ -758,12 +755,12 @@ namespace
                 uintptr_t object{};
                 if (!FindSubsystem(required[i], object) || !object || !Hold(object, Subsystems[i])) return false;
             }
-            uintptr_t manager{}, controller{}; bool ticking{};
-            if (!Read(Subsystems[0].Object.Bits + 0x290, manager) || manager ||
-                !Read(Subsystems[0].Object.Bits + 0x298, controller) || controller ||
-                !Read(Subsystems[1].Object.Bits + 0xf0, manager) || manager ||
-                !Read(Subsystems[1].Object.Bits + 0xf8, controller) || controller ||
-                !Read(Subsystems[0].Object.Bits + 0x38, ticking) || !ticking) return false;
+            PluginMap::SharedRef electricityManager{}, gridManager{}; uint8_t ticking{};
+            if (!ReadMember(Subsystems[0].Object.Bits, MiniMapFields::ElectricityEntityManager, electricityManager, nullptr) ||
+                electricityManager.Object || electricityManager.Controller ||
+                !ReadMember(Subsystems[1].Object.Bits, MiniMapFields::GridEntityManager, gridManager, nullptr) ||
+                gridManager.Object || gridManager.Controller ||
+                !ReadMember(Subsystems[0].Object.Bits, EF::TickableInitialized, ticking, nullptr) || !ticking) return false;
             for (const auto excluded : {Mass, Replication, Wave})
             {
                 uintptr_t object{};
@@ -1136,12 +1133,12 @@ namespace
         }
         bool CleanupPostconditions(ReadinessDiagnostic* diagnostic = nullptr)
         {
-            bool ticking{}; uintptr_t tickType{};
+            uint8_t ticking{}; uintptr_t tickType{};
             const auto stage = [&](const char* name) { if (diagnostic) diagnostic->Stage(name); return true; };
             return stage("post-cleanup GC admission") && QuietGC(diagnostic) &&
                 stage("post-cleanup private ownership/isolation") && TeardownPrivateState(false, diagnostic) &&
                 stage("post-cleanup electricity initialized flag") &&
-                Read(Subsystems[0].Object.Bits + 0x38, ticking, diagnostic) &&
+                ReadMember(Subsystems[0].Object.Bits, EF::TickableInitialized, ticking, diagnostic) &&
                 (!diagnostic ? !ticking : diagnostic->Check(!ticking, "electricity initialized flag", 0, ticking)) &&
                 stage("post-cleanup electricity tick type") &&
                 (!diagnostic ? Invoke(Operation::TickType, Subsystems[0].Object.Bits + 0x30, 0, &tickType) :
