@@ -2,6 +2,7 @@
 #include "ResidentMetadata.h"
 #include "NativeApi.h"
 #include "DefinitionAcquisitionCore.h"
+#include "UObjectAbi.h"
 #include "Map/Map.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -22,9 +23,9 @@ namespace
     bool Held(uintptr_t object)
     {
         int32_t index{}, count{}; MiniMapDefinitionAcquisition::Slot slot; SlotReader reader;
-        return reader.Read(object + 0xc, index) &&
+        return reader.Read(MiniMapUObjectAbi::IndexAddress(object), index) &&
             MiniMapDefinitionAcquisition::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), index, slot) == MiniMapDefinitionAcquisition::Status::Success &&
-            slot.Object == object && (slot.Flags & 0x20000000) && reader.Read(slot.Item + 0x14, count) && count > 0;
+            slot.Object == object && (slot.Flags & 0x20000000) && reader.Read(MiniMapUObjectAbi::RefCountAddress(slot.Item), count) && count > 0;
     }
     void Uncertain(const char* reason)
     {
@@ -82,7 +83,7 @@ namespace MiniMapResidentMetadata
     bool Serial(uintptr_t object, int32_t& serial)
     {
         int32_t index{}; MiniMapDefinitionAcquisition::Slot slot; SlotReader reader;
-        if (!Available() || !Validate(object) || !reader.Read(object + 0xc, index) ||
+        if (!Available() || !Validate(object) || !reader.Read(MiniMapUObjectAbi::IndexAddress(object), index) ||
             MiniMapDefinitionAcquisition::ReadSlot(reader, reinterpret_cast<uintptr_t>(N::Get()->asset.objectArray), index, slot) != MiniMapDefinitionAcquisition::Status::Success ||
             slot.Object != object || (slot.Flags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags)) return false;
         serial = slot.Serial; return true;
