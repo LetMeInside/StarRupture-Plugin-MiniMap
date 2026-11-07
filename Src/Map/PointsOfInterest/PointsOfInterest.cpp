@@ -165,13 +165,7 @@ namespace
         SDK::ACrCharacterPlayerBase* player = nullptr;
         if (!MiniMapMap::TryGetPhysicalCharacter(player)) return nullptr;
 
-        auto* component = player->PlayerMapMenuDataComponent;
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return nullptr;
-        return component;
+        return MiniMapMap::GetMapDataComponent(player);
     }
 
 
@@ -350,10 +344,17 @@ namespace
             return nullptr;
         }
 
-        const auto& entries = replicator->AbandonBaseDataContainer.AbandonBaseData;
-        const auto* data = entries.GetDataPtr();
-        const int32_t count = entries.Num();
-        const int32_t capacity = entries.Max();
+        const auto* entries = MiniMapFields::AbandonBaseRecords.In(
+            MiniMapFields::AbandonBaseContainer.In(replicator));
+
+        if (entries == nullptr)
+        {
+            return nullptr;
+        }
+
+        const void* data = entries->Data;
+        const int32_t count = entries->Num;
+        const int32_t capacity = entries->Max;
 
         if (count < 0 ||
             capacity < count ||
@@ -379,15 +380,22 @@ namespace
             index < count;
             ++index)
         {
-            const auto& record = data[index];
-            const auto& id = record.AbandonBasePOIId;
-            const POIGuid recordGuid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
-                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
+            const void* record = PluginMap::ElementAt(
+                data, count, index, MiniMapFields::AbandonBaseRecordSize);
+            const SDK::FGuid* id = MiniMapFields::AbandonBasePOIId.In(record);
+
+            if (id == nullptr)
+            {
+                continue;
+            }
+
+            const POIGuid recordGuid{static_cast<uint32_t>(id->A), static_cast<uint32_t>(id->B),
+                static_cast<uint32_t>(id->C), static_cast<uint32_t>(id->D)};
 
             if (recordGuid ==
                 guid)
             {
-                return &record;
+                return static_cast<const SDK::FCrAbandonBaseData*>(record);
             }
         }
 
@@ -467,15 +475,20 @@ namespace
             return {};
         }
 
-        const SDK::FSlateBrush* brush = &category->Icon;
+        const SDK::FSlateBrush* brush = MiniMapFields::CategoryIcon.In(category);
 
         if (variant == IconVariant::Unknown)
         {
-            brush = &category->UnknownIcon;
+            brush = MiniMapFields::PoiUnknownIcon.In(category);
         }
         else if (variant == IconVariant::Completed)
         {
-            brush = &category->AbandonBaseCompletedIcon;
+            brush = MiniMapFields::PoiCompletedIcon.In(category);
+        }
+
+        if (brush == nullptr)
+        {
+            return {};
         }
 
         SDK::UTexture2D* texture =
@@ -611,7 +624,18 @@ namespace
         }
 
         const auto* marker = static_cast<const SDK::ACrPointOfInterestMarkerActor*>(actor);
-        const uint8_t state = static_cast<uint8_t>(marker->PointOfInterestState);
+        const auto* markerState = MiniMapFields::PoiState.In(marker);
+        const auto* markerType = MiniMapFields::PoiType.In(marker);
+        const SDK::FGuid* id = MiniMapFields::PoiGuid.In(marker);
+
+        if (markerState == nullptr ||
+            markerType == nullptr ||
+            id == nullptr)
+        {
+            return false;
+        }
+
+        const uint8_t state = static_cast<uint8_t>(*markerState);
 
         if (state ==
                 kStateHidden ||
@@ -629,7 +653,7 @@ namespace
             return false;
         }
 
-        const uint8_t poiType = static_cast<uint8_t>(marker->PointOfInterestType);
+        const uint8_t poiType = static_cast<uint8_t>(*markerType);
 
         const SDK::UCrMapMenuPOIData* category =
             native->
@@ -648,10 +672,19 @@ namespace
             state ==
             kStateVisibleUnknown;
 
+        const auto* categoryFilter = MiniMapFields::CategoryLegendFilter.In(category);
+        const auto* categoryFogHidable = MiniMapFields::CategoryFogHidable.In(category);
+
+        if (categoryFilter == nullptr ||
+            categoryFogHidable == nullptr)
+        {
+            return false;
+        }
+
         const uint8_t leafFilter =
             unknown
                 ? kUnknownFilter
-                : static_cast<uint8_t>(category->LegendFilter);
+                : static_cast<uint8_t>(*categoryFilter);
 
         if (!native->
                 pointsOfInterest.
@@ -662,9 +695,8 @@ namespace
             return false;
         }
 
-        const auto& id = marker->Guid;
-        const POIGuid guid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
-                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
+        const POIGuid guid{static_cast<uint32_t>(id->A), static_cast<uint32_t>(id->B),
+                static_cast<uint32_t>(id->C), static_cast<uint32_t>(id->D)};
 
         IconVariant iconVariant =
             unknown
@@ -733,7 +765,7 @@ namespace
         // Discovery/classification stays native. Fog admission is presentation
         // state and must use the current feather at draw time, not a poll-time
         // native-mask-only exclusion.
-        outRecord.CanHideByFog = category->CanBeHiddenByFogOfWar;
+        outRecord.CanHideByFog = *categoryFogHidable;
 
         outRecord.Guid =
             guid;

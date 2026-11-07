@@ -340,13 +340,8 @@ namespace
         if (!MiniMapMap::TryGetPhysicalCharacter(player)) return false;
 
         SDK::UCrPlayerMapMenuDataComponent* component =
-            player->PlayerMapMenuDataComponent;
-
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return false;
+            MiniMapMap::GetMapDataComponent(player);
+        if (!component) return false;
 
         outPlayer =
             player;

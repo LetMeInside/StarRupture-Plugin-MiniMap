@@ -120,13 +120,7 @@ namespace
     {
         SDK::ACrCharacterPlayerBase* player = nullptr;
         if (!MiniMapMap::TryGetPhysicalCharacter(player)) return nullptr;
-        auto* component = player->PlayerMapMenuDataComponent;
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return nullptr;
-        return component;
+        return MiniMapMap::GetMapDataComponent(player);
     }
 
     bool LoadIconFromBulkData(
@@ -248,7 +242,10 @@ namespace
 
         const MiniMapNative::NativeApi* native = MiniMapNative::Get();
 
+        const SDK::FSlateBrush* brush = MiniMapFields::CategoryIcon.In(category);
+
         if (category == nullptr ||
+            brush == nullptr ||
             native == nullptr ||
             native->texture.getBrushTexture == nullptr)
         {
@@ -256,7 +253,7 @@ namespace
         }
 
         SDK::UTexture2D* texture =
-            native->texture.getBrushTexture(category->Icon);
+            native->texture.getBrushTexture(*brush);
 
         if (texture == nullptr)
         {
@@ -492,26 +489,29 @@ namespace
         return true;
     }
 
+    // The simple item in slot `index` of an items container's storage records, or
+    // null. The records are stepped by the size the game reports for them.
+    const SDK::FAuSimpleItem* StoredItem(const MiniMapFields::RawTArray& records, int32_t index)
+    {
+        const auto* record = PluginMap::ElementAt(records.Data, records.Num, index, MiniMapFields::StorageItemSize);
+        return MiniMapFields::StorageItemItem.In(record);
+    }
+
     bool InventoryHasItems(const void* inventoryFragment)
     {
-        if (inventoryFragment == nullptr)
+        const auto* container = MiniMapFields::InventoryMain.In(inventoryFragment);
+        const auto* records = MiniMapFields::StorageItems.In(container);
+
+        if (records == nullptr || records->Num <= 0)
         {
             return false;
         }
 
-        const auto& inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment)->MainInventoryContainer.Items;
-        const int32_t count = inventory.Num();
-
-        if (count <= 0)
+        for (int32_t index = 0; index < records->Num; ++index)
         {
-            return false;
-        }
+            const auto* count = MiniMapFields::SimpleItemCount.In(StoredItem(*records, index));
 
-        for (int32_t index = 0; index < count; ++index)
-        {
-            const int32_t itemCount = inventory[index].Item.Count;
-
-            if (itemCount > 0)
+            if (count != nullptr && *count > 0)
             {
                 return true;
             }
@@ -526,20 +526,29 @@ namespace
         const SDK::FGuid zeroGuid = {};
 
         bool hasOrdinaryItem = false;
-        const auto inspect = [&](const SDK::FCrItemsStorageContainer& container)
+        const auto inspect = [&](const SDK::FCrItemsStorageContainer* container)
         {
-            const int32_t count = container.Items.Num();
-            for (int32_t index = 0; index < count; ++index)
+            const auto* records = MiniMapFields::StorageItems.In(container);
+            if (records == nullptr)
             {
-                const auto& item = container.Items[index].Item;
-                if (item.ItemDataBase == nullptr ||
-                    std::memcmp(&item.ItemId.Handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
-                    item.Count <= 0)
+                return false;
+            }
+
+            for (int32_t index = 0; index < records->Num; ++index)
+            {
+                const auto* item = StoredItem(*records, index);
+                const auto* itemData = MiniMapFields::SimpleItemData.In(item);
+                const auto* count = MiniMapFields::SimpleItemCount.In(item);
+                const auto* handle = MiniMapFields::ItemIdHandle.In(MiniMapFields::SimpleItemId.In(item));
+                if (itemData == nullptr || *itemData == nullptr || count == nullptr || handle == nullptr ||
+                    std::memcmp(handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
+                    *count <= 0)
                 {
                     continue;
                 }
 
-                if (item.ItemDataBase->UIItemType == SDK::EUIItemType::BlueprintItem)
+                const auto* type = MiniMapFields::ItemUIType.In(*itemData);
+                if (type != nullptr && *type == SDK::EUIItemType::BlueprintItem)
                 {
                     return true;
                 }
@@ -550,8 +559,8 @@ namespace
             return false;
         };
 
-        if (inspect(inventory.InputInventoryContainer) ||
-            inspect(inventory.MainInventoryContainer))
+        if (inspect(MiniMapFields::InventoryInput.In(&inventory)) ||
+            inspect(MiniMapFields::InventoryMain.In(&inventory)))
         {
             return ContainerContents::Blueprint;
         }
@@ -646,13 +655,18 @@ namespace
             return false;
         }
 
-        if (category->CategoryBlocked)
+        const bool* blocked = MiniMapFields::CategoryBlocked.In(category);
+        const auto* legendFilter = MiniMapFields::CategoryLegendFilter.In(category);
+
+        if (blocked == nullptr ||
+            legendFilter == nullptr ||
+            *blocked)
         {
             return false;
         }
 
         const uint8_t filter =
-            static_cast<uint8_t>(category->LegendFilter);
+            static_cast<uint8_t>(*legendFilter);
 
         if (!native->pointsOfInterest.getMarkerFilterStatus(
             mapData,
@@ -698,6 +712,13 @@ namespace
             return (guid[0] | guid[1] | guid[2] | guid[3]) != 0;
         }
 
+        // The story guid of a datapad or an audiolog actor; zero when it cannot be read.
+        Guid StoryGuid(const SDK::AActor* actor, bool audio)
+        {
+            const SDK::FGuid* guid = (audio ? MiniMapFields::AudiologGuid : MiniMapFields::DatapadGuid).In(actor);
+            return guid ? CopyGuid(*guid) : Guid{};
+        }
+
         template<class T>
         bool ValidSpan(const T* data, int32_t count, int32_t capacity)
         {
@@ -711,6 +732,18 @@ namespace
             data = array.GetDataPtr();
             count = array.Num();
             return ValidSpan(data, count, array.Max());
+        }
+
+        // The same for a TArray of a game struct, read through its header and stepped
+        // by the size the game reports for the struct (`stride`, an SR_SIZE row).
+        bool ReadRecords(const MiniMapFields::RawTArray& array, const PluginFieldSpec& stride,
+            const void*& data, int32_t& count)
+        {
+            data = array.Data;
+            count = array.Num;
+            return stride.resolvedSize != 0 && count >= 0 && array.Max >= count &&
+                (count == 0 || (data != nullptr &&
+                    size_t(count) <= (std::numeric_limits<size_t>::max)() / stride.resolvedSize));
         }
 
         // All metadata and actor pointers below are borrowed only inside one
@@ -895,8 +928,10 @@ namespace
                 auto* actor = actors.Values.Data[index];
                 if (!types.Actor(actor, types.POI, sizeof(SDK::ACrPointOfInterestMarkerActor), world)) continue;
                 auto* poi = static_cast<SDK::ACrPointOfInterestMarkerActor*>(actor);
-                if (poi->PointOfInterestType != SDK::ECrPointOfInterestType::AbandonedBase) continue;
-                const auto base = CopyGuid(poi->Guid);
+                const auto* poiType = MiniMapFields::PoiType.In(poi);
+                const auto* poiGuid = MiniMapFields::PoiGuid.In(poi);
+                if (!poiType || !poiGuid || *poiType != SDK::ECrPointOfInterestType::AbandonedBase) continue;
+                const auto base = CopyGuid(*poiGuid);
                 if (!ValidGuid(base)) continue;
                 if (!assignedBases.insert(base).second)
                 {
@@ -907,7 +942,8 @@ namespace
                 }
                 const SDK::FGuid* assignments = nullptr;
                 int32_t count = 0;
-                if (!ReadArray(poi->AbandonBaseStoryItemsAssigned, assignments, count)) continue;
+                const auto* storyItems = MiniMapFields::PoiStoryItems.In(poi);
+                if (!storyItems || !ReadArray(*storyItems, assignments, count)) continue;
                 for (int32_t item = 0; item < count; ++item)
                 {
                     const auto guid = CopyGuid(assignments[item]);
@@ -917,32 +953,40 @@ namespace
                 }
             }
 
-            const SDK::FCrAbandonBaseData* bases = nullptr;
+            const void* bases = nullptr;
             int32_t baseCount = 0;
-            if (!ReadArray(replicator->AbandonBaseDataContainer.AbandonBaseData, bases, baseCount)) return false;
+            const auto* baseRecords = MiniMapFields::AbandonBaseRecords.In(MiniMapFields::AbandonBaseContainer.In(replicator));
+            if (!baseRecords || !ReadRecords(*baseRecords, MiniMapFields::AbandonBaseRecordSize, bases, baseCount)) return false;
             std::unordered_set<Guid, GuidHash> replicatedBases;
             std::unordered_set<Guid, GuidHash> ambiguousReplicatedBases;
             for (int32_t index = 0; index < baseCount; ++index)
             {
-                const auto base = CopyGuid(bases[index].AbandonBasePOIId);
+                const auto* baseRecord = PluginMap::ElementAt(bases, baseCount, index, MiniMapFields::AbandonBaseRecordSize);
+                const auto* baseId = MiniMapFields::AbandonBasePOIId.In(baseRecord);
+                if (!baseId) continue;
+                const auto base = CopyGuid(*baseId);
                 if (!ValidGuid(base)) continue;
                 if (!replicatedBases.insert(base).second)
                 {
                     ambiguousReplicatedBases.insert(base);
                     continue;
                 }
-                const SDK::FCrAbandonBaseDataCollectedStatus* statuses = nullptr;
+                const void* statuses = nullptr;
                 int32_t count = 0;
-                if (!ReadArray(bases[index].StoryItemsCollectedStatus, statuses, count)) continue;
+                const auto* statusRecords = MiniMapFields::AbandonBaseStatuses.In(baseRecord);
+                if (!statusRecords || !ReadRecords(*statusRecords, MiniMapFields::StoryStatusSize, statuses, count)) continue;
                 for (int32_t item = 0; item < count; ++item)
                 {
-                    const auto guid = CopyGuid(statuses[item].Item);
+                    const auto* statusRecord = PluginMap::ElementAt(statuses, count, item, MiniMapFields::StoryStatusSize);
+                    const auto* storyGuid = MiniMapFields::StoryStatusItem.In(statusRecord);
+                    const auto* storyStatus = MiniMapFields::StoryStatusValue.In(statusRecord);
+                    if (!storyGuid || !storyStatus) continue;
+                    const auto guid = CopyGuid(*storyGuid);
                     if (!ValidGuid(guid)) continue;
                     const auto found = progress.find(guid);
                     if (found == progress.end() || found->second.Base != base) continue;
                     // Read the representation first; malformed bool bytes are UNKNOWN.
-                    uint8_t status = 2;
-                    std::memcpy(&status, &statuses[item].Status, sizeof(status));
+                    const uint8_t status = *storyStatus;
                     auto& entry = found->second;
                     ++entry.Records;
                     entry.Status = entry.Records == 1 && status <= 1 ? status : 2;
@@ -1001,17 +1045,13 @@ namespace
                 {
                     auto* actor = actors.Values.Data[index];
                     if (!types.Actor(actor, type, family.Extent, world)) continue;
-                    const auto guid = CopyGuid(family.Audio
-                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
-                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    const auto guid = StoryGuid(actor, family.Audio);
                     const auto found = progress.find(guid);
                     if (!ValidGuid(guid) || found == progress.end() || found->second.Ambiguous ||
                         found->second.Records != 1 || found->second.Status != 0) continue;
                     SDK::FVector location{};
                     if (!ReadPosition(types, actor, world, type, family.Extent, location)) continue;
-                    const auto currentGuid = CopyGuid(family.Audio
-                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
-                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    const auto currentGuid = StoryGuid(actor, family.Audio);
                     if (guid != currentGuid) continue;
                     Candidate candidate{{location.X, location.Y, ContainerContents::Ordinary}};
                     const auto inserted = candidates.emplace(guid, candidate);
@@ -1092,7 +1132,10 @@ namespace
                 parametersStruct);
             if (parameters == nullptr) continue;
 
-            const auto foundableType = static_cast<uint8_t>(parameters->FoundableType);
+            const auto* type = MiniMapFields::FoundableType.In(parameters);
+            if (type == nullptr) continue;
+
+            const auto foundableType = static_cast<uint8_t>(*type);
             if (foundableType == kUndefinedType && !settings.ShowLootInBases) continue;
             const void* inventoryFragment = native->mass.getFragmentDataPtr(g_massManager, id, inventoryStruct);
             const auto* inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment);

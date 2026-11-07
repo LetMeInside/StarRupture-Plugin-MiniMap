@@ -8,6 +8,7 @@ namespace SDK
 {
     class UWorld;
     class ACrCharacterPlayerBase;
+    class UCrPlayerMapMenuDataComponent;
     struct FVector;
 }
 
@@ -56,6 +57,10 @@ namespace MiniMapMap
     // Game-thread-only borrowed pointer, valid only for the current acquisition.
     // Resolves the current physical character without pose/heading dependencies.
     bool TryGetPhysicalCharacter(SDK::ACrCharacterPlayerBase*& outCharacter);
+
+    // The character's map-menu data component, or null when it is not a live object
+    // that the character owns (or its member did not resolve on this build).
+    SDK::UCrPlayerMapMenuDataComponent* GetMapDataComponent(SDK::ACrCharacterPlayerBase* character);
 
     bool TryGetPlayerPose(
         PlayerPose& outPose);

@@ -129,7 +129,7 @@ namespace MiniMapMap
 
     bool TryGetPresentationSample(PresentationSample& outSample)
     {
-        const auto settings = MiniMapConfig::GetTrackingSettings();
+        const MiniMapConfig::TrackingSettings settings = MiniMapConfig::GetTrackingSettings();
         outSample = {};
         LocalPlayer player;
         PresentationSample sample{};
@@ -151,10 +151,10 @@ namespace MiniMapMap
         }
         // Only a complete current association can select the drone. Missing or
         // retiring drone state uses the valid physical character, never history.
-        auto* drone = player.Character->BuildingDrone;
+        SDK::ACrCharacterDroneBase* drone = PluginMap::ValueOr(MiniMapFields::BuildingDrone, player.Character);
         if (settings.FollowBuildDrone && player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone &&
             IsObject<SDK::ACrCharacterDroneBase>(drone) && InWorld(drone) &&
-            drone->OwnerPlayer == player.Character &&
+            PluginMap::ValueOr(MiniMapFields::DroneOwner, drone) == player.Character &&
             (player.Pawn == player.Character || player.Pawn == drone))
         {
             PlayerPose dronePose{};
@@ -182,6 +182,17 @@ namespace MiniMapMap
         if (!ResolveLocalPlayer(player)) return false;
         outCharacter = player.Character;
         return true;
+    }
+
+    SDK::UCrPlayerMapMenuDataComponent* GetMapDataComponent(SDK::ACrCharacterPlayerBase* character)
+    {
+        auto* component = PluginMap::ValueOr(MiniMapFields::PlayerMapData, character);
+        const auto* native = MiniMapNative::Get();
+        if (!native || !MiniMapNative::ValidateObjectIdentity(
+            reinterpret_cast<uintptr_t>(component),
+            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
+            component->Outer != character) return nullptr;
+        return component;
     }
 
     bool TryGetPlayerPose(PlayerPose& outPose)

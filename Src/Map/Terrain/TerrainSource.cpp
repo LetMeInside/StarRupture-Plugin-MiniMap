@@ -62,7 +62,13 @@ namespace
 
         void* terrainDataSoftPtr =
             static_cast<void*>(
-                &g_devSettings->TerrainData);
+                MiniMapFields::DevSettingsTerrainData.In(
+                    static_cast<void*>(g_devSettings)));
+
+        if (terrainDataSoftPtr == nullptr)
+        {
+            return nullptr;
+        }
 
         SDK::UObject* loadedObject =
             native->asset.loadSynchronous(
@@ -148,8 +154,15 @@ namespace
             return false;
         }
 
-        outRadiationLevel =
-            helper->CurrentRadiationLevelReplicated;
+        const int32_t* level =
+            MiniMapFields::RadiationLevel.In(helper);
+
+        if (level == nullptr)
+        {
+            return false;
+        }
+
+        outRadiationLevel = *level;
 
         return true;
     }
@@ -205,10 +218,10 @@ namespace MiniMapTerrainSource
         outX = outY = 0.0;
         SDK::UCrMapMenuTerrainData* terrainData = LoadTerrainData();
         if (!terrainData) return false;
-        const auto& pivot = terrainData->MapTerrainTopLeftPivotPoint;
-        if (!std::isfinite(pivot.X) || !std::isfinite(pivot.Y)) return false;
-        outX = static_cast<double>(pivot.X);
-        outY = static_cast<double>(pivot.Y);
+        const SDK::FVector3f* pivot = MiniMapFields::TerrainPivot.In(terrainData);
+        if (!pivot || !std::isfinite(pivot->X) || !std::isfinite(pivot->Y)) return false;
+        outX = static_cast<double>(pivot->X);
+        outY = static_cast<double>(pivot->Y);
         return true;
     }
 
@@ -269,14 +282,27 @@ namespace MiniMapTerrainSource
             }
         }
 
-        const auto& pivot =
-            terrainData->MapTerrainTopLeftPivotPoint;
+        const SDK::FVector3f* pivotField =
+            MiniMapFields::TerrainPivot.In(terrainData);
 
-        const auto& segmentSize =
-            terrainData->MapTerrainSegmentSize;
+        const SDK::FVector3f* segmentSizeField =
+            MiniMapFields::TerrainSegmentSize.In(terrainData);
 
-        const int segmentCount =
-            terrainData->TerrainSegmentsData.Num();
+        const MiniMapFields::RawTArray* segments =
+            MiniMapFields::TerrainSegments.In(terrainData);
+
+        if (pivotField == nullptr ||
+            segmentSizeField == nullptr ||
+            segments == nullptr)
+        {
+            return false;
+        }
+
+        const auto& pivot = *pivotField;
+
+        const auto& segmentSize = *segmentSizeField;
+
+        const int segmentCount = segments->Num;
 
         if (verbose)
         {
@@ -376,26 +402,11 @@ namespace MiniMapTerrainSource
             }
         }
 
-        const SDK::FCrTerrainSegmentData* sourceSegment =
-            nullptr;
-
-        for (int i = 0; i < segmentCount; ++i)
-        {
-            const auto& segment =
-                terrainData->
-                TerrainSegmentsData[i];
-
-            if (segment.TerrainSegmentGridIndex.X ==
-                gridX &&
-                segment.TerrainSegmentGridIndex.Y ==
-                gridY)
-            {
-                sourceSegment =
-                    &segment;
-
-                break;
-            }
-        }
+        const uint8_t* sourceSegment =
+            MiniMapFields::FindTerrainSegment(
+                terrainData,
+                gridX,
+                gridY);
 
         if (sourceSegment == nullptr)
         {
@@ -420,12 +431,18 @@ namespace MiniMapTerrainSource
         SDK::UTexture2D* sourceTexture =
             nullptr;
 
-        if (radiationLevel == 1)
+        const SDK::FSlateBrush* radiationBrush =
+            MiniMapFields::TerrainSegmentRadiation2.In(sourceSegment);
+
+        const SDK::FSlateBrush* ordinaryBrush =
+            MiniMapFields::TerrainSegmentTexture.In(sourceSegment);
+
+        if (radiationLevel == 1 &&
+            radiationBrush != nullptr)
         {
             sourceTexture =
                 native->texture.getBrushTexture(
-                    sourceSegment->
-                    TerrainSegmentTextureRadiation2);
+                    *radiationBrush);
 
             if (sourceTexture != nullptr)
             {
@@ -451,12 +468,12 @@ namespace MiniMapTerrainSource
             }
         }
 
-        if (sourceTexture == nullptr)
+        if (sourceTexture == nullptr &&
+            ordinaryBrush != nullptr)
         {
             sourceTexture =
                 native->texture.getBrushTexture(
-                    sourceSegment->
-                    TerrainSegmentTexture);
+                    *ordinaryBrush);
 
             selectedVariant =
                 Variant::Ordinary;

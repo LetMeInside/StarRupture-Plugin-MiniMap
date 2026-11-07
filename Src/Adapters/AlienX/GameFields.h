@@ -7,6 +7,11 @@
 #include "SDK/Chimera_structs.hpp"
 #include "SDK/AuActorPlacement_classes.hpp"
 #include "SDK/AuActorPlacement_structs.hpp"
+#include "SDK/AuItems_classes.hpp"
+#include "SDK/AuItems_structs.hpp"
+#include "SDK/ChimeraUI_classes.hpp"
+#include "SDK/ChimeraUI_structs.hpp"
+#include "SDK/MassEntity_structs.hpp"
 #include <plugin_interface.h>
 #include <plugin_map.h>
 
@@ -87,6 +92,87 @@ namespace MiniMapFields
 	inline auto SplinePointSize        = SR_SIZE(FAuAPSplinePointData);
 	inline auto SplinePayloadHandle    = PluginField<SDK::FAuAPPayloadDataHandle>{ SR_FIELD_ANY_SIZE(FAuAPMassFragment, Payload, 0) };
 
+	// What the map layers read off the game's map-menu data. The player character holds
+	// the data component the filters and the fog live on; a marker category holds the
+	// brush a marker is drawn with, whether it can be filtered and whether the fog hides
+	// it (the point-of-interest category adds two brushes of its own); the dev settings
+	// name the terrain data asset, and that asset holds the terrain's origin, its tile
+	// size and one record per tile, each with the brush of the tile's picture. The
+	// brushes, the vectors and the grid index are engine types, read at their compiled
+	// size; the tile record is a game struct stepped by the size the game reports.
+	inline auto BuildingDrone          = SR_FIELD(SDK::ACrCharacterDroneBase*, ACrCharacterPlayerBase, BuildingDrone, 0);
+	inline auto PlayerMapData          = SR_FIELD(SDK::UCrPlayerMapMenuDataComponent*, ACrCharacterPlayerBase, PlayerMapMenuDataComponent, 0);
+	inline auto CategoryIcon           = SR_FIELD(SDK::FSlateBrush, UCrMapMenuCategoryData, Icon, 0);
+	inline auto CategoryBlocked        = SR_FIELD(bool, UCrMapMenuCategoryData, CategoryBlocked, 0);
+	inline auto CategoryLegendFilter   = SR_FIELD(SDK::ECrMapMenuMarkerFilter, UCrMapMenuCategoryData, LegendFilter, 0);
+	inline auto CategoryFogHidable     = SR_FIELD(bool, UCrMapMenuCategoryData, CanBeHiddenByFogOfWar, 0);
+	inline auto PoiUnknownIcon         = SR_FIELD(SDK::FSlateBrush, UCrMapMenuPOIData, UnknownIcon, 0);
+	inline auto PoiCompletedIcon       = SR_FIELD(SDK::FSlateBrush, UCrMapMenuPOIData, AbandonBaseCompletedIcon, 0);
+	inline auto DevSettingsTerrainData = SR_FIELD(SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>, UCrMapMenuDevSettings, TerrainData, 0);
+	inline auto TerrainPivot           = SR_FIELD(SDK::FVector3f, UCrMapMenuTerrainData, MapTerrainTopLeftPivotPoint, 0);
+	inline auto TerrainSegmentSize     = SR_FIELD(SDK::FVector3f, UCrMapMenuTerrainData, MapTerrainSegmentSize, 0);
+	inline auto TerrainSegments        = SR_FIELD(RawTArray, UCrMapMenuTerrainData, TerrainSegmentsData, 0);
+	inline auto TerrainSegmentStride   = SR_SIZE(FCrTerrainSegmentData);
+	inline auto TerrainSegmentGrid     = SR_FIELD(SDK::FIntPoint, FCrTerrainSegmentData, TerrainSegmentGridIndex, 0);
+	inline auto TerrainSegmentTexture  = SR_FIELD(SDK::FSlateBrush, FCrTerrainSegmentData, TerrainSegmentTexture, 0);
+	inline auto TerrainSegmentRadiation2 = SR_FIELD(SDK::FSlateBrush, FCrTerrainSegmentData, TerrainSegmentTextureRadiation2, 0);
+	inline auto RadiationLevel         = SR_FIELD(int32_t, ACrMapMenuDataReplicationHelper, CurrentRadiationLevelReplicated, 0);
+
+	// What the point-of-interest and foundable layers read off a point-of-interest marker
+	// and the abandoned-base replicator: the marker's type, state and guid, the story
+	// items assigned to it, and the replicator's records (one per base, each with the
+	// base's guid and a record per story item). The records are game structs held in
+	// arrays and stepped by the size the game reports; the replicator's container is
+	// held by value and requested at any size.
+	inline auto PoiState               = SR_FIELD(SDK::EPointOfInterestState, ACrPointOfInterestMarkerActor, PointOfInterestState, 0);
+	inline auto PoiType                = SR_FIELD(SDK::ECrPointOfInterestType, ACrPointOfInterestMarkerActor, PointOfInterestType, 0);
+	inline auto PoiGuid                = SR_FIELD(SDK::FGuid, ACrPointOfInterestMarkerActor, Guid, 0);
+	inline auto PoiStoryItems          = SR_FIELD(SDK::TArray<SDK::FGuid>, ACrPointOfInterestMarkerActor, AbandonBaseStoryItemsAssigned, 0);
+	inline auto AbandonBaseContainer   = PluginField<SDK::FCrAbandonBaseDataContainer>{ SR_FIELD_ANY_SIZE(ACrAbandonBaseInfoReplicator, AbandonBaseDataContainer, 0) };
+	inline auto AbandonBaseRecords     = SR_FIELD(RawTArray, FCrAbandonBaseDataContainer, AbandonBaseData, 0);
+	inline auto AbandonBaseRecordSize  = SR_SIZE(FCrAbandonBaseData);
+	inline auto AbandonBasePOIId       = SR_FIELD(SDK::FGuid, FCrAbandonBaseData, AbandonBasePOIId, 0);
+	inline auto AbandonBaseStatuses    = SR_FIELD(RawTArray, FCrAbandonBaseData, StoryItemsCollectedStatus, 0);
+	inline auto StoryStatusSize        = SR_SIZE(FCrAbandonBaseDataCollectedStatus);
+	inline auto StoryStatusItem        = SR_FIELD(SDK::FGuid, FCrAbandonBaseDataCollectedStatus, Item, 0);
+	// Read as the byte it is: a byte that is neither 0 nor 1 means unknown.
+	inline auto StoryStatusValue       = SR_FIELD(uint8_t, FCrAbandonBaseDataCollectedStatus, Status, 0);
+	inline auto DatapadGuid            = SR_FIELD(SDK::FGuid, ACrDatapadBase, Guid, 0);
+	inline auto AudiologGuid           = SR_FIELD(SDK::FGuid, ACrAudiologBase, Guid, 0);
+
+	// What the foundable layer reads off a Mass foundable: its parameters' type, and what
+	// its inventory fragment holds. The two item containers are game structs held by
+	// value, each with a TArray of storage records, a game struct stepped by the size
+	// the game reports; a record holds a simple item (by value) with its count, its
+	// item data and its id (by value, over a guid).
+	inline auto FoundableType          = SR_FIELD(SDK::ECrFoundableType, FCrMassFoundableParameters, FoundableType, 0);
+	inline auto InventoryMain          = PluginField<SDK::FCrItemsStorageContainer>{ SR_FIELD_ANY_SIZE(FCrInventoryFragment, MainInventoryContainer, 0) };
+	inline auto InventoryInput         = PluginField<SDK::FCrItemsStorageContainer>{ SR_FIELD_ANY_SIZE(FCrInventoryFragment, InputInventoryContainer, 0) };
+	inline auto StorageItems           = SR_FIELD(RawTArray, FCrItemsStorageContainer, Items, 0);
+	inline auto StorageItemSize        = SR_SIZE(FCrStorageItem);
+	inline auto StorageItemItem        = PluginField<SDK::FAuSimpleItem>{ SR_FIELD_ANY_SIZE(FCrStorageItem, Item, 0) };
+	inline auto SimpleItemCount        = SR_FIELD(int32_t, FAuSimpleItem, Count, 0);
+	inline auto SimpleItemData         = SR_FIELD(SDK::UAuItemDataBase*, FAuSimpleItem, ItemDataBase, 0);
+	inline auto SimpleItemId           = PluginField<SDK::FAuItemId>{ SR_FIELD_ANY_SIZE(FAuSimpleItem, ItemId, 0) };
+	inline auto ItemIdHandle           = SR_FIELD(SDK::FGuid, FAuItemId, Handle, 0);
+	inline auto ItemUIType             = SR_FIELD(SDK::EUIItemType, UAuItemDataBase, UIItemType, 0);
+
+	// The terrain record of tile (gridX, gridY), or null. The array order does not follow
+	// the grid, so each record's own index is compared.
+	inline const uint8_t* FindTerrainSegment(const void* terrainData, int gridX, int gridY)
+	{
+		const RawTArray* segments = TerrainSegments.In(terrainData);
+		if (segments == nullptr) return nullptr;
+
+		for (int32_t i = 0; i < segments->Num; ++i)
+		{
+			const uint8_t* segment = PluginMap::ElementAt(segments->Data, segments->Num, i, TerrainSegmentStride);
+			const SDK::FIntPoint* grid = TerrainSegmentGrid.In(segment);
+			if (grid != nullptr && grid->X == gridX && grid->Y == gridY) return segment;
+		}
+		return nullptr;
+	}
+
 	// The Mass enemy state (the fragment's initialisation state). The game does not
 	// reflect it (the Game-SDK folds the fragment into padding), so it is a native
 	// row, with CL-127004's offset for when the loader's map has none for the
@@ -102,17 +188,11 @@ namespace MiniMapFields
 	inline auto TransformTranslation = SR_FIELD(SDK::FVector, FTransform, Translation, 0);
 	inline auto TextureSRGB = SR_BITFIELD(UTexture, SRGB);
 
-	// FMassEntityQuery is a plain C++ struct. Code that holds a query takes a
-	// PluginMap::StructBuffer of this size, never a fixed array, so a build with a
-	// bigger query cannot be overrun. The loader serves the size from the game's
-	// own metadata where the struct is reflected, and from this row where it is
-	// not; a loader that serves neither refuses the request, and the layers that
-	// build a query are off.
-	inline auto MassQuerySize = PluginFieldSpec{ "FMassEntityQuery", "FMassEntityQuery", nullptr,
-		PLUGIN_FIELD_FLAG_NONE, 0x350, -1 };
-	inline const PluginFieldCandidate kMassQuerySizeRows[] = {
-		{ 127004, 0, 0x350, 0, nullptr },
-	};
+	// FMassEntityQuery is a reflected script struct (MassEntity.MassEntityQuery), so
+	// the loader gives its size from the game's own metadata on every build, with no
+	// row. Code that holds a query takes a PluginMap::StructBuffer of this size,
+	// never a fixed array, so a build with a bigger query cannot be overrun.
+	inline auto MassQuerySize = SR_SIZE(FMassEntityQuery);
 
 	// The Mass entity manager of a subsystem is the SDK's own native field,
 	// PluginMap::MassEntityManagerField, with its 127004 row; it is resolved below.
@@ -125,16 +205,24 @@ namespace MiniMapFields
 		const auto rowCount = [](const auto& rows) { return static_cast<uint32_t>(sizeof(rows) / sizeof(rows[0])); };
 		bool all = PluginMap::ResolveField(scanner, self, FogData, kFogDataRows, rowCount(kFogDataRows));
 		all = PluginMap::ResolveField(scanner, self, EnemyState, kEnemyStateRows, rowCount(kEnemyStateRows)) && all;
-		all = PluginMap::ResolveField(scanner, self, MassQuerySize, kMassQuerySizeRows, rowCount(kMassQuerySizeRows)) && all;
 		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
 		return PluginMap::ResolveFields(scanner, self,
 			PlayerMainCharacter, IsDead, DroneOwner, MapMenuDataReplicationHelper,
 			AbandonBaseInfoReplicator, BuildingTags, WalkwaySplineMesh,
-			TransformTranslation, TextureSRGB,
+			TransformTranslation, TextureSRGB, MassQuerySize,
 			BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
 			CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 			SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
-			SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle) && all;
+			SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle,
+			BuildingDrone, PlayerMapData, CategoryIcon, CategoryBlocked, CategoryLegendFilter, CategoryFogHidable,
+			PoiUnknownIcon, PoiCompletedIcon, DevSettingsTerrainData, TerrainPivot, TerrainSegmentSize,
+			TerrainSegments, TerrainSegmentStride, TerrainSegmentGrid, TerrainSegmentTexture,
+			TerrainSegmentRadiation2, RadiationLevel,
+			PoiState, PoiType, PoiGuid, PoiStoryItems, AbandonBaseContainer, AbandonBaseRecords,
+			AbandonBaseRecordSize, AbandonBasePOIId, AbandonBaseStatuses, StoryStatusSize, StoryStatusItem,
+			StoryStatusValue, DatapadGuid, AudiologGuid,
+			FoundableType, InventoryMain, InventoryInput, StorageItems, StorageItemSize, StorageItemItem,
+			SimpleItemCount, SimpleItemData, SimpleItemId, ItemIdHandle, ItemUIType) && all;
 	}
 
 	using PluginMap::KeysOf;
@@ -142,18 +230,22 @@ namespace MiniMapFields
 	// The layers that can be off while the rest runs. Each lists the keys only it
 	// needs; a key two layers need is listed in both. The terrain is not one:
 	// it gives every other layer its transform, so a miss there leaves nothing
-	// to draw and refuses the plugin. Declared in OnPluginLoadHooks before any key
+	// to draw and refuses the plugin, so its keys (the map-menu data above) are listed
+	// by none. Declared in OnPluginLoadHooks before any key
 	// is resolved. Every entry point of a layer checks On(), so an off layer runs
 	// nothing and reads none of its keys or config entries.
 	namespace Features
 	{
 		inline PluginMap::Feature FogOfWar{ "fog-of-war", "Fog of war on the minimap",
-			KeysOf(FogData),
+			KeysOf(FogData, PlayerMapData),
 			{ "Fog Of War.DisableFog", "Fog Of War.FeatherRange" } };
 
 		inline PluginMap::Feature PointsOfInterest{ "points-of-interest", "Points of interest on the minimap",
 			KeysOf(Keys::GetAllActorsOfClass, Keys::PoiStaticClass, Keys::PoiCategory, Keys::MarkerFilter,
-				Keys::AbandonBaseCompleted, AbandonBaseInfoReplicator),
+				Keys::AbandonBaseCompleted, AbandonBaseInfoReplicator,
+				PlayerMapData, CategoryIcon, CategoryLegendFilter, CategoryFogHidable, PoiUnknownIcon, PoiCompletedIcon,
+				PoiState, PoiType, PoiGuid, AbandonBaseContainer, AbandonBaseRecords, AbandonBaseRecordSize,
+				AbandonBasePOIId),
 			{ "Points Of Interest.ShowLayer", "Points Of Interest.MarkerScale" } };
 
 		inline PluginMap::Feature Foundables{ "foundables", "Foundables on the minimap",
@@ -163,7 +255,13 @@ namespace MiniMapFields
 				Keys::AddTransformRequirement, Keys::AddFoundableParameters, Keys::AddFoundableTag,
 				Keys::AddTagRequirement, Keys::TransformStaticStruct, Keys::InventoryStaticStruct,
 				Keys::FoundableStaticStruct, AbandonBaseInfoReplicator,
-				PluginMap::MassEntityManagerField, MassQuerySize),
+				PluginMap::MassEntityManagerField, MassQuerySize,
+				PlayerMapData, CategoryIcon, CategoryBlocked, CategoryLegendFilter, FoundableType,
+				InventoryMain, InventoryInput, StorageItems, StorageItemSize, StorageItemItem, SimpleItemCount,
+				SimpleItemData, SimpleItemId, ItemIdHandle, ItemUIType,
+				PoiType, PoiGuid, PoiStoryItems, AbandonBaseContainer, AbandonBaseRecords, AbandonBaseRecordSize,
+				AbandonBasePOIId, AbandonBaseStatuses, StoryStatusSize, StoryStatusItem, StoryStatusValue,
+				DatapadGuid, AudiologGuid),
 			{ "Foundables.ShowLayer", "Foundables.ShowLootInBases", "Foundables.MarkerScale" } };
 
 		inline PluginMap::Feature AlienActors{ "alien-actors", "Alien actors on the minimap",
