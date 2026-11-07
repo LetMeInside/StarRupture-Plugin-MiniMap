@@ -156,6 +156,7 @@ namespace Services::Map::Buildings
 	void BuildingMapViewport::Close()
 	{
 		sectionImageChangedHandler_ = {};
+		observedCandidatePublication_.reset();
 		if (service_ == nullptr)
 		{
 			return;
@@ -170,6 +171,7 @@ namespace Services::Map::Buildings
 	void BuildingMapViewport::InvalidateService()
 	{
 		sectionImageChangedHandler_ = {};
+		observedCandidatePublication_.reset();
 		service_ = nullptr;
 		buildingCollector_ = nullptr;
 	}

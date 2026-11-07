@@ -85,7 +85,49 @@ namespace Services::Map::Buildings
 	{
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
+			ObserveViewportCandidatePublicationChanges();
 			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this);
+		}
+	}
+
+	/** Requeues demanded viewport cells when their current publication owner changes. */
+	void BuildingMapService::ObserveViewportCandidatePublicationChanges()
+	{
+		if (sectionSchedulingCoordinator_ == nullptr)
+		{
+			return;
+		}
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			BuildingMapViewport* viewport = viewportEntry.second;
+			if (viewport == nullptr || viewport->service_ != this ||
+				viewport->viewportHandle_ != viewportEntry.first || viewport->buildingCollector_ == nullptr)
+			{
+				continue;
+			}
+			std::shared_ptr<const BuildingCandidatePublication> publication =
+				viewport->buildingCollector_->AcquireCandidatePublication();
+			if (publication != nullptr && !publication->IsCurrent())
+			{
+				publication.reset();
+			}
+			const std::weak_ptr<const BuildingCandidatePublication>& previousPublication =
+				viewport->observedCandidatePublication_;
+			if (!previousPublication.owner_before(publication) &&
+				!publication.owner_before(previousPublication))
+			{
+				continue;
+			}
+			viewport->observedCandidatePublication_ = publication;
+			const BuildingMapViewport::GridRange& gridRange = viewport->gridRange_;
+			for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
+			{
+				for (std::int64_t gridX = gridRange.firstX; gridX < gridRange.endX; ++gridX)
+				{
+					sectionSchedulingCoordinator_->RequestSectionWork(
+						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
+				}
+			}
 		}
 	}
 

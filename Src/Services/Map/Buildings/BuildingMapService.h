@@ -161,6 +161,11 @@ namespace Services::Map::Buildings
 		 */
 		void AdvanceSectionScheduling();
 
+		/** Detects viewport publication owner changes and requeues each affected current range.
+		 * The temporary publication owner is released before this operation returns.
+		 */
+		void ObserveViewportCandidatePublicationChanges();
+
 		/** Obtains one candidate batch from one retained publication without final certification.
 		 * @param buildingCollector Associated collector for this viewport.
 		 * @param observationGrid Requested row-major map-space grid.

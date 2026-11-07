@@ -1,4 +1,4 @@
-// Represents one caller-owned viewport over service-owned Building Map cells and owns its optional image-change handler.
+// Represents one caller-owned viewport over service-owned Building Map cells, its optional image-change handler, and weak publication observation.
 // Its unit-agnostic 2D rectangle uses an upper-left origin, positive X rightward,
 // positive Y downward, and half-open bounds [x, right) by [y, bottom).
 #pragma once
@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 namespace Services::Map::Buildings
 {
@@ -19,11 +20,12 @@ namespace Services::Map::Buildings
 		class IBuildingMapService;
 	}
 
-	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, and owns one optional synchronous image-change handler.
+	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, owns one optional synchronous image-change handler, and remembers only a weak identity for its last observed candidate publication.
 	 * Local (0, 0) is the top-left cell; columns increase rightward and rows
 	 * increase downward with the corresponding grid coordinates. Its collector
 	 * pointer is non-owning and remains valid only while the caller keeps that
-	 * collector alive.
+	 * collector alive. The publication observation never extends a publication's
+	 * lifetime and is cleared when this viewport loses its service association.
 	 */
 	class BuildingMapViewport
 	{
@@ -154,5 +156,7 @@ namespace Services::Map::Buildings
 		double heightMapUnits_;
 		GridRange gridRange_;
 		SectionImageChangedHandler sectionImageChangedHandler_;
+		/** Non-owning control-block identity of the last publication observed by the service. */
+		std::weak_ptr<const BuildingCandidatePublication> observedCandidatePublication_;
 	};
 }
