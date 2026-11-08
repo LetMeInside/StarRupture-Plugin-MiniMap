@@ -15,7 +15,6 @@
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
-#include "Map/Buildings/BuildingComplexWorld.h"
 #include "Map/Buildings/BuildingVisuals.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
 #include "PluginPaths.h"
@@ -553,8 +552,7 @@ namespace
 static void OnBuildingSpriteRendererTick(float deltaTime)
 {
     ObserveWorldIdentity("renderer-entry", true);
-    // Independent bounded native publication/retirement owners. Dormant until
-    // a future BuildingComplex consumer supplies imagery; no worldwide work.
+    // Service generic texture owners without advancing building acquisition.
     if(!MiniMapMap::GameplayReady())
     {
         MiniMapTexturePublication::Service();
@@ -1022,7 +1020,6 @@ namespace MiniMap
 #ifdef MODLOADER_CLIENT_BUILD
 
         MiniMapUI::StopInput();
-        MiniMapBuildingComplexWorld::Shutdown();
         MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();

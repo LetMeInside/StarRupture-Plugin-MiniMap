@@ -174,8 +174,6 @@
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionAdapter.h" />
     <ClInclude Include="Map\Buildings\BuildingSplineOcclusionRender.h" />
     <ClInclude Include="Map\Buildings\BuildingImageRasterizationCore.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexWorld.h" />
-    <ClInclude Include="Map\Buildings\BuildingComplexAbi.h" />
     <ClInclude Include="Map\Buildings\BuildingVisibilityTrace.h" />
     <ClInclude Include="Map\MarkerIconSizing.h" />
     <ClInclude Include="Map\Terrain\TerrainProfile.h" />
@@ -314,8 +312,6 @@
     <ClCompile Include="Services\Rgba16fImageDestination.cpp">
       <ObjectFileName>$(IntDir)LegacyRgba16fImageDestination.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="Map\Buildings\BuildingComplexWorld.cpp" />
-    <ClCompile Include="Map\Buildings\BuildingComplexApi.cpp" />
     <ClCompile Include="Native\ResidentMetadata.cpp" />
     <ClCompile Include="Map\Buildings\BuildingBlueprintIdentity.cpp" />
     <ClCompile Include="Map\Buildings\BuildingScheduler.cpp">
