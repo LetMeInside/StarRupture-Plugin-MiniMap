@@ -162,6 +162,8 @@ namespace Services::Map::Buildings
 	{
 		sectionImageChangedHandler_ = {};
 		observedCandidatePublication_.reset();
+		observedSourceChangeIdentity_.reset();
+		observedCandidatePublicationAvailable_ = false;
 		if (service_ == nullptr)
 		{
 			return;
@@ -177,6 +179,8 @@ namespace Services::Map::Buildings
 	{
 		sectionImageChangedHandler_ = {};
 		observedCandidatePublication_.reset();
+		observedSourceChangeIdentity_.reset();
+		observedCandidatePublicationAvailable_ = false;
 		service_ = nullptr;
 		buildingCollector_ = nullptr;
 	}

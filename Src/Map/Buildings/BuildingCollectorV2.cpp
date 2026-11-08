@@ -321,6 +321,8 @@ namespace MiniMap::BuildingAcquisition
         std::shared_ptr<const Facts> Published;
         std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> PublishedCandidates;
         std::shared_ptr<std::atomic<bool>> PublicationEligibility;
+        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity> SourceChangeIdentity;
+        bool SourceChangeIdentityDirty = true;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
         static std::uint64_t Key(EntityId id) noexcept
@@ -336,9 +338,10 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Marks exposed bytes historical immediately; their retained CPU lifetime is unaffected. */
-        void Invalidate() noexcept
+        void Invalidate(bool sourceContentChanged = true) noexcept
         {
             Dirty = true;
+            SourceChangeIdentityDirty = SourceChangeIdentityDirty || sourceContentChanged;
             if (PublicationEligibility)
                 PublicationEligibility->store(false, std::memory_order_release);
             PublicationEligibility.reset();
@@ -1306,7 +1309,8 @@ namespace MiniMap::BuildingAcquisition
         std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
         CreateCandidatePublication(
             const std::shared_ptr<const Facts>& facts,
-            std::shared_ptr<std::atomic<bool>>& eligibility)
+            std::shared_ptr<std::atomic<bool>>& eligibility,
+            const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity>& sourceChangeIdentity)
         {
             using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
             using CandidateSourceRecord = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
@@ -1351,7 +1355,8 @@ namespace MiniMap::BuildingAcquisition
                 requestedCoverage,
                 evidence.candidateCoverageComplete,
                 requestedCoverage,
-                eligibility);
+                eligibility,
+                sourceChangeIdentity);
         }
 
         /** Freezes all occurrences only when relevant acquisition/request evidence changed. */
@@ -1377,9 +1382,14 @@ namespace MiniMap::BuildingAcquisition
             });
             std::shared_ptr<std::atomic<bool>> eligibility;
             std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> candidates;
+            if (SourceChangeIdentityDirty || !SourceChangeIdentity)
+            {
+                SourceChangeIdentity = std::make_shared<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity>();
+                SourceChangeIdentityDirty = false;
+            }
             if (facts->HasRequestedRegion)
             {
-                candidates = CreateCandidatePublication(facts, eligibility);
+                candidates = CreateCandidatePublication(facts, eligibility, SourceChangeIdentity);
             }
             Published = std::move(facts);
             PublishedCandidates = std::move(candidates);
@@ -1641,7 +1651,7 @@ namespace MiniMap::BuildingAcquisition
         {
             state_->RequestedRegion = region;
             state_->HasRegion = true;
-            state_->Invalidate();
+            state_->Invalidate(false);
         }
         return true;
     }

@@ -76,6 +76,7 @@ namespace Services::Map::Buildings::Scheduling
 				if (!ContainsCoordinate(nextFirstGridX, nextFirstGridY, nextEndGridX, nextEndGridY, coordinate))
 				{
 					RemoveDemandCoordinate(coordinate);
+					RequestSectionWork(coordinate);
 				}
 			}
 		}
@@ -92,6 +93,7 @@ namespace Services::Map::Buildings::Scheduling
 					coordinate))
 				{
 					AddDemandCoordinate(coordinate);
+					RequestSectionWork(coordinate);
 				}
 			}
 		}
@@ -454,20 +456,21 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Adds one viewport reference and queues work on the first active demand. */
+	/** Adds one viewport reference and requeues shared coordinates for source reselection. */
 	void SectionSchedulingCoordinator::AddDemandCoordinate(const SectionCoordinate& coordinate)
 	{
 		auto demandCount = demandCounts_.find(coordinate);
 		if (demandCount != demandCounts_.end())
 		{
 			++demandCount->second;
+			RequestSectionWork(coordinate);
 			return;
 		}
 		demandCounts_.emplace(coordinate, 1);
 		waitingSections_.insert(coordinate);
 	}
 
-	/** Drops one viewport reference and withdraws waiting work after the final demand leaves. */
+	/** Drops one reference, requeues shared demand, and withdraws work after the final departure. */
 	void SectionSchedulingCoordinator::RemoveDemandCoordinate(const SectionCoordinate& coordinate)
 	{
 		const auto demandCount = demandCounts_.find(coordinate);
@@ -478,6 +481,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (demandCount->second > 1)
 		{
 			--demandCount->second;
+			RequestSectionWork(coordinate);
 			return;
 		}
 		demandCounts_.erase(demandCount);

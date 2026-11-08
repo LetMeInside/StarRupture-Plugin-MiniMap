@@ -20,7 +20,7 @@ namespace Services::Map::Buildings
 		class IBuildingMapService;
 	}
 
-	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, owns one optional synchronous image-change handler, and remembers only a weak identity for its last observed candidate publication.
+	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, owns one optional synchronous image-change handler, and keeps weak observations of its last publication and source identity.
 	 * Local (0, 0) is the top-left cell; columns increase rightward and rows
 	 * increase downward with the corresponding grid coordinates. Its collector
 	 * pointer is non-owning and remains valid only while the caller keeps that
@@ -157,5 +157,8 @@ namespace Services::Map::Buildings
 		SectionImageChangedHandler sectionImageChangedHandler_;
 		/** Non-owning control-block identity of the last publication observed by the service. */
 		std::weak_ptr<const BuildingCandidatePublication> observedCandidatePublication_;
+		/** Non-owning source-content identity from the last available publication. */
+		std::weak_ptr<const BuildingCandidateSourceChangeIdentity> observedSourceChangeIdentity_;
+		bool observedCandidatePublicationAvailable_ = false;
 	};
 }

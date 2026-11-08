@@ -243,7 +243,7 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Requeues this viewport's demanded cells when its current publication owner changes. */
+	/** Requeues this viewport's cells only when availability or source-content identity changes. */
 	void BuildingMapService::ObserveViewportCandidatePublicationChanges(BuildingMapViewport& viewport)
 	{
 		std::shared_ptr<const BuildingCandidatePublication> publication =
@@ -254,12 +254,32 @@ namespace Services::Map::Buildings
 		}
 		const std::weak_ptr<const BuildingCandidatePublication>& previousPublication =
 			viewport.observedCandidatePublication_;
-		if (!previousPublication.owner_before(publication) &&
-			!publication.owner_before(previousPublication))
+		const bool samePublicationOwner = !previousPublication.owner_before(publication) &&
+			!publication.owner_before(previousPublication);
+		if (samePublicationOwner)
 		{
 			return;
 		}
+		const bool wasAvailable = viewport.observedCandidatePublicationAvailable_;
+		const bool isAvailable = publication != nullptr;
+		bool sourceContentChanged = wasAvailable != isAvailable;
+		if (wasAvailable && isAvailable)
+		{
+			const auto previousIdentity = viewport.observedSourceChangeIdentity_.lock();
+			const auto nextIdentity = publication->GetSourceChangeIdentity();
+			const bool sameIdentity = previousIdentity != nullptr && nextIdentity != nullptr &&
+				!previousIdentity.owner_before(nextIdentity) && !nextIdentity.owner_before(previousIdentity);
+			sourceContentChanged = !sameIdentity;
+		}
 		viewport.observedCandidatePublication_ = publication;
+		viewport.observedCandidatePublicationAvailable_ = publication != nullptr;
+		viewport.observedSourceChangeIdentity_ = publication != nullptr
+			? publication->GetSourceChangeIdentity()
+			: std::weak_ptr<const BuildingCandidateSourceChangeIdentity>{};
+		if (!sourceContentChanged)
+		{
+			return;
+		}
 		const BuildingMapViewport::GridRange& gridRange = viewport.gridRange_;
 		for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
 		{

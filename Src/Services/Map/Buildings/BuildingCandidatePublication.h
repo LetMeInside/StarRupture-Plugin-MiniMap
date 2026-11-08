@@ -11,6 +11,11 @@
 
 namespace Services::Map::Buildings
 {
+	/** Immutable owner token shared by publications from one unchanged source state. */
+	class BuildingCandidateSourceChangeIdentity final
+	{
+	};
+
 	/** Retains immutable neutral candidates and matching source records under one eligibility token.
 	 * The object owns all occurrence, source and ordinal storage borrowed by its output views.
 	 * Historical data remains readable after the producer revokes the weak eligibility token.
@@ -22,7 +27,7 @@ namespace Services::Map::Buildings
 		 * Ordinals are reassigned contiguously in input order. The weak token is observed for
 		 * currentness only; the producer retains control of its lifetime and revocation. Source
 		 * records must have exactly one entry per occurrence and remain in the same input order.
-		 * A cardinality mismatch throws std::invalid_argument before the object can be published.
+		 * A cardinality mismatch or missing source identity throws std::invalid_argument before publication.
 		 * @param occurrences Neutral candidate records, preserving one entry per occurrence.
 		 * @param sourceRecords Matching neutral source records, preserving occurrence order.
 		 * @param evidence Producer-certified enumeration, coverage and acquisition evidence.
@@ -31,6 +36,7 @@ namespace Services::Map::Buildings
 		 * @param hasCoverage Whether the producer certifies acquired coverage for the rectangle.
 		 * @param coverage The producer-certified acquired rectangle.
 		 * @param eligibility Producer-owned independently revocable eligibility token.
+		 * @param sourceChangeIdentity Immutable producer identity shared by unchanged source states.
 		 */
 		BuildingCandidatePublication(
 			std::vector<BuildingCandidateOccurrence> occurrences,
@@ -40,10 +46,15 @@ namespace Services::Map::Buildings
 			BuildingCollectionRegion requestedCoverage,
 			bool hasCoverage,
 			BuildingCollectionRegion coverage,
-			std::weak_ptr<const std::atomic<bool>> eligibility);
+			std::weak_ptr<const std::atomic<bool>> eligibility,
+			std::shared_ptr<const BuildingCandidateSourceChangeIdentity> sourceChangeIdentity);
 
 		/** Reports current eligibility without changing historical readability. */
 		bool IsCurrent() const noexcept;
+
+		/** Returns the immutable producer identity for source and policy content. */
+		const std::shared_ptr<const BuildingCandidateSourceChangeIdentity>&
+		GetSourceChangeIdentity() const noexcept;
 
 		/** Borrows immutable occurrence and coverage data while this owner is retained. */
 		BuildingCandidateData BorrowCandidateData() const noexcept;
@@ -104,6 +115,7 @@ namespace Services::Map::Buildings
 		std::vector<std::uint64_t> ordinals_;
 		BuildingCandidateEvidence evidence_{};
 		std::weak_ptr<const std::atomic<bool>> eligibility_;
+		std::shared_ptr<const BuildingCandidateSourceChangeIdentity> sourceChangeIdentity_;
 		BuildingCollectionRegion requestedCoverage_{};
 		BuildingCollectionRegion coverage_{};
 		bool hasRequestedCoverage_ = false;

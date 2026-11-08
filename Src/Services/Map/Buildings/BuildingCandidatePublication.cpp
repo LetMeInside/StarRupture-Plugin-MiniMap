@@ -19,11 +19,13 @@ namespace Services::Map::Buildings
 		BuildingCollectionRegion requestedCoverage,
 		bool hasCoverage,
 		BuildingCollectionRegion coverage,
-		std::weak_ptr<const std::atomic<bool>> eligibility)
+		std::weak_ptr<const std::atomic<bool>> eligibility,
+		std::shared_ptr<const BuildingCandidateSourceChangeIdentity> sourceChangeIdentity)
 		: occurrences_(std::move(occurrences))
 		, sourceRecords_(std::move(sourceRecords))
 		, evidence_(evidence)
 		, eligibility_(std::move(eligibility))
+		, sourceChangeIdentity_(std::move(sourceChangeIdentity))
 		, requestedCoverage_(requestedCoverage)
 		, coverage_(coverage)
 		, hasRequestedCoverage_(hasRequestedCoverage)
@@ -34,6 +36,10 @@ namespace Services::Map::Buildings
 		{
 			throw std::invalid_argument(
 				"Candidate and source records must have matching occurrence cardinality.");
+		}
+		if (sourceChangeIdentity_ == nullptr)
+		{
+			throw std::invalid_argument("Candidate publications require a source-change identity.");
 		}
 
 		if (!hasValidRequestedCoverage_)
@@ -51,6 +57,13 @@ namespace Services::Map::Buildings
 			requestedCoverage_ = {};
 		}
 		InitializeOccurrences();
+	}
+
+	/** Returns the producer-owned identity shared across coverage-only replacements. */
+	const std::shared_ptr<const BuildingCandidateSourceChangeIdentity>&
+	BuildingCandidatePublication::GetSourceChangeIdentity() const noexcept
+	{
+		return sourceChangeIdentity_;
 	}
 
 	/** Reads only the producer token and immutable construction validity. */
