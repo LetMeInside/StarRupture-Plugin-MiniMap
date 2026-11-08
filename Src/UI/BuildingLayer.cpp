@@ -11,6 +11,9 @@
 
 #include <algorithm>
 #include <array>
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -28,11 +31,84 @@ namespace MiniMapUI
 		, sectionSizeMapUnits_(service.GetSectionSizeMapUnits())
 		, buildingCollector_(std::make_unique<MiniMap::BuildingAcquisition::BuildingCollectorV2>())
 	{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ResetDiagnosticsInterval();
+#endif
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0)
 		{
 			throw std::invalid_argument("BuildingLayer Section size must be positive finite map units.");
 		}
 	}
+
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Starts one presentation-operation measurement using the steady clock. */
+	BuildingLayer::DurationScope::DurationScope(DiagnosticsSnapshot::Duration& duration) noexcept
+		: duration_(duration)
+		, started_(std::chrono::steady_clock::now())
+	{
+	}
+
+	/** Adds elapsed time to its game-thread aggregate when the measured scope exits. */
+	BuildingLayer::DurationScope::~DurationScope() noexcept
+	{
+		const double elapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - started_).count();
+		duration_.Add(elapsedMs);
+	}
+
+	/** Hands off a due nonempty interval without touching presentation ownership. */
+	bool BuildingLayer::TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept
+	{
+		const auto now = std::chrono::steady_clock::now();
+		const double intervalMs = std::chrono::duration<double, std::milli>(
+			now - diagnosticsIntervalStart_).count();
+		if (intervalMs < 10000.0 || !HasDiagnosticsActivity())
+		{
+			return false;
+		}
+		diagnostics_.IntervalMs = intervalMs;
+		output = diagnostics_;
+		ResetDiagnosticsInterval();
+		return true;
+	}
+
+	/** Clears only interval measurements and restarts their per-layer clock. */
+	void BuildingLayer::ResetDiagnosticsInterval() noexcept
+	{
+		diagnostics_ = {};
+		diagnosticsIntervalStart_ = std::chrono::steady_clock::now();
+	}
+
+	/** Returns true when any measured method or classified presentation outcome occurred. */
+	bool BuildingLayer::HasDiagnosticsActivity() const noexcept
+	{
+		if (diagnostics_.OpenViewport.Samples || diagnostics_.ViewportUpdate.Samples ||
+			diagnostics_.PrepareCpuImages.Samples || diagnostics_.ImageConversion.Samples ||
+			diagnostics_.GpuPublicationPass.Samples || diagnostics_.TextureUploadCall.Samples ||
+			diagnostics_.TextureReleaseCall.Samples || diagnostics_.SuccessfulOpenViewports ||
+			diagnostics_.SuccessfulViewportUpdates || diagnostics_.RejectedViewportUpdates ||
+			diagnostics_.PreparedCoordinates || diagnostics_.PublicationPassAlreadyActive ||
+			diagnostics_.OutstandingTextureOperationRejections ||
+			diagnostics_.ValidatedTexturePublications || diagnostics_.ProcessedRemovalUpdates ||
+			diagnostics_.DischargedTextureReceipts)
+		{
+			return true;
+		}
+		for (const auto count : diagnostics_.CoordinateResolutionCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.TextureUploadStateCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.TextureReleaseStateCounts)
+		{
+			if (count != 0) return true;
+		}
+		return false;
+	}
+#endif
 
 	/** Initializes the owned collector and opens this layer's only viewport when gameplay is active. */
 	bool BuildingLayer::OpenViewport(
@@ -41,6 +117,9 @@ namespace MiniMapUI
 		double widthMapUnits,
 		double heightMapUnits)
 	{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.OpenViewport);
+#endif
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			if (shutdownRequested_)
@@ -72,6 +151,9 @@ namespace MiniMapUI
 			return false;
 		}
 		SetViewport(std::move(viewport));
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.SuccessfulOpenViewports;
+#endif
 		return true;
 	}
 
@@ -119,6 +201,21 @@ namespace MiniMapUI
 	/** Updates the viewport and reconciles CPU work only after acceptance. */
 	bool BuildingLayer::Update(double x1, double y1, double x2, double y2)
 	{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.ViewportUpdate);
+#endif
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		bool shuttingDown = false;
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			shuttingDown = shutdownRequested_;
+		}
+		if (shuttingDown)
+		{
+			++diagnostics_.RejectedViewportUpdates;
+			return false;
+		}
+#else
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			if (shutdownRequested_)
@@ -126,13 +223,20 @@ namespace MiniMapUI
 				return false;
 			}
 		}
+#endif
 		if (viewport_ == nullptr)
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.RejectedViewportUpdates;
+#endif
 			return false;
 		}
 		const std::set<Coordinate> previousCoordinates = CollectVisibleCoordinates();
 		if (!viewport_->Update(x1, y1, x2, y2))
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.RejectedViewportUpdates;
+#endif
 			return false;
 		}
 		const std::set<Coordinate> visibleCoordinates = CollectVisibleCoordinates();
@@ -146,6 +250,9 @@ namespace MiniMapUI
 		DiscardCoordinatesOutside(visibleCoordinates);
 		WithdrawDepartedTextures(visibleCoordinates);
 		ReleasePendingTextures();
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.SuccessfulViewportUpdates;
+#endif
 		return true;
 	}
 
@@ -161,10 +268,28 @@ namespace MiniMapUI
 	/** Uploads one snapshot of pending updates and releases withdrawn receipts. */
 	void BuildingLayer::PublishGpuImages()
 	{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.GpuPublicationPass);
+#endif
 		if (publishPassActive_)
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.PublicationPassAlreadyActive;
+#endif
 			return;
 		}
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		bool textureOperationOutstanding = false;
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			textureOperationOutstanding = activeTextureOperations_ != 0;
+		}
+		if (textureOperationOutstanding)
+		{
+			++diagnostics_.OutstandingTextureOperationRejections;
+			return;
+		}
+#else
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			if (activeTextureOperations_ != 0)
@@ -172,6 +297,7 @@ namespace MiniMapUI
 				return;
 			}
 		}
+#endif
 		publishPassActive_ = true;
 		bool shuttingDown = false;
 		{
@@ -259,6 +385,9 @@ namespace MiniMapUI
 	/** Converts each accumulated coordinate against the viewport's latest image state. */
 	void BuildingLayer::PrepareCpuImages()
 	{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.PrepareCpuImages);
+#endif
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			if (shutdownRequested_)
@@ -274,6 +403,9 @@ namespace MiniMapUI
 		{
 			const Coordinate coordinate = *dirtyCoordinates_.begin();
 			dirtyCoordinates_.erase(dirtyCoordinates_.begin());
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.PreparedCoordinates;
+#endif
 			PrepareCoordinate(coordinate);
 		}
 	}
@@ -346,6 +478,10 @@ namespace MiniMapUI
 		std::size_t localY = 0;
 		if (!TryFindLocalCoordinate(coordinate, localX, localY))
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.CoordinateResolutionCounts[
+				static_cast<std::size_t>(CoordinateResolution::NotCovered)];
+#endif
 			pendingUpdates_.erase(coordinate);
 			return;
 		}
@@ -353,26 +489,55 @@ namespace MiniMapUI
 			viewport_->GetSectionAt(localX, localY);
 		if (section == nullptr)
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.CoordinateResolutionCounts[
+				static_cast<std::size_t>(CoordinateResolution::SectionUnavailable)];
+#endif
 			RecordImageRemoval(coordinate);
 			return;
 		}
 		Services::Map::Buildings::BuildingMapSection::CompletedImageView image;
 		if (!section->TryBorrowCompletedImage(image))
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.CoordinateResolutionCounts[
+				static_cast<std::size_t>(CoordinateResolution::ImageUnavailable)];
+#endif
 			RecordImageRemoval(coordinate);
 			return;
 		}
 		PendingPresentationUpdate replacement;
-		if (!TryConvertCompletedImage(
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		bool converted = false;
+		{
+			DurationScope durationScope(diagnostics_.ImageConversion);
+			converted = TryConvertCompletedImage(
 			image.PixelWidth,
 			image.PixelHeight,
 			image.Rgba16fBytes,
-			replacement))
+			replacement);
+		}
+#else
+		const bool converted = TryConvertCompletedImage(
+			image.PixelWidth,
+			image.PixelHeight,
+			image.Rgba16fBytes,
+			replacement);
+#endif
+		if (!converted)
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.CoordinateResolutionCounts[
+				static_cast<std::size_t>(CoordinateResolution::ConversionFailed)];
+#endif
 			pendingUpdates_.erase(coordinate);
 			lastConversionFailureCoordinate_ = coordinate;
 			return;
 		}
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.CoordinateResolutionCounts[
+			static_cast<std::size_t>(CoordinateResolution::Converted)];
+#endif
 		StorePendingUpdate(coordinate, std::move(replacement));
 		ClearConversionFailureFor(coordinate);
 	}
@@ -416,11 +581,24 @@ namespace MiniMapUI
 			entry->State = TextureResourceState::Acquiring;
 			++activeTextureOperations_;
 		}
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		MiniMap::Services::UploadState result;
+		{
+			DurationScope durationScope(diagnostics_.TextureUploadCall);
+			result = textures_->UploadRGBA(
+				update.Rgba8Bytes,
+				size,
+				request,
+				entry->Owner);
+		}
+		++diagnostics_.TextureUploadStateCounts[static_cast<std::size_t>(result)];
+#else
 		const MiniMap::Services::UploadState result = textures_->UploadRGBA(
 			update.Rgba8Bytes,
 			size,
 			request,
 			entry->Owner);
+#endif
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			--activeTextureOperations_;
@@ -445,7 +623,16 @@ namespace MiniMapUI
 				entry.State = TextureResourceState::PendingRelease;
 				return;
 			}
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const bool published = PublishValidatedTexture(coordinate, expectedSize, entry);
+			if (published)
+			{
+				++diagnostics_.ValidatedTexturePublications;
+			}
+			if (!published)
+#else
 			if (!PublishValidatedTexture(coordinate, expectedSize, entry))
+#endif
 			{
 				if (entry.State == TextureResourceState::Acquiring)
 				{
@@ -747,6 +934,9 @@ namespace MiniMapUI
 		if (update.Kind == PendingUpdateKind::Removal)
 		{
 			WithdrawPublishedTexture(coordinate);
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.ProcessedRemovalUpdates;
+#endif
 			return;
 		}
 		UploadPendingReplacement(coordinate, std::move(update));
@@ -829,6 +1019,41 @@ namespace MiniMapUI
 		}
 		for (TextureEntry* entry : eligible)
 		{
+#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			MiniMap::Services::ReleaseState result;
+			{
+				DurationScope durationScope(diagnostics_.TextureReleaseCall);
+				result = textures_->Release(entry->Owner);
+			}
+			++diagnostics_.TextureReleaseStateCounts[static_cast<std::size_t>(result)];
+			bool discharged = false;
+			{
+				std::lock_guard<std::mutex> lock(presentationMutex_);
+				--activeTextureOperations_;
+				discharged = (result == MiniMap::Services::ReleaseState::Empty ||
+					result == MiniMap::Services::ReleaseState::Returned) && !entry->Owner.HasRecord();
+				if (discharged)
+				{
+					auto owned = std::find_if(
+						textureResources_.begin(), textureResources_.end(),
+						[entry](TextureEntry& candidate) { return &candidate == entry; });
+					if (owned != textureResources_.end())
+					{
+						textureResources_.erase(owned);
+					}
+				}
+				else
+				{
+					entry->State = result == MiniMap::Services::ReleaseState::UnavailableRetained &&
+						entry->Owner.HasRecord() ? TextureResourceState::PendingRelease : TextureResourceState::Unresolved;
+				}
+			}
+			if (discharged)
+			{
+				++diagnostics_.DischargedTextureReceipts;
+				continue;
+			}
+#else
 			const MiniMap::Services::ReleaseState result = textures_->Release(entry->Owner);
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			--activeTextureOperations_;
@@ -846,6 +1071,7 @@ namespace MiniMapUI
 			}
 			entry->State = result == MiniMap::Services::ReleaseState::UnavailableRetained &&
 				entry->Owner.HasRecord() ? TextureResourceState::PendingRelease : TextureResourceState::Unresolved;
+#endif
 		}
 	}
 

@@ -7,6 +7,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <array>
+#include <chrono>
+#endif
 #include <list>
 #include <map>
 #include <memory>
@@ -52,6 +56,58 @@ namespace MiniMapUI
 	class BuildingLayer final
 	{
 	public:
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Fixed-size game-thread presentation measurements owned by one layer instance. */
+		struct DiagnosticsSnapshot
+		{
+			/** Repeated steady-clock elapsed duration; MeanMs is derived by the reporter. */
+			struct Duration
+			{
+				std::uint64_t Samples = 0;
+				double TotalMs = 0.0;
+				double MaxMs = 0.0;
+
+				/** Adds one elapsed operation duration. */
+				void Add(double elapsedMs) noexcept
+				{
+					++Samples;
+					TotalMs += elapsedMs;
+					if (elapsedMs > MaxMs)
+					{
+						MaxMs = elapsedMs;
+					}
+				}
+			};
+
+			double IntervalMs = 0.0;
+			Duration OpenViewport;
+			std::uint64_t SuccessfulOpenViewports = 0;
+			Duration ViewportUpdate;
+			std::uint64_t SuccessfulViewportUpdates = 0;
+			std::uint64_t RejectedViewportUpdates = 0;
+			Duration PrepareCpuImages;
+			std::uint64_t PreparedCoordinates = 0;
+			Duration ImageConversion;
+			/** NotCovered, SectionUnavailable, ImageUnavailable, Converted, ConversionFailed. */
+			std::array<std::uint64_t, 5> CoordinateResolutionCounts{};
+			Duration GpuPublicationPass;
+			std::uint64_t PublicationPassAlreadyActive = 0;
+			std::uint64_t OutstandingTextureOperationRejections = 0;
+			Duration TextureUploadCall;
+			/** Entries follow UploadState declaration order. */
+			std::array<std::uint64_t, 4> TextureUploadStateCounts{};
+			std::uint64_t ValidatedTexturePublications = 0;
+			std::uint64_t ProcessedRemovalUpdates = 0;
+			Duration TextureReleaseCall;
+			/** Entries follow ReleaseState declaration order. */
+			std::array<std::uint64_t, 4> TextureReleaseStateCounts{};
+			std::uint64_t DischargedTextureReceipts = 0;
+		};
+
+		/** Hands off one due nonempty game-thread interval without changing layer state. */
+		bool TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept;
+#endif
+
 		/**
 		 * Removes the callback and closes the viewport without backend resource calls.
 		 * Native collector resources require explicit Shutdown before destruction; the
@@ -153,6 +209,37 @@ namespace MiniMapUI
 
 	private:
 		using Coordinate = std::pair<std::int64_t, std::int64_t>;
+
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records one coordinate-resolution outcome without retaining its coordinate. */
+		enum class CoordinateResolution : std::size_t
+		{
+			NotCovered,
+			SectionUnavailable,
+			ImageUnavailable,
+			Converted,
+			ConversionFailed
+		};
+
+		/** Adds elapsed time to one game-thread-owned aggregate on scope exit. */
+		struct DurationScope final
+		{
+			explicit DurationScope(DiagnosticsSnapshot::Duration& duration) noexcept;
+			~DurationScope() noexcept;
+
+		private:
+			DiagnosticsSnapshot::Duration& duration_;
+			std::chrono::steady_clock::time_point started_;
+		};
+
+		/** Starts a new interval while preserving every functional presentation field. */
+		void ResetDiagnosticsInterval() noexcept;
+		/** Tests whether the interval contains actual layer operation observations. */
+		bool HasDiagnosticsActivity() const noexcept;
+
+		DiagnosticsSnapshot diagnostics_{};
+		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+#endif
 
 		/** Attaches a service-created viewport and resets prior CPU presentation state. */
 		void SetViewport(std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport);
