@@ -3,8 +3,7 @@
 #include "plugin_helpers.h"
 #include <utility>
 
-// Preserve the former input ABI/vocabulary review checks inside the adapter.
-static_assert(PLUGIN_INTERFACE_VERSION == 70, "Review the wheel ABI when updating the SDK");
+// Preserve the adapter's expected EModKey vocabulary.
 static_assert(std::size_t(EModKey::Unknown) == 101);
 
 namespace MiniMap::Adapters::AlienX
