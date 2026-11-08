@@ -3,6 +3,7 @@
 // Owns the V2 viewport presentation lifecycle and draws published Section textures.
 #include "BuildingLayer.h"
 
+#include "../Map/Buildings/BuildingCollectorV2.h"
 #include "../Services/Map/Buildings/BuildingMapSection.h"
 #include "../Services/Map/Buildings/BuildingMapViewport.h"
 #include "../Map/MapTransform.h"
@@ -17,12 +18,13 @@
 
 namespace MiniMapUI
 {
-	/** Stores the caller-owned texture service and validates the configured Section size. */
+	/** Creates inert collector state, stores textures and validates the Section size. */
 	BuildingLayer::BuildingLayer(
 		MiniMap::Services::ITextures& textures,
 		double sectionSizeMapUnits)
 		: textures_(&textures)
 		, sectionSizeMapUnits_(sectionSizeMapUnits)
+		, buildingCollector_(std::make_unique<MiniMap::BuildingAcquisition::BuildingCollectorV2>())
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0)
 		{
@@ -187,7 +189,7 @@ namespace MiniMapUI
 		ui.PopClip(MiniMap::Services::DrawLayer::Window);
 	}
 
-	/** Stops publication and drawing, withdraws receipts, and attempts backend release. */
+	/** Closes the viewport, shuts down the collector, and retires published textures. */
 	bool BuildingLayer::Shutdown()
 	{
 		{
@@ -195,6 +197,11 @@ namespace MiniMapUI
 			shutdownRequested_ = true;
 		}
 		DetachViewportAndClearCpuState();
+		if (buildingCollector_)
+		{
+			buildingCollector_->ShutdownResources();
+			buildingCollector_.reset();
+		}
 		WithdrawAllPublishedTextures();
 		ReleasePendingTextures();
 		const bool complete = HasCompletedResourceShutdown();

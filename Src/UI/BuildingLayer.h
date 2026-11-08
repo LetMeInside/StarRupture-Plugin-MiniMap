@@ -22,6 +22,11 @@ namespace Services::Map::Buildings
 	class BuildingMapViewport;
 }
 
+namespace MiniMap::BuildingAcquisition
+{
+	class BuildingCollectorV2;
+}
+
 namespace MiniMap::Services
 {
 	class ICanvas;
@@ -35,9 +40,11 @@ namespace MiniMapMap
 namespace MiniMapUI
 {
 	/**
-	 * Owns one caller-created V2 viewport, CPU image updates and validated texture
-	 * receipts. The caller owns the service, collector, texture service and world
-	 * session; those owners must outlive this layer's viewport and resources.
+	 * Owns one BuildingCollectorV2, its viewport, CPU image updates and validated
+	 * texture receipts. The caller owns BuildingMapService and ITextures; both must
+	 * outlive this layer's viewport and texture resources. Native collector resources
+	 * require explicit Shutdown before BuildingLayer destruction. Viewport binding to
+	 * the owned collector is not implemented yet.
 	 * Non-render operations use the serialized game thread. Render accesses only
 	 * the mutex-protected texture publication and supplied transform.
 	 */
@@ -46,7 +53,8 @@ namespace MiniMapUI
 	public:
 		/**
 		 * Removes the callback and closes the viewport without backend resource calls.
-		 * The caller must complete Shutdown and keep this layer alive while it returns false.
+		 * Native collector resources require explicit Shutdown before destruction; the
+		 * caller must keep this layer alive while Shutdown returns false.
 		 */
 		~BuildingLayer();
 
@@ -60,7 +68,8 @@ namespace MiniMapUI
 		BuildingLayer& operator=(BuildingLayer&&) = delete;
 
 		/**
-		 * Creates a layer using caller-owned texture service and configured Section size.
+		 * Creates a layer with CPU-only collector state, caller-owned texture service
+		 * and configured Section size. It does not initialize native collector resources.
 		 * @param textures Texture service that must remain alive through resource shutdown.
 		 * @param sectionSizeMapUnits Positive service-configured width and height of each Section.
 		 * @throws std::invalid_argument when the Section size is nonfinite or nonpositive.
@@ -71,7 +80,8 @@ namespace MiniMapUI
 		 * Replaces the owned viewport, clearing prior CPU updates and discovering the
 		 * new viewport's existing Sections. A null viewport detaches the current one;
 		 * after Shutdown begins, attachment requests are ignored.
-		 * The caller remains responsible for keeping the service and collector alive.
+		 * The caller remains responsible for keeping BuildingMapService alive. Binding
+		 * this viewport to the layer's owned collector is not implemented yet.
 		 *
 		 * @param viewport Viewport previously created by its caller-owned service.
 		 */
@@ -122,9 +132,11 @@ namespace MiniMapUI
 			bool showLayer);
 
 		/**
-		 * Stops publication and drawing, closes the viewport, withdraws entries and
-		 * attempts backend releases. Repeat after UnavailableRetained; keep this layer
-		 * and the texture service alive while any receipt or operation remains.
+		 * Stops publication and drawing, closes the viewport, shuts down and releases
+		 * the owned collector, then withdraws entries and attempts backend releases.
+		 * Collector cleanup occurs after viewport closure and only once. Repeat after
+		 * UnavailableRetained; keep this layer and ITextures alive while any receipt or
+		 * operation remains.
 		 *
 		 * @return True when no published entry, receipt or backend operation remains.
 		 */
@@ -356,6 +368,7 @@ namespace MiniMapUI
 
 		MiniMap::Services::ITextures* textures_;
 		double sectionSizeMapUnits_;
+		std::unique_ptr<MiniMap::BuildingAcquisition::BuildingCollectorV2> buildingCollector_;
 		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport_;
 		std::set<Coordinate> dirtyCoordinates_;
 		std::map<Coordinate, PendingPresentationUpdate> pendingUpdates_;
