@@ -23,11 +23,11 @@ namespace Services::Map::Buildings
 		PublicationOwner.reset();
 	}
 
-	/** Validates immutable map settings and copies the caller's spline policy span. */
+	/** Validates map/cache settings, copies policies and derives the owned Buildings path. */
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
-		std::filesystem::path buildingsCacheDirectory,
+		std::filesystem::path cacheRoot,
 		std::span<const SplinePolicy> splinePolicies)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
@@ -38,14 +38,28 @@ namespace Services::Map::Buildings
 		{
 			throw std::invalid_argument("Building Map settings require a finite positive section size and positive resolution.");
 		}
-		if (buildingsCacheDirectory.empty() || !buildingsCacheDirectory.is_absolute())
+		if (cacheRoot.empty())
 		{
-			throw std::invalid_argument("Building Map requires an absolute Buildings cache directory.");
+			throw std::invalid_argument("Building Map requires an absolute MiniMap cache root.");
 		}
+		cacheRoot.make_preferred();
+		cacheRoot = cacheRoot.lexically_normal();
+		if (!cacheRoot.is_absolute())
+		{
+			throw std::invalid_argument("Building Map requires an absolute MiniMap cache root.");
+		}
+		std::filesystem::path buildingsCacheDirectory = cacheRoot / L"Buildings";
 		sectionSchedulingCoordinator_.reset(new Scheduling::SectionSchedulingCoordinator(
 			sectionSizeMapUnits_,
 			sectionResolutionPixels_,
 			std::move(buildingsCacheDirectory)));
+	}
+
+	/** Delegates explicit cache invalidation through the owned scheduler hierarchy. */
+	bool BuildingMapService::ClearCache()
+	{
+		return sectionSchedulingCoordinator_ != nullptr &&
+			sectionSchedulingCoordinator_->ClearCache();
 	}
 
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */

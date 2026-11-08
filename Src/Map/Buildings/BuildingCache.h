@@ -59,7 +59,6 @@ namespace MiniMapBuildingCache
     // Encodes the UTF-8 bytes reversibly. The returned name includes .sprite.
     bool BlueprintFileName(const std::string& canonicalBlueprintPath, std::string& fileName);
     bool GetCacheRoot(std::filesystem::path& directory);
-    bool Clear();
     enum class LoadStatus { Loaded, Missing, Invalid, IOError, Unavailable };
     struct LoadResult
     {

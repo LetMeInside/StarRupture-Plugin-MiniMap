@@ -409,6 +409,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return True when native retirement is complete and session state is released.
 		 */
 		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Clears the configured sprite cache without changing acquisition-session state.
+		 * @return True when SpriteDiskCache clears its configured directory without error.
+		 */
+		bool ClearCache();
 		/** Advances one existing sprite renderer operation and drains available feedback.
 		 * Called once by the coordinator per scheduling tick on the serialized game thread.
 		 */

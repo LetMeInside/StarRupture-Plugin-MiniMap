@@ -11,7 +11,6 @@ namespace MiniMapTerrainCache
 {
     bool GetCacheRoot(std::filesystem::path&);
     bool Clear();
-    bool GetBuildingDiagnosticsDirectory(std::filesystem::path&);
     bool TryLoadChunk(
         int radiationLevel,
         int gridX,

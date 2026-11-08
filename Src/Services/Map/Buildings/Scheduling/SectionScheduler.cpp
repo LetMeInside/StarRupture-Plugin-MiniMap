@@ -389,6 +389,12 @@ namespace Services::Map::Buildings::Scheduling
 		return buildingScheduler_ == nullptr || buildingScheduler_->AdvanceSessionShutdown();
 	}
 
+	/** Delegates explicit cache deletion to the owned SpriteDiskCache. */
+	bool SectionScheduler::ClearCache()
+	{
+		return spriteDiskCache_ != nullptr && spriteDiskCache_->ClearCache();
+	}
+
 	/** Advances the existing renderer acquisition path without changing its session behavior. */
 	void SectionScheduler::AdvanceSpriteAcquisition()
 	{

@@ -15,16 +15,20 @@
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
-#include "Map/Buildings/BuildingCache.h"
 #include "Map/Buildings/BuildingComplexWorld.h"
 #include "Map/Buildings/BuildingVisuals.h"
+#include "Services/Map/Buildings/BuildingMapService.h"
+#include "PluginPaths.h"
 #include "Native/ResidentMetadata.h"
 #include <array>
+#include <filesystem>
+#include <memory>
 #endif
 
 #ifdef MODLOADER_CLIENT_BUILD
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 namespace S = MiniMap::Services;
+static std::unique_ptr<Services::Map::Buildings::BuildingMapService> g_buildingMapService;
 static S::Hook g_commonUIActivatedHook{};
 static S::Hook g_commonUIDeactivatedHook{};
 static S::Registration g_rendererTick{}, g_beforeEnd{}, g_afterEnd{}, g_gameplayBegan{}, g_experienceReady{};
@@ -282,10 +286,16 @@ static bool InstallCommonUIHooks()
 #endif
 
 #ifdef MODLOADER_CLIENT_BUILD
+// Clears building files through the application-owned BuildingMapService instance.
+static bool ClearBuildingsCache()
+{
+    return g_buildingMapService != nullptr && g_buildingMapService->ClearCache();
+}
+
 static bool ClearPersistentCaches()
 {
     const bool terrainCleared = MiniMapTerrainCache::Clear();
-    const bool buildingsCleared = MiniMapBuildingCache::Clear();
+    const bool buildingsCleared = ClearBuildingsCache();
     if (!terrainCleared || !buildingsCleared)
         LOG_ERROR("MiniMap: persistent cache clearing failed (terrain=%d, buildings=%d)", terrainCleared, buildingsCleared);
     return terrainCleared && buildingsCleared;
@@ -727,16 +737,54 @@ namespace MiniMap
             return false;
         }
 
+        if (g_buildingMapService != nullptr)
+        {
+            LOG_ERROR("MiniMap: Building Map service is already initialized");
+            return false;
+        }
+
+        std::filesystem::path pluginDirectory;
+        const char* cacheFailure = nullptr;
+        if (!MiniMapPluginPaths::GetPluginDirectory(pluginDirectory, &cacheFailure))
+        {
+            LOG_ERROR("MiniMap: application cache root resolution failed: %s",
+                cacheFailure ? cacheFailure : "plugin directory unavailable");
+            return false;
+        }
+        const std::filesystem::path cacheRoot = pluginDirectory / L"MiniMap" / L"Cache";
+
+        // These approved settings use native centimeters and the established direct-index policy table.
+        constexpr double sectionSizeMapUnits = 12500.0;
+        constexpr std::uint32_t sectionResolutionPixels = 256;
+        const std::array<::Services::Map::Buildings::SplinePolicy, 4> splinePolicies{{
+            {0xFFFFFF, 1.0}, // Reserved index 0 is never resolved.
+            {0x000000, 1.0}, // DroneRail index 1.
+            {0x80EBDD, 1.0}, // Zipline index 2.
+            {0x1F1E1C, 1.0}}}; // Walkway index 3.
+        g_buildingMapService.reset(new ::Services::Map::Buildings::BuildingMapService(
+            sectionSizeMapUnits,
+            sectionResolutionPixels,
+            cacheRoot,
+            splinePolicies));
+
+        // Owns rollback of the service when any later plugin initialization step fails.
+        struct BuildingMapServiceInitGuard
+        {
+            bool Keep = false;
+            // Releases the application-owned service unless initialization completes.
+            ~BuildingMapServiceInitGuard()
+            {
+                if (!Keep) g_buildingMapService.reset();
+            }
+        } buildingMapServiceInitGuard;
+
         if (!InstallCommonUIHooks())
         {
             return false;
         }
 
-        std::filesystem::path terrainRoot;
-        const char* cacheFailure = nullptr;
-        if (!MiniMapTerrainCache::GetCacheRoot(terrainRoot) ||
-            !MiniMapCacheIdentity::Initialize(terrainRoot.parent_path(),
-                &ClearPersistentCaches, &MiniMapBuildingCache::Clear,
+        if (!MiniMapCacheIdentity::Initialize(cacheRoot,
+                &ClearPersistentCaches, &ClearBuildingsCache,
                 cacheFailure, MiniMapConfig::ClearCache()))
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
@@ -761,6 +809,7 @@ namespace MiniMap
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
             MiniMapUI::Shutdown();
+            MiniMapCacheIdentity::Reset();
             RemoveCommonUIHooks();
             return false;
         }
@@ -954,6 +1003,8 @@ namespace MiniMap
                 LOG_INFO("MiniMap: active ChimeraMain attachment ready: %p", currentWorld);
         }
 
+        buildingMapServiceInitGuard.Keep = true;
+
 #endif
 
         LOG_INFO(
@@ -1012,6 +1063,7 @@ namespace MiniMap
         MiniMapUI::Shutdown();
 
         MiniMapCacheIdentity::ClearOnExit();
+        g_buildingMapService.reset();
 
         // NativeApi should be the last subsystem torn down.
         // Other subsystems depend on it for their own shutdown paths.

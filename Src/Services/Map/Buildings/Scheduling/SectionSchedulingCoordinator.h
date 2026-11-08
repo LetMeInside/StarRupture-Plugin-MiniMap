@@ -115,6 +115,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return True when existing native retirement is complete.
 		 */
 		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Delegates explicit building-cache clearing to the owned SectionScheduler.
+		 * @return True when the configured Buildings subtree is cleared without error.
+		 */
+		bool ClearCache();
 
 	private:
 		friend class ::Services::Map::Buildings::BuildingMapService;

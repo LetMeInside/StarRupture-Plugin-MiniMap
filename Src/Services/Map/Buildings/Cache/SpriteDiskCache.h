@@ -41,6 +41,10 @@ namespace Services::Map::Buildings::Cache
 		 * @param buildingsRoot Absolute configured MiniMap/Cache/Buildings directory.
 		 */
 		SpriteDiskCache(std::filesystem::path buildingsRoot);
+		/** Removes only this cache object's configured Buildings directory.
+		 * @return True when removal completes without a filesystem error.
+		 */
+		bool ClearCache();
 
 		/** Loads one owned canonical sprite key.
 		 * @param key Owned bytes identifying one sprite file.

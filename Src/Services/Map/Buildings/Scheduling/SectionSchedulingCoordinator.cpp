@@ -197,6 +197,12 @@ namespace Services::Map::Buildings::Scheduling
 		return sectionScheduler_ == nullptr || sectionScheduler_->AdvanceCaptureGameWorldSessionShutdown();
 	}
 
+	/** Delegates explicit building-cache clearing to the owned SectionScheduler. */
+	bool SectionSchedulingCoordinator::ClearCache()
+	{
+		return sectionScheduler_ != nullptr && sectionScheduler_->ClearCache();
+	}
+
 	/** Tests one coordinate against both half-open range axes. */
 	bool SectionSchedulingCoordinator::ContainsCoordinate(
 		std::int64_t firstGridX,

@@ -30,22 +30,23 @@ namespace Services::Map::Buildings
 	class BuildingMapService final : private Coordination::IBuildingMapService
 	{
 	public:
-		/** Creates a service whose settings define the shared grid and whose absolute cache directory serves sprite files.
+		/** Creates a service whose settings define the shared grid and whose cache root contains its sprite files.
 		 * Throws std::invalid_argument unless section size is finite and positive,
-		 * resolution is positive, and the Buildings cache directory is nonempty and
-		 * absolute. Construction does not require that directory to exist and performs
-		 * no cache file operations. The spline policy span is copied; its index-zero entry
-		 * is reserved and cannot be resolved by TryGetSplinePolicy.
+		 * resolution is positive, and the MiniMap cache root is nonempty and absolute.
+		 * The root is normalized and the service derives its Buildings subdirectory.
+		 * Construction does not require either directory to exist and performs no cache
+		 * file operations. The spline policy span is copied; its index-zero entry is
+		 * reserved and cannot be resolved by TryGetSplinePolicy.
 		 *
 		 * @param sectionSizeMapUnits Width and height of each square cell in map units.
 		 * @param sectionResolutionPixels Width and height of each future square image in pixels.
-		 * @param buildingsCacheDirectory Already-resolved absolute Buildings sprite-cache directory.
+		 * @param cacheRoot Absolute application-wide MiniMap/Cache directory.
 		 * @param splinePolicies Direct-indexed policies with reserved entry zero.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
-			std::filesystem::path buildingsCacheDirectory,
+			std::filesystem::path cacheRoot,
 			std::span<const SplinePolicy> splinePolicies);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
@@ -57,6 +58,11 @@ namespace Services::Map::Buildings
 		BuildingMapService& operator=(BuildingMapService&&) = delete;
 		/** Invalidates viewports; the owner must finish active game-world-session shutdown before destruction. */
 		~BuildingMapService();
+		/** Clears only this service's configured Buildings cache subtree.
+		 * CacheIdentity remains responsible for deciding when this operation is requested.
+		 * @return True when the cache subtree was cleared without a filesystem error.
+		 */
+		bool ClearCache();
 
 		/** Returns the configured square grid-cell width and height in map units. */
 		double GetSectionSizeMapUnits() const noexcept override;

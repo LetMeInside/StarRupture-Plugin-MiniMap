@@ -247,16 +247,6 @@ namespace MiniMapBuildingCache
         return true;
     }
 
-    bool Clear()
-    {
-        std::filesystem::path root;
-        if (!GetPluginDirectory(root)) return false;
-        root /= L"MiniMap"; root /= L"Cache"; root /= L"Buildings";
-        std::error_code error;
-        std::filesystem::remove_all(root, error);
-        return !error;
-    }
-
     LoadResult TryLoad(const std::string& canonicalBlueprintPath, Sprite& out) noexcept
     {
         try

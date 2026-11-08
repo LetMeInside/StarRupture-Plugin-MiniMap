@@ -35,6 +35,14 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	{
 	}
 
+	/** Removes only the configured Buildings subtree and reports filesystem errors. */
+	bool SpriteDiskCache::ClearCache()
+	{
+		std::error_code error;
+		std::filesystem::remove_all(m_buildingsRoot, error);
+		return !error;
+	}
+
 	/** Loads one key without an existence precheck and preserves missing/invalid/I/O outcomes. */
 	SpriteDiskCache::LoadResult SpriteDiskCache::TryLoad(const OwnedSpriteKey& key) const noexcept
 	{
