@@ -13,6 +13,10 @@
 #include <span>
 #include <vector>
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "Scheduling/BuildingScheduler.h"
+#endif
+
 namespace Services::Map::Buildings
 {
 	namespace Capture
@@ -91,6 +95,12 @@ namespace Services::Map::Buildings
 		/** Forwards one completed numeric scheduling interval without exposing its coordinator. */
 		bool TakeSectionSchedulingDiagnosticsSnapshot(
 			Scheduling::SectionSchedulingDiagnosticsSnapshot& output) noexcept;
+		/** Forwards the independent scheduler-owned sprite acquisition interval.
+		 * @param output Receives the completed numeric snapshot when its interval is due.
+		 * @return True when the coordinator hands off a completed interval.
+		 */
+		bool TakeSpriteAcquisitionDiagnosticsSnapshot(
+			Scheduling::BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
 #endif
 
 		/** Returns the configured square grid-cell width and height in map units. */

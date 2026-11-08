@@ -510,6 +510,16 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Returns the owned scheduler's completed acquisition interval without advancing work. */
+	bool SectionScheduler::TakeSpriteAcquisitionDiagnosticsSnapshot(
+		BuildingScheduler::DiagnosticsSnapshot& output) noexcept
+	{
+		return buildingScheduler_ != nullptr &&
+			buildingScheduler_->TakeDiagnosticsSnapshot(output);
+	}
+#endif
+
 	/** Processes known sprites from one fixed publication without assigning a rendering pass. */
 	void SectionScheduler::PrepareKnownSpriteRequirements(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,

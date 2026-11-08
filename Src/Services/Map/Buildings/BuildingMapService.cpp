@@ -133,6 +133,14 @@ namespace Services::Map::Buildings
 		return sectionSchedulingCoordinator_ != nullptr &&
 			sectionSchedulingCoordinator_->TakeDiagnosticsSnapshot(output);
 	}
+
+	/** Delegates the independent sprite-acquisition interval without owning its measurements. */
+	bool BuildingMapService::TakeSpriteAcquisitionDiagnosticsSnapshot(
+		Scheduling::BuildingScheduler::DiagnosticsSnapshot& output) noexcept
+	{
+		return sectionSchedulingCoordinator_ != nullptr &&
+			sectionSchedulingCoordinator_->TakeSpriteAcquisitionDiagnosticsSnapshot(output);
+	}
 #endif
 
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */

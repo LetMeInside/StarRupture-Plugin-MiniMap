@@ -1,6 +1,10 @@
 // Owns Building Map acquisition and synchronously renders and commits complete Section images.
 #pragma once
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "BuildingScheduler.h"
+#endif
+
 #include "../BuildingCandidatePublication.h"
 #include "../Rendering/SectionRendering.h"
 #include "../Visuals/BuildingRenderSceneInput.h"
@@ -442,6 +446,14 @@ namespace Services::Map::Buildings::Scheduling
 		 * Called only for an admitted gameplay scheduling tick on the serialized game thread.
 		 */
 		void AdvanceSpriteAcquisition();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Forwards the BuildingScheduler's due numeric acquisition snapshot without advancing it.
+		 * @param output Receives the completed acquisition interval when one is due.
+		 * @return True when the owned BuildingScheduler hands off a completed interval.
+		 */
+		bool TakeSpriteAcquisitionDiagnosticsSnapshot(
+			BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
+#endif
 
 		/** Processes known sprites from exactly one retained, current source publication.
 		 * The caller retains publicationOwner for this operation; its borrowed spans and keys are

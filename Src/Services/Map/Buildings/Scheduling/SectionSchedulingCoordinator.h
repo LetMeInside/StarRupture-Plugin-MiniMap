@@ -12,6 +12,10 @@
 #include <memory>
 #include <set>
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "BuildingScheduler.h"
+#endif
+
 namespace Services::Map::Buildings
 {
 	class BuildingMapService;
@@ -203,6 +207,12 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Hands off one completed nonempty interval and resets only diagnostic aggregates. */
 		bool TakeDiagnosticsSnapshot(SectionSchedulingDiagnosticsSnapshot& output) noexcept;
+		/** Forwards the independent BuildingScheduler acquisition interval without combining it.
+		 * @param output Receives the completed sprite-acquisition interval when due.
+		 * @return True when the SectionScheduler forwards a completed interval.
+		 */
+		bool TakeSpriteAcquisitionDiagnosticsSnapshot(
+			BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
 #endif
 
 	private:

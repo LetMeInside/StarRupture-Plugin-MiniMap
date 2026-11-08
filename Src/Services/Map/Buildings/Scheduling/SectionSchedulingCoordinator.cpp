@@ -384,6 +384,14 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
+	/** Forwards the independent BuildingScheduler interval without touching Section aggregates. */
+	bool SectionSchedulingCoordinator::TakeSpriteAcquisitionDiagnosticsSnapshot(
+		BuildingScheduler::DiagnosticsSnapshot& output) noexcept
+	{
+		return sectionScheduler_ != nullptr &&
+			sectionScheduler_->TakeSpriteAcquisitionDiagnosticsSnapshot(output);
+	}
+
 	/** Clears interval evidence while preserving every functional coordinator collection. */
 	void SectionSchedulingCoordinator::ResetDiagnostics() noexcept
 	{

@@ -708,6 +708,97 @@ static void OnTextureServiceTick(
                     readinessName, numericalName);
             }
         }
+
+        ::Services::Map::Buildings::Scheduling::BuildingScheduler::DiagnosticsSnapshot spriteDiagnostics;
+        if (g_buildingMapService->TakeSpriteAcquisitionDiagnosticsSnapshot(spriteDiagnostics))
+        {
+            const auto meanMs = [](const auto& duration)
+            {
+                return duration.Samples == 0
+                    ? 0.0
+                    : duration.TotalMs / static_cast<double>(duration.Samples);
+            };
+            LOG_INFO("MiniMap: BuildingMap sprite_requirements intervalMs=%.1f elapsed:cpuWall ensure={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} status={ready:%llu pending:%llu failed:%llu unavailable:%llu} capturePendingShortCircuits:%llu missingCpuSourceManager:%llu",
+                spriteDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(spriteDiagnostics.EnsureSpriteReady.Samples),
+                spriteDiagnostics.EnsureSpriteReady.TotalMs,
+                meanMs(spriteDiagnostics.EnsureSpriteReady),
+                spriteDiagnostics.EnsureSpriteReady.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.RequirementStatusCounts[0]),
+                static_cast<unsigned long long>(spriteDiagnostics.RequirementStatusCounts[1]),
+                static_cast<unsigned long long>(spriteDiagnostics.RequirementStatusCounts[2]),
+                static_cast<unsigned long long>(spriteDiagnostics.RequirementStatusCounts[3]),
+                static_cast<unsigned long long>(spriteDiagnostics.CapturePendingShortCircuits),
+                static_cast<unsigned long long>(spriteDiagnostics.MissingCpuSourceManager));
+            LOG_INFO("MiniMap: BuildingMap sprite_lookup intervalMs=%.1f elapsed:cpuWall demandLookup={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} demandDiskLoad={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} routes={unknown:%llu resident:%llu noDiskProvider:%llu diskLoadedAdopted:%llu diskMissing:%llu diskInvalid:%llu diskIOError:%llu diskUnavailable:%llu loadedAdoptFailed:%llu adoptedLookupMissing:%llu otherDiskFailure:%llu}",
+                spriteDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(spriteDiagnostics.DemandSpriteLookup.Samples),
+                spriteDiagnostics.DemandSpriteLookup.TotalMs,
+                meanMs(spriteDiagnostics.DemandSpriteLookup),
+                spriteDiagnostics.DemandSpriteLookup.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.DemandDiskLoad.Samples),
+                spriteDiagnostics.DemandDiskLoad.TotalMs,
+                meanMs(spriteDiagnostics.DemandDiskLoad),
+                spriteDiagnostics.DemandDiskLoad.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[0]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[1]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[2]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[3]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[4]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[5]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[6]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[7]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[8]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[9]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpriteLookupRouteCounts[10]));
+            LOG_INFO("MiniMap: BuildingMap sprite_capture intervalMs=%.1f elapsed:cpuWall enqueue={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} rendererAdvanceSync={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} queuedRequests:%llu unavailableEnqueueReturns:%llu",
+                spriteDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(spriteDiagnostics.EnqueueCaptureRequest.Samples),
+                spriteDiagnostics.EnqueueCaptureRequest.TotalMs,
+                meanMs(spriteDiagnostics.EnqueueCaptureRequest),
+                spriteDiagnostics.EnqueueCaptureRequest.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.CaptureRendererAdvance.Samples),
+                spriteDiagnostics.CaptureRendererAdvance.TotalMs,
+                meanMs(spriteDiagnostics.CaptureRendererAdvance),
+                spriteDiagnostics.CaptureRendererAdvance.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.QueuedCaptureRequests),
+                static_cast<unsigned long long>(spriteDiagnostics.UnavailableEnqueueReturns));
+            LOG_INFO("MiniMap: BuildingMap sprite_feedback intervalMs=%.1f elapsed:cpuWall drainInclusive={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} processingNested={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} unmatched:%llu matched={succeeded:%llu failed:%llu cancelled:%llu}",
+                spriteDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(spriteDiagnostics.CaptureFeedbackDrain.Samples),
+                spriteDiagnostics.CaptureFeedbackDrain.TotalMs,
+                meanMs(spriteDiagnostics.CaptureFeedbackDrain),
+                spriteDiagnostics.CaptureFeedbackDrain.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.CaptureFeedbackProcessing.Samples),
+                spriteDiagnostics.CaptureFeedbackProcessing.TotalMs,
+                meanMs(spriteDiagnostics.CaptureFeedbackProcessing),
+                spriteDiagnostics.CaptureFeedbackProcessing.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.UnmatchedFeedback),
+                static_cast<unsigned long long>(spriteDiagnostics.MatchedFeedbackOutcomeCounts[0]),
+                static_cast<unsigned long long>(spriteDiagnostics.MatchedFeedbackOutcomeCounts[1]),
+                static_cast<unsigned long long>(spriteDiagnostics.MatchedFeedbackOutcomeCounts[2]));
+            LOG_INFO("MiniMap: BuildingMap sprite_publication intervalMs=%.1f elapsed:cpuWall adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f outcomes={success:%llu failed:%llu}} postAdoptionLookup={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} readinessPublications:%llu persistence={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f status={persisted:%llu invalid:%llu ioError:%llu unavailable:%llu}}",
+                spriteDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(spriteDiagnostics.CapturePayloadAdoption.Samples),
+                spriteDiagnostics.CapturePayloadAdoption.TotalMs,
+                meanMs(spriteDiagnostics.CapturePayloadAdoption),
+                spriteDiagnostics.CapturePayloadAdoption.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.CaptureAdoptionOutcomeCounts[0]),
+                static_cast<unsigned long long>(spriteDiagnostics.CaptureAdoptionOutcomeCounts[1]),
+                static_cast<unsigned long long>(spriteDiagnostics.PostAdoptionLookup.Samples),
+                spriteDiagnostics.PostAdoptionLookup.TotalMs,
+                meanMs(spriteDiagnostics.PostAdoptionLookup),
+                spriteDiagnostics.PostAdoptionLookup.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.ReadinessPublications),
+                static_cast<unsigned long long>(spriteDiagnostics.SpritePersistence.Samples),
+                spriteDiagnostics.SpritePersistence.TotalMs,
+                meanMs(spriteDiagnostics.SpritePersistence),
+                spriteDiagnostics.SpritePersistence.MaxMs,
+                static_cast<unsigned long long>(spriteDiagnostics.SpritePersistenceStatusCounts[0]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpritePersistenceStatusCounts[1]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpritePersistenceStatusCounts[2]),
+                static_cast<unsigned long long>(spriteDiagnostics.SpritePersistenceStatusCounts[3]));
+        }
     }
 #endif
 #endif
