@@ -51,14 +51,9 @@ namespace
     // EWorldType::GamePreview, the type of the world a capture owns.
     constexpr uint8_t kGamePreviewWorld = 5;
 
-    // These offsets and native arguments are the existing CL-127004 world contract.
-    static_assert(sizeof(SDK::UWorld) == 0xab0);
-    static_assert(offsetof(SDK::UWorld, PersistentLevel) == 0x30);
-    static_assert(offsetof(SDK::ULevel, OwningWorld) == 0xc0);
-    static_assert(offsetof(SDK::ULevel, WorldSettings) == 0x2c8);
-    static_assert(offsetof(SDK::UStruct, SuperStruct) == 0x40);
+    // The tick-type native takes the FTickableGameObject base of a tickable world subsystem, which
+    // follows the USubsystem part; every other world, level and subsystem member comes from the map.
     static_assert(sizeof(SDK::USubsystem) == 0x30);
-    static_assert(0x9f0 + 0xc0 == sizeof(SDK::UWorld));
     static_assert(sizeof(SDK::FName) == 8 && std::is_trivially_destructible_v<SDK::FName>);
 
     struct ObjectIdentity
@@ -110,23 +105,71 @@ namespace
         const bool succeeded = Read(address, value);
         return !diagnostic ? succeeded : diagnostic->Observe(succeeded, "memory read", "read_failed", address);
     }
-    // An engine member the loader's map placed (EngineFields.h), read from `object`. False, with the
-    // diagnostic naming it, when the map has no row for the running build.
-    template<class T> bool ReadMember(uintptr_t object, const PluginFieldSpec& field, T& value, ReadinessDiagnostic* diagnostic)
+    // The address of an engine member the loader's map placed (EngineFields.h) in `object`. False, with
+    // the diagnostic naming it, when the map has no row for the running build.
+    bool MemberAddress(uintptr_t object, const PluginFieldSpec& field, uintptr_t& address, ReadinessDiagnostic* diagnostic)
     {
         if (field.offset < 0)
         {
             if (diagnostic) diagnostic->Observe(false, field.key, "facility_unavailable", object);
             return false;
         }
-        return Read(object + static_cast<uintptr_t>(field.offset), value, diagnostic);
+        address = object + static_cast<uintptr_t>(field.offset);
+        return true;
     }
-    // The bits of a world flag that are set: the flag's byte masked, so non-zero means the flag is set.
+    // An engine member the loader's map placed, read from `object`.
+    template<class T> bool ReadMember(uintptr_t object, const PluginFieldSpec& field, T& value, ReadinessDiagnostic* diagnostic)
+    {
+        uintptr_t address{};
+        return MemberAddress(object, field, address, diagnostic) && Read(address, value, diagnostic);
+    }
+    // The bits of a flag that are set: the flag's byte masked, so non-zero means the flag is set.
     bool ReadFlag(uintptr_t object, const PluginBitField& flag, uint8_t& bits, ReadinessDiagnostic* diagnostic)
     {
         if (!ReadMember(object, flag, bits, diagnostic)) return false;
         bits &= flag.boolMask;
         return true;
+    }
+    // The registration state of an actor component: bit 0 is bRegistered, bit 1 bRenderStateCreated.
+    bool ReadRegistration(uintptr_t component, uint8_t& bits, ReadinessDiagnostic* diagnostic = nullptr)
+    {
+        uint8_t registered{}, rendered{};
+        if (!ReadFlag(component, EF::ComponentRegistered, registered, diagnostic) ||
+            !ReadFlag(component, EF::RenderStateCreated, rendered, diagnostic)) return false;
+        bits = uint8_t((registered ? 1 : 0) | (rendered ? 2 : 0));
+        return true;
+    }
+    // Whether an actor component has been initialised (bit 3) or has begun play (bit 5); both clear
+    // means it has not.
+    bool ReadPlayState(uintptr_t component, uint8_t& bits, ReadinessDiagnostic* diagnostic = nullptr)
+    {
+        uint8_t initialized{}, begun{};
+        if (!ReadFlag(component, EF::ComponentInitialized, initialized, diagnostic) ||
+            !ReadFlag(component, EF::ComponentBegunPlay, begun, diagnostic)) return false;
+        bits = uint8_t((initialized ? 0x08 : 0) | (begun ? 0x20 : 0));
+        return true;
+    }
+    // The spawn and destroy state of an actor.
+    struct ActorFlags { bool Finished{}, Initialized{}, BeingDestroyed{}, BegunPlay{}; };
+    bool ReadActorFlags(uintptr_t actor, ActorFlags& flags, ReadinessDiagnostic* diagnostic = nullptr)
+    {
+        uint8_t finished{}, initialized{}, destroyed{}, begun{};
+        if (!ReadFlag(actor, EF::ActorFinishedSpawning, finished, diagnostic) ||
+            !ReadFlag(actor, EF::ActorInitialized, initialized, diagnostic) ||
+            !ReadFlag(actor, EF::ActorBeingDestroyed, destroyed, diagnostic) ||
+            !ReadFlag(actor, EF::ActorBeginPlay, begun, diagnostic)) return false;
+        flags = { bool(finished), bool(initialized), bool(destroyed), bool(begun) };
+        return true;
+    }
+    // The element count and the free-slot count of an engine TMap (a TSet over a TSparseArray) held by
+    // `collection` as `map`: the element array's count follows its data pointer, the free-list count
+    // follows the allocation bits.
+    bool ReadMapCounts(uintptr_t collection, const PluginFieldSpec& map, int32_t& entries, int32_t& free, ReadinessDiagnostic* diagnostic)
+    {
+        constexpr uintptr_t kSparseCount = 0x8, kSparseFreeCount = 0x34;
+        uintptr_t at{};
+        return MemberAddress(collection, map, at, diagnostic) &&
+            Read(at + kSparseCount, entries, diagnostic) && Read(at + kSparseFreeCount, free, diagnostic);
     }
     // UWorld::OwningGameInstance, found by name in the running game's reflection. The world was
     // identified by the caller; game thread only. False when the loader cannot place the member.
@@ -376,19 +419,20 @@ namespace
     {
         enum ClassId { Class, World, Engine, Level, Settings, GameInstance, Electricity, Grid, Names, Mass, Replication, Wave, DirectionalLight, ClassCount };
         // Size is the size the class must have, or 0 when none of its members are read at a
-        // compiled offset. The subsystems' members come from the loader's map, so no size is pinned.
+        // compiled layout. The members of the world, level, engine, game instance and subsystems
+        // come from the loader's map, so no size is pinned for them.
         struct Metadata { const wchar_t* Path; size_t Size; NativeReference Ref; };
         std::array<Metadata, ClassCount> MetadataClasses{{
             {L"/Script/CoreUObject.Class", sizeof(SDK::UClass)},
-            {L"/Script/Engine.World", sizeof(SDK::UWorld)},
-            {L"/Script/Engine.Engine", sizeof(SDK::UEngine)},
-            {L"/Script/Engine.Level", sizeof(SDK::ULevel)},
+            {L"/Script/Engine.World", 0},
+            {L"/Script/Engine.Engine", 0},
+            {L"/Script/Engine.Level", 0},
             {L"/Script/Chimera.CrWorldSettings", 0},
-            {L"/Script/Engine.GameInstance", sizeof(SDK::UGameInstance)},
+            {L"/Script/Engine.GameInstance", 0},
             {L"/Script/Chimera.CrElectricityGraphSubsystem", 0},
             {L"/Script/Chimera.CrEntityGridSubsystem", 0},
             {L"/Script/Chimera.CrBuildingCustomNameSubsystem", 0},
-            {L"/Script/MassEntity.MassEntitySubsystem", sizeof(SDK::UMassEntitySubsystem)},
+            {L"/Script/MassEntity.MassEntitySubsystem", 0},
             // Only the class of these two is needed (no instance may exist in the capture world).
             {L"/Script/MassReplication.MassReplicationSubsystem", 0},
             {L"/Script/Chimera.CrEnviroWaveVisualsWorldSubsystem", 0},
@@ -505,7 +549,7 @@ namespace
                 if (!Identify(type, identity, sizeof(SDK::UClass), diagnostic)) return false;
                 if (type == anchor.Object.Bits) return true;
                 uintptr_t parent{};
-                if (!Read(type + 0x40, parent, diagnostic) ||
+                if (!ReadMember(type, EF::SuperStruct, parent, diagnostic) ||
                     (!diagnostic ? parent == type : !diagnostic->Check(parent != type, "class parent must differ", type, parent))) return false;
                 type = parent;
             }
@@ -574,13 +618,13 @@ namespace
                 !ReadMember(engine, EF::WorldList, contexts, diagnostic) || !check(contexts.Num >= 1, "context count >= 1", 1, uint64_t(contexts.Num)) ||
                 !check(contexts.Max >= contexts.Num, "context capacity >= count", uint64_t(contexts.Num), uint64_t(contexts.Max)) ||
                 !check(contexts.Max <= 4096, "context capacity <= 4096", 4096, uint64_t(contexts.Max)) ||
-                !observe(N::IsMemoryRangeReadable(reinterpret_cast<uintptr_t>(contexts.Data), size_t(contexts.Num) * 8, 8), "context array unreadable")) return false;
+                !observe(N::IsMemoryRangeReadable(contexts.Data, size_t(contexts.Num) * 8, 8), "context array unreadable")) return false;
             baseline.ContextCount = contexts.Num;
             baseline.ContextHash = 1469598103934665603ULL;
             for (int32_t i = 0; i < baseline.ContextCount; ++i)
             {
                 uintptr_t context{};
-                if (!Read(reinterpret_cast<uintptr_t>(contexts.Data) + size_t(i) * 8, context, diagnostic) ||
+                if (!Read(contexts.Data + size_t(i) * 8, context, diagnostic) ||
                     !observe(N::IsMemoryRangeReadable(context, size_t(EF::ContextWorld.offset) + sizeof(current), 8), "context unreadable") ||
                     !ReadMember(context, EF::ContextWorld, current, diagnostic)) return false;
                 baseline.ContextHash = ((baseline.ContextHash ^ context) * 1099511628211ULL ^ current) * 1099511628211ULL;
@@ -617,13 +661,15 @@ namespace
         }
         bool Collection(uintptr_t world, bool initialized, ReadinessDiagnostic* diagnostic = nullptr)
         {
-            const auto collection = world + 0x9f0;
-            uintptr_t outer{}; bool populating{}, iterating{}; int32_t entries{}, free{}, arrays{}, arraysFree{};
+            uintptr_t collection{}, outer{}; uint8_t populating{}, iterating{}; int32_t entries{}, free{}, arrays{}, arraysFree{};
             const auto check = [&](bool passed, const char* detail, uint64_t expected = 1, uint64_t current = 0)
             { return !diagnostic ? passed : diagnostic->Check(passed, detail, expected, current); };
-            return Read(collection + 0xb0, outer, diagnostic) && Read(collection + 0xb8, populating, diagnostic) && Read(collection + 0xb9, iterating, diagnostic) &&
-                Read(collection + 0x10, entries, diagnostic) && Read(collection + 0x3c, free, diagnostic) &&
-                Read(collection + 0x60, arrays, diagnostic) && Read(collection + 0x8c, arraysFree, diagnostic) &&
+            return MemberAddress(world, EF::SubsystemCollection, collection, diagnostic) &&
+                ReadMember(collection, EF::CollectionOuter, outer, diagnostic) &&
+                ReadMember(collection, EF::CollectionPopulating, populating, diagnostic) &&
+                ReadMember(collection, EF::CollectionIterating, iterating, diagnostic) &&
+                ReadMapCounts(collection, EF::CollectionMap, entries, free, diagnostic) &&
+                ReadMapCounts(collection, EF::CollectionArrayMap, arrays, arraysFree, diagnostic) &&
                 check(entries >= 0, "collection entries nonnegative", 0, uint64_t(entries)) &&
                 check(free >= 0, "collection free nonnegative", 0, uint64_t(free)) &&
                 check(free <= entries, "collection free <= entries", uint64_t(entries), uint64_t(free)) &&
@@ -657,19 +703,19 @@ namespace
                 !check(!tearingBit, "private tearing-down flag", 0, tearingBit) ||
                 !check(!begunBit, "private begun-play flag", 0, begunBit) ||
                 !check(bool(everBit) == initialized, "private ever-initialized flag", initialized, bool(everBit)) ||
-                !Read(world + 0x258, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
+                !ReadMember(world, EF::WorldScene, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
                 !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
-                !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
+                !ReadMember(world, EF::NetDriver, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, Before.EngineObject.Bits, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) ||
-                !Read(world + 0x30, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
-                !Read(level + 0xc0, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
-                !Read(level + 0x2c8, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
+                !ReadMember(world, EF::PersistentLevel, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
+                !ReadMember(level, EF::OwningWorld, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
+                !ReadMember(level, EF::LevelWorldSettings, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
                 !Read(settings + 0x10, type, diagnostic) || !check(type == MetadataClasses[Settings].Ref.Object.Bits, "world settings class", MetadataClasses[Settings].Ref.Object.Bits, type) || !Collection(world, initialized, diagnostic)) return false;
             if (initialized)
             {
                 if (!check(!(Scene && Scene != scene), "private scene identity", Scene, scene) || !observe(N::IsMemoryRangeReadable(scene, 8, 8), "private scene unreadable") ||
-                    !Read(Before.Gameplay.Bits + 0x258, gameplayScene, diagnostic) || !check(bool(gameplayScene), "gameplay scene presence") ||
+                    !ReadMember(Before.Gameplay.Bits, EF::WorldScene, gameplayScene, diagnostic) || !check(bool(gameplayScene), "gameplay scene presence") ||
                     !check(scene != gameplayScene, "private/gameplay scenes must differ", gameplayScene, scene)) return false;
                 Scene = scene;
                 IsolatedGameplayPackage = gameplayPackage;
@@ -706,15 +752,15 @@ namespace
                 !check(package != IsolatedGameplayPackage, "private/baseline gameplay packages must differ", IsolatedGameplayPackage, package) ||
                 !ReadMember(world, EF::WorldType, worldType, diagnostic) || !check(worldType == kGamePreviewWorld, "private world type", kGamePreviewWorld, worldType) ||
                 !ReadFlag(world, EF::WorldInitialized, flags, diagnostic) || !check(bool(flags) == initialized, "private initialized flag", initialized, bool(flags)) ||
-                !Read(world + 0x258, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
+                !ReadMember(world, EF::WorldScene, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
                 !check(scene != IsolatedGameplayScene, "private/baseline gameplay scenes must differ", IsolatedGameplayScene, scene) ||
                 !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
-                !Read(world + 0x38, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
+                !ReadMember(world, EF::NetDriver, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, engine, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) || !CheckOwned(MetadataClasses[Settings].Ref, diagnostic) ||
-                !Read(world + 0x30, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
-                !Read(level + 0xc0, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
-                !Read(level + 0x2c8, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
+                !ReadMember(world, EF::PersistentLevel, level, diagnostic) || !check(level == PersistentLevel.Object.Bits, "private persistent level", PersistentLevel.Object.Bits, level) ||
+                !ReadMember(level, EF::OwningWorld, owner, diagnostic) || !check(owner == world, "level owning world", world, owner) ||
+                !ReadMember(level, EF::LevelWorldSettings, settings, diagnostic) || !check(settings == WorldSettings.Object.Bits, "level world settings", WorldSettings.Object.Bits, settings) ||
                 !Read(settings + 0x10, type, diagnostic) || !check(type == MetadataClasses[Settings].Ref.Object.Bits, "world settings class", MetadataClasses[Settings].Ref.Object.Bits, type) ||
                 !Collection(world, initialized, diagnostic)) return false;
             if (initialized)
@@ -726,13 +772,15 @@ namespace
                     !observe(N::IsMemoryRangeReadable(scene, 8, 8), "private scene unreadable")) return false;
             }
             constexpr std::array<ClassId, 3> required{Electricity, Grid, Names};
+            uintptr_t worldCollection{};
+            if (!MemberAddress(world, EF::SubsystemCollection, worldCollection, diagnostic)) return false;
             for (size_t i = 0; i < Subsystems.size(); ++i)
             {
                 auto& ref = Subsystems[i]; uintptr_t outer{}, collection{};
                 if (!CheckOwned(ref, diagnostic) || !Is(ref.Object.Bits, required[i], diagnostic) ||
                     !Read(ref.Object.Bits + 0x20, outer, diagnostic) || !check(outer == world, "subsystem owning world", world, outer) ||
-                    !Read(ref.Object.Bits + 0x28, collection, diagnostic) ||
-                    !check(collection == (initialized ? world + 0x9f0 : 0), "subsystem collection", initialized ? world + 0x9f0 : 0, collection)) return false;
+                    !ReadMember(ref.Object.Bits, EF::SubsystemOwner, collection, diagnostic) ||
+                    !check(collection == (initialized ? worldCollection : 0), "subsystem collection", initialized ? worldCollection : 0, collection)) return false;
             }
             return true;
         }
@@ -740,12 +788,14 @@ namespace
         {
             const auto world = Private.Object.Bits;
             auto& metadata = MetadataClasses[type].Ref;
+            uintptr_t worldCollection{};
             if (!QuietGC() || !CheckOwned(metadata) || !Is(world, World) || !Collection(world, true) ||
-                !Invoke(Operation::Subsystem, world + 0x9f0, metadata.Object.Bits, &object) ||
+                !MemberAddress(world, EF::SubsystemCollection, worldCollection, nullptr) ||
+                !Invoke(Operation::Subsystem, worldCollection, metadata.Object.Bits, &object) ||
                 !QuietGC() || !CheckOwned(metadata) || !Is(world, World) || !Collection(world, true)) return false;
             uintptr_t outer{}, collection{};
             return !object || (Is(object, type) && Read(object + 0x20, outer) && outer == world &&
-                Read(object + 0x28, collection) && collection == world + 0x9f0);
+                ReadMember(object, EF::SubsystemOwner, collection, nullptr) && collection == worldCollection);
         }
         bool RetainSubsystems()
         {
@@ -773,7 +823,7 @@ namespace
             uintptr_t configured{};
             return Facilities() && MiniMapMap::GameplayReady() && QuietGC() && RendererAvailable() &&
                 AcquireMetadata() && ObserveGameplay(Before) &&
-                Read(Before.EngineObject.Bits + 0x190, configured) && configured == MetadataClasses[Settings].Ref.Object.Bits && QuietGC();
+                ReadMember(Before.EngineObject.Bits, EF::EngineWorldSettingsClass, configured, nullptr) && configured == MetadataClasses[Settings].Ref.Object.Bits && QuietGC();
         }
 
         static const char* RigName(RigPhase phase)
@@ -867,21 +917,20 @@ namespace
         }
         bool LightState(NativeReference& ref, bool registered, ReadinessDiagnostic* evidence = nullptr)
         {
-            uintptr_t type{}, outer{}, owner{}, world{}, proxy{}; uint8_t flags{}; uint32_t visible{};
+            uintptr_t type{}, outer{}, owner{}, world{}, proxy{}; uint8_t registration{}, visible{};
             ReadinessDiagnostic local;
             auto* diagnostic = evidence ? evidence : &local;
             diagnostic->Stage(registered ? "registered light state" : "detached light state");
-            // CL-127004: AddLight (14344c170) stores SceneProxy at +0x340;
-            // Create/DestroyRenderState (14488ab80/14488c5c0) set/clear +0x3a0 bit 0.
+            // AddLight stores the scene proxy; Create/DestroyRenderState set/clear bAddedToSceneVisible.
             // These are observations only; no offset-based native invocation.
             const bool valid = CheckOwned(ref, diagnostic) && NoForeignRoot(ref, diagnostic) &&
                 Read(ref.Object.Bits + 0x10, type, diagnostic) && diagnostic->Check(type == MetadataClasses[DirectionalLight].Ref.Object.Bits, "light class", MetadataClasses[DirectionalLight].Ref.Object.Bits, type) &&
                 Read(ref.Object.Bits + 0x20, outer, diagnostic) && diagnostic->Check(outer == Private.Object.Bits, "light outer", Private.Object.Bits, outer) &&
-                Read(ref.Object.Bits + 0xa0, owner, diagnostic) && diagnostic->Check(!owner, "actorless light owner", 0, owner) &&
-                Read(ref.Object.Bits + 0xa8, world, diagnostic) && diagnostic->Check(world == (registered ? Private.Object.Bits : 0), "cached world", registered ? Private.Object.Bits : 0, world) &&
-                Read(ref.Object.Bits + 0x94, flags, diagnostic) && diagnostic->Check((flags & 3) == (registered ? 3 : 0), "registered/render-state mask", registered ? 3 : 0, flags & 3) &&
-                Read(ref.Object.Bits + 0x340, proxy, diagnostic) && diagnostic->Check(bool(proxy) == registered, "scene proxy presence", registered, bool(proxy)) &&
-                Read(ref.Object.Bits + 0x3a0, visible, diagnostic) && diagnostic->Check(bool(visible & 1) == registered, "added-visible mask", registered, visible & 1);
+                ReadMember(ref.Object.Bits, EF::ComponentOwner, owner, diagnostic) && diagnostic->Check(!owner, "actorless light owner", 0, owner) &&
+                ReadMember(ref.Object.Bits, EF::ComponentWorld, world, diagnostic) && diagnostic->Check(world == (registered ? Private.Object.Bits : 0), "cached world", registered ? Private.Object.Bits : 0, world) &&
+                ReadRegistration(ref.Object.Bits, registration, diagnostic) && diagnostic->Check(registration == (registered ? 3 : 0), "registered/render-state mask", registered ? 3 : 0, registration) &&
+                ReadMember(ref.Object.Bits, EF::LightSceneProxy, proxy, diagnostic) && diagnostic->Check(bool(proxy) == registered, "scene proxy presence", registered, bool(proxy)) &&
+                ReadFlag(ref.Object.Bits, EF::LightAddedToScene, visible, diagnostic) && diagnostic->Check(bool(visible) == registered, "added-visible mask", registered, bool(visible));
             if (!valid) LightDiagnostic("validate component", *diagnostic, &ref == &Lights[0] ? 0 : 1);
             return valid;
         }
@@ -1060,9 +1109,9 @@ namespace
                 ReadinessDiagnostic diagnostic;
                 diagnostic.Stage("light component destruction");
                 if (!LightGuard(true) || !LightState(ref, false) ||
-                    !Read(ref.Object.Bits + 0x97, init, &diagnostic) || !diagnostic.Check(!(init & 0x28), "initialized/begun-play mask", 0, init & 0x28) ||
+                    !ReadPlayState(ref.Object.Bits, init, &diagnostic) || !diagnostic.Check(!init, "initialized/begun-play mask", 0, init) ||
                     !LightNative(LightOperation::Destroy, ref.Object.Bits, 0, nullptr, int(i)) ||
-                    !Read(ref.Object.Bits + 0x94, flags, &diagnostic) || !diagnostic.Check(!(flags & 3), "destroyed registered/render-state mask", 0, flags & 3) ||
+                    !ReadRegistration(ref.Object.Bits, flags, &diagnostic) || !diagnostic.Check(!flags, "destroyed registered/render-state mask", 0, flags) ||
                     !ReleaseDestroyedLight(ref, diagnostic))
                 {
                     LightDiagnostic("destroy/release light", diagnostic, int(i));
@@ -1098,8 +1147,8 @@ namespace
             { Quarantine("created world identity or retention uncertain"); return; }
             uintptr_t object{};
             if (!Read(Private.Object.Bits + 0x20, object) || !Hold(object, Package) ||
-                !Read(Private.Object.Bits + 0x30, object) || !Is(object, Level) || !Hold(object, PersistentLevel) ||
-                !Read(PersistentLevel.Object.Bits + 0x2c8, object) || !Is(object, Settings) || !Hold(object, WorldSettings) ||
+                !ReadMember(Private.Object.Bits, EF::PersistentLevel, object, nullptr) || !Is(object, Level) || !Hold(object, PersistentLevel) ||
+                !ReadMember(PersistentLevel.Object.Bits, EF::LevelWorldSettings, object, nullptr) || !Is(object, Settings) || !Hold(object, WorldSettings) ||
                 !QuietGC() || !GameplayUnchanged() || !PrivateState(false))
             { Quarantine("created world dependencies or isolation invalid"); return; }
             if (!Invoke(Operation::Initialize, Private.Object.Bits) || !QuietGC() || !GameplayUnchanged() || !PrivateState(true))
@@ -1113,19 +1162,24 @@ namespace
         bool CleanupPreconditions(ReadinessDiagnostic* diagnostic = nullptr)
         {
             const auto world = Private.Object.Bits;
-            int32_t count{}; uintptr_t visibility{};
+            uintptr_t visibility{}, consider{}; int32_t beingConsidered{};
             const auto stage = [&](const char* name) { if (diagnostic) diagnostic->Stage(name); return true; };
-            const auto counter = [&](uintptr_t offset, const char* name)
+            const auto empty = [&](int32_t count, const char* name)
+            { return !diagnostic ? !count : diagnostic->Check(!count, name, 0, uint64_t(count)); };
+            // An array member of `object` that must be empty.
+            const auto drained = [&](uintptr_t object, const PluginFieldSpec& field, const char* name)
             {
-                if (!Read(world + offset, count, diagnostic)) return false;
-                return !diagnostic ? !count : diagnostic->Check(!count, name, 0, uint64_t(count));
+                EF::ArrayHeader array;
+                return ReadMember(object, field, array, diagnostic) && empty(array.Num, name);
             };
             return stage("GC admission") && QuietGC(diagnostic) &&
                 stage("teardown private ownership/isolation") && TeardownPrivateState(true, diagnostic) &&
-                stage("streaming counter +0x98") && counter(0x98, "world counter +0x98") &&
-                stage("streaming counter +0xA8") && counter(0xa8, "world counter +0xA8") &&
-                stage("streaming counter +0xB8") && counter(0xb8, "world counter +0xB8") &&
-                stage("streaming counter +0xC0") && counter(0xc0, "world counter +0xC0") &&
+                stage("streaming levels") && drained(world, EF::StreamingLevels, "world streaming levels") &&
+                stage("streaming levels to consider") && MemberAddress(world, EF::StreamingLevelsToConsider, consider, diagnostic) &&
+                drained(consider, EF::ConsideredLevels, "world levels to consider") &&
+                stage("streaming levels to process") && drained(consider, EF::LevelsToProcess, "world levels to process") &&
+                stage("streaming levels being considered") && ReadMember(consider, EF::LevelsBeingConsidered, beingConsidered, diagnostic) &&
+                empty(beingConsidered, "world levels being considered") &&
                 stage("pending visibility") &&
                 (!diagnostic ? Invoke(Operation::Visibility, world, 0, &visibility) :
                     diagnostic->Observe(Invoke(Operation::Visibility, world, 0, &visibility), "visibility lookup interrupted/unavailable")) &&
@@ -1574,13 +1628,13 @@ namespace
         }
         bool Level(uintptr_t target, bool expected, uint64_t* hash = nullptr, int32_t* count = nullptr)
         {
-            struct PointerArray { uintptr_t Data{}; int32_t Count{}, Capacity{}; } actors;
+            EF::ArrayHeader actors;
             if (!g_nativeWorld.CheckOwned(g_nativeWorld.PersistentLevel) ||
-                !Read(g_nativeWorld.PersistentLevel.Object.Bits + 0xa0, actors) || actors.Count < 0 ||
-                actors.Capacity < actors.Count || actors.Capacity > 4096 ||
-                (actors.Count && !N::IsMemoryRangeReadable(actors.Data, size_t(actors.Count) * 8, 8))) return false;
+                !ReadMember(g_nativeWorld.PersistentLevel.Object.Bits, EF::LevelActors, actors, nullptr) || actors.Num < 0 ||
+                actors.Max < actors.Num || actors.Max > 4096 ||
+                (actors.Num && !N::IsMemoryRangeReadable(actors.Data, size_t(actors.Num) * 8, 8))) return false;
             bool found = false; uint64_t value{}; int32_t total{};
-            for (int32_t i = 0; i < actors.Count; ++i)
+            for (int32_t i = 0; i < actors.Num; ++i)
             {
                 uintptr_t actor{}; ObjectIdentity identity;
                 if (!Read(actors.Data + size_t(i) * 8, actor)) return false;
@@ -1595,14 +1649,14 @@ namespace
         bool ActorState(bool finished)
         {
             const auto actor = Actor.Object.Bits;
-            uint8_t a{}, b{}; uintptr_t type{}, outer{}, owner{}, instigator{};
+            ActorFlags flags; uintptr_t type{}, outer{}, owner{}, instigator{};
             return g_nativeWorld.CheckOwned(Actor) && g_nativeWorld.CheckOwned(Metadata[Blueprint]) &&
                 Read(actor + 0x10, type) && type == Metadata[Blueprint].Object.Bits &&
                 Read(actor + 0x20, outer) && outer == g_nativeWorld.PersistentLevel.Object.Bits &&
                 Read(actor + offsetof(SDK::AActor, Owner), owner) && !owner &&
                 Read(actor + offsetof(SDK::AActor, Instigator), instigator) && !instigator &&
-                Read(actor + 0x5c, a) && bool(a & 1) == finished && !(a & 2) &&
-                Read(actor + 0x5d, b) && !(b & 0x1a) && Ready() && Level(actor, true);
+                ReadActorFlags(actor, flags) && flags.Finished == finished && !flags.Initialized &&
+                !flags.BeingDestroyed && !flags.BegunPlay && Ready() && Level(actor, true);
         }
         bool NewResource(MetadataId id, NativeReference& ref, size_t size)
         {
@@ -1765,10 +1819,10 @@ namespace
         {
             if (Capture.State != Ownership::Empty)
             {
-                uint8_t flags{};
-                if (!g_nativeWorld.CheckOwned(Capture) || !Read(Capture.Object.Bits + 0x94, flags) ||
-                    ((flags & 1) && !Call(ResourceOperation::Unregister, Capture.Object.Bits)) ||
-                    !Read(Capture.Object.Bits + 0x94, flags) || (flags & 3))
+                uint8_t registration{};
+                if (!g_nativeWorld.CheckOwned(Capture) || !ReadRegistration(Capture.Object.Bits, registration) ||
+                    ((registration & 1) && !Call(ResourceOperation::Unregister, Capture.Object.Bits)) ||
+                    !ReadRegistration(Capture.Object.Bits, registration) || registration)
                 { Quarantine("capture component detachment uncertain"); return false; }
             }
             return true;
@@ -1781,19 +1835,19 @@ namespace
             if (Job) { Quarantine("object retirement attempted with a live readback Job"); return false; }
             if (Actor.State != Ownership::Empty)
             {
-                uint8_t a{}, b{}; uintptr_t destroyed{};
-                if (!Read(Actor.Object.Bits + 0x5c, a) || !ActorState(bool(a & 1)) ||
+                ActorFlags before, after; uintptr_t destroyed{};
+                if (!ReadActorFlags(Actor.Object.Bits, before) || !ActorState(before.Finished) ||
                     !Call(ResourceOperation::DestroyActor, Actor.Object.Bits, 0, &destroyed) || !destroyed ||
-                    !Read(Actor.Object.Bits + 0x5c, a) || (a & 2) || !Read(Actor.Object.Bits + 0x5d, b) ||
-                    !(b & 2) || (b & 0x18) || !Level(Actor.Object.Bits, false) || !ReleaseDestroyed(Actor))
+                    !ReadActorFlags(Actor.Object.Bits, after) || after.Initialized ||
+                    !after.BeingDestroyed || after.BegunPlay || !Level(Actor.Object.Bits, false) || !ReleaseDestroyed(Actor))
                 { Quarantine("Actor destruction or reference release uncertain"); return false; }
             }
             if (Capture.State != Ownership::Empty)
             {
                 uint8_t init{}, flags{};
-                if (!g_nativeWorld.CheckOwned(Capture) || !Read(Capture.Object.Bits + 0x97, init) || (init & 0x28) ||
+                if (!g_nativeWorld.CheckOwned(Capture) || !ReadPlayState(Capture.Object.Bits, init) || init ||
                     !Call(ResourceOperation::DestroyComponent, Capture.Object.Bits) ||
-                    !Read(Capture.Object.Bits + 0x94, flags) || (flags & 3) || !ReleaseDestroyed(Capture))
+                    !ReadRegistration(Capture.Object.Bits, flags) || flags || !ReleaseDestroyed(Capture))
                 { Quarantine("component destruction or reference release uncertain"); return false; }
             }
             if (!g_nativeWorld.Drop(Target) || !DropMetadata() || !Ready())
@@ -1880,8 +1934,8 @@ namespace
                 Fence.GetState() != MiniMapCaptureRetirement::FenceState::Constructed || !FenceAvailable()) return false;
             for (auto& ref : Metadata) if (!g_nativeWorld.CheckOwned(ref)) return false;
             uint8_t registered{}; uintptr_t world{}, target{};
-            if (!Read(Capture.Object.Bits + 0x94, registered) || !(registered & 1) ||
-                !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits ||
+            if (!ReadFlag(Capture.Object.Bits, EF::ComponentRegistered, registered, nullptr) || !registered ||
+                !ReadMember(Capture.Object.Bits, EF::ComponentWorld, world, nullptr) || world != g_nativeWorld.Private.Object.Bits ||
                 !Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, TextureTarget), target) || target != Target.Object.Bits) return false;
             SDK::ESceneCaptureSource source{}; float gamma{};
             if (!Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, CaptureSource), source) ||
@@ -2145,8 +2199,8 @@ namespace
             { Quarantine("capture camera preparation interrupted"); return; }
             if (!Call(ResourceOperation::Register, Capture.Object.Bits, g_nativeWorld.Private.Object.Bits)) return;
             uint8_t registered{}; uintptr_t world{}, resource{};
-            if (!Read(Capture.Object.Bits + 0x94, registered) || !(registered & 1) ||
-                !Read(Capture.Object.Bits + 0xa8, world) || world != g_nativeWorld.Private.Object.Bits)
+            if (!ReadFlag(Capture.Object.Bits, EF::ComponentRegistered, registered, nullptr) || !registered ||
+                !ReadMember(Capture.Object.Bits, EF::ComponentWorld, world, nullptr) || world != g_nativeWorld.Private.Object.Bits)
             { Quarantine("capture registration postconditions invalid"); return; }
             if (!Call(ResourceOperation::Resource, Target.Object.Bits, 0, &resource)) return;
             if (!resource) { Fail("render-target resource getter returned null"); return; }

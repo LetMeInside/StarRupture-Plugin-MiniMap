@@ -25,7 +25,7 @@
 // MiniMapFingerprints::Resolve, under the names in Native/NativeKeys.h; the
 // members in MiniMapFields::Resolve. Both run in OnPluginLoadHooks after the
 // layers below are declared, so a miss turns off the layer it belongs to and
-// not the plugin. Engine layout MiniMap keeps compiled is listed in the README.
+// not the plugin. The engine members of the building-picture capture are in Native/EngineFields.h.
 
 namespace MiniMapFields
 {
@@ -250,6 +250,14 @@ namespace MiniMapFields
 
 	using PluginMap::KeysOf;
 
+	// `keys` and the engine members of Native/EngineFields.h.
+	inline std::vector<const char*> WithEngineKeys(std::vector<const char*> keys)
+	{
+		const auto engine = MiniMapEngineFields::Keys();
+		keys.insert(keys.end(), engine.begin(), engine.end());
+		return keys;
+	}
+
 	// The layers that can be off while the rest runs. Each lists the keys only it
 	// needs; a key two layers need is listed in both. The terrain is not one:
 	// it gives every other layer its transform, so a miss there leaves nothing
@@ -327,7 +335,7 @@ namespace MiniMapFields
 		// report through the scanner, so a failed check turns this layer off. The loader
 		// notes that no request asked for them.
 		inline PluginMap::Feature BuildingSprites{ "building-sprites", "Building pictures on the minimap",
-			KeysOf(Keys::SpawnObject, Keys::SetObjectFlags, Keys::RegisterComponent, Keys::UnregisterComponent,
+			WithEngineKeys(KeysOf(Keys::SpawnObject, Keys::SetObjectFlags, Keys::RegisterComponent, Keys::UnregisterComponent,
 				Keys::DestroyComponent, Keys::InitRenderTarget, Keys::RenderTargetResource,
 				Keys::TransitionResources, Keys::FenceConstruct, Keys::FenceDestroy, Keys::FenceBegin,
 				Keys::FencePoll, Keys::FromValidEName, Keys::SubmitRenderCommand, Keys::ImmediateCommandList,
@@ -340,12 +348,7 @@ namespace MiniMapFields
 				Keys::GarbageCollectingLocking, Keys::PurgePending, Keys::ReachabilityPending,
 				Keys::TickableTickType, Keys::VisibilityPending, Keys::DestroyActor,
 				Keys::ActiveGarbageCollection, Keys::EngineStorage,
-				MiniMapEngineFields::WorldType, MiniMapEngineFields::WorldInitialized,
-				MiniMapEngineFields::ActorsInitialized, MiniMapEngineFields::TearingDown,
-				MiniMapEngineFields::BegunPlay, MiniMapEngineFields::EverInitialized,
-				MiniMapEngineFields::WorldList, MiniMapEngineFields::ContextWorld,
-				MiniMapEngineFields::NeedsTwoCopies, MiniMapEngineFields::TickableInitialized,
-				ElectricityEntityManager, GridEntityManager),
+				ElectricityEntityManager, GridEntityManager)),
 			{ "Buildings.CaptureSprites" } };
 
 		// Declares every layer; call before any key is resolved.
