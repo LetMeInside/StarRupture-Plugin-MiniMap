@@ -1,6 +1,7 @@
+// Owns the legacy MiniMap building presentation, sprite processing and atlas lifecycle.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "Services/Viewport.h"
 #include "Map/Map.h"
-#if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingVisuals.h"
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"

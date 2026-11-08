@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Reads and writes legacy building sprite payloads and optional diagnostic images.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 
 #include "BuildingCache.h"
 

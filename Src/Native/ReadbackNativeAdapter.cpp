@@ -1,3 +1,4 @@
+// Supplies shared Unreal RHI support and the compile-time-selected legacy readback implementation.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "ReadbackUEConfiguration.h"
 #define RHI_API
@@ -5,12 +6,14 @@
 #define WITH_MGPU 1
 #define WITH_RHI_BREADCRUMBS 0
 #include "RHIResources.h"
+#include "NativeApi.h"
+#include <cstdlib>
+
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Containers/ResourceArray.h"
 #include "ReadbackNativeAdapter.h"
-#include "NativeApi.h"
 #include <cstddef>
 #include <cstring>
-#include <cstdlib>
 #include <atomic>
 #include <new>
 #include "RHITransition.h"
@@ -20,11 +23,13 @@ class FRHIComputeCommandList;
 class FRHICommandList;
 class FRHICommandListImmediate;
 class FRHIGPUTextureReadback; // Native owns its construction and all eight slots.
+#endif
 
-// Header-inline descriptor defaults require this global. This is a validated
+// V2 readback and header-inline descriptor defaults require this shared global. This is a validated
 // snapshot of the native global, never a substituted single-GPU constant.
 uint32 GNumExplicitGPUsForRendering = 0;
 
+#if MINIMAP_USE_LEGACY_BUILDINGS
 namespace MiniMapReadbackNative
 {
     using RenderCallable = TUniqueFunction<void(FRHICommandListImmediate&)>;
@@ -480,6 +485,8 @@ namespace MiniMapReadbackNative
         return true;
     }
 }
+
+#endif // MINIMAP_USE_LEGACY_BUILDINGS
 
 // Real UE header dependencies, dispatched only after native resolution. There
 // are no global owning UE objects and no engine calls in static constructors.

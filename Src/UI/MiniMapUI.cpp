@@ -1,3 +1,4 @@
+// Presents MiniMap layers and handles widget/input visibility, with compile-time legacy building drawing.
 #include "Services/Viewport.h"
 #include "../Map/Map.h"
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -11,8 +12,10 @@
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Buildings/BuildingVisuals.h"
+#endif
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
 
@@ -153,15 +156,19 @@ namespace
             transform,
             settings))
         {
+#if MINIMAP_USE_LEGACY_BUILDINGS
             if (auto buildingState = MiniMapBuildingVisuals::MiniMapState())
                 MiniMapBuildingVisuals::DrawBuildings(*buildingState,
                     MiniMapBuildingCollector::GetSnapshot(), ui, transform, settings.Buildings);
+#endif
             MiniMapFogOfWar::Render(
                 ui,
                 transform, settings.Fog);
 
             MiniMapAlienActors::SetViewport(transform);
+#if MINIMAP_USE_LEGACY_BUILDINGS
             MiniMapBuildingCollector::SetViewport(transform);
+#endif
 
             if (settings.Foundables.ShowLayer)
             {

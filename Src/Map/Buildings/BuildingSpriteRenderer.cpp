@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Owns legacy building sprite capture, private-world resources and native retirement.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 
 #include "Map/Buildings/BuildingSpriteRenderer.h"
 #include "Map/Buildings/BuildingScheduler.h"

@@ -1,3 +1,5 @@
+// Implements the legacy offscreen RGBA16F image destination and raster submissions.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "Rgba16fImageDestination.h"
 
 #include <algorithm>
@@ -158,3 +160,5 @@ namespace MiniMap::Services
         catch (...) { output.clear(); return false; }
     }
 }
+
+#endif // MODLOADER_CLIENT_BUILD && MINIMAP_USE_LEGACY_BUILDINGS

@@ -1,3 +1,4 @@
+// Composes MiniMap services and lifecycle events, with legacy building work selected at compile time.
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "DiagnosticExports.h"
@@ -10,15 +11,21 @@
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
 #include "Native/TexturePublication.h"
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Native/ReadbackNativeAdapter.h"
+#endif
 #include "UI/MiniMapUI.h"
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Map/Buildings/BuildingVisuals.h"
+#endif
 #include "Services/Map/Buildings/BuildingMapService.h"
 #include "PluginPaths.h"
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Native/ResidentMetadata.h"
+#endif
 #include <array>
 #include <filesystem>
 #include <memory>
@@ -274,8 +281,10 @@ static bool InstallCommonUIHooks()
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
+#if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Map/Buildings/BuildingCollector.h"
 #include "Map/Buildings/BuildingVisuals.h"
+#endif
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
 #include "Map/Terrain/TerrainCache.h"
@@ -353,8 +362,10 @@ void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
         "MiniMap: native API initialized");
 #endif
 
+#if MINIMAP_USE_LEGACY_BUILDINGS
     // Optional private preflight: failure never changes production readiness.
     MiniMapReadbackNative::ResolvePrerequisites();
+#endif
 
 #else
 
@@ -374,6 +385,7 @@ static void SetServicesAdmitted(bool ready)
     MiniMapMap::SetGameplayReady(ready);
     if(changed)MiniMapUI::RefreshVisibility();
 }
+#if MINIMAP_USE_LEGACY_BUILDINGS
 static void EndBuildingSession()
 {
     MiniMapBuildingVisuals::EndSession();
@@ -386,8 +398,7 @@ static bool BuildingServiceGameThread() noexcept
         ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
 }
 
-// Stage 1 diagnostics intentionally run in Client Release as well as Debug.
-// No new compile switch and no changes to the services' admission or ordering.
+// Legacy world-identity diagnostics run in Client Release as well as Debug.
 namespace
 {
     enum class DiagnosticWorld { Null, Gameplay, Private, Other };
@@ -549,8 +560,12 @@ namespace
         }
     }
 }
-static void OnBuildingSpriteRendererTick(float deltaTime)
+#endif // MINIMAP_USE_LEGACY_BUILDINGS
+
+// Services generic native textures on the existing game-thread event; legacy work retains its ordering.
+static void OnTextureServiceTick(float deltaTime)
 {
+#if MINIMAP_USE_LEGACY_BUILDINGS
     ObserveWorldIdentity("renderer-entry", true);
     // Service generic texture owners without advancing building acquisition.
     if(!MiniMapMap::GameplayReady())
@@ -571,6 +586,10 @@ static void OnBuildingSpriteRendererTick(float deltaTime)
     MiniMapTexturePublication::Service();
     ObserveWorldIdentity("after-texture-publication");
     ObserveWorldIdentity("after-mass-buildingcomplex");
+#else
+    (void)deltaTime;
+    MiniMapTexturePublication::Service();
+#endif
 }
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
@@ -581,14 +600,18 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     SetServicesAdmitted(false);
     // A replacement world can begin before the owned world's EndPlay. Keep the
     // previous gameplay identity available until its native owner has ended.
+#if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
+#endif
     MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
+#if MINIMAP_USE_LEGACY_BUILDINGS
     MiniMapBuildingCollector::Reset();
     MiniMapBuildingVisuals::Reset();
+#endif
     MiniMapPointsOfInterest::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     MiniMapTerrain::CancelPendingDiagnostic();
@@ -615,21 +638,27 @@ static void OnExperienceLoadComplete()
     {
         LOG_ERROR("MiniMap: terrain service preparation failed; generation remains unadmitted");
         SetServicesAdmitted(false);
+#if MINIMAP_USE_LEGACY_BUILDINGS
         EndBuildingSession();
+#endif
         return;
     }
 
     MiniMapFoundables::OnExperienceLoadComplete();
     MiniMapAlienActors::OnExperienceLoadComplete();
+#if MINIMAP_USE_LEGACY_BUILDINGS
     MiniMapBuildingCollector::OnExperienceLoadComplete();
+#endif
     MiniMapPointsOfInterest::OnExperienceLoadComplete();
 
+#if MINIMAP_USE_LEGACY_BUILDINGS
     if(!MiniMapBuildingVisuals::BeginSession())
     {
         EndBuildingSession();
         LOG_ERROR("MiniMap: building renderer/atlas session blocked by retained ownership or missing dependencies; gameplay remains unadmitted");
         return;
     }
+#endif
     SetServicesAdmitted(true);
     if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
     else MiniMapUI::Hide();
@@ -641,7 +670,9 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
+#if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
+#endif
     MiniMapUI::Hide();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     const uint32_t blockingMenuMask =
@@ -672,14 +703,18 @@ static void OnAfterWorldEndPlay(
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
+#if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession(); // Idempotent fallback if BeforeEndPlay was not delivered.
+#endif
     g_preparedGeneration=0;
     MiniMapUI::Hide();
 
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
+#if MINIMAP_USE_LEGACY_BUILDINGS
     MiniMapBuildingCollector::Reset();
     MiniMapBuildingVisuals::Reset();
+#endif
     MiniMapPointsOfInterest::Reset();
     MiniMapFogOfWar::Reset();
     MiniMapMap::SetWorld(nullptr);
@@ -803,6 +838,7 @@ namespace MiniMap
             return false;
         }
 
+#if MINIMAP_USE_LEGACY_BUILDINGS
         if(!MiniMapBuildingVisuals::InitializeSpriteProcessing())
         {
             LOG_ERROR("MiniMap: atlas texture interface initialization failed");
@@ -811,8 +847,9 @@ namespace MiniMap
             RemoveCommonUIHooks();
             return false;
         }
+#endif
         if (!AcceptEventRegistration(g_rendererTick, events->OnTick(
-            [](void*, float delta) { OnBuildingSpriteRendererTick(delta); }, nullptr)))
+            [](void*, float delta) { OnTextureServiceTick(delta); }, nullptr)))
         {
             Shutdown();
             return false;
@@ -845,6 +882,7 @@ namespace MiniMap
             LOG_ERROR("MiniMap: Alien Actors initialization failed");
         }
 
+#if MINIMAP_USE_LEGACY_BUILDINGS
         if (!MiniMapBuildingCollector::Initialize(pluginSelf))
         {
             LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
@@ -855,6 +893,7 @@ namespace MiniMap
             LOG_ERROR("MiniMap: building visuals initialization failed");
         }
 
+#endif
         if (!MiniMapFoundables::Initialize(
             pluginSelf))
         {
@@ -1025,7 +1064,9 @@ namespace MiniMap
         RemoveCommonUIHooks();
         g_worldEnding=true;
         SetServicesAdmitted(false);
+#if MINIMAP_USE_LEGACY_BUILDINGS
         MiniMapBuildingVisuals::ShutdownSpriteProcessing();
+#endif
         RemoveEventRegistration(g_rendererTick);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1050,8 +1091,10 @@ namespace MiniMap
         MiniMapTerrain::UnregisterDiagnostics();
 #endif
         MiniMapAlienActors::Shutdown();
+#if MINIMAP_USE_LEGACY_BUILDINGS
         MiniMapBuildingVisuals::Shutdown();
         MiniMapBuildingCollector::Shutdown();
+#endif
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();

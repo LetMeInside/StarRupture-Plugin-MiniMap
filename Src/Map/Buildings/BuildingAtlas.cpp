@@ -1,5 +1,6 @@
+// Owns legacy sprite atlas sources, texture publication and session retirement.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "Services/Viewport.h"
-#if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingAtlas.h"
 #include "BuildingScheduler.h"

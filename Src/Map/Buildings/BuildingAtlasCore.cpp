@@ -1,3 +1,5 @@
+// Packs and retains CPU image layouts for the legacy building atlas.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "BuildingAtlasCore.h"
 
 #include <algorithm>
@@ -356,3 +358,5 @@ namespace MiniMapBuildingAtlasCore
         catch (...) { return Result::InternalError; }
     }
 }
+
+#endif // MODLOADER_CLIENT_BUILD && MINIMAP_USE_LEGACY_BUILDINGS

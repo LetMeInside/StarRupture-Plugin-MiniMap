@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Tracks prerequisite resolution and status for the legacy native readback path.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "ReadbackNativeAdapter.h"
 #include "NativeApi.h"
 namespace MiniMapReadbackNative

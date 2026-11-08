@@ -1,5 +1,5 @@
 // Implements StarRupture acquisition and publishes immutable legacy rendering snapshots.
-#if defined(MODLOADER_CLIENT_BUILD)
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "BuildingCollector.h"
 #include "DiagnosticExports.h"
 #include "Config/Config.h"

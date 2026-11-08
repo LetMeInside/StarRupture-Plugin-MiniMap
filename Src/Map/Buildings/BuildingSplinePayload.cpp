@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Copies native spline payloads into the legacy collector geometry representation.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "BuildingSplinePayload.h"
 #include "BuildingGeometry.h"
 #include "Native/NativeApi.h"

@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Resolves and retains legacy building Blueprint identity conversion resources.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 #include "BuildingBlueprintIdentity.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"

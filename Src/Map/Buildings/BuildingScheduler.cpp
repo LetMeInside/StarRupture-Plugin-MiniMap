@@ -1,4 +1,5 @@
-#if defined(MODLOADER_CLIENT_BUILD)
+// Schedules legacy draw-driven sprite requirements, cache retrieval and atlas batches.
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_USE_LEGACY_BUILDINGS
 
 #include "BuildingScheduler.h"
 #include "BuildingAtlas.h"
