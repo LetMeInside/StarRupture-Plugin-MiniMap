@@ -5,6 +5,7 @@
 
 #include "../Map/Buildings/BuildingCollectorV2.h"
 #include "../Services/Map/Buildings/BuildingMapSection.h"
+#include "../Services/Map/Buildings/BuildingMapService.h"
 #include "../Services/Map/Buildings/BuildingMapViewport.h"
 #include "../Map/MapTransform.h"
 
@@ -18,18 +19,60 @@
 
 namespace MiniMapUI
 {
-	/** Creates inert collector state, stores textures and validates the Section size. */
+	/** Creates inert collector state, borrows textures/service and validates Section size. */
 	BuildingLayer::BuildingLayer(
 		MiniMap::Services::ITextures& textures,
-		double sectionSizeMapUnits)
+		Services::Map::Buildings::BuildingMapService& service)
 		: textures_(&textures)
-		, sectionSizeMapUnits_(sectionSizeMapUnits)
+		, service_(&service)
+		, sectionSizeMapUnits_(service.GetSectionSizeMapUnits())
 		, buildingCollector_(std::make_unique<MiniMap::BuildingAcquisition::BuildingCollectorV2>())
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0)
 		{
 			throw std::invalid_argument("BuildingLayer Section size must be positive finite map units.");
 		}
+	}
+
+	/** Initializes the owned collector and opens this layer's only viewport when gameplay is active. */
+	bool BuildingLayer::OpenViewport(
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
+	{
+		{
+			std::lock_guard<std::mutex> lock(presentationMutex_);
+			if (shutdownRequested_)
+			{
+				return false;
+			}
+		}
+		if (buildingCollector_ == nullptr || viewport_ != nullptr)
+		{
+			return false;
+		}
+		if (service_->GetMapWidthMapUnits() == 0.0 || service_->GetMapHeightMapUnits() == 0.0)
+		{
+			return false;
+		}
+		if (!buildingCollector_->InitializeResources())
+		{
+			return false;
+		}
+		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport =
+			service_->OpenViewport(
+				buildingCollector_.get(),
+				xMapUnits,
+				yMapUnits,
+				widthMapUnits,
+				heightMapUnits);
+		if (viewport == nullptr)
+		{
+			return false;
+		}
+		SetViewport(std::move(viewport));
+		return true;
 	}
 
 	/** Removes the callback and closes the viewport without backend resource calls. */

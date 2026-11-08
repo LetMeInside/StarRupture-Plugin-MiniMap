@@ -19,6 +19,7 @@
 
 namespace Services::Map::Buildings
 {
+	class BuildingMapService;
 	class BuildingMapViewport;
 }
 
@@ -42,9 +43,9 @@ namespace MiniMapUI
 	/**
 	 * Owns one BuildingCollectorV2, its viewport, CPU image updates and validated
 	 * texture receipts. The caller owns BuildingMapService and ITextures; both must
-	 * outlive this layer's viewport and texture resources. Native collector resources
-	 * require explicit Shutdown before BuildingLayer destruction. Viewport binding to
-	 * the owned collector is not implemented yet.
+	 * outlive this layer's viewport and texture resources. It creates one viewport
+	 * through the borrowed service using its owned collector. Native collector
+	 * resources require explicit Shutdown before BuildingLayer destruction.
 	 * Non-render operations use the serialized game thread. Render accesses only
 	 * the mutex-protected texture publication and supplied transform.
 	 */
@@ -69,23 +70,32 @@ namespace MiniMapUI
 
 		/**
 		 * Creates a layer with CPU-only collector state, caller-owned texture service
-		 * and configured Section size. It does not initialize native collector resources.
+		 * and BuildingMapService. Section size is read from the service. It does not
+		 * initialize native collector resources.
 		 * @param textures Texture service that must remain alive through resource shutdown.
-		 * @param sectionSizeMapUnits Positive service-configured width and height of each Section.
+		 * @param service Caller-owned service that must outlive this layer and its viewport.
 		 * @throws std::invalid_argument when the Section size is nonfinite or nonpositive.
 		 */
-		BuildingLayer(MiniMap::Services::ITextures& textures, double sectionSizeMapUnits);
+		BuildingLayer(
+			MiniMap::Services::ITextures& textures,
+			Services::Map::Buildings::BuildingMapService& service);
 
 		/**
-		 * Replaces the owned viewport, clearing prior CPU updates and discovering the
-		 * new viewport's existing Sections. A null viewport detaches the current one;
-		 * after Shutdown begins, attachment requests are ignored.
-		 * The caller remains responsible for keeping BuildingMapService alive. Binding
-		 * this viewport to the layer's owned collector is not implemented yet.
+		 * Opens and attaches this layer's single viewport through its borrowed service
+		 * using the owned collector. Native collector resources are initialized only
+		 * when the service reports an active gameplay map.
 		 *
-		 * @param viewport Viewport previously created by its caller-owned service.
+		 * @param xMapUnits Upper-left map X coordinate in service map units.
+		 * @param yMapUnits Upper-left map Y coordinate in service map units.
+		 * @param widthMapUnits Positive viewport width in service map units.
+		 * @param heightMapUnits Positive viewport height in service map units.
+		 * @return True when collector initialization succeeds and a viewport is attached.
 		 */
-		void SetViewport(std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport);
+		bool OpenViewport(
+			double xMapUnits,
+			double yMapUnits,
+			double widthMapUnits,
+			double heightMapUnits);
 
 		/**
 		 * Applies a complete rectangle in the attached service's map units. Accepted
@@ -144,6 +154,9 @@ namespace MiniMapUI
 
 	private:
 		using Coordinate = std::pair<std::int64_t, std::int64_t>;
+
+		/** Attaches a service-created viewport and resets prior CPU presentation state. */
+		void SetViewport(std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport);
 
 		/** Distinguishes a prepared image replacement from absent-image removal. */
 		enum class PendingUpdateKind
@@ -367,6 +380,7 @@ namespace MiniMapUI
 			MiniMap::Services::Vec2 clipMaximum) noexcept;
 
 		MiniMap::Services::ITextures* textures_;
+		Services::Map::Buildings::BuildingMapService* service_;
 		double sectionSizeMapUnits_;
 		std::unique_ptr<MiniMap::BuildingAcquisition::BuildingCollectorV2> buildingCollector_;
 		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport_;
