@@ -149,6 +149,15 @@ namespace MiniMapUI
 		return true;
 	}
 
+	/** Forwards presentation policy to the layer-owned V2 collector. */
+	void BuildingLayer::SetRenderDroneRails(bool enabled)
+	{
+		if (buildingCollector_ != nullptr)
+		{
+			buildingCollector_->SetRenderDroneRails(enabled);
+		}
+	}
+
 	/** Uploads one snapshot of pending updates and releases withdrawn receipts. */
 	void BuildingLayer::PublishGpuImages()
 	{

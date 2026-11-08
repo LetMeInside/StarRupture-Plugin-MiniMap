@@ -110,6 +110,9 @@ namespace MiniMapUI
 		 */
 		bool Update(double x1, double y1, double x2, double y2);
 
+		/** Applies the existing drone-rail collection policy before the next viewport update. */
+		void SetRenderDroneRails(bool enabled);
+
 		/**
 		 * Resolves dirty current Sections and records owned RGBA8 replacements or
 		 * removals. Borrowed Section bytes are consumed synchronously; this operation

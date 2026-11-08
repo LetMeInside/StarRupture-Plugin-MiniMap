@@ -16,6 +16,8 @@ namespace MiniMapTerrain
     bool Initialize(IPluginSelf* self);
     void Shutdown();
     void InvalidatePresentation(); // Values only; safe for visibility callbacks.
+    /** Reads the current valid terrain view and returns its rotated world-space AABB in native centimetres. */
+    bool TryGetVisibleWorldBounds(double& x1, double& y1, double& x2, double& y2);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool RegisterDiagnostics(IPluginSelf* self);

@@ -3,10 +3,23 @@
 #include <cstdint>
 
 struct IPluginSelf;
+namespace Services::Map::Buildings { class BuildingMapService; }
+namespace MiniMap::Services { class ITextures; }
 
 namespace MiniMapUI
 {
     bool Initialize(IPluginSelf* self);
+
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    /** Creates this gameplay session's layer using the plugin-owned service and texture backend. */
+    bool BeginBuildingLayerSession(
+        ::Services::Map::Buildings::BuildingMapService& service,
+        MiniMap::Services::ITextures& textures);
+    /** Advances MiniMap's viewport and its CPU/GPU presentation on the existing game-thread tick. */
+    void UpdateBuildingLayerSession();
+    /** Detaches and shuts down this session's layer, retaining it when texture release must retry. */
+    bool EndBuildingLayerSession();
+#endif
 
     void Shutdown();
     void StopInput();

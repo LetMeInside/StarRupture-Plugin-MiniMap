@@ -1332,6 +1332,56 @@ namespace
 
 namespace MiniMapTerrain
 {
+    bool TryGetVisibleWorldBounds(double& x1, double& y1, double& x2, double& y2)
+    {
+        x1 = y1 = x2 = y2 = 0.0;
+        const auto settings = MiniMapConfig::GetRenderSettings();
+        if (!MiniMapMap::GameplayReady() || !MiniMapUI::IsVisible())
+        {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        if (!g_initialized || !g_hasViewportAnchor || !g_presentation.Valid ||
+            g_presentation.WorldGeneration != MiniMapMap::GetWorldGeneration() ||
+            g_presentation.TrackingRevision != settings.TrackingRevision ||
+            !std::isfinite(g_presentation.Tracking.WorldX) ||
+            !std::isfinite(g_presentation.Tracking.WorldY) ||
+            !std::isfinite(g_metersPerPixel) || g_metersPerPixel <= 0.0 ||
+            !std::isfinite(g_viewportPixelWidth) || g_viewportPixelWidth <= 0.0f ||
+            !std::isfinite(g_viewportPixelHeight) || g_viewportPixelHeight <= 0.0f)
+        {
+            return false;
+        }
+        const double rotationDegrees = settings.RotatingMiniMap
+            ? MiniMapMap::HeadingUpMapRotationDegrees(g_presentation.Tracking.ControlYawDegrees)
+            : 0.0;
+        constexpr double degreesToRadians = 3.1415926535897932384626433832795 / 180.0;
+        const double angle = rotationDegrees * degreesToRadians;
+        const double cosine = std::abs(std::cos(angle));
+        const double sine = std::abs(std::sin(angle));
+        const double halfWorldWidth = static_cast<double>(g_viewportPixelWidth) * g_metersPerPixel * 100.0 / 2.0;
+        const double halfWorldHeight = static_cast<double>(g_viewportPixelHeight) * g_metersPerPixel * 100.0 / 2.0;
+        const double halfX = cosine * halfWorldWidth + sine * halfWorldHeight;
+        const double halfY = sine * halfWorldWidth + cosine * halfWorldHeight;
+        const double centerX = g_presentation.Tracking.WorldX;
+        const double centerY = g_presentation.Tracking.WorldY;
+        const double left = centerX - halfX;
+        const double top = centerY - halfY;
+        const double right = centerX + halfX;
+        const double bottom = centerY + halfY;
+        if (!std::isfinite(rotationDegrees) || !std::isfinite(halfX) || !std::isfinite(halfY) ||
+            !std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right) || !std::isfinite(bottom) ||
+            right <= left || bottom <= top)
+        {
+            return false;
+        }
+        x1 = left;
+        y1 = top;
+        x2 = right;
+        y2 = bottom;
+        return true;
+    }
+
     void InvalidatePresentation()
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);

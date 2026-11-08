@@ -595,20 +595,31 @@ static void OnTextureServiceTick(
     ObserveWorldIdentity("after-mass-buildingcomplex");
 #else
     (void)deltaTime;
+    MiniMapUI::UpdateBuildingLayerSession();
     MiniMapTexturePublication::Service();
 #endif
 }
+
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+// Detaches and retires this gameplay session's presentation before stopping its borrowed service.
+static void StopBuildingMapGameplaySession()
+{
+    MiniMapUI::EndBuildingLayerSession();
+    if (g_buildingMapService != nullptr)
+        g_buildingMapService->StopGameSession();
+}
+#endif
+
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
     if(!world||(world==MiniMapMap::GetWorld()&&!g_worldEnding))return;
+    SetServicesAdmitted(false);
 #if !MINIMAP_USE_LEGACY_BUILDINGS
-    if (g_buildingMapService != nullptr)
-        g_buildingMapService->StopGameSession();
+    StopBuildingMapGameplaySession();
 #endif
     ++g_worldGeneration;
     g_preparedGeneration=0;
     g_worldEnding=false;
-    SetServicesAdmitted(false);
     // A replacement world can begin before the owned world's EndPlay. Keep the
     // previous gameplay identity available until its native owner has ended.
 #if MINIMAP_USE_LEGACY_BUILDINGS
@@ -655,6 +666,14 @@ static bool TryStartBuildingMapSession()
     if (!g_buildingMapService->StartGameSession(mapWidthMapUnits, mapHeightMapUnits))
     {
         LOG_ERROR("MiniMap: Building Map session start was rejected; V2 gameplay remains unadmitted");
+        SetServicesAdmitted(false);
+        return false;
+    }
+    auto* textures = MiniMap::Services::TryTextures();
+    if (textures == nullptr || !MiniMapUI::BeginBuildingLayerSession(*g_buildingMapService, *textures))
+    {
+        LOG_ERROR("MiniMap: BuildingLayer presentation session could not be created; V2 gameplay remains unadmitted");
+        StopBuildingMapGameplaySession();
         SetServicesAdmitted(false);
         return false;
     }
@@ -715,8 +734,7 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     g_worldEnding=true;
     SetServicesAdmitted(false);
 #if !MINIMAP_USE_LEGACY_BUILDINGS
-    if (g_buildingMapService != nullptr)
-        g_buildingMapService->StopGameSession();
+    StopBuildingMapGameplaySession();
 #endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
@@ -752,8 +770,7 @@ static void OnAfterWorldEndPlay(
     g_worldEnding=true;
     SetServicesAdmitted(false);
 #if !MINIMAP_USE_LEGACY_BUILDINGS
-    if (g_buildingMapService != nullptr)
-        g_buildingMapService->StopGameSession();
+    StopBuildingMapGameplaySession();
 #endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession(); // Idempotent fallback if BeforeEndPlay was not delivered.
@@ -1132,17 +1149,17 @@ namespace MiniMap
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+        g_worldEnding=true;
+        SetServicesAdmitted(false);
         MiniMapUI::StopInput();
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+        StopBuildingMapGameplaySession();
+#endif
         MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
         RemoveCommonUIHooks();
-        g_worldEnding=true;
-        SetServicesAdmitted(false);
 #if MINIMAP_USE_LEGACY_BUILDINGS
         MiniMapBuildingVisuals::ShutdownSpriteProcessing();
-#else
-        if (g_buildingMapService != nullptr)
-            g_buildingMapService->StopGameSession();
 #endif
         if (g_buildingSpriteRenderer != nullptr)
         {
@@ -1185,8 +1202,17 @@ namespace MiniMap
         MiniMapUI::Shutdown();
 
         MiniMapCacheIdentity::ClearOnExit();
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+        const bool buildingLayerShutdownComplete = MiniMapUI::EndBuildingLayerSession();
+        if (buildingLayerShutdownComplete)
+            g_buildingMapService.reset();
+        else
+            LOG_ERROR("MiniMap: retaining the Building Map service while detached BuildingLayer texture receipts remain unresolved");
+        g_buildingSpriteRenderer = nullptr;
+#else
         g_buildingMapService.reset();
         g_buildingSpriteRenderer = nullptr;
+#endif
 
         // NativeApi should be the last subsystem torn down.
         // Other subsystems depend on it for their own shutdown paths.

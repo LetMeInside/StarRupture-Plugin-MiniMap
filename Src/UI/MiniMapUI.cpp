@@ -18,6 +18,10 @@
 #endif
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+#include "BuildingLayer.h"
+#include "Services/Map/Buildings/BuildingMapService.h"
+#endif
 
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -26,6 +30,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
+#include <memory>
+#include <vector>
 
 namespace
 {
@@ -39,6 +46,12 @@ namespace
     bool g_bindingsActive = false; // Protected by g_bindingMutex.
     std::atomic<bool> g_inputActive{false};
     S::Registration g_toggleBinding{}, g_zoomInBinding{}, g_zoomOutBinding{};
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    std::mutex g_buildingLayerMutex;
+    std::shared_ptr<::MiniMapUI::BuildingLayer> g_buildingLayer;
+    std::vector<std::shared_ptr<::MiniMapUI::BuildingLayer>> g_retiredBuildingLayers;
+    bool g_buildingLayerViewportOpened = false;
+#endif
 
 
     constexpr float kWindowWidth = 300.0f;
@@ -161,6 +174,17 @@ namespace
                 MiniMapBuildingVisuals::DrawBuildings(*buildingState,
                     MiniMapBuildingCollector::GetSnapshot(), ui, transform, settings.Buildings);
 #endif
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+            std::shared_ptr<::MiniMapUI::BuildingLayer> buildingLayer;
+            {
+                std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+                buildingLayer = g_buildingLayer;
+            }
+            if (buildingLayer != nullptr)
+            {
+                buildingLayer->Render(ui, transform, settings.Buildings.ShowLayer);
+            }
+#endif
             MiniMapFogOfWar::Render(
                 ui,
                 transform, settings.Fog);
@@ -277,6 +301,101 @@ namespace
 
 namespace MiniMapUI
 {
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    bool BeginBuildingLayerSession(
+        ::Services::Map::Buildings::BuildingMapService& service,
+        MiniMap::Services::ITextures& textures)
+    {
+        std::shared_ptr<BuildingLayer> layer;
+        try
+        {
+            layer = std::make_shared<::MiniMapUI::BuildingLayer>(textures, service);
+        }
+        catch (const std::exception& exception)
+        {
+            LOG_ERROR("MiniMap: BuildingLayer construction failed: %s", exception.what());
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+        if (g_buildingLayer != nullptr)
+        {
+            return false;
+        }
+        g_buildingLayer = std::move(layer);
+        g_buildingLayerViewportOpened = false;
+        return true;
+    }
+
+    void UpdateBuildingLayerSession()
+    {
+        std::shared_ptr<BuildingLayer> layer;
+        std::vector<std::shared_ptr<BuildingLayer>> retiredLayers;
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            layer = g_buildingLayer;
+            retiredLayers = g_retiredBuildingLayers;
+        }
+        for (const auto& retired : retiredLayers)
+        {
+            if (retired == nullptr || retired->Shutdown())
+            {
+                std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+                std::erase(g_retiredBuildingLayers, retired);
+            }
+        }
+        if (layer == nullptr)
+        {
+            return;
+        }
+        double x1, y1, x2, y2;
+        if (!MiniMapTerrain::TryGetVisibleWorldBounds(x1, y1, x2, y2))
+        {
+            return;
+        }
+        bool viewportOpened = false;
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            viewportOpened = g_buildingLayerViewportOpened;
+        }
+        if (!viewportOpened && layer->OpenViewport(x1, y1, x2 - x1, y2 - y1))
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            if (g_buildingLayer == layer)
+            {
+                g_buildingLayerViewportOpened = true;
+            }
+            viewportOpened = true;
+        }
+        if (!viewportOpened)
+        {
+            return;
+        }
+        const auto settings = MiniMapConfig::GetRenderSettings();
+        layer->SetRenderDroneRails(settings.Buildings.RenderDroneRails);
+        layer->Update(x1, y1, x2, y2);
+        layer->PrepareCpuImages();
+        layer->PublishGpuImages();
+    }
+
+    bool EndBuildingLayerSession()
+    {
+        std::shared_ptr<BuildingLayer> layer;
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            layer = std::move(g_buildingLayer);
+            g_buildingLayerViewportOpened = false;
+        }
+        if (layer != nullptr && !layer->Shutdown())
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            g_retiredBuildingLayers.push_back(std::move(layer));
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+        return g_retiredBuildingLayers.empty();
+    }
+#endif
+
     bool Initialize(
         IPluginSelf* self)
     {
@@ -373,6 +492,9 @@ namespace MiniMapUI
 
     void Shutdown()
     {
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+        EndBuildingLayerSession();
+#endif
         StopInput();
         if (g_widget.id) if (auto* viewport = S::TryViewport())
             viewport->SetVisible(g_widget, false);
