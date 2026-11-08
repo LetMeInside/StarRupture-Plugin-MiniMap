@@ -108,6 +108,13 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
+	/** Clears viewport demand bookkeeping without changing scheduler ownership or state. */
+	void SectionSchedulingCoordinator::ClearViewportDemand() noexcept
+	{
+		demandCounts_.clear();
+		waitingSections_.clear();
+	}
+
 	/** Requeues one demanded Section after a future dependency invalidation report. */
 	void SectionSchedulingCoordinator::RequestSectionWork(const SectionCoordinate& coordinate)
 	{

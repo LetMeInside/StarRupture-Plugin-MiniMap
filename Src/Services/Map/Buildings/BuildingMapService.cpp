@@ -62,6 +62,57 @@ namespace Services::Map::Buildings
 			sectionSchedulingCoordinator_->ClearCache();
 	}
 
+	/** Starts a renderer session once finite positive gameplay dimensions are accepted. */
+	bool BuildingMapService::StartGameSession(
+		double mapWidthMapUnits,
+		double mapHeightMapUnits)
+	{
+		if (!std::isfinite(mapWidthMapUnits) || !std::isfinite(mapHeightMapUnits) ||
+			mapWidthMapUnits <= 0.0 || mapHeightMapUnits <= 0.0 ||
+			mapWidthMapUnits_ != 0.0 || mapHeightMapUnits_ != 0.0)
+		{
+			return false;
+		}
+		if (!BeginCaptureGameWorldSession())
+		{
+			return false;
+		}
+		mapWidthMapUnits_ = mapWidthMapUnits;
+		mapHeightMapUnits_ = mapHeightMapUnits;
+		return true;
+	}
+
+	/** Retires capture and clears gameplay-owned registrations, demand and Sections. */
+	void BuildingMapService::StopGameSession()
+	{
+		AdvanceCaptureGameWorldSessionShutdown();
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			viewportEntry.second->InvalidateService();
+		}
+		viewportsByHandle_.clear();
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			sectionSchedulingCoordinator_->ClearViewportDemand();
+		}
+		sections_.clear();
+		sectionImageResidencyReconciliationPending_ = false;
+		mapWidthMapUnits_ = 0.0;
+		mapHeightMapUnits_ = 0.0;
+	}
+
+	/** Returns the active gameplay map width without modifying service state. */
+	double BuildingMapService::GetMapWidthMapUnits() const noexcept
+	{
+		return mapWidthMapUnits_;
+	}
+
+	/** Returns the active gameplay map height without modifying service state. */
+	double BuildingMapService::GetMapHeightMapUnits() const noexcept
+	{
+		return mapHeightMapUnits_;
+	}
+
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */
 	BuildingMapService::~BuildingMapService()
 	{
@@ -89,6 +140,10 @@ namespace Services::Map::Buildings
 	/** Reconciles pending image residency before publication observation and one normal scheduling tick. */
 	void BuildingMapService::AdvanceSectionScheduling()
 	{
+		if (mapWidthMapUnits_ == 0.0 || mapHeightMapUnits_ == 0.0)
+		{
+			return;
+		}
 		if (sectionImageResidencyReconciliationPending_)
 		{
 			ReconcileSectionImageResidency();
@@ -226,6 +281,10 @@ namespace Services::Map::Buildings
 		double widthMapUnits,
 		double heightMapUnits)
 	{
+		if (mapWidthMapUnits_ == 0.0 || mapHeightMapUnits_ == 0.0)
+		{
+			return nullptr;
+		}
 		if (buildingCollector == nullptr)
 		{
 			throw std::invalid_argument("A viewport requires a caller-owned building collector.");

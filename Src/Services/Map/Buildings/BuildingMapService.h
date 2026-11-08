@@ -63,6 +63,18 @@ namespace Services::Map::Buildings
 		 * @return True when the cache subtree was cleared without a filesystem error.
 		 */
 		bool ClearCache();
+		/** Starts renderer capture for one gameplay map and stores its finite positive dimensions.
+		 * @param mapWidthMapUnits Active gameplay map width in map units.
+		 * @param mapHeightMapUnits Active gameplay map height in map units.
+		 * @return True when a renderer session starts and the map dimensions become active.
+		 */
+		bool StartGameSession(double mapWidthMapUnits, double mapHeightMapUnits);
+		/** Shuts down renderer capture and clears gameplay Sections, viewports and demand. */
+		void StopGameSession();
+		/** Returns the active gameplay map width, or zero outside a gameplay session. */
+		double GetMapWidthMapUnits() const noexcept;
+		/** Returns the active gameplay map height, or zero outside a gameplay session. */
+		double GetMapHeightMapUnits() const noexcept;
 
 		/** Returns the configured square grid-cell width and height in map units. */
 		double GetSectionSizeMapUnits() const noexcept override;
@@ -240,6 +252,8 @@ namespace Services::Map::Buildings
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
 		const std::vector<SplinePolicy> splinePolicies_;
+		double mapWidthMapUnits_ = 0.0;
+		double mapHeightMapUnits_ = 0.0;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;

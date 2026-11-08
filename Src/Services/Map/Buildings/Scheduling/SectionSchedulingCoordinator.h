@@ -99,6 +99,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
 			std::int64_t endGridY);
+		/** Clears all viewport demand counts and waiting coordinates, retaining the scheduler. */
+		void ClearViewportDemand() noexcept;
 
 		/** Requeues demanded work after a Section dependency changes.
 		 * @param coordinate Signed service-grid coordinate requiring regeneration.
