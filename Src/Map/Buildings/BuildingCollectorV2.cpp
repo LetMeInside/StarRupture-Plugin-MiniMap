@@ -1,6 +1,10 @@
 // Independently acquires StarRupture native building facts. All ABI-specific access
 // stays here; no rendering, legacy collector, service interface or runtime caller is used.
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "DiagnosticExports.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "plugin_helpers.h"
+#endif
 #include "BuildingCollectorV2.h"
 #include "SplinePolicyId.h"
 #include "../Map.h"
@@ -41,6 +45,152 @@ namespace MiniMap::BuildingAcquisition
     struct BuildingCollectorV2::State
     {
         using Clock = std::chrono::steady_clock;
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Aggregates one repeated CPU phase without retaining per-operation history. */
+        struct Metric
+        {
+            std::uint64_t Samples = 0;
+            double TotalMs = 0.0;
+            double MaxMs = 0.0;
+
+            void Add(double elapsedMs) noexcept
+            {
+                ++Samples;
+                TotalMs += elapsedMs;
+                MaxMs = (std::max)(MaxMs, elapsedMs);
+            }
+
+            double MeanMs() const noexcept
+            {
+                return Samples == 0 ? 0.0 : TotalMs / static_cast<double>(Samples);
+            }
+        };
+
+        /** Numeric evidence for the slowest membership scan in the active interval. */
+        struct WorstMembershipScan
+        {
+            double TotalMs = 0.0;
+            double NativeMs = 0.0;
+            double BookkeepingMs = 0.0;
+            double SweepMs = 0.0;
+            double ReleaseMs = 0.0;
+            std::uint64_t Handles = 0;
+            std::uint64_t Entities = 0;
+            std::uint64_t Pending = 0;
+            std::uint64_t Added = 0;
+            std::uint64_t Removed = 0;
+        };
+
+        /** Owns bounded interval counters and phase aggregates for this collector session. */
+        struct Measurements
+        {
+            Clock::time_point IntervalStart{};
+            Metric Update;
+            Metric UpdateMembership;
+            Metric UpdateAcquisition;
+            Metric Membership;
+            Metric MembershipNative;
+            Metric MembershipBookkeeping;
+            Metric MembershipSweep;
+            Metric MembershipRelease;
+            Metric Acquisition;
+            Metric LocalKeys;
+            Metric LocalAcquisition;
+            Metric RemoteAcquisition;
+            Metric Publication;
+            std::uint64_t MembershipScans = 0;
+            std::uint64_t NativeHandles = 0;
+            std::uint64_t Added = 0;
+            std::uint64_t Removed = 0;
+            std::uint64_t Duplicates = 0;
+            std::uint64_t Invalid = 0;
+            std::uint64_t FailedScans = 0;
+            std::uint64_t MalformedScans = 0;
+            std::uint64_t LocalAttempts = 0;
+            std::uint64_t RemoteAttempts = 0;
+            std::uint64_t Completed = 0;
+            std::uint64_t PublicationAttempts = 0;
+            std::uint64_t Publications = 0;
+            WorstMembershipScan WorstScan;
+
+            void Reset() noexcept
+            {
+                *this = {};
+                IntervalStart = Clock::now();
+            }
+        };
+
+        /** Captures one reconciliation and folds its numeric result into the interval. */
+        struct MembershipTiming
+        {
+            State& Owner;
+            Clock::time_point Started = Clock::now();
+            double NativeMs = 0.0;
+            double BookkeepingMs = 0.0;
+            double SweepMs = 0.0;
+            double ReleaseMs = 0.0;
+            std::uint64_t Handles = 0;
+            std::uint64_t Added = 0;
+            std::uint64_t Removed = 0;
+            std::uint64_t Duplicates = 0;
+            std::uint64_t Invalid = 0;
+            std::uint64_t Generation = 0;
+            bool Complete = false;
+            bool Malformed = false;
+
+            explicit MembershipTiming(State& owner) noexcept : Owner(owner), Generation(owner.Generation) {}
+
+            ~MembershipTiming() noexcept
+            {
+                if (Owner.Generation != Generation)
+                {
+                    return;
+                }
+                const double totalMs = ElapsedMs(Started);
+                auto& measurements = Owner.Diagnostics;
+                ++measurements.MembershipScans;
+                measurements.Membership.Add(totalMs);
+                measurements.MembershipNative.Add(NativeMs);
+                measurements.MembershipBookkeeping.Add(BookkeepingMs);
+                measurements.MembershipSweep.Add(SweepMs);
+                measurements.MembershipRelease.Add(ReleaseMs);
+                measurements.NativeHandles += Handles;
+                measurements.Added += Added;
+                measurements.Removed += Removed;
+                measurements.Duplicates += Duplicates;
+                measurements.Invalid += Invalid;
+                measurements.FailedScans += Complete ? 0 : 1;
+                measurements.MalformedScans += Malformed ? 1 : 0;
+                if (totalMs >= measurements.WorstScan.TotalMs)
+                {
+                    measurements.WorstScan = {totalMs, NativeMs, BookkeepingMs, SweepMs, ReleaseMs,
+                        Handles, Owner.Entities.size(), Owner.Pending.size(), Added, Removed};
+                }
+            }
+
+            static double ElapsedMs(Clock::time_point started) noexcept
+            {
+                return std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            }
+        };
+
+        /** Adds one elapsed phase sample when an existing operation scope exits. */
+        struct PhaseTiming
+        {
+            Metric& Aggregate;
+            Clock::time_point Started = Clock::now();
+
+            explicit PhaseTiming(Metric& aggregate) noexcept : Aggregate(aggregate) {}
+
+            ~PhaseTiming() noexcept
+            {
+                Aggregate.Add(std::chrono::duration<double, std::milli>(Clock::now() - Started).count());
+            }
+        };
+
+        Measurements Diagnostics;
+#endif
 
         const std::chrono::milliseconds MembershipInterval;
 
@@ -120,11 +270,25 @@ namespace MiniMap::BuildingAcquisition
         {
             const Native& Api;
             MiniMapNative::MassEntityHandleArray Handles{};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            MembershipTiming* Timing = nullptr;
+#endif
             /** Frees native array storage even on exceptions/context rejection. */
             ~HandleArrayOwner()
             {
                 if (Handles.Data)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    const auto started = Clock::now();
+#endif
                     Api.texture.memoryFree(Handles.Data);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    if (Timing != nullptr)
+                    {
+                        Timing->ReleaseMs += std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+                    }
+#endif
+                }
             }
         };
 
@@ -213,6 +377,9 @@ namespace MiniMap::BuildingAcquisition
         /** Destroys query before releasing roots; caller keeps native services/world valid. */
         void ClearSession(bool clearRequest)
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            Diagnostics.Reset();
+#endif
             Invalidate();
             ++Generation;
             if (QueryConstructed)
@@ -273,12 +440,28 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Inserts one full handle with rollback if pending-index insertion cannot allocate. */
-        void MarkHandle(EntityId id, std::uint64_t epoch)
+        void MarkHandle(EntityId id, std::uint64_t epoch
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
         {
             const auto key = Key(id);
             auto [entry, added] = Entities.try_emplace(key);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (!added && timing != nullptr && entry->second.SeenScan == epoch)
+            {
+                ++timing->Duplicates;
+            }
+#endif
             if (added)
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                if (timing != nullptr)
+                {
+                    ++timing->Added;
+                }
+#endif
                 try
                 {
                     Pending.insert(key);
@@ -296,44 +479,117 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Removes absent entries only after the complete native scan/context was validated. */
-        void SweepMembership(std::uint64_t epoch)
+        void SweepMembership(std::uint64_t epoch
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto started = Clock::now();
+#endif
             for (auto entry = Entities.begin(); entry != Entities.end();)
             {
                 if (entry->second.SeenScan == epoch)
                     ++entry;
                 else
                 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    if (timing != nullptr)
+                    {
+                        ++timing->Removed;
+                    }
+#endif
                     Pending.erase(entry->first);
                     entry = Entities.erase(entry);
                     Invalidate();
                 }
             }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (timing != nullptr)
+            {
+                timing->SweepMs += std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            }
+#endif
         }
 
         /** Reconciles authoritative membership; failed traversal cannot authorize a removal sweep. */
         bool Reconcile(const Native& native)
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            MembershipTiming timing{*this};
+            HandleArrayOwner owner{native};
+            owner.Timing = &timing;
+#else
+            HandleArrayOwner owner{native};
+#endif
             const auto context = CaptureContext();
             const auto epoch = NextScanEpoch();
-            HandleArrayOwner owner{native};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto nativeStarted = Clock::now();
+#endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const MiniMapNative::MassEntityHandleArray* returned = nullptr;
+            try
+            {
+                returned = native.mass.getMatchingEntityHandles(Query.data(), &owner.Handles);
+            }
+            catch (...)
+            {
+                timing.NativeMs = std::chrono::duration<double, std::milli>(Clock::now() - nativeStarted).count();
+                throw;
+            }
+#else
             const auto* returned = native.mass.getMatchingEntityHandles(Query.data(), &owner.Handles);
+#endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.NativeMs = std::chrono::duration<double, std::milli>(Clock::now() - nativeStarted).count();
+            timing.Handles = owner.Handles.Num > 0 ? static_cast<std::uint64_t>(owner.Handles.Num) : 0;
+#endif
             const auto& handles = owner.Handles;
             if (returned != &handles || handles.Num < 0 || handles.Max < handles.Num ||
                 (handles.Num && !handles.Data) || !IsContextCurrent(native, context))
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                timing.Malformed = returned != &handles || handles.Num < 0 || handles.Max < handles.Num ||
+                    (handles.Num && !handles.Data);
+#endif
                 return false;
+            }
             bool valid = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto bookkeepingStarted = Clock::now();
+#endif
             for (int index = 0; index < handles.Num; ++index)
             {
                 const auto id = handles.Data[index];
                 if (id.Index < 0 || !id.SerialNumber)
+                {
                     valid = false;
+ #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing.Invalid;
+ #endif
+                }
                 else
-                    MarkHandle(id, epoch); // Duplicate handles merely repeat the same mark.
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    MarkHandle(id, epoch, &timing);
+#else
+                    MarkHandle(id, epoch);
+#endif
+                }
             }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.BookkeepingMs += std::chrono::duration<double, std::milli>(Clock::now() - bookkeepingStarted).count();
+#endif
             if (!valid || !IsContextCurrent(native, context))
                 return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            SweepMembership(epoch, &timing);
+            timing.Complete = true;
+#else
             SweepMembership(epoch);
+#endif
             return true;
         }
 
@@ -641,6 +897,9 @@ namespace MiniMap::BuildingAcquisition
         /** Enumerates local pending priority around the exact requested rectangle, across all Z. */
         void CollectLocalKeys(const Native& native, std::unordered_set<std::uint64_t>& keys)
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            PhaseTiming timing{Diagnostics.LocalKeys};
+#endif
             if (!HasRegion)
                 return;
             const double radius = std::hypot(RequestedRegion.Width, RequestedRegion.Height) * 0.5;
@@ -659,12 +918,35 @@ namespace MiniMap::BuildingAcquisition
 
         /** Acquires a stable key sequence; no map iterators survive native calls. */
         template<class Keys> bool AcquireKeys(const Native& native, const Keys& keys,
-            std::unordered_set<const DefinitionOwner*>& attempted, const Context& context)
+            std::unordered_set<const DefinitionOwner*>& attempted, const Context& context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , bool localPass
+#endif
+        )
         {
             for (const auto key : keys)
             {
                 if (Pending.contains(key))
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    const auto pendingBefore = Pending.size();
+                    if (localPass)
+                    {
+                        ++Diagnostics.LocalAttempts;
+                    }
+                    else
+                    {
+                        ++Diagnostics.RemoteAttempts;
+                    }
+#endif
                     Acquire(native, key, attempted);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    if (Pending.size() < pendingBefore)
+                    {
+                        ++Diagnostics.Completed;
+                    }
+#endif
+                }
                 if (!IsContextCurrent(native, context))
                     return false;
             }
@@ -1077,6 +1359,10 @@ namespace MiniMap::BuildingAcquisition
         {
             if (!Dirty)
                 return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++Diagnostics.PublicationAttempts;
+            PhaseTiming publicationTiming{Diagnostics.Publication};
+#endif
             auto facts = std::make_shared<Facts>();
             facts->MembershipComplete = MembershipComplete;
             facts->AcquisitionComplete = MembershipComplete && Pending.empty();
@@ -1099,11 +1385,17 @@ namespace MiniMap::BuildingAcquisition
             PublishedCandidates = std::move(candidates);
             PublicationEligibility = std::move(eligibility);
             Dirty = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++Diagnostics.Publications;
+#endif
         }
 
         /** Alternates local-progress publication with unrestricted remote pending acquisition. */
         void AdvancePending(const Native& native)
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            PhaseTiming acquisitionTiming{Diagnostics.Acquisition};
+#endif
             if (Pending.empty())
             {
                 RemoteTurn = false;
@@ -1116,8 +1408,20 @@ namespace MiniMap::BuildingAcquisition
             if (!IsContextCurrent(native, context))
                 return;
             std::unordered_set<const DefinitionOwner*> attempted;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            bool localComplete = false;
+            {
+                PhaseTiming localTiming{Diagnostics.LocalAcquisition};
+                localComplete = AcquireKeys(native, local, attempted, context
+                    , true
+                );
+            }
+            if (!localComplete)
+                return;
+#else
             if (!AcquireKeys(native, local, attempted, context))
                 return;
+#endif
             if (!Pending.empty() && Dirty && !RemoteTurn)
             {
                 Publish();
@@ -1126,9 +1430,101 @@ namespace MiniMap::BuildingAcquisition
             }
             RemoteTurn = false;
             const std::vector<std::uint64_t> remote(Pending.begin(), Pending.end());
-            if (AcquireKeys(native, remote, attempted, context))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            PhaseTiming remoteTiming{Diagnostics.RemoteAcquisition};
+#endif
+            if (AcquireKeys(native, remote, attempted, context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , false
+#endif
+            ))
                 Publish();
         }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Emits collector totals and acquisition phases for one completed interval. */
+        void ReportCollectorMeasurements(double intervalMs) const
+        {
+            const auto& d = Diagnostics;
+            LOG_INFO("MiniMap: BuildingMap V2 collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisitionWork={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f localAttempts:%llu remoteAttempts:%llu completed:%llu pending:%llu publishAttempts:%llu publications:%llu",
+                intervalMs,
+                static_cast<unsigned long long>(d.Update.Samples), d.Update.TotalMs, d.Update.MeanMs(), d.Update.MaxMs,
+                d.UpdateMembership.TotalMs, d.UpdateMembership.MeanMs(), d.UpdateMembership.MaxMs,
+                d.UpdateAcquisition.TotalMs, d.UpdateAcquisition.MeanMs(), d.UpdateAcquisition.MaxMs,
+                static_cast<unsigned long long>(d.Acquisition.Samples), d.Acquisition.TotalMs, d.Acquisition.MeanMs(), d.Acquisition.MaxMs,
+                static_cast<unsigned long long>(d.LocalAttempts), static_cast<unsigned long long>(d.RemoteAttempts),
+                static_cast<unsigned long long>(d.Completed), static_cast<unsigned long long>(Pending.size()),
+                static_cast<unsigned long long>(d.PublicationAttempts), static_cast<unsigned long long>(d.Publications));
+            LOG_INFO("MiniMap: BuildingMap V2 collector_phases intervalMs=%.1f localKeys={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} local={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} remote={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+                intervalMs,
+                static_cast<unsigned long long>(d.LocalKeys.Samples), d.LocalKeys.TotalMs, d.LocalKeys.MeanMs(), d.LocalKeys.MaxMs,
+                static_cast<unsigned long long>(d.LocalAcquisition.Samples), d.LocalAcquisition.TotalMs, d.LocalAcquisition.MeanMs(), d.LocalAcquisition.MaxMs,
+                static_cast<unsigned long long>(d.RemoteAcquisition.Samples), d.RemoteAcquisition.TotalMs, d.RemoteAcquisition.MeanMs(), d.RemoteAcquisition.MaxMs,
+                static_cast<unsigned long long>(d.Publication.Samples), d.Publication.TotalMs, d.Publication.MeanMs(), d.Publication.MaxMs);
+        }
+
+        /** Emits membership phase and outcome totals for one completed interval. */
+        void ReportMembershipMeasurements(double intervalMs) const
+        {
+            const auto& d = Diagnostics;
+            LOG_INFO("MiniMap: BuildingMap V2 membership intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} native={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} bookkeeping={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sweep={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} release={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} handles:%llu added:%llu removed:%llu duplicate:%llu invalid:%llu failed:%llu malformed:%llu entities:%llu pending:%llu",
+                intervalMs, static_cast<unsigned long long>(d.MembershipScans),
+                static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
+                static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
+                static_cast<unsigned long long>(d.MembershipNative.Samples), d.MembershipNative.TotalMs, d.MembershipNative.MeanMs(), d.MembershipNative.MaxMs,
+                static_cast<unsigned long long>(d.MembershipBookkeeping.Samples), d.MembershipBookkeeping.TotalMs, d.MembershipBookkeeping.MeanMs(), d.MembershipBookkeeping.MaxMs,
+                static_cast<unsigned long long>(d.MembershipSweep.Samples), d.MembershipSweep.TotalMs, d.MembershipSweep.MeanMs(), d.MembershipSweep.MaxMs,
+                static_cast<unsigned long long>(d.MembershipRelease.Samples), d.MembershipRelease.TotalMs, d.MembershipRelease.MeanMs(), d.MembershipRelease.MaxMs,
+                static_cast<unsigned long long>(d.NativeHandles), static_cast<unsigned long long>(d.Added),
+                static_cast<unsigned long long>(d.Removed), static_cast<unsigned long long>(d.Duplicates),
+                static_cast<unsigned long long>(d.Invalid), static_cast<unsigned long long>(d.FailedScans),
+                static_cast<unsigned long long>(d.MalformedScans), static_cast<unsigned long long>(Entities.size()),
+                static_cast<unsigned long long>(Pending.size()));
+        }
+
+        /** Emits the numeric-only worst scan retained for one completed interval. */
+        void ReportWorstMembershipScan(double intervalMs) const
+        {
+            const auto& d = Diagnostics;
+            if (d.WorstScan.TotalMs > 0.0)
+            {
+                const auto& worst = d.WorstScan;
+                LOG_INFO("MiniMap: BuildingMap V2 membership_worst intervalMs=%.1f totalMs:%.3f nativeMs:%.3f bookkeepingMs:%.3f sweepMs:%.3f releaseMs:%.3f handles:%llu entities:%llu pending:%llu added:%llu removed:%llu",
+                    intervalMs, worst.TotalMs, worst.NativeMs, worst.BookkeepingMs, worst.SweepMs, worst.ReleaseMs,
+                    static_cast<unsigned long long>(worst.Handles), static_cast<unsigned long long>(worst.Entities),
+                    static_cast<unsigned long long>(worst.Pending), static_cast<unsigned long long>(worst.Added),
+                    static_cast<unsigned long long>(worst.Removed));
+            }
+        }
+
+        /** Emits and resets ten-second aggregates only from a permitted Update call. */
+        void ReportMeasurements() noexcept
+        {
+            const auto now = Clock::now();
+            if (Diagnostics.IntervalStart == Clock::time_point{})
+            {
+                Diagnostics.IntervalStart = now;
+                return;
+            }
+            const double intervalMs = std::chrono::duration<double, std::milli>(now - Diagnostics.IntervalStart).count();
+            if (intervalMs < 10000.0)
+            {
+                return;
+            }
+            try
+            {
+                ReportCollectorMeasurements(intervalMs);
+                ReportMembershipMeasurements(intervalMs);
+                ReportWorstMembershipScan(intervalMs);
+            }
+            catch (...)
+            {
+                Diagnostics.Reset();
+                return;
+            }
+            Diagnostics.Reset();
+        }
+#endif
     };
 
     /** Hashes the exact approved class-path and ready transform bytes for one occurrence. */
@@ -1296,10 +1692,32 @@ namespace MiniMap::BuildingAcquisition
         {
             if (!state_->Types || !state_->EnsureSession(*native, world))
                 return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto updateStarted = State::Clock::now();
+            const auto membershipStarted = updateStarted;
+#endif
             const auto context = state_->CaptureContext();
             state_->ReconcileIfDue(*native);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (state_->Generation == context.Session)
+            {
+                state_->Diagnostics.UpdateMembership.Add(
+                    std::chrono::duration<double, std::milli>(State::Clock::now() - membershipStarted).count());
+            }
+            const auto acquisitionStarted = State::Clock::now();
+#endif
             if (state_->IsContextCurrent(*native, context))
                 state_->AdvancePending(*native);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (state_->Generation == context.Session)
+            {
+                state_->Diagnostics.UpdateAcquisition.Add(
+                    std::chrono::duration<double, std::milli>(State::Clock::now() - acquisitionStarted).count());
+                state_->Diagnostics.Update.Add(
+                    std::chrono::duration<double, std::milli>(State::Clock::now() - updateStarted).count());
+                state_->ReportMeasurements();
+            }
+#endif
         }
         catch (const std::bad_alloc&)
         {
