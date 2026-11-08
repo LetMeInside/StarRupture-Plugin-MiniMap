@@ -108,6 +108,65 @@ namespace Services::Map::Buildings::Scheduling
 			scratch.clear();
 			return false;
 		}
+		std::stable_sort(
+			scratch.begin(),
+			scratch.end(),
+			[](const Visuals::BuildingSplineRenderInput& left, const Visuals::BuildingSplineRenderInput& right)
+			{
+				const auto compareComponent = [](double leftValue, double rightValue)
+				{
+					const bool leftFinite = std::isfinite(leftValue);
+					const bool rightFinite = std::isfinite(rightValue);
+					if (leftFinite != rightFinite)
+					{
+						return leftFinite ? -1 : 1;
+					}
+					if (!leftFinite || leftValue == rightValue)
+					{
+						return 0;
+					}
+					return leftValue < rightValue ? -1 : 1;
+				};
+				const auto getElevation = [](const Visuals::BuildingSplineRenderInput& input)
+					-> std::optional<double>
+				{
+					if (input.Segments.empty())
+					{
+						return std::nullopt;
+					}
+					const double startZ = input.Segments.front().Controls[0][2];
+					const double endZ = input.Segments.back().Controls[3][2];
+					if (!std::isfinite(startZ) || !std::isfinite(endZ))
+					{
+						return std::nullopt;
+					}
+					return (std::max)(startZ, endZ);
+				};
+				const std::optional<double> leftElevation = getElevation(left);
+				const std::optional<double> rightElevation = getElevation(right);
+				if (leftElevation.has_value() != rightElevation.has_value())
+				{
+					return leftElevation.has_value();
+				}
+				if (leftElevation.has_value())
+				{
+					const int elevationOrder = compareComponent(*leftElevation, *rightElevation);
+					if (elevationOrder != 0)
+					{
+						return elevationOrder < 0;
+					}
+				}
+				const int yOrder = compareComponent(
+					left.RootTransform.Translation[1],
+					right.RootTransform.Translation[1]);
+				if (yOrder != 0)
+				{
+					return yOrder < 0;
+				}
+				return compareComponent(
+					left.RootTransform.Translation[0],
+					right.RootTransform.Translation[0]) < 0;
+			});
 		output.OrdinarySprites = std::span<const Visuals::BuildingSpriteRenderInput>(OrdinarySprites);
 		output.Splines = std::span<const Visuals::BuildingSplineRenderInput>(scratch);
 		output.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(OverlayLastSprites);
@@ -643,6 +702,24 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		output.PreparationReadiness = readiness;
+		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs)
+		{
+			const auto placementOrder = [](const Visuals::BuildingSpriteRenderInput& left,
+				const Visuals::BuildingSpriteRenderInput& right)
+			{
+				if (left.Placement.Position[2] != right.Placement.Position[2])
+				{
+					return left.Placement.Position[2] < right.Placement.Position[2];
+				}
+				if (left.Placement.Position[1] != right.Placement.Position[1])
+				{
+					return left.Placement.Position[1] < right.Placement.Position[1];
+				}
+				return left.Placement.Position[0] < right.Placement.Position[0];
+			};
+			std::stable_sort(output.OrdinarySprites.begin(), output.OrdinarySprites.end(), placementOrder);
+			std::stable_sort(output.OverlayLastSprites.begin(), output.OverlayLastSprites.end(), placementOrder);
+		}
 	}
 
 	/** Preserves invalid, stale and mismatched input outcomes before scene preparation starts. */

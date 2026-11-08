@@ -331,11 +331,11 @@ namespace Services::Map::Buildings::Scheduling
 
 			/** Per-observation-occurrence preparation evidence, preserving duplicates and source order. */
 			std::vector<KnownSpritePreparationResult::OccurrenceOutcome> OccurrenceOutcomes;
-			/** Ready FirstPass sprites, in observation order, borrowing CPU pixel payloads. */
+			/** Ready FirstPass sprites, stably ordered by placement Z, Y, then X, borrowing CPU pixel payloads. */
 			std::vector<Visuals::BuildingSpriteRenderInput> OrdinarySprites;
-			/** Owned spline composition results in observation order. */
+			/** Owned spline composition results in observation order; borrowing sorts only temporary descriptors. */
 			std::vector<SplineRenderInputPreparationResult> SplinePreparations;
-			/** Ready SecondPass sprites, in observation order, borrowing CPU pixel payloads. */
+			/** Ready SecondPass sprites, stably ordered by placement Z, Y, then X, borrowing CPU pixel payloads. */
 			std::vector<Visuals::BuildingSpriteRenderInput> OverlayLastSprites;
 			/** Publication and observation evidence retained without publication-owned spans. */
 			BuildingCandidateEvidence CandidateEvidence{};
