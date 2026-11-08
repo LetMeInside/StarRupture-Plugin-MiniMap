@@ -149,8 +149,6 @@ namespace MiniMap::BuildingAcquisition
             bool operator==(const Building&) const = default;
         };
 
-        std::uint64_t SessionGeneration = 0;
-        std::uint64_t WorldGeneration = 0;
         bool HasRequestedRegion = false;
         Region RequestedRegion;
         bool MembershipComplete = false;

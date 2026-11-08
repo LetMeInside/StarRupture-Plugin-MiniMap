@@ -99,7 +99,6 @@ namespace MiniMap::BuildingAcquisition
             SDK::UWorld* World;
             const void* Manager;
             std::uint64_t Session;
-            std::uint64_t HostGeneration;
         };
 
         /** Owns only the native result allocation, not its entity handles' lifetimes. */
@@ -133,7 +132,6 @@ namespace MiniMap::BuildingAcquisition
         SDK::UWorld* World = nullptr;
         const void* Manager = nullptr;
         std::uint64_t Generation = 0;
-        std::uint64_t WorldGeneration = 0;
         std::uint64_t ScanEpoch = 0;
         Clock::time_point NextMembership{};
         bool MembershipComplete = false;
@@ -156,7 +154,7 @@ namespace MiniMap::BuildingAcquisition
         /** Captures logical source lifetime before native operations. */
         Context CaptureContext() const noexcept
         {
-            return {World, Manager, Generation, WorldGeneration};
+            return {World, Manager, Generation};
         }
 
         /** Marks exposed bytes historical immediately; their retained CPU lifetime is unaffected. */
@@ -193,7 +191,7 @@ namespace MiniMap::BuildingAcquisition
         bool IsContextCurrent(const Native& native, const Context& context) const
         {
             if (!QueryConstructed || World != context.World || Manager != context.Manager ||
-                Generation != context.Session || WorldGeneration != context.HostGeneration)
+                Generation != context.Session)
                 return false;
             return ReadManager(ManagerStorage(native, context.World)) == context.Manager;
         }
@@ -208,7 +206,6 @@ namespace MiniMap::BuildingAcquisition
             QueryConstructed = false;
             World = nullptr;
             Manager = nullptr;
-            WorldGeneration = 0;
             Pending.clear();
             Entities.clear();
             Definitions.clear();
@@ -226,11 +223,11 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Establishes a query for the supplied live world, preserving exact request across automatic rebinding. */
-        bool EnsureSession(const Native& native, SDK::UWorld* world, std::uint64_t hostGeneration)
+        bool EnsureSession(const Native& native, SDK::UWorld* world)
         {
             const auto* storage = ManagerStorage(native, world);
             const auto* manager = ReadManager(storage);
-            if (World && (World != world || WorldGeneration != hostGeneration || Manager != manager))
+            if (World && (World != world || Manager != manager))
                 ClearSession(false);
             if (!world || !manager || !Types)
                 return false;
@@ -238,7 +235,6 @@ namespace MiniMap::BuildingAcquisition
                 return true;
             World = world;
             Manager = manager;
-            WorldGeneration = hostGeneration;
             ++Generation;
             // Existing Win64 ctor: RCX=query, RDX=native shared-owner storage, RAX=this.
             native.mass.queryConstruct(Query.data(), storage);
@@ -1068,8 +1064,6 @@ namespace MiniMap::BuildingAcquisition
             if (!Dirty)
                 return;
             auto facts = std::make_shared<Facts>();
-            facts->SessionGeneration = Generation;
-            facts->WorldGeneration = WorldGeneration;
             facts->MembershipComplete = MembershipComplete;
             facts->AcquisitionComplete = MembershipComplete && Pending.empty();
             facts->HasRequestedRegion = HasRegion;
@@ -1273,12 +1267,12 @@ namespace MiniMap::BuildingAcquisition
     }
 
     /** Progresses the sole native query and pending work without registering any caller. */
-    void BuildingCollectorV2::AdvanceAcquisition(SDK::UWorld* world, std::uint64_t worldGeneration, bool gameplayReady)
+    void BuildingCollectorV2::AdvanceAcquisition(SDK::UWorld* world, bool gameplayReady)
     {
         const auto* native = MiniMapNative::Get();
         if (!native || !native->player.isGameThread())
             return;
-        if (!gameplayReady || !world || !worldGeneration)
+        if (!gameplayReady || !world)
         {
             if (state_->World)
                 state_->ClearSession(false);
@@ -1286,7 +1280,7 @@ namespace MiniMap::BuildingAcquisition
         }
         try
         {
-            if (!state_->Types || !state_->EnsureSession(*native, world, worldGeneration))
+            if (!state_->Types || !state_->EnsureSession(*native, world))
                 return;
             const auto context = state_->CaptureContext();
             state_->ReconcileIfDue(*native);

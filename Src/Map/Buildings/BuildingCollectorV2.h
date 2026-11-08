@@ -41,11 +41,11 @@ namespace MiniMap::BuildingAcquisition
         /** Retains the current immutable candidate source, or returns null when unavailable or stale. */
         std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
             AcquireCandidatePublication() const override;
-        /** Advances native acquisition using caller-supplied live-world facts.
-         * Caller must keep world/native facilities alive throughout this call and notify
-         * reentrant lifecycle changes through Reset or this operation before retirement.
+        /** Advances native acquisition for the caller-owned gameplay-world lifetime.
+         * The caller supplies the current world and readiness, keeps world/native facilities
+         * alive throughout this call, and resets before retiring the world.
          */
-        void AdvanceAcquisition(SDK::UWorld* world, std::uint64_t worldGeneration, bool gameplayReady);
+        void AdvanceAcquisition(SDK::UWorld* world, bool gameplayReady);
         /** Revokes currentness and clears query/session roots while native services remain live. */
         void Reset();
         /** Clears session then releases metadata/conversion roots; required before destruction. */
