@@ -9,6 +9,10 @@
 #include "SpriteStatus.h"
 
 #include <cstdint>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <array>
+#include <chrono>
+#endif
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -40,6 +44,58 @@ namespace Services::Map::Buildings::Scheduling
 			Failed,
 			Unavailable
 		};
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Fixed-size numeric observations for one ten-second acquisition interval. */
+		struct DiagnosticsSnapshot
+		{
+			/** Repeated elapsed CPU wall-time measurements; the reporter derives means. */
+			struct Duration
+			{
+				std::uint64_t Samples = 0;
+				double TotalMs = 0.0;
+				double MaxMs = 0.0;
+
+				/** Adds one existing operation duration to the aggregate. */
+				void Add(double elapsedMs) noexcept
+				{
+					++Samples;
+					TotalMs += elapsedMs;
+					if (elapsedMs > MaxMs)
+					{
+						MaxMs = elapsedMs;
+					}
+				}
+			};
+
+			double IntervalMs = 0.0;
+			Duration EnsureSpriteReady;
+			Duration DemandSpriteLookup;
+			Duration DemandDiskLoad;
+			Duration EnqueueCaptureRequest;
+			Duration CaptureRendererAdvance;
+			Duration CaptureFeedbackDrain;
+			Duration CaptureFeedbackProcessing;
+			Duration CapturePayloadAdoption;
+			Duration PostAdoptionLookup;
+			Duration SpritePersistence;
+			/** Entries follow the existing RequirementStatus enum declaration order. */
+			std::array<std::uint64_t, 4> RequirementStatusCounts{};
+			/** Entries follow CpuSpriteSourceManager::SpriteResult::LookupRoute order. */
+			std::array<std::uint64_t, 11> SpriteLookupRouteCounts{};
+			std::uint64_t CapturePendingShortCircuits = 0;
+			std::uint64_t MissingCpuSourceManager = 0;
+			std::uint64_t QueuedCaptureRequests = 0;
+			std::uint64_t UnavailableEnqueueReturns = 0;
+			std::uint64_t UnmatchedFeedback = 0;
+			/** Entries follow the existing CaptureFeedback::Outcome declaration order. */
+			std::array<std::uint64_t, 3> MatchedFeedbackOutcomeCounts{};
+			/** Entry zero is Adopt success; entry one is Adopt failure. */
+			std::array<std::uint64_t, 2> CaptureAdoptionOutcomeCounts{};
+			std::uint64_t ReadinessPublications = 0;
+			/** Entries follow the existing SpriteDiskCache::WriteStatus declaration order. */
+			std::array<std::uint64_t, 4> SpritePersistenceStatusCounts{};
+		};
+	#endif
 
 		/** Creates the persistent renderer and borrows the sibling cache/source manager.
 		 * @param cpuSpriteSourceManager Owner of resident processed sprites.
@@ -74,8 +130,36 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Advances one ordinary capture operation and drains terminal feedback. */
 		void AdvanceSpriteAcquisition();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Hands off and resets one due interval without advancing functional work. */
+		bool TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept;
+#endif
 
 	private:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Adds elapsed time to one scheduler-owned aggregate when a scope exits. */
+		struct DiagnosticsDurationScope final
+		{
+			explicit DiagnosticsDurationScope(DiagnosticsSnapshot::Duration& aggregate) noexcept;
+			~DiagnosticsDurationScope() noexcept;
+			void Finish() noexcept;
+
+		private:
+			DiagnosticsSnapshot::Duration& aggregate_;
+			std::chrono::steady_clock::time_point started_;
+			bool active_ = true;
+		};
+
+		/** Counts one actual EnsureSpriteReady result category. */
+		void RecordRequirementStatus(RequirementStatus status) noexcept;
+		/** Runs the existing acquisition path while recording path-specific evidence. */
+		RequirementStatus EnsureSpriteReadyWithDiagnostics(const Cache::OwnedSpriteKey& key);
+		/** Consumes one demand-side GetSprite route and its existing timing evidence. */
+		void RecordDemandSpriteLookup(const Cache::CpuSpriteSourceManager::SpriteResult& result) noexcept;
+		/** Resets only scheduler diagnostic observations and restarts their interval. */
+		void ResetDiagnostics() noexcept;
+#endif
+
 		/** Enqueues one owned correlated request after a confirmed cache miss or invalid entry. */
 		RequirementStatus EnqueueCaptureRequest(const Cache::OwnedSpriteKey& key);
 		/** Drains feedback after request values have left the independently locked FIFO. */
@@ -102,6 +186,12 @@ namespace Services::Map::Buildings::Scheduling
 		void ProcessSuccessfulCapture(
 			Capture::CaptureFeedback&& feedback,
 			SpriteStatus& status);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Persists one already-published CPU sprite when the configured cache exists. */
+		void PersistReadySprite(
+			const Cache::OwnedSpriteKey& key,
+			const Cache::ProcessedSpritePayload& payload);
+#endif
 
 		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager_ = nullptr;
 		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
@@ -111,5 +201,9 @@ namespace Services::Map::Buildings::Scheduling
 		SpriteRequestQueue spriteRequestQueue_;
 		SpriteFeedbackQueue spriteFeedbackQueue_;
 		std::unique_ptr<Capture::BuildingSpriteRenderer> captureRenderer_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DiagnosticsSnapshot diagnostics_{};
+		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+#endif
 	};
 }
