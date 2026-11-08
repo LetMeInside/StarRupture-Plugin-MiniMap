@@ -73,19 +73,10 @@ namespace Services::Map::Buildings
 	}
 
 	/** Starts one renderer session through the coordinator without activating runtime callbacks. */
-	bool BuildingMapService::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
+	bool BuildingMapService::BeginCaptureGameWorldSession()
 	{
-		if (!sectionSchedulingCoordinator_ || sessionGeneration == 0 ||
-			sessionGeneration <= lastCaptureSessionGeneration_)
-		{
-			return false;
-		}
-		if (!sectionSchedulingCoordinator_->BeginCaptureGameWorldSession(sessionGeneration))
-		{
-			return false;
-		}
-		lastCaptureSessionGeneration_ = sessionGeneration;
-		return true;
+		return sectionSchedulingCoordinator_ &&
+			sectionSchedulingCoordinator_->BeginCaptureGameWorldSession();
 	}
 
 	/** Advances coordinator-delegated renderer teardown without releasing pending native owners. */

@@ -157,8 +157,8 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Begins one coordinator-owned SectionScheduler session for the current game-world session. */
-		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
+		/** Begins one coordinator-owned capture renderer session. */
+		bool BeginCaptureGameWorldSession();
 		/** Advances coordinator-delegated shutdown only until native retirement completes. */
 		bool AdvanceCaptureGameWorldSessionShutdown();
 		/** Advances one internal coordinator Section-processing tick.
@@ -243,7 +243,6 @@ namespace Services::Map::Buildings
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::uint64_t nextViewportHandle_ = 1;
-		std::uint64_t lastCaptureSessionGeneration_ = 0;
 		bool sectionImageResidencyReconciliationPending_ = false;
 		std::unique_ptr<Scheduling::SectionSchedulingCoordinator> sectionSchedulingCoordinator_;
 	};

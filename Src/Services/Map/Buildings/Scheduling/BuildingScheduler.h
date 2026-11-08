@@ -24,7 +24,7 @@ namespace Services::Map::Buildings::Capture
 
 namespace Services::Map::Buildings::Scheduling
 {
-	/** Owns per-session status, request/feedback queues and the private sprite renderer.
+	/** Owns active-session status, request/feedback queues and the private sprite renderer.
 	 * It borrows the CPU source manager and disk cache, which must outlive this scheduler.
 	 * Acquisition and payload borrowing are serialized on the designated game thread.
 	 */
@@ -59,12 +59,11 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		RequirementStatus EnsureSpriteReady(const Cache::OwnedSpriteKey& key);
 
-		/** Creates a renderer for a strictly increasing nonzero session generation.
-		 * @param sessionGeneration New game-world session identity.
+		/** Creates a renderer when no renderer session is active.
 		 * @param pixelsPerMapUnit Capture scale passed to the renderer.
 		 * @return True when a new renderer session is established.
 		 */
-		bool BeginSession(std::uint64_t sessionGeneration, double pixelsPerMapUnit);
+		bool BeginSession(double pixelsPerMapUnit);
 
 		/** Requests ordered shutdown and advances retirement until the renderer can be released.
 		 * @return True when renderer retirement completed and session-local state was cleared.
@@ -84,8 +83,8 @@ namespace Services::Map::Buildings::Scheduling
 		/** Clears scheduler-only session values after renderer retirement has completed. */
 		void ClearSessionState() noexcept;
 
-		/** Finds status only when feedback exactly matches its pending current-session request.
-		 * @param feedback Dequeued terminal message to correlate by session and canonical key.
+		/** Finds status only when feedback exactly matches its pending request in the active session.
+		 * @param feedback Dequeued terminal message to correlate by request sequence and canonical key.
 		 * @return Mutable status entry, or null when the message is stale or unrelated.
 		 */
 		SpriteStatus* FindMatchingPendingStatus(
@@ -106,8 +105,6 @@ namespace Services::Map::Buildings::Scheduling
 
 		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager_ = nullptr;
 		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
-		std::uint64_t sessionGeneration_ = 0;
-		std::uint64_t lastSessionGeneration_ = 0;
 		std::uint64_t nextRequestSequence_ = 1;
 		bool sessionShutdownRequested_ = false;
 		std::unordered_map<std::string, SpriteStatus> spriteStatusesByKey_;

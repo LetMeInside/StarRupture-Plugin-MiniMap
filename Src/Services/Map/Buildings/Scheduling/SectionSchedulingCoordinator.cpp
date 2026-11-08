@@ -185,10 +185,10 @@ namespace Services::Map::Buildings::Scheduling
 	}
 
 	/** Delegates acquisition-session creation to the owned SectionScheduler. */
-	bool SectionSchedulingCoordinator::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
+	bool SectionSchedulingCoordinator::BeginCaptureGameWorldSession()
 	{
 		return sectionScheduler_ != nullptr &&
-			sectionScheduler_->BeginCaptureGameWorldSession(sessionGeneration);
+			sectionScheduler_->BeginCaptureGameWorldSession();
 	}
 
 	/** Delegates ordered acquisition-session retirement to the owned SectionScheduler. */

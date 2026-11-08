@@ -14,16 +14,14 @@ namespace Services::Map::Buildings::Capture
 	 */
 	struct CaptureRequest
 	{
-		/** Correlates one request within a scheduler session without identifying a game entity. */
+		/** Correlates one request within the active renderer session without identifying a game entity. */
 		struct Correlation
 		{
-			/** Scheduler-owned session generation; stale generations are discarded by the service. */
-			std::uint64_t SessionGeneration = 0;
-			/** Scheduler-owned request sequence, unique only within its session generation. */
+			/** Scheduler-owned sequence identifying this individual request. */
 			std::uint64_t RequestSequence = 0;
 		};
 
-		/** Session/request identity used for acceptance, cancellation, and stale-result checks. */
+		/** Request correlation used for acceptance, cancellation, and stale-result checks. */
 		Correlation RequestIdentity;
 		/** Canonical Blueprint generated-class path used as the sole per-sprite input. */
 		Cache::OwnedSpriteKey SpriteRequirement;

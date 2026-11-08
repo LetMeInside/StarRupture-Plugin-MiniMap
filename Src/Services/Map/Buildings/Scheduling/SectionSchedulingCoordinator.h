@@ -106,10 +106,9 @@ namespace Services::Map::Buildings::Scheduling
 		void RequestSectionWork(const SectionCoordinate& coordinate);
 
 		/** Delegates the existing acquisition-session start to the owned scheduler.
-		 * @param sessionGeneration New nonzero service-admitted world-session generation.
 		 * @return True when the owned BuildingScheduler establishes that session.
 		 */
-		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
+		bool BeginCaptureGameWorldSession();
 
 		/** Delegates ordered renderer-session shutdown to the owned scheduler.
 		 * @return True when existing native retirement is complete.

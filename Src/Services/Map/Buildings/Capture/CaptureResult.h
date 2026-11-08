@@ -20,7 +20,6 @@ namespace Services::Map::Buildings::Capture
 			{
 				Accepted,
 				RejectedInvalidRequest,
-				RejectedStaleSession,
 				RejectedStaleRequest,
 				RejectedUnavailable
 			};
@@ -58,7 +57,7 @@ namespace Services::Map::Buildings::Capture
 				StaleRequest
 			};
 
-			/** Original service/session correlation used to reject stale completion feedback. */
+			/** Original request correlation used to reject stale completion feedback. */
 			CaptureRequest::Correlation Correlation;
 			/** Current or terminal request state. */
 			Status Result = Status::Pending;

@@ -75,8 +75,8 @@ namespace Services::Map::Buildings::Capture
 			ServiceRetirement
 		};
 
-		/** Creates an inert renderer tied to one active game-world session generation. */
-		explicit BuildingSpriteRenderer(std::uint64_t sessionGeneration, double pixelsPerMapUnit);
+		/** Creates an inert renderer for one active capture session at the supplied map scale. */
+		explicit BuildingSpriteRenderer(double pixelsPerMapUnit);
 		/** Prevents copies from creating ambiguous native-resource ownership. */
 		BuildingSpriteRenderer(const BuildingSpriteRenderer&) = delete;
 		/** Prevents copies from creating ambiguous native-resource ownership. */
@@ -88,7 +88,7 @@ namespace Services::Map::Buildings::Capture
 
 		/** Validates and moves a request into the retained active slot.
 		 * @param request Owned request, left untouched when admission is rejected.
-		 * @return Accepted or the existing validation/session rejection classification.
+		 * @return Accepted or the existing request validation rejection classification.
 		 */
 		CaptureResult::Acceptance AcceptOwned(CaptureRequest&& request);
 		/** Advances one retained request or admits one FIFO request on the Unreal game thread.
@@ -245,7 +245,6 @@ namespace Services::Map::Buildings::Capture
 		double pixelsPerMapUnit_ = 0.0;
 		std::uint64_t admittedServiceIterations_ = 0;
 		std::uint64_t lastAcceptedRequestSequence_ = 0;
-		std::uint64_t activeGameWorldSessionGeneration_ = 0;
 		std::uint64_t preparedIteration_ = 0;
 		std::uint64_t hdrWarmupIteration_ = 0;
 		alignas(8) unsigned char retirementFenceStorage_[8]{};

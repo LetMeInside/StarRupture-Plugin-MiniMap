@@ -41,7 +41,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 
 		/** Records a queued request and its correlation for later terminal-result matching.
-		 * @param requestIdentity Current session and unique request sequence.
+		 * @param requestIdentity Sequence identifying this individual request.
 		 */
 		void MarkPending(Capture::CaptureRequest::Correlation requestIdentity) noexcept
 		{
@@ -58,7 +58,7 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Retains a terminal failure only for the exact request still pending for this key.
 		 * Call only after matching terminal failure feedback has been received.
-		 * @param requestIdentity Session and sequence returned by terminal feedback.
+		 * @param requestIdentity Request sequence returned by terminal feedback.
 		 * @return True when the matching pending request became terminally failed.
 		 */
 		bool MarkTerminalFailure(Capture::CaptureRequest::Correlation requestIdentity) noexcept
@@ -81,13 +81,12 @@ namespace Services::Map::Buildings::Scheduling
 		}
 
 		/** Checks that a result belongs to this key's currently pending request.
-		 * @param requestIdentity Session and sequence returned by terminal feedback.
+		 * @param requestIdentity Request sequence returned by terminal feedback.
 		 * @return True only for an exact pending correlation match.
 		 */
 		bool IsPendingFor(Capture::CaptureRequest::Correlation requestIdentity) const noexcept
 		{
 			return m_state == State::CapturePending &&
-				m_requestIdentity.SessionGeneration == requestIdentity.SessionGeneration &&
 				m_requestIdentity.RequestSequence == requestIdentity.RequestSequence;
 		}
 

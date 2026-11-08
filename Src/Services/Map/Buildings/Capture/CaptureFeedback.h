@@ -26,7 +26,7 @@ namespace Services::Map::Buildings::Capture
 
 		/** Canonical owned Blueprint key corresponding to the originating request. */
 		Cache::OwnedSpriteKey SpriteRequirement;
-		/** Session and sequence copied from the originating request for stale-result checks. */
+		/** Request sequence copied from the originating request for stale-result checks. */
 		CaptureRequest::Correlation RequestIdentity;
 		/** Terminal success, failure, or cancellation outcome. */
 		Outcome Result = Outcome::Failed;

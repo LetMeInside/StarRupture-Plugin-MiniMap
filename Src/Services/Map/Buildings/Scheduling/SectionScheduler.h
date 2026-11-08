@@ -400,10 +400,9 @@ namespace Services::Map::Buildings::Scheduling
 			std::filesystem::path buildingsCacheDirectory);
 
 		/** Begins the existing BuildingScheduler session using the stored service image scale.
-		 * @param sessionGeneration Game-world session identity admitted by the service.
 		 * @return True when BuildingScheduler establishes this renderer session.
 		 */
-		bool BeginCaptureGameWorldSession(std::uint64_t sessionGeneration);
+		bool BeginCaptureGameWorldSession();
 
 		/** Advances existing ordered renderer retirement without performing destructor cleanup.
 		 * @return True when native retirement is complete and session state is released.

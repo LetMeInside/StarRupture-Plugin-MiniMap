@@ -374,13 +374,13 @@ namespace Services::Map::Buildings::Scheduling
 	/** Destroys subordinates in reverse member order; native retirement remains service-directed. */
 	SectionScheduler::~SectionScheduler() = default;
 
-	/** Delegates session creation without changing BuildingScheduler's generation contract. */
-	bool SectionScheduler::BeginCaptureGameWorldSession(std::uint64_t sessionGeneration)
+	/** Delegates session creation after calculating the configured capture scale. */
+	bool SectionScheduler::BeginCaptureGameWorldSession()
 	{
 		const double pixelsPerMapUnit =
 			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
 		return buildingScheduler_ != nullptr &&
-			buildingScheduler_->BeginSession(sessionGeneration, pixelsPerMapUnit);
+			buildingScheduler_->BeginSession(pixelsPerMapUnit);
 	}
 
 	/** Advances the existing retirement path and releases no native owner before completion. */

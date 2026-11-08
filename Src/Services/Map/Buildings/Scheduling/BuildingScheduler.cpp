@@ -49,7 +49,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Ready &&
 			spriteResult.Payload != nullptr)
 		{
-			if (sessionGeneration_ != 0)
+			if (captureRenderer_)
 			{
 				spriteStatusesByKey_.insert_or_assign(key.Bytes(), SpriteStatus(SpriteStatus::State::Ready));
 			}
@@ -57,7 +57,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Unavailable)
 		{
-			if (sessionGeneration_ != 0)
+			if (captureRenderer_)
 			{
 				spriteStatusesByKey_.insert_or_assign(
 					key.Bytes(),
@@ -69,17 +69,15 @@ namespace Services::Map::Buildings::Scheduling
 		return EnqueueCaptureRequest(key);
 	}
 
-	/** Creates an inert private renderer for a strictly increasing session generation. */
-	bool BuildingScheduler::BeginSession(std::uint64_t sessionGeneration, double pixelsPerMapUnit)
+	/** Creates an inert private renderer when the previous renderer has been retired. */
+	bool BuildingScheduler::BeginSession(double pixelsPerMapUnit)
 	{
-		if (captureRenderer_ || sessionGeneration == 0 || sessionGeneration <= lastSessionGeneration_)
+		if (captureRenderer_)
 		{
 			return false;
 		}
 		ClearSessionState();
-		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(sessionGeneration, pixelsPerMapUnit));
-		sessionGeneration_ = sessionGeneration;
-		lastSessionGeneration_ = sessionGeneration;
+		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(pixelsPerMapUnit));
 		return true;
 	}
 
@@ -128,12 +126,11 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Returns status only for an exact pending request in the active, non-shutting-down session. */
+	/** Returns status only for an exact pending request in an active, non-shutting-down renderer session. */
 	SpriteStatus* BuildingScheduler::FindMatchingPendingStatus(
 		const Capture::CaptureFeedback& feedback) noexcept
 	{
-		if (sessionGeneration_ == 0 || sessionShutdownRequested_ ||
-			feedback.RequestIdentity.SessionGeneration != sessionGeneration_)
+		if (!captureRenderer_ || sessionShutdownRequested_)
 		{
 			return nullptr;
 		}
@@ -220,7 +217,6 @@ namespace Services::Map::Buildings::Scheduling
 		spriteRequestQueue_.Clear();
 		spriteFeedbackQueue_.Clear();
 		spriteStatusesByKey_.clear();
-		sessionGeneration_ = 0;
 		nextRequestSequence_ = 1;
 		sessionShutdownRequested_ = false;
 	}
@@ -232,9 +228,9 @@ namespace Services::Map::Buildings::Scheduling
 	BuildingScheduler::RequirementStatus BuildingScheduler::EnqueueCaptureRequest(
 		const Cache::OwnedSpriteKey& key)
 	{
-		if (sessionGeneration_ == 0 || nextRequestSequence_ == 0 || sessionShutdownRequested_)
+		if (!captureRenderer_ || nextRequestSequence_ == 0 || sessionShutdownRequested_)
 		{
-			if (sessionGeneration_ != 0)
+			if (captureRenderer_)
 			{
 				spriteStatusesByKey_.insert_or_assign(
 					key.Bytes(),
@@ -244,7 +240,6 @@ namespace Services::Map::Buildings::Scheduling
 		}
 
 		Capture::CaptureRequest request;
-		request.RequestIdentity.SessionGeneration = sessionGeneration_;
 		request.RequestIdentity.RequestSequence = nextRequestSequence_;
 		request.SpriteRequirement = key;
 

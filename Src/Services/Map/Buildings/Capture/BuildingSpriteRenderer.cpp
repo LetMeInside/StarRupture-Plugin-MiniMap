@@ -23,10 +23,9 @@
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Stores the service-owned session identity without preparing native resources. */
-	BuildingSpriteRenderer::BuildingSpriteRenderer(std::uint64_t sessionGeneration, double pixelsPerMapUnit)
-		: activeGameWorldSessionGeneration_(sessionGeneration)
-		, pixelsPerMapUnit_(pixelsPerMapUnit)
+	/** Stores the map scale without preparing native resources. */
+	BuildingSpriteRenderer::BuildingSpriteRenderer(double pixelsPerMapUnit)
+		: pixelsPerMapUnit_(pixelsPerMapUnit)
 	{
 	}
 
@@ -46,12 +45,7 @@ namespace Services::Map::Buildings::Capture
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
 			return acceptance;
 		}
-		if (request.RequestIdentity.SessionGeneration != activeGameWorldSessionGeneration_)
-		{
-			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleSession;
-			return acceptance;
-		}
-		if (request.RequestIdentity.SessionGeneration == 0 || request.RequestIdentity.RequestSequence == 0)
+		if (request.RequestIdentity.RequestSequence == 0)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
 			return acceptance;
@@ -149,9 +143,6 @@ namespace Services::Map::Buildings::Capture
 		feedback.RequestIdentity = request.RequestIdentity;
 		switch (acceptance.Result)
 		{
-		case CaptureResult::Acceptance::Status::RejectedStaleSession:
-			feedback.Result = CaptureFeedback::Outcome::Cancelled;
-			break;
 		case CaptureResult::Acceptance::Status::RejectedStaleRequest:
 			feedback.Result = CaptureFeedback::Outcome::Failed;
 			feedback.Error = CaptureResult::Completion::Failure::StaleRequest;
@@ -262,7 +253,7 @@ namespace Services::Map::Buildings::Capture
 	/** Cancels only the correlated request and keeps submitted resources until BM-07 retires them. */
 	void BuildingSpriteRenderer::Cancel(CaptureRequest::Correlation correlation)
 	{
-		if (!hasActiveRequest_ || correlation.SessionGeneration != activeRequest_.RequestIdentity.SessionGeneration ||
+		if (!hasActiveRequest_ ||
 			correlation.RequestSequence != activeRequest_.RequestIdentity.RequestSequence)
 		{
 			return;
@@ -301,9 +292,7 @@ namespace Services::Map::Buildings::Capture
 	{
 		return hasActiveRequest_ && phase_ == Phase::Terminal &&
 			completion_.Result != CaptureResult::Completion::Status::Pending &&
-			correlation.SessionGeneration == activeRequest_.RequestIdentity.SessionGeneration &&
 			correlation.RequestSequence == activeRequest_.RequestIdentity.RequestSequence &&
-			correlation.SessionGeneration == completion_.Correlation.SessionGeneration &&
 			correlation.RequestSequence == completion_.Correlation.RequestSequence &&
 			!sceneWorkSubmitted_ && !readbackStarted_ && hdrReadback_.IsRetired() && finalReadback_.IsRetired() &&
 			!subjectActor_ && !captureComponent_ && !renderTarget_ && !actorClass_ &&
@@ -339,8 +328,7 @@ namespace Services::Map::Buildings::Capture
 		CaptureFeedback feedback;
 		feedback.SpriteRequirement = std::move(activeRequest_.SpriteRequirement);
 		feedback.RequestIdentity = correlation;
-		if (correlation.SessionGeneration != activeGameWorldSessionGeneration_ ||
-			completion_.Result == CaptureResult::Completion::Status::Cancelled)
+		if (completion_.Result == CaptureResult::Completion::Status::Cancelled)
 		{
 			feedback.Result = CaptureFeedback::Outcome::Cancelled;
 		}
