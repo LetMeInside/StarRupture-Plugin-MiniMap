@@ -1,3 +1,4 @@
+// Reads authored terrain metadata and resolves map-space tiles without scanning during ticks.
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainSource.h"
@@ -12,7 +13,10 @@
 #include "plugin_helpers.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace
 {
@@ -206,6 +210,61 @@ namespace MiniMapTerrainSource
         if (!std::isfinite(pivot.X) || !std::isfinite(pivot.Y)) return false;
         outX = static_cast<double>(pivot.X);
         outY = static_cast<double>(pivot.Y);
+        return true;
+    }
+
+
+    // Calculates the actual terrain-record bounding extent in native map units.
+    // Outputs remain zero when terrain metadata, segment size or coverage is invalid.
+    bool TryGetWorldDimensions(
+        double& outWidthMapUnits,
+        double& outHeightMapUnits)
+    {
+        outWidthMapUnits = 0.0;
+        outHeightMapUnits = 0.0;
+        SDK::UCrMapMenuTerrainData* terrainData = LoadTerrainData();
+        if (terrainData == nullptr) return false;
+        const double worldTileWidth = 100.0 * static_cast<double>(terrainData->MapTerrainSegmentSize.X),
+            worldTileHeight = 100.0 * static_cast<double>(terrainData->MapTerrainSegmentSize.Y);
+        const int segmentCount = terrainData->TerrainSegmentsData.Num();
+        if (!std::isfinite(worldTileWidth) || !std::isfinite(worldTileHeight) || worldTileWidth <= 0.0 ||
+            worldTileHeight <= 0.0 || segmentCount <= 0) return false;
+        const auto& firstSegment = terrainData->TerrainSegmentsData[0];
+        std::int64_t minimumIndexX = firstSegment.TerrainSegmentGridIndex.X,
+            maximumIndexX = minimumIndexX,
+            minimumIndexY = firstSegment.TerrainSegmentGridIndex.Y,
+            maximumIndexY = minimumIndexY;
+        for (int segmentIndex = 1; segmentIndex < segmentCount; ++segmentIndex)
+        {
+            const auto& segment = terrainData->TerrainSegmentsData[segmentIndex];
+            const std::int64_t indexX = segment.TerrainSegmentGridIndex.X,
+                indexY = segment.TerrainSegmentGridIndex.Y;
+            minimumIndexX = (std::min)(minimumIndexX, indexX);
+            maximumIndexX = (std::max)(maximumIndexX, indexX);
+            minimumIndexY = (std::min)(minimumIndexY, indexY);
+            maximumIndexY = (std::max)(maximumIndexY, indexY);
+        }
+        const long double tileCountX = static_cast<long double>(maximumIndexY) -
+            static_cast<long double>(minimumIndexY) + 1.0L,
+            tileCountY = static_cast<long double>(maximumIndexX) -
+                static_cast<long double>(minimumIndexX) + 1.0L;
+        const long double widthMapUnits = tileCountX * static_cast<long double>(worldTileWidth),
+            heightMapUnits = tileCountY * static_cast<long double>(worldTileHeight);
+        if (!std::isfinite(widthMapUnits) || !std::isfinite(heightMapUnits) ||
+            widthMapUnits <= 0.0L || heightMapUnits <= 0.0L ||
+            widthMapUnits > static_cast<long double>((std::numeric_limits<double>::max)()) ||
+            heightMapUnits > static_cast<long double>((std::numeric_limits<double>::max)()))
+        {
+            return false;
+        }
+        outWidthMapUnits = static_cast<double>(widthMapUnits);
+        outHeightMapUnits = static_cast<double>(heightMapUnits);
+        if (!std::isfinite(outWidthMapUnits) || !std::isfinite(outHeightMapUnits) ||
+            outWidthMapUnits <= 0.0 || outHeightMapUnits <= 0.0)
+        {
+            outWidthMapUnits = outHeightMapUnits = 0.0;
+            return false;
+        }
         return true;
     }
 

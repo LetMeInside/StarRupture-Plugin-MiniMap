@@ -289,6 +289,7 @@ static bool InstallCommonUIHooks()
 #endif
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
+#include "Map/Terrain/TerrainSource.h"
 #include "Map/Terrain/TerrainCache.h"
 #include "CacheIdentity.h"
 #include "Map/Map.h"
@@ -600,6 +601,10 @@ static void OnTextureServiceTick(
 static void OnWorldBeginPlay(SDK::UWorld* world)
 {
     if(!world||(world==MiniMapMap::GetWorld()&&!g_worldEnding))return;
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    if (g_buildingMapService != nullptr)
+        g_buildingMapService->StopGameSession();
+#endif
     ++g_worldGeneration;
     g_preparedGeneration=0;
     g_worldEnding=false;
@@ -628,6 +633,34 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
         world);
 
 }
+
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+// Starts V2 gameplay only after authored terrain coverage and the owned service are ready.
+static bool TryStartBuildingMapSession()
+{
+    double mapWidthMapUnits = 0.0;
+    double mapHeightMapUnits = 0.0;
+    if (!MiniMapTerrainSource::TryGetWorldDimensions(mapWidthMapUnits, mapHeightMapUnits))
+    {
+        LOG_ERROR("MiniMap: authored terrain coverage dimensions are unavailable; V2 gameplay remains unadmitted");
+        SetServicesAdmitted(false);
+        return false;
+    }
+    if (g_buildingMapService == nullptr)
+    {
+        LOG_ERROR("MiniMap: Building Map service is unavailable; V2 gameplay remains unadmitted");
+        SetServicesAdmitted(false);
+        return false;
+    }
+    if (!g_buildingMapService->StartGameSession(mapWidthMapUnits, mapHeightMapUnits))
+    {
+        LOG_ERROR("MiniMap: Building Map session start was rejected; V2 gameplay remains unadmitted");
+        SetServicesAdmitted(false);
+        return false;
+    }
+    return true;
+}
+#endif
 
 static void OnExperienceLoadComplete()
 {
@@ -664,6 +697,11 @@ static void OnExperienceLoadComplete()
         LOG_ERROR("MiniMap: building renderer/atlas session blocked by retained ownership or missing dependencies; gameplay remains unadmitted");
         return;
     }
+#else
+    if (!TryStartBuildingMapSession())
+    {
+        return;
+    }
 #endif
     SetServicesAdmitted(true);
     if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
@@ -676,6 +714,10 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    if (g_buildingMapService != nullptr)
+        g_buildingMapService->StopGameSession();
+#endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
 #endif
@@ -709,6 +751,10 @@ static void OnAfterWorldEndPlay(
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    if (g_buildingMapService != nullptr)
+        g_buildingMapService->StopGameSession();
+#endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession(); // Idempotent fallback if BeforeEndPlay was not delivered.
 #endif
@@ -1094,6 +1140,9 @@ namespace MiniMap
         SetServicesAdmitted(false);
 #if MINIMAP_USE_LEGACY_BUILDINGS
         MiniMapBuildingVisuals::ShutdownSpriteProcessing();
+#else
+        if (g_buildingMapService != nullptr)
+            g_buildingMapService->StopGameSession();
 #endif
         if (g_buildingSpriteRenderer != nullptr)
         {

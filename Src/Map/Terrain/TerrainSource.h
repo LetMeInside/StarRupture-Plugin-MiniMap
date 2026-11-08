@@ -1,3 +1,4 @@
+// Exposes read-only terrain metadata and source-tile resolution for MiniMap.
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -38,6 +39,12 @@ namespace MiniMapTerrainSource
         IPluginSelf* self);
 
     void Shutdown();
+
+    // Returns authored terrain coverage dimensions in native centimetre map units.
+    // Outputs are cleared on failure; the bounds use actual records, not inferred world limits.
+    bool TryGetWorldDimensions(
+        double& outWidthMapUnits,
+        double& outHeightMapUnits);
 
     // Copies the terrain-aligned sparse-index origin from the loaded terrain
     // definition. Game-thread only; no terrain texture or chunk work is done.
