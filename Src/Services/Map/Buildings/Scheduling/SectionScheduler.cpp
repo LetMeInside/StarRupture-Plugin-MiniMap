@@ -12,6 +12,9 @@
 #include "../Visuals/SpriteGeometry.h"
 #include "../Visuals/SplineGeometry.h"
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -58,6 +61,9 @@ namespace Services::Map::Buildings::Scheduling
 		SceneReadiness.reset();
 		NumericalStatus.reset();
 		CompletedImageRemoved = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Timing = {};
+#endif
 	}
 
 	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
@@ -117,16 +123,68 @@ namespace Services::Map::Buildings::Scheduling
 		std::span<const SplinePolicy> splinePolicies,
 		SectionImageCommitResult& output) const
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		using Clock = std::chrono::steady_clock;
+		/** Stores whole-operation elapsed time across every return and exception path. */
+		struct TotalTimingScope
+		{
+			SectionImageCommitResult& Result;
+			Clock::time_point Started = Clock::now();
+
+			/** Stores the complete attempt duration, including ordinary early returns. */
+			~TotalTimingScope() noexcept
+			{
+				Result.Timing.TotalMs =
+					std::chrono::duration<double, std::milli>(Clock::now() - Started).count();
+			}
+		};
+		/** Records one existing phase call into its numeric result field. */
+		struct PhaseTimingScope
+		{
+			double* ElapsedMs;
+			Clock::time_point Started = Clock::now();
+
+			/** Starts timing one result field without allocating additional state. */
+			explicit PhaseTimingScope(double& elapsedMs) noexcept : ElapsedMs(&elapsedMs) {}
+
+			/** Stores elapsed time once; the destructor safely skips a completed scope. */
+			void Finish() noexcept
+			{
+				if (ElapsedMs == nullptr)
+				{
+					return;
+				}
+				*ElapsedMs = std::chrono::duration<double, std::milli>(Clock::now() - Started).count();
+				ElapsedMs = nullptr;
+			}
+
+			~PhaseTimingScope() noexcept
+			{
+				Finish();
+			}
+		};
+		[[maybe_unused]] TotalTimingScope totalTiming{output};
+#endif
 		output.Reset();
 		SectionScenePreparationResult scenePreparation;
-		if (!TryPrepareSectionSceneForCommit(
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		PhaseTimingScope scenePreparationTiming{output.Timing.ScenePreparationMs};
+#endif
+		const bool sceneReady = TryPrepareSectionSceneForCommit(
 			section,
 			publicationOwner,
 			observation,
 			knownSpritePreparation,
 			splinePolicies,
 			scenePreparation,
-			output)) return;
+			output);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		scenePreparationTiming.Finish();
+#endif
+		if (!sceneReady)
+		{
+			return;
+		}
 		if (observation.candidateOrdinals.empty())
 		{
 			CommitEmptySection(section, publicationOwner, output);
@@ -134,19 +192,47 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
 		Visuals::BuildingRenderSceneInput sceneInput;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		PhaseTimingScope sceneBorrowTiming{output.Timing.SceneBorrowMs};
+#endif
 		if (!scenePreparation.BorrowRenderSceneInput(publicationOwner, splineViewScratch, sceneInput))
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			sceneBorrowTiming.Finish();
+#endif
 			output.CommitStatus = publicationOwner->IsCurrent()
 				? SectionImageCommitResult::Status::InvalidOrIncompleteInput
 				: SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		sceneBorrowTiming.Finish();
+#endif
 		const Rendering::Rgba16fImageGrid grid =
 			CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
 		std::vector<std::uint8_t> imageBytes;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		output.Timing.NumericalRenderingInvoked = true;
+		PhaseTimingScope numericalRenderingTiming{output.Timing.NumericalRenderingMs};
+#endif
 		output.NumericalStatus = RenderIntoSectionContext(section, sceneInput, grid, imageBytes);
-		if (!IsCompletedRenderCurrentAndComplete(publicationOwner, output)) return;
-		if (IsFullyTransparentRgba16fImage(std::span<const std::uint8_t>(imageBytes)))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		numericalRenderingTiming.Finish();
+#endif
+		if (!IsCompletedRenderCurrentAndComplete(publicationOwner, output))
+		{
+			return;
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		output.Timing.TransparencyCheckInvoked = true;
+		PhaseTimingScope transparencyCheckTiming{output.Timing.TransparencyCheckMs};
+#endif
+		const bool imageTransparent = IsFullyTransparentRgba16fImage(
+			std::span<const std::uint8_t>(imageBytes));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		transparencyCheckTiming.Finish();
+#endif
+		if (imageTransparent)
 		{
 			CommitEmptySection(section, publicationOwner, output);
 			return;
@@ -156,7 +242,16 @@ namespace Services::Map::Buildings::Scheduling
 			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
 			return;
 		}
-		if (!section.TryAdoptCompletedImage(sectionResolutionPixels_, sectionResolutionPixels_, std::move(imageBytes)))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		output.Timing.ImageAdoptionAttempted = true;
+		PhaseTimingScope imageAdoptionTiming{output.Timing.ImageAdoptionMs};
+#endif
+		const bool imageAdopted = section.TryAdoptCompletedImage(
+			sectionResolutionPixels_, sectionResolutionPixels_, std::move(imageBytes));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		imageAdoptionTiming.Finish();
+#endif
+		if (!imageAdopted)
 		{
 			output.CommitStatus = SectionImageCommitResult::Status::ImageAdoptionRejected;
 			return;

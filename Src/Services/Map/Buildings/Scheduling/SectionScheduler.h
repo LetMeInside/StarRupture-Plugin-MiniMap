@@ -380,6 +380,22 @@ namespace Services::Map::Buildings::Scheduling
 			std::optional<Rendering::SectionRendering::Status> NumericalStatus;
 			/** True only when confirmed-empty completion removed a previously stored image. */
 			bool CompletedImageRemoved = false;
+			/** Debug-only elapsed timings for the existing prepare, render and commit call boundaries. */
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			struct TimingData
+			{
+				double TotalMs = 0.0;
+				double ScenePreparationMs = 0.0;
+				double SceneBorrowMs = 0.0;
+				double NumericalRenderingMs = 0.0;
+				double TransparencyCheckMs = 0.0;
+				double ImageAdoptionMs = 0.0;
+				bool NumericalRenderingInvoked = false;
+				bool TransparencyCheckInvoked = false;
+				bool ImageAdoptionAttempted = false;
+			};
+			TimingData Timing;
+#endif
 
 			/** Clears prior caller-owned evidence before another attempt. */
 			void Reset() noexcept;
