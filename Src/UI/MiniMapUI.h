@@ -1,5 +1,9 @@
 #pragma once
 
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "BuildingLayer.h"
+#endif
+
 #include <cstdint>
 
 struct IPluginSelf;
@@ -19,6 +23,15 @@ namespace MiniMapUI
     void UpdateBuildingLayerSession();
     /** Detaches and shuts down this session's layer, retaining it when texture release must retry. */
     bool EndBuildingLayerSession();
+#endif
+
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    /** Drains a completed game-thread presentation interval from the current layer. */
+    bool TakeBuildingLayerPresentationDiagnosticsSnapshot(
+        BuildingLayer::DiagnosticsSnapshot& output) noexcept;
+    /** Drains a completed UI render interval from the current layer. */
+    bool TakeBuildingLayerRenderDiagnosticsSnapshot(
+        BuildingLayer::RenderDiagnosticsSnapshot& output) noexcept;
 #endif
 
     void Shutdown();

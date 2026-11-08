@@ -394,6 +394,30 @@ namespace MiniMapUI
         std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
         return g_retiredBuildingLayers.empty();
     }
+
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    bool TakeBuildingLayerPresentationDiagnosticsSnapshot(
+        BuildingLayer::DiagnosticsSnapshot& output) noexcept
+    {
+        std::shared_ptr<BuildingLayer> layer;
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            layer = g_buildingLayer;
+        }
+        return layer != nullptr && layer->TakeDiagnosticsSnapshot(output);
+    }
+
+    bool TakeBuildingLayerRenderDiagnosticsSnapshot(
+        BuildingLayer::RenderDiagnosticsSnapshot& output) noexcept
+    {
+        std::shared_ptr<BuildingLayer> layer;
+        {
+            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
+            layer = g_buildingLayer;
+        }
+        return layer != nullptr && layer->TakeRenderDiagnosticsSnapshot(output);
+    }
+#endif
 #endif
 
     bool Initialize(
