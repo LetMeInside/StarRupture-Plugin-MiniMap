@@ -807,14 +807,8 @@ namespace
                 return type;
             }
 
-            SDK::UClass* FindNative(const wchar_t* path, size_t size) const
-            {
-                auto* type = FindClass(path, size);
-                return type && type->Class == Core && size_t(type->Size) == size ? type : nullptr;
-            }
-
-            // A native game class MiniMap reads only through members the map places,
-            // so its compiled size means nothing: the class has to reach past them.
+            // A native class MiniMap reads only through members the map places, so its
+            // compiled size means nothing: the class has to reach past them.
             SDK::UClass* FindNativeReaching(const wchar_t* path,
                 std::initializer_list<const PluginFieldSpec*> members) const
             {
@@ -838,16 +832,18 @@ namespace
                         L"/Script/CoreUObject.Class", false, core)) return false;
                 Core = reinterpret_cast<SDK::UClass*>(core);
                 if (!Core || Core->Class != Core) return false;
-                World = FindNative(L"/Script/Engine.World", sizeof(SDK::UWorld));
-                Level = FindNative(L"/Script/Engine.Level", sizeof(SDK::ULevel));
-                Scene = FindNative(L"/Script/Engine.SceneComponent", sizeof(SDK::USceneComponent));
+                namespace EF = MiniMapEngineFields;
+                World = FindNativeReaching(L"/Script/Engine.World", {&EF::WorldGameState});
+                Level = FindNativeReaching(L"/Script/Engine.Level", {&EF::OwningWorld});
+                // Scene and Blueprint: only the class's identity is used, no member is read.
+                Scene = FindNativeReaching(L"/Script/Engine.SceneComponent", {});
                 GameState = FindNativeReaching(L"/Script/Chimera.CrGameStateBase",
                     {&MiniMapFields::AbandonBaseInfoReplicator});
                 Replicator = FindNativeReaching(L"/Script/Chimera.CrAbandonBaseInfoReplicator",
                     {&MiniMapFields::AbandonBaseContainer});
                 POI = FindNativeReaching(L"/Script/Chimera.CrPointOfInterestMarkerActor",
                     {&MiniMapFields::PoiType, &MiniMapFields::PoiGuid, &MiniMapFields::PoiStoryItems});
-                Blueprint = FindNative(L"/Script/Engine.BlueprintGeneratedClass", sizeof(SDK::UBlueprintGeneratedClass));
+                Blueprint = FindNativeReaching(L"/Script/Engine.BlueprintGeneratedClass", {});
                 Datapad = FindNativeReaching(L"/Script/Chimera.CrDatapadBase", {&MiniMapFields::DatapadGuid});
                 Audiolog = FindNativeReaching(L"/Script/Chimera.CrAudiologBase", {&MiniMapFields::AudiologGuid});
                 return World && Level && Scene && GameState && Replicator && POI && Blueprint;
@@ -864,12 +860,13 @@ namespace
             bool Actor(const SDK::AActor* actor, const SDK::UClass* base,
                 const SDK::UWorld* world) const
             {
-                if (!actor || actor->bActorIsBeingDestroyed ||
+                if (!actor || MiniMapEngineFields::ActorBeingDestroyed.Get(actor) ||
                     (uint32_t(actor->Flags) & (uint32_t(SDK::EObjectFlags::ClassDefaultObject) |
                         uint32_t(SDK::EObjectFlags::ArchetypeObject))) || !Derives(actor->Class, base)) return false;
                 auto* level = actor->Outer;
-                return level && Derives(level->Class, Level) &&
-                    static_cast<const SDK::ULevel*>(level)->OwningWorld == world;
+                if (!level || !Derives(level->Class, Level)) return false;
+                const auto* owner = MiniMapEngineFields::OwningWorld.In(level);
+                return owner && *owner == reinterpret_cast<uintptr_t>(world);
             }
         };
 
@@ -907,6 +904,19 @@ namespace
         };
         using ProgressMap = std::unordered_map<Guid, Progress, GuidHash>;
 
+        // The world's game state and an actor's root component, where the map places them; null
+        // when it does not (the layer is then off).
+        SDK::AGameStateBase* GameStateOf(const SDK::UWorld* world)
+        {
+            const auto* at = MiniMapEngineFields::WorldGameState.In(world);
+            return at ? *at : nullptr;
+        }
+        SDK::USceneComponent* RootOf(const SDK::AActor* actor)
+        {
+            const auto* at = MiniMapEngineFields::ActorRootComponent.In(actor);
+            return at ? *at : nullptr;
+        }
+
         struct ProgressScope
         {
             SDK::UWorld* World = nullptr;
@@ -916,7 +926,7 @@ namespace
             bool Matches(const SDK::UWorld* world) const
             {
                 return world && World && GameState && Replicator && world == World &&
-                    world->GameState == GameState &&
+                    GameStateOf(world) == GameState &&
                     PluginMap::ValueOr(MiniMapFields::AbandonBaseInfoReplicator, GameState) == Replicator;
             }
         };
@@ -925,7 +935,7 @@ namespace
         {
             if (!world || !types.Derives(world->Class, types.World)) return false;
             scope.World = world;
-            auto* baseGameState = world->GameState;
+            auto* baseGameState = GameStateOf(world);
             if (!types.Actor(baseGameState, types.GameState, world)) return false;
             auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
             scope.GameState = gameState;
@@ -1016,12 +1026,12 @@ namespace
             SDK::UClass* family, SDK::FVector& location)
         {
             if (!actor) return false;
-            auto* root = actor->RootComponent;
+            auto* root = RootOf(actor);
             if (!root || root->Outer != actor ||
                 !types.Derives(root->Class, types.Scene)) return false;
             types.Native.player.getComponentLocation(root, &location);
             return types.Actor(actor, family, world) &&
-                actor->RootComponent == root && root->Outer == actor &&
+                RootOf(actor) == root && root->Outer == actor &&
                 std::isfinite(location.X) && std::isfinite(location.Y) && std::isfinite(location.Z);
         }
 

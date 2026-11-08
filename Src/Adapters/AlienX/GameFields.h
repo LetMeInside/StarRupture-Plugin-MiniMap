@@ -292,7 +292,9 @@ namespace MiniMapFields
 				SimpleItemData, SimpleItemId, ItemIdHandle, ItemUIType,
 				PoiType, PoiGuid, PoiStoryItems, AbandonBaseContainer, AbandonBaseRecords, AbandonBaseRecordSize,
 				AbandonBasePOIId, AbandonBaseStatuses, StoryStatusSize, StoryStatusItem, StoryStatusValue,
-				DatapadGuid, AudiologGuid),
+				DatapadGuid, AudiologGuid,
+				MiniMapEngineFields::WorldGameState, MiniMapEngineFields::ActorRootComponent,
+				MiniMapEngineFields::OwningWorld, MiniMapEngineFields::ActorBeingDestroyed),
 			{ "Foundables.ShowLayer", "Foundables.ShowLootInBases", "Foundables.MarkerScale" } };
 
 		inline PluginMap::Feature AlienActors{ "alien-actors", "Alien actors on the minimap",
@@ -312,8 +314,7 @@ namespace MiniMapFields
 				BuildingPlacementData, PlacementBuildingID, PlacementActorClass, PlacementEntityType, EntityConfig, EntityConfigPtr,
 				CosmeticHighResActor, CosmeticLowResActor, VisualHighResActor, VisualLowResActor,
 				SplineFragmentData, SplineFragmentCurves, SplineFragmentBuilt, SplineDataPoints,
-				SplinePointPosition, SplinePointTangent, SplinePointSize, SplinePayloadHandle,
-				SplinePayloadSize, SplinePayloadData),
+				SplinePointPosition, SplinePointTangent, SplinePointSize),
 			{ "Buildings.ShowLayer", "Buildings.RenderDroneRails" } };
 
 		// The BuildingComplex observer hooks the save-load notifications to know when the
@@ -331,9 +332,6 @@ namespace MiniMapFields
 				SplinePayloadSize, SplinePayloadData),
 			{ "Buildings.RenderDroneRails" } };
 
-		// ReadbackGlobals and ReleaseGuard are not requests: they name the checks that
-		// report through the scanner, so a failed check turns this layer off. The loader
-		// notes that no request asked for them.
 		inline PluginMap::Feature BuildingSprites{ "building-sprites", "Building pictures on the minimap",
 			WithEngineKeys(KeysOf(Keys::SpawnObject, Keys::SetObjectFlags, Keys::RegisterComponent, Keys::UnregisterComponent,
 				Keys::DestroyComponent, Keys::InitRenderTarget, Keys::RenderTargetResource,
@@ -342,8 +340,8 @@ namespace MiniMapFields
 				Keys::CreateRHITexture, Keys::ReadbackConstruct, Keys::ReadbackDestroy, Keys::ReadbackCopy,
 				Keys::ReadbackLock, Keys::ReadbackUnlock, Keys::GpuFencePoll, Keys::MarkForDelete,
 				Keys::MemoryMalloc, Keys::DynamicRHI, Keys::RenderCommandPipe,
-				Keys::ThreadedRendering, Keys::RHIMultithreading, Keys::GpuCount, Keys::ReadbackGlobals,
-				Keys::ReleaseGuard, Keys::CreateWorld, Keys::InitWorld, Keys::UpdateWorldComponents,
+				Keys::ThreadedRendering, Keys::RHIMultithreading, Keys::GpuCount,
+				Keys::CreateWorld, Keys::InitWorld, Keys::UpdateWorldComponents,
 				Keys::CleanupWorld, Keys::WorldContext, Keys::GetSubsystemInternal,
 				Keys::GarbageCollectingLocking, Keys::PurgePending, Keys::ReachabilityPending,
 				Keys::TickableTickType, Keys::VisibilityPending, Keys::DestroyActor,
@@ -351,12 +349,19 @@ namespace MiniMapFields
 				ElectricityEntityManager, GridEntityManager)),
 			{ "Buildings.CaptureSprites" } };
 
+		// The camera follows the build drone while the player flies it. Without the
+		// player's drone member the minimap tracks the character, as it does with
+		// General.FollowBuildDrone off.
+		inline PluginMap::Feature FollowBuildDrone{ "follow-build-drone", "Minimap follows the build drone",
+			KeysOf(BuildingDrone),
+			{ "General.FollowBuildDrone" } };
+
 		// Declares every layer; call before any key is resolved.
 		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 		{
 			return PluginMap::DeclareFeatures(scanner, self,
 				FogOfWar, PointsOfInterest, Foundables, AlienActors, Buildings, BuildingRestore,
-				BuildingSplines, BuildingSprites);
+				BuildingSplines, BuildingSprites, FollowBuildDrone);
 		}
 	}
 }

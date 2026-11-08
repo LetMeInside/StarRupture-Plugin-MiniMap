@@ -16,7 +16,9 @@
 // not only with a game build. The loader holds a row per game build; the compiled
 // one below is used only on the build the plugin was compiled for. All of them
 // belong to the building-sprites layer, which is off on a build whose rows the
-// map does not have yet.
+// map does not have yet. The exceptions are WorldGameState and ActorRootComponent,
+// which only the foundables layer reads, and ActorBeingDestroyed and OwningWorld,
+// which both read.
 
 namespace MiniMapEngineFields
 {
@@ -54,6 +56,21 @@ namespace MiniMapEngineFields
 	inline auto LevelWorldSettings     = SR_FIELD(uintptr_t, ULevel, WorldSettings, 0);
 	inline auto EngineWorldSettingsClass = SR_FIELD(uintptr_t, UEngine, WorldSettingsClass, 0);
 	inline auto ActorBeingDestroyed    = SR_BITFIELD(AActor, bActorIsBeingDestroyed);
+	// What the foundables layer reads to tell its actors from the world's: the world's
+	// game state and an actor's root component.
+	inline auto WorldGameState         = SR_FIELD(SDK::AGameStateBase*, UWorld, GameState, 0);
+	inline auto ActorRootComponent     = SR_FIELD(SDK::USceneComponent*, AActor, RootComponent, 0);
+	// The sprite capture checks that its actors are unowned, and its world's game instance.
+	inline auto WorldGameInstance      = SR_FIELD(uintptr_t, UWorld, OwningGameInstance, 0);
+	inline auto ActorOwner             = SR_FIELD(uintptr_t, AActor, Owner, 0);
+	inline auto ActorInstigator        = SR_FIELD(uintptr_t, AActor, Instigator, 0);
+	// The capture component's target and source, and the render target it draws into.
+	inline auto CaptureTarget          = SR_FIELD(uintptr_t, USceneCaptureComponent2D, TextureTarget, 0);
+	inline auto CaptureSource          = SR_FIELD(SDK::ESceneCaptureSource, USceneCaptureComponent, CaptureSource, 0);
+	inline auto TargetGamma            = SR_FIELD(float, UTextureRenderTarget, TargetGamma, 0);
+	inline auto TargetClearColor       = SR_FIELD(SDK::FLinearColor, UTextureRenderTarget2D, ClearColor, 0);
+	inline auto TargetSupportsUAV      = SR_BITFIELD(UTextureRenderTarget2D, bSupportsUAV);
+	inline auto TargetAutoMips         = SR_BITFIELD(UTextureRenderTarget2D, bAutoGenerateMips);
 
 	// EWorldType::Type, one byte; the world a capture owns is a GamePreview.
 	inline auto WorldType = MM_NATIVE(uint8_t, UWorld, WorldType, 0x18a);
@@ -121,6 +138,8 @@ namespace MiniMapEngineFields
 		return PluginMap::KeysOf(
 			PersistentLevel, NetDriver, StreamingLevels, StreamingLevelsToConsider, ConsideredLevels, OwningWorld,
 			LevelWorldSettings, EngineWorldSettingsClass, ActorBeingDestroyed,
+			WorldGameInstance, ActorOwner, ActorInstigator, CaptureTarget, CaptureSource, TargetGamma, TargetClearColor,
+			TargetSupportsUAV, TargetAutoMips,
 			WorldType, WorldInitialized, ActorsInitialized, TearingDown, BegunPlay, EverInitialized,
 			WorldList, ContextWorld, NeedsTwoCopies, TickableInitialized,
 			WorldScene, SubsystemCollection, LevelsToProcess, LevelsBeingConsidered,
@@ -136,7 +155,9 @@ namespace MiniMapEngineFields
 	{
 		bool all = PluginMap::ResolveFields(scanner, self,
 			PersistentLevel, NetDriver, StreamingLevels, StreamingLevelsToConsider, ConsideredLevels, OwningWorld,
-			LevelWorldSettings, EngineWorldSettingsClass, ActorBeingDestroyed);
+			LevelWorldSettings, EngineWorldSettingsClass, ActorBeingDestroyed, WorldGameState, ActorRootComponent,
+			WorldGameInstance, ActorOwner, ActorInstigator, CaptureTarget, CaptureSource, TargetGamma, TargetClearColor,
+			TargetSupportsUAV, TargetAutoMips);
 
 		// A member's row is its compiled offset and size.
 		PluginFieldSpec* const members[] = {

@@ -9,6 +9,7 @@
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
 #include "../DiagnosticExports.h"
+#include <algorithm>
 #include <cmath>
 #include <atomic>
 
@@ -129,7 +130,9 @@ namespace MiniMapMap
 
     bool TryGetPresentationSample(PresentationSample& outSample)
     {
-        const MiniMapConfig::TrackingSettings settings = MiniMapConfig::GetTrackingSettings();
+        MiniMapConfig::TrackingSettings settings = MiniMapConfig::GetTrackingSettings();
+        // Without the player's drone member the minimap tracks the character.
+        settings.FollowBuildDrone = settings.FollowBuildDrone && MiniMapFields::Features::FollowBuildDrone.On();
         outSample = {};
         LocalPlayer player;
         PresentationSample sample{};
@@ -188,9 +191,15 @@ namespace MiniMapMap
     {
         auto* component = PluginMap::ValueOr(MiniMapFields::PlayerMapData, character);
         const auto* native = MiniMapNative::Get();
+        // The component has to be readable as far as the member read from it reaches (the fog
+        // segments, where the map places them), and at least over the UObject header.
+        constexpr size_t kObjectHeader = 0x28;
+        const PluginFieldSpec& fog = MiniMapFields::FogData;
+        const size_t extent = fog.offset < 0 ? kObjectHeader :
+            (std::max)(kObjectHeader, size_t(fog.offset) + (fog.resolvedSize ? fog.resolvedSize : fog.size));
         if (!native || !MiniMapNative::ValidateObjectIdentity(
             reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
+            reinterpret_cast<uintptr_t>(native->asset.objectArray), extent) ||
             component->Outer != character) return nullptr;
         return component;
     }

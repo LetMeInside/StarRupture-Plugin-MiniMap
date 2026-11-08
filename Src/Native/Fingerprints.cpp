@@ -559,7 +559,7 @@ namespace MiniMapFingerprints
 //
 // Verified against:
 //
-//   ++Earth20+Neon-HF2.5-CL-126119
+//   an earlier game build
 //
 // Target RVA:
 //
@@ -823,7 +823,7 @@ namespace MiniMapFingerprints
         // -------------------------------------------------------------------
         // ACrCharacterPlayerBase::IsPlayerInForgottenEngine
         //
-        // Verified against HF2.5-CL-126119.
+        // Verified against an earlier game build.
         //
         // Native target:
         //
@@ -882,7 +882,7 @@ namespace MiniMapFingerprints
         // -------------------------------------------------------------------
         // AController::GetControlRotation
         //
-        // Verified against HF2.5-CL-126119.
+        // Verified against an earlier game build.
         //
         // Native target:
         //
@@ -1136,7 +1136,7 @@ namespace MiniMapFingerprints
         }
 
         // The spline payload getter has no pattern here: the CL-127004 pattern
-        // does not match on CL-128786, so the loader's map is the only locator.
+        // does not match on a newer game build, so the loader's map is the only locator.
         // A build with no row for it turns off building-splines. The getter's
         // generic forwarding body is not unique;
         // its row is the call at +0x0C in SetActorPlacementPayloadData's
@@ -1254,7 +1254,7 @@ namespace MiniMapFingerprints
         foundableTagRequest.name =
             Keys::AddFoundableTag;
 
-        // No pattern: the CL-127004 one does not match on CL-128786, so the
+        // No pattern: the CL-127004 one does not match on a newer game build, so the
         // loader's map is the only locator and a build with no row for it turns
         // the foundables layer off.
         foundableTagRequest.kind =
@@ -1673,8 +1673,8 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            // No pattern for the next two: the CL-127004 ones do not match on
-            // CL-128786, so the loader's map is the only locator. A build with no
+            // No pattern for the next two: the CL-127004 ones do not match on a
+            // newer game build, so the loader's map is the only locator. A build with no
             // row for them turns off building-sprites.
             request.name = Keys::FenceBegin;
             request.kind = AddressKind::FunctionEntry;
@@ -1820,7 +1820,7 @@ namespace MiniMapFingerprints
         IMAGE_NT_HEADERS64 readbackNt{};
         auto imageFailure = [&]()
         {
-            scanner.Fail(Keys::ReadbackGlobals, "invalid or unreadable executable headers/section table");
+            scanner.Fail(Keys::DynamicRHI, "readback globals: invalid or unreadable executable headers/section table");
             return false;
         };
         if (!readbackImage || !MiniMapNative::ReadMemory(readbackImage, &readbackDos, sizeof(readbackDos)) ||
@@ -1844,11 +1844,12 @@ namespace MiniMapFingerprints
         // so preserve the actual MOV/LEA/CMP RIP operand decode here.
         auto decodeGlobal = [&](const char* name, uintptr_t anchor, size_t displacementOffset,
             size_t instructionSize, std::array<uint8_t,3> opcode, size_t storageSize,
-            size_t alignment, uintptr_t& output)
+            size_t alignment, uintptr_t& output,
+            const char* failure = "invalid RIP instruction or unreadable/non-data global target")
         {
             auto invalid = [&]()
             {
-                scanner.Fail(name, "invalid RIP instruction or unreadable/non-data global target");
+                scanner.Fail(name, failure);
                 return false;
             };
             std::array<uint8_t,7> instruction{};
@@ -1968,15 +1969,18 @@ namespace MiniMapFingerprints
             AddressKind::Code, engineAnchor) ||
             !decodeGlobal(Keys::EngineStorage, engineAnchor,
                 3, 7, {0x48,0x8b,0x3d}, 8, 8, addresses.engineStorage)) return false;
-        // Reuse the already resolved guarded Release wrapper, without another scan.
-        if (!decodeGlobal(Keys::ReleaseGuard, addresses.releaseObject,
-                2, 7, {0x80,0x3d,0}, 1, 1, addresses.exitPurge)) return false;
+        // Reuse the already resolved guarded Release wrapper, without another scan. A failure of
+        // this check and of the one below is reported under the collection anchor above, so that
+        // it turns off the layer that lists it.
+        if (!decodeGlobal(Keys::ActiveGarbageCollection, addresses.releaseObject,
+                2, 7, {0x80,0x3d,0}, 1, 1, addresses.exitPurge,
+                "UObject::ReleaseRef guard: invalid RIP instruction or unreadable/non-data global target")) return false;
 
         // Preserve the legacy direct ReleaseRef verification, deriving its address
         // from the wrapper's JE rather than a historical RVA. It is not a call binding.
         auto invalidRelease = [&]()
         {
-            scanner.Fail(Keys::ReleaseGuard, "invalid guarded Release branch or direct ReleaseRef entry");
+            scanner.Fail(Keys::ActiveGarbageCollection, "UObject::ReleaseRef guard: invalid guarded Release branch or direct ReleaseRef entry");
             return false;
         };
         std::array<uint8_t,13> releaseInstruction{};

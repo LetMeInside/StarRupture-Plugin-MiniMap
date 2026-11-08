@@ -130,6 +130,4 @@ namespace MiniMapNative::Keys
     inline constexpr const char* DestroyActor        = "UWorld::DestroyActor";
     inline constexpr const char* ActiveGarbageCollection = "GIsGarbageCollecting (anchor)";
     inline constexpr const char* EngineStorage       = "GEngine (anchor)";
-    inline constexpr const char* ReadbackGlobals     = "Readback globals (executable headers)";
-    inline constexpr const char* ReleaseGuard        = "UObject::ReleaseRef (guard)";
 }

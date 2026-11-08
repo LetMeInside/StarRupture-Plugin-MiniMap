@@ -171,19 +171,6 @@ namespace
         return MemberAddress(collection, map, at, diagnostic) &&
             Read(at + kSparseCount, entries, diagnostic) && Read(at + kSparseFreeCount, free, diagnostic);
     }
-    // UWorld::OwningGameInstance, found by name in the running game's reflection. The world was
-    // identified by the caller; game thread only. False when the loader cannot place the member.
-    bool ReadWorldGameInstance(uintptr_t world, uintptr_t& instance, ReadinessDiagnostic* diagnostic)
-    {
-        static PluginLazyField<SDK::UGameInstance*> field{"OwningGameInstance"};
-        const auto* at = field.In(PluginSdkRuntime::ObjectProperties(), reinterpret_cast<SDK::UWorld*>(world));
-        if (!at)
-        {
-            if (diagnostic) diagnostic->Observe(false, "world game instance member", "facility_unavailable", world);
-            return false;
-        }
-        return Read(reinterpret_cast<uintptr_t>(at), instance, diagnostic);
-    }
     struct SlotReader
     {
         ReadinessDiagnostic* Diagnostic = nullptr;
@@ -612,7 +599,7 @@ namespace
                 !Is(engine, Engine, diagnostic) || !Is(game, World, diagnostic) || !ReadFlag(game, EF::TearingDown, flags, diagnostic) || !check(!flags, "gameplay tearing-down flag", 0, flags) ||
                 !ReadFlag(game, EF::WorldInitialized, flags, diagnostic) || !check(bool(flags), "gameplay initialized flag", EF::WorldInitialized.boolMask, flags) ||
                 !Identify(game, baseline.Gameplay, 0x28, diagnostic) || !Identify(engine, baseline.EngineObject, 0x28, diagnostic) ||
-                !ReadWorldGameInstance(game, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
+                !ReadMember(game, EF::WorldGameInstance, instance, diagnostic) || !Is(instance, GameInstance, diagnostic) || !Identify(instance, baseline.GameInstanceObject, 0x28, diagnostic) ||
                 !observe(Invoke(Operation::Context, engine, game, &baseline.Context), "gameplay context lookup interrupted/unavailable") || !check(bool(baseline.Context), "gameplay context presence") ||
                 !ReadMember(baseline.Context, EF::ContextWorld, current, diagnostic) || !check(current == game, "context gameplay world", game, current) ||
                 !ReadMember(engine, EF::WorldList, contexts, diagnostic) || !check(contexts.Num >= 1, "context count >= 1", 1, uint64_t(contexts.Num)) ||
@@ -704,7 +691,7 @@ namespace
                 !check(!begunBit, "private begun-play flag", 0, begunBit) ||
                 !check(bool(everBit) == initialized, "private ever-initialized flag", initialized, bool(everBit)) ||
                 !ReadMember(world, EF::WorldScene, scene, diagnostic) || !check(bool(scene) == initialized, "private scene presence", initialized, bool(scene)) ||
-                !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !ReadMember(world, EF::WorldGameInstance, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
                 !ReadMember(world, EF::NetDriver, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, Before.EngineObject.Bits, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) ||
@@ -754,7 +741,7 @@ namespace
                 !ReadFlag(world, EF::WorldInitialized, flags, diagnostic) || !check(bool(flags) == initialized, "private initialized flag", initialized, bool(flags)) ||
                 !ReadMember(world, EF::WorldScene, scene, diagnostic) || !check(scene == Scene, "private scene identity", Scene, scene) ||
                 !check(scene != IsolatedGameplayScene, "private/baseline gameplay scenes must differ", IsolatedGameplayScene, scene) ||
-                !ReadWorldGameInstance(world, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
+                !ReadMember(world, EF::WorldGameInstance, instance, diagnostic) || !check(!instance, "private game instance", 0, instance) ||
                 !ReadMember(world, EF::NetDriver, net, diagnostic) || !check(!net, "private net driver", 0, net) ||
                 !observe(Invoke(Operation::Context, engine, world, &context), "private context lookup interrupted/unavailable") || !check(!context, "private world context", 0, context) ||
                 !CheckOwned(PersistentLevel, diagnostic) || !CheckOwned(WorldSettings, diagnostic) || !CheckOwned(MetadataClasses[Settings].Ref, diagnostic) ||
@@ -1387,13 +1374,13 @@ namespace
             // UE 5.6: GetDisplayGamma honors this before the float-format default.
             // The final-color LUT supplies display encoding; the existing custom
             // float target stays non-sRGB, so no hardware encoding is added.
-            static_assert(offsetof(SDK::UTextureRenderTarget, TargetGamma) == 0x140);
-            target->TargetGamma = finalColor ? 2.2f : 1.f;
-            target->bAutoGenerateMips = false;
-            target->bSupportsUAV = false;
-            if (!EF::NeedsTwoCopies.Set(target, false)) return false;
-            target->ClearColor = SDK::FLinearColor(0, 0, 0, 1);
-            return true;
+            float* const gamma = EF::TargetGamma.In(target);
+            SDK::FLinearColor* const clear = EF::TargetClearColor.In(target);
+            if (!gamma || !clear) return false;
+            *gamma = finalColor ? 2.2f : 1.f;
+            *clear = SDK::FLinearColor(0, 0, 0, 1);
+            return EF::TargetAutoMips.Set(target, false) && EF::TargetSupportsUAV.Set(target, false) &&
+                EF::NeedsTwoCopies.Set(target, false);
         }
         __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
             ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
@@ -1604,6 +1591,8 @@ namespace
             if (Ready() && g_nativeWorld.Hold(object, ref)) return true;
             Quarantine("request native reference acquisition uncertain"); return false;
         }
+        // `expectedSize` is the size the class must have, or 0 when the capture reads none of its
+        // members at a compiled layout (the map places them).
         bool ClassMetadata(const wchar_t* path, MetadataId id, size_t expectedSize)
         {
             const auto object = Lookup(path, g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits, true);
@@ -1622,7 +1611,7 @@ namespace
             ObjectIdentity identity; uintptr_t type{}; int32_t size{};
             if (!g_nativeWorld.Identify(object, identity, sizeof(SDK::UClass)) || !Read(object + 0x10, type) ||
                 type != g_nativeWorld.MetadataClasses[NativeWorldOwner::Class].Ref.Object.Bits ||
-                !Read(object + offsetof(SDK::UStruct, Size), size) || size != int32_t(expectedSize))
+                !Read(object + offsetof(SDK::UStruct, Size), size) || (expectedSize && size != int32_t(expectedSize)))
             { Quarantine("request class metadata layout or identity invalid"); return false; }
             return Keep(object, Metadata[id]);
         }
@@ -1653,8 +1642,8 @@ namespace
             return g_nativeWorld.CheckOwned(Actor) && g_nativeWorld.CheckOwned(Metadata[Blueprint]) &&
                 Read(actor + 0x10, type) && type == Metadata[Blueprint].Object.Bits &&
                 Read(actor + 0x20, outer) && outer == g_nativeWorld.PersistentLevel.Object.Bits &&
-                Read(actor + offsetof(SDK::AActor, Owner), owner) && !owner &&
-                Read(actor + offsetof(SDK::AActor, Instigator), instigator) && !instigator &&
+                ReadMember(actor, EF::ActorOwner, owner, nullptr) && !owner &&
+                ReadMember(actor, EF::ActorInstigator, instigator, nullptr) && !instigator &&
                 ReadActorFlags(actor, flags) && flags.Finished == finished && !flags.Initialized &&
                 !flags.BeingDestroyed && !flags.BegunPlay && Ready() && Level(actor, true);
         }
@@ -1936,11 +1925,11 @@ namespace
             uint8_t registered{}; uintptr_t world{}, target{};
             if (!ReadFlag(Capture.Object.Bits, EF::ComponentRegistered, registered, nullptr) || !registered ||
                 !ReadMember(Capture.Object.Bits, EF::ComponentWorld, world, nullptr) || world != g_nativeWorld.Private.Object.Bits ||
-                !Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, TextureTarget), target) || target != Target.Object.Bits) return false;
+                !ReadMember(Capture.Object.Bits, EF::CaptureTarget, target, nullptr) || target != Target.Object.Bits) return false;
             SDK::ESceneCaptureSource source{}; float gamma{};
-            if (!Read(Capture.Object.Bits + offsetof(SDK::USceneCaptureComponent2D, CaptureSource), source) ||
+            if (!ReadMember(Capture.Object.Bits, EF::CaptureSource, source, nullptr) ||
                 source != (FinalColorPass ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR) ||
-                !Read(Target.Object.Bits + offsetof(SDK::UTextureRenderTarget, TargetGamma), gamma) || gamma != (FinalColorPass ? 2.2f : 1.f))
+                !ReadMember(Target.Object.Bits, EF::TargetGamma, gamma, nullptr) || gamma != (FinalColorPass ? 2.2f : 1.f))
             { Rejected("capture source/target display gamma mismatch"); return false; }
             if (!Job) return false;
             const auto report = MiniMapReadbackNative::Inspect(Job);
@@ -2128,9 +2117,9 @@ namespace
             if (!ReadbackAvailable(true, available)) { Quarantine("readback prerequisite inspection interrupted"); return; }
             if (!available) { Wait(WaitReason::ReadbackPrerequisite, "readback prerequisite inspection succeeded but service unavailable"); return; }
             if (!ClassMetadata(L"/Script/Engine.BlueprintGeneratedClass", Generated, sizeof(SDK::UBlueprintGeneratedClass)) ||
-                !ClassMetadata(L"/Script/Engine.Actor", ActorType, sizeof(SDK::AActor)) ||
+                !ClassMetadata(L"/Script/Engine.Actor", ActorType, 0) ||
                 !ClassMetadata(L"/Script/Engine.SceneCaptureComponent2D", CaptureType, sizeof(SDK::USceneCaptureComponent2D)) ||
-                !ClassMetadata(L"/Script/Engine.TextureRenderTarget2D", TargetType, sizeof(SDK::UTextureRenderTarget2D)))
+                !ClassMetadata(L"/Script/Engine.TextureRenderTarget2D", TargetType, 0))
             {
                 if (Phase != RequestPhase::Quarantined && !DropMetadata()) Quarantine("waiting metadata release uncertain");
                 return;
