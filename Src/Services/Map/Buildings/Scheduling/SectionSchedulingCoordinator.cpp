@@ -29,6 +29,9 @@ namespace Services::Map::Buildings::Scheduling
 			sectionResolutionPixels,
 			std::move(buildingsCacheDirectory)))
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ResetDiagnostics();
+#endif
 	}
 
 	/** Releases the owned scheduler after coordinator demand state is no longer accessible. */
@@ -138,12 +141,32 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto advancementStarted = std::chrono::steady_clock::now();
+		++diagnostics_.AdvancementCalls;
+#endif
 		const std::vector<SectionCoordinate> waitingSnapshot(waitingSections_.begin(), waitingSections_.end());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnostics_.InitialWaitingSections += waitingSnapshot.size();
+		const auto spriteAcquisitionStarted = std::chrono::steady_clock::now();
+#endif
 		sectionScheduler_->AdvanceSpriteAcquisition();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnostics_.SpriteAcquisitionAdvancement.Add(std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - spriteAcquisitionStarted).count());
+#endif
 		for (const SectionCoordinate& coordinate : waitingSnapshot)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.SnapshotCoordinatesExamined;
+#endif
 			ProcessWaitingSection(buildingMapService, coordinate);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnostics_.WaitingAfterAdvancement += waitingSections_.size();
+		diagnostics_.CoordinatorAdvancement.Add(std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - advancementStarted).count());
+#endif
 	}
 
 	/** Processes one still-demanded waiting coordinate from the current tick snapshot. */
@@ -151,22 +174,51 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionCoordinate& coordinate)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto attemptStarted = std::chrono::steady_clock::now();
+#endif
 		if (!IsDemanded(coordinate) || waitingSections_.find(coordinate) == waitingSections_.end())
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.NoLongerEligibleCoordinates;
+#endif
 			return;
 		}
 		::Services::Map::Buildings::BuildingMapService::SectionCandidateSource candidateSource;
-		if (!buildingMapService.TrySelectCandidatePublicationForSection(
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto sourceSelectionStarted = std::chrono::steady_clock::now();
+#endif
+		const bool candidateSelected = buildingMapService.TrySelectCandidatePublicationForSection(
 			coordinate.GridX,
 			coordinate.GridY,
-			candidateSource))
+			candidateSource);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const double sourceSelectionMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - sourceSelectionStarted).count();
+		diagnostics_.SourceSelection.Add(sourceSelectionMs);
+#endif
+		if (!candidateSelected)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.SourceSelectionMisses;
+#endif
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.ProcessingAttempts;
+#endif
 		::Services::Map::Buildings::BuildingMapSection& section =
 			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
 		SectionScheduler::KnownSpritePreparationResult spritePreparation;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto knownSpritePreparationStarted = std::chrono::steady_clock::now();
+#endif
 		sectionScheduler_->PrepareKnownSpriteRequirements(candidateSource.PublicationOwner, spritePreparation);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const double knownSpritePreparationMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - knownSpritePreparationStarted).count();
+		diagnostics_.KnownSpritePreparation.Add(knownSpritePreparationMs);
+#endif
 		SectionScheduler::SectionImageCommitResult commitResult;
 		sectionScheduler_->RenderAndCommitSectionImage(
 			section,
@@ -175,6 +227,52 @@ namespace Services::Map::Buildings::Scheduling
 			spritePreparation,
 			buildingMapService.splinePolicies_,
 			commitResult);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto totalAttemptMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - attemptStarted).count();
+		diagnostics_.WholeSectionAttempt.Add(totalAttemptMs);
+		diagnostics_.RenderAndCommit.Add(commitResult.Timing.TotalMs);
+		diagnostics_.ScenePreparation.Add(commitResult.Timing.ScenePreparationMs);
+		const auto commitStatusIndex = static_cast<std::size_t>(commitResult.CommitStatus);
+		if (commitStatusIndex < diagnostics_.CommitStatusCounts.size())
+		{
+			++diagnostics_.CommitStatusCounts[commitStatusIndex];
+		}
+		if (commitResult.SceneReadiness.has_value())
+		{
+			const auto readinessIndex = static_cast<std::size_t>(*commitResult.SceneReadiness);
+			if (readinessIndex < diagnostics_.SceneReadinessCounts.size())
+			{
+				++diagnostics_.SceneReadinessCounts[readinessIndex];
+			}
+		}
+		if (commitResult.Timing.NumericalRenderingInvoked && commitResult.NumericalStatus.has_value())
+		{
+			const auto numericalIndex = static_cast<std::size_t>(*commitResult.NumericalStatus);
+			if (numericalIndex < diagnostics_.NumericalStatusCounts.size())
+			{
+				++diagnostics_.NumericalStatusCounts[numericalIndex];
+			}
+		}
+		if (commitResult.Timing.NumericalRenderingInvoked)
+		{
+			diagnostics_.NumericalRendering.Add(commitResult.Timing.NumericalRenderingMs);
+		}
+		if (commitResult.Timing.TransparencyCheckInvoked)
+		{
+			diagnostics_.TransparencyCheck.Add(commitResult.Timing.TransparencyCheckMs);
+		}
+		if (commitResult.Timing.ImageAdoptionAttempted)
+		{
+			diagnostics_.ImageAdoption.Add(commitResult.Timing.ImageAdoptionMs);
+		}
+		if (commitResult.SceneReadiness.has_value() &&
+			*commitResult.SceneReadiness == SectionScheduler::SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
+			!candidateSource.Observation.candidateOrdinals.empty())
+		{
+			diagnostics_.SceneBorrow.Add(commitResult.Timing.SceneBorrowMs);
+		}
+#endif
 		const bool imageCommitted =
 			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed;
 		const bool emptyCommitted =
@@ -183,19 +281,63 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			RecordSectionCompleted(coordinate);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (emptyCommitted)
+		{
+			if (commitResult.CompletedImageRemoved)
+			{
+				++diagnostics_.ExistingImagesRemoved;
+			}
+		}
+		std::size_t diagnosticNotifications = 0;
+#endif
 		if (imageCommitted || (emptyCommitted && commitResult.CompletedImageRemoved))
 		{
 			buildingMapService.NotifySectionImageChangedToViewports(
 				coordinate.GridX,
-				coordinate.GridY);
+				coordinate.GridY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, &diagnosticNotifications
+#endif
+				);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnostics_.ImageChangeNotificationsSent += diagnosticNotifications;
+		if (totalAttemptMs >= diagnostics_.Worst.TotalMs)
+		{
+			diagnostics_.Worst.Present = true;
+			diagnostics_.Worst.GridX = coordinate.GridX;
+			diagnostics_.Worst.GridY = coordinate.GridY;
+			diagnostics_.Worst.TotalMs = totalAttemptMs;
+			diagnostics_.Worst.SourceSelectionMs = sourceSelectionMs;
+			diagnostics_.Worst.KnownSpritePreparationMs = knownSpritePreparationMs;
+			diagnostics_.Worst.RenderAndCommitMs = commitResult.Timing.TotalMs;
+			diagnostics_.Worst.ScenePreparationMs = commitResult.Timing.ScenePreparationMs;
+			diagnostics_.Worst.NumericalRenderingMs = commitResult.Timing.NumericalRenderingMs;
+			diagnostics_.Worst.CommitStatus = static_cast<std::uint8_t>(commitResult.CommitStatus);
+			diagnostics_.Worst.HasSceneReadiness = commitResult.SceneReadiness.has_value();
+			diagnostics_.Worst.SceneReadiness = commitResult.SceneReadiness.has_value()
+				? static_cast<std::uint8_t>(*commitResult.SceneReadiness)
+				: 0;
+			diagnostics_.Worst.HasNumericalStatus = commitResult.NumericalStatus.has_value();
+			diagnostics_.Worst.NumericalStatus = commitResult.NumericalStatus.has_value()
+				? static_cast<std::uint8_t>(*commitResult.NumericalStatus)
+				: 0;
+		}
+#endif
 	}
 
 	/** Starts gameplay scheduling through the existing SectionScheduler. */
 	bool SectionSchedulingCoordinator::BeginCaptureGameWorldSession()
 	{
-		return sectionScheduler_ != nullptr &&
-			sectionScheduler_->BeginCaptureGameWorldSession();
+		if (sectionScheduler_ == nullptr || !sectionScheduler_->BeginCaptureGameWorldSession())
+		{
+			return false;
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ResetDiagnostics();
+#endif
+		return true;
 	}
 
 	/** Stops gameplay scheduling and requests active capture cancellation once. */
@@ -205,6 +347,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			sectionScheduler_->StopCaptureGameWorldSession();
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ResetDiagnostics();
+#endif
 	}
 
 	/** Returns the persistent renderer without processing lifecycle work here. */
@@ -220,6 +365,32 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		return sectionScheduler_ != nullptr && sectionScheduler_->ClearCache();
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Hands off one completed nonempty interval and resets only diagnostic observations. */
+	bool SectionSchedulingCoordinator::TakeDiagnosticsSnapshot(
+		SectionSchedulingDiagnosticsSnapshot& output) noexcept
+	{
+		const auto now = std::chrono::steady_clock::now();
+		const double intervalMs = std::chrono::duration<double, std::milli>(
+			now - diagnosticsIntervalStart_).count();
+		if (intervalMs < 10000.0 || diagnostics_.AdvancementCalls == 0)
+		{
+			return false;
+		}
+		diagnostics_.IntervalMs = intervalMs;
+		output = diagnostics_;
+		ResetDiagnostics();
+		return true;
+	}
+
+	/** Clears interval evidence while preserving every functional coordinator collection. */
+	void SectionSchedulingCoordinator::ResetDiagnostics() noexcept
+	{
+		diagnostics_ = {};
+		diagnosticsIntervalStart_ = std::chrono::steady_clock::now();
+	}
+#endif
 
 	/** Tests one coordinate against both half-open range axes. */
 	bool SectionSchedulingCoordinator::ContainsCoordinate(

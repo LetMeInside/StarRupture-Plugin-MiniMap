@@ -3,6 +3,10 @@
 
 #include <cstdint>
 #include <cstddef>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <array>
+#include <chrono>
+#endif
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -21,6 +25,76 @@ namespace Services::Map::Buildings::Capture
 namespace Services::Map::Buildings::Scheduling
 {
 	class SectionScheduler;
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Numeric interval report for coordinator-owned V2 Section scheduling work. */
+	struct SectionSchedulingDiagnosticsSnapshot
+	{
+		/** Repeated elapsed CPU wall-time aggregate; MeanMs is derived by the reporter. */
+		struct Duration
+		{
+			std::uint64_t Samples = 0;
+			double TotalMs = 0.0;
+			double MaxMs = 0.0;
+
+			/** Adds one elapsed CPU wall-time sample to this numeric aggregate. */
+			void Add(double elapsedMs) noexcept
+			{
+				++Samples;
+				TotalMs += elapsedMs;
+				if (elapsedMs > MaxMs)
+				{
+					MaxMs = elapsedMs;
+				}
+			}
+		};
+
+		/** Numeric evidence for the slowest actual Section attempt in the interval. */
+		struct WorstSection
+		{
+			bool Present = false;
+			std::int64_t GridX = 0;
+			std::int64_t GridY = 0;
+			double TotalMs = 0.0;
+			double SourceSelectionMs = 0.0;
+			double KnownSpritePreparationMs = 0.0;
+			double RenderAndCommitMs = 0.0;
+			double ScenePreparationMs = 0.0;
+			double NumericalRenderingMs = 0.0;
+			std::uint8_t CommitStatus = 0;
+			bool HasSceneReadiness = false;
+			std::uint8_t SceneReadiness = 0;
+			bool HasNumericalStatus = false;
+			std::uint8_t NumericalStatus = 0;
+		};
+
+		double IntervalMs = 0.0;
+		Duration CoordinatorAdvancement;
+		Duration SpriteAcquisitionAdvancement;
+		Duration SourceSelection;
+		Duration KnownSpritePreparation;
+		Duration RenderAndCommit;
+		Duration ScenePreparation;
+		Duration SceneBorrow;
+		Duration NumericalRendering;
+		Duration TransparencyCheck;
+		Duration ImageAdoption;
+		Duration WholeSectionAttempt;
+		std::uint64_t AdvancementCalls = 0;
+		std::uint64_t InitialWaitingSections = 0;
+		std::uint64_t WaitingAfterAdvancement = 0;
+		std::uint64_t SnapshotCoordinatesExamined = 0;
+		std::uint64_t ProcessingAttempts = 0;
+		std::uint64_t NoLongerEligibleCoordinates = 0;
+		std::uint64_t SourceSelectionMisses = 0;
+		std::array<std::uint64_t, 6> CommitStatusCounts{};
+		std::array<std::uint64_t, 9> SceneReadinessCounts{};
+		std::array<std::uint64_t, 6> NumericalStatusCounts{};
+		std::uint64_t ExistingImagesRemoved = 0;
+		std::uint64_t ImageChangeNotificationsSent = 0;
+		WorstSection Worst;
+	};
+#endif
 
 	/** Tracks deduplicated Section work required by active viewports.
 	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
@@ -126,6 +200,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return True when the configured Buildings subtree is cleared without error.
 		 */
 		bool ClearCache();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Hands off one completed nonempty interval and resets only diagnostic aggregates. */
+		bool TakeDiagnosticsSnapshot(SectionSchedulingDiagnosticsSnapshot& output) noexcept;
+#endif
 
 	private:
 		friend class ::Services::Map::Buildings::BuildingMapService;
@@ -193,9 +271,17 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param coordinate Signed service-grid coordinate whose image was committed.
 		 */
 		void RecordSectionCompleted(const SectionCoordinate& coordinate);
+		/** Resets interval counters without changing demand, waiting work, or scheduler state. */
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		void ResetDiagnostics() noexcept;
+#endif
 
 		std::map<SectionCoordinate, std::size_t> demandCounts_;
 		std::set<SectionCoordinate> waitingSections_;
 		std::unique_ptr<SectionScheduler> sectionScheduler_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		SectionSchedulingDiagnosticsSnapshot diagnostics_{};
+		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+#endif
 	};
 }

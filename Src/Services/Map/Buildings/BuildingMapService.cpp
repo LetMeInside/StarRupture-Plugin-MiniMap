@@ -125,6 +125,16 @@ namespace Services::Map::Buildings
 		return mapHeightMapUnits_;
 	}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Delegates one completed numeric interval to the coordinator that owns its aggregates. */
+	bool BuildingMapService::TakeSectionSchedulingDiagnosticsSnapshot(
+		Scheduling::SectionSchedulingDiagnosticsSnapshot& output) noexcept
+	{
+		return sectionSchedulingCoordinator_ != nullptr &&
+			sectionSchedulingCoordinator_->TakeDiagnosticsSnapshot(output);
+	}
+#endif
+
 	/** Invalidates all outstanding viewports before releasing service-owned sections. */
 	BuildingMapService::~BuildingMapService()
 	{
@@ -378,7 +388,11 @@ namespace Services::Map::Buildings
 	/** Delivers one completed-image availability change to each live subscribed viewport in range. */
 	void BuildingMapService::NotifySectionImageChangedToViewports(
 		std::int64_t gridX,
-		std::int64_t gridY)
+		std::int64_t gridY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, std::size_t* diagnosticNotifications
+#endif
+	)
 	{
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
@@ -391,6 +405,12 @@ namespace Services::Map::Buildings
 			{
 				continue;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (diagnosticNotifications != nullptr)
+			{
+				++(*diagnosticNotifications);
+			}
+#endif
 			viewport->NotifySectionImageChanged(gridX, gridY);
 		}
 	}

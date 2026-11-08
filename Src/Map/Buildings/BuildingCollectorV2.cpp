@@ -1446,7 +1446,7 @@ namespace MiniMap::BuildingAcquisition
         void ReportCollectorMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap V2 collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisitionWork={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f localAttempts:%llu remoteAttempts:%llu completed:%llu pending:%llu publishAttempts:%llu publications:%llu",
+            LOG_INFO("MiniMap: BuildingMap collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisitionWork={totalMs:%.3f meanMs:%.3f maxMs:%.3f acquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f localAttempts:%llu remoteAttempts:%llu completed:%llu pending:%llu publishAttempts:%llu publications:%llu",
                 intervalMs,
                 static_cast<unsigned long long>(d.Update.Samples), d.Update.TotalMs, d.Update.MeanMs(), d.Update.MaxMs,
                 d.UpdateMembership.TotalMs, d.UpdateMembership.MeanMs(), d.UpdateMembership.MaxMs,
@@ -1455,7 +1455,7 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<unsigned long long>(d.LocalAttempts), static_cast<unsigned long long>(d.RemoteAttempts),
                 static_cast<unsigned long long>(d.Completed), static_cast<unsigned long long>(Pending.size()),
                 static_cast<unsigned long long>(d.PublicationAttempts), static_cast<unsigned long long>(d.Publications));
-            LOG_INFO("MiniMap: BuildingMap V2 collector_phases intervalMs=%.1f localKeys={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} local={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} remote={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+            LOG_INFO("MiniMap: BuildingMap collector_phases intervalMs=%.1f localKeys={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} local={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} remote={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
                 intervalMs,
                 static_cast<unsigned long long>(d.LocalKeys.Samples), d.LocalKeys.TotalMs, d.LocalKeys.MeanMs(), d.LocalKeys.MaxMs,
                 static_cast<unsigned long long>(d.LocalAcquisition.Samples), d.LocalAcquisition.TotalMs, d.LocalAcquisition.MeanMs(), d.LocalAcquisition.MaxMs,
@@ -1467,7 +1467,7 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap V2 membership intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} native={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} bookkeeping={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sweep={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} release={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} handles:%llu added:%llu removed:%llu duplicate:%llu invalid:%llu failed:%llu malformed:%llu entities:%llu pending:%llu",
+            LOG_INFO("MiniMap: BuildingMap membership intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} native={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} bookkeeping={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sweep={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} release={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} handles:%llu added:%llu removed:%llu duplicate:%llu invalid:%llu failed:%llu malformed:%llu entities:%llu pending:%llu",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
@@ -1489,7 +1489,7 @@ namespace MiniMap::BuildingAcquisition
             if (d.WorstScan.TotalMs > 0.0)
             {
                 const auto& worst = d.WorstScan;
-                LOG_INFO("MiniMap: BuildingMap V2 membership_worst intervalMs=%.1f totalMs:%.3f nativeMs:%.3f bookkeepingMs:%.3f sweepMs:%.3f releaseMs:%.3f handles:%llu entities:%llu pending:%llu added:%llu removed:%llu",
+                LOG_INFO("MiniMap: BuildingMap membership_worst intervalMs=%.1f totalMs:%.3f nativeMs:%.3f bookkeepingMs:%.3f sweepMs:%.3f releaseMs:%.3f handles:%llu entities:%llu pending:%llu added:%llu removed:%llu",
                     intervalMs, worst.TotalMs, worst.NativeMs, worst.BookkeepingMs, worst.SweepMs, worst.ReleaseMs,
                     static_cast<unsigned long long>(worst.Handles), static_cast<unsigned long long>(worst.Entities),
                     static_cast<unsigned long long>(worst.Pending), static_cast<unsigned long long>(worst.Added),

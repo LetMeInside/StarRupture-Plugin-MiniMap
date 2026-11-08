@@ -25,6 +25,9 @@ namespace Services::Map::Buildings
 	namespace Scheduling
 	{
 		class SectionSchedulingCoordinator;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		struct SectionSchedulingDiagnosticsSnapshot;
+#endif
 	}
 
 	/** Owns map configuration, shared Sections and their image residency, viewport registrations, source selection, image-change routing and the scheduling coordinator.
@@ -84,6 +87,11 @@ namespace Services::Map::Buildings
 		double GetMapWidthMapUnits() const noexcept;
 		/** Returns the active gameplay map height, or zero outside a gameplay session. */
 		double GetMapHeightMapUnits() const noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Forwards one completed numeric scheduling interval without exposing its coordinator. */
+		bool TakeSectionSchedulingDiagnosticsSnapshot(
+			Scheduling::SectionSchedulingDiagnosticsSnapshot& output) noexcept;
+#endif
 
 		/** Returns the configured square grid-cell width and height in map units. */
 		double GetSectionSizeMapUnits() const noexcept override;
@@ -149,7 +157,13 @@ namespace Services::Map::Buildings
 		 * @param gridX Signed global Section column whose completed-image state changed.
 		 * @param gridY Signed global Section row whose completed-image state changed.
 		 */
-		void NotifySectionImageChangedToViewports(std::int64_t gridX, std::int64_t gridY);
+		void NotifySectionImageChangedToViewports(
+			std::int64_t gridX,
+			std::int64_t gridY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, std::size_t* diagnosticNotifications
+#endif
+		);
 
 		/**
 		 * Sends the exact map-space rectangle covered by a half-open Section grid range.

@@ -422,7 +422,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     const auto status = Objects.FreeEngineAllocation(const_cast<wchar_t*>(text));
                     if (status.error != Services::Error::None)
-                        Services::LogMessage(Services::Level::Error, "V2 soft-reference string release failed");
+                        Services::LogMessage(Services::Level::Error, "MiniMap: BuildingMap soft-reference string release failed");
                 }
             }
         };

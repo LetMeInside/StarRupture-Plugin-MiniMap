@@ -22,6 +22,9 @@
 #include "Map/Buildings/BuildingVisuals.h"
 #endif
 #include "Services/Map/Buildings/BuildingMapService.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+#include "Services/Map/Buildings/Scheduling/SectionSchedulingCoordinator.h"
+#endif
 #include "Services/Map/Buildings/Capture/BuildingSpriteRenderer.h"
 #include "PluginPaths.h"
 #if MINIMAP_USE_LEGACY_BUILDINGS
@@ -597,6 +600,116 @@ static void OnTextureServiceTick(
     (void)deltaTime;
     MiniMapUI::UpdateBuildingLayerSession();
     MiniMapTexturePublication::Service();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    if (g_buildingMapService != nullptr)
+    {
+        ::Services::Map::Buildings::Scheduling::SectionSchedulingDiagnosticsSnapshot diagnostics;
+        if (g_buildingMapService->TakeSectionSchedulingDiagnosticsSnapshot(diagnostics))
+        {
+            const auto meanMs = [](const auto& duration)
+            {
+                return duration.Samples == 0
+                    ? 0.0
+                    : duration.TotalMs / static_cast<double>(duration.Samples);
+            };
+            LOG_INFO("MiniMap: BuildingMap sections intervalMs=%.1f elapsed:cpuWall calls:%llu advancement={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} initialWaiting:%llu examined:%llu waitingAfter:%llu attempts:%llu noLongerEligible:%llu sourceMisses:%llu",
+                diagnostics.IntervalMs,
+                static_cast<unsigned long long>(diagnostics.AdvancementCalls),
+                static_cast<unsigned long long>(diagnostics.CoordinatorAdvancement.Samples),
+                diagnostics.CoordinatorAdvancement.TotalMs,
+                meanMs(diagnostics.CoordinatorAdvancement),
+                diagnostics.CoordinatorAdvancement.MaxMs,
+                static_cast<unsigned long long>(diagnostics.InitialWaitingSections),
+                static_cast<unsigned long long>(diagnostics.SnapshotCoordinatesExamined),
+                static_cast<unsigned long long>(diagnostics.WaitingAfterAdvancement),
+                static_cast<unsigned long long>(diagnostics.ProcessingAttempts),
+                static_cast<unsigned long long>(diagnostics.NoLongerEligibleCoordinates),
+                static_cast<unsigned long long>(diagnostics.SourceSelectionMisses));
+            LOG_INFO("MiniMap: BuildingMap section_phases intervalMs=%.1f elapsed:cpuWall spriteAcquire={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} source={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} knownSprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} scenePrepare={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sceneBorrow={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+                diagnostics.IntervalMs,
+                static_cast<unsigned long long>(diagnostics.SpriteAcquisitionAdvancement.Samples),
+                diagnostics.SpriteAcquisitionAdvancement.TotalMs, meanMs(diagnostics.SpriteAcquisitionAdvancement),
+                diagnostics.SpriteAcquisitionAdvancement.MaxMs,
+                static_cast<unsigned long long>(diagnostics.SourceSelection.Samples),
+                diagnostics.SourceSelection.TotalMs, meanMs(diagnostics.SourceSelection), diagnostics.SourceSelection.MaxMs,
+                static_cast<unsigned long long>(diagnostics.KnownSpritePreparation.Samples),
+                diagnostics.KnownSpritePreparation.TotalMs, meanMs(diagnostics.KnownSpritePreparation),
+                diagnostics.KnownSpritePreparation.MaxMs,
+                static_cast<unsigned long long>(diagnostics.ScenePreparation.Samples),
+                diagnostics.ScenePreparation.TotalMs, meanMs(diagnostics.ScenePreparation), diagnostics.ScenePreparation.MaxMs,
+                static_cast<unsigned long long>(diagnostics.SceneBorrow.Samples),
+                diagnostics.SceneBorrow.TotalMs, meanMs(diagnostics.SceneBorrow), diagnostics.SceneBorrow.MaxMs);
+            LOG_INFO("MiniMap: BuildingMap section_render intervalMs=%.1f elapsed:cpuWall renderCommit={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} wholeAttempt={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} numerical={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} transparency={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} commit={invalidIncomplete:%llu stale:%llu numericalFailed:%llu adoptionRejected:%llu committed:%llu committedEmpty:%llu} removed:%llu notifications:%llu numericalStatus={complete:%llu invalidDestination:%llu incompleteDrawing:%llu destinationUnavailable:%llu destinationRejected:%llu finalizationFailed:%llu}",
+                diagnostics.IntervalMs,
+                static_cast<unsigned long long>(diagnostics.RenderAndCommit.Samples), diagnostics.RenderAndCommit.TotalMs,
+                meanMs(diagnostics.RenderAndCommit), diagnostics.RenderAndCommit.MaxMs,
+                static_cast<unsigned long long>(diagnostics.WholeSectionAttempt.Samples), diagnostics.WholeSectionAttempt.TotalMs,
+                meanMs(diagnostics.WholeSectionAttempt), diagnostics.WholeSectionAttempt.MaxMs,
+                static_cast<unsigned long long>(diagnostics.NumericalRendering.Samples), diagnostics.NumericalRendering.TotalMs,
+                meanMs(diagnostics.NumericalRendering), diagnostics.NumericalRendering.MaxMs,
+                static_cast<unsigned long long>(diagnostics.TransparencyCheck.Samples), diagnostics.TransparencyCheck.TotalMs,
+                meanMs(diagnostics.TransparencyCheck), diagnostics.TransparencyCheck.MaxMs,
+                static_cast<unsigned long long>(diagnostics.ImageAdoption.Samples), diagnostics.ImageAdoption.TotalMs,
+                meanMs(diagnostics.ImageAdoption), diagnostics.ImageAdoption.MaxMs,
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[0]),
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[1]),
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[2]),
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[3]),
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[4]),
+                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[5]),
+                static_cast<unsigned long long>(diagnostics.ExistingImagesRemoved),
+                static_cast<unsigned long long>(diagnostics.ImageChangeNotificationsSent),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[0]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[1]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[2]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[3]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[4]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[5]));
+            LOG_INFO("MiniMap: BuildingMap section_readiness intervalMs=%.1f elapsed:cpuWall invalidPublication:%llu stalePublication:%llu invalidObservation:%llu incompleteCandidateCoverage:%llu pendingNativeSourceAcquisition:%llu pendingSpriteAcquisition:%llu temporarilyUnavailableResources:%llu unresolvedInputs:%llu completeSceneInputs:%llu",
+                diagnostics.IntervalMs,
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[0]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[1]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[2]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[3]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[4]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[5]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[6]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[7]),
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[8]));
+            if (diagnostics.Worst.Present)
+            {
+                static constexpr const char* commitNames[] = {
+                    "InvalidOrIncompleteInput", "StalePublication", "NumericalRenderingFailed",
+                    "ImageAdoptionRejected", "Committed", "CommittedEmpty"};
+                static constexpr const char* readinessNames[] = {
+                    "InvalidPublication", "StalePublication", "InvalidObservation", "IncompleteCandidateCoverage",
+                    "PendingNativeSourceAcquisition", "PendingSpriteAcquisition", "TemporarilyUnavailableResources",
+                    "UnresolvedInputs", "CompleteSceneInputs"};
+                static constexpr const char* numericalNames[] = {
+                    "Complete", "InvalidDestinationConfiguration", "IncompleteDrawing",
+                    "DestinationUnavailable", "DestinationRejected", "FinalizationFailed"};
+                const auto& worst = diagnostics.Worst;
+                const char* readinessName = worst.HasSceneReadiness &&
+                    worst.SceneReadiness < sizeof(readinessNames) / sizeof(readinessNames[0])
+                    ? readinessNames[worst.SceneReadiness]
+                    : "absent";
+                const char* numericalName = worst.HasNumericalStatus &&
+                    worst.NumericalStatus < sizeof(numericalNames) / sizeof(numericalNames[0])
+                    ? numericalNames[worst.NumericalStatus]
+                    : "absent";
+                LOG_INFO("MiniMap: BuildingMap section_worst intervalMs=%.1f elapsed:cpuWall grid=(%lld,%lld) totalMs:%.3f sourceMs:%.3f knownSpriteMs:%.3f renderCommitMs:%.3f scenePreparationMs:%.3f numericalMs:%.3f commit:%s readiness:%s numerical:%s",
+                    diagnostics.IntervalMs,
+                    static_cast<long long>(worst.GridX), static_cast<long long>(worst.GridY),
+                    worst.TotalMs, worst.SourceSelectionMs, worst.KnownSpritePreparationMs,
+                    worst.RenderAndCommitMs, worst.ScenePreparationMs, worst.NumericalRenderingMs,
+                    worst.CommitStatus < sizeof(commitNames) / sizeof(commitNames[0])
+                        ? commitNames[worst.CommitStatus]
+                        : "unknown",
+                    readinessName, numericalName);
+            }
+        }
+    }
+#endif
 #endif
 }
 
@@ -653,26 +766,26 @@ static bool TryStartBuildingMapSession()
     double mapHeightMapUnits = 0.0;
     if (!MiniMapTerrainSource::TryGetWorldDimensions(mapWidthMapUnits, mapHeightMapUnits))
     {
-        LOG_ERROR("MiniMap: authored terrain coverage dimensions are unavailable; V2 gameplay remains unadmitted");
+        LOG_ERROR("MiniMap: authored terrain coverage dimensions are unavailable; gameplay remains unadmitted");
         SetServicesAdmitted(false);
         return false;
     }
     if (g_buildingMapService == nullptr)
     {
-        LOG_ERROR("MiniMap: Building Map service is unavailable; V2 gameplay remains unadmitted");
+        LOG_ERROR("MiniMap: Building Map service is unavailable; gameplay remains unadmitted");
         SetServicesAdmitted(false);
         return false;
     }
     if (!g_buildingMapService->StartGameSession(mapWidthMapUnits, mapHeightMapUnits))
     {
-        LOG_ERROR("MiniMap: Building Map session start was rejected; V2 gameplay remains unadmitted");
+        LOG_ERROR("MiniMap: Building Map session start was rejected; gameplay remains unadmitted");
         SetServicesAdmitted(false);
         return false;
     }
     auto* textures = MiniMap::Services::TryTextures();
     if (textures == nullptr || !MiniMapUI::BeginBuildingLayerSession(*g_buildingMapService, *textures))
     {
-        LOG_ERROR("MiniMap: BuildingLayer presentation session could not be created; V2 gameplay remains unadmitted");
+        LOG_ERROR("MiniMap: BuildingLayer presentation session could not be created; gameplay remains unadmitted");
         StopBuildingMapGameplaySession();
         SetServicesAdmitted(false);
         return false;
@@ -976,7 +1089,7 @@ namespace MiniMap
 #if MINIMAP_USE_LEGACY_BUILDINGS
         if (!MiniMapBuildingCollector::Initialize(pluginSelf))
         {
-            LOG_ERROR("MiniMap: Stage B.1 building collector initialization failed");
+            LOG_ERROR("MiniMap: building collector initialization failed");
         }
 
         if (!MiniMapBuildingVisuals::Initialize(pluginSelf))
