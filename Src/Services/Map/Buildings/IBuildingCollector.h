@@ -1,4 +1,4 @@
-// Defines exact acquisition-region requests and retained candidate publication access.
+// Defines game-independent collector updates, exact region requests and retained candidate access.
 #pragma once
 
 #include "BuildingMapRegion.h"
@@ -8,12 +8,18 @@
 
 namespace Services::Map::Buildings
 {
-	/** Accepts exact acquisition regions and returns retained candidate publications. */
+	/** Advances ordinary acquisition progress and exposes exact requests and retained candidates. */
 	class IBuildingCollector
 	{
 	public:
 		/** Supports destruction through the game-independent collector boundary. */
 		virtual ~IBuildingCollector() = default;
+		/** Requests ordinary acquisition progress without supplying game-specific context.
+		 * The concrete collector chooses its acquisition frequency and internal policy.
+		 * This operation neither establishes nor terminates gameplay-session ownership;
+		 * native resource initialization and shutdown remain the concrete owner's responsibility.
+		 */
+		virtual void Update() = 0;
 
 		/** Requests acquisition for one exact map-space rectangle.
 		 * The collector is responsible for discovering contributors whose geometry overlaps the

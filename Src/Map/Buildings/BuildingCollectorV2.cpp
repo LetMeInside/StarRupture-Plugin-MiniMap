@@ -3,6 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingCollectorV2.h"
 #include "SplinePolicyId.h"
+#include "../Map.h"
 #include "Services/Map/Buildings/BuildingCandidatePublication.h"
 #include "BuildingDefinitionAcquisition.h"
 #include "BuildingSplineSource.h"
@@ -222,17 +223,17 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
-        /** Establishes a query for the supplied live world, preserving exact request across automatic rebinding. */
+        /** Establishes the native query once for this collector's gameplay session. */
         bool EnsureSession(const Native& native, SDK::UWorld* world)
         {
-            const auto* storage = ManagerStorage(native, world);
-            const auto* manager = ReadManager(storage);
-            if (World && (World != world || Manager != manager))
-                ClearSession(false);
-            if (!world || !manager || !Types)
+            if (!world || !Types)
                 return false;
             if (QueryConstructed)
                 return true;
+            const auto* storage = ManagerStorage(native, world);
+            const auto* manager = ReadManager(storage);
+            if (!manager)
+                return false;
             World = world;
             Manager = manager;
             ++Generation;
@@ -1266,18 +1267,15 @@ namespace MiniMap::BuildingAcquisition
         return state_->PublishedCandidates;
     }
 
-    /** Progresses the sole native query and pending work without registering any caller. */
-    void BuildingCollectorV2::AdvanceAcquisition(SDK::UWorld* world, bool gameplayReady)
+    /** Advances native acquisition using MiniMap's established gameplay world. */
+    void BuildingCollectorV2::Update()
     {
         const auto* native = MiniMapNative::Get();
         if (!native || !native->player.isGameThread())
             return;
-        if (!gameplayReady || !world)
-        {
-            if (state_->World)
-                state_->ClearSession(false);
+        SDK::UWorld* world = MiniMapMap::GetWorld();
+        if (!world)
             return;
-        }
         try
         {
             if (!state_->Types || !state_->EnsureSession(*native, world))

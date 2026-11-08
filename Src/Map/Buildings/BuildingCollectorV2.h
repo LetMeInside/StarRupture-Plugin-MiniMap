@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <memory>
 
-namespace SDK { class UWorld; }
-
 namespace MiniMap::BuildingAcquisition
 {
-    /** Owns one acquisition session. Calls are serialized on the game thread.
-     * Caller must Reset before world retirement and ShutdownResources before native
-     * services disappear or destruction. This class registers nothing and has no singleton.
+    /** Owns acquisition for one gameplay session; calls are serialized on the game thread.
+     * Update advances acquisition without owning or terminating the session. The owner
+     * must call ShutdownResources before native resources are destroyed or this collector
+     * is destroyed. Reset and ShutdownResources remain explicit lifecycle operations.
+     * This class registers nothing and has no singleton.
      */
     class BuildingCollectorV2 final : public ::Services::Map::Buildings::IBuildingCollector
     {
@@ -41,11 +41,12 @@ namespace MiniMap::BuildingAcquisition
         /** Retains the current immutable candidate source, or returns null when unavailable or stale. */
         std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
             AcquireCandidatePublication() const override;
-        /** Advances native acquisition for the caller-owned gameplay-world lifetime.
-         * The caller supplies the current world and readiness, keeps world/native facilities
-         * alive throughout this call, and resets before retiring the world.
+        /** Advances pending acquisition on the permitted game thread using MiniMapMap::GetWorld().
+         * An unavailable world or uninitialized metadata leaves acquisition state untouched.
+         * This does not establish, replace or terminate session ownership; native resources
+         * remain the owner's responsibility.
          */
-        void AdvanceAcquisition(SDK::UWorld* world, bool gameplayReady);
+        void Update() override;
         /** Revokes currentness and clears query/session roots while native services remain live. */
         void Reset();
         /** Clears session then releases metadata/conversion roots; required before destruction. */
