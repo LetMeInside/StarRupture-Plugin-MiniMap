@@ -33,6 +33,7 @@ namespace MiniMapUI
 	{
 #if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnosticsInterval();
+		ResetRenderDiagnosticsInterval();
 #endif
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0)
 		{
@@ -72,11 +73,35 @@ namespace MiniMapUI
 		return true;
 	}
 
+	/** Copies one due render interval while excluding concurrent UI callback updates. */
+	bool BuildingLayer::TakeRenderDiagnosticsSnapshot(RenderDiagnosticsSnapshot& output) noexcept
+	{
+		std::lock_guard<std::mutex> lock(presentationMutex_);
+		const auto now = std::chrono::steady_clock::now();
+		const double intervalMs = std::chrono::duration<double, std::milli>(
+			now - renderDiagnosticsIntervalStart_).count();
+		if (intervalMs < 10000.0 || renderDiagnostics_.RenderMutexWait.Samples == 0)
+		{
+			return false;
+		}
+		renderDiagnostics_.IntervalMs = intervalMs;
+		output = renderDiagnostics_;
+		ResetRenderDiagnosticsInterval();
+		return true;
+	}
+
 	/** Clears only interval measurements and restarts their per-layer clock. */
 	void BuildingLayer::ResetDiagnosticsInterval() noexcept
 	{
 		diagnostics_ = {};
 		diagnosticsIntervalStart_ = std::chrono::steady_clock::now();
+	}
+
+	/** Clears only UI render aggregates and starts a fresh ten-second window. */
+	void BuildingLayer::ResetRenderDiagnosticsInterval() noexcept
+	{
+		renderDiagnostics_ = {};
+		renderDiagnosticsIntervalStart_ = std::chrono::steady_clock::now();
 	}
 
 	/** Returns true when any measured method or classified presentation outcome occurred. */
@@ -327,14 +352,46 @@ namespace MiniMapUI
 		const MiniMapMap::Transform& transform,
 		bool showLayer)
 	{
+	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto mutexWaitStarted = std::chrono::steady_clock::now();
+	#endif
 		std::lock_guard<std::mutex> lock(presentationMutex_);
+	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope lockedExecutionScope(renderDiagnostics_.RenderLockedExecution);
+		const double mutexWaitMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - mutexWaitStarted).count();
+		renderDiagnostics_.RenderMutexWait.Add(mutexWaitMs);
+	#endif
 		MiniMap::Services::Vec2 clipMinimum{};
 		MiniMap::Services::Vec2 clipMaximum{};
+	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!showLayer)
+		{
+			++renderDiagnostics_.RenderOutcomeCounts[
+				static_cast<std::size_t>(RenderOutcome::HiddenBySettings)];
+			return;
+		}
+		if (shutdownRequested_)
+		{
+			++renderDiagnostics_.RenderOutcomeCounts[
+				static_cast<std::size_t>(RenderOutcome::ShutdownSuppressed)];
+			return;
+		}
+		if (!TryGetClipRectangle(transform, clipMinimum, clipMaximum))
+		{
+			++renderDiagnostics_.RenderOutcomeCounts[
+				static_cast<std::size_t>(RenderOutcome::InvalidClip)];
+			return;
+		}
+		++renderDiagnostics_.RenderOutcomeCounts[
+			static_cast<std::size_t>(RenderOutcome::RenderedWithValidClip)];
+	#else
 		if (!showLayer || shutdownRequested_ ||
 			!TryGetClipRectangle(transform, clipMinimum, clipMaximum))
 		{
 			return;
 		}
+	#endif
 		ui.PushClip(MiniMap::Services::DrawLayer::Window, clipMinimum, clipMaximum, true);
 		const MiniMap::Services::Quad textureCoordinates{{
 			{0.0f, 0.0f},
@@ -343,22 +400,44 @@ namespace MiniMapUI
 			{0.0f, 1.0f}}};
 		for (const auto& [coordinate, entry] : publishedTextures_)
 		{
+		#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++renderDiagnostics_.PublishedEntriesExamined;
+		#endif
 			if (entry == nullptr || entry->DrawIdentity.id == 0)
 			{
+			#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++renderDiagnostics_.InvalidDrawIdentitySkipped;
+			#endif
 				continue;
 			}
 			MiniMap::Services::Quad positions{};
+		#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (!TryProjectSectionQuad(coordinate, sectionSizeMapUnits_, transform, positions))
+			{
+				++renderDiagnostics_.QuadProjectionFailed;
+				continue;
+			}
+			if (!IntersectsClipRectangle(positions, clipMinimum, clipMaximum))
+			{
+				++renderDiagnostics_.QuadOutsideClip;
+				continue;
+			}
+		#else
 			if (!TryProjectSectionQuad(coordinate, sectionSizeMapUnits_, transform, positions) ||
 				!IntersectsClipRectangle(positions, clipMinimum, clipMaximum))
 			{
 				continue;
 			}
+		#endif
 			ui.ImageQuad(
 				MiniMap::Services::DrawLayer::Window,
 				entry->DrawIdentity,
 				positions,
 				textureCoordinates,
 				0xFFFFFFFFu);
+		#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++renderDiagnostics_.ImageQuadSubmissions;
+		#endif
 		}
 		ui.PopClip(MiniMap::Services::DrawLayer::Window);
 	}

@@ -106,6 +106,26 @@ namespace MiniMapUI
 
 		/** Hands off one due nonempty game-thread interval without changing layer state. */
 		bool TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept;
+
+		/** Fixed-size UI callback measurements synchronized by the publication mutex. */
+		struct RenderDiagnosticsSnapshot
+		{
+			using Duration = DiagnosticsSnapshot::Duration;
+
+			double IntervalMs = 0.0;
+			Duration RenderMutexWait;
+			Duration RenderLockedExecution;
+			/** HiddenBySettings, ShutdownSuppressed, InvalidClip, RenderedWithValidClip. */
+			std::array<std::uint64_t, 4> RenderOutcomeCounts{};
+			std::uint64_t PublishedEntriesExamined = 0;
+			std::uint64_t InvalidDrawIdentitySkipped = 0;
+			std::uint64_t QuadProjectionFailed = 0;
+			std::uint64_t QuadOutsideClip = 0;
+			std::uint64_t ImageQuadSubmissions = 0;
+		};
+
+		/** Copies and resets one due render interval under the publication mutex. */
+		bool TakeRenderDiagnosticsSnapshot(RenderDiagnosticsSnapshot& output) noexcept;
 #endif
 
 		/**
@@ -211,6 +231,15 @@ namespace MiniMapUI
 		using Coordinate = std::pair<std::int64_t, std::int64_t>;
 
 #if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records one suppression or valid-clip outcome in declaration order. */
+		enum class RenderOutcome : std::size_t
+		{
+			HiddenBySettings,
+			ShutdownSuppressed,
+			InvalidClip,
+			RenderedWithValidClip
+		};
+
 		/** Records one coordinate-resolution outcome without retaining its coordinate. */
 		enum class CoordinateResolution : std::size_t
 		{
@@ -236,9 +265,13 @@ namespace MiniMapUI
 		void ResetDiagnosticsInterval() noexcept;
 		/** Tests whether the interval contains actual layer operation observations. */
 		bool HasDiagnosticsActivity() const noexcept;
+		/** Resets render observations; caller holds presentationMutex_ after exposure. */
+		void ResetRenderDiagnosticsInterval() noexcept;
 
 		DiagnosticsSnapshot diagnostics_{};
 		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+		RenderDiagnosticsSnapshot renderDiagnostics_{};
+		std::chrono::steady_clock::time_point renderDiagnosticsIntervalStart_{};
 #endif
 
 		/** Attaches a service-created viewport and resets prior CPU presentation state. */
