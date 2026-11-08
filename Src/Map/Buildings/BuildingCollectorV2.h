@@ -4,6 +4,7 @@
 #include "BuildingAcquiredFacts.h"
 #include "Services/Map/Buildings/BuildingCandidateData.h"
 #include "Services/Map/Buildings/IBuildingCollector.h"
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -18,8 +19,12 @@ namespace MiniMap::BuildingAcquisition
     class BuildingCollectorV2 final : public ::Services::Map::Buildings::IBuildingCollector
     {
     public:
-        /** Creates empty CPU state only; does not acquire native resources. */
-        BuildingCollectorV2();
+        /** Creates empty CPU state and fixes the minimum interval between membership scans.
+         * @param membershipInterval Positive delay between authoritative Mass membership scans.
+         * @throws std::invalid_argument when the interval is zero or negative.
+         */
+        explicit BuildingCollectorV2(
+            std::chrono::milliseconds membershipInterval = std::chrono::milliseconds{1000});
         /** Requires prior ShutdownResources; performs no implicit native shutdown. */
         ~BuildingCollectorV2() override;
         BuildingCollectorV2(const BuildingCollectorV2&) = delete;

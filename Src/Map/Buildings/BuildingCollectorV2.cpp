@@ -23,6 +23,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,6 +41,18 @@ namespace MiniMap::BuildingAcquisition
     struct BuildingCollectorV2::State
     {
         using Clock = std::chrono::steady_clock;
+
+        const std::chrono::milliseconds MembershipInterval;
+
+        /** Stores the immutable scan interval and rejects nonpositive values once. */
+        explicit State(std::chrono::milliseconds membershipInterval)
+            : MembershipInterval(membershipInterval)
+        {
+            if (MembershipInterval <= std::chrono::milliseconds::zero())
+            {
+                throw std::invalid_argument("BuildingCollectorV2 membership interval must be positive.");
+            }
+        }
 
         /** Metadata roots belong exclusively to this collector instance. */
         struct Metadata
@@ -349,7 +362,7 @@ namespace MiniMap::BuildingAcquisition
             if (MembershipComplete != complete)
                 Invalidate();
             MembershipComplete = complete;
-            NextMembership = Clock::now() + std::chrono::seconds(1);
+            NextMembership = Clock::now() + MembershipInterval;
         }
 
         /** Borrows the aligned parameter value only for immediate placement acquisition.
@@ -1189,8 +1202,11 @@ namespace MiniMap::BuildingAcquisition
             std::isfinite(building.Position[0]) && std::isfinite(building.Position[1]);
     }
 
-    /** Creates inert CPU state; no native resource is acquired here. */
-    BuildingCollectorV2::BuildingCollectorV2() : state_(std::make_unique<State>()) {}
+    /** Creates inert CPU state and validates the immutable membership interval. */
+    BuildingCollectorV2::BuildingCollectorV2(std::chrono::milliseconds membershipInterval)
+        : state_(std::make_unique<State>(membershipInterval))
+    {
+    }
 
     /** Explicit lifecycle is mandatory; native retirement is never initiated from this destructor. */
     BuildingCollectorV2::~BuildingCollectorV2()
