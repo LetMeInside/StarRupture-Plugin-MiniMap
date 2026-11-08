@@ -276,7 +276,8 @@ namespace MiniMapFields
 				Keys::AbandonBaseCompleted, AbandonBaseInfoReplicator,
 				PlayerMapData, CategoryIcon, CategoryLegendFilter, CategoryFogHidable, PoiUnknownIcon, PoiCompletedIcon,
 				PoiState, PoiType, PoiGuid, AbandonBaseContainer, AbandonBaseRecords, AbandonBaseRecordSize,
-				AbandonBasePOIId),
+				AbandonBasePOIId,
+				MiniMapEngineFields::WorldGameState, MiniMapEngineFields::ActorRootComponent),
 			{ "Points Of Interest.ShowLayer", "Points Of Interest.MarkerScale" } };
 
 		inline PluginMap::Feature Foundables{ "foundables", "Foundables on the minimap",

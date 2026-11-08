@@ -314,16 +314,17 @@ namespace
         }
 
         /*
-         * UWorld::GameState is an engine field, verified against the current
-         * PDB and native UpdatePOIMarkers path (+0x1B0).
-         * ACrGameStateBase::AbandonBaseInfoReplicator is placed by the
-         * loader's version map for the running game build.
+         * UWorld::GameState and ACrGameStateBase::AbandonBaseInfoReplicator
+         * are both placed by the loader's version map for the running game
+         * build.
          *
          * The tracked MiniMap world is the gameplay world. We do not retain
          * either pointer across polls.
          */
         SDK::AGameStateBase* baseGameState =
-            world->GameState;
+            PluginMap::ValueOr(
+                MiniMapEngineFields::WorldGameState,
+                world);
 
         if (baseGameState == nullptr)
         {
@@ -746,7 +747,10 @@ namespace
             return false;
         }
 
-        SDK::USceneComponent* root = actor->RootComponent;
+        SDK::USceneComponent* root =
+            PluginMap::ValueOr(
+                MiniMapEngineFields::ActorRootComponent,
+                actor);
 
         if (root ==
             nullptr)

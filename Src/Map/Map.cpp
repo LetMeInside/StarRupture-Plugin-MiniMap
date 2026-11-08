@@ -77,7 +77,8 @@ namespace
     bool ReadPosition(const SDK::AActor* actor, MiniMapMap::PlayerPose& pose)
     {
         const auto* native = MiniMapNative::Get();
-        auto* root = actor->RootComponent;
+        SDK::USceneComponent* root =
+            PluginMap::ValueOr(MiniMapEngineFields::ActorRootComponent, actor);
         if (!native || !native->player.getComponentLocation ||
             !IsObject<SDK::USceneComponent>(root) || root->Outer != actor) return false;
         SDK::FVector location{};

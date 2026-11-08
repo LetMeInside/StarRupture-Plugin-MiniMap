@@ -64,7 +64,7 @@ The current settings field and segment members are accessed through generated SD
 
 ## Native terrain loading
 
-Current source obtains the active world from `MiniMapMap`, reads `world->GameState`, casts to `ACrGameStateBase`, then reads `MapMenuDataReplicationHelper->CurrentRadiationLevelReplicated`. Null at any step fails the source resolution. The terrain data supplies `MapTerrainTopLeftPivotPoint`, `MapTerrainSegmentSize`, and an array of `TerrainSegmentsData`; each segment supplies grid index and ordinary/Radiation2 brushes.
+Current source obtains the active world from `MiniMapMap`, reads the world's `GameState` through the loader's map, casts to `ACrGameStateBase`, then reads `MapMenuDataReplicationHelper->CurrentRadiationLevelReplicated`. Null at any step fails the source resolution. The terrain data supplies `MapTerrainTopLeftPivotPoint`, `MapTerrainSegmentSize`, and an array of `TerrainSegmentsData`; each segment supplies grid index and ordinary/Radiation2 brushes.
 
 The grid mapping implemented in `TerrainSource::TryResolveSourceTile` is, with world coordinates in Unreal centimeters and segment sizes converted to centimeters:
 

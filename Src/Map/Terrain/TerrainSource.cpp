@@ -115,7 +115,9 @@ namespace
         }
 
         SDK::AGameStateBase* baseGameState =
-            world->GameState;
+            PluginMap::ValueOr(
+                MiniMapEngineFields::WorldGameState,
+                world);
 
         if (baseGameState == nullptr)
         {
