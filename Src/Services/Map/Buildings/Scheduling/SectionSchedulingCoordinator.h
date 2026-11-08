@@ -13,6 +13,11 @@ namespace Services::Map::Buildings
 	class BuildingMapService;
 }
 
+namespace Services::Map::Buildings::Capture
+{
+	class BuildingSpriteRenderer;
+}
+
 namespace Services::Map::Buildings::Scheduling
 {
 	class SectionScheduler;
@@ -20,8 +25,8 @@ namespace Services::Map::Buildings::Scheduling
 	/** Tracks deduplicated Section work required by active viewports.
 	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
 	 * Waiting coordinates persist until demand is withdrawn or an explicit completed-work report
-	 * removes them. Its Section tick synchronously processes waiting Sections. Plugin code may
-	 * separately advance pending capture-request retirement without processing Section work.
+	 * removes them. Its Section tick synchronously processes waiting Sections. The renderer's
+	 * lifecycle callback advances native request retirement independently of Section work.
 	 * Normal Section scheduling remains externally controlled.
 	 */
 	class SectionSchedulingCoordinator final
@@ -115,8 +120,8 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Ends gameplay scheduling and requests cancellation of active capture work once. */
 		void StopCaptureGameWorldSession();
-		/** Advances pending capture-request retirement without processing Sections. */
-		void AdvancePendingCaptureRetirement();
+		/** Returns the capturer target used by the plugin's direct engine callback. */
+		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 		/** Delegates explicit building-cache clearing to the owned SectionScheduler.
 		 * @return True when the configured Buildings subtree is cleared without error.
 		 */

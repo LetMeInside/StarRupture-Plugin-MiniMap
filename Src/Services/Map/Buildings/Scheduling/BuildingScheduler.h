@@ -62,25 +62,17 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		RequirementStatus EnsureSpriteReady(const Cache::OwnedSpriteKey& key);
 
-		/** Starts scheduling against the existing plugin-lifetime renderer.
-		 * Pending cancellation retirement from a previous session does not reject start.
+		/** Requests Start and begins scheduling against the existing plugin-lifetime renderer.
 		 * @return True when this scheduler transitions into an active gameplay session.
 		 */
 		bool BeginSession();
 
-		/** Ends gameplay admission and cancels any active request without waiting.
-		 * Native request ownership remains in the renderer until tick-driven retirement.
-		 */
+		/** Ends gameplay admission and requests renderer-owned Stop processing. */
 		void StopSession();
-		/** Advances only pending request retirement, without admitting new requests.
-		 * This may run after gameplay ends and while a later gameplay session is active.
-		 */
-		void AdvancePendingSessionRetirement();
+		/** Returns the persistent capturer used by the plugin's direct engine callback. */
+		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 
-		/** Advances one capture operation, prioritizing prior-session retirement when pending.
-		 * Otherwise it uses the normal active-session path and drains terminal feedback.
-		 * This internal operation is called on the serialized game thread.
-		 */
+		/** Advances one ordinary capture operation and drains terminal feedback. */
 		void AdvanceSpriteAcquisition();
 
 	private:
@@ -115,7 +107,6 @@ namespace Services::Map::Buildings::Scheduling
 		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
 		std::uint64_t nextRequestSequence_ = 1;
 		bool sessionActive_ = false;
-		bool sessionRetirementPending_ = false;
 		std::unordered_map<std::string, SpriteStatus> spriteStatusesByKey_;
 		SpriteRequestQueue spriteRequestQueue_;
 		SpriteFeedbackQueue spriteFeedbackQueue_;

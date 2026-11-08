@@ -1,4 +1,4 @@
-// Implements the persistent capture world, two-pass sprite capture, asynchronous readback, and retirement.
+// Implements capturer lifecycle, persistent world/light ownership, sprite capture and asynchronous retirement.
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingSpriteRenderer.h"
@@ -29,12 +29,152 @@ namespace Services::Map::Buildings::Capture
 	{
 	}
 
+	/** Requests one-time renderer initialization without creating lazy native resources. */
+	bool BuildingSpriteRenderer::RequestInitialization() noexcept
+	{
+		CapturerLifecycleState expected = CapturerLifecycleState::Load;
+		if (capturerState_.compare_exchange_strong(expected, CapturerLifecycleState::Init))
+		{
+			return true;
+		}
+		return expected == CapturerLifecycleState::Init || expected == CapturerLifecycleState::Start;
+	}
+
+	/** Requests Start only after initialization or when the same Start is already pending. */
+	bool BuildingSpriteRenderer::RequestStart() noexcept
+	{
+		CapturerLifecycleState requestedState = capturerState_.load();
+		while (requestedState == CapturerLifecycleState::Init ||
+			requestedState == CapturerLifecycleState::Start)
+		{
+			if (requestedState == CapturerLifecycleState::Start)
+			{
+				return true;
+			}
+			if (capturerState_.compare_exchange_weak(requestedState, CapturerLifecycleState::Start))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Requests Stop without advancing native retirement on the caller. */
+	void BuildingSpriteRenderer::RequestStop() noexcept
+	{
+		CapturerLifecycleState requestedState = capturerState_.load();
+		while (requestedState != CapturerLifecycleState::Exit &&
+			requestedState != CapturerLifecycleState::Load &&
+			requestedState != CapturerLifecycleState::Stop)
+		{
+			if (capturerState_.compare_exchange_weak(requestedState, CapturerLifecycleState::Stop))
+			{
+				return;
+			}
+		}
+	}
+
+	/** Permanently requests Exit, which takes priority over Start and Stop requests. */
+	void BuildingSpriteRenderer::RequestExit() noexcept
+	{
+		capturerState_.store(CapturerLifecycleState::Exit);
+	}
+
+	/** Processes one requested lifecycle transition on the Unreal game thread. */
+	void BuildingSpriteRenderer::ProcessLifecycle()
+	{
+		if (!IsGameThread())
+		{
+			return;
+		}
+		AdvanceLifecycleState(capturerState_.load());
+	}
+
+	/** Keeps request admission closed until the active request has safely retired. */
+	void BuildingSpriteRenderer::AdvanceLifecycleState(CapturerLifecycleState requestedState)
+	{
+		if (requestedState == CapturerLifecycleState::Load ||
+			capturerSubState_ == CapturerSubState::ExitReady)
+		{
+			return;
+		}
+		if (requestedState == CapturerLifecycleState::Init)
+		{
+			capturerSubState_ = CapturerSubState::InitCompleted;
+			return;
+		}
+		if (requestedState == CapturerLifecycleState::Start)
+		{
+			AdvanceStartLifecycle();
+			return;
+		}
+		if (requestedState == CapturerLifecycleState::Stop)
+		{
+			AdvanceStopLifecycle();
+			return;
+		}
+		AdvanceExitLifecycle();
+	}
+
+	/** Activates the persistent renderer after its one-time initialization state. */
+	void BuildingSpriteRenderer::AdvanceStartLifecycle()
+	{
+		if (capturerSubState_ == CapturerSubState::None)
+		{
+			capturerSubState_ = CapturerSubState::InitCompleted;
+		}
+		if (capturerSubState_ == CapturerSubState::InitCompleted ||
+			capturerSubState_ == CapturerSubState::StopCompleted)
+		{
+			capturerSubState_ = CapturerSubState::Active;
+		}
+	}
+
+	/** Retires session request ownership and acknowledges completed Stop. */
+	void BuildingSpriteRenderer::AdvanceStopLifecycle()
+	{
+		if (capturerSubState_ != CapturerSubState::StopReleasing)
+		{
+			capturerSubState_ = CapturerSubState::StopReleasing;
+			if (hasActiveRequest_)
+			{
+				Cancel(activeRequest_.RequestIdentity);
+			}
+		}
+		AdvanceLifecycleRetirement();
+		if (!hasActiveRequest_)
+		{
+			capturerSubState_ = CapturerSubState::StopCompleted;
+			CapturerLifecycleState expected = CapturerLifecycleState::Stop;
+			capturerState_.compare_exchange_strong(expected, CapturerLifecycleState::Init);
+		}
+	}
+
+	/** Retires request ownership and releases persistent native objects for Exit. */
+	void BuildingSpriteRenderer::AdvanceExitLifecycle()
+	{
+		if (capturerSubState_ != CapturerSubState::ExitCleanup)
+		{
+			capturerSubState_ = CapturerSubState::ExitCleanup;
+			if (hasActiveRequest_)
+			{
+				Cancel(activeRequest_.RequestIdentity);
+			}
+		}
+		AdvanceLifecycleRetirement();
+		if (!hasActiveRequest_ && CleanupPersistentWorld())
+		{
+			capturerSubState_ = CapturerSubState::ExitReady;
+		}
+	}
+
 	/** Validates one request and moves it into the renderer's existing retained request state. */
 	CaptureResult::Acceptance BuildingSpriteRenderer::AcceptOwned(CaptureRequest&& request)
 	{
 		CaptureResult::Acceptance acceptance;
 		acceptance.Correlation = request.RequestIdentity;
-		if (hasActiveRequest_ || !sharedWorldUsable_)
+		if (capturerState_.load() != CapturerLifecycleState::Start ||
+			capturerSubState_ != CapturerSubState::Active || hasActiveRequest_ || !sharedWorldUsable_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedUnavailable;
 			return acceptance;
@@ -91,7 +231,13 @@ namespace Services::Map::Buildings::Capture
 		Scheduling::SpriteRequestQueue& requestQueue,
 		Scheduling::SpriteFeedbackQueue& feedbackQueue)
 	{
+		lifecycleFeedbackQueue_ = &feedbackQueue;
 		if (!IsGameThread())
+		{
+			return;
+		}
+		if (capturerState_.load() != CapturerLifecycleState::Start ||
+			capturerSubState_ != CapturerSubState::Active)
 		{
 			return;
 		}
@@ -287,31 +433,18 @@ namespace Services::Map::Buildings::Capture
 		}
 	}
 
-	/** Cancels the active request without requesting shared-world retirement. */
-	bool BuildingSpriteRenderer::RequestSessionStop()
+	/** Advances active-request cancellation and reports terminal feedback through the existing FIFO. */
+	void BuildingSpriteRenderer::AdvanceLifecycleRetirement()
 	{
 		if (!hasActiveRequest_)
 		{
-			return true;
+			return;
 		}
-		Cancel(activeRequest_.RequestIdentity);
-		return false;
-	}
-
-	/** Advances only cancelled request retirement while retaining the shared world and lighting. */
-	bool BuildingSpriteRenderer::AdvanceSessionRetirement(
-		Scheduling::SpriteFeedbackQueue& feedbackQueue)
-	{
-		if (!IsGameThread())
+		Advance();
+		if (lifecycleFeedbackQueue_ != nullptr)
 		{
-			return false;
+			EmitTerminalFeedback(*lifecycleFeedbackQueue_);
 		}
-		if (hasActiveRequest_)
-		{
-			Advance();
-			EmitTerminalFeedback(feedbackQueue);
-		}
-		return !hasActiveRequest_;
 	}
 
 	/** Reports whether the matching terminal request and every native owner are safely retired. */
@@ -475,6 +608,7 @@ namespace Services::Map::Buildings::Capture
 			return false;
 		}
 		privateWorld_ = reinterpret_cast<SDK::UWorld*>(world);
+		privateWorldCleaned_ = false;
 		nativeApi->asset.retainObject(privateWorld_);
 		nativeApi->world.initWorld(world, initializationValues);
 		nativeApi->world.updateWorldComponents(world, false, false, nullptr);
@@ -843,6 +977,96 @@ namespace Services::Map::Buildings::Capture
 			return false;
 		}
 		nativeApi->player.registerComponent(directionalLights_[lightIndex], privateWorld_, nullptr);
+		directionalLightRegistered_[lightIndex] = true;
+		return true;
+	}
+
+	/** Unregisters and destroys one persistent light while retaining its root for fence retirement. */
+	bool BuildingSpriteRenderer::DestroyDirectionalLight(std::size_t lightIndex)
+	{
+		if (lightIndex >= directionalLights_.size() || !directionalLights_[lightIndex] ||
+			directionalLightDestroyed_[lightIndex])
+		{
+			return true;
+		}
+		const auto* nativeApi = MiniMapNative::Get();
+		if (!nativeApi || !nativeApi->player.unregisterComponent || !IsGameThread())
+		{
+			return false;
+		}
+		if (directionalLightRegistered_[lightIndex])
+		{
+			nativeApi->player.unregisterComponent(directionalLights_[lightIndex]);
+			directionalLightRegistered_[lightIndex] = false;
+		}
+		if (!DestroyComponent(directionalLights_[lightIndex]))
+		{
+			return false;
+		}
+		directionalLightDestroyed_[lightIndex] = true;
+		return true;
+	}
+
+	/** Releases the shared lighting rig and private world only after request retirement. */
+	bool BuildingSpriteRenderer::CleanupPersistentWorld()
+	{
+		if (!IsGameThread())
+		{
+			return false;
+		}
+		for (std::size_t lightIndex = 0; lightIndex < directionalLights_.size(); ++lightIndex)
+		{
+			if (!DestroyDirectionalLight(lightIndex))
+			{
+				return false;
+			}
+		}
+		if (privateWorld_ && !exitCleanupFenceComplete_)
+		{
+			if (fencePurpose_ == FencePurpose::None && !StartFence(FencePurpose::RequestRetirement))
+			{
+				return false;
+			}
+			if (fencePurpose_ != FencePurpose::RequestRetirement ||
+				!PollFence(FencePurpose::RequestRetirement))
+			{
+				return false;
+			}
+			exitCleanupFenceComplete_ = true;
+		}
+		return ReleasePersistentWorldRoots();
+	}
+
+	/** Releases retained light roots and cleans the private-world root in dependency order. */
+	bool BuildingSpriteRenderer::ReleasePersistentWorldRoots()
+	{
+		for (std::size_t lightIndex = 0; lightIndex < directionalLights_.size(); ++lightIndex)
+		{
+			if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(directionalLights_[lightIndex])))
+			{
+				return false;
+			}
+			directionalLights_[lightIndex] = nullptr;
+		}
+		if (privateWorld_ && !privateWorldCleaned_)
+		{
+			const auto* nativeApi = MiniMapNative::Get();
+			if (!nativeApi || !nativeApi->world.cleanupWorld)
+			{
+				return false;
+			}
+			nativeApi->world.cleanupWorld(reinterpret_cast<std::uintptr_t>(privateWorld_), true, true, 0);
+			privateWorldCleaned_ = true;
+		}
+		if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(privateWorld_)))
+		{
+			return false;
+		}
+		privateWorld_ = nullptr;
+		privateWorldInitialized_ = false;
+		lightingRigSetupStarted_ = false;
+		lightingRigReady_ = false;
+		sharedWorldUsable_ = false;
 		return true;
 	}
 

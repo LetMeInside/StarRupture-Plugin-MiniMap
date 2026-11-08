@@ -15,6 +15,11 @@
 
 namespace Services::Map::Buildings
 {
+	namespace Capture
+	{
+		class BuildingSpriteRenderer;
+	}
+
 	class BuildingMapSection;
 	class BuildingMapViewport;
 	namespace Scheduling
@@ -70,13 +75,11 @@ namespace Services::Map::Buildings
 		 */
 		bool StartGameSession(double mapWidthMapUnits, double mapHeightMapUnits);
 		/** Ends one gameplay session, requests active-capture cancellation, and clears gameplay state.
-		 * Returns without waiting for native retirement; the renderer remains service-owned.
+		 * Returns without waiting for renderer-owned native retirement.
 		 */
 		void StopGameSession();
-		/** Advances pending native capture-request retirement on the existing game-thread tick.
-		 * This operation never advances normal Section scheduling.
-		 */
-		void AdvancePendingCaptureRetirement();
+		/** Returns the persistent renderer for direct plugin engine-callback execution. */
+		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 		/** Returns the active gameplay map width, or zero outside a gameplay session. */
 		double GetMapWidthMapUnits() const noexcept;
 		/** Returns the active gameplay map height, or zero outside a gameplay session. */

@@ -207,13 +207,12 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Advances only pending native request retirement; no Section work is processed. */
-	void SectionSchedulingCoordinator::AdvancePendingCaptureRetirement()
+	/** Returns the persistent renderer without processing lifecycle work here. */
+	Capture::BuildingSpriteRenderer* SectionSchedulingCoordinator::GetCapturerLifecycleTarget() noexcept
 	{
-		if (sectionScheduler_ != nullptr)
-		{
-			sectionScheduler_->AdvancePendingCaptureRetirement();
-		}
+		return sectionScheduler_ != nullptr
+			? sectionScheduler_->GetCapturerLifecycleTarget()
+			: nullptr;
 	}
 
 	/** Delegates explicit building-cache clearing to the owned SectionScheduler. */

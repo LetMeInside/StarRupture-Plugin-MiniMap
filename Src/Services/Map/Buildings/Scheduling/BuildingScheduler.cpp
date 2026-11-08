@@ -74,7 +74,7 @@ namespace Services::Map::Buildings::Scheduling
 	/** Starts gameplay scheduling without replacing the persistent renderer. */
 	bool BuildingScheduler::BeginSession()
 	{
-		if (sessionActive_)
+		if (sessionActive_ || captureRenderer_ == nullptr || !captureRenderer_->RequestStart())
 		{
 			return false;
 		}
@@ -83,7 +83,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Stops session admission and requests cancellation without waiting for native retirement. */
+	/** Stops session admission and signals the renderer's atomic Stop command. */
 	void BuildingScheduler::StopSession()
 	{
 		if (!sessionActive_)
@@ -94,31 +94,21 @@ namespace Services::Map::Buildings::Scheduling
 		ClearSessionState();
 		if (captureRenderer_ != nullptr)
 		{
-			sessionRetirementPending_ = !captureRenderer_->RequestSessionStop();
+			captureRenderer_->RequestStop();
 		}
 	}
 
-	/** Advances cancellation retirement after stop and preserves the shared renderer world. */
-	void BuildingScheduler::AdvancePendingSessionRetirement()
+	/** Returns the persistent renderer for direct plugin engine-callback execution. */
+	Capture::BuildingSpriteRenderer* BuildingScheduler::GetCapturerLifecycleTarget() noexcept
 	{
-		if (!sessionRetirementPending_ || captureRenderer_ == nullptr)
-		{
-			return;
-		}
-		sessionRetirementPending_ = !captureRenderer_->AdvanceSessionRetirement(spriteFeedbackQueue_);
-		spriteFeedbackQueue_.Clear();
+		return captureRenderer_.get();
 	}
 
-	/** Advances one capture operation or pending stop retirement, then drains terminal feedback. */
+	/** Advances ordinary capture only while gameplay scheduling remains active. */
 	void BuildingScheduler::AdvanceSpriteAcquisition()
 	{
 		if (!sessionActive_ || captureRenderer_ == nullptr)
 		{
-			return;
-		}
-		if (sessionRetirementPending_)
-		{
-			AdvancePendingSessionRetirement();
 			return;
 		}
 

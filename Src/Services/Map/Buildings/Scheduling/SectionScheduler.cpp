@@ -392,13 +392,12 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Advances active-request retirement without invoking normal sprite acquisition. */
-	void SectionScheduler::AdvancePendingCaptureRetirement()
+	/** Returns the persistent renderer without processing lifecycle work here. */
+	Capture::BuildingSpriteRenderer* SectionScheduler::GetCapturerLifecycleTarget() noexcept
 	{
-		if (buildingScheduler_ != nullptr)
-		{
-			buildingScheduler_->AdvancePendingSessionRetirement();
-		}
+		return buildingScheduler_ != nullptr
+			? buildingScheduler_->GetCapturerLifecycleTarget()
+			: nullptr;
 	}
 
 	/** Delegates explicit cache deletion to the owned SpriteDiskCache. */

@@ -1,5 +1,5 @@
-// Owns one plugin-lifetime private world and lighting rig plus request-scoped sprite capture resources.
-// It is an internal BuildingScheduler component; request resources retire independently per capture.
+// Owns one plugin-lifetime capture renderer, its requested lifecycle, private world and lighting rig.
+// Request-scoped sprite resources use the existing capture/readback retirement operations.
 #pragma once
 
 #include "CaptureRequest.h"
@@ -8,6 +8,7 @@
 #include "../Visuals/SpriteGeometry.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -45,11 +46,45 @@ namespace Services::Map::Buildings::Capture
 	class BuildingSpriteRenderer final
 	{
 	public:
-		/** Does not perform native cleanup; request retirement is advanced explicitly while owned. */
+		/** Does not perform native cleanup; lifecycle work is processed by the engine callback. */
 		~BuildingSpriteRenderer() = default;
+		/** Requests one-time initialization without performing native work on the caller. */
+		bool RequestInitialization() noexcept;
+		/** Requests gameplay capture admission when no Stop command remains pending. */
+		bool RequestStart() noexcept;
+		/** Requests nonblocking cancellation and retirement of session-owned capture resources. */
+		void RequestStop() noexcept;
+		/** Permanently requests capturer cleanup and blocks any later Start request. */
+		void RequestExit() noexcept;
+		/** Processes the requested lifecycle command on the Unreal game thread. */
+		void ProcessLifecycle();
+
+		/** Capturer lifecycle command requested by its plugin/service owner. */
+		enum class CapturerLifecycleState : std::uint8_t
+		{
+			Load = 0,
+			Init,
+			Start,
+			Stop,
+			Exit
+		};
 
 	private:
 		friend class Scheduling::BuildingScheduler;
+
+		/** Capturer execution progress owned only by the engine game-thread callback. */
+		enum class CapturerSubState : std::uint8_t
+		{
+			None = 0,
+			InitStep1,
+			InitStep2,
+			InitCompleted,
+			Active,
+			StopReleasing,
+			StopCompleted,
+			ExitCleanup,
+			ExitReady
+		};
 
 		/** Describes the point reached in the nonblocking HDR/final-color capture sequence. */
 		enum class Phase : std::uint8_t
@@ -131,15 +166,12 @@ namespace Services::Map::Buildings::Capture
 		void AdvanceCurrentPhase();
 		/** Revokes result eligibility; submitted scene work remains owned until BM-07 retires it. */
 		void Cancel(CaptureRequest::Correlation correlation);
-		/** Cancels the active request for a gameplay-session stop without retiring the shared world.
-		 * @return True when no active request remains to retire.
-		 */
-		bool RequestSessionStop();
-		/** Advances only active-request cancellation and native retirement.
-		 * @param feedbackQueue Receives the correlated terminal result after safe retirement.
-		 * @return True when no active request remains; the shared private world stays alive.
-		 */
-		bool AdvanceSessionRetirement(Scheduling::SpriteFeedbackQueue& feedbackQueue);
+		/** Advances Stop or Exit cleanup while keeping request feedback correlated. */
+		void AdvanceLifecycleRetirement();
+		/** Releases shared lights and private-world roots after request work is retired. */
+		bool CleanupPersistentWorld();
+		/** Releases retained light roots and cleans the private-world root in dependency order. */
+		bool ReleasePersistentWorldRoots();
 		/** Releases terminal request state after its feedback value enters the FIFO. */
 		void AcknowledgeCompletion(CaptureRequest::Correlation correlation);
 		/** Continues or cancels HDR work after BM-07 proves scene/readback retirement. */
@@ -189,6 +221,8 @@ namespace Services::Map::Buildings::Capture
 		bool CreateDirectionalLight(std::size_t lightIndex);
 		/** Configures the source-backed key/fill light values. */
 		bool ConfigureDirectionalLight(std::size_t lightIndex);
+		/** Unregisters and destroys one persistent directional light. */
+		bool DestroyDirectionalLight(std::size_t lightIndex);
 		/** Destroys a request-owned component after submitted request work is retired. */
 		bool DestroyComponent(SDK::UActorComponent* component);
 		/** Destroys the request-owned subject actor after submitted request work is retired. */
@@ -217,6 +251,14 @@ namespace Services::Map::Buildings::Capture
 		SDK::UObject* CreateRetainedObject(SDK::UClass* objectClass, SDK::UObject* outer);
 		/** Submits one capture scene and records the outstanding GPU-work boundary. */
 		bool SubmitCaptureScene();
+		/** Executes one lifecycle step after the engine callback confirms game-thread ownership. */
+		void AdvanceLifecycleState(CapturerLifecycleState requestedState);
+		/** Activates the persistent renderer after its one-time initialization state. */
+		void AdvanceStartLifecycle();
+		/** Retires session request ownership and acknowledges completed Stop. */
+		void AdvanceStopLifecycle();
+		/** Retires request ownership and releases persistent native objects for Exit. */
+		void AdvanceExitLifecycle();
 
 		CaptureRequest activeRequest_;
 		CaptureResult::Completion completion_;
@@ -241,6 +283,10 @@ namespace Services::Map::Buildings::Capture
 		alignas(8) unsigned char retirementFenceStorage_[8]{};
 		FencePurpose fencePurpose_ = FencePurpose::None;
 		CaptureResult::Completion::Failure pendingFailure_ = CaptureResult::Completion::Failure::None;
+		std::atomic<CapturerLifecycleState> capturerState_{CapturerLifecycleState::Load};
+		CapturerSubState capturerSubState_{CapturerSubState::None};
+		Scheduling::SpriteFeedbackQueue* lifecycleFeedbackQueue_ = nullptr;
+		bool exitCleanupFenceComplete_ = false;
 		bool hasActiveRequest_ = false;
 		bool resultEligible_ = true;
 		bool sceneWorkSubmitted_ = false;
@@ -251,10 +297,13 @@ namespace Services::Map::Buildings::Capture
 		bool lightingRigSetupStarted_ = false;
 		bool lightingRigReady_ = false;
 		bool sharedWorldUsable_ = true;
+		bool privateWorldCleaned_ = false;
 		bool requestRetirementFenceComplete_ = false;
 		bool captureComponentRegistered_ = false;
 		bool captureComponentDestroyed_ = false;
 		bool subjectActorDestroyed_ = false;
 		bool actorDestroyFailed_ = false;
+		std::array<bool, 2> directionalLightRegistered_{};
+		std::array<bool, 2> directionalLightDestroyed_{};
 	};
 }

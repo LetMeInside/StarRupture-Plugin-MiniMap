@@ -22,6 +22,7 @@
 #include "Map/Buildings/BuildingVisuals.h"
 #endif
 #include "Services/Map/Buildings/BuildingMapService.h"
+#include "Services/Map/Buildings/Capture/BuildingSpriteRenderer.h"
 #include "PluginPaths.h"
 #if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Native/ResidentMetadata.h"
@@ -35,6 +36,7 @@
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 namespace S = MiniMap::Services;
 static std::unique_ptr<Services::Map::Buildings::BuildingMapService> g_buildingMapService;
+static Services::Map::Buildings::Capture::BuildingSpriteRenderer* g_buildingSpriteRenderer = nullptr;
 static S::Hook g_commonUIActivatedHook{};
 static S::Hook g_commonUIDeactivatedHook{};
 static S::Registration g_rendererTick{}, g_beforeEnd{}, g_afterEnd{}, g_gameplayBegan{}, g_experienceReady{};
@@ -563,11 +565,12 @@ namespace
 #endif // MINIMAP_USE_LEGACY_BUILDINGS
 
 // Services generic native textures on the existing game-thread event; legacy work retains its ordering.
-static void OnTextureServiceTick(float deltaTime)
+static void OnTextureServiceTick(
+    Services::Map::Buildings::Capture::BuildingSpriteRenderer* renderer,
+    float deltaTime)
 {
-    // Retire only cancelled V2 capture requests; this never advances Section scheduling.
-    if (g_buildingMapService != nullptr)
-        g_buildingMapService->AdvancePendingCaptureRetirement();
+    if (renderer != nullptr)
+        renderer->ProcessLifecycle();
 #if MINIMAP_USE_LEGACY_BUILDINGS
     ObserveWorldIdentity("renderer-entry", true);
     // Service generic texture owners without advancing building acquisition.
@@ -802,6 +805,14 @@ namespace MiniMap
             sectionResolutionPixels,
             cacheRoot,
             splinePolicies));
+        g_buildingSpriteRenderer = g_buildingMapService->GetCapturerLifecycleTarget();
+        if (g_buildingSpriteRenderer == nullptr || !g_buildingSpriteRenderer->RequestInitialization())
+        {
+            g_buildingMapService.reset();
+            g_buildingSpriteRenderer = nullptr;
+            LOG_ERROR("MiniMap: capturer lifecycle initialization request failed");
+            return false;
+        }
 
         // Owns rollback of the service when any later plugin initialization step fails.
         struct BuildingMapServiceInitGuard
@@ -810,7 +821,16 @@ namespace MiniMap
             // Releases the application-owned service unless initialization completes.
             ~BuildingMapServiceInitGuard()
             {
-                if (!Keep) g_buildingMapService.reset();
+                if (!Keep)
+                {
+                    if (g_buildingSpriteRenderer != nullptr)
+                    {
+                        g_buildingSpriteRenderer->RequestExit();
+                        g_buildingSpriteRenderer->ProcessLifecycle();
+                    }
+                    g_buildingSpriteRenderer = nullptr;
+                    g_buildingMapService.reset();
+                }
             }
         } buildingMapServiceInitGuard;
 
@@ -852,7 +872,12 @@ namespace MiniMap
         }
 #endif
         if (!AcceptEventRegistration(g_rendererTick, events->OnTick(
-            [](void*, float delta) { OnTextureServiceTick(delta); }, nullptr)))
+            [](void* user, float delta)
+            {
+                OnTextureServiceTick(
+                    static_cast<::Services::Map::Buildings::Capture::BuildingSpriteRenderer*>(user),
+                    delta);
+            }, g_buildingSpriteRenderer)))
         {
             Shutdown();
             return false;
@@ -1070,6 +1095,11 @@ namespace MiniMap
 #if MINIMAP_USE_LEGACY_BUILDINGS
         MiniMapBuildingVisuals::ShutdownSpriteProcessing();
 #endif
+        if (g_buildingSpriteRenderer != nullptr)
+        {
+            g_buildingSpriteRenderer->RequestExit();
+            g_buildingSpriteRenderer->ProcessLifecycle();
+        }
         RemoveEventRegistration(g_rendererTick);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1107,6 +1137,7 @@ namespace MiniMap
 
         MiniMapCacheIdentity::ClearOnExit();
         g_buildingMapService.reset();
+        g_buildingSpriteRenderer = nullptr;
 
         // NativeApi should be the last subsystem torn down.
         // Other subsystems depend on it for their own shutdown paths.

@@ -105,13 +105,12 @@ namespace Services::Map::Buildings
 		mapHeightMapUnits_ = 0.0;
 	}
 
-	/** Advances only pending capture-request retirement; gameplay readiness is not required. */
-	void BuildingMapService::AdvancePendingCaptureRetirement()
+	/** Returns the persistent renderer without processing its private lifecycle state. */
+	Capture::BuildingSpriteRenderer* BuildingMapService::GetCapturerLifecycleTarget() noexcept
 	{
-		if (sectionSchedulingCoordinator_ != nullptr)
-		{
-			sectionSchedulingCoordinator_->AdvancePendingCaptureRetirement();
-		}
+		return sectionSchedulingCoordinator_ != nullptr
+			? sectionSchedulingCoordinator_->GetCapturerLifecycleTarget()
+			: nullptr;
 	}
 
 	/** Returns the active gameplay map width without modifying service state. */

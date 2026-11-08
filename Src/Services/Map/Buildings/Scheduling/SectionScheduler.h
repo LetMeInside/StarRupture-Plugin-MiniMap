@@ -32,11 +32,20 @@ namespace Services::Map::Buildings::Scheduling
 {
 	class BuildingScheduler;
 	class SectionSchedulingCoordinator;
+}
+
+namespace Services::Map::Buildings::Capture
+{
+	class BuildingSpriteRenderer;
+}
+
+namespace Services::Map::Buildings::Scheduling
+{
 
 	/** Owns persistent acquisition resources and synchronously prepares, renders and commits Sections.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
 	 * The renderer object survives gameplay stops under this plugin-lifetime owner. Construction creates
-	 * CPU-side owners only; session cancellation retirement advances independently from Section work.
+	 * CPU-side owners only; the renderer lifecycle callback advances cancellation independently.
 	 * Completed image ownership remains exclusively with the supplied BuildingMapSection; the commit
 	 * outcome reports whether adoption succeeded.
 	 */
@@ -407,8 +416,8 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Ends gameplay-session acquisition and begins cancellation of active request work. */
 		void StopCaptureGameWorldSession();
-		/** Advances active-request retirement without admitting captures or processing Sections. */
-		void AdvancePendingCaptureRetirement();
+		/** Returns the renderer used by the plugin's direct engine callback. */
+		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 		/** Clears the configured sprite cache without changing acquisition-session state.
 		 * @return True when SpriteDiskCache clears its configured directory without error.
 		 */
