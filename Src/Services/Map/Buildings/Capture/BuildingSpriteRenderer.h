@@ -6,9 +6,15 @@
 #include "CaptureResult.h"
 #include "BuildingSpriteReadback.h"
 #include "../Visuals/SpriteGeometry.h"
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "CaptureFeedback.h"
+#endif
 
 #include <array>
 #include <atomic>
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -46,6 +52,69 @@ namespace Services::Map::Buildings::Capture
 	class BuildingSpriteRenderer final
 	{
 	public:
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Fixed-size numeric evidence for one renderer-owned capture interval. */
+		struct DiagnosticsSnapshot
+		{
+			/** Repeated elapsed wall-time aggregate; MeanMs is derived by the reporter. */
+			struct Duration
+			{
+				std::uint64_t Samples = 0;
+				double TotalMs = 0.0;
+				double MaxMs = 0.0;
+
+				/** Adds one observed elapsed duration. */
+				void Add(double elapsedMs) noexcept
+				{
+					++Samples;
+					TotalMs += elapsedMs;
+					if (elapsedMs > MaxMs)
+					{
+						MaxMs = elapsedMs;
+					}
+				}
+			};
+
+			double IntervalMs = 0.0;
+			/** End-to-end elapsed request time from retention through terminal FIFO enqueue. */
+			Duration AcceptedRequestLifetime;
+			/** Synchronous elapsed game-thread time inside accepted Advance() calls. */
+			Duration ActiveAdvance;
+			Duration PrivateWorldPreparation;
+			Duration SubjectPreparation;
+			Duration CaptureSceneSubmission;
+			/** Entries follow CaptureResult::Acceptance::Status declaration order. */
+			std::array<std::uint64_t, 4> AcceptanceStatusCounts{};
+			/** Entries follow CaptureSubmissionPurpose: HdrWarmup, HdrCapture, FinalColor. */
+			std::array<std::uint64_t, 3> CaptureSubmissionAttempts{};
+			/** Counts submissions returning true; this is not GPU completion evidence. */
+			std::array<std::uint64_t, 3> CaptureSubmissionSuccesses{};
+			Duration HdrReadbackStart;
+			Duration HdrReadbackAdvance;
+			Duration FinalReadbackStart;
+			Duration FinalReadbackAdvance;
+			/** Entries follow BuildingSpriteReadback::Status declaration order. */
+			std::array<std::uint64_t, 4> HdrReadbackStatusCounts{};
+			std::array<std::uint64_t, 4> FinalReadbackStatusCounts{};
+			Duration HdrReadbackCompletion;
+			Duration FinalReadbackCompletion;
+			Duration FinalCaptureProcessing;
+			Duration SpriteProcessing;
+			/** Entries follow SpriteProcessingResult::Status declaration order. */
+			std::array<std::uint64_t, 4> SpriteProcessingStatusCounts{};
+			Duration AdvanceRetirement;
+			Duration SubmittedSceneRetirement;
+			Duration RequestResourceRetirement;
+			/** Entries follow CaptureFeedback::Outcome declaration order. */
+			std::array<std::uint64_t, 3> TerminalFeedbackOutcomeCounts{};
+			/** Entries follow CaptureResult::Completion::Failure declaration order. */
+			std::array<std::uint64_t, 8> TerminalFailureCounts{};
+		};
+
+		/** Hands off one due nonempty numeric interval without changing active capture state. */
+		bool TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept;
+#endif
+
 		/** Does not perform native cleanup; lifecycle work is processed by the engine callback. */
 		~BuildingSpriteRenderer() = default;
 		/** Requests one-time initialization without performing native work on the caller. */
@@ -71,6 +140,53 @@ namespace Services::Map::Buildings::Capture
 
 	private:
 		friend class Scheduling::BuildingScheduler;
+
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Identifies which existing capture submission call site performed the operation. */
+		enum class CaptureSubmissionPurpose : std::uint8_t
+		{
+			HdrWarmup,
+			HdrCapture,
+			FinalColor
+		};
+
+		/** Adds one active-request acceptance observation to the current interval. */
+		void RecordAcceptanceStatus(CaptureResult::Acceptance::Status status) noexcept;
+		/** Invokes one existing scene submission while recording its caller purpose. */
+		bool SubmitCaptureSceneForPurpose(CaptureSubmissionPurpose purpose);
+		/** Adds one actual readback progress result to its pass-specific category array. */
+		void RecordReadbackStatus(bool hdrPass, BuildingSpriteReadback::Status status) noexcept;
+		/** Records one successfully enqueued accepted-request outcome and its lifetime. */
+		void RecordTerminalFeedback(
+			CaptureFeedback::Outcome outcome,
+			CaptureResult::Completion::Failure failure) noexcept;
+		/** Times one existing readback Start call for its pass. */
+		bool StartReadbackForDiagnostics(bool hdrPass, BuildingSpriteReadback& readback);
+		/** Times and records one existing nonblocking readback Advance call. */
+		BuildingSpriteReadback::Status AdvanceReadbackForDiagnostics(
+			bool hdrPass,
+			BuildingSpriteReadback& readback);
+		/** Clears interval aggregates and restarts their timestamp without touching requests. */
+		void ResetDiagnosticsInterval() noexcept;
+		/** Tests fixed-size observations to suppress reports for an idle interval. */
+		bool HasDiagnosticsActivity() const noexcept;
+
+		/** Adds one method's elapsed time on every ordinary return path. */
+		struct DurationScope final
+		{
+			explicit DurationScope(DiagnosticsSnapshot::Duration& duration) noexcept;
+			~DurationScope() noexcept;
+
+		private:
+			DiagnosticsSnapshot::Duration& duration_;
+			std::chrono::steady_clock::time_point started_;
+		};
+
+		DiagnosticsSnapshot diagnostics_{};
+		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+		std::chrono::steady_clock::time_point activeRequestStartedAt_{};
+		bool activeRequestLifetimeActive_ = false;
+#endif
 
 		/** Capturer execution progress owned only by the engine game-thread callback. */
 		enum class CapturerSubState : std::uint8_t

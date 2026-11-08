@@ -14,6 +14,9 @@
 #include <Windows.h>
 
 #include <algorithm>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <cmath>
 #include <limits>
 #include <string>
@@ -27,7 +30,176 @@ namespace Services::Map::Buildings::Capture
 	BuildingSpriteRenderer::BuildingSpriteRenderer(double pixelsPerMapUnit)
 		: pixelsPerMapUnit_(pixelsPerMapUnit)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ResetDiagnosticsInterval();
+#endif
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Starts one due-interval measurement at the existing method boundary. */
+	BuildingSpriteRenderer::DurationScope::DurationScope(
+		DiagnosticsSnapshot::Duration& duration) noexcept
+		: duration_(duration)
+		, started_(std::chrono::steady_clock::now())
+	{
+	}
+
+	/** Adds elapsed steady-clock time when the measured operation exits. */
+	BuildingSpriteRenderer::DurationScope::~DurationScope() noexcept
+	{
+		const double elapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - started_).count();
+		duration_.Add(elapsedMs);
+	}
+
+	/** Hands off a due interval while leaving active request lifetime state untouched. */
+	bool BuildingSpriteRenderer::TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept
+	{
+		const auto now = std::chrono::steady_clock::now();
+		const double intervalMs = std::chrono::duration<double, std::milli>(
+			now - diagnosticsIntervalStart_).count();
+		if (intervalMs < 10000.0 || !HasDiagnosticsActivity())
+		{
+			return false;
+		}
+		diagnostics_.IntervalMs = intervalMs;
+		output = diagnostics_;
+		ResetDiagnosticsInterval();
+		return true;
+	}
+
+	/** Counts an actual admission result in the existing enum's declaration order. */
+	void BuildingSpriteRenderer::RecordAcceptanceStatus(CaptureResult::Acceptance::Status status) noexcept
+	{
+		++diagnostics_.AcceptanceStatusCounts[static_cast<std::size_t>(status)];
+	}
+
+	/** Counts and measures one existing submission for its actual caller purpose. */
+	bool BuildingSpriteRenderer::SubmitCaptureSceneForPurpose(CaptureSubmissionPurpose purpose)
+	{
+		const std::size_t purposeIndex = static_cast<std::size_t>(purpose);
+		++diagnostics_.CaptureSubmissionAttempts[purposeIndex];
+		const bool submitted = SubmitCaptureScene();
+		if (submitted)
+		{
+			++diagnostics_.CaptureSubmissionSuccesses[purposeIndex];
+		}
+		return submitted;
+	}
+
+	/** Counts an actual readback status in its HDR or final-color category array. */
+	void BuildingSpriteRenderer::RecordReadbackStatus(
+		bool hdrPass,
+		BuildingSpriteReadback::Status status) noexcept
+	{
+		if (hdrPass)
+		{
+			++diagnostics_.HdrReadbackStatusCounts[static_cast<std::size_t>(status)];
+			return;
+		}
+		++diagnostics_.FinalReadbackStatusCounts[static_cast<std::size_t>(status)];
+	}
+
+	/** Records terminal evidence only after its accepted feedback value enters the FIFO. */
+	void BuildingSpriteRenderer::RecordTerminalFeedback(
+		CaptureFeedback::Outcome outcome,
+		CaptureResult::Completion::Failure failure) noexcept
+	{
+		++diagnostics_.TerminalFeedbackOutcomeCounts[static_cast<std::size_t>(outcome)];
+		if (outcome == CaptureFeedback::Outcome::Failed)
+		{
+			++diagnostics_.TerminalFailureCounts[static_cast<std::size_t>(failure)];
+		}
+		if (activeRequestLifetimeActive_)
+		{
+			const double lifetimeMs = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - activeRequestStartedAt_).count();
+			diagnostics_.AcceptedRequestLifetime.Add(lifetimeMs);
+		}
+		activeRequestStartedAt_ = {};
+		activeRequestLifetimeActive_ = false;
+	}
+
+	/** Times one existing Start invocation without changing when it is called. */
+	bool BuildingSpriteRenderer::StartReadbackForDiagnostics(
+		bool hdrPass,
+		BuildingSpriteReadback& readback)
+	{
+		DurationScope durationScope(hdrPass
+			? diagnostics_.HdrReadbackStart
+			: diagnostics_.FinalReadbackStart);
+		return readback.Start(renderTarget_);
+	}
+
+	/** Times and categorizes one existing nonblocking Advance invocation. */
+	BuildingSpriteReadback::Status BuildingSpriteRenderer::AdvanceReadbackForDiagnostics(
+		bool hdrPass,
+		BuildingSpriteReadback& readback)
+	{
+		DurationScope durationScope(hdrPass
+			? diagnostics_.HdrReadbackAdvance
+			: diagnostics_.FinalReadbackAdvance);
+		const BuildingSpriteReadback::Status status = readback.Advance();
+		RecordReadbackStatus(hdrPass, status);
+		return status;
+	}
+
+	/** Clears interval values and starts the next renderer-owned reporting window. */
+	void BuildingSpriteRenderer::ResetDiagnosticsInterval() noexcept
+	{
+		diagnostics_ = {};
+		diagnosticsIntervalStart_ = std::chrono::steady_clock::now();
+	}
+
+	/** Detects numeric work without retaining request or native-object history. */
+	bool BuildingSpriteRenderer::HasDiagnosticsActivity() const noexcept
+	{
+		if (diagnostics_.AcceptedRequestLifetime.Samples || diagnostics_.ActiveAdvance.Samples ||
+			diagnostics_.PrivateWorldPreparation.Samples || diagnostics_.SubjectPreparation.Samples ||
+			diagnostics_.CaptureSceneSubmission.Samples || diagnostics_.HdrReadbackStart.Samples ||
+			diagnostics_.HdrReadbackAdvance.Samples || diagnostics_.FinalReadbackStart.Samples ||
+			diagnostics_.FinalReadbackAdvance.Samples || diagnostics_.HdrReadbackCompletion.Samples ||
+			diagnostics_.FinalReadbackCompletion.Samples || diagnostics_.FinalCaptureProcessing.Samples ||
+			diagnostics_.SpriteProcessing.Samples || diagnostics_.AdvanceRetirement.Samples ||
+			diagnostics_.SubmittedSceneRetirement.Samples || diagnostics_.RequestResourceRetirement.Samples)
+		{
+			return true;
+		}
+		for (const auto count : diagnostics_.AcceptanceStatusCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.CaptureSubmissionAttempts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.CaptureSubmissionSuccesses)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.HdrReadbackStatusCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.FinalReadbackStatusCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.SpriteProcessingStatusCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.TerminalFeedbackOutcomeCounts)
+		{
+			if (count != 0) return true;
+		}
+		for (const auto count : diagnostics_.TerminalFailureCounts)
+		{
+			if (count != 0) return true;
+		}
+		return false;
+	}
+#endif
 
 	/** Requests one-time renderer initialization without creating lazy native resources. */
 	bool BuildingSpriteRenderer::RequestInitialization() noexcept
@@ -127,6 +299,9 @@ namespace Services::Map::Buildings::Capture
 			capturerSubState_ == CapturerSubState::StopCompleted)
 		{
 			capturerSubState_ = CapturerSubState::Active;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ResetDiagnosticsInterval();
+#endif
 		}
 	}
 
@@ -177,26 +352,41 @@ namespace Services::Map::Buildings::Capture
 			capturerSubState_ != CapturerSubState::Active || hasActiveRequest_ || !sharedWorldUsable_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedUnavailable;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordAcceptanceStatus(acceptance.Result);
+#endif
 			return acceptance;
 		}
 		std::string spriteFileName;
 		if (!request.SpriteRequirement.TryGetFileName(spriteFileName))
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordAcceptanceStatus(acceptance.Result);
+#endif
 			return acceptance;
 		}
 		if (request.RequestIdentity.RequestSequence == 0)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedInvalidRequest;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordAcceptanceStatus(acceptance.Result);
+#endif
 			return acceptance;
 		}
 		if (request.RequestIdentity.RequestSequence <= lastAcceptedRequestSequence_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedStaleRequest;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordAcceptanceStatus(acceptance.Result);
+#endif
 			return acceptance;
 		}
 		RetainAcceptedRequest(std::move(request));
 		acceptance.Result = CaptureResult::Acceptance::Status::Accepted;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		RecordAcceptanceStatus(acceptance.Result);
+#endif
 		return acceptance;
 	}
 
@@ -224,6 +414,10 @@ namespace Services::Map::Buildings::Capture
 		captureComponentDestroyed_ = false;
 		subjectActorDestroyed_ = false;
 		actorDestroyFailed_ = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		activeRequestStartedAt_ = std::chrono::steady_clock::now();
+		activeRequestLifetimeActive_ = true;
+#endif
 	}
 
 	/** Advances active work or admits exactly one request without holding a queue lock in capture code. */
@@ -314,6 +508,9 @@ namespace Services::Map::Buildings::Capture
 		{
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.ActiveAdvance);
+#endif
 		if (phase_ == Phase::RetirementRequired)
 		{
 			AdvanceRetirement();
@@ -331,6 +528,9 @@ namespace Services::Map::Buildings::Capture
 	/** Retries pre-submission cleanup and records cancellation or failure after release. */
 	void BuildingSpriteRenderer::AdvanceRetirement()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.AdvanceRetirement);
+#endif
 		if (sceneWorkSubmitted_ && !RetireSubmittedSceneBehindFence())
 		{
 			return;
@@ -381,7 +581,11 @@ namespace Services::Map::Buildings::Capture
 		}
 		if (phase_ == Phase::WaitingForFinalColor)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (!SubmitCaptureSceneForPurpose(CaptureSubmissionPurpose::FinalColor))
+#else
 			if (!SubmitCaptureScene())
+#endif
 			{
 				FailRequest(CaptureResult::Completion::Failure::EngineOperationFailed);
 				return;
@@ -516,7 +720,14 @@ namespace Services::Map::Buildings::Capture
 			return;
 		}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const CaptureFeedback::Outcome terminalOutcome = feedback.Result;
+		const CaptureResult::Completion::Failure terminalFailure = feedback.Error;
+#endif
 		feedbackQueue.Enqueue(std::move(feedback));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		RecordTerminalFeedback(terminalOutcome, terminalFailure);
+#endif
 		AcknowledgeCompletion(correlation);
 	}
 
@@ -806,6 +1017,9 @@ namespace Services::Map::Buildings::Capture
 	/** Retires request owners behind a fence without destroying the shared world or lights. */
 	bool BuildingSpriteRenderer::RetireRequestResources()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.RequestResourceRetirement);
+#endif
 		if (sceneWorkSubmitted_ || !IsGameThread()) return false;
 		if (fencePurpose_ == FencePurpose::LightingReadiness)
 		{
@@ -1114,7 +1328,11 @@ namespace Services::Map::Buildings::Capture
 		{
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!SubmitCaptureSceneForPurpose(CaptureSubmissionPurpose::HdrWarmup))
+#else
 		if (!SubmitCaptureScene())
+#endif
 		{
 			FailRequest(CaptureResult::Completion::Failure::EngineOperationFailed);
 			return;
@@ -1130,7 +1348,11 @@ namespace Services::Map::Buildings::Capture
 		{
 			return;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!SubmitCaptureSceneForPurpose(CaptureSubmissionPurpose::HdrCapture))
+#else
 		if (!SubmitCaptureScene())
+#endif
 		{
 			FailRequest(CaptureResult::Completion::Failure::EngineOperationFailed);
 			return;
@@ -1145,14 +1367,24 @@ namespace Services::Map::Buildings::Capture
 		BuildingSpriteReadback& readback = hdrPass ? hdrReadback_ : finalReadback_;
 		if (!readbackStarted_)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (!sceneWorkSubmitted_ || !renderTarget_ ||
+				!StartReadbackForDiagnostics(hdrPass, readback))
+#else
 			if (!sceneWorkSubmitted_ || !renderTarget_ || !readback.Start(renderTarget_))
+#endif
 			{
 				FailRequest(CaptureResult::Completion::Failure::ReadbackFailed);
 				return;
 			}
 			readbackStarted_ = true;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const BuildingSpriteReadback::Status status =
+			AdvanceReadbackForDiagnostics(hdrPass, readback);
+#else
 		const BuildingSpriteReadback::Status status = readback.Advance();
+#endif
 		if (status == BuildingSpriteReadback::Status::Pending || !readback.IsRetired())
 		{
 			return;
@@ -1184,6 +1416,9 @@ namespace Services::Map::Buildings::Capture
 	/** Saves HDR source pixels and reconfigures only after GPU copy and scene retirement. */
 	void BuildingSpriteRenderer::CompleteHdrReadback()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.HdrReadbackCompletion);
+#endif
 		try
 		{
 			hdrPixels_ = hdrReadback_.Pixels();
@@ -1207,6 +1442,9 @@ namespace Services::Map::Buildings::Capture
 	/** Converts final samples to an immutable payload before request-specific retirement. */
 	void BuildingSpriteRenderer::CompleteFinalReadback()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.FinalReadbackCompletion);
+#endif
 		sceneWorkSubmitted_ = false;
 		ProcessFinalCapture();
 		if (!finalReadback_.Reset())
@@ -1220,6 +1458,9 @@ namespace Services::Map::Buildings::Capture
 	/** Uses the independent BM-02 processor to create the only successful capture payload. */
 	void BuildingSpriteRenderer::ProcessFinalCapture()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope finalCaptureScope(diagnostics_.FinalCaptureProcessing);
+#endif
 		const auto& finalPixels = finalReadback_.Pixels();
 		Cache::SpriteCapturePixels pixels{
 			std::span<const std::uint16_t>(finalPixels.data(), finalPixels.size()),
@@ -1229,7 +1470,16 @@ namespace Services::Map::Buildings::Capture
 			GetCaptureBounds(),
 			orthographicExtent,
 			pixelsPerMapUnit_};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Cache::SpriteProcessingResult result;
+		{
+			DurationScope spriteProcessingScope(diagnostics_.SpriteProcessing);
+			result = Cache::SpriteProcessing::Process(pixels, metadata);
+		}
+		++diagnostics_.SpriteProcessingStatusCounts[static_cast<std::size_t>(result.Result)];
+#else
 		Cache::SpriteProcessingResult result = Cache::SpriteProcessing::Process(pixels, metadata);
+#endif
 		if (result.Result != Cache::SpriteProcessingResult::Status::Processed || !result.Payload)
 		{
 			pendingFailure_ = result.Result == Cache::SpriteProcessingResult::Status::EmptyCapture
@@ -1243,10 +1493,18 @@ namespace Services::Map::Buildings::Capture
 	/** Detaches submitted capture resources, orders their release fence, and waits without blocking. */
 	bool BuildingSpriteRenderer::RetireSubmittedSceneBehindFence()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.SubmittedSceneRetirement);
+#endif
 		if (readbackStarted_)
 		{
 			BuildingSpriteReadback& readback = finalColorPassSubmitted_ ? finalReadback_ : hdrReadback_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const bool hdrPass = !finalColorPassSubmitted_;
+			AdvanceReadbackForDiagnostics(hdrPass, readback);
+#else
 			readback.Advance();
+#endif
 			if (!readback.IsRetired())
 			{
 				return false;
@@ -1278,6 +1536,9 @@ namespace Services::Map::Buildings::Capture
 	/** Lazily prepares the persistent world and lighting rig for capture. */
 	void BuildingSpriteRenderer::PreparePrivateWorld()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.PrivateWorldPreparation);
+#endif
 		if (!privateWorld_ && !CreatePrivateWorld())
 		{
 			sharedWorldUsable_ = false;
@@ -1306,6 +1567,9 @@ namespace Services::Map::Buildings::Capture
 	/** Resolves the subject, obtains bounds, and creates its capture rig without submission. */
 	void BuildingSpriteRenderer::PrepareSubject()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.SubjectPreparation);
+#endif
 		if (!ResolveAndRetainActorClass(activeRequest_.SpriteRequirement.Bytes()) ||
 			!SpawnSubjectAndAcquireBounds())
 		{
@@ -1344,6 +1608,9 @@ namespace Services::Map::Buildings::Capture
 	/** Captures one scene and retains all connected resources until BM-07 retires its work. */
 	bool BuildingSpriteRenderer::SubmitCaptureScene()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		DurationScope durationScope(diagnostics_.CaptureSceneSubmission);
+#endif
 		if (!captureComponent_ || !captureComponentRegistered_ || !IsGameThread())
 		{
 			return false;
