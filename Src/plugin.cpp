@@ -800,6 +800,133 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(spriteDiagnostics.SpritePersistenceStatusCounts[3]));
         }
     }
+
+    if (renderer != nullptr)
+    {
+        ::Services::Map::Buildings::Capture::BuildingSpriteRenderer::DiagnosticsSnapshot captureDiagnostics;
+        if (renderer->TakeDiagnosticsSnapshot(captureDiagnostics))
+        {
+            const auto meanMs = [](const auto& duration)
+            {
+                return duration.Samples == 0
+                    ? 0.0
+                    : duration.TotalMs / static_cast<double>(duration.Samples);
+            };
+            LOG_INFO("MiniMap: BuildingMap capture_admission intervalMs=%.1f elapsed:cpuWall activeAdvance={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} acceptance={accepted:%llu invalid:%llu stale:%llu unavailable:%llu}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.ActiveAdvance.Samples),
+                captureDiagnostics.ActiveAdvance.TotalMs,
+                meanMs(captureDiagnostics.ActiveAdvance),
+                captureDiagnostics.ActiveAdvance.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.AcceptanceStatusCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.AcceptanceStatusCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.AcceptanceStatusCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.AcceptanceStatusCounts[3]));
+            LOG_INFO("MiniMap: BuildingMap capture_preparation intervalMs=%.1f elapsed:cpuWall privateWorld={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} subject={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.PrivateWorldPreparation.Samples),
+                captureDiagnostics.PrivateWorldPreparation.TotalMs,
+                meanMs(captureDiagnostics.PrivateWorldPreparation),
+                captureDiagnostics.PrivateWorldPreparation.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.SubjectPreparation.Samples),
+                captureDiagnostics.SubjectPreparation.TotalMs,
+                meanMs(captureDiagnostics.SubjectPreparation),
+                captureDiagnostics.SubjectPreparation.MaxMs);
+            LOG_INFO("MiniMap: BuildingMap capture_submission intervalMs=%.1f elapsed:cpuWall sceneSubmission={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} warmup={attempts:%llu successReturn:%llu} hdr={attempts:%llu successReturn:%llu} final={attempts:%llu successReturn:%llu}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSceneSubmission.Samples),
+                captureDiagnostics.CaptureSceneSubmission.TotalMs,
+                meanMs(captureDiagnostics.CaptureSceneSubmission),
+                captureDiagnostics.CaptureSceneSubmission.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionAttempts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionSuccesses[0]),
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionAttempts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionSuccesses[1]),
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionAttempts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.CaptureSubmissionSuccesses[2]));
+            LOG_INFO("MiniMap: BuildingMap capture_hdr_readback intervalMs=%.1f elapsed:cpuWall start={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} advanceIncludingRetirement={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} completion={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} status={idle:%llu pendingAsync:%llu complete:%llu failed:%llu} completionRequiresRetirementCheck:true",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackStart.Samples),
+                captureDiagnostics.HdrReadbackStart.TotalMs,
+                meanMs(captureDiagnostics.HdrReadbackStart),
+                captureDiagnostics.HdrReadbackStart.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackAdvance.Samples),
+                captureDiagnostics.HdrReadbackAdvance.TotalMs,
+                meanMs(captureDiagnostics.HdrReadbackAdvance),
+                captureDiagnostics.HdrReadbackAdvance.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackCompletion.Samples),
+                captureDiagnostics.HdrReadbackCompletion.TotalMs,
+                meanMs(captureDiagnostics.HdrReadbackCompletion),
+                captureDiagnostics.HdrReadbackCompletion.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackStatusCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackStatusCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackStatusCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.HdrReadbackStatusCounts[3]));
+            LOG_INFO("MiniMap: BuildingMap capture_final_readback intervalMs=%.1f elapsed:cpuWall start={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} advanceIncludingRetirement={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} completionInclusive={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} status={idle:%llu pendingAsync:%llu complete:%llu failed:%llu} completionRequiresRetirementCheck:true",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackStart.Samples),
+                captureDiagnostics.FinalReadbackStart.TotalMs,
+                meanMs(captureDiagnostics.FinalReadbackStart),
+                captureDiagnostics.FinalReadbackStart.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackAdvance.Samples),
+                captureDiagnostics.FinalReadbackAdvance.TotalMs,
+                meanMs(captureDiagnostics.FinalReadbackAdvance),
+                captureDiagnostics.FinalReadbackAdvance.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackCompletion.Samples),
+                captureDiagnostics.FinalReadbackCompletion.TotalMs,
+                meanMs(captureDiagnostics.FinalReadbackCompletion),
+                captureDiagnostics.FinalReadbackCompletion.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackStatusCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackStatusCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackStatusCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.FinalReadbackStatusCounts[3]));
+            LOG_INFO("MiniMap: BuildingMap capture_processing intervalMs=%.1f elapsed:cpuWall finalCapture={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} spriteProcessingNested={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} processorStatus={processed:%llu empty:%llu invalid:%llu failed:%llu}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.FinalCaptureProcessing.Samples),
+                captureDiagnostics.FinalCaptureProcessing.TotalMs,
+                meanMs(captureDiagnostics.FinalCaptureProcessing),
+                captureDiagnostics.FinalCaptureProcessing.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.SpriteProcessing.Samples),
+                captureDiagnostics.SpriteProcessing.TotalMs,
+                meanMs(captureDiagnostics.SpriteProcessing),
+                captureDiagnostics.SpriteProcessing.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.SpriteProcessingStatusCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.SpriteProcessingStatusCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.SpriteProcessingStatusCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.SpriteProcessingStatusCounts[3]));
+            LOG_INFO("MiniMap: BuildingMap capture_retirement intervalMs=%.1f elapsed:cpuWall advanceRetirementInclusive={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sceneRetirementNested={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} resourceRetirementNested={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.AdvanceRetirement.Samples),
+                captureDiagnostics.AdvanceRetirement.TotalMs,
+                meanMs(captureDiagnostics.AdvanceRetirement),
+                captureDiagnostics.AdvanceRetirement.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.SubmittedSceneRetirement.Samples),
+                captureDiagnostics.SubmittedSceneRetirement.TotalMs,
+                meanMs(captureDiagnostics.SubmittedSceneRetirement),
+                captureDiagnostics.SubmittedSceneRetirement.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.RequestResourceRetirement.Samples),
+                captureDiagnostics.RequestResourceRetirement.TotalMs,
+                meanMs(captureDiagnostics.RequestResourceRetirement),
+                captureDiagnostics.RequestResourceRetirement.MaxMs);
+            LOG_INFO("MiniMap: BuildingMap capture_terminal intervalMs=%.1f elapsed:acceptedRequestWallLifetime acceptedRequestWallLifetime={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} outcome={succeeded:%llu failed:%llu cancelled:%llu} failedRequestReason={none:%llu subjectUnavailable:%llu engineOperationFailed:%llu readbackFailed:%llu invalidCapture:%llu processingFailed:%llu retirementFailed:%llu staleRequest:%llu}",
+                captureDiagnostics.IntervalMs,
+                static_cast<unsigned long long>(captureDiagnostics.AcceptedRequestLifetime.Samples),
+                captureDiagnostics.AcceptedRequestLifetime.TotalMs,
+                meanMs(captureDiagnostics.AcceptedRequestLifetime),
+                captureDiagnostics.AcceptedRequestLifetime.MaxMs,
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFeedbackOutcomeCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFeedbackOutcomeCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFeedbackOutcomeCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[0]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[1]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[2]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[3]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[4]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[5]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[6]),
+                static_cast<unsigned long long>(captureDiagnostics.TerminalFailureCounts[7]));
+        }
+    }
 #endif
 #endif
 }
