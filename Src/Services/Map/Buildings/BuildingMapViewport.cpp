@@ -44,26 +44,24 @@ namespace Services::Map::Buildings
 		Close();
 	}
 
-	/** Moves the upper-left corner while retaining the current rectangle dimensions. */
-	bool BuildingMapViewport::Move(double xMapUnits, double yMapUnits)
-	{
-		return SetRectangle(xMapUnits, yMapUnits, widthMapUnits_, heightMapUnits_);
-	}
-
-	/** Commits a complete rectangle only after any changed grid range is accepted. */
-	bool BuildingMapViewport::SetRectangle(
-		double xMapUnits,
-		double yMapUnits,
-		double widthMapUnits,
-		double heightMapUnits)
+	/** Reconciles this rectangle, advances its collector, and advances shared scheduling. */
+	bool BuildingMapViewport::Update(double x1, double y1, double x2, double y2)
 	{
 		if (service_ == nullptr || buildingCollector_ == nullptr)
 		{
 			return false;
 		}
+		const double widthMapUnits = x2 - x1;
+		const double heightMapUnits = y2 - y1;
+		if (!std::isfinite(widthMapUnits) || !std::isfinite(heightMapUnits) ||
+			widthMapUnits <= 0.0 || heightMapUnits <= 0.0 ||
+			x1 + widthMapUnits != x2 || y1 + heightMapUnits != y2)
+		{
+			throw std::invalid_argument("Viewport corners must define finite, positive, representable dimensions.");
+		}
 		const GridRange nextRange = CalculateGridRange(
-			xMapUnits,
-			yMapUnits,
+			x1,
+			y1,
 			widthMapUnits,
 			heightMapUnits,
 			service_->GetSectionSizeMapUnits());
@@ -80,22 +78,17 @@ namespace Services::Map::Buildings
 				return false;
 			}
 		}
-		xMapUnits_ = xMapUnits;
-		yMapUnits_ = yMapUnits;
+		xMapUnits_ = x1;
+		yMapUnits_ = y1;
 		widthMapUnits_ = widthMapUnits;
 		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;
-		return true;
-	}
-
-	/** Requests service-owned observations for the current visible grid range. */
-	bool BuildingMapViewport::RefreshSections()
-	{
-		if (service_ == nullptr)
+		buildingCollector_->Update();
+		if (!service_->AdvanceViewportScheduling(viewportHandle_))
 		{
 			return false;
 		}
-		return service_->RefreshViewportSections(viewportHandle_);
+		return true;
 	}
 
 	/** Returns the current upper-left map X coordinate. */

@@ -168,13 +168,8 @@ namespace Services::Map::Buildings
 			std::int64_t endGridX,
 			std::int64_t endGridY) override;
 
-		/**
-		 * Observes candidate evidence for the current grid without certifying Sections.
-		 *
-		 * @param viewportHandle Opaque registration handle owned by the viewport.
-		 * @return True only if scheduler-certified final membership changed.
-		 */
-		bool RefreshViewportSections(std::uint64_t viewportHandle) override;
+		/** Advances publication observation for one live viewport and then the shared coordinator once. */
+		bool AdvanceViewportScheduling(std::uint64_t viewportHandle) override;
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
@@ -182,16 +177,8 @@ namespace Services::Map::Buildings
 		bool BeginCaptureGameWorldSession();
 		/** Ends gameplay scheduling and requests cancellation of active capture work. */
 		void StopCaptureGameWorldSession();
-		/** Advances one internal coordinator Section-processing tick.
-		 * A future runtime caller must invoke this only during an admitted active capture session;
-		 * no host runtime caller is connected yet.
-		 */
-		void AdvanceSectionScheduling();
-
-		/** Detects viewport publication owner changes and requeues each affected current range.
-		 * The temporary publication owner is released before this operation returns.
-		 */
-		void ObserveViewportCandidatePublicationChanges();
+		/** Detects one viewport's publication owner change and requeues its demanded range. */
+		void ObserveViewportCandidatePublicationChanges(BuildingMapViewport& viewport);
 
 		/** Checks whether any valid active viewport's one-cell-expanded range contains a Section coordinate.
 		 * @param gridX Signed global Section column to check.
@@ -202,18 +189,6 @@ namespace Services::Map::Buildings
 
 		/** Releases completed images outside all active viewport residency ranges without erasing Sections. */
 		void ReconcileSectionImageResidency();
-
-		/** Obtains one candidate batch from one retained publication without final certification.
-		 * @param buildingCollector Associated collector for this viewport.
-		 * @param observationGrid Requested row-major map-space grid.
-		 * @param columnCount Number of rightward cells in each row.
-		 * @param rowCount Number of downward rows.
-		 */
-		void ObserveCandidateBatch(
-			IBuildingCollector& buildingCollector,
-			const BuildingSectionGrid& observationGrid,
-			std::size_t columnCount,
-			std::size_t rowCount);
 
 		/** Selects one live viewport publication for the requested signed Section coordinate.
 		 * Prefers complete source evidence and keeps first registration order for ties. Incomplete

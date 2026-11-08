@@ -38,12 +38,11 @@ namespace Services::Map::Buildings::Coordination
 			std::int64_t endGridY) = 0;
 
 		/**
-		 * Refreshes each cell in the registered viewport's current range.
-		 *
+		 * Observes the registered viewport's publication change and advances the shared Section scheduler.
 		 * @param viewportHandle Opaque registration handle owned by the viewport.
-		 * @return True if at least one complete membership fingerprint was first observed or changed.
+		 * @return True when the handle is a live registered viewport and the operation ran.
 		 */
-		virtual bool RefreshViewportSections(std::uint64_t viewportHandle) = 0;
+		virtual bool AdvanceViewportScheduling(std::uint64_t viewportHandle) = 0;
 
 		/** Releases the registration represented by an opaque viewport handle. */
 		virtual void CloseViewport(std::uint64_t viewportHandle) = 0;

@@ -98,21 +98,17 @@ namespace MiniMapUI
 			double heightMapUnits);
 
 		/**
-		 * Applies a complete rectangle in the attached service's map units. Accepted
+		 * Updates the complete rectangle in the attached service's map units. Accepted
 		 * changes discover newly entered grid cells and discard departed CPU updates.
 		 * Rejection preserves all dirty and pending presentation work.
 		 *
-		 * @param xMapUnits New upper-left X coordinate.
-		 * @param yMapUnits New upper-left Y coordinate.
-		 * @param widthMapUnits New positive rectangle width.
-		 * @param heightMapUnits New positive rectangle height.
-		 * @return True when the attached viewport accepts and stores the rectangle.
+		 * @param x1 New inclusive upper-left X coordinate.
+		 * @param y1 New inclusive upper-left Y coordinate.
+		 * @param x2 New exclusive lower-right X coordinate.
+		 * @param y2 New exclusive lower-right Y coordinate.
+		 * @return True when the attached viewport accepts the rectangle and completes its update.
 		 */
-		bool SetRectangle(
-			double xMapUnits,
-			double yMapUnits,
-			double widthMapUnits,
-			double heightMapUnits);
+		bool Update(double x1, double y1, double x2, double y2);
 
 		/**
 		 * Resolves dirty current Sections and records owned RGBA8 replacements or

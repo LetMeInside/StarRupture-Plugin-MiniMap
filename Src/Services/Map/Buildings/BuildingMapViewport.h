@@ -45,41 +45,20 @@ namespace Services::Map::Buildings
 		~BuildingMapViewport();
 
 		/**
-		 * Moves the upper-left corner in the service's map units without changing size.
-		 * Returns false and preserves the old position and cell range if the service
-		 * or collector cannot apply a changed grid-aligned collection region.
+		 * Accepts an upper-left-origin half-open rectangle, advances this viewport's
+		 * collector once, and advances the shared service scheduler once. A closed or
+		 * invalidated viewport returns false without using its former associations.
+		 * Invalid or unrepresentable dimensions and unsupported grid coordinates retain
+		 * CalculateGridRange's exception behavior. True means the update operation ran,
+		 * regardless of Section image changes or remaining work.
 		 *
-		 * @param xMapUnits New upper-left map X coordinate.
-		 * @param yMapUnits New upper-left map Y coordinate.
-		 * @return True when the moved rectangle is accepted and stored.
+		 * @param x1 Upper-left map X coordinate; inclusive.
+		 * @param y1 Upper-left map Y coordinate; inclusive.
+		 * @param x2 Lower-right map X coordinate; exclusive.
+		 * @param y2 Lower-right map Y coordinate; exclusive.
+		 * @return True when the rectangle was accepted and its update operation executed.
 		 */
-		bool Move(double xMapUnits, double yMapUnits);
-
-		/**
-		 * Replaces the complete upper-left-origin rectangle in service map units.
-		 * Returns false without changing stored rectangle values or grid range when
-		 * the viewport is closed or the service rejects a changed grid range.
-		 * Invalid coordinates, nonpositive or nonfinite dimensions, and unsupported
-		 * coordinates retain the existing CalculateGridRange exception behavior.
-		 *
-		 * @param xMapUnits New upper-left map X coordinate.
-		 * @param yMapUnits New upper-left map Y coordinate.
-		 * @param widthMapUnits New strictly positive rectangle width.
-		 * @param heightMapUnits New strictly positive rectangle height.
-		 * @return True when the rectangle is accepted and stored.
-		 */
-		bool SetRectangle(
-			double xMapUnits,
-			double yMapUnits,
-			double widthMapUnits,
-			double heightMapUnits);
-
-		/**
-		 * Requests candidate observations for the current cells without changing the
-		 * collector's acquisition region. Returns true only when final scheduler-certified
-		 * membership is newly certified or changes; candidate signatures do not count.
-		 */
-		bool RefreshSections();
+		bool Update(double x1, double y1, double x2, double y2);
 
 		/** Returns the current rectangle's upper-left X coordinate in map units. */
 		double GetXMapUnits() const;

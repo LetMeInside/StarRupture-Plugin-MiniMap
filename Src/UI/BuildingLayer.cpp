@@ -116,12 +116,8 @@ namespace MiniMapUI
 		ReleasePendingTextures();
 	}
 
-	/** Updates the rectangle and reconciles CPU work only after acceptance. */
-	bool BuildingLayer::SetRectangle(
-		double xMapUnits,
-		double yMapUnits,
-		double widthMapUnits,
-		double heightMapUnits)
+	/** Updates the viewport and reconciles CPU work only after acceptance. */
+	bool BuildingLayer::Update(double x1, double y1, double x2, double y2)
 	{
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
@@ -135,7 +131,7 @@ namespace MiniMapUI
 			return false;
 		}
 		const std::set<Coordinate> previousCoordinates = CollectVisibleCoordinates();
-		if (!viewport_->SetRectangle(xMapUnits, yMapUnits, widthMapUnits, heightMapUnits))
+		if (!viewport_->Update(x1, y1, x2, y2))
 		{
 			return false;
 		}

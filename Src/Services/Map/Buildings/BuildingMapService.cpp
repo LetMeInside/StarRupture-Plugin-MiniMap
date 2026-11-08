@@ -151,12 +151,19 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Reconciles pending image residency before publication observation and one normal scheduling tick. */
-	void BuildingMapService::AdvanceSectionScheduling()
+	/** Observes one registered viewport and advances the shared coordinator once. */
+	bool BuildingMapService::AdvanceViewportScheduling(std::uint64_t viewportHandle)
 	{
-		if (mapWidthMapUnits_ == 0.0 || mapHeightMapUnits_ == 0.0)
+		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
+		if (viewportEntry == viewportsByHandle_.end())
 		{
-			return;
+			return false;
+		}
+		BuildingMapViewport* viewport = viewportEntry->second;
+		if (viewport == nullptr || viewport->service_ != this ||
+			viewport->viewportHandle_ != viewportHandle || viewport->buildingCollector_ == nullptr)
+		{
+			return false;
 		}
 		if (sectionImageResidencyReconciliationPending_)
 		{
@@ -165,9 +172,10 @@ namespace Services::Map::Buildings
 		}
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
-			ObserveViewportCandidatePublicationChanges();
+			ObserveViewportCandidatePublicationChanges(*viewport);
 			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this);
 		}
+		return true;
 	}
 
 	/** Tests one coordinate against every valid viewport's overflow-safe expanded grid range. */
@@ -217,43 +225,30 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Requeues demanded viewport cells when their current publication owner changes. */
-	void BuildingMapService::ObserveViewportCandidatePublicationChanges()
+	/** Requeues this viewport's demanded cells when its current publication owner changes. */
+	void BuildingMapService::ObserveViewportCandidatePublicationChanges(BuildingMapViewport& viewport)
 	{
-		if (sectionSchedulingCoordinator_ == nullptr)
+		std::shared_ptr<const BuildingCandidatePublication> publication =
+			viewport.buildingCollector_->AcquireCandidatePublication();
+		if (publication != nullptr && !publication->IsCurrent())
+		{
+			publication.reset();
+		}
+		const std::weak_ptr<const BuildingCandidatePublication>& previousPublication =
+			viewport.observedCandidatePublication_;
+		if (!previousPublication.owner_before(publication) &&
+			!publication.owner_before(previousPublication))
 		{
 			return;
 		}
-		for (const auto& viewportEntry : viewportsByHandle_)
+		viewport.observedCandidatePublication_ = publication;
+		const BuildingMapViewport::GridRange& gridRange = viewport.gridRange_;
+		for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
 		{
-			BuildingMapViewport* viewport = viewportEntry.second;
-			if (viewport == nullptr || viewport->service_ != this ||
-				viewport->viewportHandle_ != viewportEntry.first || viewport->buildingCollector_ == nullptr)
+			for (std::int64_t gridX = gridRange.firstX; gridX < gridRange.endX; ++gridX)
 			{
-				continue;
-			}
-			std::shared_ptr<const BuildingCandidatePublication> publication =
-				viewport->buildingCollector_->AcquireCandidatePublication();
-			if (publication != nullptr && !publication->IsCurrent())
-			{
-				publication.reset();
-			}
-			const std::weak_ptr<const BuildingCandidatePublication>& previousPublication =
-				viewport->observedCandidatePublication_;
-			if (!previousPublication.owner_before(publication) &&
-				!publication.owner_before(previousPublication))
-			{
-				continue;
-			}
-			viewport->observedCandidatePublication_ = publication;
-			const BuildingMapViewport::GridRange& gridRange = viewport->gridRange_;
-			for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
-			{
-				for (std::int64_t gridX = gridRange.firstX; gridX < gridRange.endX; ++gridX)
-				{
-					sectionSchedulingCoordinator_->RequestSectionWork(
-						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
-				}
+				sectionSchedulingCoordinator_->RequestSectionWork(
+					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
 			}
 		}
 	}
@@ -457,61 +452,6 @@ namespace Services::Map::Buildings
 			sectionImageResidencyReconciliationPending_ = true;
 		}
 		return true;
-	}
-
-	/** Observes candidate evidence for the requested grid without updating Section state. */
-	bool BuildingMapService::RefreshViewportSections(std::uint64_t viewportHandle)
-	{
-		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
-		if (viewportEntry == viewportsByHandle_.end() || viewportEntry->second->buildingCollector_ == nullptr)
-		{
-			return false;
-		}
-		const BuildingMapViewport::GridRange gridRange = viewportEntry->second->gridRange_;
-		const double sectionSize = sectionSizeMapUnits_;
-		const std::size_t columnCount = static_cast<std::size_t>(gridRange.endX - gridRange.firstX);
-		const std::size_t rowCount = static_cast<std::size_t>(gridRange.endY - gridRange.firstY);
-		const BuildingSectionGrid observationGrid{
-			static_cast<double>(gridRange.firstX) * sectionSize,
-			static_cast<double>(gridRange.firstY) * sectionSize,
-			sectionSize,
-			columnCount,
-			rowCount};
-		IBuildingCollector& buildingCollector = *viewportEntry->second->buildingCollector_;
-		ObserveCandidateBatch(
-			buildingCollector,
-			observationGrid,
-			columnCount,
-			rowCount);
-		return false;
-	}
-
-	/** Observes one retained candidate publication and never promotes its evidence to Section state. */
-	void BuildingMapService::ObserveCandidateBatch(
-		IBuildingCollector& buildingCollector,
-		const BuildingSectionGrid& observationGrid,
-		std::size_t columnCount,
-		std::size_t rowCount)
-	{
-		std::vector<BuildingCandidateObservation> observations;
-		if (rowCount != 0 && columnCount > observations.max_size() / rowCount)
-		{
-			throw std::length_error("Viewport candidate observation grid exceeds supported storage size.");
-		}
-		observations.resize(columnCount * rowCount);
-		const std::shared_ptr<const BuildingCandidatePublication> publication =
-			buildingCollector.AcquireCandidatePublication();
-		if (publication == nullptr || !publication->IsCurrent())
-		{
-			return;
-		}
-		publication->ObserveCandidates(
-			observationGrid,
-			std::span<BuildingCandidateObservation>(observations));
-		if (!publication->IsCurrent())
-		{
-			return;
-		}
 	}
 
 	/** Chooses the best current publication among live viewports covering one Section cell. */
