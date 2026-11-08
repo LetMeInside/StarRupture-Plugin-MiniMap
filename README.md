@@ -50,16 +50,16 @@ MiniMap reads live game state. It does not modify your save file.
 ## Requirements
 
 - **StarRupture**
-- **AlienX StarRupture Mod Loader 1.22.0 or newer**
+- **AlienX StarRupture Mod Loader 1.23.1 or newer**
 - Plugin interface **v70 or newer**
 
 MiniMap is a **client-side plugin**.
 
 ### Game builds
 
-MiniMap declares itself map-migrated: the game functions and class members it reads come from the Mod Loader's version map, so one DLL keeps working after a game update for every game build the Mod Loader knows. A layer whose functions the map cannot place on the running build (for example after a game update, until the map has rows for it) switches off in the Mod Loader's feature list, and the rest of MiniMap keeps running.
+MiniMap gets every game-specific location it uses (offsets, sizes, patterns and functions) from the Mod Loader's version map instead of values built into the plugin. One DLL runs on every supported game build, and it keeps working after a game update once the Mod Loader's map covers the new build.
 
-MiniMap no longer depends on the compiled size of the game's `ACrGameStateBase` or the layout of the building data classes: the members it reads from them (the map replicators, building tags, walkway spline mesh and placement entity type) are resolved from the running game through the Mod Loader, so one DLL keeps working when the game changes those classes. A member the game does not expose switches off only the layer that needs it. The same holds for the Unreal Engine members the building-picture capture reads from its private world (the world and level, the subsystem collection, actors and components, the light component): the reflected ones come from the game metadata, the others from the Mod Loader version map, and a game build the map does not know yet turns that layer off instead of reading a wrong offset. This needs Mod Loader v1.23.1 or newer.
+If the map lacks something for a build, only the affected layer switches off (for example the building pictures on the minimap) and the rest of MiniMap keeps running. Terrain is required. Building pictures on a newly released game build need a Mod Loader whose map covers it.
 
 ## Installation
 
