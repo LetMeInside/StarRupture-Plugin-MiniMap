@@ -62,7 +62,10 @@ namespace
         "Kian369",
         "A configurable on-screen minimap for StarRupture",
         PLUGIN_INTERFACE_VERSION,
-        MINIMAP_EXPORTS_TARGET
+        MINIMAP_EXPORTS_TARGET,
+        PLUGIN_GAME_BUILT_CL,
+        PluginLoadSetting(PluginReload::MENU) |
+            PluginUnloadSetting(PluginReload::MENU)
     };
 
     void ReleaseRuntime() noexcept
