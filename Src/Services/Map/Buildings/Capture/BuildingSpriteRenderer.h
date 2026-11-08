@@ -1,5 +1,5 @@
-// Owns one persistent private world and lighting rig plus request-scoped sprite capture resources.
-// It is an internal BuildingScheduler component with explicit owner-directed retirement.
+// Owns one plugin-lifetime private world and lighting rig plus request-scoped sprite capture resources.
+// It is an internal BuildingScheduler component; request resources retire independently per capture.
 #pragma once
 
 #include "CaptureRequest.h"
@@ -35,18 +35,17 @@ namespace Services::Map::Buildings::Scheduling
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Owns one persistent private world and shared lighting rig plus one active capture request.
+	/** Owns one plugin-lifetime private world and shared lighting rig plus one active capture request.
 	 * Queue-driven advancement admits one moved request and reports terminal feedback through
-	 * the independent FIFOs. The renderer
-	 * never observes scheduler status or disk/cache ownership.
-	 * All methods that touch UObject or NativeApi state require the game thread. Native
-	 * resources must be explicitly retired before BuildingScheduler releases this object. Submitted
-	 * scene work remains owned until asynchronous readback or an ordered retirement fence proves safety.
+	 * the independent FIFOs. The renderer never observes scheduler status or disk/cache ownership.
+	 * All methods that touch UObject or NativeApi state require the game thread. Gameplay-session stop
+	 * retires only active request resources; the shared world and lighting remain renderer-owned.
+	 * Submitted scene work remains owned until readback or an ordered retirement fence proves safety.
 	 */
 	class BuildingSpriteRenderer final
 	{
 	public:
-		/** Does not perform native cleanup; BuildingScheduler must retire resources explicitly. */
+		/** Does not perform native cleanup; request retirement is advanced explicitly while owned. */
 		~BuildingSpriteRenderer() = default;
 
 	private:
@@ -71,11 +70,10 @@ namespace Services::Map::Buildings::Capture
 		{
 			None,
 			LightingReadiness,
-			RequestRetirement,
-			ServiceRetirement
+			RequestRetirement
 		};
 
-		/** Creates an inert renderer for one active capture session at the supplied map scale. */
+		/** Creates inert plugin-lifetime renderer state at the service-configured map scale. */
 		explicit BuildingSpriteRenderer(double pixelsPerMapUnit);
 		/** Prevents copies from creating ambiguous native-resource ownership. */
 		BuildingSpriteRenderer(const BuildingSpriteRenderer&) = delete;
@@ -133,6 +131,15 @@ namespace Services::Map::Buildings::Capture
 		void AdvanceCurrentPhase();
 		/** Revokes result eligibility; submitted scene work remains owned until BM-07 retires it. */
 		void Cancel(CaptureRequest::Correlation correlation);
+		/** Cancels the active request for a gameplay-session stop without retiring the shared world.
+		 * @return True when no active request remains to retire.
+		 */
+		bool RequestSessionStop();
+		/** Advances only active-request cancellation and native retirement.
+		 * @param feedbackQueue Receives the correlated terminal result after safe retirement.
+		 * @return True when no active request remains; the shared private world stays alive.
+		 */
+		bool AdvanceSessionRetirement(Scheduling::SpriteFeedbackQueue& feedbackQueue);
 		/** Releases terminal request state after its feedback value enters the FIFO. */
 		void AcknowledgeCompletion(CaptureRequest::Correlation correlation);
 		/** Continues or cancels HDR work after BM-07 proves scene/readback retirement. */
@@ -182,38 +189,22 @@ namespace Services::Map::Buildings::Capture
 		bool CreateDirectionalLight(std::size_t lightIndex);
 		/** Configures the source-backed key/fill light values. */
 		bool ConfigureDirectionalLight(std::size_t lightIndex);
-		/** Destroys an already unregistered component before world cleanup. */
+		/** Destroys a request-owned component after submitted request work is retired. */
 		bool DestroyComponent(SDK::UActorComponent* component);
-		/** Destroys an actor before private-world cleanup. */
+		/** Destroys the request-owned subject actor after submitted request work is retired. */
 		bool DestroyActor(SDK::AActor*& actor);
-		/** Unregisters and destroys one shared light component during service teardown. */
-		bool RetireLight(std::size_t lightIndex);
 		/** Releases request-specific resources only after scene work has been retired. */
 		bool RetireWithoutSubmittedScene();
 		/** Unregisters and destroys request-specific capture and actor resources. */
 		bool DestroyRequestContents();
 		/** Retires request owners behind their render fence while preserving the shared world and rig. */
 		bool RetireRequestResources();
-		/** Unregisters and destroys the shared lighting rig during service teardown. */
-		bool DestroySharedLighting();
-		/** Cleans up the private world only during explicit service teardown. */
-		bool CleanupPrivateWorld();
 		/** Releases actor, capture-component, target, and class roots after request retirement. */
 		bool ReleaseRequestRoots();
-		/** Releases shared light and world roots after service retirement. */
-		bool ReleaseWorldRoots();
 		/** Constructs, inserts, and polls a NativeApi render fence without blocking. */
 		bool StartFence(FencePurpose purpose);
 		/** Polls and destroys the expected render fence once its queued work completes. */
 		bool PollFence(FencePurpose purpose);
-		/** Begins scheduler-directed shutdown without freeing resources still in use by BM-07. */
-		void RequestServiceShutdown();
-		/** Advances request and shared-world retirement; true means the renderer can be released. */
-		bool AdvanceServiceShutdown();
-		/** Cancels and retires the active request before shared-world shutdown. */
-		bool AdvanceRequestShutdown();
-		/** Retires the shared lighting rig and world behind ordered render work. */
-		bool AdvanceSharedWorldShutdown();
 		/** Releases one retained UObject after its component/actor/world role is retired. */
 		bool ReleaseObject(SDK::UObject* object);
 		/** Checks NativeApi availability and confirms this is the Unreal game thread. */
@@ -260,17 +251,10 @@ namespace Services::Map::Buildings::Capture
 		bool lightingRigSetupStarted_ = false;
 		bool lightingRigReady_ = false;
 		bool sharedWorldUsable_ = true;
-		bool serviceShutdownRequested_ = false;
-		bool serviceRetired_ = false;
 		bool requestRetirementFenceComplete_ = false;
-		bool lightingRetirementFenceComplete_ = false;
-		bool serviceRetirementFenceComplete_ = false;
 		bool captureComponentRegistered_ = false;
 		bool captureComponentDestroyed_ = false;
 		bool subjectActorDestroyed_ = false;
 		bool actorDestroyFailed_ = false;
-		bool privateWorldCleaned_ = false;
-		std::array<bool, 2> lightComponentsRegistered_{};
-		std::array<bool, 2> lightComponentsDestroyed_{};
 	};
 }

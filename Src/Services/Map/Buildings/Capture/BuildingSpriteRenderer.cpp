@@ -34,7 +34,7 @@ namespace Services::Map::Buildings::Capture
 	{
 		CaptureResult::Acceptance acceptance;
 		acceptance.Correlation = request.RequestIdentity;
-		if (hasActiveRequest_ || serviceShutdownRequested_ || !sharedWorldUsable_)
+		if (hasActiveRequest_ || !sharedWorldUsable_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedUnavailable;
 			return acceptance;
@@ -122,7 +122,7 @@ namespace Services::Map::Buildings::Capture
 	/** Requires idle, game-thread admission with no outstanding native request retirement. */
 	bool BuildingSpriteRenderer::CanAdmitQueuedRequest() const
 	{
-		return !hasActiveRequest_ && phase_ == Phase::Idle && !serviceShutdownRequested_ &&
+		return !hasActiveRequest_ && phase_ == Phase::Idle &&
 			sharedWorldUsable_ && !sceneWorkSubmitted_ && !readbackStarted_ &&
 			fencePurpose_ == FencePurpose::None && hdrReadback_.IsRetired() && finalReadback_.IsRetired() &&
 			!actorClass_ && !subjectActor_ && !captureComponent_ && !renderTarget_;
@@ -285,6 +285,33 @@ namespace Services::Map::Buildings::Capture
 		{
 			phase_ = Phase::RetirementRequired;
 		}
+	}
+
+	/** Cancels the active request without requesting shared-world retirement. */
+	bool BuildingSpriteRenderer::RequestSessionStop()
+	{
+		if (!hasActiveRequest_)
+		{
+			return true;
+		}
+		Cancel(activeRequest_.RequestIdentity);
+		return false;
+	}
+
+	/** Advances only cancelled request retirement while retaining the shared world and lighting. */
+	bool BuildingSpriteRenderer::AdvanceSessionRetirement(
+		Scheduling::SpriteFeedbackQueue& feedbackQueue)
+	{
+		if (!IsGameThread())
+		{
+			return false;
+		}
+		if (hasActiveRequest_)
+		{
+			Advance();
+			EmitTerminalFeedback(feedbackQueue);
+		}
+		return !hasActiveRequest_;
 	}
 
 	/** Reports whether the matching terminal request and every native owner are safely retired. */
@@ -666,27 +693,6 @@ namespace Services::Map::Buildings::Capture
 		return ReleaseRequestRoots();
 	}
 
-	/** Unregisters and destroys the service-lifetime directional lighting rig. */
-	bool BuildingSpriteRenderer::DestroySharedLighting()
-	{
-		for (std::size_t lightIndex = 0; lightIndex < directionalLights_.size(); ++lightIndex)
-		{
-			if (!RetireLight(lightIndex)) return false;
-		}
-		return true;
-	}
-
-	/** Cleans up the persistent private world only during service-directed shutdown. */
-	bool BuildingSpriteRenderer::CleanupPrivateWorld()
-	{
-		if (!privateWorld_ || privateWorldCleaned_) return true;
-		const auto* nativeApi = MiniMapNative::Get();
-		if (!nativeApi || !nativeApi->world.cleanupWorld || !IsGameThread()) return false;
-		nativeApi->world.cleanupWorld(reinterpret_cast<std::uintptr_t>(privateWorld_), true, true, 0);
-		privateWorldCleaned_ = true;
-		return true;
-	}
-
 	/** Releases request-specific retained objects after their fence and owner teardown. */
 	bool BuildingSpriteRenderer::ReleaseRequestRoots()
 	{
@@ -698,21 +704,6 @@ namespace Services::Map::Buildings::Capture
 		subjectActor_ = nullptr;
 		if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(actorClass_))) return false;
 		actorClass_ = nullptr;
-		return true;
-	}
-
-	/** Releases the shared light and world roots after service retirement completes. */
-	bool BuildingSpriteRenderer::ReleaseWorldRoots()
-	{
-		for (SDK::UDirectionalLightComponent*& light : directionalLights_)
-		{
-			if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(light))) return false;
-			light = nullptr;
-		}
-		if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(privateWorld_))) return false;
-		privateWorld_ = nullptr;
-		privateWorldInitialized_ = false;
-		lightingRigReady_ = false;
 		return true;
 	}
 
@@ -743,82 +734,6 @@ namespace Services::Map::Buildings::Capture
 		if (!nativeApi->texture.renderFencePoll(retirementFenceStorage_)) return false;
 		nativeApi->texture.renderFenceDestroy(retirementFenceStorage_);
 		fencePurpose_ = FencePurpose::None;
-		return true;
-	}
-
-	/** Begins service shutdown and cancels any request without bypassing submitted-work retirement. */
-	void BuildingSpriteRenderer::RequestServiceShutdown()
-	{
-		serviceShutdownRequested_ = true;
-		if (!hasActiveRequest_) return;
-		resultEligible_ = false;
-		pendingFailure_ = CaptureResult::Completion::Failure::None;
-		pendingPayload_.reset();
-		completion_.Payload.reset();
-		if (phase_ == Phase::Terminal)
-		{
-			if (completion_.Result == CaptureResult::Completion::Status::Completed)
-			{
-				completion_.Result = CaptureResult::Completion::Status::Cancelled;
-			}
-			return;
-		}
-		phase_ = Phase::RetirementRequired;
-	}
-
-	/** Advances service shutdown without releasing any outstanding native owner. */
-	bool BuildingSpriteRenderer::AdvanceServiceShutdown()
-	{
-		if (!serviceShutdownRequested_ || !IsGameThread()) return false;
-		if (hasActiveRequest_ && !AdvanceRequestShutdown()) return false;
-		return AdvanceSharedWorldShutdown();
-	}
-
-	/** Retires the active request, waiting for BM-07 after any submitted scene work. */
-	bool BuildingSpriteRenderer::AdvanceRequestShutdown()
-	{
-		if (phase_ != Phase::Terminal)
-		{
-			phase_ = Phase::RetirementRequired;
-			AdvanceRetirement();
-			if (phase_ != Phase::Terminal) return false;
-		}
-		hasActiveRequest_ = false;
-		activeRequest_ = {};
-		completion_ = {};
-		phase_ = Phase::Idle;
-		return true;
-	}
-
-	/** Retires persistent lights and world, then releases the service-owned roots. */
-	bool BuildingSpriteRenderer::AdvanceSharedWorldShutdown()
-	{
-		if (serviceRetired_) return true;
-		if (fencePurpose_ == FencePurpose::LightingReadiness)
-		{
-			if (!PollFence(FencePurpose::LightingReadiness)) return false;
-			lightingRigReady_ = true;
-		}
-		if (fencePurpose_ == FencePurpose::RequestRetirement) return false;
-		if (!lightingRetirementFenceComplete_)
-		{
-			if (!DestroySharedLighting()) return false;
-			if (privateWorld_ && fencePurpose_ == FencePurpose::None &&
-				!StartFence(FencePurpose::ServiceRetirement)) return false;
-			if (privateWorld_ && !PollFence(FencePurpose::ServiceRetirement)) return false;
-			lightingRetirementFenceComplete_ = true;
-		}
-		if (!CleanupPrivateWorld()) return false;
-		if (!serviceRetirementFenceComplete_)
-		{
-			if (privateWorld_ && fencePurpose_ == FencePurpose::None &&
-				!StartFence(FencePurpose::ServiceRetirement)) return false;
-			if (privateWorld_ && !PollFence(FencePurpose::ServiceRetirement)) return false;
-			serviceRetirementFenceComplete_ = true;
-		}
-		if (!ReleaseWorldRoots()) return false;
-		serviceRetired_ = true;
-		sharedWorldUsable_ = false;
 		return true;
 	}
 
@@ -928,7 +843,6 @@ namespace Services::Map::Buildings::Capture
 			return false;
 		}
 		nativeApi->player.registerComponent(directionalLights_[lightIndex], privateWorld_, nullptr);
-		lightComponentsRegistered_[lightIndex] = true;
 		return true;
 	}
 
@@ -1252,36 +1166,6 @@ namespace Services::Map::Buildings::Capture
 			actorDestroyFailed_ = true;
 			return false;
 		}
-		return true;
-	}
-
-	/** Unregisters and destroys one directional light before private-world cleanup. */
-	bool BuildingSpriteRenderer::RetireLight(std::size_t lightIndex)
-	{
-		if (lightIndex >= directionalLights_.size() || !directionalLights_[lightIndex])
-		{
-			return true;
-		}
-		SDK::UActorComponent* component = directionalLights_[lightIndex];
-		if (lightComponentsRegistered_[lightIndex])
-		{
-			const auto* nativeApi = MiniMapNative::Get();
-			if (!nativeApi || !nativeApi->player.unregisterComponent)
-			{
-				return false;
-			}
-			nativeApi->player.unregisterComponent(component);
-			lightComponentsRegistered_[lightIndex] = false;
-		}
-		if (lightComponentsDestroyed_[lightIndex])
-		{
-			return true;
-		}
-		if (!DestroyComponent(component))
-		{
-			return false;
-		}
-		lightComponentsDestroyed_[lightIndex] = true;
 		return true;
 	}
 
