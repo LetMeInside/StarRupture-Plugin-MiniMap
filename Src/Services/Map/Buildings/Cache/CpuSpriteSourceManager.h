@@ -4,6 +4,9 @@
 #include "OwnedSpriteKey.h"
 #include "ProcessedSpritePayload.h"
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <cstdint>
+#endif
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -32,6 +35,32 @@ namespace Services::Map::Buildings::Cache
 		{
 			Status Result = Status::Unavailable;
 			const ProcessedSpritePayload* Payload = nullptr;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			/** Records the actual resident or disk retrieval outcome and elapsed lookup time. */
+			struct LookupEvidence
+			{
+				/** Identifies the retrieval path observed by one GetSprite call. */
+				enum class LookupRoute : std::uint8_t
+				{
+					Unknown,
+					ResidentPayloadFound,
+					NoDiskCacheProvider,
+					DiskLoadedAndPayloadAdopted,
+					DiskEntryMissing,
+					DiskEntryInvalid,
+					DiskReadIOError,
+					DiskReadUnavailable,
+					LoadedPayloadCouldNotBeAdopted,
+					AdoptedPayloadNotFound,
+					OtherDiskLoadFailure
+				};
+
+				LookupRoute Route = LookupRoute::Unknown;
+				double TotalMs = 0.0;
+				double DiskLoadMs = 0.0;
+			};
+			LookupEvidence Diagnostics{};
+#endif
 		};
 
 		/** Borrows the disk cache for lazy retrieval; the cache must outlive this manager.
