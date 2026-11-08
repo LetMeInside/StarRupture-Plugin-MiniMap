@@ -365,28 +365,40 @@ namespace Services::Map::Buildings::Scheduling
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
 	{
+		const double pixelsPerMapUnit =
+			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
 		spriteDiskCache_.reset(new Cache::SpriteDiskCache(std::move(buildingsCacheDirectory)));
 		cpuSpriteSourceManager_.reset(new Cache::CpuSpriteSourceManager(spriteDiskCache_.get()));
 		buildingScheduler_.reset(new BuildingScheduler(
-			cpuSpriteSourceManager_.get(), spriteDiskCache_.get()));
+			cpuSpriteSourceManager_.get(), spriteDiskCache_.get(), pixelsPerMapUnit));
 	}
 
 	/** Destroys subordinates in reverse member order; native retirement remains service-directed. */
 	SectionScheduler::~SectionScheduler() = default;
 
-	/** Delegates session creation after calculating the configured capture scale. */
+	/** Starts gameplay scheduling against the renderer created with service configuration. */
 	bool SectionScheduler::BeginCaptureGameWorldSession()
 	{
-		const double pixelsPerMapUnit =
-			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
 		return buildingScheduler_ != nullptr &&
-			buildingScheduler_->BeginSession(pixelsPerMapUnit);
+			buildingScheduler_->BeginSession();
 	}
 
-	/** Advances the existing retirement path and releases no native owner before completion. */
-	bool SectionScheduler::AdvanceCaptureGameWorldSessionShutdown()
+	/** Ends gameplay scheduling and starts cancellation of active request work. */
+	void SectionScheduler::StopCaptureGameWorldSession()
 	{
-		return buildingScheduler_ == nullptr || buildingScheduler_->AdvanceSessionShutdown();
+		if (buildingScheduler_ != nullptr)
+		{
+			buildingScheduler_->StopSession();
+		}
+	}
+
+	/** Advances active-request retirement without invoking normal sprite acquisition. */
+	void SectionScheduler::AdvancePendingCaptureRetirement()
+	{
+		if (buildingScheduler_ != nullptr)
+		{
+			buildingScheduler_->AdvancePendingSessionRetirement();
+		}
 	}
 
 	/** Delegates explicit cache deletion to the owned SpriteDiskCache. */

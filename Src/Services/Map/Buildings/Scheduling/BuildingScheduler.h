@@ -24,9 +24,10 @@ namespace Services::Map::Buildings::Capture
 
 namespace Services::Map::Buildings::Scheduling
 {
-	/** Owns active-session status, request/feedback queues and the private sprite renderer.
+	/** Owns session status and request queues plus one plugin-lifetime private sprite renderer.
 	 * It borrows the CPU source manager and disk cache, which must outlive this scheduler.
-	 * Acquisition and payload borrowing are serialized on the designated game thread.
+	 * The renderer survives gameplay sessions; acquisition and payload borrowing are
+	 * serialized on the designated game thread.
 	 */
 	class BuildingScheduler final
 	{
@@ -40,14 +41,16 @@ namespace Services::Map::Buildings::Scheduling
 			Unavailable
 		};
 
-		/** Borrows the sibling cache and resident CPU source manager.
+		/** Creates the persistent renderer and borrows the sibling cache/source manager.
 		 * @param cpuSpriteSourceManager Owner of resident processed sprites.
 		 * @param spriteDiskCache Cache used for capture persistence and by CPU source retrieval.
+		 * @param pixelsPerMapUnit Capture scale derived from service Section settings.
 		 */
 		BuildingScheduler(
 			Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
-			Cache::SpriteDiskCache* spriteDiskCache) noexcept;
-		/** Releases renderer storage; callers must complete ordered session shutdown first. */
+			Cache::SpriteDiskCache* spriteDiskCache,
+			double pixelsPerMapUnit);
+		/** Releases the plugin-lifetime renderer object without implicit native cleanup. */
 		~BuildingScheduler();
 
 		/** Resolves one requirement through status, CPU source, disk cache, or request FIFO.
@@ -59,19 +62,24 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		RequirementStatus EnsureSpriteReady(const Cache::OwnedSpriteKey& key);
 
-		/** Creates a renderer when no renderer session is active.
-		 * @param pixelsPerMapUnit Capture scale passed to the renderer.
-		 * @return True when a new renderer session is established.
+		/** Starts scheduling against the existing plugin-lifetime renderer.
+		 * Pending cancellation retirement from a previous session does not reject start.
+		 * @return True when this scheduler transitions into an active gameplay session.
 		 */
-		bool BeginSession(double pixelsPerMapUnit);
+		bool BeginSession();
 
-		/** Requests ordered shutdown and advances retirement until the renderer can be released.
-		 * @return True when renderer retirement completed and session-local state was cleared.
+		/** Ends gameplay admission and cancels any active request without waiting.
+		 * Native request ownership remains in the renderer until tick-driven retirement.
 		 */
-		bool AdvanceSessionShutdown();
+		void StopSession();
+		/** Advances only pending request retirement, without admitting new requests.
+		 * This may run after gameplay ends and while a later gameplay session is active.
+		 */
+		void AdvancePendingSessionRetirement();
 
-		/** Advances the renderer once, then drains its available terminal feedback.
-		 * This internal acquisition operation is called on the serialized game thread.
+		/** Advances one capture operation, prioritizing prior-session retirement when pending.
+		 * Otherwise it uses the normal active-session path and drains terminal feedback.
+		 * This internal operation is called on the serialized game thread.
 		 */
 		void AdvanceSpriteAcquisition();
 
@@ -80,7 +88,7 @@ namespace Services::Map::Buildings::Scheduling
 		RequirementStatus EnqueueCaptureRequest(const Cache::OwnedSpriteKey& key);
 		/** Drains feedback after request values have left the independently locked FIFO. */
 		void ProcessCaptureFeedback();
-		/** Clears scheduler-only session values after renderer retirement has completed. */
+		/** Clears queued requests, feedback and session-local status without resetting correlation. */
 		void ClearSessionState() noexcept;
 
 		/** Finds status only when feedback exactly matches its pending request in the active session.
@@ -106,7 +114,8 @@ namespace Services::Map::Buildings::Scheduling
 		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager_ = nullptr;
 		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
 		std::uint64_t nextRequestSequence_ = 1;
-		bool sessionShutdownRequested_ = false;
+		bool sessionActive_ = false;
+		bool sessionRetirementPending_ = false;
 		std::unordered_map<std::string, SpriteStatus> spriteStatusesByKey_;
 		SpriteRequestQueue spriteRequestQueue_;
 		SpriteFeedbackQueue spriteFeedbackQueue_;

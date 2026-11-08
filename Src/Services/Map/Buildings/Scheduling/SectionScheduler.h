@@ -33,11 +33,12 @@ namespace Services::Map::Buildings::Scheduling
 	class BuildingScheduler;
 	class SectionSchedulingCoordinator;
 
-	/** Owns acquisition resources and synchronously prepares, renders and commits one Section image.
+	/** Owns persistent acquisition resources and synchronously prepares, renders and commits Sections.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
-	 * The coordinator delegates session lifetime and shutdown progression. Construction is inert; session
-	 * shutdown must finish before this owner is destroyed. Completed image ownership remains exclusively
-	 * with the supplied BuildingMapSection; the commit outcome reports whether adoption succeeded.
+	 * The renderer object survives gameplay stops under this plugin-lifetime owner. Construction creates
+	 * CPU-side owners only; session cancellation retirement advances independently from Section work.
+	 * Completed image ownership remains exclusively with the supplied BuildingMapSection; the commit
+	 * outcome reports whether adoption succeeded.
 	 */
 	class SectionScheduler final
 	{
@@ -399,21 +400,21 @@ namespace Services::Map::Buildings::Scheduling
 			std::uint32_t sectionResolutionPixels,
 			std::filesystem::path buildingsCacheDirectory);
 
-		/** Begins the existing BuildingScheduler session using the stored service image scale.
-		 * @return True when BuildingScheduler establishes this renderer session.
+		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
+		 * @return True when BuildingScheduler enters gameplay-active scheduling state.
 		 */
 		bool BeginCaptureGameWorldSession();
 
-		/** Advances existing ordered renderer retirement without performing destructor cleanup.
-		 * @return True when native retirement is complete and session state is released.
-		 */
-		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Ends gameplay-session acquisition and begins cancellation of active request work. */
+		void StopCaptureGameWorldSession();
+		/** Advances active-request retirement without admitting captures or processing Sections. */
+		void AdvancePendingCaptureRetirement();
 		/** Clears the configured sprite cache without changing acquisition-session state.
 		 * @return True when SpriteDiskCache clears its configured directory without error.
 		 */
 		bool ClearCache();
 		/** Advances one existing sprite renderer operation and drains available feedback.
-		 * Called once by the coordinator per scheduling tick on the serialized game thread.
+		 * Called only for an admitted gameplay scheduling tick on the serialized game thread.
 		 */
 		void AdvanceSpriteAcquisition();
 

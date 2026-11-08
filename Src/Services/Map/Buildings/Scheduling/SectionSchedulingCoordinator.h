@@ -20,8 +20,9 @@ namespace Services::Map::Buildings::Scheduling
 	/** Tracks deduplicated Section work required by active viewports.
 	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
 	 * Waiting coordinates persist until demand is withdrawn or an explicit completed-work report
-	 * removes them. Its internal tick synchronously processes waiting Sections, but no host runtime
-	 * caller is connected; service and acquisition lifecycle remain externally controlled.
+	 * removes them. Its Section tick synchronously processes waiting Sections. Plugin code may
+	 * separately advance pending capture-request retirement without processing Section work.
+	 * Normal Section scheduling remains externally controlled.
 	 */
 	class SectionSchedulingCoordinator final
 	{
@@ -112,10 +113,10 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		bool BeginCaptureGameWorldSession();
 
-		/** Delegates ordered renderer-session shutdown to the owned scheduler.
-		 * @return True when existing native retirement is complete.
-		 */
-		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Ends gameplay scheduling and requests cancellation of active capture work once. */
+		void StopCaptureGameWorldSession();
+		/** Advances pending capture-request retirement without processing Sections. */
+		void AdvancePendingCaptureRetirement();
 		/** Delegates explicit building-cache clearing to the owned SectionScheduler.
 		 * @return True when the configured Buildings subtree is cleared without error.
 		 */

@@ -62,7 +62,7 @@ namespace Services::Map::Buildings
 			sectionSchedulingCoordinator_->ClearCache();
 	}
 
-	/** Starts a renderer session once finite positive gameplay dimensions are accepted. */
+	/** Starts a gameplay session against the renderer already owned by the service. */
 	bool BuildingMapService::StartGameSession(
 		double mapWidthMapUnits,
 		double mapHeightMapUnits)
@@ -82,10 +82,14 @@ namespace Services::Map::Buildings
 		return true;
 	}
 
-	/** Retires capture and clears gameplay-owned registrations, demand and Sections. */
+	/** Stops one gameplay session and clears its viewport/demand/Section state without waiting. */
 	void BuildingMapService::StopGameSession()
 	{
-		AdvanceCaptureGameWorldSessionShutdown();
+		if (mapWidthMapUnits_ == 0.0 && mapHeightMapUnits_ == 0.0)
+		{
+			return;
+		}
+		StopCaptureGameWorldSession();
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
 			viewportEntry.second->InvalidateService();
@@ -99,6 +103,15 @@ namespace Services::Map::Buildings
 		sectionImageResidencyReconciliationPending_ = false;
 		mapWidthMapUnits_ = 0.0;
 		mapHeightMapUnits_ = 0.0;
+	}
+
+	/** Advances only pending capture-request retirement; gameplay readiness is not required. */
+	void BuildingMapService::AdvancePendingCaptureRetirement()
+	{
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			sectionSchedulingCoordinator_->AdvancePendingCaptureRetirement();
+		}
 	}
 
 	/** Returns the active gameplay map width without modifying service state. */
@@ -123,18 +136,20 @@ namespace Services::Map::Buildings
 		viewportsByHandle_.clear();
 	}
 
-	/** Starts one renderer session through the coordinator without activating runtime callbacks. */
+	/** Starts gameplay scheduling against the coordinator's persistent renderer. */
 	bool BuildingMapService::BeginCaptureGameWorldSession()
 	{
 		return sectionSchedulingCoordinator_ &&
 			sectionSchedulingCoordinator_->BeginCaptureGameWorldSession();
 	}
 
-	/** Advances coordinator-delegated renderer teardown without releasing pending native owners. */
-	bool BuildingMapService::AdvanceCaptureGameWorldSessionShutdown()
+	/** Ends scheduler admission and requests active-request cancellation once. */
+	void BuildingMapService::StopCaptureGameWorldSession()
 	{
-		return sectionSchedulingCoordinator_ == nullptr ||
-			sectionSchedulingCoordinator_->AdvanceCaptureGameWorldSessionShutdown();
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			sectionSchedulingCoordinator_->StopCaptureGameWorldSession();
+		}
 	}
 
 	/** Reconciles pending image residency before publication observation and one normal scheduling tick. */

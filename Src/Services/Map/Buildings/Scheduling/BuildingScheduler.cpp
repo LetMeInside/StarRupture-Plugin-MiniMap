@@ -13,13 +13,15 @@ namespace Services::Map::Buildings::Scheduling
 	/** Retains references to the CPU source manager and configured disk cache. */
 	BuildingScheduler::BuildingScheduler(
 		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
-		Cache::SpriteDiskCache* spriteDiskCache) noexcept
+		Cache::SpriteDiskCache* spriteDiskCache,
+		double pixelsPerMapUnit)
 		: cpuSpriteSourceManager_(cpuSpriteSourceManager)
 		, spriteDiskCache_(spriteDiskCache)
+		, captureRenderer_(new Capture::BuildingSpriteRenderer(pixelsPerMapUnit))
 	{
 	}
 
-	/** Requires session shutdown to have retired every native renderer owner. */
+	/** Destroys the plugin-lifetime renderer object without implicit native cleanup. */
 	BuildingScheduler::~BuildingScheduler() = default;
 
 	/** Returns current readiness or queues one owned request after a confirmed disk miss. */
@@ -69,46 +71,54 @@ namespace Services::Map::Buildings::Scheduling
 		return EnqueueCaptureRequest(key);
 	}
 
-	/** Creates an inert private renderer when the previous renderer has been retired. */
-	bool BuildingScheduler::BeginSession(double pixelsPerMapUnit)
+	/** Starts gameplay scheduling without replacing the persistent renderer. */
+	bool BuildingScheduler::BeginSession()
 	{
-		if (captureRenderer_)
+		if (sessionActive_)
 		{
 			return false;
 		}
 		ClearSessionState();
-		captureRenderer_.reset(new Capture::BuildingSpriteRenderer(pixelsPerMapUnit));
+		sessionActive_ = true;
 		return true;
 	}
 
-	/** Advances ordered native shutdown and clears session values only after renderer retirement. */
-	bool BuildingScheduler::AdvanceSessionShutdown()
+	/** Stops session admission and requests cancellation without waiting for native retirement. */
+	void BuildingScheduler::StopSession()
 	{
-		if (!captureRenderer_)
+		if (!sessionActive_)
 		{
-			return true;
+			return;
 		}
-
-		if (!sessionShutdownRequested_)
-		{
-			captureRenderer_->RequestServiceShutdown();
-			sessionShutdownRequested_ = true;
-		}
-
-		if (!captureRenderer_->AdvanceServiceShutdown())
-		{
-			return false;
-		}
-		captureRenderer_.reset();
+		sessionActive_ = false;
 		ClearSessionState();
-		return true;
+		if (captureRenderer_ != nullptr)
+		{
+			sessionRetirementPending_ = !captureRenderer_->RequestSessionStop();
+		}
 	}
 
-	/** Advances one renderer operation, then drains all terminal feedback now available. */
+	/** Advances cancellation retirement after stop and preserves the shared renderer world. */
+	void BuildingScheduler::AdvancePendingSessionRetirement()
+	{
+		if (!sessionRetirementPending_ || captureRenderer_ == nullptr)
+		{
+			return;
+		}
+		sessionRetirementPending_ = !captureRenderer_->AdvanceSessionRetirement(spriteFeedbackQueue_);
+		spriteFeedbackQueue_.Clear();
+	}
+
+	/** Advances one capture operation or pending stop retirement, then drains terminal feedback. */
 	void BuildingScheduler::AdvanceSpriteAcquisition()
 	{
-		if (!captureRenderer_ || sessionShutdownRequested_)
+		if (!sessionActive_ || captureRenderer_ == nullptr)
 		{
+			return;
+		}
+		if (sessionRetirementPending_)
+		{
+			AdvancePendingSessionRetirement();
 			return;
 		}
 
@@ -130,7 +140,7 @@ namespace Services::Map::Buildings::Scheduling
 	SpriteStatus* BuildingScheduler::FindMatchingPendingStatus(
 		const Capture::CaptureFeedback& feedback) noexcept
 	{
-		if (!captureRenderer_ || sessionShutdownRequested_)
+		if (!sessionActive_ || captureRenderer_ == nullptr)
 		{
 			return nullptr;
 		}
@@ -217,8 +227,6 @@ namespace Services::Map::Buildings::Scheduling
 		spriteRequestQueue_.Clear();
 		spriteFeedbackQueue_.Clear();
 		spriteStatusesByKey_.clear();
-		nextRequestSequence_ = 1;
-		sessionShutdownRequested_ = false;
 	}
 
 	/** Creates one owned request after a confirmed cache miss and records it as pending.
@@ -228,7 +236,7 @@ namespace Services::Map::Buildings::Scheduling
 	BuildingScheduler::RequirementStatus BuildingScheduler::EnqueueCaptureRequest(
 		const Cache::OwnedSpriteKey& key)
 	{
-		if (!captureRenderer_ || nextRequestSequence_ == 0 || sessionShutdownRequested_)
+		if (!sessionActive_ || captureRenderer_ == nullptr || nextRequestSequence_ == 0)
 		{
 			if (captureRenderer_)
 			{

@@ -56,21 +56,27 @@ namespace Services::Map::Buildings
 		BuildingMapService(BuildingMapService&&) = delete;
 		/** Prevents moves from invalidating non-owning viewport service references. */
 		BuildingMapService& operator=(BuildingMapService&&) = delete;
-		/** Invalidates viewports; the owner must finish active game-world-session shutdown before destruction. */
+		/** Invalidates outstanding viewports when the plugin-lifetime owner is destroyed. */
 		~BuildingMapService();
 		/** Clears only this service's configured Buildings cache subtree.
 		 * CacheIdentity remains responsible for deciding when this operation is requested.
 		 * @return True when the cache subtree was cleared without a filesystem error.
 		 */
 		bool ClearCache();
-		/** Starts renderer capture for one gameplay map and stores its finite positive dimensions.
+		/** Starts gameplay scheduling against the persistent renderer and stores map dimensions.
 		 * @param mapWidthMapUnits Active gameplay map width in map units.
 		 * @param mapHeightMapUnits Active gameplay map height in map units.
-		 * @return True when a renderer session starts and the map dimensions become active.
+		 * @return True when gameplay scheduling starts and the map dimensions become active.
 		 */
 		bool StartGameSession(double mapWidthMapUnits, double mapHeightMapUnits);
-		/** Shuts down renderer capture and clears gameplay Sections, viewports and demand. */
+		/** Ends one gameplay session, requests active-capture cancellation, and clears gameplay state.
+		 * Returns without waiting for native retirement; the renderer remains service-owned.
+		 */
 		void StopGameSession();
+		/** Advances pending native capture-request retirement on the existing game-thread tick.
+		 * This operation never advances normal Section scheduling.
+		 */
+		void AdvancePendingCaptureRetirement();
 		/** Returns the active gameplay map width, or zero outside a gameplay session. */
 		double GetMapWidthMapUnits() const noexcept;
 		/** Returns the active gameplay map height, or zero outside a gameplay session. */
@@ -169,10 +175,10 @@ namespace Services::Map::Buildings
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
-		/** Begins one coordinator-owned capture renderer session. */
+		/** Begins gameplay scheduling against the coordinator's persistent renderer. */
 		bool BeginCaptureGameWorldSession();
-		/** Advances coordinator-delegated shutdown only until native retirement completes. */
-		bool AdvanceCaptureGameWorldSessionShutdown();
+		/** Ends gameplay scheduling and requests cancellation of active capture work. */
+		void StopCaptureGameWorldSession();
 		/** Advances one internal coordinator Section-processing tick.
 		 * A future runtime caller must invoke this only during an admitted active capture session;
 		 * no host runtime caller is connected yet.

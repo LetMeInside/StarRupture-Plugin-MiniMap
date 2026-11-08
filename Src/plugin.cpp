@@ -565,6 +565,9 @@ namespace
 // Services generic native textures on the existing game-thread event; legacy work retains its ordering.
 static void OnTextureServiceTick(float deltaTime)
 {
+    // Retire only cancelled V2 capture requests; this never advances Section scheduling.
+    if (g_buildingMapService != nullptr)
+        g_buildingMapService->AdvancePendingCaptureRetirement();
 #if MINIMAP_USE_LEGACY_BUILDINGS
     ObserveWorldIdentity("renderer-entry", true);
     // Service generic texture owners without advancing building acquisition.

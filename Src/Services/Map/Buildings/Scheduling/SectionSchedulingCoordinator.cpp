@@ -191,17 +191,29 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Delegates acquisition-session creation to the owned SectionScheduler. */
+	/** Starts gameplay scheduling through the existing SectionScheduler. */
 	bool SectionSchedulingCoordinator::BeginCaptureGameWorldSession()
 	{
 		return sectionScheduler_ != nullptr &&
 			sectionScheduler_->BeginCaptureGameWorldSession();
 	}
 
-	/** Delegates ordered acquisition-session retirement to the owned SectionScheduler. */
-	bool SectionSchedulingCoordinator::AdvanceCaptureGameWorldSessionShutdown()
+	/** Stops gameplay scheduling and requests active capture cancellation once. */
+	void SectionSchedulingCoordinator::StopCaptureGameWorldSession()
 	{
-		return sectionScheduler_ == nullptr || sectionScheduler_->AdvanceCaptureGameWorldSessionShutdown();
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->StopCaptureGameWorldSession();
+		}
+	}
+
+	/** Advances only pending native request retirement; no Section work is processed. */
+	void SectionSchedulingCoordinator::AdvancePendingCaptureRetirement()
+	{
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->AdvancePendingCaptureRetirement();
+		}
 	}
 
 	/** Delegates explicit building-cache clearing to the owned SectionScheduler. */
