@@ -155,7 +155,262 @@ namespace MiniMap::BuildingAcquisition
             Facts::Building Data;
             std::shared_ptr<DefinitionOwner> Placement;
             std::unique_ptr<PayloadHandleOwner> Payload;
+            std::uint64_t PreliminaryHashContribution = 0;
         };
+
+        /** Holds the order-independent multiset aggregate for one in-progress regional scan. */
+        struct AcquisitionHashAggregate
+        {
+            std::uint64_t Sum = 0;
+            std::uint64_t Xor = 0;
+            std::uint64_t Count = 0;
+
+            /** Adds one mixed occurrence contribution while preserving duplicate multiplicity. */
+            void Add(std::uint64_t contribution) noexcept
+            {
+                Sum += contribution;
+                Xor ^= contribution;
+                ++Count;
+            }
+
+            /** Replaces preliminary content without changing the occurrence count. */
+            void Replace(std::uint64_t previous, std::uint64_t completed) noexcept
+            {
+                Sum -= previous;
+                Sum += completed;
+                Xor ^= previous;
+                Xor ^= completed;
+            }
+        };
+
+        /** Appends a fixed-width byte through the established deterministic byte step. */
+        static void AppendAcquisitionByte(std::uint64_t& hash, std::uint8_t value) noexcept
+        {
+            BuildingCollectorV2::AppendHashByte(hash, value);
+        }
+
+        /** Appends a fixed-width integer in the established little-endian order. */
+        static void AppendAcquisitionInteger(std::uint64_t& hash, std::uint64_t value) noexcept
+        {
+            BuildingCollectorV2::AppendHashInteger(hash, value);
+        }
+
+        /** Canonicalizes signed zero and NaN payloads before hashing one floating value. */
+        static void AppendAcquisitionDouble(std::uint64_t& hash, double value) noexcept
+        {
+            if (value == 0.0)
+                value = 0.0;
+            if (std::isnan(value))
+            {
+                AppendAcquisitionInteger(hash, 0x7ff8000000000000ULL);
+                return;
+            }
+            AppendAcquisitionInteger(hash, std::bit_cast<std::uint64_t>(value));
+        }
+
+        /** Appends owned text with a length prefix and its original byte sequence. */
+        static void AppendAcquisitionString(std::uint64_t& hash, const std::string& value) noexcept
+        {
+            AppendAcquisitionInteger(hash, value.size());
+            for (unsigned char byte : value)
+                AppendAcquisitionByte(hash, byte);
+        }
+
+        /** Appends an ordered fixed-size array of acquired floating values. */
+        template<std::size_t Size>
+        static void AppendAcquisitionArray(std::uint64_t& hash, const std::array<double, Size>& values) noexcept
+        {
+            for (double value : values)
+                AppendAcquisitionDouble(hash, value);
+        }
+
+        /** Appends one enum value without hashing its object representation. */
+        template<class Enum>
+        static void AppendAcquisitionEnum(std::uint64_t& hash, Enum value) noexcept
+        {
+            AppendAcquisitionByte(hash, static_cast<std::uint8_t>(value));
+        }
+
+        /** Appends a copied spline value whether it is scalar, point, or quaternion data. */
+        static void AppendSplineValue(std::uint64_t& hash, double value) noexcept
+        {
+            AppendAcquisitionDouble(hash, value);
+        }
+
+        /** Appends a copied point or quaternion in its declared component order. */
+        template<std::size_t Size>
+        static void AppendSplineValue(std::uint64_t& hash, const std::array<double, Size>& value) noexcept
+        {
+            AppendAcquisitionArray(hash, value);
+        }
+
+        /** Appends one pointer-free authored spline channel, preserving point order and loop metadata. */
+        template<class Value>
+        static void AppendAcquisitionCurve(std::uint64_t& hash, const Facts::Curve<Value>& curve) noexcept
+        {
+            AppendAcquisitionInteger(hash, curve.Points.size());
+            for (const auto& point : curve.Points)
+            {
+                AppendAcquisitionDouble(hash, point.Key);
+                AppendSplineValue(hash, point.ValueAtKey);
+                AppendSplineValue(hash, point.ArriveTangent);
+                AppendSplineValue(hash, point.LeaveTangent);
+                AppendAcquisitionByte(hash, point.Mode);
+            }
+            AppendAcquisitionByte(hash, curve.IsLooped ? 1 : 0);
+            AppendAcquisitionDouble(hash, curve.LoopKeyOffset);
+        }
+
+        /** Appends one copied fragment or payload spline source and its ordered points. */
+        static void AppendAcquisitionSplineData(std::uint64_t& hash, const Facts::SplineData& data) noexcept
+        {
+            AppendAcquisitionInteger(hash, data.Points.size());
+            for (const auto& point : data.Points)
+            {
+                AppendAcquisitionByte(hash, point.Index);
+                AppendAcquisitionArray(hash, point.Position);
+                AppendAcquisitionArray(hash, point.Tangent);
+            }
+            AppendAcquisitionInteger(hash, static_cast<std::uint32_t>(data.NativePointCount));
+            AppendAcquisitionEnum(hash, data.ValueStatus);
+            AppendAcquisitionArray(hash, data.LocationWS);
+            AppendAcquisitionArray(hash, data.RotationDegreesWS);
+            AppendAcquisitionDouble(hash, data.RecordedLength);
+        }
+
+        /** Appends immutable authored profile alternatives and preserves absence and order. */
+        static void AppendAcquisitionProfiles(std::uint64_t& hash,
+            const std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet>& profiles) noexcept
+        {
+            AppendAcquisitionByte(hash, profiles ? 1 : 0);
+            if (!profiles)
+                return;
+            AppendAcquisitionInteger(hash, profiles->Alternatives.size());
+            for (const auto& alternative : profiles->Alternatives)
+            {
+                AppendAcquisitionEnum(hash, alternative.Status);
+                AppendAcquisitionByte(hash, alternative.HasBounds ? 1 : 0);
+                if (alternative.HasBounds)
+                {
+                    AppendAcquisitionArray(hash, alternative.Bounds.Origin);
+                    AppendAcquisitionArray(hash, alternative.Bounds.Extent);
+                    AppendAcquisitionDouble(hash, alternative.Bounds.SphereRadius);
+                }
+                AppendAcquisitionArray(hash, alternative.Transform.Translation);
+                AppendAcquisitionArray(hash, alternative.Transform.RotationDegrees);
+                AppendAcquisitionArray(hash, alternative.Transform.Rotation);
+                AppendAcquisitionArray(hash, alternative.Transform.Scale);
+                AppendAcquisitionArray(hash, alternative.CrossSection.StartScale);
+                AppendAcquisitionArray(hash, alternative.CrossSection.EndScale);
+                AppendAcquisitionArray(hash, alternative.CrossSection.StartOffset);
+                AppendAcquisitionArray(hash, alternative.CrossSection.EndOffset);
+                AppendAcquisitionDouble(hash, alternative.CrossSection.StartRoll);
+                AppendAcquisitionDouble(hash, alternative.CrossSection.EndRoll);
+                AppendAcquisitionArray(hash, alternative.CrossSection.Up);
+                AppendAcquisitionByte(hash, alternative.ForwardAxis);
+            }
+        }
+
+        /** Appends core definition facts and spline-only profile evidence when applicable. */
+        static void AppendAcquisitionDefinition(std::uint64_t& hash, const Facts::Building& building) noexcept
+        {
+            const auto& definition = building.DefinitionFacts;
+            AppendAcquisitionByte(hash, definition ? 1 : 0);
+            if (!definition)
+                return;
+            AppendAcquisitionInteger(hash, static_cast<std::uint32_t>(definition->ObjectIndex));
+            AppendAcquisitionInteger(hash, definition->BuildingId);
+            AppendAcquisitionString(hash, definition->CanonicalClassPath);
+            AppendAcquisitionString(hash, definition->EntityConfigPath);
+            AppendAcquisitionEnum(hash, definition->ClassStatus);
+            AppendAcquisitionEnum(hash, definition->ConfigReferenceStatus);
+            AppendAcquisitionEnum(hash, definition->InteriorStatus);
+            AppendAcquisitionByte(hash, definition->InteriorOnly ? 1 : 0);
+            if (building.SplineClassificationStatus == Status::Ready && building.HasSpline)
+            {
+                AppendAcquisitionEnum(hash, definition->SplineProfileStatus);
+                AppendAcquisitionProfiles(hash, definition->SplineProfiles);
+            }
+        }
+
+        /** Appends immutable callback-copied spline values without pointer identity. */
+        static void AppendCallbackSplineFacts(std::uint64_t& hash,
+            const std::shared_ptr<const Facts::Spline>& spline) noexcept
+        {
+            AppendAcquisitionByte(hash, spline ? 1 : 0);
+            if (!spline)
+                return;
+            AppendAcquisitionSplineData(hash, spline->FragmentData);
+            AppendAcquisitionCurve(hash, spline->Position);
+            AppendAcquisitionCurve(hash, spline->Rotation);
+            AppendAcquisitionCurve(hash, spline->Scale);
+            AppendAcquisitionCurve(hash, spline->Reparameterization);
+            AppendAcquisitionInteger(hash, spline->CurveVersion);
+            AppendAcquisitionByte(hash, spline->CurvesInitialized ? 1 : 0);
+        }
+
+        /** Appends deferred spline fallback values and final source classification. */
+        static void AppendDeferredSplineFacts(std::uint64_t& hash,
+            const std::shared_ptr<const Facts::Spline>& spline) noexcept
+        {
+            AppendAcquisitionByte(hash, spline ? 1 : 0);
+            if (!spline)
+                return;
+            AppendAcquisitionByte(hash, spline->PayloadData ? 1 : 0);
+            if (spline->PayloadData)
+                AppendAcquisitionSplineData(hash, *spline->PayloadData);
+            AppendAcquisitionEnum(hash, spline->Provenance);
+            AppendAcquisitionEnum(hash, spline->SourceStatus);
+        }
+
+        /** Hashes callback-owned identity, transform, reach and raw spline values. */
+        static std::uint64_t ComputePreliminaryAcquisitionContribution(const Facts::Building& building) noexcept
+        {
+            std::uint64_t hash = 14695981039346656037ULL;
+            AppendAcquisitionByte(hash, 0xC1);
+            AppendAcquisitionInteger(hash, static_cast<std::uint32_t>(building.Index));
+            AppendAcquisitionInteger(hash, static_cast<std::uint32_t>(building.Serial));
+            AppendAcquisitionEnum(hash, building.EntityStatus);
+            AppendAcquisitionEnum(hash, building.TransformStatus);
+            AppendAcquisitionEnum(hash, building.SplineClassificationStatus);
+            AppendAcquisitionByte(hash, building.HasSpline ? 1 : 0);
+            AppendAcquisitionDouble(hash, building.ResolvedReach);
+            AppendAcquisitionArray(hash, building.Position);
+            AppendAcquisitionArray(hash, building.Rotation);
+            AppendAcquisitionArray(hash, building.SignedScale);
+            AppendCallbackSplineFacts(hash, building.SplineFacts);
+            return SplitMix64(hash);
+        }
+
+        /** Combines the retained callback contribution with finalized deferred occurrence facts. */
+        static std::uint64_t CompleteAcquisitionContribution(
+            std::uint64_t preliminary, const Facts::Building& building) noexcept
+        {
+            std::uint64_t deferredHash = 14695981039346656037ULL;
+            AppendAcquisitionByte(deferredHash, 0xD1);
+            AppendAcquisitionEnum(deferredHash, building.DefinitionStatus);
+            AppendAcquisitionEnum(deferredHash, building.SplineStatus);
+            AppendAcquisitionByte(deferredHash, building.Complete ? 1 : 0);
+            AppendAcquisitionDefinition(deferredHash, building);
+            AppendDeferredSplineFacts(deferredHash, building.SplineFacts);
+            return SplitMix64(preliminary ^ SplitMix64(deferredHash));
+        }
+
+        /** Finalizes a multiset aggregate after every preliminary contribution is replaced. */
+        static std::uint64_t FinalizeAcquisitionHash(const AcquisitionHashAggregate& aggregate) noexcept
+        {
+            const std::uint64_t combined = aggregate.Sum ^ std::rotl(aggregate.Xor, 23) ^ aggregate.Count;
+            return SplitMix64(combined);
+        }
+
+        /** Applies the standard SplitMix64 avalanche to one deterministic value. */
+        static std::uint64_t SplitMix64(std::uint64_t value) noexcept
+        {
+            value += 0x9e3779b97f4a7c15ULL;
+            value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+            return value ^ (value >> 31);
+        }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         /** Aggregates one repeated CPU phase without retaining per-operation history. */
@@ -466,6 +721,8 @@ namespace MiniMap::BuildingAcquisition
         const void* Manager = nullptr;
         std::uint64_t Generation = 0;
         std::uint64_t RequestGeneration = 0;
+        /** Content hash for the currently committed regional dataset; zero is a valid value. */
+        std::uint64_t AcquisitionContentHash = 0;
         Clock::time_point NextMembership{};
         bool MembershipComplete = false;
         bool Dirty = true;
@@ -547,6 +804,7 @@ namespace MiniMap::BuildingAcquisition
             Manager = nullptr;
             Pending.clear();
             Entities.clear();
+            AcquisitionContentHash = 0;
             Definitions.clear();
             NextMembership = {};
             MembershipComplete = false;
@@ -703,7 +961,8 @@ namespace MiniMap::BuildingAcquisition
             const Context& context,
             const MassChunkViews& views,
             std::vector<OwnedScanOccurrence>& occurrences,
-            std::unordered_set<std::uint64_t>& seen
+            std::unordered_set<std::uint64_t>& seen,
+            AcquisitionHashAggregate& acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -733,10 +992,13 @@ namespace MiniMap::BuildingAcquisition
                 }
                 if (!seen.insert(Key(id)).second)
                     throw std::runtime_error("Mass chunk traversal repeated a building identity.");
+                occurrences.push_back(std::move(*occurrence));
+                occurrences.back().PreliminaryHashContribution =
+                    ComputePreliminaryAcquisitionContribution(occurrences.back().Data);
+                acquisitionHash.Add(occurrences.back().PreliminaryHashContribution);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++timing->Admitted;
 #endif
-                occurrences.push_back(std::move(*occurrence));
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing->OwnedFactCopyingMs += std::chrono::duration<double, std::milli>(Clock::now() - copyingStarted).count();
@@ -809,7 +1071,8 @@ namespace MiniMap::BuildingAcquisition
         bool CaptureMassSnapshot(
             const Native& native,
             const Context& context,
-            std::vector<OwnedScanOccurrence>& occurrences
+            std::vector<OwnedScanOccurrence>& occurrences,
+            AcquisitionHashAggregate& acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -820,7 +1083,7 @@ namespace MiniMap::BuildingAcquisition
             const auto chunkStarted = Clock::now();
 #endif
             const bool traversed = ForEachMassChunk(native, TFunction<void(const MassChunkViews&)>(
-                [this, &native, &context, &occurrences, &seen
+                [this, &native, &context, &occurrences, &seen, &acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     , timing
 #endif
@@ -829,7 +1092,7 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++timing->Chunks;
 #endif
-                    CaptureMassChunk(native, context, views, occurrences, seen
+                    CaptureMassChunk(native, context, views, occurrences, seen, acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         , timing
 #endif
@@ -841,13 +1104,45 @@ namespace MiniMap::BuildingAcquisition
             return traversed && IsContextCurrent(native, context);
         }
 
+        /** Adds one completed occurrence to the temporary reconciled regional state. */
+        void ReconcileAcquiredOccurrence(
+            Facts::Building& data,
+            const OwnedScanOccurrence& occurrence,
+            std::unordered_map<std::uint64_t, Entry>& reconciled,
+            std::unordered_set<std::uint64_t>& pending)
+        {
+            const auto key = Key({data.Index, data.Serial});
+            auto previous = Entities.find(key);
+            Entry entry;
+            if (previous != Entities.end() && SameAcquiredFacts(previous->second.Data, data))
+            {
+                entry.Data = previous->second.Data;
+                entry.Definition = previous->second.Definition;
+            }
+            else
+            {
+                entry.Data = std::move(data);
+                Invalidate();
+            }
+            if (!entry.Data.Complete)
+            {
+                const auto definition = Definitions.find(
+                    occurrence.Placement ? occurrence.Placement->Root : nullptr);
+                if (definition != Definitions.end())
+                    entry.Definition = definition->second;
+                pending.insert(key);
+            }
+            reconciled.emplace(key, std::move(entry));
+        }
+
         /** Defers payload and authored-definition work until all borrowed Mass views have expired. */
         bool BuildRegionalState(
             const Native& native,
             const Context& context,
             std::vector<OwnedScanOccurrence>& occurrences,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
-            std::unordered_set<std::uint64_t>& pending
+            std::unordered_set<std::uint64_t>& pending,
+            AcquisitionHashAggregate& acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -866,30 +1161,9 @@ namespace MiniMap::BuildingAcquisition
                 if (!AcquireOwnedOccurrence(native, context, occurrence,
                     attemptedCoreDefinitions, attemptedSplineProfiles, data))
                     return false;
-                const auto key = Key({data.Index, data.Serial});
-                auto previous = Entities.find(key);
-                Entry entry;
-                if (previous != Entities.end() && SameAcquiredFacts(previous->second.Data, data))
-                {
-                    entry.Data = previous->second.Data;
-                    entry.Definition = previous->second.Definition;
-                }
-                else
-                {
-                    entry.Data = std::move(data);
-                    Invalidate();
-                }
-                if (!entry.Data.Complete)
-                {
-                    const auto definition = Definitions.find(
-                        occurrence.Placement ? occurrence.Placement->Root : nullptr);
-                    if (definition != Definitions.end())
-                    {
-                        entry.Definition = definition->second;
-                    }
-                    pending.insert(key);
-                }
-                reconciled.emplace(key, std::move(entry));
+                acquisitionHash.Replace(occurrence.PreliminaryHashContribution,
+                    CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data));
+                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending);
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing->DeferredAcquisitionMs = std::chrono::duration<double, std::milli>(Clock::now() - acquisitionStarted).count();
@@ -902,7 +1176,8 @@ namespace MiniMap::BuildingAcquisition
             const Native& native,
             const Context& context,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
-            std::unordered_set<std::uint64_t>& pending
+            std::unordered_set<std::uint64_t>& pending,
+            std::uint64_t acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -932,6 +1207,7 @@ namespace MiniMap::BuildingAcquisition
 #endif
             Entities.swap(reconciled);
             Pending.swap(pending);
+            AcquisitionContentHash = acquisitionHash;
             if (!MembershipComplete)
                 Invalidate();
             MembershipComplete = true;
@@ -953,7 +1229,8 @@ namespace MiniMap::BuildingAcquisition
             if (!context.HasRegion || !IsContextCurrent(native, context))
                 return false;
             std::vector<OwnedScanOccurrence> occurrences;
-            if (!CaptureMassSnapshot(native, context, occurrences
+            AcquisitionHashAggregate acquisitionHash{};
+            if (!CaptureMassSnapshot(native, context, occurrences, acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
 #endif
@@ -961,13 +1238,14 @@ namespace MiniMap::BuildingAcquisition
                 return false;
             std::unordered_map<std::uint64_t, Entry> reconciled;
             std::unordered_set<std::uint64_t> pending;
-            if (!BuildRegionalState(native, context, occurrences, reconciled, pending
+            if (!BuildRegionalState(native, context, occurrences, reconciled, pending, acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
 #endif
             ))
                 return false;
-            return CommitRegionalState(native, context, reconciled, pending
+            return CommitRegionalState(native, context, reconciled, pending,
+                FinalizeAcquisitionHash(acquisitionHash)
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
 #endif
