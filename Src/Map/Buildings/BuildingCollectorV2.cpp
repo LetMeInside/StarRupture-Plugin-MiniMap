@@ -1,6 +1,7 @@
 // Independently acquires StarRupture native building facts. All ABI-specific access
 // stays here; no rendering, legacy collector, service interface or runtime caller is used.
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "BuildingMapLoadingTrace.h"
 #include "DiagnosticExports.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "plugin_helpers.h"
@@ -535,7 +536,9 @@ namespace MiniMap::BuildingAcquisition
             const MiniMapNative::MassEntityHandleArray* returned = nullptr;
             try
             {
+                BM124D_MARK("membership native query begin");
                 returned = native.mass.getMatchingEntityHandles(Query.data(), &owner.Handles);
+                BM124D_MARK("membership native query returned");
             }
             catch (...)
             {
@@ -559,6 +562,7 @@ namespace MiniMap::BuildingAcquisition
 #endif
                 return false;
             }
+            BM124D_MARK("membership bookkeeping begin");
             bool valid = true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             const auto bookkeepingStarted = Clock::now();
@@ -585,6 +589,7 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing.BookkeepingMs += std::chrono::duration<double, std::milli>(Clock::now() - bookkeepingStarted).count();
 #endif
+            BM124D_MARK("membership bookkeeping finished");
             if (!valid || !IsContextCurrent(native, context))
                 return false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1414,7 +1419,7 @@ namespace MiniMap::BuildingAcquisition
             }
             const auto context = CaptureContext();
             std::unordered_set<std::uint64_t> local;
-            CollectLocalKeys(native, local);
+            BM124D_RUN("CollectLocalKeys", CollectLocalKeys(native, local));
             if (!IsContextCurrent(native, context))
                 return;
             std::unordered_set<const DefinitionOwner*> attempted;
@@ -1422,9 +1427,9 @@ namespace MiniMap::BuildingAcquisition
             bool localComplete = false;
             {
                 PhaseTiming localTiming{Diagnostics.LocalAcquisition};
-                localComplete = AcquireKeys(native, local, attempted, context
+                localComplete = BM124D_RUN("local pending acquisition", AcquireKeys(native, local, attempted, context
                     , true
-                );
+                ));
             }
             if (!localComplete)
                 return;
@@ -1439,16 +1444,20 @@ namespace MiniMap::BuildingAcquisition
                 return;
             }
             RemoteTurn = false;
+            BM124D_MARK("remote pending snapshot begin");
             const std::vector<std::uint64_t> remote(Pending.begin(), Pending.end());
+            BM124D_MARK("remote pending snapshot finished");
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             PhaseTiming remoteTiming{Diagnostics.RemoteAcquisition};
 #endif
+            BM124D_MARK("remote pending acquisition begin");
             if (AcquireKeys(native, remote, attempted, context
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , false
 #endif
             ))
                 Publish();
+            BM124D_MARK("remote pending acquisition and publication finished");
         }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1707,7 +1716,7 @@ namespace MiniMap::BuildingAcquisition
             const auto membershipStarted = updateStarted;
 #endif
             const auto context = state_->CaptureContext();
-            state_->ReconcileIfDue(*native);
+            BM124D_RUN("membership reconciliation", state_->ReconcileIfDue(*native));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (state_->Generation == context.Session)
             {
@@ -1717,7 +1726,7 @@ namespace MiniMap::BuildingAcquisition
             const auto acquisitionStarted = State::Clock::now();
 #endif
             if (state_->IsContextCurrent(*native, context))
-                state_->AdvancePending(*native);
+                BM124D_RUN("pending acquisition", state_->AdvancePending(*native));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (state_->Generation == context.Session)
             {

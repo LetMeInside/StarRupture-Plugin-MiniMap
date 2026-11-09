@@ -3,6 +3,9 @@
 
 #include <cstdint>
 #include <vector>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../Visuals/BuildingVisualsResult.h"
+#endif
 
 namespace Services::Map::Buildings
 {
@@ -45,13 +48,20 @@ namespace Services::Map::Buildings::Rendering
 		 * @param context Numerical workspace borrowed from the owning BuildingMapSection.
 		 * @param grid Destination cell and pixel configuration supplied by the coordinator.
 		 * @param output Caller-owned final row-major little-endian RGBA16F bytes.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		 * @param phaseTimings Receives elapsed CPU wall time and invocation flags for the six measured phases.
+#endif
 		 * @return The numerical rendering, destination or finalization outcome.
 		 */
 		static Status RenderSection(
 			const Visuals::BuildingRenderSceneInput& scene,
 			Visuals::BuildingVisualsContext& context,
 			const Rgba16fImageGrid& grid,
-			std::vector<std::uint8_t>& output);
+			std::vector<std::uint8_t>& output
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, Visuals::BuildingVisualsPhaseTimings& phaseTimings
+#endif
+			);
 
 	private:
 		/** Checks destination grid fields that can be rejected without recomputing world bounds. */

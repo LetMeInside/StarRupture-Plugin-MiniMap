@@ -1,4 +1,5 @@
 // Composes MiniMap services and lifecycle events, with legacy building work selected at compile time.
+#include "BuildingMapLoadingTrace.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "DiagnosticExports.h"
@@ -573,8 +574,16 @@ static void OnTextureServiceTick(
     Services::Map::Buildings::Capture::BuildingSpriteRenderer* renderer,
     float deltaTime)
 {
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+    const bool traceCallback = ::MiniMap::Diagnostics::BuildingMapLoadingTrace::ClaimCallback();
+    ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Run("renderer lifecycle", [&]()
+    {
+        if (renderer != nullptr) renderer->ProcessLifecycle();
+    }, traceCallback);
+#else
     if (renderer != nullptr)
         renderer->ProcessLifecycle();
+#endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     ObserveWorldIdentity("renderer-entry", true);
     // Service generic texture owners without advancing building acquisition.
@@ -598,7 +607,14 @@ static void OnTextureServiceTick(
     ObserveWorldIdentity("after-mass-buildingcomplex");
 #else
     (void)deltaTime;
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+    ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Run("UpdateBuildingLayerSession", [&]()
+    {
+        MiniMapUI::UpdateBuildingLayerSession();
+    }, traceCallback);
+#else
     MiniMapUI::UpdateBuildingLayerSession();
+#endif
     MiniMapTexturePublication::Service();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     if (g_buildingMapService != nullptr)
@@ -665,6 +681,20 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[3]),
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[4]),
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[5]));
+            LOG_INFO("MiniMap: BuildingMap section_render_phases intervalMs=%.1f elapsed:cpuWall nestedWithinNumericalMs=true destinationConstruction={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ordinarySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} occlusionIndexPreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} splineDrawing={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} overlaySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} destinationFinalization={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} unmeasuredGaps=small boundary and bookkeeping work",
+                diagnostics.IntervalMs,
+                static_cast<unsigned long long>(diagnostics.DestinationConstruction.Samples), diagnostics.DestinationConstruction.TotalMs,
+                meanMs(diagnostics.DestinationConstruction), diagnostics.DestinationConstruction.MaxMs,
+                static_cast<unsigned long long>(diagnostics.OrdinarySprites.Samples), diagnostics.OrdinarySprites.TotalMs,
+                meanMs(diagnostics.OrdinarySprites), diagnostics.OrdinarySprites.MaxMs,
+                static_cast<unsigned long long>(diagnostics.OcclusionIndexPreparation.Samples), diagnostics.OcclusionIndexPreparation.TotalMs,
+                meanMs(diagnostics.OcclusionIndexPreparation), diagnostics.OcclusionIndexPreparation.MaxMs,
+                static_cast<unsigned long long>(diagnostics.SplineDrawing.Samples), diagnostics.SplineDrawing.TotalMs,
+                meanMs(diagnostics.SplineDrawing), diagnostics.SplineDrawing.MaxMs,
+                static_cast<unsigned long long>(diagnostics.OverlaySprites.Samples), diagnostics.OverlaySprites.TotalMs,
+                meanMs(diagnostics.OverlaySprites), diagnostics.OverlaySprites.MaxMs,
+                static_cast<unsigned long long>(diagnostics.DestinationFinalization.Samples), diagnostics.DestinationFinalization.TotalMs,
+                meanMs(diagnostics.DestinationFinalization), diagnostics.DestinationFinalization.MaxMs);
             LOG_INFO("MiniMap: BuildingMap section_readiness intervalMs=%.1f elapsed:cpuWall invalidPublication:%llu stalePublication:%llu invalidObservation:%llu incompleteCandidateCoverage:%llu pendingNativeSourceAcquisition:%llu pendingSpriteAcquisition:%llu temporarilyUnavailableResources:%llu unresolvedInputs:%llu completeSceneInputs:%llu",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[0]),
@@ -697,11 +727,27 @@ static void OnTextureServiceTick(
                     worst.NumericalStatus < sizeof(numericalNames) / sizeof(numericalNames[0])
                     ? numericalNames[worst.NumericalStatus]
                     : "absent";
-                LOG_INFO("MiniMap: BuildingMap section_worst intervalMs=%.1f elapsed:cpuWall grid=(%lld,%lld) totalMs:%.3f sourceMs:%.3f knownSpriteMs:%.3f renderCommitMs:%.3f scenePreparationMs:%.3f numericalMs:%.3f commit:%s readiness:%s numerical:%s",
+                const auto& numericalPhases = worst.NumericalPhases;
+                LOG_INFO("MiniMap: BuildingMap section_worst intervalMs=%.1f elapsed:cpuWall grid=(%lld,%lld) totalMs:%.3f sourceMs:%.3f knownSpriteMs:%.3f renderCommitMs:%.3f scenePreparationMs:%.3f numericalMs:%.3f inputs={ordinarySprites:%llu splineContributors:%llu overlayLastSprites:%llu} phases={destinationConstruction:{ran:%u ms:%.3f} ordinarySprites:{ran:%u ms:%.3f} occlusionIndexPreparation:{ran:%u ms:%.3f} splineDrawing:{ran:%u ms:%.3f} overlaySprites:{ran:%u ms:%.3f} destinationFinalization:{ran:%u ms:%.3f}} commit:%s readiness:%s numerical:%s",
                     diagnostics.IntervalMs,
                     static_cast<long long>(worst.GridX), static_cast<long long>(worst.GridY),
                     worst.TotalMs, worst.SourceSelectionMs, worst.KnownSpritePreparationMs,
                     worst.RenderAndCommitMs, worst.ScenePreparationMs, worst.NumericalRenderingMs,
+                    static_cast<unsigned long long>(worst.OrdinarySpriteInputCount),
+                    static_cast<unsigned long long>(worst.SplineContributorInputCount),
+                    static_cast<unsigned long long>(worst.OverlayLastSpriteInputCount),
+                    numericalPhases.DestinationConstruction.Invoked ? 1u : 0u,
+                    numericalPhases.DestinationConstruction.ElapsedMs,
+                    numericalPhases.OrdinarySprites.Invoked ? 1u : 0u,
+                    numericalPhases.OrdinarySprites.ElapsedMs,
+                    numericalPhases.OcclusionIndexPreparation.Invoked ? 1u : 0u,
+                    numericalPhases.OcclusionIndexPreparation.ElapsedMs,
+                    numericalPhases.SplineDrawing.Invoked ? 1u : 0u,
+                    numericalPhases.SplineDrawing.ElapsedMs,
+                    numericalPhases.OverlaySprites.Invoked ? 1u : 0u,
+                    numericalPhases.OverlaySprites.ElapsedMs,
+                    numericalPhases.DestinationFinalization.Invoked ? 1u : 0u,
+                    numericalPhases.DestinationFinalization.ElapsedMs,
                     worst.CommitStatus < sizeof(commitNames) / sizeof(commitNames[0])
                         ? commitNames[worst.CommitStatus]
                         : "unknown",

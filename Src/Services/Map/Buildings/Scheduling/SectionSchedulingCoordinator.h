@@ -14,6 +14,7 @@
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "BuildingScheduler.h"
+#include "../Rendering/SectionRendering.h"
 #endif
 
 namespace Services::Map::Buildings
@@ -65,6 +66,10 @@ namespace Services::Map::Buildings::Scheduling
 			double RenderAndCommitMs = 0.0;
 			double ScenePreparationMs = 0.0;
 			double NumericalRenderingMs = 0.0;
+			Visuals::BuildingVisualsPhaseTimings NumericalPhases;
+			std::size_t OrdinarySpriteInputCount = 0;
+			std::size_t SplineContributorInputCount = 0;
+			std::size_t OverlayLastSpriteInputCount = 0;
 			std::uint8_t CommitStatus = 0;
 			bool HasSceneReadiness = false;
 			std::uint8_t SceneReadiness = 0;
@@ -81,6 +86,12 @@ namespace Services::Map::Buildings::Scheduling
 		Duration ScenePreparation;
 		Duration SceneBorrow;
 		Duration NumericalRendering;
+		Duration DestinationConstruction;
+		Duration OrdinarySprites;
+		Duration OcclusionIndexPreparation;
+		Duration SplineDrawing;
+		Duration OverlaySprites;
+		Duration DestinationFinalization;
 		Duration TransparencyCheck;
 		Duration ImageAdoption;
 		Duration WholeSectionAttempt;

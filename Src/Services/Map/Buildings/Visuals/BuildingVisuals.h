@@ -21,12 +21,19 @@ namespace Services::Map::Buildings::Visuals
 		 * @param scene Borrowed neutral contributors in established drawing order.
 		 * @param destination Borrowed synchronous image and geometry submission target.
 		 * @param context Caller-owned numerical storage for this independent render sequence.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		 * @param phaseTimings Receives elapsed CPU wall times for the existing numerical rendering phases.
+#endif
 		 * @return Aggregate and positional outcomes owned by context.
 		 */
 		static const BuildingVisualsResult& DrawScene(
 			const BuildingRenderSceneInput& scene,
 			IImageDestination& destination,
-			BuildingVisualsContext& context);
+			BuildingVisualsContext& context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingVisualsPhaseTimings& phaseTimings
+#endif
+			);
 
 	private:
 		/** Clears this operation's reports and candidate occluders without releasing vector capacity.

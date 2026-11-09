@@ -1,4 +1,5 @@
 // Presents MiniMap layers and handles widget/input visibility, with compile-time legacy building drawing.
+#include "BuildingMapLoadingTrace.h"
 #include "Services/Viewport.h"
 #include "../Map/Map.h"
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -323,6 +324,9 @@ namespace MiniMapUI
         }
         g_buildingLayer = std::move(layer);
         g_buildingLayerViewportOpened = false;
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+        ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Arm();
+#endif
         return true;
     }
 
@@ -352,12 +356,15 @@ namespace MiniMapUI
         {
             return;
         }
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+        ::MiniMap::Diagnostics::BuildingMapLoadingTrace trace;
+#endif
         bool viewportOpened = false;
         {
             std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
             viewportOpened = g_buildingLayerViewportOpened;
         }
-        if (!viewportOpened && layer->OpenViewport(x1, y1, x2 - x1, y2 - y1))
+        if (!viewportOpened && BM124D_RUN("OpenViewport", layer->OpenViewport(x1, y1, x2 - x1, y2 - y1)))
         {
             std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
             if (g_buildingLayer == layer)
@@ -372,9 +379,9 @@ namespace MiniMapUI
         }
         const auto settings = MiniMapConfig::GetRenderSettings();
         layer->SetRenderDroneRails(settings.Buildings.RenderDroneRails);
-        layer->Update(x1, y1, x2, y2);
-        layer->PrepareCpuImages();
-        layer->PublishGpuImages();
+        BM124D_RUN("BuildingLayer::Update", layer->Update(x1, y1, x2, y2));
+        BM124D_RUN("PrepareCpuImages", layer->PrepareCpuImages());
+        BM124D_RUN("PublishGpuImages", layer->PublishGpuImages());
     }
 
     bool EndBuildingLayerSession()

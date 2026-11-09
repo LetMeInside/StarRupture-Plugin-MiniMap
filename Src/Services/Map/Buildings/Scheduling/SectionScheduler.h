@@ -161,6 +161,11 @@ namespace Services::Map::Buildings::Scheduling
 			};
 			/** Ready known sprite occurrences, preserving duplicates and publication correspondence. */
 			std::vector<PreparedSpriteOccurrence> PreparedSprites;
+			/** Temporary publication-ordinal to sparse PreparedSprites index correspondence.
+			 * Empty entries have no prepared sprite. Owns indices only, never vector pointers or pixels.
+			 * Reset and stale-publication withdrawal clear this alongside PreparedSprites.
+			 */
+			std::vector<std::optional<std::size_t>> PreparedSpriteIndicesByOrdinal;
 		};
 
 		/** Owns ordered numerical profile values prepared from one retained source record.
@@ -397,6 +402,10 @@ namespace Services::Map::Buildings::Scheduling
 				bool NumericalRenderingInvoked = false;
 				bool TransparencyCheckInvoked = false;
 				bool ImageAdoptionAttempted = false;
+				Visuals::BuildingVisualsPhaseTimings NumericalPhases;
+				std::size_t OrdinarySpriteInputCount = 0;
+				std::size_t SplineContributorInputCount = 0;
+				std::size_t OverlayLastSpriteInputCount = 0;
 			};
 			TimingData Timing;
 #endif
@@ -581,13 +590,20 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param sceneInput Borrowed complete neutral scene valid for the synchronous call.
 		 * @param grid Existing zero-origin destination grid.
 		 * @param imageBytes Receives finalized bytes only on numerical success.
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		 * @param phaseTimings Receives the actual numerical phase timings from SectionRendering.
+#endif
 		 * @return The exact existing SectionRendering outcome.
 		 */
 		static Rendering::SectionRendering::Status RenderIntoSectionContext(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const Visuals::BuildingRenderSceneInput& sceneInput,
 			const Rendering::Rgba16fImageGrid& grid,
-			std::vector<std::uint8_t>& imageBytes);
+			std::vector<std::uint8_t>& imageBytes
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, Visuals::BuildingVisualsPhaseTimings& phaseTimings
+#endif
+			);
 		/** Validates one well-formed observation and its exact source-relative ordinal sequence.
 		 * @param publication Retained publication whose candidate occurrence order is authoritative.
 		 * @param observation Borrowed section observation to validate.

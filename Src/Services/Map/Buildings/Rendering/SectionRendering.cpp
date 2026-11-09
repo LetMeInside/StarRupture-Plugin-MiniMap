@@ -12,6 +12,9 @@
 #include <cmath>
 #include <cstdint>
 #include <climits>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <vector>
 
 namespace Services::Map::Buildings::Rendering
@@ -21,21 +24,49 @@ namespace Services::Map::Buildings::Rendering
 		const Visuals::BuildingRenderSceneInput& scene,
 		Visuals::BuildingVisualsContext& context,
 		const Rgba16fImageGrid& grid,
-		std::vector<std::uint8_t>& output)
+		std::vector<std::uint8_t>& output
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, Visuals::BuildingVisualsPhaseTimings& phaseTimings
+#endif
+		)
 	{
 		output.clear();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings = {};
+#endif
 		if (!HasValidGridInputs(grid))
 		{
 			return Status::InvalidDestinationConfiguration;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto destinationConstructionStarted = std::chrono::steady_clock::now();
+#endif
 		Rgba16fImageDestination destination(grid);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.DestinationConstruction.Invoked = true;
+		phaseTimings.DestinationConstruction.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - destinationConstructionStarted).count();
+#endif
 		const Visuals::BuildingVisualsResult& drawingResult =
-			Visuals::BuildingVisuals::DrawScene(scene, destination, context);
+			Visuals::BuildingVisuals::DrawScene(scene, destination, context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, phaseTimings
+#endif
+				);
 		if (!drawingResult.Complete)
 		{
 			return GetDrawingFailureStatus(drawingResult);
 		}
-		if (!destination.Finalize(output))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto finalizationStarted = std::chrono::steady_clock::now();
+#endif
+		const bool finalized = destination.Finalize(output);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.DestinationFinalization.Invoked = true;
+		phaseTimings.DestinationFinalization.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - finalizationStarted).count();
+#endif
+		if (!finalized)
 		{
 			output.clear();
 			return Status::FinalizationFailed;

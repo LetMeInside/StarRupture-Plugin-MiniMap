@@ -11,6 +11,25 @@
 
 namespace Services::Map::Buildings::Visuals
 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Carries Debug-only CPU wall timings for the six existing numerical Section phases. */
+	struct BuildingVisualsPhaseTimings
+	{
+		/** Describes whether one synchronous phase ran and its elapsed CPU wall time. */
+		struct Phase
+		{
+			double ElapsedMs = 0.0;
+			bool Invoked = false;
+		};
+		Phase DestinationConstruction;
+		Phase OrdinarySprites;
+		Phase OcclusionIndexPreparation;
+		Phase SplineDrawing;
+		Phase OverlaySprites;
+		Phase DestinationFinalization;
+	};
+#endif
+
 	/** Identifies the operation that prevented one supplied contributor from drawing completely. */
 	enum class BuildingVisualsFailureStage
 	{

@@ -5,23 +5,58 @@
 
 #include <cmath>
 #include <cstdint>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#endif
 
 namespace Services::Map::Buildings::Visuals
 {
 	const BuildingVisualsResult& BuildingVisuals::DrawScene(
 		const BuildingRenderSceneInput& scene,
 		IImageDestination& destination,
-		BuildingVisualsContext& context)
+		BuildingVisualsContext& context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, BuildingVisualsPhaseTimings& phaseTimings
+#endif
+		)
 	{
 		ResetOperation(context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto ordinarySpritesStarted = std::chrono::steady_clock::now();
+#endif
 		DrawOrdinarySprites(scene, destination, context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.OrdinarySprites.Invoked = true;
+		phaseTimings.OrdinarySprites.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - ordinarySpritesStarted).count();
+		const auto occlusionPreparationStarted = std::chrono::steady_clock::now();
+#endif
 		context.result_.OcclusionPreparationStatus = PrepareOcclusionIndex(context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.OcclusionIndexPreparation.Invoked = true;
+		phaseTimings.OcclusionIndexPreparation.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - occlusionPreparationStarted).count();
+#endif
 		if (context.result_.OcclusionPreparationStatus != SplineOcclusionStatus::Complete)
 		{
 			context.result_.Complete = false;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto splineDrawingStarted = std::chrono::steady_clock::now();
+#endif
 		DrawSplineSurfaces(scene, destination, context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.SplineDrawing.Invoked = true;
+		phaseTimings.SplineDrawing.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - splineDrawingStarted).count();
+		const auto overlaySpritesStarted = std::chrono::steady_clock::now();
+#endif
 		DrawOverlaySprites(scene, destination, context);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		phaseTimings.OverlaySprites.Invoked = true;
+		phaseTimings.OverlaySprites.ElapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - overlaySpritesStarted).count();
+#endif
 		return context.result_;
 	}
 

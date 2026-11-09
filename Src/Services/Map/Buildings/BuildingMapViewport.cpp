@@ -2,6 +2,7 @@
 
 // Implements 2D map-rectangle movement and resizing plus read-only access to
 // service-owned sparse Building Map sections.
+#include "BuildingMapLoadingTrace.h"
 #include "BuildingMapViewport.h"
 
 #include "Coordination/IBuildingMapService.h"
@@ -83,8 +84,8 @@ namespace Services::Map::Buildings
 		widthMapUnits_ = widthMapUnits;
 		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;
-		buildingCollector_->Update();
-		if (!service_->AdvanceViewportScheduling(viewportHandle_))
+		BM124D_RUN("collector Update", buildingCollector_->Update());
+		if (!BM124D_RUN("AdvanceViewportScheduling", service_->AdvanceViewportScheduling(viewportHandle_)))
 		{
 			return false;
 		}

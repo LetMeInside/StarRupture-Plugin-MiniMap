@@ -1,6 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 // Owns shared viewport demand, delegates per-Section work to SectionScheduler, and reports completed-image changes to the service.
+#include "BuildingMapLoadingTrace.h"
 #include "SectionSchedulingCoordinator.h"
 
 #include "../BuildingMapSection.h"
@@ -152,7 +153,7 @@ namespace Services::Map::Buildings::Scheduling
 		diagnostics_.InitialWaitingSections += waitingSnapshot.size();
 		const auto spriteAcquisitionStarted = std::chrono::steady_clock::now();
 #endif
-		sectionScheduler_->AdvanceSpriteAcquisition();
+		BM124D_RUN("AdvanceSpriteAcquisition", sectionScheduler_->AdvanceSpriteAcquisition());
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		diagnostics_.SpriteAcquisitionAdvancement.Add(std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - spriteAcquisitionStarted).count());
@@ -162,7 +163,7 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			++diagnostics_.SnapshotCoordinatesExamined;
 #endif
-			ProcessWaitingSection(buildingMapService, coordinate);
+			BM124D_SECTION(coordinate.GridX, coordinate.GridY, ProcessWaitingSection(buildingMapService, coordinate));
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		diagnostics_.WaitingAfterAdvancement += waitingSections_.size();
@@ -182,6 +183,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (!IsDemanded(coordinate) || waitingSections_.find(coordinate) == waitingSections_.end())
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BM124D_MARK("Section skipped: no longer eligible");
 			++diagnostics_.NoLongerEligibleCoordinates;
 #endif
 			return;
@@ -190,10 +192,10 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto sourceSelectionStarted = std::chrono::steady_clock::now();
 #endif
-		const bool candidateSelected = buildingMapService.TrySelectCandidatePublicationForSection(
+		const bool candidateSelected = BM124D_RUN("Section source selection", buildingMapService.TrySelectCandidatePublicationForSection(
 			coordinate.GridX,
 			coordinate.GridY,
-			candidateSource);
+			candidateSource));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double sourceSelectionMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sourceSelectionStarted).count();
@@ -202,6 +204,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (!candidateSelected)
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BM124D_MARK("Section skipped: no candidate source");
 			++diagnostics_.SourceSelectionMisses;
 #endif
 			return;
@@ -215,20 +218,20 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto knownSpritePreparationStarted = std::chrono::steady_clock::now();
 #endif
-		sectionScheduler_->PrepareKnownSpriteRequirements(candidateSource.PublicationOwner, spritePreparation);
+		BM124D_RUN("Section known sprite preparation", sectionScheduler_->PrepareKnownSpriteRequirements(candidateSource.PublicationOwner, spritePreparation));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double knownSpritePreparationMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - knownSpritePreparationStarted).count();
 		diagnostics_.KnownSpritePreparation.Add(knownSpritePreparationMs);
 #endif
 		SectionScheduler::SectionImageCommitResult commitResult;
-		sectionScheduler_->RenderAndCommitSectionImage(
+		BM124D_RUN("Section render and commit", sectionScheduler_->RenderAndCommitSectionImage(
 			section,
 			candidateSource.PublicationOwner,
 			candidateSource.Observation,
 			spritePreparation,
 			buildingMapService.splinePolicies_,
-			commitResult);
+			commitResult));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto totalAttemptMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - attemptStarted).count();
@@ -259,6 +262,31 @@ namespace Services::Map::Buildings::Scheduling
 		if (commitResult.Timing.NumericalRenderingInvoked)
 		{
 			diagnostics_.NumericalRendering.Add(commitResult.Timing.NumericalRenderingMs);
+			const auto& phases = commitResult.Timing.NumericalPhases;
+			if (phases.DestinationConstruction.Invoked)
+			{
+				diagnostics_.DestinationConstruction.Add(phases.DestinationConstruction.ElapsedMs);
+			}
+			if (phases.OrdinarySprites.Invoked)
+			{
+				diagnostics_.OrdinarySprites.Add(phases.OrdinarySprites.ElapsedMs);
+			}
+			if (phases.OcclusionIndexPreparation.Invoked)
+			{
+				diagnostics_.OcclusionIndexPreparation.Add(phases.OcclusionIndexPreparation.ElapsedMs);
+			}
+			if (phases.SplineDrawing.Invoked)
+			{
+				diagnostics_.SplineDrawing.Add(phases.SplineDrawing.ElapsedMs);
+			}
+			if (phases.OverlaySprites.Invoked)
+			{
+				diagnostics_.OverlaySprites.Add(phases.OverlaySprites.ElapsedMs);
+			}
+			if (phases.DestinationFinalization.Invoked)
+			{
+				diagnostics_.DestinationFinalization.Add(phases.DestinationFinalization.ElapsedMs);
+			}
 		}
 		if (commitResult.Timing.TransparencyCheckInvoked)
 		{
@@ -316,6 +344,10 @@ namespace Services::Map::Buildings::Scheduling
 			diagnostics_.Worst.RenderAndCommitMs = commitResult.Timing.TotalMs;
 			diagnostics_.Worst.ScenePreparationMs = commitResult.Timing.ScenePreparationMs;
 			diagnostics_.Worst.NumericalRenderingMs = commitResult.Timing.NumericalRenderingMs;
+			diagnostics_.Worst.NumericalPhases = commitResult.Timing.NumericalPhases;
+			diagnostics_.Worst.OrdinarySpriteInputCount = commitResult.Timing.OrdinarySpriteInputCount;
+			diagnostics_.Worst.SplineContributorInputCount = commitResult.Timing.SplineContributorInputCount;
+			diagnostics_.Worst.OverlayLastSpriteInputCount = commitResult.Timing.OverlayLastSpriteInputCount;
 			diagnostics_.Worst.CommitStatus = static_cast<std::uint8_t>(commitResult.CommitStatus);
 			diagnostics_.Worst.HasSceneReadiness = commitResult.SceneReadiness.has_value();
 			diagnostics_.Worst.SceneReadiness = commitResult.SceneReadiness.has_value()
