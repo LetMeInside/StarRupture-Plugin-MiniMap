@@ -3,9 +3,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingMapLoadingTrace.h"
 #include "DiagnosticExports.h"
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "plugin_helpers.h"
-#endif
 #include "BuildingCollectorV2.h"
 #include "SplinePolicyId.h"
 #include "../Map.h"
@@ -29,8 +27,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
-#include <limits>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -137,6 +135,9 @@ namespace MiniMap::BuildingAcquisition
             TConstArrayView<SDK::FAuSplineConnectionFragment> SplineConnections;
             TConstArrayView<SDK::FAuAPMassFragment> ActorPlacement;
             const SDK::FCrBuildingParameters* BuildingParameters = nullptr;
+            bool HasTransforms = false;
+            bool HasSplineConnections = false;
+            bool HasActorPlacement = false;
 
             /** Copies one current chunk identity into the SDK's established handle type. */
             SDK::FMassEntityHandle EntityAt(int32 index) const noexcept
@@ -146,6 +147,14 @@ namespace MiniMap::BuildingAcquisition
                 entity.SerialNumber = Entities[index].SerialNumber;
                 return entity;
             }
+        };
+
+        /** Owns admitted numerical facts and native references copied during one scan callback. */
+        struct OwnedScanOccurrence
+        {
+            Facts::Building Data;
+            std::shared_ptr<DefinitionOwner> Placement;
+            std::unique_ptr<PayloadHandleOwner> Payload;
         };
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -169,16 +178,17 @@ namespace MiniMap::BuildingAcquisition
             }
         };
 
-        /** Numeric evidence for the slowest membership scan in the active interval. */
+        /** Numeric evidence for the slowest regional Mass traversal in the active interval. */
         struct WorstMembershipScan
         {
             double TotalMs = 0.0;
-            double NativeMs = 0.0;
-            double BookkeepingMs = 0.0;
-            double SweepMs = 0.0;
-            double ReleaseMs = 0.0;
-            std::uint64_t Handles = 0;
+            double ChunkExecutionMs = 0.0;
+            double OwnedFactCopyingMs = 0.0;
+            double DeferredAcquisitionMs = 0.0;
+            double ReconciliationMs = 0.0;
+            std::uint64_t Chunks = 0;
             std::uint64_t Entities = 0;
+            std::uint64_t Admitted = 0;
             std::uint64_t Pending = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
@@ -190,28 +200,20 @@ namespace MiniMap::BuildingAcquisition
             Clock::time_point IntervalStart{};
             Metric Update;
             Metric UpdateMembership;
-            Metric UpdateAcquisition;
             Metric Membership;
-            Metric MembershipNative;
-            Metric MembershipBookkeeping;
-            Metric MembershipSweep;
-            Metric MembershipRelease;
+            Metric ChunkExecution;
+            Metric RegionalBookkeeping;
+            Metric OwnedFactCopying;
             Metric Acquisition;
-            Metric LocalKeys;
-            Metric LocalAcquisition;
-            Metric RemoteAcquisition;
             Metric Publication;
             std::uint64_t MembershipScans = 0;
-            std::uint64_t NativeHandles = 0;
+            std::uint64_t Chunks = 0;
+            std::uint64_t Examined = 0;
+            std::uint64_t Admitted = 0;
+            std::uint64_t MissingOrigin = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
-            std::uint64_t Duplicates = 0;
-            std::uint64_t Invalid = 0;
             std::uint64_t FailedScans = 0;
-            std::uint64_t MalformedScans = 0;
-            std::uint64_t LocalAttempts = 0;
-            std::uint64_t RemoteAttempts = 0;
-            std::uint64_t Completed = 0;
             std::uint64_t PublicationAttempts = 0;
             std::uint64_t Publications = 0;
             WorstMembershipScan WorstScan;
@@ -223,23 +225,23 @@ namespace MiniMap::BuildingAcquisition
             }
         };
 
-        /** Captures one reconciliation and folds its numeric result into the interval. */
+        /** Captures one regional traversal and folds its numeric result into the interval. */
         struct MembershipTiming
         {
             State& Owner;
             Clock::time_point Started = Clock::now();
-            double NativeMs = 0.0;
-            double BookkeepingMs = 0.0;
-            double SweepMs = 0.0;
-            double ReleaseMs = 0.0;
-            std::uint64_t Handles = 0;
+            double ChunkExecutionMs = 0.0;
+            double OwnedFactCopyingMs = 0.0;
+            double DeferredAcquisitionMs = 0.0;
+            double ReconciliationMs = 0.0;
+            std::uint64_t Chunks = 0;
+            std::uint64_t Examined = 0;
+            std::uint64_t Admitted = 0;
+            std::uint64_t MissingOrigin = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
-            std::uint64_t Duplicates = 0;
-            std::uint64_t Invalid = 0;
             std::uint64_t Generation = 0;
             bool Complete = false;
-            bool Malformed = false;
 
             explicit MembershipTiming(State& owner) noexcept : Owner(owner), Generation(owner.Generation) {}
 
@@ -253,21 +255,21 @@ namespace MiniMap::BuildingAcquisition
                 auto& measurements = Owner.Diagnostics;
                 ++measurements.MembershipScans;
                 measurements.Membership.Add(totalMs);
-                measurements.MembershipNative.Add(NativeMs);
-                measurements.MembershipBookkeeping.Add(BookkeepingMs);
-                measurements.MembershipSweep.Add(SweepMs);
-                measurements.MembershipRelease.Add(ReleaseMs);
-                measurements.NativeHandles += Handles;
+                measurements.ChunkExecution.Add(ChunkExecutionMs);
+                measurements.OwnedFactCopying.Add(OwnedFactCopyingMs);
+                measurements.Acquisition.Add(DeferredAcquisitionMs);
+                measurements.RegionalBookkeeping.Add(ReconciliationMs);
+                measurements.Chunks += Chunks;
+                measurements.Examined += Examined;
+                measurements.Admitted += Admitted;
+                measurements.MissingOrigin += MissingOrigin;
                 measurements.Added += Added;
                 measurements.Removed += Removed;
-                measurements.Duplicates += Duplicates;
-                measurements.Invalid += Invalid;
                 measurements.FailedScans += Complete ? 0 : 1;
-                measurements.MalformedScans += Malformed ? 1 : 0;
                 if (totalMs >= measurements.WorstScan.TotalMs)
                 {
-                    measurements.WorstScan = {totalMs, NativeMs, BookkeepingMs, SweepMs, ReleaseMs,
-                        Handles, Owner.Entities.size(), Owner.Pending.size(), Added, Removed};
+                    measurements.WorstScan = {totalMs, ChunkExecutionMs, OwnedFactCopyingMs, DeferredAcquisitionMs,
+                        ReconciliationMs, Chunks, Examined, Admitted, Owner.Pending.size(), Added, Removed};
                 }
             }
 
@@ -358,8 +360,6 @@ namespace MiniMap::BuildingAcquisition
             const SDK::UScriptStruct* sdkType)
         {
             const auto* type = reinterpret_cast<const ::UScriptStruct*>(sdkType);
-            if (!context.DoesArchetypeHaveFragment(*type))
-                return {};
             const auto nativeView = context.GetFragmentView(type);
             return TConstArrayView<FragmentType>(
                 reinterpret_cast<const FragmentType*>(nativeView.GetData()),
@@ -375,14 +375,23 @@ namespace MiniMap::BuildingAcquisition
             views.Transforms = GetOptionalFragmentView<SDK::FTransformFragment>(context, Types->Transform);
             views.SplineConnections = GetOptionalFragmentView<SDK::FAuSplineConnectionFragment>(context, Types->Spline);
             views.ActorPlacement = GetOptionalFragmentView<SDK::FAuAPMassFragment>(context, Types->Placement);
+            views.HasTransforms = !views.Transforms.IsEmpty();
+            views.HasSplineConnections = !views.SplineConnections.IsEmpty();
+            views.HasActorPlacement = !views.ActorPlacement.IsEmpty();
             const auto* parametersType = reinterpret_cast<const ::UScriptStruct*>(Types->Parameters);
+            // The context accessor returns the shared fragment's payload bytes, or null when absent.
             views.BuildingParameters = static_cast<const SDK::FCrBuildingParameters*>(
                 context.GetConstSharedFragmentPtr(*parametersType));
 
             const int32 entityCount = views.Entities.Num();
-            return (views.Transforms.IsEmpty() || views.Transforms.Num() == entityCount) &&
-                (views.SplineConnections.IsEmpty() || views.SplineConnections.Num() == entityCount) &&
-                (views.ActorPlacement.IsEmpty() || views.ActorPlacement.Num() == entityCount);
+            const auto hasValidCorrespondence = [entityCount](const auto& fragmentView)
+            {
+                return fragmentView.IsEmpty() ||
+                    (fragmentView.Num() == entityCount && fragmentView.GetData() != nullptr);
+            };
+            return hasValidCorrespondence(views.Transforms) &&
+                hasValidCorrespondence(views.SplineConnections) &&
+                hasValidCorrespondence(views.ActorPlacement);
         }
 
         /** Runs one serial chunk traversal and converts callback exceptions to incomplete status. */
@@ -440,40 +449,9 @@ namespace MiniMap::BuildingAcquisition
             SDK::UWorld* World;
             const void* Manager;
             std::uint64_t Session;
-        };
-
-        /** Owns only the native result allocation, not its entity handles' lifetimes. */
-        struct HandleArrayOwner
-        {
-            const Native& Api;
-            MiniMapNative::MassEntityHandleArray Handles{};
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            MembershipTiming* Timing = nullptr;
-#endif
-            /** Frees native array storage even on exceptions/context rejection. */
-            ~HandleArrayOwner()
-            {
-                if (Handles.Data)
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    const auto started = Clock::now();
-#endif
-                    Api.texture.memoryFree(Handles.Data);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    if (Timing != nullptr)
-                    {
-                        Timing->ReleaseMs += std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-                    }
-#endif
-                }
-            }
-        };
-
-        /** Carries synchronous grid visitor context; grid visits only prioritize pending keys. */
-        struct GridVisit
-        {
-            State& Owner;
-            std::unordered_set<std::uint64_t>& Keys;
+            std::uint64_t Request;
+            bool HasRegion;
+            Facts::Region Region;
         };
 
         std::unordered_map<std::uint64_t, Entry> Entities;
@@ -487,11 +465,10 @@ namespace MiniMap::BuildingAcquisition
         SDK::UWorld* World = nullptr;
         const void* Manager = nullptr;
         std::uint64_t Generation = 0;
-        std::uint64_t ScanEpoch = 0;
+        std::uint64_t RequestGeneration = 0;
         Clock::time_point NextMembership{};
         bool MembershipComplete = false;
         bool Dirty = true;
-        bool RemoteTurn = false;
         bool HasRegion = false;
         bool IncludeDroneRails = true;
         Facts::Region RequestedRegion;
@@ -511,7 +488,7 @@ namespace MiniMap::BuildingAcquisition
         /** Captures logical source lifetime before native operations. */
         Context CaptureContext() const noexcept
         {
-            return {World, Manager, Generation};
+            return {World, Manager, Generation, RequestGeneration, HasRegion, RequestedRegion};
         }
 
         /** Marks exposed bytes historical immediately; their retained CPU lifetime is unaffected. */
@@ -549,7 +526,8 @@ namespace MiniMap::BuildingAcquisition
         bool IsContextCurrent(const Native& native, const Context& context) const
         {
             if (!QueryConstructed || World != context.World || Manager != context.Manager ||
-                Generation != context.Session)
+                Generation != context.Session || RequestGeneration != context.Request ||
+                HasRegion != context.HasRegion || (HasRegion && !(RequestedRegion == context.Region)))
                 return false;
             return ReadManager(ManagerStorage(native, context.World)) == context.Manager;
         }
@@ -570,16 +548,17 @@ namespace MiniMap::BuildingAcquisition
             Pending.clear();
             Entities.clear();
             Definitions.clear();
-            ScanEpoch = 0;
             NextMembership = {};
             MembershipComplete = false;
-            RemoteTurn = false;
             Published.reset();
             PublishedCandidates.reset();
             if (clearRequest)
             {
                 HasRegion = false;
                 RequestedRegion = {};
+                ++RequestGeneration;
+                if (RequestGeneration == 0)
+                    ++RequestGeneration;
             }
         }
 
@@ -615,263 +594,25 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
-        /** Advances mark epoch, clearing old marks before reusing epoch one. */
-        std::uint64_t NextScanEpoch()
+        /** Applies the approved shortest XY distance from one finite origin to the exact request. */
+        static bool IsRegionallyAdmitted(const Facts::Region& region, double px, double py) noexcept
         {
-            if (ScanEpoch == (std::numeric_limits<std::uint64_t>::max)())
-            {
-                for (auto& item : Entities)
-                    item.second.SeenScan = 0;
-                ScanEpoch = 0;
-            }
-            return ++ScanEpoch;
+            constexpr double DefaultMaximumReach = 5000.0;
+            const double right = region.X + region.Width;
+            const double bottom = region.Y + region.Height;
+            if (px >= region.X && px < right && py >= region.Y && py < bottom)
+                return true;
+            const double dx = (std::max)((std::max)(region.X - px, 0.0), px - right);
+            const double dy = (std::max)((std::max)(region.Y - py, 0.0), py - bottom);
+            return std::hypot(dx, dy) <= DefaultMaximumReach;
         }
 
-        /** Inserts one full handle with rollback if pending-index insertion cannot allocate. */
-        void MarkHandle(EntityId id, std::uint64_t epoch
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            , MembershipTiming* timing
-#endif
-        )
+        /** Copies transform values and preserves invalid rotation/scale status independently of XY admission. */
+        static void CopyTransform(const SDK::FTransform& transform, Facts::Building& result)
         {
-            const auto key = Key(id);
-            auto [entry, added] = Entities.try_emplace(key);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if (!added && timing != nullptr && entry->second.SeenScan == epoch)
-            {
-                ++timing->Duplicates;
-            }
-#endif
-            if (added)
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                if (timing != nullptr)
-                {
-                    ++timing->Added;
-                }
-#endif
-                try
-                {
-                    Pending.insert(key);
-                }
-                catch (...)
-                {
-                    Entities.erase(entry);
-                    throw;
-                }
-                entry->second.Data.Index = id.Index;
-                entry->second.Data.Serial = id.SerialNumber;
-                Invalidate();
-            }
-            entry->second.SeenScan = epoch;
-        }
-
-        /** Removes absent entries only after the complete native scan/context was validated. */
-        void SweepMembership(std::uint64_t epoch
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            , MembershipTiming* timing
-#endif
-        )
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            const auto started = Clock::now();
-#endif
-            for (auto entry = Entities.begin(); entry != Entities.end();)
-            {
-                if (entry->second.SeenScan == epoch)
-                    ++entry;
-                else
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    if (timing != nullptr)
-                    {
-                        ++timing->Removed;
-                    }
-#endif
-                    Pending.erase(entry->first);
-                    entry = Entities.erase(entry);
-                    Invalidate();
-                }
-            }
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if (timing != nullptr)
-            {
-                timing->SweepMs += std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-            }
-#endif
-        }
-
-        /** Reconciles authoritative membership; failed traversal cannot authorize a removal sweep. */
-        bool Reconcile(const Native& native)
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            MembershipTiming timing{*this};
-            HandleArrayOwner owner{native};
-            owner.Timing = &timing;
-#else
-            HandleArrayOwner owner{native};
-#endif
-            const auto context = CaptureContext();
-            const auto epoch = NextScanEpoch();
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            const auto nativeStarted = Clock::now();
-#endif
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            const MiniMapNative::MassEntityHandleArray* returned = nullptr;
-            try
-            {
-                BM124D_MARK("membership native query begin");
-                returned = native.mass.getMatchingEntityHandles(Query.data(), &owner.Handles);
-                BM124D_MARK("membership native query returned");
-            }
-            catch (...)
-            {
-                timing.NativeMs = std::chrono::duration<double, std::milli>(Clock::now() - nativeStarted).count();
-                throw;
-            }
-#else
-            const auto* returned = native.mass.getMatchingEntityHandles(Query.data(), &owner.Handles);
-#endif
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            timing.NativeMs = std::chrono::duration<double, std::milli>(Clock::now() - nativeStarted).count();
-            timing.Handles = owner.Handles.Num > 0 ? static_cast<std::uint64_t>(owner.Handles.Num) : 0;
-#endif
-            const auto& handles = owner.Handles;
-            if (returned != &handles || handles.Num < 0 || handles.Max < handles.Num ||
-                (handles.Num && !handles.Data) || !IsContextCurrent(native, context))
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                timing.Malformed = returned != &handles || handles.Num < 0 || handles.Max < handles.Num ||
-                    (handles.Num && !handles.Data);
-#endif
-                return false;
-            }
-            BM124D_MARK("membership bookkeeping begin");
-            bool valid = true;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            const auto bookkeepingStarted = Clock::now();
-#endif
-            for (int index = 0; index < handles.Num; ++index)
-            {
-                const auto id = handles.Data[index];
-                if (id.Index < 0 || !id.SerialNumber)
-                {
-                    valid = false;
- #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    ++timing.Invalid;
- #endif
-                }
-                else
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    MarkHandle(id, epoch, &timing);
-#else
-                    MarkHandle(id, epoch);
-#endif
-                }
-            }
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            timing.BookkeepingMs += std::chrono::duration<double, std::milli>(Clock::now() - bookkeepingStarted).count();
-#endif
-            BM124D_MARK("membership bookkeeping finished");
-            if (!valid || !IsContextCurrent(native, context))
-                return false;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            SweepMembership(epoch, &timing);
-            timing.Complete = true;
-#else
-            SweepMembership(epoch);
-#endif
-            return true;
-        }
-
-        /** Revokes scan completeness before a due scan, including exceptions or reentrant reset. */
-        void ReconcileIfDue(const Native& native)
-        {
-            if (Clock::now() < NextMembership)
-                return;
-            const auto context = CaptureContext();
-            bool complete = false;
-            try
-            {
-                complete = Reconcile(native);
-            }
-            catch (...)
-            {
-                if (Generation == context.Session)
-                {
-                    MembershipComplete = false;
-                    Invalidate();
-                }
-                throw;
-            }
-            if (!IsContextCurrent(native, context))
-                return;
-            if (MembershipComplete != complete)
-                Invalidate();
-            MembershipComplete = complete;
-            NextMembership = Clock::now() + MembershipInterval;
-        }
-
-        /** Borrows the aligned parameter value only for immediate placement acquisition.
-         * Established UE 5.6.1 FConstSharedStruct ABI: first word is shared storage,
-         * whose 8-byte script-struct header precedes AlignUp(payload, MinAlignment).
-         * The returned wrapper/value are manager-owned and must never be freed/copied as owners.
-         */
-        const SDK::FCrBuildingParameters* Parameters(const Native& native, EntityId id) const
-        {
-            static_assert(sizeof(SDK::FCrBuildingParameters) == 0x18);
-            const auto* wrapper = native.mass.getConstSharedFragmentPtr(Manager, id, Types->Parameters);
-            const std::byte* storage = nullptr;
-            if (wrapper)
-                std::memcpy(&storage, wrapper, sizeof(storage));
-            const auto alignment = std::uintptr_t(Types->Parameters->MinAlignment);
-            if (!storage || !alignment || (alignment & (alignment - 1)))
-                return nullptr;
-            const auto address = (reinterpret_cast<std::uintptr_t>(storage) + sizeof(void*) + alignment - 1) &
-                ~(alignment - 1);
-            return reinterpret_cast<const SDK::FCrBuildingParameters*>(address);
-        }
-
-        /** Finds or roots one placement in the sole session definition cache. */
-        std::shared_ptr<DefinitionOwner> FindDefinition(const Native& native, EntityId id)
-        {
-            SDK::UAuActorPlacementData* placement = nullptr;
-            {
-                const auto* parameters = Parameters(native, id);
-                placement = parameters ? parameters->PlacementData : nullptr;
-            }
-            if (!placement)
-                return {};
-            auto found = Definitions.find(placement);
-            if (found != Definitions.end())
-                return found->second;
-            auto definition = DefinitionAcquisition.Retain(placement);
-            return Definitions.emplace(placement, std::move(definition)).first->second;
-        }
-
-        /** Validates a copied fixed-size numerical value, never native memory. */
-        template<std::size_t Size> static bool Finite(const std::array<double, Size>& values)
-        {
-            for (double value : values)
-                if (!std::isfinite(value))
-                    return false;
-            return true;
-        }
-
-        /** Copies optional native transform and normalizes orientation, retaining signed scale. */
-        void CopyTransform(const Native& native, EntityId id, Facts::Building& result) const
-        {
-            if (result.TransformStatus == Status::Ready)
-                return;
-            const auto* transform = static_cast<const SDK::FTransform*>(
-                native.mass.getFragmentDataPtr(Manager, id, Types->Transform));
-            result.TransformStatus = Status::Missing;
-            if (!transform)
-                return;
-            result.Position = {transform->Translation.X, transform->Translation.Y, transform->Translation.Z};
-            result.SignedScale = {transform->Scale3D.X, transform->Scale3D.Y, transform->Scale3D.Z};
-            result.Rotation = {transform->Rotation.X, transform->Rotation.Y, transform->Rotation.Z, transform->Rotation.W};
+            result.Position = {transform.Translation.X, transform.Translation.Y, transform.Translation.Z};
+            result.SignedScale = {transform.Scale3D.X, transform.Scale3D.Y, transform.Scale3D.Z};
+            result.Rotation = {transform.Rotation.X, transform.Rotation.Y, transform.Rotation.Z, transform.Rotation.W};
             double norm = 0;
             for (double value : result.Rotation)
                 norm += value * value;
@@ -884,48 +625,389 @@ namespace MiniMap::BuildingAcquisition
             result.TransformStatus = Status::Ready;
         }
 
-        /** Copies a scoped AP handle argument only; it is not an owning or retained handle. */
-        bool CopyPayloadArgument(const Native& native, EntityId id, SDK::FAuAPPayloadDataHandle& handle) const
+        /** Copies an admitted entity while its transform, spline and AP views remain borrowed. */
+        std::optional<OwnedScanOccurrence> CaptureMassOccurrence(
+            const Native& native,
+            const Context& context,
+            const MassChunkViews& views,
+            int32 index,
+            EntityId id,
+            bool& missingOrigin)
         {
-            const auto* placement = static_cast<const SDK::FAuAPMassFragment*>(
-                native.mass.getFragmentDataPtr(Manager, id, Types->Placement));
-            if (!placement)
+            missingOrigin = false;
+            if (!views.HasTransforms)
+            {
+                missingOrigin = true;
+                LOG_WARN("MiniMap: BuildingMap skipped entity Index=%d Serial=%d because its optional transform origin is missing.",
+                    id.Index, id.SerialNumber);
+                return std::nullopt;
+            }
+            const SDK::FTransform& transform = views.Transforms[index].Transform;
+            const double x = transform.Translation.X;
+            const double y = transform.Translation.Y;
+            if (!std::isfinite(x) || !std::isfinite(y))
+            {
+                missingOrigin = true;
+                LOG_WARN("MiniMap: BuildingMap skipped entity Index=%d Serial=%d because its XY origin is nonfinite (x=%.9g y=%.9g).",
+                    id.Index, id.SerialNumber, x, y);
+                return std::nullopt;
+            }
+            if (!context.HasRegion || !IsRegionallyAdmitted(context.Region, x, y))
+                return std::nullopt;
+            OwnedScanOccurrence occurrence;
+            occurrence.Data.Index = id.Index;
+            occurrence.Data.Serial = id.SerialNumber;
+            occurrence.Data.EntityStatus = Status::Ready;
+            CopyTransform(transform, occurrence.Data);
+            occurrence.Data.SplineClassificationStatus = Status::Ready;
+            occurrence.Data.HasSpline = views.HasSplineConnections;
+            if (occurrence.Data.HasSpline)
+            {
+                Facts::Spline spline = BuildingSplineSource::CopyFragment(views.SplineConnections[index]);
+                occurrence.Data.SplineStatus = spline.SourceStatus;
+                occurrence.Data.SplineFacts = std::make_shared<const Facts::Spline>(std::move(spline));
+                if (BuildingSplineSource::NeedsFallback(*occurrence.Data.SplineFacts) && views.HasActorPlacement)
+                {
+                    occurrence.Payload = std::make_unique<PayloadHandleOwner>(
+                        native, views.ActorPlacement[index].Payload);
+                }
+            }
+            else
+            {
+                occurrence.Data.SplineStatus = Status::Ready;
+            }
+            if (views.BuildingParameters && views.BuildingParameters->PlacementData)
+            {
+                occurrence.Placement = DefinitionAcquisition.Retain(
+                    views.BuildingParameters->PlacementData);
+            }
+            return std::move(occurrence);
+        }
+
+        /** Copies admitted chunk occurrences into owned storage and rejects duplicate identities. */
+        void CaptureMassChunk(
+            const Native& native,
+            const Context& context,
+            const MassChunkViews& views,
+            std::vector<OwnedScanOccurrence>& occurrences,
+            std::unordered_set<std::uint64_t>& seen
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto copyingStarted = Clock::now();
+#endif
+            for (int32 index = 0; index < views.Entities.Num(); ++index)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++timing->Examined;
+#endif
+                const SDK::FMassEntityHandle sdkId = views.EntityAt(index);
+                const EntityId id{sdkId.Index, sdkId.SerialNumber};
+                if (id.Index < 0 || id.SerialNumber == 0)
+                    throw std::runtime_error("Mass chunk contained an invalid building identity.");
+                bool missingOrigin = false;
+                auto occurrence = CaptureMassOccurrence(native, context, views, index, id, missingOrigin);
+                if (!occurrence)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    if (missingOrigin)
+                        ++timing->MissingOrigin;
+#endif
+                    continue;
+                }
+                if (!seen.insert(Key(id)).second)
+                    throw std::runtime_error("Mass chunk traversal repeated a building identity.");
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++timing->Admitted;
+#endif
+                occurrences.push_back(std::move(*occurrence));
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing->OwnedFactCopyingMs += std::chrono::duration<double, std::milli>(Clock::now() - copyingStarted).count();
+#endif
+        }
+
+        /** Completes one owned occurrence after every borrowed Mass view has expired. */
+        bool AcquireOwnedOccurrence(
+            const Native& native,
+            const Context& context,
+            OwnedScanOccurrence& occurrence,
+            std::unordered_set<const DefinitionOwner*>& attempted,
+            Facts::Building& result)
+        {
+            result = std::move(occurrence.Data);
+            if (result.SplineFacts && occurrence.Payload &&
+                BuildingSplineSource::NeedsFallback(*result.SplineFacts))
+            {
+                Facts::Spline spline = *result.SplineFacts;
+                BuildingSplineSource::CopyFallback(*occurrence.Payload->Get(), spline);
+                result.SplineStatus = spline.SourceStatus;
+                result.SplineFacts = std::make_shared<const Facts::Spline>(std::move(spline));
+                if (!IsContextCurrent(native, context))
+                    return false;
+            }
+            if (occurrence.Placement)
+            {
+                auto* placement = occurrence.Placement->Root;
+                auto found = Definitions.find(placement);
+                if (found == Definitions.end())
+                {
+                    found = Definitions.emplace(placement, occurrence.Placement).first;
+                }
+                const auto definition = found->second;
+                CopyDefinition(native, context, definition, attempted,
+                    result.SplineClassificationStatus == Status::Ready && result.HasSpline);
+                if (!IsContextCurrent(native, context))
+                    return false;
+                result.DefinitionFacts = definition->Facts;
+            }
+            result.DefinitionStatus = DefinitionStatus(result.DefinitionFacts);
+            result.Complete = result.DefinitionStatus == Status::Ready &&
+                result.TransformStatus == Status::Ready && result.SplineStatus == Status::Ready &&
+                AreRequiredSplineProfilesResolved(result.DefinitionFacts, result.HasSpline);
+            return IsContextCurrent(native, context);
+        }
+
+        /** Compares acquired values deeply enough to preserve unchanged immutable spline owners. */
+        static bool SameAcquiredFacts(const Facts::Building& first, const Facts::Building& second)
+        {
+            const bool definitionsMatch = first.DefinitionFacts == second.DefinitionFacts ||
+                (first.DefinitionFacts && second.DefinitionFacts &&
+                    *first.DefinitionFacts == *second.DefinitionFacts);
+            const bool splinesMatch = first.SplineFacts == second.SplineFacts ||
+                (first.SplineFacts && second.SplineFacts && *first.SplineFacts == *second.SplineFacts);
+            return first.Index == second.Index && first.Serial == second.Serial &&
+                first.EntityStatus == second.EntityStatus && first.DefinitionStatus == second.DefinitionStatus &&
+                first.TransformStatus == second.TransformStatus &&
+                first.SplineClassificationStatus == second.SplineClassificationStatus &&
+                first.SplineStatus == second.SplineStatus && first.HasSpline == second.HasSpline &&
+                first.Complete == second.Complete && first.Position == second.Position &&
+                first.Rotation == second.Rotation && first.SignedScale == second.SignedScale &&
+                definitionsMatch && splinesMatch;
+        }
+
+        /** Captures one serial traversal into callback-owned snapshots. */
+        bool CaptureMassSnapshot(
+            const Native& native,
+            const Context& context,
+            std::vector<OwnedScanOccurrence>& occurrences
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
+        {
+            std::unordered_set<std::uint64_t> seen;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto chunkStarted = Clock::now();
+#endif
+            const bool traversed = ForEachMassChunk(native, TFunction<void(const MassChunkViews&)>(
+                [this, &native, &context, &occurrences, &seen
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , timing
+#endif
+                ](const MassChunkViews& views)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing->Chunks;
+#endif
+                    CaptureMassChunk(native, context, views, occurrences, seen
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                        , timing
+#endif
+                    );
+                }));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing->ChunkExecutionMs = std::chrono::duration<double, std::milli>(Clock::now() - chunkStarted).count();
+#endif
+            return traversed && IsContextCurrent(native, context);
+        }
+
+        /** Defers payload and authored-definition work until all borrowed Mass views have expired. */
+        bool BuildRegionalState(
+            const Native& native,
+            const Context& context,
+            std::vector<OwnedScanOccurrence>& occurrences,
+            std::unordered_map<std::uint64_t, Entry>& reconciled,
+            std::unordered_set<std::uint64_t>& pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
+        {
+            reconciled.reserve(occurrences.size());
+            pending.reserve(occurrences.size());
+            std::unordered_set<const DefinitionOwner*> attempted;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto acquisitionStarted = Clock::now();
+#endif
+            for (auto& occurrence : occurrences)
+            {
+                Facts::Building data;
+                if (!AcquireOwnedOccurrence(native, context, occurrence, attempted, data))
+                    return false;
+                const auto key = Key({data.Index, data.Serial});
+                auto previous = Entities.find(key);
+                Entry entry;
+                if (previous != Entities.end() && SameAcquiredFacts(previous->second.Data, data))
+                {
+                    entry.Data = previous->second.Data;
+                    entry.Definition = previous->second.Definition;
+                }
+                else
+                {
+                    entry.Data = std::move(data);
+                    Invalidate();
+                }
+                if (!entry.Data.Complete)
+                {
+                    const auto definition = Definitions.find(
+                        occurrence.Placement ? occurrence.Placement->Root : nullptr);
+                    if (definition != Definitions.end())
+                    {
+                        entry.Definition = definition->second;
+                    }
+                    pending.insert(key);
+                }
+                reconciled.emplace(key, std::move(entry));
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing->DeferredAcquisitionMs = std::chrono::duration<double, std::milli>(Clock::now() - acquisitionStarted).count();
+#endif
+            return IsContextCurrent(native, context);
+        }
+
+        /** Commits the fully acquired regional set only while its session and request remain current. */
+        bool CommitRegionalState(
+            const Native& native,
+            const Context& context,
+            std::unordered_map<std::uint64_t, Entry>& reconciled,
+            std::unordered_set<std::uint64_t>& pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto reconciliationStarted = Clock::now();
+#endif
+            if (!IsContextCurrent(native, context))
                 return false;
-            handle = placement->Payload;
+            for (const auto& previous : Entities)
+            {
+                if (!reconciled.contains(previous.first))
+                {
+                    Invalidate();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing->Removed;
+#endif
+                }
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            for (const auto& item : reconciled)
+            {
+                if (!Entities.contains(item.first))
+                    ++timing->Added;
+            }
+#endif
+            Entities.swap(reconciled);
+            Pending.swap(pending);
+            if (!MembershipComplete)
+                Invalidate();
+            MembershipComplete = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing->ReconciliationMs = std::chrono::duration<double, std::milli>(Clock::now() - reconciliationStarted).count();
+#endif
             return true;
         }
 
-        /** Ends every native fragment borrow before the potentially reentrant payload getter. */
-        void CopySpline(const Native& native, EntityId id, Facts::Building& result) const
+        /** Completes one regional scan without exposing partial traversal or acquisition results. */
+        bool Reconcile(const Native& native, const Context& context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        )
         {
-            if (result.SplineStatus == Status::Ready)
-                return;
-            Facts::Spline source;
-            {
-                const auto* fragment = static_cast<const SDK::FAuSplineConnectionFragment*>(
-                    native.mass.getFragmentDataPtr(Manager, id, Types->Spline));
-                result.SplineClassificationStatus = Status::Ready;
-                result.HasSpline = fragment != nullptr;
-                if (!fragment)
-                {
-                    result.SplineStatus = Status::Ready;
-                    result.SplineFacts.reset();
-                    return;
-                }
-                source = BuildingSplineSource::CopyFragment(*fragment);
-            }
-            if (BuildingSplineSource::NeedsFallback(source))
-            {
-                SDK::FAuAPPayloadDataHandle handle{};
-                if (CopyPayloadArgument(native, id, handle))
-                    BuildingSplineSource::CopyFallback(handle, source);
-            }
-            result.SplineStatus = source.SourceStatus;
-            if (!result.SplineFacts || !(*result.SplineFacts == source))
-                result.SplineFacts = std::make_shared<const Facts::Spline>(std::move(source));
+            if (!context.HasRegion || !IsContextCurrent(native, context))
+                return false;
+            std::vector<OwnedScanOccurrence> occurrences;
+            if (!CaptureMassSnapshot(native, context, occurrences
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , timing
+#endif
+            ))
+                return false;
+            std::unordered_map<std::uint64_t, Entry> reconciled;
+            std::unordered_set<std::uint64_t> pending;
+            if (!BuildRegionalState(native, context, occurrences, reconciled, pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , timing
+#endif
+            ))
+                return false;
+            return CommitRegionalState(native, context, reconciled, pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , timing
+#endif
+            );
         }
 
-        /** Acquires shared core/profile facts once per callback without retaining entry references across reentry. */
+        /** Runs the due request scan and keeps failed or stale results incomplete. */
+        void ReconcileIfDue(const Native& native)
+        {
+            if (Clock::now() < NextMembership)
+                return;
+            const auto context = CaptureContext();
+            bool complete = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            MembershipTiming timing{*this};
+#endif
+            try
+            {
+                complete = Reconcile(native, context
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , &timing
+#endif
+                );
+            }
+            catch (...)
+            {
+                complete = false;
+            }
+            if (!IsContextCurrent(native, context))
+                return;
+            if (!complete)
+            {
+                if (MembershipComplete)
+                    Invalidate();
+                else
+                    Invalidate(false);
+                MembershipComplete = false;
+            }
+            else if (!MembershipComplete)
+            {
+                MembershipComplete = true;
+                Invalidate();
+            }
+            NextMembership = Clock::now() + MembershipInterval;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            timing.Complete = complete;
+#endif
+        }
+
+        /** Validates a copied fixed-size numerical value, never native memory. */
+        template<std::size_t Size> static bool Finite(const std::array<double, Size>& values)
+        {
+            for (double value : values)
+                if (!std::isfinite(value))
+                    return false;
+            return true;
+        }
+
+
+        /** Acquires shared core/profile facts once per definition in the deferred pass. */
         void CopyDefinition(const Native& native, const Context& context,
             const std::shared_ptr<DefinitionOwner>& definition,
             std::unordered_set<const DefinitionOwner*>& attempted, bool hasSpline)
@@ -1010,139 +1092,6 @@ namespace MiniMap::BuildingAcquisition
                     (status != Status::Missing && definition->ConfigReferenceStatus == status))
                     return status;
             return Status::Missing;
-        }
-
-        /** Commits copied facts only after session/manager and full entity correspondence revalidation. */
-        void Commit(const Native& native, const Context& context, std::uint64_t key,
-            Facts::Building&& result, const std::shared_ptr<DefinitionOwner>& definition)
-        {
-            if (!IsContextCurrent(native, context))
-                return;
-            auto found = Entities.find(key);
-            if (found == Entities.end() || found->second.Data.Complete)
-                return;
-            const EntityId id{result.Index, result.Serial};
-            if (result.EntityStatus == Status::Ready &&
-                (!native.mass.isEntityValid(Manager, id) || !native.mass.isEntityBuilt(Manager, id)))
-                return;
-            if (!(found->second.Data == result))
-            {
-                found->second.Data = std::move(result);
-                Invalidate();
-            }
-            found->second.Definition = definition;
-            if (found->second.Data.Complete)
-            {
-                found->second.Definition.reset();
-                Pending.erase(key);
-            }
-        }
-
-        /** Acquires independent native facts with owned locals across payload/reflection reentry. */
-        void Acquire(const Native& native, std::uint64_t key, std::unordered_set<const DefinitionOwner*>& attempted)
-        {
-            Facts::Building result;
-            std::shared_ptr<DefinitionOwner> definition;
-            {
-                const auto found = Entities.find(key);
-                if (found == Entities.end() || found->second.Data.Complete)
-                    return;
-                result = found->second.Data;
-                definition = found->second.Definition;
-            }
-            const auto context = CaptureContext();
-            const EntityId id{result.Index, result.Serial};
-            result.EntityStatus = Status::Missing;
-            if (native.mass.isEntityValid(Manager, id) && native.mass.isEntityBuilt(Manager, id))
-            {
-                result.EntityStatus = Status::Ready;
-                if (!definition)
-                    definition = FindDefinition(native, id);
-                CopyTransform(native, id, result);
-                CopySpline(native, id, result);
-                if (!IsContextCurrent(native, context))
-                    return;
-                if (definition)
-                    CopyDefinition(native, context, definition, attempted,
-                        result.SplineClassificationStatus == Status::Ready && result.HasSpline);
-                if (!IsContextCurrent(native, context))
-                    return;
-                result.DefinitionFacts = definition ? definition->Facts : nullptr;
-                result.DefinitionStatus = DefinitionStatus(result.DefinitionFacts);
-                result.Complete = result.DefinitionStatus == Status::Ready &&
-                    result.TransformStatus == Status::Ready && result.SplineStatus == Status::Ready &&
-                    AreRequiredSplineProfilesResolved(result.DefinitionFacts, result.HasSpline);
-            }
-            Commit(native, context, key, std::move(result), definition);
-        }
-
-        /** Records only pending keys; spatial visits are never authoritative membership. */
-        static bool VisitLocal(void* context, const MiniMapNative::GridEntityHandle& handle)
-        {
-            auto& visit = *static_cast<GridVisit*>(context);
-            const auto key = Key(handle.Entity);
-            if (visit.Owner.Pending.contains(key))
-                visit.Keys.insert(key);
-            return true;
-        }
-
-        /** Enumerates local pending priority around the exact requested rectangle, across all Z. */
-        void CollectLocalKeys(const Native& native, std::unordered_set<std::uint64_t>& keys)
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            PhaseTiming timing{Diagnostics.LocalKeys};
-#endif
-            if (!HasRegion)
-                return;
-            const double radius = std::hypot(RequestedRegion.Width, RequestedRegion.Height) * 0.5;
-            const double x = RequestedRegion.X + RequestedRegion.Width * 0.5;
-            const double y = RequestedRegion.Y + RequestedRegion.Height * 0.5;
-            if (radius > (std::numeric_limits<float>::max)())
-                return; // Remote pending pass still reaches every entity.
-            auto* grid = native.gridDiagnostic.getSubsystem(World);
-            if (!grid)
-                return;
-            GridVisit visit{*this, keys};
-            const MiniMapNative::GridDiagnosticApi::VisitorRef visitor{&State::VisitLocal, &visit};
-            native.gridDiagnostic.forEachCellInRadius(grid, SDK::FVector{x, y, 0},
-                std::nextafter(static_cast<float>(radius), INFINITY), visitor, false);
-        }
-
-        /** Acquires a stable key sequence; no map iterators survive native calls. */
-        template<class Keys> bool AcquireKeys(const Native& native, const Keys& keys,
-            std::unordered_set<const DefinitionOwner*>& attempted, const Context& context
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            , bool localPass
-#endif
-        )
-        {
-            for (const auto key : keys)
-            {
-                if (Pending.contains(key))
-                {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    const auto pendingBefore = Pending.size();
-                    if (localPass)
-                    {
-                        ++Diagnostics.LocalAttempts;
-                    }
-                    else
-                    {
-                        ++Diagnostics.RemoteAttempts;
-                    }
-#endif
-                    Acquire(native, key, attempted);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    if (Pending.size() < pendingBefore)
-                    {
-                        ++Diagnostics.Completed;
-                    }
-#endif
-                }
-                if (!IsContextCurrent(native, context))
-                    return false;
-            }
-            return true;
         }
 
         /** Maps copied native acquisition outcomes without exposing native status values. */
@@ -1551,7 +1500,7 @@ namespace MiniMap::BuildingAcquisition
         /** Freezes all occurrences only when relevant acquisition/request evidence changed. */
         void Publish()
         {
-            if (!Dirty)
+            if (!Dirty || !MembershipComplete)
                 return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             ++Diagnostics.PublicationAttempts;
@@ -1589,80 +1538,23 @@ namespace MiniMap::BuildingAcquisition
 #endif
         }
 
-        /** Alternates local-progress publication with unrestricted remote pending acquisition. */
-        void AdvancePending(const Native& native)
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            PhaseTiming acquisitionTiming{Diagnostics.Acquisition};
-#endif
-            if (Pending.empty())
-            {
-                RemoteTurn = false;
-                Publish();
-                return;
-            }
-            const auto context = CaptureContext();
-            std::unordered_set<std::uint64_t> local;
-            BM124D_RUN("CollectLocalKeys", CollectLocalKeys(native, local));
-            if (!IsContextCurrent(native, context))
-                return;
-            std::unordered_set<const DefinitionOwner*> attempted;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            bool localComplete = false;
-            {
-                PhaseTiming localTiming{Diagnostics.LocalAcquisition};
-                localComplete = BM124D_RUN("local pending acquisition", AcquireKeys(native, local, attempted, context
-                    , true
-                ));
-            }
-            if (!localComplete)
-                return;
-#else
-            if (!AcquireKeys(native, local, attempted, context))
-                return;
-#endif
-            if (!Pending.empty() && Dirty && !RemoteTurn)
-            {
-                Publish();
-                RemoteTurn = true;
-                return;
-            }
-            RemoteTurn = false;
-            BM124D_MARK("remote pending snapshot begin");
-            const std::vector<std::uint64_t> remote(Pending.begin(), Pending.end());
-            BM124D_MARK("remote pending snapshot finished");
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            PhaseTiming remoteTiming{Diagnostics.RemoteAcquisition};
-#endif
-            BM124D_MARK("remote pending acquisition begin");
-            if (AcquireKeys(native, remote, attempted, context
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                , false
-#endif
-            ))
-                Publish();
-            BM124D_MARK("remote pending acquisition and publication finished");
-        }
-
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         /** Emits collector totals and acquisition phases for one completed interval. */
         void ReportCollectorMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} acquisitionWork={totalMs:%.3f meanMs:%.3f maxMs:%.3f acquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f localAttempts:%llu remoteAttempts:%llu completed:%llu pending:%llu publishAttempts:%llu publications:%llu",
+            LOG_INFO("MiniMap: BuildingMap collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} deferredAcquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f pending:%llu publishAttempts:%llu publications:%llu",
                 intervalMs,
                 static_cast<unsigned long long>(d.Update.Samples), d.Update.TotalMs, d.Update.MeanMs(), d.Update.MaxMs,
                 d.UpdateMembership.TotalMs, d.UpdateMembership.MeanMs(), d.UpdateMembership.MaxMs,
-                d.UpdateAcquisition.TotalMs, d.UpdateAcquisition.MeanMs(), d.UpdateAcquisition.MaxMs,
                 static_cast<unsigned long long>(d.Acquisition.Samples), d.Acquisition.TotalMs, d.Acquisition.MeanMs(), d.Acquisition.MaxMs,
-                static_cast<unsigned long long>(d.LocalAttempts), static_cast<unsigned long long>(d.RemoteAttempts),
-                static_cast<unsigned long long>(d.Completed), static_cast<unsigned long long>(Pending.size()),
+                static_cast<unsigned long long>(Pending.size()),
                 static_cast<unsigned long long>(d.PublicationAttempts), static_cast<unsigned long long>(d.Publications));
-            LOG_INFO("MiniMap: BuildingMap collector_phases intervalMs=%.1f localKeys={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} local={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} remote={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+            LOG_INFO("MiniMap: BuildingMap collector_phases intervalMs=%.1f chunkExecution={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ownedCopy={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} reconciliation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
                 intervalMs,
-                static_cast<unsigned long long>(d.LocalKeys.Samples), d.LocalKeys.TotalMs, d.LocalKeys.MeanMs(), d.LocalKeys.MaxMs,
-                static_cast<unsigned long long>(d.LocalAcquisition.Samples), d.LocalAcquisition.TotalMs, d.LocalAcquisition.MeanMs(), d.LocalAcquisition.MaxMs,
-                static_cast<unsigned long long>(d.RemoteAcquisition.Samples), d.RemoteAcquisition.TotalMs, d.RemoteAcquisition.MeanMs(), d.RemoteAcquisition.MaxMs,
+                static_cast<unsigned long long>(d.ChunkExecution.Samples), d.ChunkExecution.TotalMs, d.ChunkExecution.MeanMs(), d.ChunkExecution.MaxMs,
+                static_cast<unsigned long long>(d.OwnedFactCopying.Samples), d.OwnedFactCopying.TotalMs, d.OwnedFactCopying.MeanMs(), d.OwnedFactCopying.MaxMs,
+                static_cast<unsigned long long>(d.RegionalBookkeeping.Samples), d.RegionalBookkeeping.TotalMs, d.RegionalBookkeeping.MeanMs(), d.RegionalBookkeeping.MaxMs,
                 static_cast<unsigned long long>(d.Publication.Samples), d.Publication.TotalMs, d.Publication.MeanMs(), d.Publication.MaxMs);
         }
 
@@ -1670,18 +1562,14 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap membership intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} native={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} bookkeeping={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sweep={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} release={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} handles:%llu added:%llu removed:%llu duplicate:%llu invalid:%llu failed:%llu malformed:%llu entities:%llu pending:%llu",
+            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
-                static_cast<unsigned long long>(d.MembershipNative.Samples), d.MembershipNative.TotalMs, d.MembershipNative.MeanMs(), d.MembershipNative.MaxMs,
-                static_cast<unsigned long long>(d.MembershipBookkeeping.Samples), d.MembershipBookkeeping.TotalMs, d.MembershipBookkeeping.MeanMs(), d.MembershipBookkeeping.MaxMs,
-                static_cast<unsigned long long>(d.MembershipSweep.Samples), d.MembershipSweep.TotalMs, d.MembershipSweep.MeanMs(), d.MembershipSweep.MaxMs,
-                static_cast<unsigned long long>(d.MembershipRelease.Samples), d.MembershipRelease.TotalMs, d.MembershipRelease.MeanMs(), d.MembershipRelease.MaxMs,
-                static_cast<unsigned long long>(d.NativeHandles), static_cast<unsigned long long>(d.Added),
-                static_cast<unsigned long long>(d.Removed), static_cast<unsigned long long>(d.Duplicates),
-                static_cast<unsigned long long>(d.Invalid), static_cast<unsigned long long>(d.FailedScans),
-                static_cast<unsigned long long>(d.MalformedScans), static_cast<unsigned long long>(Entities.size()),
+                static_cast<unsigned long long>(d.Chunks), static_cast<unsigned long long>(d.Examined),
+                static_cast<unsigned long long>(d.Admitted), static_cast<unsigned long long>(d.MissingOrigin),
+                static_cast<unsigned long long>(d.Added), static_cast<unsigned long long>(d.Removed),
+                static_cast<unsigned long long>(d.FailedScans), static_cast<unsigned long long>(Entities.size()),
                 static_cast<unsigned long long>(Pending.size()));
         }
 
@@ -1692,9 +1580,11 @@ namespace MiniMap::BuildingAcquisition
             if (d.WorstScan.TotalMs > 0.0)
             {
                 const auto& worst = d.WorstScan;
-                LOG_INFO("MiniMap: BuildingMap membership_worst intervalMs=%.1f totalMs:%.3f nativeMs:%.3f bookkeepingMs:%.3f sweepMs:%.3f releaseMs:%.3f handles:%llu entities:%llu pending:%llu added:%llu removed:%llu",
-                    intervalMs, worst.TotalMs, worst.NativeMs, worst.BookkeepingMs, worst.SweepMs, worst.ReleaseMs,
-                    static_cast<unsigned long long>(worst.Handles), static_cast<unsigned long long>(worst.Entities),
+                LOG_INFO("MiniMap: BuildingMap regional_scan_worst intervalMs=%.1f totalMs:%.3f chunkMs:%.3f ownedCopyMs:%.3f deferredMs:%.3f reconcileMs:%.3f chunks:%llu entities:%llu admitted:%llu pending:%llu added:%llu evicted:%llu",
+                    intervalMs, worst.TotalMs, worst.ChunkExecutionMs, worst.OwnedFactCopyingMs,
+                    worst.DeferredAcquisitionMs, worst.ReconciliationMs,
+                    static_cast<unsigned long long>(worst.Chunks), static_cast<unsigned long long>(worst.Entities),
+                    static_cast<unsigned long long>(worst.Admitted),
                     static_cast<unsigned long long>(worst.Pending), static_cast<unsigned long long>(worst.Added),
                     static_cast<unsigned long long>(worst.Removed));
             }
@@ -1794,11 +1684,10 @@ namespace MiniMap::BuildingAcquisition
         AppendHashInteger(hash, std::bit_cast<std::uint64_t>(value));
     }
 
-    /** Exposes map position only when native transform facts are ready and finite. */
+    /** Exposes a finite XY origin independently of rotation, scale or Z validity. */
     bool BuildingCollectorV2::HasValidMapPosition(const BuildingAcquiredFacts::Building& building) noexcept
     {
-        return building.TransformStatus == BuildingAcquiredFacts::Status::Ready &&
-            std::isfinite(building.Position[0]) && std::isfinite(building.Position[1]);
+        return std::isfinite(building.Position[0]) && std::isfinite(building.Position[1]);
     }
 
     /** Creates inert CPU state and validates the immutable membership interval. */
@@ -1830,7 +1719,7 @@ namespace MiniMap::BuildingAcquisition
         return true;
     }
 
-    /** Accepts exact representable half-open coverage; it controls priority, never exclusion. */
+    /** Accepts the exact half-open rectangle used by this collector's regional admission request. */
     bool BuildingCollectorV2::SetAcquisitionRegion(const Facts::Region& region) noexcept
     {
         const double right = region.X + region.Width;
@@ -1844,7 +1733,12 @@ namespace MiniMap::BuildingAcquisition
         {
             state_->RequestedRegion = region;
             state_->HasRegion = true;
-            state_->Invalidate(false);
+            ++state_->RequestGeneration;
+            if (state_->RequestGeneration == 0)
+                ++state_->RequestGeneration;
+            state_->MembershipComplete = false;
+            state_->NextMembership = {};
+            state_->Invalidate();
         }
         return true;
     }
@@ -1900,22 +1794,19 @@ namespace MiniMap::BuildingAcquisition
             const auto membershipStarted = updateStarted;
 #endif
             const auto context = state_->CaptureContext();
-            BM124D_RUN("membership reconciliation", state_->ReconcileIfDue(*native));
+            BM124D_RUN("regional Mass scan", state_->ReconcileIfDue(*native));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (state_->Generation == context.Session)
             {
                 state_->Diagnostics.UpdateMembership.Add(
                     std::chrono::duration<double, std::milli>(State::Clock::now() - membershipStarted).count());
             }
-            const auto acquisitionStarted = State::Clock::now();
 #endif
             if (state_->IsContextCurrent(*native, context))
-                BM124D_RUN("pending acquisition", state_->AdvancePending(*native));
+                BM124D_RUN("regional publication", state_->Publish());
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (state_->Generation == context.Session)
             {
-                state_->Diagnostics.UpdateAcquisition.Add(
-                    std::chrono::duration<double, std::milli>(State::Clock::now() - acquisitionStarted).count());
                 state_->Diagnostics.Update.Add(
                     std::chrono::duration<double, std::milli>(State::Clock::now() - updateStarted).count());
                 state_->ReportMeasurements();
