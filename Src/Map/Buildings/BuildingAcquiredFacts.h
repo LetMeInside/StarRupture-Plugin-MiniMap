@@ -140,6 +140,8 @@ namespace MiniMap::BuildingAcquisition
             Status SplineStatus = Status::Unknown;
             bool HasSpline = false;
             bool Complete = false;
+            /** Maximum XY reach resolved before regional admission and retained for Section selection. */
+            double ResolvedReach = 0.0;
             Point Position{};
             Quaternion Rotation{};
             Point SignedScale{};

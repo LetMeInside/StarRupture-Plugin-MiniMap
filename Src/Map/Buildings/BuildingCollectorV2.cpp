@@ -594,17 +594,27 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
-        /** Applies the approved shortest XY distance from one finite origin to the exact request. */
-        static bool IsRegionallyAdmitted(const Facts::Region& region, double px, double py) noexcept
+        /** Resolves the one reach used by regional admission and later Section selection. */
+        static inline double ResolveBuildingReach(const SDK::FCrBuildingParameters* parameters) noexcept
         {
-            constexpr double DefaultMaximumReach = 5000.0;
+            (void)parameters;
+            return 5000.0;
+        }
+
+        /** Applies the approved shortest XY distance from one finite origin to the exact request. */
+        static bool IsRegionallyAdmitted(
+            const Facts::Region& region,
+            double px,
+            double py,
+            double resolvedReach) noexcept
+        {
             const double right = region.X + region.Width;
             const double bottom = region.Y + region.Height;
             if (px >= region.X && px < right && py >= region.Y && py < bottom)
                 return true;
             const double dx = (std::max)((std::max)(region.X - px, 0.0), px - right);
             const double dy = (std::max)((std::max)(region.Y - py, 0.0), py - bottom);
-            return std::hypot(dx, dy) <= DefaultMaximumReach;
+            return std::hypot(dx, dy) <= resolvedReach;
         }
 
         /** Copies transform values and preserves invalid rotation/scale status independently of XY admission. */
@@ -652,12 +662,15 @@ namespace MiniMap::BuildingAcquisition
                     id.Index, id.SerialNumber, x, y);
                 return std::nullopt;
             }
-            if (!context.HasRegion || !IsRegionallyAdmitted(context.Region, x, y))
+            const SDK::FCrBuildingParameters* parameters = views.BuildingParameters;
+            const double resolvedReach = ResolveBuildingReach(parameters);
+            if (!context.HasRegion || !IsRegionallyAdmitted(context.Region, x, y, resolvedReach))
                 return std::nullopt;
             OwnedScanOccurrence occurrence;
             occurrence.Data.Index = id.Index;
             occurrence.Data.Serial = id.SerialNumber;
             occurrence.Data.EntityStatus = Status::Ready;
+            occurrence.Data.ResolvedReach = resolvedReach;
             CopyTransform(transform, occurrence.Data);
             occurrence.Data.SplineClassificationStatus = Status::Ready;
             occurrence.Data.HasSpline = views.HasSplineConnections;
@@ -785,6 +798,7 @@ namespace MiniMap::BuildingAcquisition
                 first.SplineClassificationStatus == second.SplineClassificationStatus &&
                 first.SplineStatus == second.SplineStatus && first.HasSpline == second.HasSpline &&
                 first.Complete == second.Complete && first.Position == second.Position &&
+                first.ResolvedReach == second.ResolvedReach &&
                 first.Rotation == second.Rotation && first.SignedScale == second.SignedScale &&
                 definitionsMatch && splinesMatch;
         }
