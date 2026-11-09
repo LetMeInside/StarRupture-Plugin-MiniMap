@@ -748,7 +748,8 @@ namespace MiniMap::BuildingAcquisition
             const Native& native,
             const Context& context,
             OwnedScanOccurrence& occurrence,
-            std::unordered_set<const DefinitionOwner*>& attempted,
+            std::unordered_set<const DefinitionOwner*>& attemptedCoreDefinitions,
+            std::unordered_set<const DefinitionOwner*>& attemptedSplineProfiles,
             Facts::Building& result)
         {
             result = std::move(occurrence.Data);
@@ -771,7 +772,8 @@ namespace MiniMap::BuildingAcquisition
                     found = Definitions.emplace(placement, occurrence.Placement).first;
                 }
                 const auto definition = found->second;
-                CopyDefinition(native, context, definition, attempted,
+                CopyDefinition(native, context, definition, attemptedCoreDefinitions,
+                    attemptedSplineProfiles,
                     result.SplineClassificationStatus == Status::Ready && result.HasSpline);
                 if (!IsContextCurrent(native, context))
                     return false;
@@ -853,14 +855,16 @@ namespace MiniMap::BuildingAcquisition
         {
             reconciled.reserve(occurrences.size());
             pending.reserve(occurrences.size());
-            std::unordered_set<const DefinitionOwner*> attempted;
+            std::unordered_set<const DefinitionOwner*> attemptedCoreDefinitions;
+            std::unordered_set<const DefinitionOwner*> attemptedSplineProfiles;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             const auto acquisitionStarted = Clock::now();
 #endif
             for (auto& occurrence : occurrences)
             {
                 Facts::Building data;
-                if (!AcquireOwnedOccurrence(native, context, occurrence, attempted, data))
+                if (!AcquireOwnedOccurrence(native, context, occurrence,
+                    attemptedCoreDefinitions, attemptedSplineProfiles, data))
                     return false;
                 const auto key = Key({data.Index, data.Serial});
                 auto previous = Entities.find(key);
@@ -938,7 +942,9 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Completes one regional scan without exposing partial traversal or acquisition results. */
-        bool Reconcile(const Native& native, const Context& context
+        bool Reconcile(
+            const Native& native,
+            const Context& context
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -1021,19 +1027,15 @@ namespace MiniMap::BuildingAcquisition
         }
 
 
-        /** Acquires shared core/profile facts once per definition in the deferred pass. */
+        /** Acquires shared core facts and spline profiles independently once per definition in the deferred pass. */
         void CopyDefinition(const Native& native, const Context& context,
             const std::shared_ptr<DefinitionOwner>& definition,
-            std::unordered_set<const DefinitionOwner*>& attempted, bool hasSpline)
+            std::unordered_set<const DefinitionOwner*>& attemptedCoreDefinitions,
+            std::unordered_set<const DefinitionOwner*>& attemptedSplineProfiles,
+            bool hasSpline)
         {
             const bool coreComplete = definition->Facts && BuildingDefinitionAcquisition::IsComplete(*definition->Facts);
-            const bool profilesTerminal = !hasSpline || (definition->Facts && IsSplineProfileTerminal(
-                definition->Facts->SplineProfileStatus));
-            if (coreComplete && profilesTerminal)
-                return;
-            if (!attempted.insert(definition.get()).second)
-                return;
-            if (!coreComplete)
+            if (!coreComplete && attemptedCoreDefinitions.insert(definition.get()).second)
             {
                 auto facts = DefinitionAcquisition.Copy(definition);
                 if (!IsContextCurrent(native, context))
@@ -1044,12 +1046,16 @@ namespace MiniMap::BuildingAcquisition
                 return;
             if (IsDroneRailDefinitionId(definition->Facts->BuildingId))
             {
+                if (!attemptedSplineProfiles.insert(definition.get()).second)
+                    return;
                 auto facts = std::make_shared<Facts::Definition>(*definition->Facts);
                 facts->SplineProfileStatus = ::Services::Map::Buildings::SplineProfileAcquisitionStatus::NotApplicable;
                 definition->Facts = std::move(facts);
                 return;
             }
             if (IsSplineProfileTerminal(definition->Facts->SplineProfileStatus))
+                return;
+            if (!attemptedSplineProfiles.insert(definition.get()).second)
                 return;
             auto facts = DefinitionAcquisition.CopySplineProfiles(definition);
             if (facts && IsContextCurrent(native, context))
