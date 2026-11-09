@@ -1191,6 +1191,36 @@ namespace MiniMapFingerprints
         addresses.destroySplineActorPayloadData = resolveRequired(splinePayloadDestroyRequest);
         if (!addresses.destroySplineActorPayloadData) return false;
 
+        RequiredScan payloadHandleCopyConstructRequest{};
+        payloadHandleCopyConstructRequest.name =
+            "MiniMap::FAuAPPayloadDataHandle::CopyConstruct";
+        payloadHandleCopyConstructRequest.idaPattern =
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B 02 48 8B FA "
+            "48 89 01 48 8B D9 48 8B 42 08 48 89 41 08 "
+            "48 85 C0 74 ?? F0 FF 40 08 48 8B 4A 10 "
+            "48 89 4B 10 80 3D ?? ?? ?? ?? 00 74 ?? "
+            "48 85 C9 74 ?? E8 ?? ?? ?? ?? 0F B6 47 18 "
+            "88 43 18 48 8B C3";
+        payloadHandleCopyConstructRequest.kind = AddressKind::FunctionEntry;
+        addresses.payloadHandleCopyConstruct =
+            resolveRequired(payloadHandleCopyConstructRequest);
+        if (!addresses.payloadHandleCopyConstruct) return false;
+
+        RequiredScan payloadHandleDestructRequest{};
+        payloadHandleDestructRequest.name =
+            "MiniMap::FAuAPPayloadDataHandle::~FAuAPPayloadDataHandle";
+        payloadHandleDestructRequest.idaPattern =
+            "40 53 48 83 EC 20 48 8B 59 08 48 85 DB 74 ?? "
+            "48 89 7C 24 30 BF FF FF FF FF 8B C7 "
+            "F0 0F C1 43 08 83 F8 01 75 ?? 48 8B 03 "
+            "48 8B CB FF 10 F0 0F C1 7B 0C 83 FF 01 75 ?? "
+            "48 8B 03 8B D7 48 8B CB FF 50 08 "
+            "48 8B 7C 24 30 48 83 C4 20 5B C3 CC CC CC";
+        payloadHandleDestructRequest.kind = AddressKind::FunctionEntry;
+        addresses.payloadHandleDestruct =
+            resolveRequired(payloadHandleDestructRequest);
+        if (!addresses.payloadHandleDestruct) return false;
+
         // Warm the exact type cache used by GetValue during NativeApi initialization.
         // The fixed name-string LEA displacement distinguishes this generated
         // StaticStruct body in CL-127004; no absolute runtime address is embedded.
@@ -1372,6 +1402,114 @@ namespace MiniMapFingerprints
 
         addresses.massQueryDestruct =
             massQueryDtorAddress;
+
+        RequiredScan massForEachChunkRequest{};
+        massForEachChunkRequest.name =
+            "MiniMap::FMassEntityQuery::ForEachEntityChunk";
+        massForEachChunkRequest.idaPattern =
+            "4C 89 44 24 18 56 57 41 55 48 81 EC C0 00 00 00 "
+            "48 8B 81 60 02 00 00 4D 8B E8 48 8B F2 48 8B F9 "
+            "48 85 C0 74 ?? 48 3B 82 18 04 00 00 74 ?? "
+            "4C 8D 0D ?? ?? ?? ?? 41 B8 ED 00 00 00 "
+            "48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? "
+            "E8 ?? ?? ?? ?? 84 C0";
+        massForEachChunkRequest.kind = AddressKind::FunctionEntry;
+        addresses.massForEachEntityChunk =
+            resolveRequired(massForEachChunkRequest);
+        if (addresses.massForEachEntityChunk == 0)
+        {
+            return false;
+        }
+
+        RequiredScan massExecutionContextConstructRequest{};
+        massExecutionContextConstructRequest.name =
+            "MiniMap::FMassExecutionContext::FMassExecutionContext";
+        massExecutionContextConstructRequest.idaPattern =
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 "
+            "57 41 56 41 57 48 83 EC 30 45 33 FF "
+            "C7 81 0C 01 00 00 08 00 00 00 "
+            "4C 89 B9 00 01 00 00 48 8B D9 "
+            "44 89 B9 08 01 00 00 41 0F B6 E9 "
+            "4C 89 B9 90 01 00 00 48 8B F2 "
+            "44 89 B9 98 01 00 00";
+        massExecutionContextConstructRequest.kind =
+            AddressKind::FunctionEntry;
+        addresses.massExecutionContextConstruct =
+            resolveRequired(massExecutionContextConstructRequest);
+        if (addresses.massExecutionContextConstruct == 0)
+        {
+            return false;
+        }
+
+        RequiredScan massExecutionContextDestructRequest{};
+        massExecutionContextDestructRequest.name =
+            "MiniMap::FMassExecutionContext::~FMassExecutionContext";
+        massExecutionContextDestructRequest.idaPattern =
+            "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 "
+            "83 B9 D0 04 00 00 00 48 8B F9 74 ?? "
+            "48 8D 4C 24 30 E8 ?? ?? ?? ?? "
+            "48 8B 8F C8 04 00 00 48 8D 9F 28 04 00 00 "
+            "8B 97 D0 04 00 00 48 85 C9 48 0F 44 CB "
+            "E8 ?? ?? ?? ?? 48 8B 8B A0 00 00 00 48 85 C9";
+        massExecutionContextDestructRequest.kind =
+            AddressKind::FunctionEntry;
+        addresses.massExecutionContextDestruct =
+            resolveRequired(massExecutionContextDestructRequest);
+        if (addresses.massExecutionContextDestruct == 0)
+        {
+            return false;
+        }
+
+        RequiredScan addSplineRequirementRequest{};
+        addSplineRequirementRequest.name =
+            "MiniMap::AddRequirement<FAuSplineConnectionFragment>";
+        addSplineRequirementRequest.idaPattern =
+            "45 33 C0 48 8D 8B E0 00 00 00 B2 01 "
+            "E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? "
+            "48 8D 8B 78 03 00 00 8B D0 E8 ?? ?? ?? ?? "
+            "80 8B 98 03 00 00 01 48 8D 8B E0 00";
+        addSplineRequirementRequest.followRel32At = 0x0C;
+        addSplineRequirementRequest.kind = AddressKind::Code;
+        addresses.addSplineRequirement =
+            resolveRequired(addSplineRequirementRequest);
+        if (addresses.addSplineRequirement == 0)
+        {
+            return false;
+        }
+
+        RequiredScan addAPRequirementRequest{};
+        addAPRequirementRequest.name =
+            "MiniMap::AddRequirement<FAuAPMassFragment>";
+        addAPRequirementRequest.idaPattern =
+            "45 33 C0 48 8D 8F C0 00 00 00 B2 01 "
+            "E8 ?? ?? ?? ?? 33 D2 48 8D 8F C0 00 00 00 "
+            "E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B D0 "
+            "48 8D 8F 38 03 00 00 48 8B 5C";
+        addAPRequirementRequest.followRel32At = 0x0C;
+        addAPRequirementRequest.kind = AddressKind::Code;
+        addresses.addAPRequirement =
+            resolveRequired(addAPRequirementRequest);
+        if (addresses.addAPRequirement == 0)
+        {
+            return false;
+        }
+
+        RequiredScan addBuildingParametersRequirementRequest{};
+        addBuildingParametersRequirementRequest.name =
+            "MiniMap::AddConstSharedRequirement<FCrBuildingParameters>";
+        addBuildingParametersRequirementRequest.idaPattern =
+            "48 8D 9F C0 00 00 00 B2 03 48 8B CB "
+            "E8 ?? ?? ?? ?? 45 33 C0 B2 02 48 8B CB "
+            "E8 ?? ?? ?? ?? 45 33 C0 B2 02 48 8B CB "
+            "E8 ?? ?? ?? ?? 41 B0 03 B2 01";
+        addBuildingParametersRequirementRequest.followRel32At = 0x0C;
+        addBuildingParametersRequirementRequest.kind = AddressKind::Code;
+        addresses.addBuildingParametersRequirement =
+            resolveRequired(addBuildingParametersRequirementRequest);
+        if (addresses.addBuildingParametersRequirement == 0)
+        {
+            return false;
+        }
 
 
         RequiredScan matchingHandlesRequest{};

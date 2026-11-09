@@ -1,7 +1,7 @@
 #pragma once
 
-// Use Epic's genuine callable template without pulling in RHI headers with
-// engine static initializers.
+// Supplies the installed UE 5.6.1 Shipping configuration for genuine templates,
+// readback declarations and private Mass implementation in client-only TUs.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
@@ -10,6 +10,12 @@
 #endif
 #include <Windows.h>
 #include <strsafe.h>
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 #undef Yield
 
 #define UBT_COMPILED_PLATFORM Windows
@@ -25,11 +31,31 @@
 #define WITH_UNREAL_DEVELOPER_TOOLS 0
 #define WITH_PLUGIN_SUPPORT 0
 #define WITH_PERFCOUNTERS 0
+#define WITH_MASSENTITY_DEBUG 0
+#define UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_6 0
 #define IS_MONOLITHIC 1
 #define IS_PROGRAM 0
 #define STATS 0
 #define CORE_API
+#define COREUOBJECT_API
+#define ENGINE_API
+#define INPUTCORE_API
+#define SLATECORE_API
+#define SOCKETS_API
+#define APPLICATIONCORE_API
+#define COREONLINE_API
+#define RHI_API
+#define PHYSICSCORE_API
+#define DEVELOPERSETTINGS_API
+#define STRUCTUTILS_API
+#define STATESTREAM_API
+#define RENDERCORE_API
+#define NETCORE_API
+#define NETCOMMON_API
 #define TRACELOG_API
+#define MASSENTITY_API
+#define CHAOS_API
+#define CHAOSCORE_API
 
 #include "Templates/Function.h"
 // StatsSystemTypes alone omits TStatId when STATS=0; Stats.h supplies the

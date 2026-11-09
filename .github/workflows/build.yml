@@ -76,11 +76,11 @@ jobs:
           path: epic-unreal-source
           sparse-checkout: |
             Engine/Build
-            Engine/Source/Runtime/Core/Public
-            Engine/Source/Runtime/RHI/Public
-            Engine/Source/Runtime/TraceLog/Public
-            Engine/Source/Runtime/AutoRTFM/Public
-            Engine/Source/Runtime/RenderCore/Public
+            Engine/Binaries/DotNET
+            Engine/Config
+            Engine/Platforms
+            Engine/Plugins
+            Engine/Source
           sparse-checkout-cone-mode: true
           lfs: false
           submodules: false
@@ -126,12 +126,91 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Setup .NET for UnrealBuildTool
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Generate Unreal readback compatibility header
         shell: pwsh
         run: |
           $generator = Join-Path $env:GITHUB_WORKSPACE 'Tools/Extract-RHIGPUReadbackCompat.py'
           $output = Join-Path $env:GITHUB_WORKSPACE 'Src/Generated/Unreal/RHIGPUReadbackCompat.h'
           python $generator --unreal-root $env:MINIMAP_UNREAL_ENGINE_ROOT --output $output
+
+      - name: Generate Unreal MassEntity headers
+        shell: pwsh
+        run: |
+          $ueRoot = [System.IO.Path]::GetFullPath($env:MINIMAP_UNREAL_ENGINE_ROOT)
+          $buildScript = Join-Path $ueRoot 'Engine/Build/BatchFiles/Build.bat'
+          if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) {
+            throw "UnrealBuildTool entry point is missing: $buildScript"
+          }
+
+          Push-Location $ueRoot
+          try {
+            & $buildScript '-Mode=UnrealHeaderTool' '-Target=UnrealGame Win64 Shipping'
+            if ($LASTEXITCODE -ne 0) {
+              throw "UnrealHeaderTool development mode failed with exit code $LASTEXITCODE."
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+          $generatedDirectory = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/MassEntity/UHT'
+          $requiredHeaders = @(
+            'MassEntityHandle.generated.h',
+            'MassEntityTypes.generated.h',
+            'MassProcessingTypes.generated.h',
+            'MassProcessor.generated.h',
+            'MassEntityQuery.generated.h',
+            'MassRequirements.generated.h'
+          )
+
+          foreach ($header in $requiredHeaders) {
+            $headerPath = Join-Path $generatedDirectory $header
+            if (-not (Test-Path -LiteralPath $headerPath -PathType Leaf)) {
+              throw "UnrealHeaderTool did not produce required MassEntity output: $headerPath"
+            }
+          }
+
+          $coreUObjectHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/CoreUObject/UHT/InstancedStruct.generated.h'
+          if (-not (Test-Path -LiteralPath $coreUObjectHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required CoreUObject dependency: $coreUObjectHeader"
+          }
+
+          $inputCoreHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/InputCore/UHT/InputCoreTypes.generated.h'
+          if (-not (Test-Path -LiteralPath $inputCoreHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required InputCore dependency: $inputCoreHeader"
+          }
+
+          $coreOnlineHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/CoreOnline/UHT/CoreOnline.generated.h'
+          if (-not (Test-Path -LiteralPath $coreOnlineHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required CoreOnline dependency: $coreOnlineHeader"
+          }
+
+          $stateStreamHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/StateStream/UHT/StateStreamHandle.generated.h'
+          if (-not (Test-Path -LiteralPath $stateStreamHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required StateStream dependency: $stateStreamHeader"
+          }
+
+          $physicsCoreHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/PhysicsCore/UHT/ChaosEngineInterface.generated.h'
+          if (-not (Test-Path -LiteralPath $physicsCoreHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required PhysicsCore dependency: $physicsCoreHeader"
+          }
+
+          $netCoreHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/NetCore/UHT/NetEnums.generated.h'
+          if (-not (Test-Path -LiteralPath $netCoreHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required NetCore dependency: $netCoreHeader"
+          }
+
+          $slateCoreHeader = Join-Path $ueRoot 'Engine/Intermediate/Build/Win64/UnrealGame/Inc/SlateCore/UHT/SlateEnums.generated.h'
+          if (-not (Test-Path -LiteralPath $slateCoreHeader -PathType Leaf)) {
+            throw "UnrealHeaderTool did not produce required SlateCore dependency: $slateCoreHeader"
+          }
+
+          Write-Host "Verified required generated MassEntity headers in $generatedDirectory."
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2

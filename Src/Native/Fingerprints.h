@@ -41,8 +41,14 @@ namespace MiniMapFingerprints
         uintptr_t getMassEntitySubsystem = 0;
         uintptr_t massQueryConstruct = 0;
         uintptr_t massQueryDestruct = 0;
+        uintptr_t massForEachEntityChunk = 0;
+        uintptr_t massExecutionContextConstruct = 0;
+        uintptr_t massExecutionContextDestruct = 0;
         uintptr_t addInventoryRequirement = 0;
         uintptr_t addTransformRequirement = 0;
+        uintptr_t addSplineRequirement = 0;
+        uintptr_t addAPRequirement = 0;
+        uintptr_t addBuildingParametersRequirement = 0;
         uintptr_t isMassEntityValid = 0;
         uintptr_t isMassEntityBuilt = 0;
         uintptr_t gridForEachCellInRadius = 0; // XY collector traversal.
@@ -62,6 +68,8 @@ namespace MiniMapFingerprints
         // Mandatory Client spline-payload value-copy, cleanup and initialization metadata.
         uintptr_t getSplineActorData = 0;
         uintptr_t destroySplineActorPayloadData = 0;
+        uintptr_t payloadHandleCopyConstruct = 0;
+        uintptr_t payloadHandleDestruct = 0;
         uintptr_t splineActorPayloadStaticStruct = 0;
 
         // Mandatory collector grid subsystem resolution.

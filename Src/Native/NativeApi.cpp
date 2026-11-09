@@ -123,8 +123,14 @@ namespace MiniMapNative
             addresses.getMassEntitySubsystem == 0 ||
             addresses.massQueryConstruct == 0 ||
             addresses.massQueryDestruct == 0 ||
+            addresses.massForEachEntityChunk == 0 ||
+            addresses.massExecutionContextConstruct == 0 ||
+            addresses.massExecutionContextDestruct == 0 ||
             addresses.addInventoryRequirement == 0 ||
             addresses.addTransformRequirement == 0 ||
+            addresses.addSplineRequirement == 0 ||
+            addresses.addAPRequirement == 0 ||
+            addresses.addBuildingParametersRequirement == 0 ||
             addresses.addEnemyStateRequirement == 0 ||
             addresses.enemyStateFragmentStaticStruct == 0 ||
             addresses.enemyTagStaticStruct == 0 ||
@@ -140,6 +146,8 @@ namespace MiniMapNative
             addresses.foundableParametersStaticStruct == 0 ||
             addresses.getSplineActorData == 0 ||
             addresses.destroySplineActorPayloadData == 0 ||
+            addresses.payloadHandleCopyConstruct == 0 ||
+            addresses.payloadHandleDestruct == 0 ||
             addresses.splineActorPayloadStaticStruct == 0 ||
             addresses.isGameThread == 0 ||
             addresses.getPlatformData == 0 ||
@@ -281,6 +289,18 @@ namespace MiniMapNative
             reinterpret_cast<MassApi::QueryDestructFn>(
                 addresses.massQueryDestruct);
 
+        g_nativeApi.mass.forEachEntityChunk =
+            reinterpret_cast<MassApi::ForEachEntityChunkFn>(
+                addresses.massForEachEntityChunk);
+
+        g_nativeApi.mass.executionContextConstruct =
+            reinterpret_cast<MassApi::ExecutionContextConstructFn>(
+                addresses.massExecutionContextConstruct);
+
+        g_nativeApi.mass.executionContextDestruct =
+            reinterpret_cast<MassApi::ExecutionContextDestructFn>(
+                addresses.massExecutionContextDestruct);
+
         g_nativeApi.mass.addEnemyStateRequirement =
             reinterpret_cast<MassApi::AddEnemyStateRequirementFn>(
                 addresses.addEnemyStateRequirement);
@@ -309,9 +329,21 @@ namespace MiniMapNative
             reinterpret_cast<MassApi::AddFragmentRequirementFn>(
                 addresses.addTransformRequirement);
 
+        g_nativeApi.mass.addOptionalSplineRequirement =
+            reinterpret_cast<MassApi::AddFragmentRequirementFn>(
+                addresses.addSplineRequirement);
+
+        g_nativeApi.mass.addOptionalAPRequirement =
+            reinterpret_cast<MassApi::AddFragmentRequirementFn>(
+                addresses.addAPRequirement);
+
         g_nativeApi.mass.addFoundableParametersRequirement =
             reinterpret_cast<MassApi::AddSharedRequirementFn>(
                 addresses.addFoundableParametersRequirement);
+
+        g_nativeApi.mass.addOptionalBuildingParametersRequirement =
+            reinterpret_cast<MassApi::AddSharedRequirementFn>(
+                addresses.addBuildingParametersRequirement);
 
         g_nativeApi.mass.addFoundableTagRequirement =
             reinterpret_cast<MassApi::AddSharedRequirementFn>(
@@ -453,6 +485,12 @@ namespace MiniMapNative
         g_nativeApi.player.isGameThread = reinterpret_cast<PlayerApi::IsGameThreadFn>(addresses.isGameThread);
         g_nativeApi.splinePayload.get = reinterpret_cast<SplinePayloadApi::GetFn>(addresses.getSplineActorData);
         g_nativeApi.splinePayload.destroy = reinterpret_cast<SplinePayloadApi::DestroyFn>(addresses.destroySplineActorPayloadData);
+        g_nativeApi.splinePayload.payloadHandleCopyConstruct =
+            reinterpret_cast<SplinePayloadApi::PayloadHandleCopyConstructFn>(
+                addresses.payloadHandleCopyConstruct);
+        g_nativeApi.splinePayload.payloadHandleDestruct =
+            reinterpret_cast<SplinePayloadApi::PayloadHandleDestructFn>(
+                addresses.payloadHandleDestruct);
         // This populates the same static type cache used by the native typed getter.
         // No script-struct discovery belongs in the gameplay numerical adapter.
         g_nativeApi.splinePayload.payloadType =

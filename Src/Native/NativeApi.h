@@ -27,6 +27,11 @@ enum class EName : uint32_t;
 template<typename FuncType> class TUniqueFunction;
 template<typename ReferencedType> class TRefCountPtr;
 
+struct FMassEntityManager;
+struct FMassExecutionContext;
+struct FMassEntityQuery;
+template<typename FuncType> class TFunction;
+
 namespace SDK
 {
     class FName;
@@ -255,6 +260,23 @@ namespace MiniMapNative
             void (__fastcall*)(
                 void* query);
 
+        using ForEachEntityChunkFn =
+            void (__fastcall*)(
+                FMassEntityQuery* query,
+                FMassExecutionContext& executionContext,
+                const TFunction<void(FMassExecutionContext&)>& callback);
+
+        using ExecutionContextConstructFn =
+            void (__fastcall*)(
+                FMassExecutionContext* executionContext,
+                FMassEntityManager& entityManager,
+                float deltaTimeSeconds,
+                bool flushDeferredCommands);
+
+        using ExecutionContextDestructFn =
+            void (__fastcall*)(
+                FMassExecutionContext* executionContext);
+
         using AddFragmentRequirementFn =
             void* (__fastcall*)(
                 void* requirements,
@@ -299,9 +321,14 @@ namespace MiniMapNative
         GetMassEntitySubsystemFn getMassEntitySubsystem = nullptr;
         QueryConstructFn queryConstruct = nullptr;
         QueryDestructFn queryDestruct = nullptr;
+        ForEachEntityChunkFn forEachEntityChunk = nullptr;
+        ExecutionContextConstructFn executionContextConstruct = nullptr;
+        ExecutionContextDestructFn executionContextDestruct = nullptr;
 
         AddFragmentRequirementFn addInventoryRequirement = nullptr;
         AddFragmentRequirementFn addTransformRequirement = nullptr;
+        AddFragmentRequirementFn addOptionalSplineRequirement = nullptr;
+        AddFragmentRequirementFn addOptionalAPRequirement = nullptr;
         using EntityCheckFn = bool (__fastcall*)(const void*, MassEntityHandle);
         EntityCheckFn isEntityValid = nullptr;
         EntityCheckFn isEntityBuilt = nullptr;
@@ -312,6 +339,7 @@ namespace MiniMapNative
         StaticStructFn neutralTagStaticStruct = nullptr;
         AddSharedRequirementFn addFoundableParametersRequirement = nullptr;
         AddSharedRequirementFn addFoundableTagRequirement = nullptr;
+        AddSharedRequirementFn addOptionalBuildingParametersRequirement = nullptr;
 
         GetMatchingEntityHandlesFn getMatchingEntityHandles = nullptr;
         GetFragmentDataPtrFn getFragmentDataPtr = nullptr;
@@ -562,8 +590,15 @@ namespace MiniMapNative
             SDK::FAuAPSplineActorPayloadData*, const SDK::FAuAPPayloadDataHandle*);
         // Non-deleting destructor: RCX is the constructed value, never its owner buffer.
         using DestroyFn = void (__fastcall*)(SDK::FAuAPSplineActorPayloadData*);
+        using PayloadHandleCopyConstructFn = void (__fastcall*)(
+            SDK::FAuAPPayloadDataHandle*,
+            const SDK::FAuAPPayloadDataHandle*);
+        using PayloadHandleDestructFn = void (__fastcall*)(
+            SDK::FAuAPPayloadDataHandle*);
         GetFn get = nullptr;
         DestroyFn destroy = nullptr;
+        PayloadHandleCopyConstructFn payloadHandleCopyConstruct = nullptr;
+        PayloadHandleDestructFn payloadHandleDestruct = nullptr;
         SDK::UScriptStruct* payloadType = nullptr; // Engine static metadata, warmed only at initialization.
     };
 

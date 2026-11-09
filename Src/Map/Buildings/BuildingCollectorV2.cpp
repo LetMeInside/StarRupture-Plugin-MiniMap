@@ -18,6 +18,9 @@
 #include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
+#include "Native/ReadbackUEConfiguration.h"
+#include <MassExecutionContext.h>
+#include <MassArchetypeTypes.h>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -42,10 +45,108 @@ namespace MiniMap::BuildingAcquisition
     using EntityId = MiniMapNative::MassEntityHandle;
     using DefinitionOwner = BuildingDefinitionAcquisition::DefinitionOwner;
 
+    static_assert(sizeof(FMassExecutionContext) == 0x4E0);
+    static_assert(alignof(FMassExecutionContext) == 8);
+    static_assert(sizeof(FMassExecuteFunction) == 0x30);
+    static_assert(sizeof(::FMassEntityHandle) == sizeof(SDK::FMassEntityHandle));
+    static_assert(alignof(::FMassEntityHandle) == alignof(SDK::FMassEntityHandle));
+    static_assert(sizeof(SDK::FTransformFragment) == 0x60);
+    static_assert(sizeof(SDK::FAuSplineConnectionFragment) == 0xE0);
+    static_assert(sizeof(SDK::FAuAPMassFragment) == 0x50);
+    static_assert(sizeof(SDK::FCrBuildingParameters) == 0x18);
+    static_assert(sizeof(SDK::FAuAPPayloadDataHandle) == 0x20);
+
     /** Sole mutable acquisition owner; publications are frozen CPU projections only. */
     struct BuildingCollectorV2::State
     {
         using Clock = std::chrono::steady_clock;
+
+        /** Owns one native-constructed Shipping context for one synchronous traversal. */
+        struct MassExecutionContextOwner
+        {
+            const Native& Api;
+            alignas(FMassExecutionContext) std::byte Storage[sizeof(FMassExecutionContext)];
+            bool Constructed = false;
+
+            /** Native-constructs a non-flushing context for the current query manager. */
+            MassExecutionContextOwner(const Native& api, const void* manager)
+                : Api(api)
+            {
+                Api.mass.executionContextConstruct(
+                    reinterpret_cast<FMassExecutionContext*>(Storage),
+                    *reinterpret_cast<FMassEntityManager*>(const_cast<void*>(manager)),
+                    0.0f,
+                    false);
+                Constructed = true;
+            }
+
+            MassExecutionContextOwner(const MassExecutionContextOwner&) = delete;
+            MassExecutionContextOwner& operator=(const MassExecutionContextOwner&) = delete;
+
+            /** Native-destroys the context once after callback and view lifetimes end. */
+            ~MassExecutionContextOwner()
+            {
+                if (Constructed)
+                    Api.mass.executionContextDestruct(Get());
+            }
+
+            /** Returns the genuine context pointer after native construction. */
+            FMassExecutionContext* Get() noexcept
+            {
+                return std::launder(reinterpret_cast<FMassExecutionContext*>(Storage));
+            }
+        };
+
+        /** Holds a native-owned payload copy at a stable address until native destruction. */
+        struct PayloadHandleOwner
+        {
+            const Native& Api;
+            alignas(SDK::FAuAPPayloadDataHandle)
+                std::byte Storage[sizeof(SDK::FAuAPPayloadDataHandle)];
+
+            /** Native-copy-constructs an owning handle from one borrowed fragment value. */
+            PayloadHandleOwner(const Native& api, const SDK::FAuAPPayloadDataHandle& source)
+                : Api(api)
+            {
+                Api.splinePayload.payloadHandleCopyConstruct(
+                    reinterpret_cast<SDK::FAuAPPayloadDataHandle*>(Storage),
+                    &source);
+            }
+
+            PayloadHandleOwner(const PayloadHandleOwner&) = delete;
+            PayloadHandleOwner& operator=(const PayloadHandleOwner&) = delete;
+
+            /** Releases the native shared ownership exactly once. */
+            ~PayloadHandleOwner()
+            {
+                Api.splinePayload.payloadHandleDestruct(Get());
+            }
+
+            /** Returns the payload handle after native copy construction. */
+            SDK::FAuAPPayloadDataHandle* Get() noexcept
+            {
+                return std::launder(reinterpret_cast<SDK::FAuAPPayloadDataHandle*>(Storage));
+            }
+        };
+
+        /** Borrows chunk data only for the duration of its native execution callback. */
+        struct MassChunkViews
+        {
+            TConstArrayView<::FMassEntityHandle> Entities;
+            TConstArrayView<SDK::FTransformFragment> Transforms;
+            TConstArrayView<SDK::FAuSplineConnectionFragment> SplineConnections;
+            TConstArrayView<SDK::FAuAPMassFragment> ActorPlacement;
+            const SDK::FCrBuildingParameters* BuildingParameters = nullptr;
+
+            /** Copies one current chunk identity into the SDK's established handle type. */
+            SDK::FMassEntityHandle EntityAt(int32 index) const noexcept
+            {
+                SDK::FMassEntityHandle entity{};
+                entity.Index = Entities[index].Index;
+                entity.SerialNumber = Entities[index].SerialNumber;
+                return entity;
+            }
+        };
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         /** Aggregates one repeated CPU phase without retaining per-operation history. */
@@ -250,6 +351,81 @@ namespace MiniMap::BuildingAcquisition
             }
         };
 
+        /** Returns a typed SDK view over the genuine borrowed Mass fragment array. */
+        template<typename FragmentType>
+        static TConstArrayView<FragmentType> GetOptionalFragmentView(
+            const FMassExecutionContext& context,
+            const SDK::UScriptStruct* sdkType)
+        {
+            const auto* type = reinterpret_cast<const ::UScriptStruct*>(sdkType);
+            if (!context.DoesArchetypeHaveFragment(*type))
+                return {};
+            const auto nativeView = context.GetFragmentView(type);
+            return TConstArrayView<FragmentType>(
+                reinterpret_cast<const FragmentType*>(nativeView.GetData()),
+                nativeView.Num());
+        }
+
+        /** Builds chunk-local views and rejects any broken entity/fragment correspondence. */
+        bool CreateMassChunkViews(
+            const FMassExecutionContext& context,
+            MassChunkViews& views) const
+        {
+            views.Entities = context.GetEntities();
+            views.Transforms = GetOptionalFragmentView<SDK::FTransformFragment>(context, Types->Transform);
+            views.SplineConnections = GetOptionalFragmentView<SDK::FAuSplineConnectionFragment>(context, Types->Spline);
+            views.ActorPlacement = GetOptionalFragmentView<SDK::FAuAPMassFragment>(context, Types->Placement);
+            const auto* parametersType = reinterpret_cast<const ::UScriptStruct*>(Types->Parameters);
+            views.BuildingParameters = static_cast<const SDK::FCrBuildingParameters*>(
+                context.GetConstSharedFragmentPtr(*parametersType));
+
+            const int32 entityCount = views.Entities.Num();
+            return (views.Transforms.IsEmpty() || views.Transforms.Num() == entityCount) &&
+                (views.SplineConnections.IsEmpty() || views.SplineConnections.Num() == entityCount) &&
+                (views.ActorPlacement.IsEmpty() || views.ActorPlacement.Num() == entityCount);
+        }
+
+        /** Runs one serial chunk traversal and converts callback exceptions to incomplete status. */
+        bool ForEachMassChunk(
+            const Native& native,
+            TFunction<void(const MassChunkViews&)> visitor) noexcept
+        {
+            try
+            {
+                MassExecutionContextOwner executionContext(native, Manager);
+                bool callbackFailed = false;
+                FMassExecuteFunction callback = [this, &visitor, &callbackFailed](
+                    FMassExecutionContext& context)
+                {
+                    if (callbackFailed)
+                        return;
+                    try
+                    {
+                        MassChunkViews views;
+                        if (!CreateMassChunkViews(context, views))
+                        {
+                            callbackFailed = true;
+                            return;
+                        }
+                        visitor(views);
+                    }
+                    catch (...)
+                    {
+                        callbackFailed = true;
+                    }
+                };
+                native.mass.forEachEntityChunk(
+                    reinterpret_cast<FMassEntityQuery*>(Query.data()),
+                    *executionContext.Get(),
+                    callback);
+                return !callbackFailed;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
         /** Native correspondence and scan mark for one authoritative building occurrence. */
         struct Entry
         {
@@ -427,6 +603,14 @@ namespace MiniMap::BuildingAcquisition
             native.mass.addTagRequirement(Query.data(), Types->Building, SDK::EMassFragmentPresence::All);
             native.mass.addTransformRequirement(Query.data(),
                 std::uint8_t(SDK::EMassFragmentAccess::ReadOnly), std::uint8_t(SDK::EMassFragmentPresence::Optional));
+            native.mass.addOptionalSplineRequirement(Query.data(),
+                std::uint8_t(SDK::EMassFragmentAccess::ReadOnly),
+                std::uint8_t(SDK::EMassFragmentPresence::Optional));
+            native.mass.addOptionalAPRequirement(Query.data(),
+                std::uint8_t(SDK::EMassFragmentAccess::ReadOnly),
+                std::uint8_t(SDK::EMassFragmentPresence::Optional));
+            native.mass.addOptionalBuildingParametersRequirement(
+                Query.data(), std::uint8_t(SDK::EMassFragmentPresence::Optional));
             Invalidate();
             return true;
         }
