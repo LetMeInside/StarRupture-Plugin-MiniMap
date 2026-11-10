@@ -1,11 +1,11 @@
 // Owns multi-viewport Section demand and the single SectionScheduler resource owner.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <array>
-#include <chrono>
 #endif
 #include <filesystem>
 #include <map>
@@ -62,27 +62,15 @@ namespace Services::Map::Buildings::Scheduling
 			}
 		};
 
-		/** Numeric evidence for the slowest actual Section attempt in the interval. */
-		struct WorstSection
+		/** Numeric evidence for the slowest measured incremental Section slice. */
+		struct WorstSectionSlice
 		{
 			bool Present = false;
 			std::int64_t GridX = 0;
 			std::int64_t GridY = 0;
-			double TotalMs = 0.0;
-			double SourceSelectionMs = 0.0;
-			double KnownSpritePreparationMs = 0.0;
-			double RenderAndCommitMs = 0.0;
-			double ScenePreparationMs = 0.0;
-			double NumericalRenderingMs = 0.0;
-			Visuals::BuildingVisualsPhaseTimings NumericalPhases;
-			std::size_t OrdinarySpriteInputCount = 0;
-			std::size_t SplineContributorInputCount = 0;
-			std::size_t OverlayLastSpriteInputCount = 0;
-			std::uint8_t CommitStatus = 0;
-			bool HasSceneReadiness = false;
-			std::uint8_t SceneReadiness = 0;
-			bool HasNumericalStatus = false;
-			std::uint8_t NumericalStatus = 0;
+			double ElapsedMs = 0.0;
+			std::size_t WorkUnitsConsumed = 0;
+			std::uint8_t AdvancementState = 0;
 		};
 
 		double IntervalMs = 0.0;
@@ -90,7 +78,7 @@ namespace Services::Map::Buildings::Scheduling
 		Duration SpriteAcquisitionAdvancement;
 		Duration SourceSelection;
 		Duration KnownSpritePreparation;
-		Duration RenderAndCommit;
+		Duration SectionSlice;
 		Duration ScenePreparation;
 		Duration SceneBorrow;
 		Duration NumericalRendering;
@@ -102,12 +90,20 @@ namespace Services::Map::Buildings::Scheduling
 		Duration DestinationFinalization;
 		Duration TransparencyCheck;
 		Duration ImageAdoption;
-		Duration WholeSectionAttempt;
 		std::uint64_t AdvancementCalls = 0;
-		std::uint64_t InitialWaitingSections = 0;
-		std::uint64_t WaitingAfterAdvancement = 0;
-		std::uint64_t SnapshotCoordinatesExamined = 0;
-		std::uint64_t ProcessingAttempts = 0;
+		std::uint64_t SectionSlicesAttempted = 0;
+		std::uint64_t WorkUnitsConsumed = 0;
+		std::uint64_t PendingResults = 0;
+		std::uint64_t WaitingForResourcesResults = 0;
+		std::uint64_t RestartRequiredResults = 0;
+		std::uint64_t AttemptFinishedResults = 0;
+		std::uint64_t SuccessfulImageCommits = 0;
+		std::uint64_t SuccessfulEmptyCommits = 0;
+		std::uint64_t FailedTerminalAttempts = 0;
+		std::uint64_t BudgetExhaustionEvents = 0;
+		std::uint64_t BudgetOverrunEvents = 0;
+		double BudgetOverrunTotalMs = 0.0;
+		double MaximumBudgetOverrunMs = 0.0;
 		std::uint64_t NoLongerEligibleCoordinates = 0;
 		std::uint64_t SourceSelectionMisses = 0;
 		std::array<std::uint64_t, 5> CommitStatusCounts{};
@@ -115,16 +111,16 @@ namespace Services::Map::Buildings::Scheduling
 		std::array<std::uint64_t, 7> NumericalStatusCounts{};
 		std::uint64_t ExistingImagesRemoved = 0;
 		std::uint64_t ImageChangeNotificationsSent = 0;
-		WorstSection Worst;
+		WorstSectionSlice WorstSlice;
 	};
 #endif
 
 	/** Tracks deduplicated Section work required by active viewports.
 	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
 	 * Waiting coordinates persist until demand is withdrawn or an explicit completed-work report
-	 * removes them. Its Section tick synchronously processes waiting Sections. The renderer's
-	 * lifecycle callback advances native request retirement independently of Section work.
-	 * Normal Section scheduling remains externally controlled.
+	 * removes them. Its serialized Section advancement incrementally processes waiting Sections.
+	 * The renderer's lifecycle callback advances native request retirement independently of Section work.
+	 * BuildingMapService invokes bounded Section advancement on the serialized game-thread path.
 	 */
 	class SectionSchedulingCoordinator final
 	{
@@ -240,8 +236,9 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 
 	private:
+		static constexpr std::size_t MaximumSectionVisitWorkUnits = 1024;
 		friend class ::Services::Map::Buildings::BuildingMapService;
-		/** Reports one dormant Section-job state and the exact deterministic quota consumed. */
+		/** Reports one Section-job state and the exact deterministic quota consumed. */
 		struct IncrementalSectionAdvanceResult
 		{
 			enum class State
@@ -254,6 +251,24 @@ namespace Services::Map::Buildings::Scheduling
 
 			State CurrentState = State::Pending;
 			std::size_t WorkUnitsConsumed = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			bool HasSceneReadiness = false;
+			bool SceneBorrowMeasured = false;
+			std::uint8_t SceneReadiness = 0;
+			bool HasCommitStatus = false;
+			std::uint8_t CommitStatus = 0;
+			bool HasNumericalStatus = false;
+			std::uint8_t NumericalStatus = 0;
+			double ScenePreparationMs = 0.0;
+			double SceneBorrowMs = 0.0;
+			double NumericalRenderingMs = 0.0;
+			double TransparencyCheckMs = 0.0;
+			double ImageAdoptionMs = 0.0;
+			bool NumericalRenderingInvoked = false;
+			bool TransparencyCheckInvoked = false;
+			bool ImageAdoptionAttempted = false;
+			Visuals::BuildingVisualsPhaseTimings NumericalPhases;
+#endif
 		};
 		/** Collapses existing terminal commit statuses for shared successful-completion handling. */
 		enum class SectionCommitOutcome
@@ -263,23 +278,63 @@ namespace Services::Map::Buildings::Scheduling
 			EmptyCommitted
 		};
 
-		/** Advances sprite acquisition once and processes waiting work with service-retained publications.
-		 * @param buildingMapService Service-owned Section/source provider for synchronous attempts.
-		 * @param publications Service-owned pending publications retained through this synchronous call.
+		/** Advances sprite acquisition once and shares the service's current tick allowance across waiting Sections.
+		 * @param buildingMapService Service-owned Section/source and frame-budget provider.
+		 * @param publications Service-owned selected publications, copied into local owners before job advancement.
 		 */
 		void AdvanceWaitingSections(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionPublicationBatch& publications);
+		/** Starts a fresh allowance only when the service-owned tick identity advances. */
+		void InitializeTickBudget(
+			const ::Services::Map::Buildings::BuildingMapService& buildingMapService);
+		/** Advances the single existing sprite-acquisition path once for this coordinator call. */
+		void AdvanceSpriteAcquisitionOnce();
 
-		/** Processes one snapshot coordinate only while it remains demanded and waiting.
-		 * @param buildingMapService Service that owns the Section and retained publication.
-		 * @param coordinate Signed grid coordinate from the initial tick snapshot.
-		 */
-		void ProcessWaitingSection(
+		/** Copies the next waiting coordinate after the value cursor, skipping current pass and per-tick deferred work. */
+		bool TrySelectNextWaitingSection(
+			SectionCoordinate& output,
+			const std::set<SectionCoordinate>& visitedThisPass) const;
+		/** Advances eligible jobs in rotated order until time or per-tick deferral stops useful work. */
+		void AdvanceWaitingSectionSlices(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionPublicationBatch& publications,
+			std::chrono::steady_clock::time_point advancementStarted);
+		/** Advances one selected coordinate once and reports whether it must wait until the next tick. */
+		bool AdvanceOneWaitingSection(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionCoordinate& coordinate,
 			const SectionPublicationBatch& publications);
-		/** Advances one already selected publication job once without activating it in the waiting loop.
+		/** Tests the shared allowance using prior same-tick consumption and this call's elapsed time. */
+		bool IsTickAllowanceAvailable(
+			std::chrono::steady_clock::time_point advancementStarted) const noexcept;
+		/** Adds this advancement's wall duration to per-tick consumption before returning. */
+		void FinalizeTickBudget(
+			std::chrono::steady_clock::time_point advancementStarted
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, bool budgetWasAlreadyExhausted
+#endif
+			);
+		/** Clears value-only round-robin and shared-budget state at full demand/session reset boundaries. */
+		void ResetSchedulingBudgetState() noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records one actual incremental state and terminal commit evidence in Debug aggregates. */
+		void RecordIncrementalDiagnostics(
+			const SectionCoordinate& coordinate,
+			double sliceElapsedMs,
+			const IncrementalSectionAdvanceResult& result) noexcept;
+		/** Adds actual terminal commit and cumulative active-operation phase evidence once. */
+		void RecordTerminalAttemptDiagnostics(const IncrementalSectionAdvanceResult& result) noexcept;
+		/** Counts only terminal commit and numerical status values. */
+		void RecordTerminalStatusDiagnostics(const IncrementalSectionAdvanceResult& result) noexcept;
+		/** Adds only durations actually carried by a terminal incremental attempt. */
+		void RecordTerminalTimingDiagnostics(const IncrementalSectionAdvanceResult& result) noexcept;
+		/** Adds one invoked numerical phase's cumulative active duration to its interval aggregate. */
+		static void AddPhaseDuration(
+			const Visuals::BuildingVisualsPhaseTimings::Phase& phase,
+			SectionSchedulingDiagnosticsSnapshot::Duration& aggregate) noexcept;
+#endif
+		/** Advances one selected publication job once from the active round-robin waiting loop.
 		 * @param buildingMapService Service-owned Section and immutable spline-policy provider.
 		 * @param coordinate Exact signed Section coordinate selected by the future scheduler.
 		 * @param publicationOwner Selected shared publication retained through this advancement.
@@ -382,6 +437,13 @@ namespace Services::Map::Buildings::Scheduling
 
 		std::map<SectionCoordinate, std::size_t> demandCounts_;
 		std::set<SectionCoordinate> waitingSections_;
+		std::set<SectionCoordinate> deferredSectionsThisTick_;
+		SectionCoordinate roundRobinCursor_{};
+		bool roundRobinCursorAvailable_ = false;
+		std::uint64_t budgetTickSequence_ = 0;
+		double nominalTickBudgetMs_ = 0.0;
+		double consumedSchedulingMs_ = 0.0;
+		bool budgetTickAvailable_ = false;
 		std::unique_ptr<SectionScheduler> sectionScheduler_;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SectionSchedulingDiagnosticsSnapshot diagnostics_{};
