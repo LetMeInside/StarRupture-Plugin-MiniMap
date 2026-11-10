@@ -47,6 +47,13 @@ namespace Services::Map::Buildings::Capture
 
 namespace Services::Map::Buildings::Scheduling
 {
+	/** Scheduler-selected preparation contract for one retained Section advancement. */
+	enum class SectionJobContinuationMode : std::uint8_t
+	{
+		FullPreparation,
+		ReborrowRetainedScene,
+		NoSceneInput
+	};
 
 	/** Owns persistent acquisition resources, unfinished publication jobs and optional pixel-free retained scenes.
 	 * Existing production scheduling still prepares, renders and commits Sections synchronously; retained-scene helpers are dormant.
@@ -430,6 +437,7 @@ namespace Services::Map::Buildings::Scheduling
 		friend class SectionSchedulingCoordinator;
 		struct SectionJob;
 		struct RetainedSectionScene;
+		struct RetainedSpriteRequirement;
 		enum class RetainedSceneBorrowStatus;
 		/** Describes one dormant bounded advancement without conflating waits with render failures. */
 		struct SectionJobAdvanceResult
@@ -446,6 +454,10 @@ namespace Services::Map::Buildings::Scheduling
 			std::size_t WorkUnitsConsumed = 0;
 			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
 			std::optional<SectionImageCommitResult> FinishedAttempt;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			bool RetainedSpriteReborrowMeasured = false;
+			double RetainedSpriteReborrowMs = 0.0;
+#endif
 		};
 
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
@@ -467,16 +479,41 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t gridX,
 			std::int64_t gridY,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
-		/** Checks retained coordinate, owner and scene state before skipping fresh sprite preparation.
+		/** Selects full preparation, retained-scene resource reborrowing or a scene-free continuation.
 		 * @param gridX Exact signed Section column of the selected job.
 		 * @param gridY Exact signed Section row of the selected job.
 		 * @param publicationOwner Currently selected shared publication owner.
-		 * @return True unless retained state proves this advancement does not need known-sprite preparation.
+		 * @return The conservative continuation mode supported by exact retained state.
 		 */
-		bool RequiresKnownSpritePreparationForNextAdvance(
+		SectionJobContinuationMode SelectSectionJobContinuationMode(
 			std::int64_t gridX,
 			std::int64_t gridY,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner) const noexcept;
+		/** Validates exact retained publication and complete scene evidence before mode selection.
+		 * @param job Retained job selected by the exact Section coordinate.
+		 * @param publicationOwner Currently selected shared publication owner.
+		 * @return True only when ownership, scene readiness and drawable correspondence agree.
+		 */
+		bool HasValidRetainedSceneForContinuation(
+			const SectionJob& job,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner) const noexcept;
+		/** Validates both retained sprite passes against their owned geometry and occurrence evidence.
+		 * @param retained Pixel-free scene and per-pass owned sprite requirements to check.
+		 * @return True when both pass arrays match their retained ready occurrences.
+		 */
+		static bool IsRetainedSceneContinuationStateValid(const RetainedSectionScene& retained) noexcept;
+		/** Validates one pass's exact drawable occurrences without inspecting unrelated publication entries.
+		 * @param requirements Owned key/ordinal/pass values retained for drawable occurrences.
+		 * @param inputs Pixel-free retained geometry aligned with requirements.
+		 * @param outcomes Retained per-occurrence evidence from initial preparation.
+		 * @param expectedPass Required ordinary or overlay pass classification.
+		 * @return True when every aligned value identifies a ready sprite in the expected pass.
+		 */
+		static bool IsRetainedSpritePassStateValid(
+			const std::vector<RetainedSpriteRequirement>& requirements,
+			const std::vector<Visuals::BuildingSpriteRenderInput>& inputs,
+			const std::vector<KnownSpritePreparationResult::OccurrenceOutcome>& outcomes,
+			BuildingCandidateSpritePass expectedPass) noexcept;
 		/** Erases one retained Section job without changing demand or completed image state.
 		 * @param gridX Signed Section column to cancel.
 		 * @param gridY Signed Section row to cancel.
@@ -484,10 +521,11 @@ namespace Services::Map::Buildings::Scheduling
 		void CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept;
 		/** Destroys all retained jobs without clearing images or acquisition resources. */
 		void ClearSectionJobs() noexcept;
-		/** Advances one existing publication job without changing the synchronous production route.
+		/** Advances one existing publication job using its scheduler-selected continuation contract.
 		 * @param section Exact Section whose stable numerical context is borrowed for this call.
 		 * @param publicationOwner Currently selected immutable publication for this coordinate.
-		 * @param knownSpritePreparation Fresh same-publication sprite outcomes and call-valid pixels.
+		 * @param continuationMode Scheduler-owned full, retained-reborrow or scene-free mode.
+		 * @param knownSpritePreparation Fresh full-preparation result, required only in FullPreparation mode.
 		 * @param splinePolicies Existing immutable spline policy table.
 		 * @param maximumWorkUnits Deterministic per-call preparation, borrowing and numerical quota.
 		 * @return Pending, waiting, restart-required, or a fully populated terminal attempt result.
@@ -495,7 +533,8 @@ namespace Services::Map::Buildings::Scheduling
 		SectionJobAdvanceResult AdvanceSectionJob(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const KnownSpritePreparationResult& knownSpritePreparation,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			std::size_t maximumWorkUnits);
 
@@ -597,11 +636,53 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
 			std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
 			Visuals::BuildingRenderSceneInput& output) const;
-		/** Prepares a retained scene or completes already validated zero-candidate work when quota permits. */
+		/** Reborrows retained drawable resources and builds temporary spline views for one immediate call.
+		 * @param job Owner-matched job whose complete retained scene supplies geometry and splines.
+		 * @param ordinarySprites Receives current ordinary-pass pixel views in retained painter order.
+		 * @param overlaySprites Receives current overlay-pass pixel views in retained painter order.
+		 * @param splineScratch Receives call-local descriptors borrowing retained spline values.
+		 * @param output Receives spans valid only while all supplied scratch remains unchanged.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged for this immediate use.
+		 */
+		RetainedSceneBorrowStatus TryBorrowRetainedSceneFromCurrentResources(
+			const SectionJob& job,
+			std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
+			std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
+			std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
+			Visuals::BuildingRenderSceneInput& output) const;
+		/** Ensures scene state and completes validated zero-candidate work when the quota permits.
+		 * @param section Exact service-owned Section for this publication coordinate.
+		 * @param job Selected retained job and attempt state.
+		 * @param continuationMode Scheduler-selected scene preparation contract.
+		 * @param knownSpritePreparation Fresh result, present only for full preparation.
+		 * @param splinePolicies Borrowed immutable service policy values.
+		 * @param maximumWorkUnits Deterministic work limit for this visit.
+		 * @param result Receives readiness, state and consumed units.
+		 * @return True when numerical continuation may proceed.
+		 */
 		bool PrepareSectionJobAttempt(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
-			const KnownSpritePreparationResult& knownSpritePreparation,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Establishes or validates scene state for the selected continuation mode.
+		 * @param section Exact service-owned Section described by the publication.
+		 * @param job Selected retained job whose scene state may be rebuilt or reused.
+		 * @param continuationMode Scheduler-selected full, retained or scene-free mode.
+		 * @param knownSpritePreparation Fresh full-preparation result, or null for retained modes.
+		 * @param splinePolicies Borrowed immutable service policy values.
+		 * @param maximumWorkUnits Work quota available after earlier preparation units.
+		 * @param result Receives preparation readiness and any restart/wait state.
+		 * @return True when a valid retained scene is available for this advancement.
+		 */
+		bool PrepareSectionJobSceneForAttempt(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			std::size_t maximumWorkUnits,
 			SectionJobAdvanceResult& result);
@@ -612,20 +693,88 @@ namespace Services::Map::Buildings::Scheduling
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionJobAdvanceResult& result);
-		/** Reborrows scene inputs only when needed and advances one persistent numerical operation. */
+		/** Uses the selected input path and advances the existing persistent numerical operation.
+		 * @param section Service-owned Section whose stable context is borrowed for rendering.
+		 * @param job Retained operation, scene and attempt evidence.
+		 * @param continuationMode Scheduler-selected input contract for this visit.
+		 * @param knownSpritePreparation Fresh full-preparation result when that mode is selected.
+		 * @param maximumWorkUnits Remaining deterministic work quota.
+		 * @param result Receives status and actual consumed units.
+		 * @return True when numerical work completed or remains ready for commitment.
+		 */
 		bool AdvanceSectionJobNumerical(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
-			const KnownSpritePreparationResult& knownSpritePreparation,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
 			std::size_t maximumWorkUnits,
 			SectionJobAdvanceResult& result);
-		/** Keeps temporary sprite and spline borrows alive through their immediate numerical call. */
+		/** Keeps temporary sprite and spline borrows alive through one immediate numerical call.
+		 * @param section Service-owned Section whose stable context is borrowed for rendering.
+		 * @param job Retained operation and complete scene for this coordinate.
+		 * @param continuationMode Selects full-result or retained-resource borrowing.
+		 * @param knownSpritePreparation Full result when selected; null for retained-resource borrowing.
+		 * @param maximumWorkUnits Remaining deterministic quota.
+		 * @param result Receives status, consumed units and optional Debug reborrow timing.
+		 * @return True when the numerical advancement is ready for commitment.
+		 */
 		bool ReborrowAndAdvanceSectionJobNumerical(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
-			const KnownSpritePreparationResult& knownSpritePreparation,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
 			std::size_t maximumWorkUnits,
 			SectionJobAdvanceResult& result);
+		/** Reacquires one retained key and validates current payload metadata against owned geometry.
+		 * @param requirement Exact retained key, publication ordinal and pass.
+		 * @param expectedInput Pixel-free geometry established by initial preparation.
+		 * @param output Receives a temporary input borrowing current payload pixels on success.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryReborrowCurrentSprite(
+			const RetainedSpriteRequirement& requirement,
+			const Visuals::BuildingSpriteRenderInput& expectedInput,
+			Visuals::BuildingSpriteRenderInput& output) const;
+		/** Resolves current acquisition state and returns payload access that must remain call-local.
+		 * @param spriteKey Prevalidated owned key for one retained drawable occurrence.
+		 * @param output Receives a borrowed payload pointer only when current data is ready.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryGetCurrentSpritePayload(
+			const Cache::OwnedSpriteKey& spriteKey,
+			const Cache::ProcessedSpritePayload*& output) const;
+		/** Dispatches to the selected full-result or retained-resource scene borrow path.
+		 * @param job Retained job and publication owner for the current advancement.
+		 * @param continuationMode Scheduler-selected input contract.
+		 * @param knownSpritePreparation Fresh full-preparation data when selected, otherwise null.
+		 * @param ordinarySprites Receives temporary ordinary inputs.
+		 * @param overlaySprites Receives temporary overlay-last inputs.
+		 * @param splineScratch Receives temporary descriptors borrowing retained spline values.
+		 * @param output Receives scene spans valid through one immediate numerical call.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryBorrowSectionSceneForContinuation(
+			const SectionJob& job,
+			SectionJobContinuationMode continuationMode,
+			const KnownSpritePreparationResult* knownSpritePreparation,
+			std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
+			std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
+			std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
+			Visuals::BuildingRenderSceneInput& output) const;
+		/** Rebuilds one retained sprite pass from its ordered occurrence requirements.
+		 * @param requirements Owned retained keys/ordinals in painter order.
+		 * @param scenePreparation Per-occurrence readiness retained by the complete scene.
+		 * @param expectedInputs Pixel-free geometry aligned with the requirements.
+		 * @param expectedPass Required FirstPass or SecondPass classification.
+		 * @param output Receives temporary render inputs with current pixel views.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryReborrowRetainedSpritePass(
+			const std::vector<RetainedSpriteRequirement>& requirements,
+			const SectionScenePreparationResult& scenePreparation,
+			const std::vector<Visuals::BuildingSpriteRenderInput>& expectedInputs,
+			BuildingCandidateSpritePass expectedPass,
+			std::vector<Visuals::BuildingSpriteRenderInput>& output) const;
 		/** Runs one numerical slice and translates its terminal status into the existing commit result. */
 		bool RunSectionNumericalSlice(
 			::Services::Map::Buildings::BuildingMapSection& section,
@@ -651,20 +800,50 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJobAdvanceResult& result);
 		/** Destroys all attempt state while preserving the selected publication owner. */
 		static void ResetSectionJobProgress(SectionJob& job) noexcept;
-		/** Rebuilds one sorted pass's ordinal sequence from the effective prepared scene and sprite result.
+		/** Retains one sorted pass's exact drawable keys from the effective prepared scene.
 		 * @param overlaySelectsSecondPass Chooses SecondPass when true, otherwise FirstPass.
+		 * @param publicationOwner Exact immutable publication supplying each occurrence's key.
 		 * @param knownSpritePreparation Current prepared occurrences, including sparse ordinal mapping.
 		 * @param scenePreparation Effective per-occurrence scene outcomes after source eligibility.
 		 * @param preparedInputs Existing pass values whose stable sorted order must be matched.
-		 * @param output Receives the aligned publication ordinals on exact correspondence.
-		 * @return True only when counts, ordinals, pass and geometry all match.
+		 * @param output Receives owned keys paired with aligned ordinals/pass on exact correspondence.
+		 * @return True only when counts, keys, ordinals, pass and geometry all match.
 		 */
-		static bool TryBuildRetainedSpriteOrdinals(
+		static bool TryBuildRetainedSpriteRequirements(
 			bool overlaySelectsSecondPass,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			const SectionScenePreparationResult& scenePreparation,
 			const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
-			std::vector<std::uint64_t>& output);
+			std::vector<RetainedSpriteRequirement>& output);
+		/** Selects and painter-sorts indexes whose scene outcomes remain drawable in one pass.
+		 * @param selectedPass Required ordinary or overlay pass.
+		 * @param knownSpritePreparation Initial prepared sprites and sparse ordinal correspondence.
+		 * @param scenePreparation Effective per-occurrence eligibility after source processing.
+		 * @param output Receives prepared-sprite indexes in stable painter order.
+		 * @return True when selected occurrences have valid retained scene correspondence.
+		 */
+		static bool TrySelectRetainedSpriteIndices(
+			BuildingCandidateSpritePass selectedPass,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			const SectionScenePreparationResult& scenePreparation,
+			std::vector<std::size_t>& output);
+		/** Copies one validated publication key beside its exact sorted ordinal and pass.
+		 * @param publicationOwner Exact immutable source publication for the ordinal.
+		 * @param knownSpritePreparation Initial prepared occurrence and sparse index data.
+		 * @param selectedPass Required pass for the retained input.
+		 * @param preparedIndex Index in the initial prepared-sprite vector.
+		 * @param preparedInput Sorted geometry whose correspondence must be validated.
+		 * @param output Receives the copied ordinal, pass and validated owned key.
+		 * @return True when publication, occurrence, pass, geometry and key all match.
+		 */
+		static bool TryAppendRetainedSpriteRequirement(
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			BuildingCandidateSpritePass selectedPass,
+			std::size_t preparedIndex,
+			const Visuals::BuildingSpriteRenderInput& preparedInput,
+			RetainedSpriteRequirement& output);
 		/** Validates one newly sorted sprite-to-ordinal pair before retaining its identity.
 		 * @param ordinal Publication-local occurrence represented by the sorted sprite.
 		 * @param preparedIndex Index in the current KnownSpritePreparationResult.
@@ -679,8 +858,8 @@ namespace Services::Map::Buildings::Scheduling
 			BuildingCandidateSpritePass expectedPass,
 			const Visuals::BuildingSpriteRenderInput& preparedInput,
 			const KnownSpritePreparationResult& knownSpritePreparation) noexcept;
-		/** Reborrows one retained pass in ordinal order, distinguishing temporary source absence.
-		 * @param ordinals Stable sorted Section-local ordinals for this pass.
+		/** Reborrows one retained pass in painter order, distinguishing temporary source absence.
+		 * @param requirements Owned keys paired with stable sorted occurrence ordinals and pass.
 		 * @param preparedInputs Pixel-free retained geometry in the same order.
 		 * @param expectedPass Required FirstPass or SecondPass classification.
 		 * @param knownSpritePreparation Fresh source/result state for this advancement.
@@ -688,13 +867,13 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
 		 */
 		RetainedSceneBorrowStatus TryReborrowSpritePass(
-			const std::vector<std::uint64_t>& ordinals,
+			const std::vector<RetainedSpriteRequirement>& requirements,
 			const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
 			BuildingCandidateSpritePass expectedPass,
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::vector<Visuals::BuildingSpriteRenderInput>& output) const;
 		/** Reacquires and validates one current sprite input for immediate scene use.
-		 * @param ordinal Exact retained Section-local occurrence identity.
+		 * @param ordinal Exact retained publication-local occurrence identity.
 		 * @param expectedInput Pixel-free geometry retained for this sorted position.
 		 * @param expectedPass Required source pass classification.
 		 * @param knownSpritePreparation Fresh source/result state for this advancement.
@@ -1115,12 +1294,19 @@ namespace Services::Map::Buildings::Scheduling
 			const Visuals::BuildingSpriteRenderInput& renderInput,
 			KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept;
 
+		/** Owns one drawable occurrence's validated key and exact retained pass identity. */
+		struct RetainedSpriteRequirement
+		{
+			std::uint64_t PublicationOrdinal = 0;
+			BuildingCandidateSpritePass SpritePass = BuildingCandidateSpritePass::Unknown;
+			Cache::OwnedSpriteKey SpriteKey;
+		};
 		/** Owns pixel-free prepared scene values and sorted occurrence identity for one Section job. */
 		struct RetainedSectionScene
 		{
 			SectionScenePreparationResult Preparation;
-			std::vector<std::uint64_t> OrdinarySpriteOrdinals;
-			std::vector<std::uint64_t> OverlaySpriteOrdinals;
+			std::vector<RetainedSpriteRequirement> OrdinarySprites;
+			std::vector<RetainedSpriteRequirement> OverlayLastSprites;
 		};
 
 		/** Identifies whether fresh borrowed scene inputs are usable for one immediate call. */

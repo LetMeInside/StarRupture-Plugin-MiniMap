@@ -38,6 +38,7 @@ namespace Services::Map::Buildings::Visuals
 namespace Services::Map::Buildings::Scheduling
 {
 	class SectionScheduler;
+	enum class SectionJobContinuationMode : std::uint8_t;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	/** Numeric interval report for coordinator-owned V2 Section scheduling work. */
@@ -81,6 +82,7 @@ namespace Services::Map::Buildings::Scheduling
 		Duration SectionSlice;
 		Duration ScenePreparation;
 		Duration SceneBorrow;
+		Duration RetainedSpriteReborrow;
 		Duration NumericalRendering;
 		Duration DestinationConstruction;
 		Duration OrdinarySprites;
@@ -261,6 +263,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::uint8_t NumericalStatus = 0;
 			double ScenePreparationMs = 0.0;
 			double SceneBorrowMs = 0.0;
+			bool RetainedSpriteReborrowMeasured = false;
+			double RetainedSpriteReborrowMs = 0.0;
 			double NumericalRenderingMs = 0.0;
 			double TransparencyCheckMs = 0.0;
 			double ImageAdoptionMs = 0.0;
@@ -346,12 +350,12 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
 			std::size_t maximumWorkUnits);
-		/** Conditionally prepares fresh sprite views, advances an existing job once, and applies terminal completion events.
+		/** Selectively prepares or reborrows sprite views, advances once, and applies terminal completion events.
 		 * @param buildingMapService Service providing the immutable spline policies.
 		 * @param coordinate Exact coordinate of the retained Section job.
 		 * @param publicationOwner Selected publication retained through this advancement.
 		 * @param section Service-owned Section whose numerical context remains stable across calls.
-		 * @param requiresKnownSpritePreparation Whether the scheduler requires fresh sprite outcomes for this advancement.
+		 * @param continuationMode Scheduler-owned full, retained-reborrow or scene-free mode.
 		 * @param maximumWorkUnits Deterministic quota passed unchanged to SectionScheduler.
 		 * @return The actual incremental state and work count reported by SectionScheduler.
 		 */
@@ -360,7 +364,7 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			::Services::Map::Buildings::BuildingMapSection& section,
-			bool requiresKnownSpritePreparation,
+			SectionJobContinuationMode continuationMode,
 			std::size_t maximumWorkUnits);
 		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.

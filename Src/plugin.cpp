@@ -684,7 +684,7 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[6]),
                 static_cast<unsigned long long>(diagnostics.ExistingImagesRemoved),
                 static_cast<unsigned long long>(diagnostics.ImageChangeNotificationsSent));
-            LOG_INFO("MiniMap: BuildingMap section_timing intervalMs=%.1f elapsed:cpuWall sourceSelectionEveryVisit=true knownSpritePreparation=conditional completedJobPhases=cumulativeActiveAcrossSlices=true sourceSelection={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} knownSpritePreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} scenePreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sceneBorrow={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} numerical={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} transparency={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+            LOG_INFO("MiniMap: BuildingMap section_timing intervalMs=%.1f elapsed:cpuWall sourceSelectionEveryVisit=true knownSpritePreparation=initialOrInvalidState retainedSpriteReborrow=sceneInputContinuation completedJobPhases=cumulativeActiveAcrossSlices=true sourceSelection={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} knownSpritePreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} scenePreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} sceneBorrow={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} numerical={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} transparency={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} retainedSpriteReborrow={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.SourceSelection.Samples), diagnostics.SourceSelection.TotalMs,
                 meanMs(diagnostics.SourceSelection), diagnostics.SourceSelection.MaxMs,
@@ -699,7 +699,9 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.TransparencyCheck.Samples), diagnostics.TransparencyCheck.TotalMs,
                 meanMs(diagnostics.TransparencyCheck), diagnostics.TransparencyCheck.MaxMs,
                 static_cast<unsigned long long>(diagnostics.ImageAdoption.Samples), diagnostics.ImageAdoption.TotalMs,
-                meanMs(diagnostics.ImageAdoption), diagnostics.ImageAdoption.MaxMs);
+                meanMs(diagnostics.ImageAdoption), diagnostics.ImageAdoption.MaxMs,
+                static_cast<unsigned long long>(diagnostics.RetainedSpriteReborrow.Samples), diagnostics.RetainedSpriteReborrow.TotalMs,
+                meanMs(diagnostics.RetainedSpriteReborrow), diagnostics.RetainedSpriteReborrow.MaxMs);
             LOG_INFO("MiniMap: BuildingMap section_numerical_phases intervalMs=%.1f elapsed:cpuWall cumulativeActiveAcrossCompletedJobs=true destinationConstruction={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ordinarySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} occlusionIndexPreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} splineDrawing={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} overlaySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} destinationFinalization={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.DestinationConstruction.Samples), diagnostics.DestinationConstruction.TotalMs,
