@@ -1,4 +1,4 @@
-// Coordinates one stateless synchronous numerical scene pass over borrowed Building Map inputs.
+// Implements synchronous and cursor-resumable numerical scene passes over borrowed Building Map inputs.
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingVisuals.h"
@@ -11,6 +11,772 @@
 
 namespace Services::Map::Buildings::Visuals
 {
+	/** Resets a fresh or terminal cursor without treating reset as active-work cancellation. */
+	void BuildingVisuals::SceneCursor::Reset() noexcept
+	{
+		if (Initialized && !Terminal)
+		{
+			return;
+		}
+		CurrentPhase = Phase::OrdinarySprites;
+		OrdinarySpriteIndex = 0;
+		SplineIndex = 0;
+		SplineSurfaceIndex = 0;
+		OverlaySpriteIndex = 0;
+		PendingSpriteWorldQuad = {};
+		PendingSpriteImageGeometry = {};
+		PendingOutcome = {};
+		Submission.Reset();
+		PendingOpacity = 0;
+		Initialized = false;
+		SpriteGeometryPrepared = false;
+		SplineSamplingPrepared = false;
+		SplineSurfacePreparationComplete = false;
+		SplineSurfaceClippingComplete = false;
+		TriangleConversionComplete = false;
+		SurfaceReadyForSubmission = false;
+		AlternativeSelected = false;
+		DestinationSubmissionActive = false;
+		Terminal = false;
+	}
+
+	/** Initializes operation reports and reusable context capacity for one scene lifetime. */
+	void BuildingVisuals::InitializeScene(
+		const BuildingRenderSceneInput& scene,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		ResetOperation(context);
+		context.result_.OrdinarySprites.reserve(scene.OrdinarySprites.size());
+		context.occluders_.reserve(scene.OrdinarySprites.size());
+		context.preparedSplines_.resize(scene.Splines.size());
+		std::size_t surfaceCount = 0;
+		for (const auto& spline : scene.Splines)
+		{
+			surfaceCount += spline.Surfaces.size();
+		}
+		context.result_.SplineSurfaces.reserve(surfaceCount);
+		context.result_.OverlayLastSprites.reserve(scene.OverlayLastSprites.size());
+		cursor.Initialized = true;
+	}
+
+	/** Advances one borrowed scene call while charging only completed deterministic work units. */
+	BuildingVisuals::SceneSliceResult BuildingVisuals::StepScene(
+		const BuildingRenderSceneInput& scene,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		std::size_t maximumWorkUnits
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, BuildingVisualsPhaseTimings& phaseTimings
+#endif
+		)
+	{
+		SceneSliceResult result;
+		if (cursor.Terminal)
+		{
+			result.Complete = true;
+			return result;
+		}
+		if (maximumWorkUnits == 0)
+		{
+			return result;
+		}
+		if (!cursor.Initialized)
+		{
+			InitializeScene(scene, context, cursor);
+		}
+		while (!cursor.Terminal)
+		{
+			if (result.WorkUnitsConsumed >= maximumWorkUnits &&
+				!CanAdvanceScenePhaseWithoutWork(scene, cursor))
+			{
+				break;
+			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const SceneCursor::Phase measuredPhase = cursor.CurrentPhase;
+			const auto phaseStarted = std::chrono::steady_clock::now();
+#endif
+			const SceneAdvanceResult advanceResult = AdvanceSceneStep(
+				scene,
+				destination,
+				context,
+				cursor,
+				result,
+				maximumWorkUnits);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			AccumulateScenePhaseTiming(
+				measuredPhase,
+				std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - phaseStarted).count(),
+				phaseTimings);
+#endif
+			if (advanceResult == SceneAdvanceResult::YieldWithoutWork)
+			{
+				break;
+			}
+		}
+		result.Complete = cursor.Terminal;
+		return result;
+	}
+
+	/** Allows only exhausted-phase transitions after the per-call quota has been consumed. */
+	bool BuildingVisuals::CanAdvanceScenePhaseWithoutWork(
+		const BuildingRenderSceneInput& scene,
+		const SceneCursor& cursor) noexcept
+	{
+		switch (cursor.CurrentPhase)
+		{
+		case SceneCursor::Phase::OrdinarySprites:
+			return cursor.OrdinarySpriteIndex == scene.OrdinarySprites.size();
+		case SceneCursor::Phase::Splines:
+			return cursor.SplineIndex == scene.Splines.size();
+		case SceneCursor::Phase::OverlayLastSprites:
+			return cursor.OverlaySpriteIndex == scene.OverlayLastSprites.size();
+		case SceneCursor::Phase::OcclusionIndex:
+		case SceneCursor::Phase::Complete:
+			return false;
+		}
+		return false;
+	}
+
+	/** Dispatches one work operation or a single zero-cost state transition. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSceneStep(
+		const BuildingRenderSceneInput& scene,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		switch (cursor.CurrentPhase)
+		{
+		case SceneCursor::Phase::OrdinarySprites:
+			if (cursor.OrdinarySpriteIndex == scene.OrdinarySprites.size())
+			{
+				cursor.CurrentPhase = SceneCursor::Phase::OcclusionIndex;
+				return SceneAdvanceResult::Progressed;
+			}
+			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			{
+				return SceneAdvanceResult::YieldWithoutWork;
+			}
+			return AdvanceOrdinarySprite(scene, destination, context, cursor, result, maximumWorkUnits);
+		case SceneCursor::Phase::OcclusionIndex:
+			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			{
+				return SceneAdvanceResult::YieldWithoutWork;
+			}
+			PrepareSceneOcclusionIndex(context, cursor, result);
+			return SceneAdvanceResult::Progressed;
+		case SceneCursor::Phase::Splines:
+			if (cursor.SplineIndex == scene.Splines.size())
+			{
+				cursor.CurrentPhase = SceneCursor::Phase::OverlayLastSprites;
+				return SceneAdvanceResult::Progressed;
+			}
+			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			{
+				return SceneAdvanceResult::YieldWithoutWork;
+			}
+			return AdvanceSpline(scene, destination, context, cursor, result, maximumWorkUnits);
+		case SceneCursor::Phase::OverlayLastSprites:
+			if (cursor.OverlaySpriteIndex == scene.OverlayLastSprites.size())
+			{
+				cursor.CurrentPhase = SceneCursor::Phase::Complete;
+				cursor.Terminal = true;
+				return SceneAdvanceResult::Progressed;
+			}
+			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			{
+				return SceneAdvanceResult::YieldWithoutWork;
+			}
+			return AdvanceOverlaySprite(scene, destination, context, cursor, result, maximumWorkUnits);
+		case SceneCursor::Phase::Complete:
+			cursor.Terminal = true;
+			return SceneAdvanceResult::Progressed;
+		}
+		return SceneAdvanceResult::Progressed;
+	}
+
+	/** Prepares one sprite once, resumes its image command and records its terminal result once. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceOrdinarySprite(
+		const BuildingRenderSceneInput& scene,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		const std::size_t index = cursor.OrdinarySpriteIndex;
+		const auto& sprite = scene.OrdinarySprites[index];
+		if (!cursor.SpriteGeometryPrepared)
+		{
+			ImageSubmissionCommand command;
+			BuildingVisualsContributorOutcome outcome;
+			outcome.ContributorIndex = index;
+			if (!BuildImageCommand(sprite, command, cursor.PendingSpriteWorldQuad))
+			{
+				outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
+				MarkIncompleteOnFailure(context.result_, outcome);
+				context.result_.OrdinarySprites.push_back(outcome);
+				++cursor.OrdinarySpriteIndex;
+				ResetSpriteProgress(cursor);
+			}
+			else
+			{
+				cursor.PendingSpriteImageGeometry = command.Geometry;
+				cursor.PendingOutcome = outcome;
+				cursor.PendingOutcome.GeometryPrepared = true;
+				cursor.SpriteGeometryPrepared = true;
+			}
+			++result.WorkUnitsConsumed;
+			return SceneAdvanceResult::Progressed;
+		}
+		return SubmitPreparedSprite(
+			sprite,
+			index,
+			true,
+			destination,
+			context,
+			cursor,
+			result,
+			maximumWorkUnits);
+	}
+
+	/** Reconstructs call-local source pixels and completes one ordinary or overlay sprite. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSprite(
+		const BuildingSpriteRenderInput& sprite,
+		std::size_t index,
+		bool ordinary,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		ImageSubmissionCommand command;
+		command.Source = {sprite.Pixels, sprite.PixelWidth, sprite.PixelHeight, sprite.PixelRegion};
+		command.Geometry = cursor.PendingSpriteImageGeometry;
+		cursor.PendingOutcome.SubmissionAttempted = true;
+		cursor.DestinationSubmissionActive = true;
+		const auto slice = destination.StepSubmitImage(
+			command,
+			cursor.Submission,
+			maximumWorkUnits - result.WorkUnitsConsumed);
+		result.WorkUnitsConsumed += slice.WorkUnitsConsumed;
+		if (!slice.CompletedOutcome.has_value())
+		{
+			return slice.WorkUnitsConsumed == 0
+				? SceneAdvanceResult::YieldWithoutWork
+				: SceneAdvanceResult::Progressed;
+		}
+		cursor.PendingOutcome.Submission = *slice.CompletedOutcome;
+		if (ordinary && cursor.PendingOutcome.Submission == ImageSubmission::Submitted)
+		{
+			cursor.PendingOutcome.OccluderGeometryPrepared = AddOccluder(
+				sprite,
+				cursor.PendingSpriteWorldQuad,
+				index,
+				context);
+			if (!cursor.PendingOutcome.OccluderGeometryPrepared)
+			{
+				cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::OccluderGeometry;
+			}
+		}
+		else if (cursor.PendingOutcome.Submission != ImageSubmission::Submitted &&
+			cursor.PendingOutcome.Submission != ImageSubmission::Culled)
+		{
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::DestinationSubmission;
+		}
+		MarkIncompleteOnFailure(context.result_, cursor.PendingOutcome);
+		if (ordinary)
+		{
+			context.result_.OrdinarySprites.push_back(cursor.PendingOutcome);
+			++cursor.OrdinarySpriteIndex;
+		}
+		else
+		{
+			context.result_.OverlayLastSprites.push_back(cursor.PendingOutcome);
+			++cursor.OverlaySpriteIndex;
+		}
+		ResetSpriteProgress(cursor);
+		return SceneAdvanceResult::Progressed;
+	}
+
+	/** Prepares the one context-owned occlusion index before any spline phase work. */
+	void BuildingVisuals::PrepareSceneOcclusionIndex(
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result)
+	{
+		context.result_.OcclusionPreparationStatus = PrepareOcclusionIndex(context);
+		if (context.result_.OcclusionPreparationStatus != SplineOcclusionStatus::Complete)
+		{
+			context.result_.Complete = false;
+		}
+		cursor.CurrentPhase = SceneCursor::Phase::Splines;
+		++result.WorkUnitsConsumed;
+	}
+
+	/** Clears one terminal or not-yet-started sprite's retained value state. */
+	void BuildingVisuals::ResetSpriteProgress(SceneCursor& cursor) noexcept
+	{
+		cursor.PendingSpriteWorldQuad = {};
+		cursor.PendingSpriteImageGeometry = {};
+		cursor.PendingOutcome = {};
+		cursor.Submission.Reset();
+		cursor.SpriteGeometryPrepared = false;
+		cursor.DestinationSubmissionActive = false;
+	}
+
+	/** Clears one completed spline surface's progress without touching context-owned prepared geometry. */
+	void BuildingVisuals::ResetSplineSurfaceProgress(SceneCursor& cursor) noexcept
+	{
+		cursor.PendingOutcome = {};
+		cursor.Submission.Reset();
+		cursor.PendingOpacity = 0;
+		cursor.SplineSurfacePreparationComplete = false;
+		cursor.SplineSurfaceClippingComplete = false;
+		cursor.TriangleConversionComplete = false;
+		cursor.SurfaceReadyForSubmission = false;
+		cursor.DestinationSubmissionActive = false;
+	}
+
+	/** Clears one finished spline's sampling and ordered-alternative progress. */
+	void BuildingVisuals::ResetSplineProgress(SceneCursor& cursor) noexcept
+	{
+		ResetSplineSurfaceProgress(cursor);
+		cursor.SplineSamplingPrepared = false;
+		cursor.SplineSurfaceIndex = 0;
+		cursor.AlternativeSelected = false;
+	}
+
+	/** Samples one spline once and advances it through the current surface position. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSpline(
+		const BuildingRenderSceneInput& scene,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		const auto& spline = scene.Splines[cursor.SplineIndex];
+		if (spline.SurfaceSelectionMode == BuildingSplineSurfaceSelectionMode::DrawAllSurfaces &&
+			spline.Surfaces.empty())
+		{
+			++cursor.SplineIndex;
+			ResetSplineProgress(cursor);
+			return SceneAdvanceResult::YieldWithoutWork;
+		}
+		if (!cursor.SplineSamplingPrepared)
+		{
+			SplineGeometry::Prepare(
+				spline.Segments,
+				spline.SamplingPolicy,
+				context.preparedSplines_[cursor.SplineIndex]);
+			cursor.SplineSamplingPrepared = true;
+			++result.WorkUnitsConsumed;
+			return SceneAdvanceResult::Progressed;
+		}
+		return AdvanceSplineSurface(spline, destination, context, cursor, result, maximumWorkUnits);
+	}
+
+	/** Advances one selected surface, rejected candidate or no-drawable contributor result. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSplineSurface(
+		const BuildingSplineRenderInput& spline,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		const bool alternative = spline.SurfaceSelectionMode ==
+			BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
+		if (alternative && !cursor.AlternativeSelected &&
+			cursor.SplineSurfaceIndex == spline.Surfaces.size())
+		{
+			CompleteNoDrawableAlternative(
+				context.preparedSplines_[cursor.SplineIndex],
+				context,
+				cursor);
+			return SceneAdvanceResult::Progressed;
+		}
+		if (!alternative && cursor.SplineSurfaceIndex == spline.Surfaces.size())
+		{
+			++cursor.SplineIndex;
+			ResetSplineProgress(cursor);
+			return SceneAdvanceResult::Progressed;
+		}
+		const auto& surface = spline.Surfaces[cursor.SplineSurfaceIndex];
+		if (!cursor.SplineSurfacePreparationComplete)
+		{
+			const SurfacePreparationResult preparation = PrepareIncrementalSplineSurface(
+				spline,
+				context.preparedSplines_[cursor.SplineIndex],
+				surface,
+				context,
+				cursor,
+				cursor.SplineSurfaceIndex,
+				alternative);
+			++result.WorkUnitsConsumed;
+			if (preparation == SurfacePreparationResult::CandidateRejected)
+			{
+				context.result_.SplineSurfaces.push_back(cursor.PendingOutcome);
+				++cursor.SplineSurfaceIndex;
+				ResetSplineSurfaceProgress(cursor);
+				return SceneAdvanceResult::Progressed;
+			}
+			if (preparation == SurfacePreparationResult::ContributorCompleted)
+			{
+				CompleteSplineSurface(spline, context, cursor);
+			}
+			return SceneAdvanceResult::Progressed;
+		}
+		return SubmitPreparedSplineSurface(
+			spline,
+			surface,
+			destination,
+			context,
+			cursor,
+			result,
+			maximumWorkUnits);
+	}
+
+	/** Prepares and clips one surface, then converts its visible triangles exactly once. */
+	BuildingVisuals::SurfacePreparationResult BuildingVisuals::PrepareIncrementalSplineSurface(
+		const BuildingSplineRenderInput& spline,
+		const PreparedSpline& preparedSpline,
+		const BuildingSplineSurfaceRenderInput& surface,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		std::size_t surfaceIndex,
+		bool alternative)
+	{
+		cursor.PendingOutcome = {};
+		cursor.PendingOutcome.ContributorIndex = cursor.SplineIndex;
+		cursor.PendingOutcome.SurfaceIndex = surfaceIndex;
+		cursor.PendingOutcome.SamplingIssue = preparedSpline.Issue;
+		cursor.PendingOutcome.SamplingComplete = preparedSpline.IsComplete();
+		cursor.PendingOutcome.AlternativeStatus = alternative
+			? BuildingSplineAlternativeStatus::CandidateRejected
+			: BuildingSplineAlternativeStatus::NotApplicable;
+		if (preparedSpline.Issue != SplineNumericalIssue::None || !preparedSpline.IsComplete())
+		{
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::SplineSampling;
+		}
+		PrepareSplineSurfaceGeometry(spline, preparedSpline, surface, context, cursor.PendingOutcome);
+		if (alternative && !HasDrawableSplineSurface(context.preparedSurface_))
+		{
+			if (cursor.PendingOutcome.FailureStage == BuildingVisualsFailureStage::None)
+			{
+				cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
+			}
+			cursor.SplineSurfacePreparationComplete = true;
+			cursor.SplineSurfaceClippingComplete = true;
+			return SurfacePreparationResult::CandidateRejected;
+		}
+		if (alternative)
+		{
+			cursor.PendingOutcome.AlternativeStatus = BuildingSplineAlternativeStatus::Selected;
+			cursor.AlternativeSelected = true;
+		}
+		if (!cursor.PendingOutcome.GeometryPrepared)
+		{
+			cursor.SplineSurfacePreparationComplete = true;
+			cursor.SplineSurfaceClippingComplete = true;
+			return SurfacePreparationResult::ContributorCompleted;
+		}
+		cursor.PendingOutcome.OcclusionAttempted = true;
+		cursor.PendingOutcome.OcclusionStatus = SplineOcclusionGeometry::ClipSurface(
+			context.preparedSurface_.Vertices,
+			context.preparedSurface_.Indices,
+			context.preparedSurface_.Cells,
+			context.occlusionIndex_,
+			context.occlusionWorkspace_);
+		cursor.SplineSurfaceClippingComplete = true;
+		if (cursor.PendingOutcome.OcclusionStatus != SplineOcclusionStatus::Complete)
+		{
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::Occlusion;
+			cursor.SplineSurfacePreparationComplete = true;
+			return SurfacePreparationResult::ContributorCompleted;
+		}
+		return PrepareIncrementalSurfaceTriangles(surface, context, cursor);
+	}
+
+	/** Validates appearance and converts the visible geometry into retained context-owned triangles. */
+	BuildingVisuals::SurfacePreparationResult BuildingVisuals::PrepareIncrementalSurfaceTriangles(
+		const BuildingSplineSurfaceRenderInput& surface,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		bool converted = false;
+		if (surface.Appearance.Mode == SplineSurfaceAppearanceMode::SolidColor)
+		{
+			converted = ConvertSolidSurfaceTriangles(surface, context, cursor);
+		}
+		else if (surface.Appearance.Mode == SplineSurfaceAppearanceMode::Textured)
+		{
+			converted = ConvertTexturedSurfaceTriangles(surface, context, cursor);
+		}
+		if (!converted)
+		{
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::AppearanceValidation;
+			cursor.SplineSurfacePreparationComplete = true;
+			return SurfacePreparationResult::ContributorCompleted;
+		}
+		cursor.TriangleConversionComplete = true;
+		cursor.SurfaceReadyForSubmission = true;
+		cursor.SplineSurfacePreparationComplete = true;
+		return SurfacePreparationResult::ReadyForSubmission;
+	}
+
+	/** Converts canonical visible positions to solid triangles without submitting them. */
+	bool BuildingVisuals::ConvertSolidSurfaceTriangles(
+		const BuildingSplineSurfaceRenderInput& surface,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		if (!TryConvertOpacity(surface.Appearance.Opacity, cursor.PendingOpacity))
+		{
+			return false;
+		}
+		const auto& visible = context.occlusionWorkspace_.VisibleTriangles();
+		context.solidTriangles_.clear();
+		context.solidTriangles_.reserve(visible.size());
+		for (const auto& triangle : visible)
+		{
+			SolidTriangle converted;
+			for (std::size_t vertex = 0; vertex < converted.Vertices.size(); ++vertex)
+			{
+				converted.Vertices[vertex] = triangle.Vertices[vertex].Position;
+			}
+			context.solidTriangles_.push_back(converted);
+		}
+		return true;
+	}
+
+	/** Converts canonical visible positions and UVs to retained textured triangles. */
+	bool BuildingVisuals::ConvertTexturedSurfaceTriangles(
+		const BuildingSplineSurfaceRenderInput& surface,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		if (!TryConvertOpacity(surface.Appearance.Opacity, cursor.PendingOpacity))
+		{
+			return false;
+		}
+		const auto& visible = context.occlusionWorkspace_.VisibleTriangles();
+		context.texturedTriangles_.clear();
+		context.texturedTriangles_.reserve(visible.size());
+		for (const auto& triangle : visible)
+		{
+			TexturedTriangle converted;
+			for (std::size_t vertex = 0; vertex < converted.Vertices.size(); ++vertex)
+			{
+				converted.Vertices[vertex] = {
+					triangle.Vertices[vertex].Position,
+					triangle.Vertices[vertex].TextureCoordinates};
+			}
+			context.texturedTriangles_.push_back(converted);
+		}
+		return true;
+	}
+
+	/** Resumes one prepared solid or textured batch until its next quota boundary or terminal result. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSplineSurface(
+		const BuildingSplineRenderInput& spline,
+		const BuildingSplineSurfaceRenderInput& surface,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		if (!cursor.SurfaceReadyForSubmission || result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return SceneAdvanceResult::YieldWithoutWork;
+		}
+		auto slice = StepPreparedSplineSurface(
+			surface,
+			destination,
+			context,
+			cursor,
+			maximumWorkUnits - result.WorkUnitsConsumed);
+		result.WorkUnitsConsumed += slice.WorkUnitsConsumed;
+		if (!slice.CompletedOutcome.has_value())
+		{
+			return slice.WorkUnitsConsumed == 0
+				? SceneAdvanceResult::YieldWithoutWork
+				: SceneAdvanceResult::Progressed;
+		}
+		cursor.PendingOutcome.Submission = *slice.CompletedOutcome;
+		if (cursor.PendingOutcome.Submission != ImageSubmission::Submitted &&
+			cursor.PendingOutcome.Submission != ImageSubmission::Culled)
+		{
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::SurfaceSubmission;
+		}
+		CompleteSplineSurface(
+			spline,
+			context,
+			cursor);
+		return SceneAdvanceResult::Progressed;
+	}
+
+	/** Advances one retained triangle batch using only this call's borrowed appearance view. */
+	Rendering::Rgba16fImageDestination::SubmissionSliceResult
+	BuildingVisuals::StepPreparedSplineSurface(
+		const BuildingSplineSurfaceRenderInput& surface,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		std::size_t maximumWorkUnits)
+	{
+		cursor.PendingOutcome.SubmissionAttempted = true;
+		cursor.DestinationSubmissionActive = true;
+		if (surface.Appearance.Mode == SplineSurfaceAppearanceMode::SolidColor)
+		{
+			const SolidTriangleBatch batch{
+				context.solidTriangles_,
+				surface.Appearance.SolidRgb,
+				cursor.PendingOpacity};
+			return destination.StepSubmitSolidTriangles(batch, cursor.Submission, maximumWorkUnits);
+		}
+		const Rgba8ImageSource texture{
+			surface.Appearance.Texture.Pixels,
+			surface.Appearance.Texture.Width,
+			surface.Appearance.Texture.Height,
+			surface.Appearance.Texture.PixelRegion};
+		const TexturedTriangleBatch batch{
+			context.texturedTriangles_,
+			texture,
+			surface.Appearance.UvScale,
+			surface.Appearance.UvOffset,
+			surface.Appearance.AddressU,
+			surface.Appearance.AddressV,
+			surface.Appearance.ModulationRgb,
+			cursor.PendingOpacity};
+		return destination.StepSubmitTexturedTriangles(batch, cursor.Submission, maximumWorkUnits);
+	}
+
+	/** Records the selected/all-surface result and advances the matching painter-order position. */
+	void BuildingVisuals::CompleteSplineSurface(
+		const BuildingSplineRenderInput& spline,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		if (context.occlusionIndex_.Status() != SplineOcclusionStatus::Complete)
+		{
+			cursor.PendingOutcome.OcclusionStatus = context.occlusionIndex_.Status();
+			cursor.PendingOutcome.FailureStage = BuildingVisualsFailureStage::Occlusion;
+		}
+		MarkIncompleteOnFailure(context.result_, cursor.PendingOutcome);
+		context.result_.SplineSurfaces.push_back(cursor.PendingOutcome);
+		if (spline.SurfaceSelectionMode ==
+			BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative)
+		{
+			++cursor.SplineIndex;
+			ResetSplineProgress(cursor);
+			return;
+		}
+		++cursor.SplineSurfaceIndex;
+		ResetSplineSurfaceProgress(cursor);
+	}
+
+	/** Records the synchronous contributor-level failure after every alternative is rejected. */
+	void BuildingVisuals::CompleteNoDrawableAlternative(
+		const PreparedSpline& preparedSpline,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor)
+	{
+		BuildingVisualsContributorOutcome outcome;
+		outcome.ContributorIndex = cursor.SplineIndex;
+		outcome.HasSurfaceIndex = false;
+		outcome.AlternativeStatus = BuildingSplineAlternativeStatus::NoDrawableAlternative;
+		outcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
+		outcome.SamplingIssue = preparedSpline.Issue;
+		outcome.SamplingComplete = preparedSpline.IsComplete();
+		MarkIncompleteOnFailure(context.result_, outcome);
+		context.result_.SplineSurfaces.push_back(outcome);
+		++cursor.SplineIndex;
+		ResetSplineProgress(cursor);
+	}
+
+	/** Prepares one overlay once, resumes its image command and records its outcome without occlusion. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceOverlaySprite(
+		const BuildingRenderSceneInput& scene,
+		Rendering::Rgba16fImageDestination& destination,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result,
+		std::size_t maximumWorkUnits)
+	{
+		const std::size_t index = cursor.OverlaySpriteIndex;
+		const auto& sprite = scene.OverlayLastSprites[index];
+		if (!cursor.SpriteGeometryPrepared)
+		{
+			ImageSubmissionCommand command;
+			BuildingVisualsContributorOutcome outcome;
+			outcome.ContributorIndex = index;
+			if (!BuildImageCommand(sprite, command, cursor.PendingSpriteWorldQuad))
+			{
+				outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
+				MarkIncompleteOnFailure(context.result_, outcome);
+				context.result_.OverlayLastSprites.push_back(outcome);
+				++cursor.OverlaySpriteIndex;
+				ResetSpriteProgress(cursor);
+			}
+			else
+			{
+				cursor.PendingSpriteImageGeometry = command.Geometry;
+				cursor.PendingOutcome = outcome;
+				cursor.PendingOutcome.GeometryPrepared = true;
+				cursor.SpriteGeometryPrepared = true;
+			}
+			++result.WorkUnitsConsumed;
+			return SceneAdvanceResult::Progressed;
+		}
+		return SubmitPreparedSprite(
+			sprite,
+			index,
+			false,
+			destination,
+			context,
+			cursor,
+			result,
+			maximumWorkUnits);
+	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Adds one invocation's elapsed time to the phase that performed its work. */
+	void BuildingVisuals::AccumulateScenePhaseTiming(
+		SceneCursor::Phase phase,
+		double elapsedMs,
+		BuildingVisualsPhaseTimings& phaseTimings) noexcept
+	{
+		BuildingVisualsPhaseTimings::Phase* timing = nullptr;
+		switch (phase)
+		{
+		case SceneCursor::Phase::OrdinarySprites:
+			timing = &phaseTimings.OrdinarySprites;
+			break;
+		case SceneCursor::Phase::OcclusionIndex:
+			timing = &phaseTimings.OcclusionIndexPreparation;
+			break;
+		case SceneCursor::Phase::Splines:
+			timing = &phaseTimings.SplineDrawing;
+			break;
+		case SceneCursor::Phase::OverlayLastSprites:
+			timing = &phaseTimings.OverlaySprites;
+			break;
+		case SceneCursor::Phase::Complete:
+			return;
+		}
+		timing->Invoked = true;
+		timing->ElapsedMs += elapsedMs;
+	}
+#endif
+
 	const BuildingVisualsResult& BuildingVisuals::DrawScene(
 		const BuildingRenderSceneInput& scene,
 		IImageDestination& destination,

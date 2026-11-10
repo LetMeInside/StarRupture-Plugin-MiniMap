@@ -1,20 +1,74 @@
-// Coordinates one synchronous, game-independent Building Map scene drawing pass.
+// Executes synchronous or cursor-resumable, game-independent Building Map scene drawing passes.
 #pragma once
 
 #include "BuildingRenderSceneInput.h"
 #include "BuildingVisualsContext.h"
+#include "../Rendering/Rgba16fImageDestination.h"
 
 #include <cstddef>
 #include <cstdint>
 
 namespace Services::Map::Buildings::Visuals
 {
-	/** Draws borrowed neutral scene inputs through the supplied destination without owning rendering state.
-	 * All reusable numerical state and positional outcomes remain in the caller-owned context.
+	/** Executes borrowed neutral Building Map scenes in painter order without owning reusable numerical state.
+	 * Synchronous drawing borrows an abstract destination; incremental drawing retains only a caller-owned cursor.
+	 * Prepared geometry and positional outcomes remain in the caller-owned context.
 	 */
 	class BuildingVisuals final
 	{
 	public:
+		/** Reports deterministic work consumed and whether a scene reached its terminal phase. */
+		struct SceneSliceResult
+		{
+			std::size_t WorkUnitsConsumed = 0;
+			bool Complete = false;
+		};
+
+		/** Retains only phase and value-based progress for one borrowed scene execution. */
+		struct SceneCursor
+		{
+			/** Creates a fresh scene cursor. */
+			SceneCursor() noexcept = default;
+			SceneCursor(const SceneCursor&) = delete;
+			SceneCursor& operator=(const SceneCursor&) = delete;
+			SceneCursor(SceneCursor&&) = delete;
+			SceneCursor& operator=(SceneCursor&&) = delete;
+			/** Resets a fresh or terminal cursor; active work is abandoned with its destination. */
+			void Reset() noexcept;
+
+		private:
+			friend class BuildingVisuals;
+			/** Names the painter-order phase retained between calls. */
+			enum class Phase
+			{
+				OrdinarySprites,
+				OcclusionIndex,
+				Splines,
+				OverlayLastSprites,
+				Complete
+			};
+			Phase CurrentPhase = Phase::OrdinarySprites;
+			std::size_t OrdinarySpriteIndex = 0;
+			std::size_t SplineIndex = 0;
+			std::size_t SplineSurfaceIndex = 0;
+			std::size_t OverlaySpriteIndex = 0;
+			SpriteWorldQuad PendingSpriteWorldQuad{};
+			ImageWorldQuad PendingSpriteImageGeometry{};
+			BuildingVisualsContributorOutcome PendingOutcome{};
+			Rendering::Rgba16fImageDestination::SubmissionCursor Submission{};
+			std::uint8_t PendingOpacity = 0;
+			bool Initialized = false;
+			bool SpriteGeometryPrepared = false;
+			bool SplineSamplingPrepared = false;
+			bool SplineSurfacePreparationComplete = false;
+			bool SplineSurfaceClippingComplete = false;
+			bool TriangleConversionComplete = false;
+			bool SurfaceReadyForSubmission = false;
+			bool AlternativeSelected = false;
+			bool DestinationSubmissionActive = false;
+			bool Terminal = false;
+		};
+
 		/** Draws ordinary sprites, clipped spline surfaces, then overlay sprites synchronously.
 		 * Scene spans and their pixel/texture views must remain valid until this call returns.
 		 * The returned report belongs to context and remains valid until its next DrawScene call.
@@ -34,8 +88,162 @@ namespace Services::Map::Buildings::Visuals
 			, BuildingVisualsPhaseTimings& phaseTimings
 #endif
 			);
+		/** Advances borrowed neutral scene inputs by at most maximumWorkUnits deterministic units.
+		 * The caller must retain the same context, destination and logical scene, and supply fresh valid source views.
+		 * Reset is allowed only for a fresh or terminal cursor; abandon unfinished work by destroying cursor and destination together.
+		 */
+		static SceneSliceResult StepScene(
+			const BuildingRenderSceneInput& scene,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			std::size_t maximumWorkUnits
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingVisualsPhaseTimings& phaseTimings
+#endif
+			);
 
 	private:
+		/** Distinguishes ordinary progress from a safe yield after zero-cost advancement. */
+		enum class SceneAdvanceResult
+		{
+			Progressed,
+			YieldWithoutWork
+		};
+		/** Reports whether one surface can submit, completed, or was rejected as an alternative. */
+		enum class SurfacePreparationResult
+		{
+			ReadyForSubmission,
+			ContributorCompleted,
+			CandidateRejected
+		};
+		/** Resets the cursor's value-based state after a sprite reaches a terminal outcome. */
+		static void ResetSpriteProgress(SceneCursor& cursor) noexcept;
+		/** Resets one surface's value-based state after preparation failure or terminal submission. */
+		static void ResetSplineSurfaceProgress(SceneCursor& cursor) noexcept;
+		/** Resets per-spline sampling and alternative state after its ordered work is complete. */
+		static void ResetSplineProgress(SceneCursor& cursor) noexcept;
+		/** Initializes reusable context storage for the first positive-quota scene call. */
+		static void InitializeScene(
+			const BuildingRenderSceneInput& scene,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Returns whether the current state can advance a phase without consuming quota. */
+		static bool CanAdvanceScenePhaseWithoutWork(
+			const BuildingRenderSceneInput& scene,
+			const SceneCursor& cursor) noexcept;
+		/** Advances one phase operation or performs one bounded phase transition. */
+		static SceneAdvanceResult AdvanceSceneStep(
+			const BuildingRenderSceneInput& scene,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Advances one ordinary sprite's setup, incremental submission or terminal bookkeeping. */
+		static SceneAdvanceResult AdvanceOrdinarySprite(
+			const BuildingRenderSceneInput& scene,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Reconstructs a call-local image command and resumes one prepared sprite submission. */
+		static SceneAdvanceResult SubmitPreparedSprite(
+			const BuildingSpriteRenderInput& sprite,
+			std::size_t index,
+			bool ordinary,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Runs occlusion-index preparation once and advances to the spline phase. */
+		static void PrepareSceneOcclusionIndex(
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result);
+		/** Advances one spline sample, surface or alternative-selection operation. */
+		static SceneAdvanceResult AdvanceSpline(
+			const BuildingRenderSceneInput& scene,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Advances one active surface, selected alternative or no-drawable summary. */
+		static SceneAdvanceResult AdvanceSplineSurface(
+			const BuildingSplineRenderInput& spline,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Prepares, clips and converts one spline surface once before destination slices. */
+		static SurfacePreparationResult PrepareIncrementalSplineSurface(
+			const BuildingSplineRenderInput& spline,
+			const PreparedSpline& preparedSpline,
+			const BuildingSplineSurfaceRenderInput& surface,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			std::size_t surfaceIndex,
+			bool alternative);
+		/** Validates appearance and prepares the context-owned triangle vector. */
+		static SurfacePreparationResult PrepareIncrementalSurfaceTriangles(
+			const BuildingSplineSurfaceRenderInput& surface,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Converts visible solid triangles into the existing context-owned scratch vector. */
+		static bool ConvertSolidSurfaceTriangles(
+			const BuildingSplineSurfaceRenderInput& surface,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Converts visible textured triangles into the existing context-owned scratch vector. */
+		static bool ConvertTexturedSurfaceTriangles(
+			const BuildingSplineSurfaceRenderInput& surface,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Resumes one prepared solid or textured batch and records its terminal outcome. */
+		static SceneAdvanceResult SubmitPreparedSplineSurface(
+			const BuildingSplineRenderInput& spline,
+			const BuildingSplineSurfaceRenderInput& surface,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+		/** Builds the current borrowed appearance batch and advances its destination cursor. */
+		static Rendering::Rgba16fImageDestination::SubmissionSliceResult StepPreparedSplineSurface(
+			const BuildingSplineSurfaceRenderInput& surface,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			std::size_t maximumWorkUnits);
+		/** Finishes one surface outcome and advances its parent spline/candidate position. */
+		static void CompleteSplineSurface(
+			const BuildingSplineRenderInput& spline,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Records the contributor-level result when no ordered alternative is drawable. */
+		static void CompleteNoDrawableAlternative(
+			const PreparedSpline& preparedSpline,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor);
+		/** Advances one overlay sprite's setup, incremental submission or terminal bookkeeping. */
+		static SceneAdvanceResult AdvanceOverlaySprite(
+			const BuildingRenderSceneInput& scene,
+			Rendering::Rgba16fImageDestination& destination,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result,
+			std::size_t maximumWorkUnits);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Accumulates one call-local elapsed interval into its existing diagnostic phase. */
+		static void AccumulateScenePhaseTiming(
+			SceneCursor::Phase phase,
+			double elapsedMs,
+			BuildingVisualsPhaseTimings& phaseTimings) noexcept;
+#endif
 		/** Clears this operation's reports and candidate occluders without releasing vector capacity.
 		 * @param context Caller-owned storage being prepared for one new operation.
 		 */
