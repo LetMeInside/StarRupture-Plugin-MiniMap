@@ -136,6 +136,7 @@
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionPlanner.h" />
     <ClInclude Include="Services\Map\Buildings\Coordination\IBuildingMapService.h" />
+    <ClInclude Include="Services\Map\Buildings\Coordination\FrameBudgetController.h" />
     <ClInclude Include="Services\Log.h" />
     <ClInclude Include="Services\ServiceTypes.h" />
     <ClInclude Include="Services\Configuration.h" />
@@ -237,6 +238,7 @@
   <ItemGroup>
     <ClCompile Include="Services\Map\Buildings\BuildingMapService.cpp">
     </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Coordination\FrameBudgetController.cpp" />
     <ClCompile Include="Services\Map\Buildings\Scheduling\BuildingScheduler.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Scheduling\SectionScheduler.cpp">

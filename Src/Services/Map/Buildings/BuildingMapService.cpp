@@ -12,6 +12,9 @@
 #include "BuildingMapSection.h"
 #include "BuildingMapViewport.h"
 #include "Scheduling/SectionSchedulingCoordinator.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "Services/Log.h"
+#endif
 
 namespace Services::Map::Buildings
 {
@@ -101,6 +104,41 @@ namespace Services::Map::Buildings
 		mapHeightMapUnits_ = 0.0;
 	}
 
+	/** Advances the game-thread tick estimator and emits one completed Debug aggregate when due.
+	 * @param engineDeltaSeconds Engine-provided delta recorded only as diagnostic input.
+	 */
+	void BuildingMapService::OnGameTick(float engineDeltaSeconds) noexcept
+	{
+		frameBudgetController_.OnTick(static_cast<double>(engineDeltaSeconds));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Coordination::FrameBudgetController::DiagnosticsSnapshot diagnostics;
+		if (frameBudgetController_.TakeDiagnosticsSnapshot(diagnostics))
+		{
+			if (MiniMap::Services::ILog* log = MiniMap::Services::TryLog())
+			{
+				MiniMap::Services::Logf(
+					*log,
+					MiniMap::Services::Level::Info,
+					"MiniMap: BuildingMap tick_budget intervalMs=%.1f ticks=%llu intervals={valid:%llu rejected:%llu meanMs:%.3f maxMs:%.3f} engineDeltaMeanSec=%.6f smoothedTickMs=%.3f observedTPS=%.2f nominalBudgetMs={mean:%.3f max:%.3f latest:%.3f} schedulingAdvancements={maxPerTick:%llu multipleTicks:%llu}",
+					diagnostics.IntervalDurationMs,
+					static_cast<unsigned long long>(diagnostics.ProcessingTickCount),
+					static_cast<unsigned long long>(diagnostics.ValidObservedIntervalCount),
+					static_cast<unsigned long long>(diagnostics.RejectedIntervalCount),
+					diagnostics.MeanValidTickIntervalMs,
+					diagnostics.MaximumValidTickIntervalMs,
+					diagnostics.MeanEngineDeltaSeconds,
+					diagnostics.LatestSmoothedTickIntervalMs,
+					diagnostics.LatestObservedTPS,
+					diagnostics.MeanNominalBudgetMs,
+					diagnostics.MaximumNominalBudgetMs,
+					diagnostics.LatestNominalBudgetMs,
+					static_cast<unsigned long long>(diagnostics.MaximumSchedulingAdvancementsInOneTick),
+					static_cast<unsigned long long>(diagnostics.TicksWithMultipleAdvancements));
+			}
+		}
+#endif
+	}
+
 	/** Returns the persistent renderer without processing its private lifecycle state. */
 	Capture::BuildingSpriteRenderer* BuildingMapService::GetCapturerLifecycleTarget() noexcept
 	{
@@ -179,6 +217,7 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
+		frameBudgetController_.RecordSchedulingAdvancement();
 		if (sectionImageResidencyReconciliationPending_)
 		{
 			ReconcileSectionImageResidency();

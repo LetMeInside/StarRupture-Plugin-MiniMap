@@ -606,7 +606,10 @@ static void OnTextureServiceTick(
     ObserveWorldIdentity("after-texture-publication");
     ObserveWorldIdentity("after-mass-buildingcomplex");
 #else
-    (void)deltaTime;
+	if (g_buildingMapService != nullptr)
+	{
+		g_buildingMapService->OnGameTick(deltaTime);
+	}
 #if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
     ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Run("UpdateBuildingLayerSession", [&]()
     {

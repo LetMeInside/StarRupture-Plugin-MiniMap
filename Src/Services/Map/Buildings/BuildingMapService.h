@@ -3,6 +3,7 @@
 
 #include "IBuildingCollector.h"
 #include "Coordination/IBuildingMapService.h"
+#include "Coordination/FrameBudgetController.h"
 #include "SplinePolicy.h"
 
 #include <cstddef>
@@ -36,7 +37,7 @@ namespace Services::Map::Buildings
 #endif
 	}
 
-	/** Owns map configuration, shared Sections and their image residency, viewport registrations, source selection, image-change routing and the scheduling coordinator.
+	/** Owns map configuration, shared Sections and their image residency, viewport registrations, source selection, image-change routing, the tick budget controller and scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
 	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
@@ -87,6 +88,10 @@ namespace Services::Map::Buildings
 		 * Returns without waiting for renderer-owned native retirement.
 		 */
 		void StopGameSession();
+		/** Forwards one game-thread tick delta to the service-owned timing controller.
+		 * @param engineDeltaSeconds Engine-provided delta retained for Debug diagnostics only.
+		 */
+		void OnGameTick(float engineDeltaSeconds) noexcept;
 		/** Returns the persistent renderer for direct plugin engine-callback execution. */
 		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 		/** Returns the active gameplay map width, or zero outside a gameplay session. */
@@ -270,6 +275,7 @@ namespace Services::Map::Buildings
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
+		Coordination::FrameBudgetController frameBudgetController_;
 		const std::vector<SplinePolicy> splinePolicies_;
 		double mapWidthMapUnits_ = 0.0;
 		double mapHeightMapUnits_ = 0.0;
