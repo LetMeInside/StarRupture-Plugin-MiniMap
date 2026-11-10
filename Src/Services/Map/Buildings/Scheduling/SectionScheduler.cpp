@@ -901,6 +901,44 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
+	/** Requires preparation unless this exact retained job has complete scene prerequisites and a scene-free phase. */
+	bool SectionScheduler::RequiresKnownSpritePreparationForNextAdvance(
+		std::int64_t gridX,
+		std::int64_t gridY,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner) const noexcept
+	{
+		if (publicationOwner == nullptr)
+		{
+			return true;
+		}
+		const auto jobPosition = sectionJobs_.find(std::make_pair(gridX, gridY));
+		if (jobPosition == sectionJobs_.end())
+		{
+			return true;
+		}
+		const SectionJob& job = jobPosition->second;
+		const bool sameOwner = job.publicationOwner != nullptr &&
+			job.publicationOwner.get() == publicationOwner.get() &&
+			!job.publicationOwner.owner_before(publicationOwner) &&
+			!publicationOwner.owner_before(job.publicationOwner);
+		if (!sameOwner || job.retainedScene == nullptr || job.NumericalOperation == nullptr ||
+			job.AttemptEvidence == std::nullopt ||
+			job.AttemptEvidence->SceneReadiness != SectionScenePreparationResult::Readiness::CompleteSceneInputs)
+		{
+			return true;
+		}
+		if (job.NumericalStatus.has_value())
+		{
+			const auto status = job.NumericalStatus.value();
+			const bool completedSuccessfully =
+				status == Rendering::SectionRendering::Status::Complete ||
+				status == Rendering::SectionRendering::Status::CompleteWithOmissions;
+			return !completedSuccessfully ||
+				job.AttemptEvidence->NumericalStatus != job.NumericalStatus;
+		}
+		return job.NumericalOperation->RequiresSceneInput();
+	}
+
 	/** Erases the exact job key while leaving demand, resource owners and images intact. */
 	void SectionScheduler::CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept
 	{

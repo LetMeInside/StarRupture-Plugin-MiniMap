@@ -390,11 +390,17 @@ namespace Services::Map::Buildings::Scheduling
 		sectionScheduler_->EnsureSectionJob(coordinate.GridX, coordinate.GridY, publicationOwner);
 		::Services::Map::Buildings::BuildingMapSection& section =
 			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
+		const bool requiresKnownSpritePreparation =
+			sectionScheduler_->RequiresKnownSpritePreparationForNextAdvance(
+				coordinate.GridX,
+				coordinate.GridY,
+				publicationOwner);
 		return AdvanceRetainedSectionJob(
 			buildingMapService,
 			coordinate,
 			publicationOwner,
 			section,
+			requiresKnownSpritePreparation,
 			maximumWorkUnits);
 	}
 
@@ -405,18 +411,22 @@ namespace Services::Map::Buildings::Scheduling
 		const SectionCoordinate& coordinate,
 		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 		::Services::Map::Buildings::BuildingMapSection& section,
+		bool requiresKnownSpritePreparation,
 		std::size_t maximumWorkUnits)
 	{
 		IncrementalSectionAdvanceResult result;
 		SectionScheduler::KnownSpritePreparationResult spritePreparation;
+		if (requiresKnownSpritePreparation)
+		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const auto knownSpritePreparationStarted = std::chrono::steady_clock::now();
+			const auto knownSpritePreparationStarted = std::chrono::steady_clock::now();
 #endif
-		sectionScheduler_->PrepareKnownSpriteRequirements(publicationOwner, spritePreparation);
+			sectionScheduler_->PrepareKnownSpriteRequirements(publicationOwner, spritePreparation);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		diagnostics_.KnownSpritePreparation.Add(std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - knownSpritePreparationStarted).count());
+			diagnostics_.KnownSpritePreparation.Add(std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - knownSpritePreparationStarted).count());
 #endif
+		}
 		SectionScheduler::SectionJobAdvanceResult jobResult = sectionScheduler_->AdvanceSectionJob(
 			section,
 			publicationOwner,

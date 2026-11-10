@@ -467,6 +467,16 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t gridX,
 			std::int64_t gridY,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
+		/** Checks retained coordinate, owner and scene state before skipping fresh sprite preparation.
+		 * @param gridX Exact signed Section column of the selected job.
+		 * @param gridY Exact signed Section row of the selected job.
+		 * @param publicationOwner Currently selected shared publication owner.
+		 * @return True unless retained state proves this advancement does not need known-sprite preparation.
+		 */
+		bool RequiresKnownSpritePreparationForNextAdvance(
+			std::int64_t gridX,
+			std::int64_t gridY,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner) const noexcept;
 		/** Erases one retained Section job without changing demand or completed image state.
 		 * @param gridX Signed Section column to cancel.
 		 * @param gridY Signed Section row to cancel.

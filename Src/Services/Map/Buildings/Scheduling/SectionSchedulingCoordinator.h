@@ -346,11 +346,12 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
 			std::size_t maximumWorkUnits);
-		/** Prepares fresh sprite views, advances an existing job once, and applies terminal completion events.
+		/** Conditionally prepares fresh sprite views, advances an existing job once, and applies terminal completion events.
 		 * @param buildingMapService Service providing the immutable spline policies.
 		 * @param coordinate Exact coordinate of the retained Section job.
 		 * @param publicationOwner Selected publication retained through this advancement.
 		 * @param section Service-owned Section whose numerical context remains stable across calls.
+		 * @param requiresKnownSpritePreparation Whether the scheduler requires fresh sprite outcomes for this advancement.
 		 * @param maximumWorkUnits Deterministic quota passed unchanged to SectionScheduler.
 		 * @return The actual incremental state and work count reported by SectionScheduler.
 		 */
@@ -359,6 +360,7 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			::Services::Map::Buildings::BuildingMapSection& section,
+			bool requiresKnownSpritePreparation,
 			std::size_t maximumWorkUnits);
 		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.
