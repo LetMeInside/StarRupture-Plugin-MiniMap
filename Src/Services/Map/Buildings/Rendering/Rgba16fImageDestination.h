@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace Services::Map::Buildings::Rendering
@@ -59,13 +60,115 @@ namespace Services::Map::Buildings::Rendering
 			const TexturedTriangleBatch& Batch;
 		};
 
+		/** Stores value-only setup and next-pixel progress for one raster triangle. */
+		struct RasterProgress
+		{
+			std::array<RasterVertex, 3> Vertices{};
+			std::array<RasterVertex, 3> SourceVertices{};
+			std::array<int, 4> Bounds{};
+			std::array<bool, 3> TopLeftEdges{};
+			double Area = 0.0;
+			int NextPixelX = 0;
+			int NextPixelY = 0;
+			bool Swapped = false;
+			bool SetupComplete = false;
+			bool HasPixels = false;
+		};
+
 		using Sample = std::array<float, 4>;
 		using SampleBuffer = std::vector<Sample>;
 		static constexpr std::size_t SamplesPerPixel = 4;
 
 	public:
+		/** Returns whether a value-only incremental submission operation finished in this slice. */
+		struct SubmissionSliceResult
+		{
+			std::size_t WorkUnitsConsumed = 0;
+			std::optional<ImageSubmission> CompletedOutcome;
+		};
+
+		/** Retains only numerical progress for one logical submission; borrowed inputs remain call-local.
+		 * Active cursors cannot be copied, moved or reset; abandon active work by destroying its destination and cursor together.
+		 */
+		struct SubmissionCursor
+		{
+			/** Creates a fresh cursor with no active operation. */
+			SubmissionCursor() noexcept = default;
+			SubmissionCursor(const SubmissionCursor&) = delete;
+			SubmissionCursor& operator=(const SubmissionCursor&) = delete;
+			SubmissionCursor(SubmissionCursor&&) = delete;
+			SubmissionCursor& operator=(SubmissionCursor&&) = delete;
+			/** Resets a fresh or terminal cursor; this does not cancel an active operation. */
+			void Reset() noexcept;
+
+		private:
+			friend class Rgba16fImageDestination;
+			enum class OperationKind : std::uint8_t
+			{
+				None,
+				Image,
+				SolidTriangles,
+				TexturedTriangles
+			};
+			OperationKind Kind = OperationKind::None;
+			std::uintptr_t DestinationIdentity = 0;
+			std::uint64_t OperationId = 0;
+			std::size_t TriangleIndex = 0;
+			std::array<RasterVertex, 4> ImageCorners{};
+			RasterProgress Raster{};
+			LinearPixel SolidColor{};
+			ImageSubmission TerminalOutcome = ImageSubmission::Rejected;
+			bool Terminal = false;
+			bool SubmittedAny = false;
+			bool ImageInitialized = false;
+		};
+
+		/** Identifies the terminal or pending result of incremental RGBA16F resolution. */
+		enum class FinalizationStepStatus
+		{
+			Pending,
+			Complete,
+			Failed
+		};
+
+		/** Reports how many complete pixels one finalization slice resolved. */
+		struct FinalizationSliceResult
+		{
+			FinalizationStepStatus Status = FinalizationStepStatus::Pending;
+			std::size_t PixelsResolved = 0;
+		};
+
+		/** Retains output-object identity, the next pixel and terminal state for incremental resolution.
+		 * Active cursors cannot be copied, moved or reset; abandon active work by destroying its destination and cursor together.
+		 */
+		struct FinalizationCursor
+		{
+			/** Creates a fresh cursor before output allocation and resolution. */
+			FinalizationCursor() noexcept = default;
+			FinalizationCursor(const FinalizationCursor&) = delete;
+			FinalizationCursor& operator=(const FinalizationCursor&) = delete;
+			FinalizationCursor(FinalizationCursor&&) = delete;
+			FinalizationCursor& operator=(FinalizationCursor&&) = delete;
+			/** Resets a fresh or terminal cursor; this does not cancel an active finalization. */
+			void Reset() noexcept;
+
+		private:
+			friend class Rgba16fImageDestination;
+			std::uintptr_t DestinationIdentity = 0;
+			std::uintptr_t OutputIdentity = 0;
+			std::uint64_t OperationId = 0;
+			std::size_t NextPixel = 0;
+			FinalizationStepStatus TerminalStatus = FinalizationStepStatus::Pending;
+			bool Started = false;
+			bool Terminal = false;
+		};
+
 		/** Creates and initializes the destination grid; allocation failure leaves it unavailable. */
 		explicit Rgba16fImageDestination(Rgba16fImageGrid grid) noexcept;
+		Rgba16fImageDestination(const Rgba16fImageDestination&) = delete;
+		Rgba16fImageDestination& operator=(const Rgba16fImageDestination&) = delete;
+		Rgba16fImageDestination(Rgba16fImageDestination&&) = delete;
+		Rgba16fImageDestination& operator=(Rgba16fImageDestination&&) = delete;
 
 		/** Synchronously rasterizes borrowed RGBA8 pixels at their global world-space quad without retaining the pixel view. */
 		ImageSubmission SubmitImage(const ImageSubmissionCommand& command) override;
@@ -75,11 +178,152 @@ namespace Services::Map::Buildings::Rendering
 
 		/** Synchronously rasterizes borrowed textured XYZ/UV triangles using caller-owned pixel storage. */
 		ImageSubmission SubmitTexturedTriangles(const TexturedTriangleBatch& batch) override;
+		/** Advances one image quad by at most maximumWorkUnits pixel visits/triangle setup units.
+		 * The same logical command and a valid borrowed source view must be supplied on every continuation.
+		 */
+		SubmissionSliceResult StepSubmitImage(
+			const ImageSubmissionCommand& command,
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits) noexcept;
+		/** Advances an ordered solid batch by at most maximumWorkUnits pixel visits/triangle setup units.
+		 * The same logical batch must be supplied on every continuation.
+		 */
+		SubmissionSliceResult StepSubmitSolidTriangles(
+			const SolidTriangleBatch& batch,
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits) noexcept;
+		/** Advances an ordered textured batch using only this call's borrowed pixels and triangles.
+		 * Equivalent immutable source and batch data must be supplied on every continuation.
+		 */
+		SubmissionSliceResult StepSubmitTexturedTriangles(
+			const TexturedTriangleBatch& batch,
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits) noexcept;
 
 		/** Resolves the complete working buffer to row-major little-endian RGBA16F bytes. */
 		bool Finalize(std::vector<std::uint8_t>& output) const noexcept;
+		/** Resolves at most maximumPixels complete pixels to caller-owned RGBA16F output.
+		 * The caller must retain the output unchanged and perform no drawing while the cursor is pending.
+		 */
+		FinalizationSliceResult StepFinalize(
+			std::vector<std::uint8_t>& output,
+			FinalizationCursor& cursor,
+			std::size_t maximumPixels) const noexcept;
 
 	private:
+		/** Classifies a triangle's setup, culling and raster validation outcome. */
+		enum class RasterSetupResult
+		{
+			QuotaExhausted,
+			Ready,
+			Skipped,
+			InvalidInput,
+			Rejected
+		};
+		/** Classifies whether one complete pixel consumed work, failed or needs quota. */
+		enum class RasterPixelStepResult
+		{
+			QuotaExhausted,
+			Advanced,
+			Rejected
+		};
+		/** Classifies the progress from one setup or pixel step in an ordered batch. */
+		enum class RasterSequenceStepResult
+		{
+			QuotaExhausted,
+			Progressed,
+			InvalidInput,
+			Rejected
+		};
+
+		/** Starts or validates the sole active incremental submission on this destination. */
+		bool BeginSubmission(
+			SubmissionCursor& cursor,
+			SubmissionCursor::OperationKind kind,
+			SubmissionSliceResult& output) noexcept;
+		/** Records one submission's terminal outcome and releases its destination operation slot. */
+		void CompleteSubmission(
+			SubmissionCursor& cursor,
+			ImageSubmission outcome,
+			SubmissionSliceResult& output) noexcept;
+		/** Poison-protects prior partial samples when a submission protocol is violated. */
+		void RejectSubmissionProtocol(
+			SubmissionCursor& cursor,
+			SubmissionSliceResult& output) noexcept;
+		/** Clears partial output and records a terminal incremental-resolution failure. */
+		FinalizationSliceResult FailFinalization(
+			std::vector<std::uint8_t>& output,
+			FinalizationCursor& cursor,
+			FinalizationSliceResult result) const noexcept;
+		/** Validates and retains image geometry by value before the first raster unit. */
+		bool InitializeImageSubmission(
+			const ImageSubmissionCommand& command,
+			SubmissionCursor& cursor,
+			SubmissionSliceResult& output) noexcept;
+		/** Validates one solid triangle, classifies clipping and prepares its numerical raster state. */
+		RasterSetupResult PrepareSolidRasterTriangle(
+			const SolidTriangleBatch& batch,
+			std::size_t triangleIndex,
+			SubmissionCursor& cursor,
+			RasterProgress& progress) noexcept;
+		/** Validates one textured triangle and prepares transformed UV raster state by value. */
+		RasterSetupResult PrepareTexturedRasterTriangle(
+			const TexturedTriangleBatch& batch,
+			std::size_t triangleIndex,
+			SubmissionCursor& cursor,
+			RasterProgress& progress) noexcept;
+		/** Validates borrowed textured pixels, UV transforms and address modes. */
+		static bool IsValidTexturedBatch(const TexturedTriangleBatch& batch) noexcept;
+		/** Validates destination state and allocates output on the first positive resolve slice. */
+		bool BeginFinalization(
+			std::vector<std::uint8_t>& output,
+			FinalizationCursor& cursor,
+			FinalizationSliceResult& result) const noexcept;
+		/** Captures destination/output identities and allocates output for a fresh cursor. */
+		bool StartFinalization(
+			std::vector<std::uint8_t>& output,
+			FinalizationCursor& cursor,
+			FinalizationSliceResult& result) const noexcept;
+		/** Checks the exact resolved byte count without accessing output pixels. */
+		bool HasExpectedFinalizationOutput(const std::vector<std::uint8_t>& output) const noexcept;
+		/** Resolves and stores all four channels for exactly one complete output pixel. */
+		bool ResolveFinalizationPixel(std::vector<std::uint8_t>& output, std::size_t pixel) const noexcept;
+		/** Prepares one triangle using the synchronous path's exact validation and winding rules. */
+		bool PrepareRasterProgress(
+			std::array<RasterVertex, 3> vertices,
+			RasterProgress& progress) const noexcept;
+		/** Moves the retained raster position to the next Y-major, then X-major pixel. */
+		static void AdvanceRasterPixel(RasterProgress& progress) noexcept;
+		/** Resolves one quota-bounded triangle sequence using per-call setup and shade functions. */
+		template <typename PrepareFunction, typename ShadeFunction>
+		SubmissionSliceResult StepRasterTriangleSequence(
+			SubmissionCursor& cursor,
+			std::size_t triangleCount,
+			std::size_t maximumWorkUnits,
+			PrepareFunction&& prepare,
+			ShadeFunction&& shade) noexcept;
+		/** Advances one triangle by one setup or complete-pixel work unit. */
+		template <typename PrepareFunction, typename ShadeFunction>
+		RasterSequenceStepResult StepRasterTriangle(
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits,
+			SubmissionSliceResult& result,
+			PrepareFunction&& prepare,
+			ShadeFunction&& shade) noexcept;
+		/** Consumes one triangle-setup work unit when quota allows. */
+		template <typename PrepareFunction>
+		RasterSetupResult StepRasterTriangleSetup(
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits,
+			SubmissionSliceResult& result,
+			PrepareFunction&& prepare) noexcept;
+		/** Visits one pixel and all four samples as one indivisible work unit. */
+		template <typename ShadeFunction>
+		RasterPixelStepResult StepRasterPixel(
+			SubmissionCursor& cursor,
+			std::size_t maximumWorkUnits,
+			SubmissionSliceResult& result,
+			ShadeFunction&& shade) noexcept;
 		/** Validates grid dimensions, world scale, allocation arithmetic, and signed-cell bounds. */
 		static bool IsValidGrid(
 			const Rgba16fImageGrid& grid,
@@ -270,6 +514,9 @@ namespace Services::Map::Buildings::Rendering
 		Rgba16fImageGrid grid_{};
 		std::array<long double, 4> worldBounds_{};
 		SampleBuffer samples_;
+		mutable std::uint64_t nextOperationId_ = 1;
+		std::uint64_t activeSubmissionId_ = 0;
+		mutable std::uint64_t activeFinalizationId_ = 0;
 		bool initialized_ = false;
 		bool failed_ = false;
 	};

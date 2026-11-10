@@ -30,10 +30,707 @@ namespace Services::Map::Buildings::Rendering
 		}
 	}
 
+	/** Resets all operation identity, terminal and raster progress for reuse. */
+	void Rgba16fImageDestination::SubmissionCursor::Reset() noexcept
+	{
+		Kind = OperationKind::None;
+		DestinationIdentity = 0;
+		OperationId = 0;
+		TriangleIndex = 0;
+		ImageCorners = {};
+		Raster = {};
+		SolidColor = {};
+		TerminalOutcome = ImageSubmission::Rejected;
+		Terminal = false;
+		SubmittedAny = false;
+		ImageInitialized = false;
+	}
+
+	/** Resets finalization identity and the next output pixel for a fresh resolve. */
+	void Rgba16fImageDestination::FinalizationCursor::Reset() noexcept
+	{
+		OperationId = 0;
+		DestinationIdentity = 0;
+		OutputIdentity = 0;
+		NextPixel = 0;
+		TerminalStatus = FinalizationStepStatus::Pending;
+		Started = false;
+		Terminal = false;
+	}
+
+	/** Starts or validates one cursor while enforcing a single active submission per destination. */
+	bool Rgba16fImageDestination::BeginSubmission(
+		SubmissionCursor& cursor,
+		SubmissionCursor::OperationKind kind,
+		SubmissionSliceResult& output) noexcept
+	{
+		const std::uintptr_t destinationIdentity = reinterpret_cast<std::uintptr_t>(this);
+		if (cursor.DestinationIdentity != 0 && cursor.DestinationIdentity != destinationIdentity)
+		{
+			cursor.Terminal = true;
+			cursor.TerminalOutcome = ImageSubmission::Rejected;
+			cursor.OperationId = 0;
+			output.CompletedOutcome = ImageSubmission::Rejected;
+			return false;
+		}
+		if (cursor.Terminal)
+		{
+			output.CompletedOutcome = cursor.Kind == kind && cursor.DestinationIdentity == destinationIdentity
+				? cursor.TerminalOutcome
+				: ImageSubmission::Rejected;
+			return false;
+		}
+		if (cursor.Kind != SubmissionCursor::OperationKind::None &&
+			(cursor.Kind != kind || cursor.DestinationIdentity != destinationIdentity))
+		{
+			RejectSubmissionProtocol(cursor, output);
+			return false;
+		}
+		if (cursor.Kind == SubmissionCursor::OperationKind::None)
+		{
+			cursor.Kind = kind;
+			cursor.DestinationIdentity = destinationIdentity;
+			if (activeSubmissionId_ != 0 || activeFinalizationId_ != 0)
+			{
+				RejectSubmissionProtocol(cursor, output);
+				return false;
+			}
+			cursor.OperationId = nextOperationId_++;
+			if (nextOperationId_ == 0)
+			{
+				nextOperationId_ = 1;
+			}
+			activeSubmissionId_ = cursor.OperationId;
+			return true;
+		}
+		if (cursor.OperationId == 0 || activeSubmissionId_ != cursor.OperationId || activeFinalizationId_ != 0)
+		{
+			RejectSubmissionProtocol(cursor, output);
+			return false;
+		}
+		return true;
+	}
+
+	/** Records a terminal outcome and releases this cursor's destination slot. */
+	void Rgba16fImageDestination::CompleteSubmission(
+		SubmissionCursor& cursor,
+		ImageSubmission outcome,
+		SubmissionSliceResult& output) noexcept
+	{
+		if (cursor.OperationId != 0 && activeSubmissionId_ == cursor.OperationId)
+		{
+			activeSubmissionId_ = 0;
+		}
+		cursor.Terminal = true;
+		cursor.TerminalOutcome = outcome;
+		cursor.OperationId = 0;
+		output.CompletedOutcome = outcome;
+	}
+
+	/** Poisons partial destination samples after cursor interleaving or operation-kind misuse. */
+	void Rgba16fImageDestination::RejectSubmissionProtocol(
+		SubmissionCursor& cursor,
+		SubmissionSliceResult& output) noexcept
+	{
+		cursor.DestinationIdentity = reinterpret_cast<std::uintptr_t>(this);
+		failed_ = true;
+		activeSubmissionId_ = 0;
+		activeFinalizationId_ = 0;
+		cursor.Terminal = true;
+		cursor.TerminalOutcome = ImageSubmission::Rejected;
+		cursor.OperationId = 0;
+		output.CompletedOutcome = ImageSubmission::Rejected;
+	}
+
+	/** Discards partial RGBA16F bytes and permanently terminates this finalization cursor. */
+	Rgba16fImageDestination::FinalizationSliceResult Rgba16fImageDestination::FailFinalization(
+		std::vector<std::uint8_t>& output,
+		FinalizationCursor& cursor,
+		FinalizationSliceResult result) const noexcept
+	{
+		const std::uint64_t operationId = cursor.OperationId;
+		output.clear();
+		cursor.Terminal = true;
+		cursor.TerminalStatus = FinalizationStepStatus::Failed;
+		cursor.OperationId = 0;
+		if (activeFinalizationId_ == operationId)
+		{
+			activeFinalizationId_ = 0;
+		}
+		result.Status = FinalizationStepStatus::Failed;
+		return result;
+	}
+
+	/** Validates call-local image data and retains only its world-space quad values. */
+	bool Rgba16fImageDestination::InitializeImageSubmission(
+		const ImageSubmissionCommand& command,
+		SubmissionCursor& cursor,
+		SubmissionSliceResult& output) noexcept
+	{
+		if (!IsValidImage(command))
+		{
+			CompleteSubmission(cursor, ImageSubmission::InvalidInput, output);
+			return false;
+		}
+		std::array<RasterVertex, 4> corners{};
+		constexpr std::array<std::array<double, 2>, 4> uv{{{{0.0, 0.0}}, {{1.0, 0.0}}, {{1.0, 1.0}}, {{0.0, 1.0}}}};
+		for (std::size_t index = 0; index < corners.size(); ++index)
+		{
+			const auto& position = command.Geometry.Corners[index];
+			if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
+			{
+				CompleteSubmission(cursor, ImageSubmission::InvalidInput, output);
+				return false;
+			}
+			corners[index] = {position[0], position[1], uv[index][0], uv[index][1]};
+		}
+		if (!cursor.ImageInitialized)
+		{
+			if (!IntersectsGrid(command.Geometry))
+			{
+				CompleteSubmission(cursor, ImageSubmission::Culled, output);
+				return false;
+			}
+			cursor.ImageCorners = corners;
+			cursor.ImageInitialized = true;
+			cursor.SubmittedAny = true;
+		}
+		return true;
+	}
+
+	/** Validates and prepares one solid triangle without retaining its borrowed source record. */
+	Rgba16fImageDestination::RasterSetupResult Rgba16fImageDestination::PrepareSolidRasterTriangle(
+		const SolidTriangleBatch& batch,
+		std::size_t triangleIndex,
+		SubmissionCursor& cursor,
+		RasterProgress& progress) noexcept
+	{
+		const SolidTriangle& triangle = batch.Triangles[triangleIndex];
+		if (!HasFiniteTriangleXY(triangle))
+		{
+			return RasterSetupResult::InvalidInput;
+		}
+		if (!IntersectsGrid(triangle))
+		{
+			return RasterSetupResult::Skipped;
+		}
+		cursor.SubmittedAny = true;
+		std::array<RasterVertex, 3> vertices{};
+		for (std::size_t index = 0; index < vertices.size(); ++index)
+		{
+			vertices[index] = {triangle.Vertices[index][0], triangle.Vertices[index][1], 0.0, 0.0};
+		}
+		cursor.SolidColor = {
+			float(SrgbToLinear(std::uint8_t((batch.Rgb >> 16) & 0xFF))),
+			float(SrgbToLinear(std::uint8_t((batch.Rgb >> 8) & 0xFF))),
+			float(SrgbToLinear(std::uint8_t(batch.Rgb & 0xFF))),
+			float(batch.Opacity) / 255.0f};
+		return PrepareRasterProgress(vertices, progress)
+			? RasterSetupResult::Ready
+			: RasterSetupResult::Rejected;
+	}
+
+	/** Validates one textured record and preserves the established UV transform arithmetic. */
+	Rgba16fImageDestination::RasterSetupResult Rgba16fImageDestination::PrepareTexturedRasterTriangle(
+		const TexturedTriangleBatch& batch,
+		std::size_t triangleIndex,
+		SubmissionCursor& cursor,
+		RasterProgress& progress) noexcept
+	{
+		const TexturedTriangle& triangle = batch.Triangles[triangleIndex];
+		if (!HasFiniteTexturedTriangle(triangle))
+		{
+			return RasterSetupResult::InvalidInput;
+		}
+		if (!IntersectsGrid(SolidTriangle{{triangle.Vertices[0].Position, triangle.Vertices[1].Position,
+			triangle.Vertices[2].Position}}))
+		{
+			return RasterSetupResult::Skipped;
+		}
+		cursor.SubmittedAny = true;
+		std::array<RasterVertex, 3> vertices{};
+		for (std::size_t index = 0; index < vertices.size(); ++index)
+		{
+			const auto& source = triangle.Vertices[index];
+			vertices[index] = {source.Position[0], source.Position[1],
+				source.TextureCoordinates[0] * batch.UvScale[0] + batch.UvOffset[0],
+				source.TextureCoordinates[1] * batch.UvScale[1] + batch.UvOffset[1]};
+		}
+		return PrepareRasterProgress(vertices, progress)
+			? RasterSetupResult::Ready
+			: RasterSetupResult::Rejected;
+	}
+
+	/** Validates all borrowed textured-batch metadata without retaining its source span. */
+	bool Rgba16fImageDestination::IsValidTexturedBatch(const TexturedTriangleBatch& batch) noexcept
+	{
+		ImageSubmissionCommand sourceValidation;
+		sourceValidation.Source = batch.Source;
+		return IsValidImage(sourceValidation) && std::isfinite(batch.UvScale[0]) &&
+			std::isfinite(batch.UvScale[1]) && std::isfinite(batch.UvOffset[0]) &&
+			std::isfinite(batch.UvOffset[1]) &&
+			(batch.AddressU == TextureAddressMode::Clamp || batch.AddressU == TextureAddressMode::Repeat) &&
+			(batch.AddressV == TextureAddressMode::Clamp || batch.AddressV == TextureAddressMode::Repeat);
+	}
+
+	/** Starts or resumes one finalization identity and prepares its caller-owned output storage. */
+	bool Rgba16fImageDestination::BeginFinalization(
+		std::vector<std::uint8_t>& output,
+		FinalizationCursor& cursor,
+		FinalizationSliceResult& result) const noexcept
+	{
+		if (!cursor.Started)
+		{
+			return StartFinalization(output, cursor, result);
+		}
+		if (cursor.DestinationIdentity != reinterpret_cast<std::uintptr_t>(this) ||
+			cursor.OutputIdentity != reinterpret_cast<std::uintptr_t>(&output) ||
+			activeFinalizationId_ != cursor.OperationId || activeSubmissionId_ != 0 || failed_)
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		if (!HasExpectedFinalizationOutput(output))
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		return true;
+	}
+
+	/** Captures destination/output identities and allocates output for a fresh cursor. */
+	bool Rgba16fImageDestination::StartFinalization(
+		std::vector<std::uint8_t>& output,
+		FinalizationCursor& cursor,
+		FinalizationSliceResult& result) const noexcept
+	{
+		cursor.Started = true;
+		cursor.DestinationIdentity = reinterpret_cast<std::uintptr_t>(this);
+		cursor.OutputIdentity = reinterpret_cast<std::uintptr_t>(&output);
+		if (activeSubmissionId_ != 0 || activeFinalizationId_ != 0)
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		cursor.OperationId = nextOperationId_++;
+		if (nextOperationId_ == 0)
+		{
+			nextOperationId_ = 1;
+		}
+		activeFinalizationId_ = cursor.OperationId;
+		output.clear();
+		const std::size_t width = grid_.Width;
+		if (!initialized_ || failed_ || width == 0 ||
+			std::size_t(grid_.Height) > (std::numeric_limits<std::size_t>::max)() / width)
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		const std::size_t pixels = width * grid_.Height;
+		if (pixels > (std::numeric_limits<std::size_t>::max)() / SamplesPerPixel ||
+			pixels > (std::numeric_limits<std::size_t>::max)() / 8 ||
+			samples_.size() != pixels * SamplesPerPixel)
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		try
+		{
+			output.resize(pixels * 8);
+		}
+		catch (...)
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		if (!HasExpectedFinalizationOutput(output))
+		{
+			FailFinalization(output, cursor, result);
+			return false;
+		}
+		return true;
+	}
+
+	/** Checks the exact resolved byte count without accessing output pixels. */
+	bool Rgba16fImageDestination::HasExpectedFinalizationOutput(
+		const std::vector<std::uint8_t>& output) const noexcept
+	{
+		const std::size_t width = grid_.Width;
+		if (width == 0 || std::size_t(grid_.Height) > (std::numeric_limits<std::size_t>::max)() / width)
+		{
+			return false;
+		}
+		const std::size_t pixels = width * grid_.Height;
+		if (pixels > (std::numeric_limits<std::size_t>::max)() / 8)
+		{
+			return false;
+		}
+		return output.size() == pixels * 8;
+	}
+
+	/** Resolves one pixel with the synchronous resolver's exact sample and channel order. */
+	bool Rgba16fImageDestination::ResolveFinalizationPixel(
+		std::vector<std::uint8_t>& output,
+		std::size_t pixel) const noexcept
+	{
+		for (std::size_t channel = 0; channel < 4; ++channel)
+		{
+			float value = 0.0f;
+			for (std::size_t sample = 0; sample < SamplesPerPixel; ++sample)
+			{
+				value += samples_[pixel * SamplesPerPixel + sample][channel] / float(SamplesPerPixel);
+			}
+			if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
+			{
+				return false;
+			}
+			StoreHalf(output, pixel, channel, value);
+		}
+		return true;
+	}
+
+	/** Prepares one triangle's exact synchronous setup and initializes Y-major raster progress. */
+	bool Rgba16fImageDestination::PrepareRasterProgress(
+		std::array<RasterVertex, 3> vertices,
+		RasterProgress& progress) const noexcept
+	{
+		progress = {};
+		for (const auto& vertex : vertices)
+		{
+			if (!std::isfinite(vertex.X) || !std::isfinite(vertex.Y) ||
+				!std::isfinite(vertex.U) || !std::isfinite(vertex.V))
+			{
+				return false;
+			}
+		}
+		progress.SourceVertices = vertices;
+		double area = Edge(vertices[0], vertices[1], vertices[2].X, vertices[2].Y);
+		if (!std::isfinite(area))
+		{
+			return false;
+		}
+		progress.SetupComplete = true;
+		if (area == 0.0)
+		{
+			return true;
+		}
+		progress.Swapped = area < 0.0;
+		if (progress.Swapped)
+		{
+			std::swap(vertices[1], vertices[2]);
+			area = -area;
+		}
+		bool hasPixels = false;
+		if (!TryGetRasterBounds(vertices, progress.Bounds, hasPixels))
+		{
+			return false;
+		}
+		progress.Vertices = vertices;
+		progress.Area = area;
+		progress.HasPixels = hasPixels;
+		if (!hasPixels)
+		{
+			return true;
+		}
+		progress.TopLeftEdges = {
+			IsTopLeftEdge(vertices[1], vertices[2]),
+			IsTopLeftEdge(vertices[2], vertices[0]),
+			IsTopLeftEdge(vertices[0], vertices[1])};
+		progress.NextPixelX = progress.Bounds[0];
+		progress.NextPixelY = progress.Bounds[1];
+		return true;
+	}
+
+	/** Advances one retained pixel coordinate in row-major raster order. */
+	void Rgba16fImageDestination::AdvanceRasterPixel(RasterProgress& progress) noexcept
+	{
+		if (progress.NextPixelX < progress.Bounds[2])
+		{
+			++progress.NextPixelX;
+			return;
+		}
+		progress.NextPixelX = progress.Bounds[0];
+		++progress.NextPixelY;
+		if (progress.NextPixelY > progress.Bounds[3])
+		{
+			progress.HasPixels = false;
+		}
+	}
+
+	/** Consumes one triangle-setup work unit when quota allows. */
+	template <typename PrepareFunction>
+	Rgba16fImageDestination::RasterSetupResult Rgba16fImageDestination::StepRasterTriangleSetup(
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits,
+		SubmissionSliceResult& result,
+		PrepareFunction&& prepare) noexcept
+	{
+		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return RasterSetupResult::QuotaExhausted;
+		}
+		++result.WorkUnitsConsumed;
+		return prepare(cursor.TriangleIndex, cursor.Raster);
+	}
+
+	/** Visits one pixel and its four samples as one non-splittable work unit. */
+	template <typename ShadeFunction>
+	Rgba16fImageDestination::RasterPixelStepResult Rgba16fImageDestination::StepRasterPixel(
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits,
+		SubmissionSliceResult& result,
+		ShadeFunction&& shade) noexcept
+	{
+		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return RasterPixelStepResult::QuotaExhausted;
+		}
+		constexpr std::array<std::array<double, 2>, 4> offsets{{
+			{{0.25, 0.25}}, {{0.75, 0.25}}, {{0.25, 0.75}}, {{0.75, 0.75}}}};
+		++result.WorkUnitsConsumed;
+		if (!RasterPixelSamples(
+			cursor.Raster.Vertices,
+			cursor.Raster.NextPixelX,
+			cursor.Raster.NextPixelY,
+			cursor.Raster.Area,
+			cursor.Raster.Swapped,
+			cursor.Raster.TopLeftEdges,
+			offsets,
+			samples_,
+			shade))
+		{
+			return RasterPixelStepResult::Rejected;
+		}
+		AdvanceRasterPixel(cursor.Raster);
+		return RasterPixelStepResult::Advanced;
+	}
+
+	/** Advances one ordered triangle by one setup or complete-pixel work unit. */
+	template <typename PrepareFunction, typename ShadeFunction>
+	Rgba16fImageDestination::RasterSequenceStepResult
+	Rgba16fImageDestination::StepRasterTriangle(
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits,
+		SubmissionSliceResult& result,
+		PrepareFunction&& prepare,
+		ShadeFunction&& shade) noexcept
+	{
+		if (!cursor.Raster.SetupComplete)
+		{
+			const RasterSetupResult setupResult = StepRasterTriangleSetup(
+				cursor,
+				maximumWorkUnits,
+				result,
+				prepare);
+			if (setupResult == RasterSetupResult::QuotaExhausted)
+			{
+				return RasterSequenceStepResult::QuotaExhausted;
+			}
+			if (setupResult == RasterSetupResult::InvalidInput)
+			{
+				return RasterSequenceStepResult::InvalidInput;
+			}
+			if (setupResult == RasterSetupResult::Rejected)
+			{
+				return RasterSequenceStepResult::Rejected;
+			}
+			if (setupResult == RasterSetupResult::Skipped)
+			{
+				++cursor.TriangleIndex;
+				cursor.Raster = {};
+				return RasterSequenceStepResult::Progressed;
+			}
+		}
+		if (cursor.Raster.HasPixels)
+		{
+			const RasterPixelStepResult pixelResult = StepRasterPixel(
+				cursor,
+				maximumWorkUnits,
+				result,
+				shade);
+			if (pixelResult == RasterPixelStepResult::QuotaExhausted)
+			{
+				return RasterSequenceStepResult::QuotaExhausted;
+			}
+			if (pixelResult == RasterPixelStepResult::Rejected)
+			{
+				return RasterSequenceStepResult::Rejected;
+			}
+			if (cursor.Raster.HasPixels)
+			{
+				return RasterSequenceStepResult::Progressed;
+			}
+		}
+		++cursor.TriangleIndex;
+		cursor.Raster = {};
+		return RasterSequenceStepResult::Progressed;
+	}
+
+	/** Consumes setup and complete-pixel work units for one ordered triangle sequence. */
+	template <typename PrepareFunction, typename ShadeFunction>
+	Rgba16fImageDestination::SubmissionSliceResult
+	Rgba16fImageDestination::StepRasterTriangleSequence(
+		SubmissionCursor& cursor,
+		std::size_t triangleCount,
+		std::size_t maximumWorkUnits,
+		PrepareFunction&& prepare,
+		ShadeFunction&& shade) noexcept
+	{
+		SubmissionSliceResult result;
+		while (cursor.TriangleIndex < triangleCount)
+		{
+			const RasterSequenceStepResult stepResult = StepRasterTriangle(
+				cursor,
+				maximumWorkUnits,
+				result,
+				prepare,
+				shade);
+			if (stepResult == RasterSequenceStepResult::QuotaExhausted)
+			{
+				break;
+			}
+			if (stepResult == RasterSequenceStepResult::InvalidInput)
+			{
+				CompleteSubmission(cursor, ImageSubmission::InvalidInput, result);
+				return result;
+			}
+			if (stepResult == RasterSequenceStepResult::Rejected)
+			{
+				failed_ = true;
+				CompleteSubmission(cursor, ImageSubmission::Rejected, result);
+				return result;
+			}
+		}
+		if (cursor.TriangleIndex == triangleCount)
+		{
+			CompleteSubmission(
+				cursor,
+				cursor.SubmittedAny ? ImageSubmission::Submitted : ImageSubmission::Culled,
+				result);
+		}
+		return result;
+	}
+
+	/** Resumes one image quad's source-ordered pair of triangles using call-local pixels. */
+	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitImage(
+		const ImageSubmissionCommand& command,
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits) noexcept
+	{
+		SubmissionSliceResult result;
+		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::Image, result))
+		{
+			return result;
+		}
+		if (!initialized_ || failed_)
+		{
+			CompleteSubmission(cursor, ImageSubmission::Unavailable, result);
+			return result;
+		}
+		if (!InitializeImageSubmission(command, cursor, result))
+		{
+			return result;
+		}
+		auto prepare = [this, &cursor](std::size_t triangleIndex, RasterProgress& progress)
+		{
+			const auto& imageCorners = cursor.ImageCorners;
+			const std::array<RasterVertex, 3> vertices = triangleIndex == 0
+				? std::array<RasterVertex, 3>{imageCorners[0], imageCorners[1], imageCorners[2]}
+				: std::array<RasterVertex, 3>{imageCorners[0], imageCorners[2], imageCorners[3]};
+			return PrepareRasterProgress(vertices, progress)
+				? RasterSetupResult::Ready
+				: RasterSetupResult::Rejected;
+		};
+		auto shade = [this, &command, &cursor](double first, double second, double third, LinearPixel& output)
+		{
+			const ImageShadeContext context{command, cursor.ImageCorners, cursor.TriangleIndex != 0};
+			return ShadeImage(context, first, second, third, output);
+		};
+		return StepRasterTriangleSequence(cursor, 2, maximumWorkUnits, prepare, shade);
+	}
+
+	/** Resumes one ordered solid batch without retaining its borrowed triangle span. */
+	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitSolidTriangles(
+		const SolidTriangleBatch& batch,
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits) noexcept
+	{
+		SubmissionSliceResult result;
+		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::SolidTriangles, result))
+		{
+			return result;
+		}
+		if (!initialized_ || failed_)
+		{
+			CompleteSubmission(cursor, ImageSubmission::Unavailable, result);
+			return result;
+		}
+		if (batch.Triangles.empty())
+		{
+			CompleteSubmission(cursor, ImageSubmission::Culled, result);
+			return result;
+		}
+		auto prepare = [this, &batch, &cursor](std::size_t triangleIndex, RasterProgress& progress)
+		{
+			return PrepareSolidRasterTriangle(batch, triangleIndex, cursor, progress);
+		};
+		auto shade = [&cursor](double, double, double, LinearPixel& output)
+		{
+			output = cursor.SolidColor;
+			return true;
+		};
+		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), maximumWorkUnits, prepare, shade);
+	}
+
+	/** Resumes one ordered textured batch while borrowing source pixels only for this slice. */
+	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitTexturedTriangles(
+		const TexturedTriangleBatch& batch,
+		SubmissionCursor& cursor,
+		std::size_t maximumWorkUnits) noexcept
+	{
+		SubmissionSliceResult result;
+		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::TexturedTriangles, result))
+		{
+			return result;
+		}
+		if (!initialized_ || failed_)
+		{
+			CompleteSubmission(cursor, ImageSubmission::Unavailable, result);
+			return result;
+		}
+		if (!IsValidTexturedBatch(batch))
+		{
+			CompleteSubmission(cursor, ImageSubmission::InvalidInput, result);
+			return result;
+		}
+		if (batch.Triangles.empty())
+		{
+			CompleteSubmission(cursor, ImageSubmission::Culled, result);
+			return result;
+		}
+		auto prepare = [this, &batch, &cursor](std::size_t triangleIndex, RasterProgress& progress)
+		{
+			return PrepareTexturedRasterTriangle(batch, triangleIndex, cursor, progress);
+		};
+		auto shade = [this, &batch, &cursor](double first, double second, double third, LinearPixel& output)
+		{
+			const TextureShadeContext context{batch};
+			return ShadeTexture(context, cursor.Raster.SourceVertices, first, second, third, output);
+		};
+		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), maximumWorkUnits, prepare, shade);
+	}
+
 	/** Validates the image command, then rasterizes its two source-ordered quad triangles. */
 	ImageSubmission Rgba16fImageDestination::SubmitImage(const ImageSubmissionCommand& command)
 	{
 		if (!initialized_ || failed_) return ImageSubmission::Unavailable;
+		if (activeSubmissionId_ != 0 || activeFinalizationId_ != 0)
+		{
+			failed_ = true;
+			activeSubmissionId_ = 0;
+			activeFinalizationId_ = 0;
+			return ImageSubmission::Rejected;
+		}
 		if (!IsValidImage(command)) return ImageSubmission::InvalidInput;
 
 		std::array<RasterVertex, 4> corners{};
@@ -71,6 +768,13 @@ namespace Services::Map::Buildings::Rendering
 	ImageSubmission Rgba16fImageDestination::SubmitSolidTriangles(const SolidTriangleBatch& batch)
 	{
 		if (!initialized_ || failed_) return ImageSubmission::Unavailable;
+		if (activeSubmissionId_ != 0 || activeFinalizationId_ != 0)
+		{
+			failed_ = true;
+			activeSubmissionId_ = 0;
+			activeFinalizationId_ = 0;
+			return ImageSubmission::Rejected;
+		}
 		if (batch.Triangles.empty()) return ImageSubmission::Culled;
 
 		bool submitted = false;
@@ -93,6 +797,13 @@ namespace Services::Map::Buildings::Rendering
 	ImageSubmission Rgba16fImageDestination::SubmitTexturedTriangles(const TexturedTriangleBatch& batch)
 	{
 		if (!initialized_ || failed_) return ImageSubmission::Unavailable;
+		if (activeSubmissionId_ != 0 || activeFinalizationId_ != 0)
+		{
+			failed_ = true;
+			activeSubmissionId_ = 0;
+			activeFinalizationId_ = 0;
+			return ImageSubmission::Rejected;
+		}
 		ImageSubmissionCommand sourceValidation;
 		sourceValidation.Source = batch.Source;
 		if (!IsValidImage(sourceValidation) || !std::isfinite(batch.UvScale[0]) ||
@@ -126,7 +837,7 @@ namespace Services::Map::Buildings::Rendering
 	bool Rgba16fImageDestination::Finalize(std::vector<std::uint8_t>& output) const noexcept
 	{
 		output.clear();
-		if (!initialized_ || failed_) return false;
+		if (!initialized_ || failed_ || activeSubmissionId_ != 0 || activeFinalizationId_ != 0) return false;
 		try
 		{
 			if (Resolve(output)) return true;
@@ -138,6 +849,59 @@ namespace Services::Map::Buildings::Rendering
 			output.clear();
 			return false;
 		}
+	}
+
+	/** Resolves bounded complete-pixel slices while retaining the destination's multisample buffer. */
+	Rgba16fImageDestination::FinalizationSliceResult Rgba16fImageDestination::StepFinalize(
+		std::vector<std::uint8_t>& output,
+		FinalizationCursor& cursor,
+		std::size_t maximumPixels) const noexcept
+	{
+		FinalizationSliceResult result;
+		if (cursor.DestinationIdentity != 0 &&
+			cursor.DestinationIdentity != reinterpret_cast<std::uintptr_t>(this))
+		{
+			result.Status = FinalizationStepStatus::Failed;
+			return result;
+		}
+		if (cursor.Started &&
+			(cursor.OutputIdentity != reinterpret_cast<std::uintptr_t>(&output) ||
+				!HasExpectedFinalizationOutput(output)))
+		{
+			return FailFinalization(output, cursor, result);
+		}
+		if (cursor.Terminal)
+		{
+			result.Status = cursor.TerminalStatus;
+			return result;
+		}
+		if (maximumPixels == 0)
+		{
+			return result;
+		}
+		if (!BeginFinalization(output, cursor, result))
+		{
+			result.Status = cursor.TerminalStatus;
+			return result;
+		}
+		const std::size_t pixels = std::size_t(grid_.Width) * grid_.Height;
+		while (result.PixelsResolved < maximumPixels && cursor.NextPixel < pixels)
+		{
+			if (!ResolveFinalizationPixel(output, cursor.NextPixel))
+			{
+				return FailFinalization(output, cursor, result);
+			}
+			++cursor.NextPixel;
+			++result.PixelsResolved;
+		}
+		if (cursor.NextPixel == pixels)
+		{
+			cursor.Terminal = true;
+			cursor.TerminalStatus = FinalizationStepStatus::Complete;
+			activeFinalizationId_ = 0;
+			result.Status = cursor.TerminalStatus;
+		}
+		return result;
 	}
 
 	/** Validates grid dimensions, allocation arithmetic, scale, and signed-cell world bounds. */
