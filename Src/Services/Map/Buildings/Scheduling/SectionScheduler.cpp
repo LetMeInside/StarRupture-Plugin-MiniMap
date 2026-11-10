@@ -896,7 +896,8 @@ namespace Services::Map::Buildings::Scheduling
 			!publicationOwner.owner_before(retainedOwner);
 		if (!sameOwnership)
 		{
-			existingJob->second = SectionJob{publicationOwner};
+			ResetSectionJobProgress(existingJob->second);
+			existingJob->second.publicationOwner = publicationOwner;
 		}
 	}
 
@@ -910,6 +911,366 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionScheduler::ClearSectionJobs() noexcept
 	{
 		sectionJobs_.clear();
+	}
+
+	/** Releases operation state before the prepared scene while retaining its publication owner. */
+	void SectionScheduler::ResetSectionJobProgress(SectionJob& job) noexcept
+	{
+		job.NumericalOperation.reset();
+		job.retainedScene.reset();
+		job.CompletedImage.clear();
+		job.TerminalSplineOmissions = {};
+		job.NumericalStatus.reset();
+		job.CompletedImageReady = false;
+		job.TransparencyChecked = false;
+		job.CompletedImageTransparent = false;
+		job.AttemptEvidence.reset();
+	}
+
+	/** Transfers one finished attempt to the caller and clears its retained progress. */
+	void SectionScheduler::FinishSectionJobAttempt(
+		SectionJob& job,
+		SectionJobAdvanceResult& result)
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto& timing = job.AttemptEvidence->Timing;
+		timing.TotalMs = timing.ScenePreparationMs + timing.SceneBorrowMs +
+			timing.NumericalRenderingMs + timing.TransparencyCheckMs + timing.ImageAdoptionMs;
+#endif
+		result.FinishedAttempt = std::move(job.AttemptEvidence);
+		result.CurrentState = SectionJobAdvanceResult::State::AttemptFinished;
+		ResetSectionJobProgress(job);
+	}
+
+	/** Prepares a complete retained scene or finishes the established empty-publication path. */
+	bool SectionScheduler::PrepareSectionJobAttempt(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		if (job.AttemptEvidence == std::nullopt)
+		{
+			job.AttemptEvidence.emplace();
+		}
+		if (job.retainedScene == nullptr)
+		{
+			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			{
+				return false;
+			}
+			if (!PrepareRetainedSceneForAttempt(section, job, knownSpritePreparation, splinePolicies, result))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			result.SceneReadiness = SectionScenePreparationResult::Readiness::CompleteSceneInputs;
+			job.AttemptEvidence->SceneReadiness = result.SceneReadiness;
+		}
+		if (!job.publicationOwner->BorrowCandidateData().occurrences.empty())
+		{
+			return result.WorkUnitsConsumed < maximumWorkUnits;
+		}
+		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return false;
+		}
+		CommitEmptySection(section, *job.AttemptEvidence);
+		++result.WorkUnitsConsumed;
+		FinishSectionJobAttempt(job, result);
+		return false;
+	}
+
+	/** Runs one source-composition attempt and records its readiness and Debug duration. */
+	bool SectionScheduler::PrepareRetainedSceneForAttempt(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		SectionJobAdvanceResult& result)
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto started = std::chrono::steady_clock::now();
+#endif
+		const auto readiness = PrepareRetainedSectionScene(
+			section, job, knownSpritePreparation, splinePolicies);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.AttemptEvidence->Timing.ScenePreparationMs +=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+#endif
+		++result.WorkUnitsConsumed;
+		result.SceneReadiness = readiness;
+		job.AttemptEvidence->SceneReadiness = readiness;
+		if (readiness != SectionScenePreparationResult::Readiness::CompleteSceneInputs)
+		{
+			const bool retryable = readiness == SectionScenePreparationResult::Readiness::PendingNativeSourceAcquisition ||
+				readiness == SectionScenePreparationResult::Readiness::PendingSpriteAcquisition ||
+				readiness == SectionScenePreparationResult::Readiness::TemporarilyUnavailableResources ||
+				readiness == SectionScenePreparationResult::Readiness::UnresolvedInputs;
+			result.CurrentState = retryable
+				? SectionJobAdvanceResult::State::WaitingForResources
+				: SectionJobAdvanceResult::State::RestartRequired;
+			if (!retryable)
+			{
+				ResetSectionJobProgress(job);
+			}
+			return false;
+		}
+		return true;
+	}
+
+	/** Reborrows scene views only while required and advances the retained numerical operation. */
+	bool SectionScheduler::AdvanceSectionJobNumerical(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		if (job.NumericalStatus.has_value())
+		{
+			return true;
+		}
+		const std::size_t remaining = maximumWorkUnits - result.WorkUnitsConsumed;
+		if (job.NumericalOperation == nullptr)
+		{
+			if (remaining < 2)
+			{
+				return false;
+			}
+			const auto grid = CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
+			job.NumericalOperation = std::make_unique<Rendering::SectionRendering::IncrementalOperation>(grid);
+		}
+		if (job.NumericalOperation->RequiresSceneInput())
+		{
+			return ReborrowAndAdvanceSectionJobNumerical(
+				section, job, knownSpritePreparation, maximumWorkUnits, result);
+		}
+		Visuals::BuildingRenderSceneInput sceneInput;
+		return RunSectionNumericalSlice(section, job, sceneInput, maximumWorkUnits, result);
+	}
+
+	/** Holds every temporary borrowed view through the one immediate numerical advancement. */
+	bool SectionScheduler::ReborrowAndAdvanceSectionJobNumerical(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		const std::size_t remaining = maximumWorkUnits - result.WorkUnitsConsumed;
+		if (remaining < 2)
+		{
+			return false;
+		}
+		Visuals::BuildingRenderSceneInput sceneInput;
+		std::vector<Visuals::BuildingSpriteRenderInput> ordinarySprites;
+		std::vector<Visuals::BuildingSpriteRenderInput> overlaySprites;
+		std::vector<Visuals::BuildingSplineRenderInput> splineScratch;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto borrowStarted = std::chrono::steady_clock::now();
+#endif
+		const auto borrowStatus = TryBorrowRetainedSectionScene(
+			job, knownSpritePreparation, ordinarySprites, overlaySprites, splineScratch, sceneInput);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.AttemptEvidence->Timing.SceneBorrowMs +=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - borrowStarted).count();
+#endif
+		++result.WorkUnitsConsumed;
+		if (borrowStatus == RetainedSceneBorrowStatus::TemporarilyUnavailable)
+		{
+			result.CurrentState = SectionJobAdvanceResult::State::WaitingForResources;
+			return false;
+		}
+		if (borrowStatus == RetainedSceneBorrowStatus::InvalidOrChanged)
+		{
+			ResetSectionJobProgress(job);
+			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
+			return false;
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!job.AttemptEvidence->Timing.NumericalRenderingInvoked)
+		{
+			job.AttemptEvidence->Timing.OrdinarySpriteInputCount = sceneInput.OrdinarySprites.size();
+			job.AttemptEvidence->Timing.SplineContributorInputCount = sceneInput.Splines.size();
+			job.AttemptEvidence->Timing.OverlayLastSpriteInputCount = sceneInput.OverlayLastSprites.size();
+		}
+#endif
+		return RunSectionNumericalSlice(section, job, sceneInput, maximumWorkUnits, result);
+	}
+
+	/** Runs one numerical call and translates its terminal status without repeating prior work. */
+	bool SectionScheduler::RunSectionNumericalSlice(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const Visuals::BuildingRenderSceneInput& sceneInput,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		const std::size_t numericalQuota = maximumWorkUnits - result.WorkUnitsConsumed;
+		if (numericalQuota == 0)
+		{
+			return false;
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto numericalStarted = std::chrono::steady_clock::now();
+		job.AttemptEvidence->Timing.NumericalRenderingInvoked = true;
+#endif
+		const auto step = job.NumericalOperation->Advance(
+			sceneInput, section.GetOrCreateVisualsContext(), numericalQuota);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.AttemptEvidence->Timing.NumericalRenderingMs +=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - numericalStarted).count();
+#endif
+		result.WorkUnitsConsumed += step.WorkUnitsConsumed;
+		if (!step.TerminalStatus.has_value())
+		{
+			return false;
+		}
+		job.AttemptEvidence->NumericalStatus = step.TerminalStatus;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.AttemptEvidence->Timing.NumericalPhases = job.NumericalOperation->PhaseTimings();
+#endif
+		if (!IsCompletedRenderComplete(*job.AttemptEvidence))
+		{
+			job.AttemptEvidence->TerminalSplineOmissions = {};
+			FinishSectionJobAttempt(job, result);
+			return false;
+		}
+		job.NumericalStatus = step.TerminalStatus;
+		return true;
+	}
+
+	/** Completes transparency and adoption as separate indivisible quota units. */
+	void SectionScheduler::CommitSectionJobImage(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return;
+		}
+		if (!job.TransparencyChecked &&
+			!ClassifyCompletedSectionImage(section, job, maximumWorkUnits, result))
+		{
+			return;
+		}
+		if (job.CompletedImageTransparent || result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return;
+		}
+		auto& evidence = *job.AttemptEvidence;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto adoptionStarted = std::chrono::steady_clock::now();
+		evidence.Timing.ImageAdoptionAttempted = true;
+#endif
+		const bool adopted = section.TryAdoptCompletedImage(
+			sectionResolutionPixels_, sectionResolutionPixels_, std::move(job.CompletedImage));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		evidence.Timing.ImageAdoptionMs +=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - adoptionStarted).count();
+#endif
+		++result.WorkUnitsConsumed;
+		evidence.TerminalSplineOmissions = adopted ? job.TerminalSplineOmissions
+			: Visuals::BuildingVisualsTerminalOmissionSummary{};
+		evidence.CommitStatus = adopted
+			? SectionImageCommitResult::Status::Committed
+			: SectionImageCommitResult::Status::ImageAdoptionRejected;
+		FinishSectionJobAttempt(job, result);
+	}
+
+	/** Takes finalized output and performs one bounded classification/empty-commit unit. */
+	bool SectionScheduler::ClassifyCompletedSectionImage(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		std::size_t maximumWorkUnits,
+		SectionJobAdvanceResult& result)
+	{
+		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		{
+			return false;
+		}
+		auto& evidence = *job.AttemptEvidence;
+		if (!job.CompletedImageReady)
+		{
+			if (!job.NumericalOperation->TakeCompletedImage(job.CompletedImage, job.TerminalSplineOmissions))
+			{
+				evidence.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
+				evidence.TerminalSplineOmissions = {};
+				FinishSectionJobAttempt(job, result);
+				return false;
+			}
+			job.CompletedImageReady = true;
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto started = std::chrono::steady_clock::now();
+		evidence.Timing.TransparencyCheckInvoked = true;
+#endif
+		job.CompletedImageTransparent = IsFullyTransparentRgba16fImage(
+			std::span<const std::uint8_t>(job.CompletedImage));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		evidence.Timing.TransparencyCheckMs +=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+#endif
+		job.TransparencyChecked = true;
+		++result.WorkUnitsConsumed;
+		if (job.CompletedImageTransparent)
+		{
+			evidence.TerminalSplineOmissions = job.TerminalSplineOmissions;
+			CommitEmptySection(section, evidence);
+			FinishSectionJobAttempt(job, result);
+			return false;
+		}
+		return true;
+	}
+
+	/** Advances one existing job only for its selected owner and a positive deterministic quota. */
+	SectionScheduler::SectionJobAdvanceResult SectionScheduler::AdvanceSectionJob(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		const KnownSpritePreparationResult& knownSpritePreparation,
+		std::span<const SplinePolicy> splinePolicies,
+		std::size_t maximumWorkUnits)
+	{
+		SectionJobAdvanceResult result;
+		const auto coordinate = std::make_pair(section.GetGridX(), section.GetGridY());
+		const auto jobPosition = sectionJobs_.find(coordinate);
+		if (jobPosition == sectionJobs_.end())
+		{
+			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
+			return result;
+		}
+		SectionJob& job = jobPosition->second;
+		if (maximumWorkUnits == 0)
+		{
+			return result;
+		}
+		const bool sameOwner = publicationOwner != nullptr && job.publicationOwner != nullptr &&
+			job.publicationOwner.get() == publicationOwner.get() &&
+			!job.publicationOwner.owner_before(publicationOwner) &&
+			!publicationOwner.owner_before(job.publicationOwner);
+		if (!sameOwner)
+		{
+			ResetSectionJobProgress(job);
+			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
+			return result;
+		}
+		if (!PrepareSectionJobAttempt(
+			section, job, knownSpritePreparation, splinePolicies, maximumWorkUnits, result))
+		{
+			return result;
+		}
+		if (AdvanceSectionJobNumerical(section, job, knownSpritePreparation, maximumWorkUnits, result))
+		{
+			CommitSectionJobImage(section, job, maximumWorkUnits, result);
+		}
+		return result;
 	}
 
 	/** Starts gameplay scheduling against the renderer created with service configuration. */

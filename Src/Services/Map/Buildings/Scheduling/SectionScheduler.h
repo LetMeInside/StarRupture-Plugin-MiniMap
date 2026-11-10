@@ -431,6 +431,22 @@ namespace Services::Map::Buildings::Scheduling
 		struct SectionJob;
 		struct RetainedSectionScene;
 		enum class RetainedSceneBorrowStatus;
+		/** Describes one dormant bounded advancement without conflating waits with render failures. */
+		struct SectionJobAdvanceResult
+		{
+			enum class State
+			{
+				Pending,
+				WaitingForResources,
+				RestartRequired,
+				AttemptFinished
+			};
+
+			State CurrentState = State::Pending;
+			std::size_t WorkUnitsConsumed = 0;
+			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
+			std::optional<SectionImageCommitResult> FinishedAttempt;
+		};
 
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.
@@ -458,6 +474,20 @@ namespace Services::Map::Buildings::Scheduling
 		void CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept;
 		/** Destroys all retained jobs without clearing images or acquisition resources. */
 		void ClearSectionJobs() noexcept;
+		/** Advances one existing publication job without changing the synchronous production route.
+		 * @param section Exact Section whose stable numerical context is borrowed for this call.
+		 * @param publicationOwner Currently selected immutable publication for this coordinate.
+		 * @param knownSpritePreparation Fresh same-publication sprite outcomes and call-valid pixels.
+		 * @param splinePolicies Existing immutable spline policy table.
+		 * @param maximumWorkUnits Deterministic per-call preparation, borrowing and numerical quota.
+		 * @return Pending, waiting, restart-required, or a fully populated terminal attempt result.
+		 */
+		SectionJobAdvanceResult AdvanceSectionJob(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			std::size_t maximumWorkUnits);
 
 		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
 		 * @return True when BuildingScheduler enters gameplay-active scheduling state.
@@ -557,6 +587,60 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
 			std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
 			Visuals::BuildingRenderSceneInput& output) const;
+		/** Prepares a retained scene or completes already validated zero-candidate work when quota permits. */
+		bool PrepareSectionJobAttempt(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Runs one source-composition attempt and records its readiness and Debug duration. */
+		bool PrepareRetainedSceneForAttempt(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies,
+			SectionJobAdvanceResult& result);
+		/** Reborrows scene inputs only when needed and advances one persistent numerical operation. */
+		bool AdvanceSectionJobNumerical(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Keeps temporary sprite and spline borrows alive through their immediate numerical call. */
+		bool ReborrowAndAdvanceSectionJobNumerical(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Runs one numerical slice and translates its terminal status into the existing commit result. */
+		bool RunSectionNumericalSlice(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const Visuals::BuildingRenderSceneInput& sceneInput,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Transfers finalized bytes and resumes transparency/adoption commitment within the quota. */
+		void CommitSectionJobImage(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Takes completed output once and performs the indivisible transparency classification. */
+		bool ClassifyCompletedSectionImage(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			std::size_t maximumWorkUnits,
+			SectionJobAdvanceResult& result);
+		/** Finishes one attempt and releases numerical progress before its retained scene. */
+		void FinishSectionJobAttempt(
+			SectionJob& job,
+			SectionJobAdvanceResult& result);
+		/** Destroys all attempt state while preserving the selected publication owner. */
+		static void ResetSectionJobProgress(SectionJob& job) noexcept;
 		/** Rebuilds one sorted pass's ordinal sequence from the effective prepared scene and sprite result.
 		 * @param overlaySelectsSecondPass Chooses SecondPass when true, otherwise FirstPass.
 		 * @param knownSpritePreparation Current prepared occurrences, including sparse ordinal mapping.
@@ -1041,7 +1125,15 @@ namespace Services::Map::Buildings::Scheduling
 		struct SectionJob
 		{
 			std::shared_ptr<const BuildingCandidatePublication> publicationOwner;
+			std::optional<SectionImageCommitResult> AttemptEvidence;
 			std::unique_ptr<RetainedSectionScene> retainedScene;
+			std::vector<std::uint8_t> CompletedImage;
+			Visuals::BuildingVisualsTerminalOmissionSummary TerminalSplineOmissions{};
+			std::optional<Rendering::SectionRendering::Status> NumericalStatus;
+			bool CompletedImageReady = false;
+			bool TransparencyChecked = false;
+			bool CompletedImageTransparent = false;
+			std::unique_ptr<Rendering::SectionRendering::IncrementalOperation> NumericalOperation;
 		};
 
 		const double sectionSizeMapUnits_;

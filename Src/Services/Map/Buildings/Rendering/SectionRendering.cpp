@@ -67,6 +67,14 @@ namespace Services::Map::Buildings::Rendering
 	/** Destroys unfinished numerical resources together without resetting active cursors. */
 	SectionRendering::IncrementalOperation::~IncrementalOperation() = default;
 
+	/** Identifies the numerical phases that may inspect this call's borrowed scene view. */
+	bool SectionRendering::IncrementalOperation::RequiresSceneInput() const noexcept
+	{
+		return state_->CurrentPhase == State::Phase::ConstructDestination ||
+			state_->CurrentPhase == State::Phase::DrawScene ||
+			state_->CurrentPhase == State::Phase::EvaluateDrawing;
+	}
+
 	/** Advances destination creation, scene execution, classification and finalization within one quota. */
 	SectionRendering::StepResult SectionRendering::IncrementalOperation::Advance(
 		const Visuals::BuildingRenderSceneInput& scene,
