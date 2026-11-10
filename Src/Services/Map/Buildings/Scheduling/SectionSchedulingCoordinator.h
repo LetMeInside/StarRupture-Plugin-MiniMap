@@ -21,6 +21,7 @@
 namespace Services::Map::Buildings
 {
 	class BuildingMapService;
+	class BuildingMapSection;
 	class BuildingCandidatePublication;
 }
 
@@ -240,6 +241,27 @@ namespace Services::Map::Buildings::Scheduling
 
 	private:
 		friend class ::Services::Map::Buildings::BuildingMapService;
+		/** Reports one dormant Section-job state and the exact deterministic quota consumed. */
+		struct IncrementalSectionAdvanceResult
+		{
+			enum class State
+			{
+				Pending,
+				WaitingForResources,
+				RestartRequired,
+				AttemptFinished
+			};
+
+			State CurrentState = State::Pending;
+			std::size_t WorkUnitsConsumed = 0;
+		};
+		/** Collapses existing terminal commit statuses for shared successful-completion handling. */
+		enum class SectionCommitOutcome
+		{
+			Failed,
+			ImageCommitted,
+			EmptyCommitted
+		};
 
 		/** Advances sprite acquisition once and processes waiting work with service-retained publications.
 		 * @param buildingMapService Service-owned Section/source provider for synchronous attempts.
@@ -257,6 +279,47 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionCoordinate& coordinate,
 			const SectionPublicationBatch& publications);
+		/** Advances one already selected publication job once without activating it in the waiting loop.
+		 * @param buildingMapService Service-owned Section and immutable spline-policy provider.
+		 * @param coordinate Exact signed Section coordinate selected by the future scheduler.
+		 * @param publicationOwner Selected shared publication retained through this advancement.
+		 * @param maximumWorkUnits Positive deterministic quota passed unchanged to SectionScheduler.
+		 * @return Actual job state and work units consumed; zero quota returns Pending without side effects.
+		 */
+		IncrementalSectionAdvanceResult AdvanceSelectedSectionJob(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate,
+			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
+			std::size_t maximumWorkUnits);
+		/** Prepares fresh sprite views, advances an existing job once, and applies terminal completion events.
+		 * @param buildingMapService Service providing the immutable spline policies.
+		 * @param coordinate Exact coordinate of the retained Section job.
+		 * @param publicationOwner Selected publication retained through this advancement.
+		 * @param section Service-owned Section whose numerical context remains stable across calls.
+		 * @param maximumWorkUnits Deterministic quota passed unchanged to SectionScheduler.
+		 * @return The actual incremental state and work count reported by SectionScheduler.
+		 */
+		IncrementalSectionAdvanceResult AdvanceRetainedSectionJob(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate,
+			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
+			::Services::Map::Buildings::BuildingMapSection& section,
+			std::size_t maximumWorkUnits);
+		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
+		 * @param buildingMapService Service owning the selected publication and viewport notifications.
+		 * @param coordinate Coordinate of the terminal Section attempt.
+		 * @param publicationOwner Selected immutable publication whose hash becomes applied on success.
+		 * @param outcome Existing terminal status classified as failed, image committed, or empty committed.
+		 * @param completedImageRemoved Whether a confirmed-empty commit removed a prior image.
+		 * @param omissions Fixed-size terminal omission evidence from this attempt.
+		 */
+		void HandleSectionCommitResult(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate,
+			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
+			SectionCommitOutcome outcome,
+			bool completedImageRemoved,
+			const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions);
 		/** Logs one bounded warning after successful commitment of terminal spline omissions. */
 		void ReportTerminalSplineOmissions(
 			const SectionCoordinate& coordinate,

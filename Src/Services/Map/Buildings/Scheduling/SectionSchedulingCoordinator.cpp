@@ -327,41 +327,23 @@ namespace Services::Map::Buildings::Scheduling
 			diagnostics_.SceneBorrow.Add(commitResult.Timing.SceneBorrowMs);
 		}
 #endif
-		const bool imageCommitted =
-			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed;
-		const bool emptyCommitted =
-			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::CommittedEmpty;
-		if (imageCommitted || emptyCommitted)
+		SectionCommitOutcome completionOutcome = SectionCommitOutcome::Failed;
+		if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed)
 		{
-			buildingMapService.RecordSectionAppliedHash(
-				coordinate.GridX,
-				coordinate.GridY,
-				publicationOwner->ContentHash());
-			RecordSectionCompleted(coordinate);
-			ReportTerminalSplineOmissions(coordinate, commitResult.TerminalSplineOmissions);
+			completionOutcome = SectionCommitOutcome::ImageCommitted;
 		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		if (emptyCommitted)
+		else if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::CommittedEmpty)
 		{
-			if (commitResult.CompletedImageRemoved)
-			{
-				++diagnostics_.ExistingImagesRemoved;
-			}
+			completionOutcome = SectionCommitOutcome::EmptyCommitted;
 		}
-		std::size_t diagnosticNotifications = 0;
-#endif
-		if (imageCommitted || (emptyCommitted && commitResult.CompletedImageRemoved))
-		{
-			buildingMapService.NotifySectionImageChangedToViewports(
-				coordinate.GridX,
-				coordinate.GridY
+		HandleSectionCommitResult(
+			buildingMapService,
+			coordinate,
+			publicationOwner,
+			completionOutcome,
+			commitResult.CompletedImageRemoved,
+			commitResult.TerminalSplineOmissions);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-				, &diagnosticNotifications
-#endif
-				);
-		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		diagnostics_.ImageChangeNotificationsSent += diagnosticNotifications;
 		if (totalAttemptMs >= diagnostics_.Worst.TotalMs)
 		{
 			diagnostics_.Worst.Present = true;
@@ -387,6 +369,136 @@ namespace Services::Map::Buildings::Scheduling
 				? static_cast<std::uint8_t>(*commitResult.NumericalStatus)
 				: 0;
 		}
+#endif
+	}
+
+	/** Advances one already selected publication job without activation from the production loop. */
+	SectionSchedulingCoordinator::IncrementalSectionAdvanceResult
+	SectionSchedulingCoordinator::AdvanceSelectedSectionJob(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionCoordinate& coordinate,
+		std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
+		std::size_t maximumWorkUnits)
+	{
+		IncrementalSectionAdvanceResult result;
+		if (maximumWorkUnits == 0)
+		{
+			return result;
+		}
+		if (sectionScheduler_ == nullptr || publicationOwner == nullptr)
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
+			return result;
+		}
+		sectionScheduler_->EnsureSectionJob(coordinate.GridX, coordinate.GridY, publicationOwner);
+		::Services::Map::Buildings::BuildingMapSection& section =
+			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
+		return AdvanceRetainedSectionJob(
+			buildingMapService,
+			coordinate,
+			publicationOwner,
+			section,
+			maximumWorkUnits);
+	}
+
+	/** Advances one retained job and handles only its actual terminal commit result. */
+	SectionSchedulingCoordinator::IncrementalSectionAdvanceResult
+	SectionSchedulingCoordinator::AdvanceRetainedSectionJob(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionCoordinate& coordinate,
+		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
+		::Services::Map::Buildings::BuildingMapSection& section,
+		std::size_t maximumWorkUnits)
+	{
+		IncrementalSectionAdvanceResult result;
+		SectionScheduler::KnownSpritePreparationResult spritePreparation;
+		sectionScheduler_->PrepareKnownSpriteRequirements(publicationOwner, spritePreparation);
+		SectionScheduler::SectionJobAdvanceResult jobResult = sectionScheduler_->AdvanceSectionJob(
+			section,
+			publicationOwner,
+			spritePreparation,
+			buildingMapService.splinePolicies_,
+			maximumWorkUnits);
+		result.WorkUnitsConsumed = jobResult.WorkUnitsConsumed;
+		if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::WaitingForResources)
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::WaitingForResources;
+		}
+		else if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::RestartRequired)
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
+		}
+		else if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::AttemptFinished)
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::AttemptFinished;
+		}
+		if (result.CurrentState != IncrementalSectionAdvanceResult::State::AttemptFinished)
+		{
+			return result;
+		}
+		if (!jobResult.FinishedAttempt.has_value())
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
+			return result;
+		}
+		const SectionScheduler::SectionImageCommitResult& commitResult = *jobResult.FinishedAttempt;
+		SectionCommitOutcome completionOutcome = SectionCommitOutcome::Failed;
+		if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::Committed)
+		{
+			completionOutcome = SectionCommitOutcome::ImageCommitted;
+		}
+		else if (commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::CommittedEmpty)
+		{
+			completionOutcome = SectionCommitOutcome::EmptyCommitted;
+		}
+		HandleSectionCommitResult(
+			buildingMapService,
+			coordinate,
+			publicationOwner,
+			completionOutcome,
+			commitResult.CompletedImageRemoved,
+			commitResult.TerminalSplineOmissions);
+		return result;
+	}
+
+	/** Applies shared service events only for the two successful terminal commit outcomes. */
+	void SectionSchedulingCoordinator::HandleSectionCommitResult(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionCoordinate& coordinate,
+		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
+		SectionCommitOutcome outcome,
+		bool completedImageRemoved,
+		const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions)
+	{
+		if (outcome == SectionCommitOutcome::Failed)
+		{
+			return;
+		}
+		buildingMapService.RecordSectionAppliedHash(
+			coordinate.GridX,
+			coordinate.GridY,
+			publicationOwner->ContentHash());
+		RecordSectionCompleted(coordinate);
+		ReportTerminalSplineOmissions(coordinate, omissions);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (outcome == SectionCommitOutcome::EmptyCommitted && completedImageRemoved)
+		{
+			++diagnostics_.ExistingImagesRemoved;
+		}
+		std::size_t diagnosticNotifications = 0;
+#endif
+		if (outcome == SectionCommitOutcome::ImageCommitted || completedImageRemoved)
+		{
+			buildingMapService.NotifySectionImageChangedToViewports(
+				coordinate.GridX,
+				coordinate.GridY
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, &diagnosticNotifications
+#endif
+				);
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnostics_.ImageChangeNotificationsSent += diagnosticNotifications;
 #endif
 	}
 
