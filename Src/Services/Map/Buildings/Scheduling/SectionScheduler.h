@@ -56,21 +56,20 @@ namespace Services::Map::Buildings::Scheduling
 	class SectionScheduler final
 	{
 	public:
-		/** Reports how one fixed publication's known sprite requirements were examined.
-		 * KnownRequirementsProcessed means only that its published candidates were examined;
-		 * it does not certify complete source enumeration, geometry support, or Section readiness.
+		/** Reports how one Section publication's known sprite requirements were examined.
+		 * KnownRequirementsProcessed describes only the Section-local candidate/source pairs;
+		 * readiness remains determined from each occurrence's source and resource outcome.
 		 * Prepared sprite inputs borrow CPU pixels owned by CpuSpriteSourceManager and are valid
 		 * only for immediate synchronous consumption before those payloads can be replaced, cleared,
 		 * or withdrawn. They must never be retained as Section state.
 		 */
 		struct KnownSpritePreparationResult
 		{
-			/** Distinguishes a processed descriptor batch from publication/key validity failures. */
+			/** Distinguishes a processed Section batch from publication/key validity failures. */
 			enum class Status
 			{
 				KnownRequirementsProcessed,
 				InvalidPublication,
-				StalePublication,
 				InvalidSourceRequirement
 			};
 
@@ -78,10 +77,6 @@ namespace Services::Map::Buildings::Scheduling
 			Status PreparationStatus = Status::InvalidPublication;
 			/** Non-owning publication identity valid only while the caller retains that owner. */
 			const BuildingCandidatePublication* PublicationIdentity = nullptr;
-			/** Candidate publication evidence; sprite readiness cannot upgrade these facts. */
-			BuildingCandidateEvidence CandidateEvidence{};
-			/** True when evidence or unprepared source kinds leave possible requirements unresolved. */
-			bool MayHaveUnknownRequirements = true;
 			/** Number of known requirements with an outstanding or newly queued acquisition. */
 			std::size_t PendingCount = 0;
 			/** Number of known requirements with an established session-local terminal failure. */
@@ -101,20 +96,20 @@ namespace Services::Map::Buildings::Scheduling
 				enum class Status
 				{
 					NotProcessed,
-				UnknownSource,
-				PendingNativeSourceAcquisition,
-				TemporarilyUnavailableSource,
-				TerminalSourceFailure,
-				PendingSpriteAcquisition,
-				TerminalSpriteCaptureFailure,
-				TemporarilyUnavailableSprite,
-				InvalidSpriteRequirement,
-				MissingSpritePlacement,
-				UnresolvedSpriteGeometry,
-				UnknownSpritePass,
-				UnresolvedInputs,
-				ReadySprite,
-				ReadySpline
+					UnknownSource,
+					PendingNativeSourceAcquisition,
+					TemporarilyUnavailableSource,
+					TerminalSourceFailure,
+					PendingSpriteAcquisition,
+					TerminalSpriteCaptureFailure,
+					TemporarilyUnavailableSprite,
+					InvalidSpriteRequirement,
+					MissingSpritePlacement,
+					UnresolvedSpriteGeometry,
+					UnknownSpritePass,
+					UnresolvedInputs,
+					ReadySprite,
+					ReadySpline
 			};
 
 				/** Exact publication-local occurrence ordinal. */
@@ -161,9 +156,9 @@ namespace Services::Map::Buildings::Scheduling
 			};
 			/** Ready known sprite occurrences, preserving duplicates and publication correspondence. */
 			std::vector<PreparedSpriteOccurrence> PreparedSprites;
-			/** Temporary publication-ordinal to sparse PreparedSprites index correspondence.
+			/** Temporary Section-local ordinal to sparse PreparedSprites index correspondence.
 			 * Empty entries have no prepared sprite. Owns indices only, never vector pointers or pixels.
-			 * Reset and stale-publication withdrawal clear this alongside PreparedSprites.
+			 * Reset clears this alongside PreparedSprites.
 			 */
 			std::vector<std::optional<std::size_t>> PreparedSpriteIndicesByOrdinal;
 		};
@@ -247,10 +242,10 @@ namespace Services::Map::Buildings::Scheduling
 		};
 
 		/** Owns one occurrence's composed spline inputs and all source/profile eligibility evidence.
-		 * PublicationOrdinal distinguishes duplicate occurrences. Surface indexes map accepted inputs
-		 * back to profile alternatives. BorrowRenderInput creates spans only on request; this object
-		 * must remain alive and unchanged for their full synchronous use. Composed means inputs are
-		 * available for a numerical rendering attempt; it does not certify candidate completeness.
+		 * PublicationOrdinal distinguishes duplicate occurrences. Authored surfaces retain their
+		 * profile-alternative correspondence; a synthetic ribbon owns one independent surface.
+		 * BorrowRenderInput creates spans only on request; this object must remain alive and unchanged
+		 * for their full synchronous use. Composed does not certify candidate completeness.
 		 */
 		struct SplineRenderInputPreparationResult
 		{
@@ -259,7 +254,6 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				NotAttempted,
 				Composed,
-				StalePublication,
 				InvalidOccurrence,
 				NotSpline,
 				SourceNotComplete,
@@ -278,6 +272,11 @@ namespace Services::Map::Buildings::Scheduling
 			std::uint64_t PublicationOrdinal = 0;
 			/** Source-supplied direct policy index, preserved even when resolution fails. */
 			std::uint16_t SplinePolicyIndex = 0;
+			/** Explicit source geometry intent, never inferred from profile acquisition status. */
+			BuildingCandidateSplineGeometryMode GeometryMode =
+				BuildingCandidateSplineGeometryMode::AuthoredProfiles;
+			/** Source-supplied synthetic ribbon half-width in map units. */
+			double SyntheticThinRibbonHalfWidthMapUnits = 0.0;
 			/** R2Q curve, root, acquisition, provenance and coordinate evidence owned by this result. */
 			SplineCurvePreparationResult CurvePreparation;
 			/** Per-alternative outcomes in original source order, including each accepted surface index. */
@@ -292,7 +291,7 @@ namespace Services::Map::Buildings::Scheduling
 				std::optional<std::size_t> SurfaceIndex;
 			};
 			std::vector<AlternativeOutcome> Alternatives;
-			/** Eligible surfaces in source-relative order with copied solid policy appearance. */
+			/** Eligible authored or synthetic surfaces with copied solid policy appearance. */
 			std::vector<Visuals::BuildingSplineSurfaceRenderInput> SurfaceInputs;
 			/** Existing renderer sampling defaults with service-derived pixel density. */
 			Visuals::SplineSamplingPolicy SamplingPolicy{};
@@ -313,20 +312,19 @@ namespace Services::Map::Buildings::Scheduling
 			bool BorrowRenderInput(Visuals::BuildingSplineRenderInput& output) const noexcept;
 		};
 
-		/** Owns one Section's numerical scene inputs and readiness evidence.
-		 * Sprite pixels remain borrowed from the CPU manager, and publication/observation storage is
+		/** Owns one Section's numerical scene inputs and per-occurrence readiness evidence.
+		 * Sprite pixels remain borrowed from the CPU manager, and publication storage is
 		 * never retained. Spline vectors and pass arrays are caller-owned and must remain unchanged
 		 * through synchronous rendering. No final Section membership or image completion is implied.
 		 */
 		struct SectionScenePreparationResult
 		{
-			/** Complete means all observed occurrences are accounted for and inputs are available or terminally omitted. */
+			/** Complete means all Section-local occurrences are ready or have terminally omittable outcomes. */
 			enum class Readiness
 			{
 				InvalidPublication,
-				StalePublication,
-				InvalidObservation,
-				IncompleteCandidateCoverage,
+				InvalidSection,
+				InvalidPreparationInputs,
 				PendingNativeSourceAcquisition,
 				PendingSpriteAcquisition,
 				TemporarilyUnavailableResources,
@@ -334,28 +332,26 @@ namespace Services::Map::Buildings::Scheduling
 				CompleteSceneInputs
 			};
 
-			/** Per-observation-occurrence preparation evidence, preserving duplicates and source order. */
+			/** Per-publication-occurrence preparation evidence, preserving duplicates and source order. */
 			std::vector<KnownSpritePreparationResult::OccurrenceOutcome> OccurrenceOutcomes;
 			/** Ready FirstPass sprites, stably ordered by placement Z, Y, then X, borrowing CPU pixel payloads. */
 			std::vector<Visuals::BuildingSpriteRenderInput> OrdinarySprites;
-			/** Owned spline composition results in observation order; borrowing sorts only temporary descriptors. */
+			/** Owned spline composition results in Section occurrence order; borrowing sorts temporary descriptors. */
 			std::vector<SplineRenderInputPreparationResult> SplinePreparations;
 			/** Ready SecondPass sprites, stably ordered by placement Z, Y, then X, borrowing CPU pixel payloads. */
 			std::vector<Visuals::BuildingSpriteRenderInput> OverlayLastSprites;
-			/** Publication and observation evidence retained without publication-owned spans. */
-			BuildingCandidateEvidence CandidateEvidence{};
-			/** Non-owning identity token checked during borrow while the caller retains the owner. */
+			/** Raw identity confirms sprite preparation came from this retained immutable publication. */
 			const BuildingCandidatePublication* PublicationIdentity = nullptr;
 			Readiness PreparationReadiness = Readiness::InvalidPublication;
 
 			/** Clears owned values; rebuild borrowed spline views after reset or modification. */
 			void Reset() noexcept;
 
-			/** Builds temporary views into caller-owned scratch and rejects incomplete or stale inputs.
-			 * @param publicationOwner Retained owner whose pixels and observation were prepared.
+			/** Builds temporary views into caller-owned scratch and rejects incomplete inputs.
+			 * @param publicationOwner Retained owner whose Section occurrences were prepared.
 			 * @param scratch Receives borrowed views into SplinePreparations and must remain unchanged.
 			 * @param output Receives ordered sprite/spline spans for one synchronous render call.
-			 * @return True only while the publication is current and readiness is CompleteSceneInputs.
+			 * @return True when this publication's prepared scene is CompleteSceneInputs.
 			 */
 			bool BorrowRenderSceneInput(
 				const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
@@ -374,7 +370,6 @@ namespace Services::Map::Buildings::Scheduling
 			enum class Status
 			{
 				InvalidOrIncompleteInput,
-				StalePublication,
 				NumericalRenderingFailed,
 				ImageAdoptionRejected,
 				Committed,
@@ -389,6 +384,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::optional<Rendering::SectionRendering::Status> NumericalStatus;
 			/** True only when confirmed-empty completion removed a previously stored image. */
 			bool CompletedImageRemoved = false;
+			/** Terminal no-drawable spline omissions from a finalized and successfully completed image. */
+			Visuals::BuildingVisualsTerminalOmissionSummary TerminalSplineOmissions;
 			/** Debug-only elapsed timings for the existing prepare, render and commit call boundaries. */
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			struct TimingData
@@ -464,12 +461,12 @@ namespace Services::Map::Buildings::Scheduling
 			BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
 #endif
 
-		/** Processes known sprites from exactly one retained, current source publication.
+		/** Processes known sprites from exactly one retained Section publication.
 		 * The caller retains publicationOwner for this operation; its borrowed spans and keys are
 		 * never retained. Repeated descriptors are processed independently, while BuildingScheduler
 		 * suppresses duplicate acquisition by canonical key. Ready pixels are borrowed from the CPU manager;
 		 * callers must consume input/support arrays synchronously before manager mutation or shutdown.
-		 * Unknown source requirements remain unknown, and no result certifies a Section or scene.
+		 * Per-occurrence source uncertainty remains distinct from sprite resource outcomes.
 		 * @param publicationOwner Shared owner of the one fixed source publication.
 		 * @param output Receives prepared sprite occurrences and individual outcome counts.
 		 */
@@ -477,11 +474,10 @@ namespace Services::Map::Buildings::Scheduling
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			KnownSpritePreparationResult& output);
 
-		/** Prepares neutral inputs for exactly one observation from the explicitly retained publication.
-		 * Reuses a publication-level sprite result, composes each spline occurrence with the borrowed
-		 * service policy span, and reports complete scene inputs only after final currentness validation.
+		/** Prepares neutral inputs for every occurrence in one Section publication.
+		 * Reuses a same-publication sprite result, composes each spline occurrence with the borrowed
+		 * service policy span, and derives readiness from Section-local occurrence outcomes.
 		 * @param publicationOwner Retained owner for source ordinals and the identity checked on sprite results.
-		 * @param observation One borrowed candidate list; its ordinals must match this publication in order.
 		 * @param knownSpritePreparation Reusable publication-level outcomes with short-lived pixel views.
 		 * @param splinePolicies Borrowed immutable service-owned table indexed directly by source policy index.
 		 * @param output Receives caller-owned per-occurrence evidence and neutral scene arrays.
@@ -489,47 +485,41 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		void PrepareSectionSceneInputs(
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const BuildingCandidateObservation& observation,
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionScenePreparationResult& output) const;
 
-		/** Validates and prepares one exact Section observation before rendering or empty completion.
-		 * @param section Service-owned Section that the observation must describe.
-		 * @param publicationOwner Retained candidate publication used for preparation.
-		 * @param observation Candidate observation to validate and prepare.
+		/** Validates and prepares one exact Section publication before rendering or empty completion.
+		 * @param section Service-owned Section that the publication must describe.
+		 * @param publicationOwner Retained Section publication used for preparation.
 		 * @param knownSpritePreparation Existing same-publication sprite outcomes.
 		 * @param splinePolicies Borrowed immutable service policy span.
 		 * @param output Receives the complete prepared scene when readiness permits.
-		 * @param commitResult Receives readiness and stale-publication evidence.
-		 * @return True only for a valid exact-cell observation with a current complete scene.
+		 * @param commitResult Receives readiness and render evidence.
+		 * @return True only for a valid exact-cell publication with a complete scene.
 		 */
 		bool TryPrepareSectionSceneForCommit(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const BuildingCandidateObservation& observation,
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionScenePreparationResult& output,
 			SectionImageCommitResult& commitResult) const;
 
-		/** Validates currentness and completion after the existing numerical render call.
-		 * @param publicationOwner Retained publication whose currentness gates completed output.
+		/** Validates completion after the existing numerical render call.
 		 * @param commitResult Result containing the numerical status and receiving validation failure.
-		 * @return True only for a Complete numerical result from a still-current publication.
+		 * @return True only for a Complete numerical result.
 		 */
-		bool IsCompletedRenderCurrentAndComplete(
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		bool IsCompletedRenderComplete(
 			SectionImageCommitResult& commitResult) const;
 
 		/** Prepares complete inputs, commits a zero-candidate Section without rendering, or renders
 		 * once and classifies the finalized image before either completing empty or move-adopting it.
-		 * CompleteSceneInputs and publication currentness gate either successful outcome. Failed
-		 * attempts preserve any previously stored Section image. The caller retains the publication
+			 * CompleteSceneInputs gates either successful outcome. Failed attempts preserve any
+			 * previously stored Section image. The caller retains the publication
 		 * and borrowed inputs through this synchronous operation.
 		 * @param section Service-owned Section rendered and updated on success.
-		 * @param publicationOwner Retained publication used for rendering and final currentness check.
-		 * @param observation Candidate observation matching the Section cell.
+		 * @param publicationOwner Retained Section publication used for rendering.
 		 * @param knownSpritePreparation Existing same-publication sprite outcomes.
 		 * @param splinePolicies Borrowed immutable service policy span.
 		 * @param output Receives completion status, image-removal fact, readiness and numerical evidence.
@@ -537,21 +527,17 @@ namespace Services::Map::Buildings::Scheduling
 		void RenderAndCommitSectionImage(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const BuildingCandidateObservation& observation,
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionImageCommitResult& output) const;
 
 		/** Completes an empty Section after validated pre-render or post-render evidence.
-		 * The caller has validated the exact Section observation and CompleteSceneInputs readiness;
-		 * this operation rechecks publication currentness before releasing any stored image.
+		 * The caller has validated the exact Section publication and CompleteSceneInputs readiness.
 		 * @param section Service-owned Section whose optional image may be removed.
-		 * @param publicationOwner Retained publication whose currentness gates image removal.
 		 * @param output Receives CommittedEmpty and whether image storage changed.
 		 */
 		void CommitEmptySection(
 			::Services::Map::Buildings::BuildingMapSection& section,
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			SectionImageCommitResult& output) const;
 
 		/** Validates the expected image byte count and checks exact transparent RGBA16F clear bytes.
@@ -560,16 +546,16 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		bool IsFullyTransparentRgba16fImage(std::span<const std::uint8_t> imageBytes) const noexcept;
 
-		/** Validates that the requested half-open cell corresponds to the supplied Section coordinates.
+		/** Validates that the publication's exact half-open cell corresponds to the supplied Section coordinates.
 		 * @param section Service-owned Section whose signed grid location is authoritative.
-		 * @param observation Borrowed candidate observation to match against the Section cell.
+		 * @param publication Immutable Section publication to match against the Section cell.
 		 * @return True for the same square cell under the service's map-unit scale.
 		 */
-		bool IsObservationForSection(
+		bool IsPublicationForSection(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
-			const BuildingCandidateObservation& observation) const;
+			const BuildingCandidatePublication& publication) const;
 		/** Compares coordinates within floating-point rounding tolerance, capped below cell separation.
-		 * @param actual Observation coordinate.
+		 * @param actual Publication rectangle coordinate.
 		 * @param expected Coordinate derived from the Section grid index.
 		 * @param sectionSize Positive map-space cell dimension.
 		 * @return True only when the coordinates match the same cell location.
@@ -599,31 +585,22 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const Visuals::BuildingRenderSceneInput& sceneInput,
 			const Rendering::Rgba16fImageGrid& grid,
-			std::vector<std::uint8_t>& imageBytes
+			std::vector<std::uint8_t>& imageBytes,
+			Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, Visuals::BuildingVisualsPhaseTimings& phaseTimings
 #endif
 			);
-		/** Validates one well-formed observation and its exact source-relative ordinal sequence.
-		 * @param publication Retained publication whose candidate occurrence order is authoritative.
-		 * @param observation Borrowed section observation to validate.
-		 * @return True when geometry and all candidate ordinals match the publication.
-		 */
-		static bool IsValidSectionObservation(
-			const BuildingCandidatePublication& publication,
-			const BuildingCandidateObservation& observation);
-		/** Validates publication identity, currentness and bounded preparation inputs.
+		/** Validates publication identity and sprite-preparation correspondence.
 		 * @param publicationOwner Explicitly retained source publication.
-		 * @param observation One borrowed publication observation.
 		 * @param spritePreparation Publication-level sprite outcomes to reuse.
-		 * @param readiness Receives the invalid or stale category on rejection.
-		 * @return True when preparation may safely begin.
+		 * @param readiness Receives the invalid category on rejection.
+		 * @return True when publication identity and occurrence correspondence are valid.
 		 */
-		static bool ValidateSectionPreparationInputs(
+		bool ValidateSectionPreparationInputs(
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const BuildingCandidateObservation& observation,
 			const KnownSpritePreparationResult& spritePreparation,
-			SectionScenePreparationResult::Readiness& readiness);
+			SectionScenePreparationResult::Readiness& readiness) const;
 		/** Rejects missing, reordered, or mismatched publication-level sprite outcomes.
 		 * @param publication Retained publication used to verify ordinal and pass correspondence.
 		 * @param spritePreparation Caller-owned result from the same retained publication.
@@ -632,14 +609,6 @@ namespace Services::Map::Buildings::Scheduling
 		static bool IsCompatibleSpritePreparation(
 			const BuildingCandidatePublication& publication,
 			const KnownSpritePreparationResult& spritePreparation);
-		/** Combines observation evidence without promoting weaker publication facts.
-		 * @param publication Publication owning the certified source coverage.
-		 * @param observation Evidence and requested region for one Section.
-		 * @return Evidence limited by the publication's own coverage and source facts.
-		 */
-		static BuildingCandidateEvidence GetSectionCandidateEvidence(
-			const BuildingCandidatePublication& publication,
-			const BuildingCandidateObservation& observation);
 		/** Accounts for one exact occurrence and appends only ready pass-eligible numerical inputs.
 		 * @param publicationOwner Retained source owner used by existing spline composition.
 		 * @param ordinal Publication-local occurrence ordinal.
@@ -659,7 +628,7 @@ namespace Services::Map::Buildings::Scheduling
 			const BuildingCandidateSourceRecord& source,
 			const KnownSpritePreparationResult& spritePreparation,
 			KnownSpritePreparationResult::OccurrenceOutcome& outcome);
-		/** Preserves acquisition certainty before any resource or numerical preparation.
+		/** Preserves per-occurrence acquisition evidence before resource or numerical preparation.
 		 * @param source Borrowed source record for one ordinal.
 		 * @param candidate Matching candidate occurrence with native acquisition evidence.
 		 * @param outcome Receives the preserved classification and preparation result.
@@ -695,7 +664,7 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			KnownSpritePreparationResult::OccurrenceOutcome& outcome,
 			SectionScenePreparationResult& output) const;
-		/** Reduces evidence and individual outcomes without upgrading unknown or pending facts.
+		/** Reduces Section-local outcomes without upgrading unknown or pending source facts.
 		 * @param output Completed caller-owned result to classify.
 		 * @return Complete-only input readiness or its first blocking category.
 		 */
@@ -752,12 +721,21 @@ namespace Services::Map::Buildings::Scheduling
 			const SplinePolicy* resolvedPolicy,
 			SplineRenderInputPreparationResult& output) const;
 
-		/** Preserves source/profile/curve/root distinctions and rejects incomplete prerequisites.
+		/** Preserves source/geometry/curve/root distinctions and rejects incomplete prerequisites.
 		 * @param source Borrowed occurrence source record.
 		 * @param output Receives the precise first source or geometry composition status.
-		 * @return True when source, profiles, converted world curve and root are all eligible.
+		 * @return True when the selected geometry mode and its required inputs are eligible.
 		 */
 		static bool CheckSplineSourcePrerequisites(
+			const BuildingCandidateSourceRecord& source,
+			SplineRenderInputPreparationResult& output);
+
+		/** Validates explicit geometry intent against its required profile state and width.
+		 * @param source Borrowed occurrence source record.
+		 * @param output Receives the first geometry-intent failure.
+		 * @return True when the intent has its required profile evidence and dimensions.
+		 */
+		static bool CheckSplineGeometryIntentPrerequisites(
 			const BuildingCandidateSourceRecord& source,
 			SplineRenderInputPreparationResult& output);
 
@@ -788,6 +766,17 @@ namespace Services::Map::Buildings::Scheduling
 		static bool AppendSplineRenderSurfaces(
 			const SplinePolicy& policy,
 			SplineProfilePreparationResult& profiles,
+			SplineRenderInputPreparationResult& output);
+
+		/** Creates one synthetic thin ribbon using the resolved appearance policy.
+		 * @param policy Validated service-owned solid appearance policy.
+		 * @param halfWidthMapUnits Positive synthetic half-width in map units.
+		 * @param output Owns the surface and its explicit geometry intent.
+		 * @return True when one finite synthetic surface was appended.
+		 */
+		static bool AppendSyntheticThinRibbon(
+			const SplinePolicy& policy,
+			double halfWidthMapUnits,
 			SplineRenderInputPreparationResult& output);
 
 		/** Copies placement into a validated transform used only for surface projection.
@@ -842,7 +831,7 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param sourceData Aligned borrowed source records from the same publication.
 		 * @param output Receives source-ordered per-occurrence evidence.
 		 */
-		static void InitializeKnownSpriteOccurrences(
+		static bool InitializeKnownSpriteOccurrences(
 			const BuildingCandidateData& candidateData,
 			const BuildingCandidateSourceData& sourceData,
 			KnownSpritePreparationResult& output);
@@ -855,16 +844,6 @@ namespace Services::Map::Buildings::Scheduling
 			const BuildingCandidateOccurrence& candidate,
 			const BuildingCandidatePublication& publication,
 			KnownSpritePreparationResult& output);
-		/** Preserves non-ready source and pass states before cache acquisition.
-		 * @param requirement Borrowed source record for one sprite occurrence.
-		 * @param output Receives aggregate unknown-requirement evidence.
-		 * @param outcome Receives the distinct per-occurrence source/pass state.
-		 * @return True when the existing sprite acquisition path may proceed.
-		 */
-		static void RecordSpriteSourceUncertainty(
-			const BuildingCandidateSourceRecord& requirement,
-			KnownSpritePreparationResult& output);
-
 		/** Acquires one valid sprite subject and appends a drawable input when placement is known.
 		 * @param publicationOrdinal Corresponding ordinal in the retained candidate publication.
 		 * @param requirement Borrowed neutral source key and optional validated placement.
@@ -913,15 +892,6 @@ namespace Services::Map::Buildings::Scheduling
 		bool TryBuildPreparedSpriteSupport(
 			const Visuals::BuildingSpriteRenderInput& renderInput,
 			KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept;
-
-		/** Rechecks currentness and withdraws all borrowed render inputs if the source went stale.
-		 * @param publicationOwner Retained owner of the source used for this preparation.
-		 * @param output Preparation result whose borrowed arrays are cleared when stale.
-		 * @return True when the fixed publication remains current after processing.
-		 */
-		bool RevalidatePreparedPublication(
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			KnownSpritePreparationResult& output) const noexcept;
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;

@@ -8,6 +8,8 @@
 #include "../BuildingMapService.h"
 #include "SectionScheduler.h"
 
+#include "Services/Log.h"
+
 #include <utility>
 #include <vector>
 
@@ -138,7 +140,8 @@ namespace Services::Map::Buildings::Scheduling
 
 	/** Advances sprite acquisition once and attempts every initially waiting coordinate once. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSections(
-		::Services::Map::Buildings::BuildingMapService& buildingMapService)
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionPublicationBatch& publications)
 	{
 		if (sectionScheduler_ == nullptr)
 		{
@@ -163,7 +166,10 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			++diagnostics_.SnapshotCoordinatesExamined;
 #endif
-			BM124D_SECTION(coordinate.GridX, coordinate.GridY, ProcessWaitingSection(buildingMapService, coordinate));
+			BM124D_SECTION(coordinate.GridX, coordinate.GridY, ProcessWaitingSection(
+				buildingMapService,
+				coordinate,
+				publications));
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		diagnostics_.WaitingAfterAdvancement += waitingSections_.size();
@@ -175,7 +181,8 @@ namespace Services::Map::Buildings::Scheduling
 	/** Processes one still-demanded waiting coordinate from the current tick snapshot. */
 	void SectionSchedulingCoordinator::ProcessWaitingSection(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
-		const SectionCoordinate& coordinate)
+		const SectionCoordinate& coordinate,
+		const SectionPublicationBatch& publications)
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto attemptStarted = std::chrono::steady_clock::now();
@@ -188,14 +195,18 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 			return;
 		}
-		::Services::Map::Buildings::BuildingMapService::SectionCandidateSource candidateSource;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto sourceSelectionStarted = std::chrono::steady_clock::now();
 #endif
-		const bool candidateSelected = BM124D_RUN("Section source selection", buildingMapService.TrySelectCandidatePublicationForSection(
-			coordinate.GridX,
-			coordinate.GridY,
-			candidateSource));
+		std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner;
+		{
+			const auto publicationEntry = publications.find(std::make_pair(coordinate.GridX, coordinate.GridY));
+			if (publicationEntry != publications.end())
+			{
+				publicationOwner = publicationEntry->second;
+			}
+		}
+		const bool candidateSelected = publicationOwner != nullptr;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double sourceSelectionMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sourceSelectionStarted).count();
@@ -218,7 +229,7 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto knownSpritePreparationStarted = std::chrono::steady_clock::now();
 #endif
-		BM124D_RUN("Section known sprite preparation", sectionScheduler_->PrepareKnownSpriteRequirements(candidateSource.PublicationOwner, spritePreparation));
+		BM124D_RUN("Section known sprite preparation", sectionScheduler_->PrepareKnownSpriteRequirements(publicationOwner, spritePreparation));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double knownSpritePreparationMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - knownSpritePreparationStarted).count();
@@ -227,8 +238,7 @@ namespace Services::Map::Buildings::Scheduling
 		SectionScheduler::SectionImageCommitResult commitResult;
 		BM124D_RUN("Section render and commit", sectionScheduler_->RenderAndCommitSectionImage(
 			section,
-			candidateSource.PublicationOwner,
-			candidateSource.Observation,
+			publicationOwner,
 			spritePreparation,
 			buildingMapService.splinePolicies_,
 			commitResult));
@@ -298,7 +308,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (commitResult.SceneReadiness.has_value() &&
 			*commitResult.SceneReadiness == SectionScheduler::SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
-			!candidateSource.Observation.candidateOrdinals.empty())
+			!publicationOwner->BorrowCandidateData().occurrences.empty())
 		{
 			diagnostics_.SceneBorrow.Add(commitResult.Timing.SceneBorrowMs);
 		}
@@ -309,7 +319,12 @@ namespace Services::Map::Buildings::Scheduling
 			commitResult.CommitStatus == SectionScheduler::SectionImageCommitResult::Status::CommittedEmpty;
 		if (imageCommitted || emptyCommitted)
 		{
+			buildingMapService.RecordSectionAppliedHash(
+				coordinate.GridX,
+				coordinate.GridY,
+				publicationOwner->ContentHash());
 			RecordSectionCompleted(coordinate);
+			ReportTerminalSplineOmissions(coordinate, commitResult.TerminalSplineOmissions);
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (emptyCommitted)
@@ -359,6 +374,35 @@ namespace Services::Map::Buildings::Scheduling
 				: 0;
 		}
 #endif
+	}
+
+	/** Emits one bounded warning after a Section with terminal spline omissions commits. */
+	void SectionSchedulingCoordinator::ReportTerminalSplineOmissions(
+		const SectionCoordinate& coordinate,
+		const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions) const noexcept
+	{
+		using Alternative = ::Services::Map::Buildings::Visuals::BuildingSplineAlternativeStatus;
+		if (omissions.SplineContributorCount == 0)
+		{
+			return;
+		}
+		MiniMap::Services::ILog* log = MiniMap::Services::TryLog();
+		if (log == nullptr)
+		{
+			return;
+		}
+		const char* failureReason = omissions.AlternativeStatus == Alternative::NoDrawableAlternative
+			? "NoDrawableAlternative"
+			: "Unknown";
+		MiniMap::Services::Logf(
+			*log,
+			MiniMap::Services::Level::Warn,
+			"MiniMap: BuildingMap Section grid=(%lld,%lld) committed with terminal omissions category=splines count=%llu firstSectionLocalContributor=%llu reason=%s",
+			static_cast<long long>(coordinate.GridX),
+			static_cast<long long>(coordinate.GridY),
+			static_cast<unsigned long long>(omissions.SplineContributorCount),
+			static_cast<unsigned long long>(omissions.FirstSectionLocalOrdinal),
+			failureReason);
 	}
 
 	/** Starts gameplay scheduling through the existing SectionScheduler. */

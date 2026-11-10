@@ -39,6 +39,15 @@ namespace Services::Map::Buildings
 	{
 	}
 
+	/** Forwards a changed collector policy as a one-shot Section-content recheck request. */
+	void BuildingMapViewport::RequestSectionHashRecheck()
+	{
+		if (service_ != nullptr)
+		{
+			service_->RequestViewportSectionHashRecheck(viewportHandle_);
+		}
+	}
+
 	/** Closes the session so the service can release its registration. */
 	BuildingMapViewport::~BuildingMapViewport()
 	{
@@ -162,9 +171,6 @@ namespace Services::Map::Buildings
 	void BuildingMapViewport::Close()
 	{
 		sectionImageChangedHandler_ = {};
-		observedCandidatePublication_.reset();
-		observedSourceChangeIdentity_.reset();
-		observedCandidatePublicationAvailable_ = false;
 		if (service_ == nullptr)
 		{
 			return;
@@ -179,9 +185,6 @@ namespace Services::Map::Buildings
 	void BuildingMapViewport::InvalidateService()
 	{
 		sectionImageChangedHandler_ = {};
-		observedCandidatePublication_.reset();
-		observedSourceChangeIdentity_.reset();
-		observedCandidatePublicationAvailable_ = false;
 		service_ = nullptr;
 		buildingCollector_ = nullptr;
 	}

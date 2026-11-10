@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <utility>
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "BuildingScheduler.h"
@@ -20,11 +21,17 @@
 namespace Services::Map::Buildings
 {
 	class BuildingMapService;
+	class BuildingCandidatePublication;
 }
 
 namespace Services::Map::Buildings::Capture
 {
 	class BuildingSpriteRenderer;
+}
+
+namespace Services::Map::Buildings::Visuals
+{
+	struct BuildingVisualsTerminalOmissionSummary;
 }
 
 namespace Services::Map::Buildings::Scheduling
@@ -102,9 +109,9 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t ProcessingAttempts = 0;
 		std::uint64_t NoLongerEligibleCoordinates = 0;
 		std::uint64_t SourceSelectionMisses = 0;
-		std::array<std::uint64_t, 6> CommitStatusCounts{};
-		std::array<std::uint64_t, 9> SceneReadinessCounts{};
-		std::array<std::uint64_t, 6> NumericalStatusCounts{};
+		std::array<std::uint64_t, 5> CommitStatusCounts{};
+		std::array<std::uint64_t, 8> SceneReadinessCounts{};
+		std::array<std::uint64_t, 7> NumericalStatusCounts{};
 		std::uint64_t ExistingImagesRemoved = 0;
 		std::uint64_t ImageChangeNotificationsSent = 0;
 		WorstSection Worst;
@@ -132,6 +139,11 @@ namespace Services::Map::Buildings::Scheduling
 			/** Orders coordinate keys for set storage only; it does not assign processing priority. */
 			bool operator<(const SectionCoordinate& other) const noexcept;
 		};
+
+		/** Service-owned pending publications keyed by their exact grid cell. */
+		using SectionPublicationBatch = std::map<
+			std::pair<std::int64_t, std::int64_t>,
+			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>>;
 
 		/** Creates the owned SectionScheduler from service-validated immutable map settings.
 		 * @param sectionSizeMapUnits Width and height of each square Section in map units.
@@ -229,18 +241,26 @@ namespace Services::Map::Buildings::Scheduling
 	private:
 		friend class ::Services::Map::Buildings::BuildingMapService;
 
-		/** Advances acquisition once and processes each coordinate in the initial waiting snapshot.
+		/** Advances sprite acquisition once and processes waiting work with service-retained publications.
 		 * @param buildingMapService Service-owned Section/source provider for synchronous attempts.
+		 * @param publications Service-owned pending publications retained through this synchronous call.
 		 */
-		void AdvanceWaitingSections(::Services::Map::Buildings::BuildingMapService& buildingMapService);
+		void AdvanceWaitingSections(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionPublicationBatch& publications);
 
 		/** Processes one snapshot coordinate only while it remains demanded and waiting.
-		 * @param buildingMapService Service that selects and owns the Section/source.
+		 * @param buildingMapService Service that owns the Section and retained publication.
 		 * @param coordinate Signed grid coordinate from the initial tick snapshot.
 		 */
 		void ProcessWaitingSection(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
-			const SectionCoordinate& coordinate);
+			const SectionCoordinate& coordinate,
+			const SectionPublicationBatch& publications);
+		/** Logs one bounded warning after successful commitment of terminal spline omissions. */
+		void ReportTerminalSplineOmissions(
+			const SectionCoordinate& coordinate,
+			const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions) const noexcept;
 
 		/** Tests whether one signed coordinate belongs to a half-open rectangular range.
 		 * @param firstGridX Inclusive first grid column.

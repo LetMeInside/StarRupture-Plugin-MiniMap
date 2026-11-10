@@ -44,6 +44,9 @@ namespace Services::Map::Buildings::Coordination
 		 */
 		virtual bool AdvanceViewportScheduling(std::uint64_t viewportHandle) = 0;
 
+		/** Requests one Section-content comparison after a viewport-owned policy change. */
+		virtual void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle) = 0;
+
 		/** Releases the registration represented by an opaque viewport handle. */
 		virtual void CloseViewport(std::uint64_t viewportHandle) = 0;
 	};

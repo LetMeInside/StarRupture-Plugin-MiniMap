@@ -27,6 +27,8 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		PublicationOrdinal = 0;
 		SplinePolicyIndex = 0;
+		GeometryMode = BuildingCandidateSplineGeometryMode::AuthoredProfiles;
+		SyntheticThinRibbonHalfWidthMapUnits = 0.0;
 		CurvePreparation.SourceStatus = BuildingCandidateSourceStatus::Unknown;
 		CurvePreparation.ProfileStatus = SplineProfileAcquisitionStatus::Unknown;
 		CurvePreparation.Provenance = BuildingCandidateSplineProvenance::Unknown;
@@ -42,14 +44,13 @@ namespace Services::Map::Buildings::Scheduling
 		PreparationStatus = Status::NotAttempted;
 	}
 
-	/** Clears scene-owned values without retaining publication or observation storage. */
+	/** Clears scene-owned values without retaining publication spans or source data. */
 	void SectionScheduler::SectionScenePreparationResult::Reset() noexcept
 	{
 		OccurrenceOutcomes.clear();
 		OrdinarySprites.clear();
 		SplinePreparations.clear();
 		OverlayLastSprites.clear();
-		CandidateEvidence = {};
 		PublicationIdentity = nullptr;
 		PreparationReadiness = Readiness::InvalidPublication;
 	}
@@ -61,6 +62,7 @@ namespace Services::Map::Buildings::Scheduling
 		SceneReadiness.reset();
 		NumericalStatus.reset();
 		CompletedImageRemoved = false;
+		TerminalSplineOmissions = {};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Timing = {};
 #endif
@@ -74,8 +76,7 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		output = {};
 		scratch.clear();
-		if (publicationOwner == nullptr || !publicationOwner->IsCurrent() ||
-			PublicationIdentity != publicationOwner.get() ||
+		if (publicationOwner == nullptr || PublicationIdentity != publicationOwner.get() ||
 			PreparationReadiness != Readiness::CompleteSceneInputs)
 		{
 			return false;
@@ -98,11 +99,6 @@ namespace Services::Map::Buildings::Scheduling
 				return false;
 			}
 			scratch.push_back(splineInput);
-		}
-		if (!publicationOwner->IsCurrent())
-		{
-			scratch.clear();
-			return false;
 		}
 		std::stable_sort(
 			scratch.begin(),
@@ -173,7 +169,6 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionScheduler::RenderAndCommitSectionImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const BuildingCandidateObservation& observation,
 		const KnownSpritePreparationResult& knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
 		SectionImageCommitResult& output) const
@@ -228,7 +223,6 @@ namespace Services::Map::Buildings::Scheduling
 		const bool sceneReady = TryPrepareSectionSceneForCommit(
 			section,
 			publicationOwner,
-			observation,
 			knownSpritePreparation,
 			splinePolicies,
 			scenePreparation,
@@ -240,9 +234,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
-		if (observation.candidateOrdinals.empty())
+		if (publicationOwner->BorrowCandidateData().occurrences.empty())
 		{
-			CommitEmptySection(section, publicationOwner, output);
+			CommitEmptySection(section, output);
 			return;
 		}
 		std::vector<Visuals::BuildingSplineRenderInput> splineViewScratch;
@@ -255,9 +249,7 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			sceneBorrowTiming.Finish();
 #endif
-			output.CommitStatus = publicationOwner->IsCurrent()
-				? SectionImageCommitResult::Status::InvalidOrIncompleteInput
-				: SectionImageCommitResult::Status::StalePublication;
+			output.CommitStatus = SectionImageCommitResult::Status::InvalidOrIncompleteInput;
 			return;
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -277,7 +269,8 @@ namespace Services::Map::Buildings::Scheduling
 			section,
 			sceneInput,
 			grid,
-			imageBytes
+			imageBytes,
+			output.TerminalSplineOmissions
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, output.Timing.NumericalPhases
 #endif
@@ -285,7 +278,7 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		numericalRenderingTiming.Finish();
 #endif
-		if (!IsCompletedRenderCurrentAndComplete(publicationOwner, output))
+		if (!IsCompletedRenderComplete(output))
 		{
 			return;
 		}
@@ -300,12 +293,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		if (imageTransparent)
 		{
-			CommitEmptySection(section, publicationOwner, output);
-			return;
-		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			CommitEmptySection(section, output);
 			return;
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -329,37 +317,31 @@ namespace Services::Map::Buildings::Scheduling
 	bool SectionScheduler::TryPrepareSectionSceneForCommit(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const BuildingCandidateObservation& observation,
 		const KnownSpritePreparationResult& knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
 		SectionScenePreparationResult& output,
 		SectionImageCommitResult& commitResult) const
 	{
-		if (!IsObservationForSection(section, observation)) return false;
-		PrepareSectionSceneInputs(publicationOwner, observation, knownSpritePreparation, splinePolicies, output);
-		commitResult.SceneReadiness = output.PreparationReadiness;
-		using Readiness = SectionScenePreparationResult::Readiness;
-		if (output.PreparationReadiness == Readiness::StalePublication ||
-			(publicationOwner != nullptr && !publicationOwner->IsCurrent()))
+		if (publicationOwner == nullptr || !IsPublicationForSection(section, *publicationOwner))
 		{
-			commitResult.CommitStatus = SectionImageCommitResult::Status::StalePublication;
+			output.Reset();
+			output.PreparationReadiness = SectionScenePreparationResult::Readiness::InvalidSection;
+			commitResult.SceneReadiness = output.PreparationReadiness;
 			return false;
 		}
-		return publicationOwner != nullptr && output.PreparationReadiness == Readiness::CompleteSceneInputs;
+		PrepareSectionSceneInputs(publicationOwner, knownSpritePreparation, splinePolicies, output);
+		commitResult.SceneReadiness = output.PreparationReadiness;
+		return publicationOwner != nullptr && output.PreparationReadiness ==
+			SectionScenePreparationResult::Readiness::CompleteSceneInputs;
 	}
 
-	/** Preserves currentness and complete numerical evidence before output inspection or adoption. */
-	bool SectionScheduler::IsCompletedRenderCurrentAndComplete(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+	/** Preserves complete numerical evidence before output inspection or adoption. */
+	bool SectionScheduler::IsCompletedRenderComplete(
 		SectionImageCommitResult& commitResult) const
 	{
-		if (!publicationOwner->IsCurrent())
-		{
-			commitResult.CommitStatus = SectionImageCommitResult::Status::StalePublication;
-			return false;
-		}
 		if (!commitResult.NumericalStatus.has_value() ||
-			*commitResult.NumericalStatus != Rendering::SectionRendering::Status::Complete)
+			(*commitResult.NumericalStatus != Rendering::SectionRendering::Status::Complete &&
+				*commitResult.NumericalStatus != Rendering::SectionRendering::Status::CompleteWithOmissions))
 		{
 			commitResult.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
 			return false;
@@ -370,25 +352,9 @@ namespace Services::Map::Buildings::Scheduling
 	/** Completes an empty Section without adopting pixel bytes. */
 	void SectionScheduler::CommitEmptySection(
 		::Services::Map::Buildings::BuildingMapSection& section,
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		SectionImageCommitResult& output) const
 	{
-		if (publicationOwner == nullptr)
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::InvalidOrIncompleteInput;
-			return;
-		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
-			return;
-		}
 		const bool completedImageRemoved = section.HasCompletedImage();
-		if (!publicationOwner->IsCurrent())
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::StalePublication;
-			return;
-		}
 		if (completedImageRemoved)
 		{
 			section.InvalidateCompletedImage();
@@ -431,7 +397,8 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const Visuals::BuildingRenderSceneInput& sceneInput,
 		const Rendering::Rgba16fImageGrid& grid,
-		std::vector<std::uint8_t>& imageBytes
+		std::vector<std::uint8_t>& imageBytes,
+		Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		, Visuals::BuildingVisualsPhaseTimings& phaseTimings
 #endif
@@ -442,7 +409,8 @@ namespace Services::Map::Buildings::Scheduling
 			sceneInput,
 			context,
 			grid,
-			imageBytes
+			imageBytes,
+			omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, phaseTimings
 #endif
@@ -450,21 +418,25 @@ namespace Services::Map::Buildings::Scheduling
 	}
 
 
-	/** Matches one half-open observation rectangle to the supplied Section's grid coordinate. */
-	bool SectionScheduler::IsObservationForSection(
+	/** Matches one publication rectangle to the supplied Section's grid coordinate. */
+	bool SectionScheduler::IsPublicationForSection(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
-		const BuildingCandidateObservation& observation) const
+		const BuildingCandidatePublication& publication) const
 	{
 		const double expectedX = static_cast<double>(section.GetGridX()) * sectionSizeMapUnits_;
 		const double expectedY = static_cast<double>(section.GetGridY()) * sectionSizeMapUnits_;
-		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
-		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
-		return std::isfinite(right) && std::isfinite(bottom) &&
-			right > observation.requestedRegion.xMapUnits && bottom > observation.requestedRegion.yMapUnits &&
-			observation.requestedRegion.widthMapUnits == sectionSizeMapUnits_ &&
-			observation.requestedRegion.heightMapUnits == sectionSizeMapUnits_ &&
-			IsSectionRegionCoordinateMatch(observation.requestedRegion.xMapUnits, expectedX, sectionSizeMapUnits_) &&
-			IsSectionRegionCoordinateMatch(observation.requestedRegion.yMapUnits, expectedY, sectionSizeMapUnits_);
+		const BuildingCollectionRegion& region = publication.SectionRegion();
+		const double right = region.xMapUnits + region.widthMapUnits;
+		const double bottom = region.yMapUnits + region.heightMapUnits;
+		return std::isfinite(region.xMapUnits) && std::isfinite(region.yMapUnits) &&
+			std::isfinite(region.widthMapUnits) && std::isfinite(region.heightMapUnits) &&
+			region.widthMapUnits > 0.0 && region.heightMapUnits > 0.0 &&
+			std::isfinite(right) && std::isfinite(bottom) &&
+			right > region.xMapUnits && bottom > region.yMapUnits &&
+			region.widthMapUnits == sectionSizeMapUnits_ &&
+			region.heightMapUnits == sectionSizeMapUnits_ &&
+			IsSectionRegionCoordinateMatch(region.xMapUnits, expectedX, sectionSizeMapUnits_) &&
+			IsSectionRegionCoordinateMatch(region.yMapUnits, expectedY, sectionSizeMapUnits_);
 	}
 
 	/** Allows rounding differences only when they remain well below adjacent-cell separation. */
@@ -509,9 +481,18 @@ namespace Services::Map::Buildings::Scheduling
 		Visuals::BuildingSplineRenderInput& output) const noexcept
 	{
 		output = {};
+		const bool syntheticThinRibbon =
+			GeometryMode == BuildingCandidateSplineGeometryMode::SyntheticThinRibbon;
+		const bool validGeometryMode = syntheticThinRibbon ||
+			GeometryMode == BuildingCandidateSplineGeometryMode::AuthoredProfiles;
+		const bool validProfileStatus = syntheticThinRibbon
+			? CurvePreparation.ProfileStatus == SplineProfileAcquisitionStatus::NotApplicable &&
+				std::isfinite(SyntheticThinRibbonHalfWidthMapUnits) &&
+				SyntheticThinRibbonHalfWidthMapUnits > 0.0 && SurfaceInputs.size() == 1
+			: CurvePreparation.ProfileStatus == SplineProfileAcquisitionStatus::Complete;
 		if (PreparationStatus != Status::Composed ||
 			CurvePreparation.SourceStatus != BuildingCandidateSourceStatus::Complete ||
-			CurvePreparation.ProfileStatus != SplineProfileAcquisitionStatus::Complete ||
+			!validGeometryMode || !validProfileStatus ||
 			CurvePreparation.PreparationStatus != SplineCurvePreparationResult::CurveStatus::ConvertedWorldSpace ||
 			CurvePreparation.ConversionIssue != Visuals::SplineNumericalIssue::None ||
 			CurvePreparation.RootStatus != SplineCurvePreparationResult::RootTransformStatus::Prepared ||
@@ -523,8 +504,11 @@ namespace Services::Map::Buildings::Scheduling
 		}
 
 		output.Segments = std::span<const Visuals::SplineCurveSegment>(CurvePreparation.Segments);
+		output.SectionLocalOrdinal = PublicationOrdinal;
 		output.SamplingPolicy = SamplingPolicy;
-		output.RootTransform = *CurvePreparation.RootTransform;
+		output.RootTransform = syntheticThinRibbon
+			? Visuals::SplineSurfaceTransform{}
+			: *CurvePreparation.RootTransform;
 		output.Surfaces = std::span<const Visuals::BuildingSplineSurfaceRenderInput>(SurfaceInputs);
 		output.SurfaceSelectionMode = Visuals::BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
 		return true;
@@ -598,7 +582,7 @@ namespace Services::Map::Buildings::Scheduling
 	}
 #endif
 
-	/** Processes known sprites from one fixed publication without assigning a rendering pass. */
+	/** Processes exactly one Section publication without assigning a rendering pass. */
 	void SectionScheduler::PrepareKnownSpriteRequirements(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		KnownSpritePreparationResult& output)
@@ -608,32 +592,16 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.PreparationStatus = KnownSpritePreparationResult::Status::StalePublication;
-			return;
-		}
 		output.PublicationIdentity = publicationOwner.get();
 
 		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
 		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
-		output.CandidateEvidence = candidateData.evidence;
-		output.MayHaveUnknownRequirements = !candidateData.hasCoverage ||
-			!candidateData.evidence.candidateCoverageComplete ||
-			!candidateData.evidence.membershipEnumerationComplete ||
-			!candidateData.evidence.nativeAcquisitionComplete ||
-			candidateData.evidence.hasPendingOrUnresolvedOccurrences;
-		if (sourceData.records.size() != candidateData.occurrences.size())
+		if (!InitializeKnownSpriteOccurrences(candidateData, sourceData, output))
 		{
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
 			return;
 		}
-		InitializeKnownSpriteOccurrences(candidateData, sourceData, output);
 		PrepareSpriteRequirementSpan(candidateData.occurrences, *publicationOwner, output);
-		if (!RevalidatePreparedPublication(publicationOwner, output))
-		{
-			return;
-		}
 		if (output.InvalidRequirementCount != 0)
 		{
 			output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidSourceRequirement;
@@ -647,8 +615,6 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
 		output.PublicationIdentity = nullptr;
-		output.CandidateEvidence = {};
-		output.MayHaveUnknownRequirements = true;
 		output.PendingCount = 0;
 		output.FailedCount = 0;
 		output.UnavailableCount = 0;
@@ -660,16 +626,26 @@ namespace Services::Map::Buildings::Scheduling
 		output.PreparedSpriteIndicesByOrdinal.clear();
 	}
 
-	/** Copies aligned candidate/source evidence and allocates empty sparse-sprite indices per ordinal. */
-	void SectionScheduler::InitializeKnownSpriteOccurrences(
+	/** Copies aligned candidate/source facts and allocates empty sparse-sprite indices per ordinal. */
+	bool SectionScheduler::InitializeKnownSpriteOccurrences(
 		const BuildingCandidateData& candidateData,
 		const BuildingCandidateSourceData& sourceData,
 		KnownSpritePreparationResult& output)
 	{
+		if (sourceData.records.size() != candidateData.occurrences.size())
+		{
+			return false;
+		}
 		output.OccurrenceOutcomes.reserve(candidateData.occurrences.size());
 		output.PreparedSpriteIndicesByOrdinal.resize(candidateData.occurrences.size());
 		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
 		{
+			if (candidateData.occurrences[index].publicationOrdinal != index)
+			{
+				output.OccurrenceOutcomes.clear();
+				output.PreparedSpriteIndicesByOrdinal.clear();
+				return false;
+			}
 			KnownSpritePreparationResult::OccurrenceOutcome outcome;
 			outcome.PublicationOrdinal = candidateData.occurrences[index].publicationOrdinal;
 			outcome.SourceKind = sourceData.records[index].kind;
@@ -679,12 +655,12 @@ namespace Services::Map::Buildings::Scheduling
 			outcome.IsPendingOrUnresolved = candidateData.occurrences[index].isPendingOrUnresolved;
 			output.OccurrenceOutcomes.push_back(outcome);
 		}
+		return true;
 	}
 
-	/** Prepares ordered neutral inputs for exactly one explicitly supplied publication observation. */
+	/** Prepares ordered neutral inputs for every occurrence in one retained Section publication. */
 	void SectionScheduler::PrepareSectionSceneInputs(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const BuildingCandidateObservation& observation,
 		const KnownSpritePreparationResult& knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
 		SectionScenePreparationResult& output) const
@@ -692,36 +668,24 @@ namespace Services::Map::Buildings::Scheduling
 		output.Reset();
 		if (!ValidateSectionPreparationInputs(
 			publicationOwner,
-			observation,
 			knownSpritePreparation,
 			output.PreparationReadiness))
 		{
 			return;
 		}
 		output.PublicationIdentity = publicationOwner.get();
-		output.CandidateEvidence = GetSectionCandidateEvidence(*publicationOwner, observation);
-		output.OccurrenceOutcomes.reserve(observation.candidateOrdinals.size());
-		for (const std::uint64_t ordinal : observation.candidateOrdinals)
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		output.OccurrenceOutcomes.reserve(candidateData.occurrences.size());
+		for (const BuildingCandidateOccurrence& occurrence : candidateData.occurrences)
 		{
 			ProcessSectionOccurrence(
 				publicationOwner,
-				ordinal,
+				occurrence.publicationOrdinal,
 				knownSpritePreparation,
 				splinePolicies,
 				output);
 		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.PreparationReadiness = SectionScenePreparationResult::Readiness::StalePublication;
-			return;
-		}
 		const SectionScenePreparationResult::Readiness readiness = DetermineSceneReadiness(output);
-		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
-			!publicationOwner->IsCurrent())
-		{
-			output.PreparationReadiness = SectionScenePreparationResult::Readiness::StalePublication;
-			return;
-		}
 		output.PreparationReadiness = readiness;
 		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs)
 		{
@@ -743,12 +707,11 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Preserves invalid, stale and mismatched input outcomes before scene preparation starts. */
+	/** Preserves invalid publication and mismatched sprite-result outcomes before preparation. */
 	bool SectionScheduler::ValidateSectionPreparationInputs(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const BuildingCandidateObservation& observation,
 		const KnownSpritePreparationResult& spritePreparation,
-		SectionScenePreparationResult::Readiness& readiness)
+		SectionScenePreparationResult::Readiness& readiness) const
 	{
 		using Readiness = SectionScenePreparationResult::Readiness;
 		if (publicationOwner == nullptr ||
@@ -757,49 +720,13 @@ namespace Services::Map::Buildings::Scheduling
 			readiness = Readiness::InvalidPublication;
 			return false;
 		}
-		if (!publicationOwner->IsCurrent() ||
-			spritePreparation.PreparationStatus == KnownSpritePreparationResult::Status::StalePublication)
-		{
-			readiness = Readiness::StalePublication;
-			return false;
-		}
 		if (spritePreparation.PublicationIdentity != publicationOwner.get() ||
 			(spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::KnownRequirementsProcessed &&
 				spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::InvalidSourceRequirement) ||
-			!IsValidSectionObservation(*publicationOwner, observation) ||
 			!IsCompatibleSpritePreparation(*publicationOwner, spritePreparation))
 		{
-			readiness = Readiness::InvalidObservation;
+			readiness = Readiness::InvalidPreparationInputs;
 			return false;
-		}
-		return true;
-	}
-
-	/** Validates that one observation exactly corresponds to source-relative publication ordinals. */
-	bool SectionScheduler::IsValidSectionObservation(
-		const BuildingCandidatePublication& publication,
-		const BuildingCandidateObservation& observation)
-	{
-		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
-		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
-		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
-		if (!std::isfinite(observation.requestedRegion.xMapUnits) ||
-			!std::isfinite(observation.requestedRegion.yMapUnits) ||
-			!std::isfinite(observation.requestedRegion.widthMapUnits) ||
-			!std::isfinite(observation.requestedRegion.heightMapUnits) ||
-			observation.requestedRegion.widthMapUnits <= 0.0 || observation.requestedRegion.heightMapUnits <= 0.0 ||
-			!std::isfinite(right) || !std::isfinite(bottom) || right <= observation.requestedRegion.xMapUnits ||
-			bottom <= observation.requestedRegion.yMapUnits ||
-			observation.candidateOrdinals.size() != candidateData.occurrences.size())
-		{
-			return false;
-		}
-		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
-		{
-			if (observation.candidateOrdinals[index] != candidateData.occurrences[index].publicationOrdinal)
-			{
-				return false;
-			}
 		}
 		return true;
 	}
@@ -812,13 +739,15 @@ namespace Services::Map::Buildings::Scheduling
 		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
 		const BuildingCandidateSourceData sourceData = publication.BorrowSourceData();
 		if (candidateData.occurrences.size() != spritePreparation.OccurrenceOutcomes.size() ||
-			sourceData.records.size() != candidateData.occurrences.size())
+			sourceData.records.size() != candidateData.occurrences.size() ||
+			spritePreparation.PreparedSpriteIndicesByOrdinal.size() != candidateData.occurrences.size())
 		{
 			return false;
 		}
 		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
 		{
-			if (spritePreparation.OccurrenceOutcomes[index].PublicationOrdinal !=
+			if (candidateData.occurrences[index].publicationOrdinal != index ||
+				spritePreparation.OccurrenceOutcomes[index].PublicationOrdinal !=
 				candidateData.occurrences[index].publicationOrdinal)
 			{
 				return false;
@@ -826,9 +755,12 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		for (const auto& prepared : spritePreparation.PreparedSprites)
 		{
+			if (prepared.PublicationOrdinal >= sourceData.records.size())
+			{
+				return false;
+			}
 			const std::size_t index = static_cast<std::size_t>(prepared.PublicationOrdinal);
-			if (index >= sourceData.records.size() ||
-				sourceData.records[index].kind != BuildingCandidateSourceKind::Sprite ||
+			if (sourceData.records[index].kind != BuildingCandidateSourceKind::Sprite ||
 				sourceData.records[index].spritePass != prepared.SpritePass ||
 				(spritePreparation.OccurrenceOutcomes[index].PreparationStatus !=
 					KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
@@ -839,32 +771,6 @@ namespace Services::Map::Buildings::Scheduling
 			}
 		}
 		return true;
-	}
-
-	/** Prevents one observation from promoting weaker publication evidence or uncovered regions. */
-	BuildingCandidateEvidence SectionScheduler::GetSectionCandidateEvidence(
-		const BuildingCandidatePublication& publication,
-		const BuildingCandidateObservation& observation)
-	{
-		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
-		BuildingCandidateEvidence evidence = observation.evidence;
-		evidence.membershipEnumerationComplete = evidence.membershipEnumerationComplete &&
-			candidateData.evidence.membershipEnumerationComplete;
-		evidence.nativeAcquisitionComplete = evidence.nativeAcquisitionComplete &&
-			candidateData.evidence.nativeAcquisitionComplete;
-		evidence.hasPendingOrUnresolvedOccurrences = evidence.hasPendingOrUnresolvedOccurrences ||
-			candidateData.evidence.hasPendingOrUnresolvedOccurrences;
-		const double right = observation.requestedRegion.xMapUnits + observation.requestedRegion.widthMapUnits;
-		const double bottom = observation.requestedRegion.yMapUnits + observation.requestedRegion.heightMapUnits;
-		const double coverageRight = candidateData.coverage.xMapUnits + candidateData.coverage.widthMapUnits;
-		const double coverageBottom = candidateData.coverage.yMapUnits + candidateData.coverage.heightMapUnits;
-		const bool regionCovered = candidateData.hasCoverage &&
-			observation.requestedRegion.xMapUnits >= candidateData.coverage.xMapUnits &&
-			observation.requestedRegion.yMapUnits >= candidateData.coverage.yMapUnits &&
-			right <= coverageRight && bottom <= coverageBottom;
-		evidence.candidateCoverageComplete = evidence.candidateCoverageComplete &&
-			candidateData.evidence.candidateCoverageComplete && regionCovered;
-		return evidence;
 	}
 
 	/** Accounts for one candidate occurrence and appends only already prepared eligible inputs. */
@@ -1046,10 +952,6 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySpline;
 		}
-		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::StalePublication)
-		{
-			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingNativeSourceAcquisition;
-		}
 		else if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::ProfilesNotComplete &&
 			source.splineProfileStatus == SplineProfileAcquisitionStatus::Unavailable)
 		{
@@ -1073,22 +975,12 @@ namespace Services::Map::Buildings::Scheduling
 		output.SplinePreparations.push_back(std::move(preparation));
 	}
 
-	/** Requires certified coverage and rejects all unresolved or temporarily unavailable occurrence outcomes. */
+	/** Completes only when every Section occurrence is ready or terminally omittable. */
 	SectionScheduler::SectionScenePreparationResult::Readiness
 	SectionScheduler::DetermineSceneReadiness(const SectionScenePreparationResult& output)
 	{
 		using Readiness = SectionScenePreparationResult::Readiness;
 		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
-		if (!output.CandidateEvidence.candidateCoverageComplete ||
-			!output.CandidateEvidence.membershipEnumerationComplete)
-		{
-			return Readiness::IncompleteCandidateCoverage;
-		}
-		if (!output.CandidateEvidence.nativeAcquisitionComplete ||
-			output.CandidateEvidence.hasPendingOrUnresolvedOccurrences)
-		{
-			return Readiness::PendingNativeSourceAcquisition;
-		}
 		for (const auto& outcome : output.OccurrenceOutcomes)
 		{
 			switch (outcome.PreparationStatus)
@@ -1323,7 +1215,7 @@ namespace Services::Map::Buildings::Scheduling
 		output.RootStatus = RootStatus::Prepared;
 	}
 
-	/** Checks publication currentness before reading and after composing one ordinal-bound spline input.
+	/** Composes one ordinal-bound spline input from a retained immutable Section publication.
 	 * The publication and policy are borrowed only during this call and are not retained in output.
 	 */
 	void SectionScheduler::ComposeSplineRenderInput(
@@ -1340,11 +1232,6 @@ namespace Services::Map::Buildings::Scheduling
 			output.PreparationStatus = SplineRenderInputPreparationResult::Status::InvalidOccurrence;
 			return;
 		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.PreparationStatus = SplineRenderInputPreparationResult::Status::StalePublication;
-			return;
-		}
 		if (!publicationOwner->TryGetSourceRecord(publicationOrdinal, source) || source == nullptr)
 		{
 			output.PreparationStatus = SplineRenderInputPreparationResult::Status::InvalidOccurrence;
@@ -1352,30 +1239,35 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		output.PublicationOrdinal = publicationOrdinal;
 		output.SplinePolicyIndex = source->splinePolicyIndex;
+		output.GeometryMode = source->splineGeometryMode;
+		output.SyntheticThinRibbonHalfWidthMapUnits = source->syntheticThinRibbonHalfWidthMapUnits;
 		PrepareSplineCurve(*source, output.CurvePreparation);
 		SplineProfilePreparationResult profilePreparation;
-		PrepareSplineProfileAlternatives(*source, profilePreparation);
-		output.Alternatives.reserve(profilePreparation.Alternatives.size());
-		for (std::size_t alternativeIndex = 0;
-			alternativeIndex < profilePreparation.Alternatives.size();
-			++alternativeIndex)
+		if (output.GeometryMode == BuildingCandidateSplineGeometryMode::AuthoredProfiles)
 		{
-			SplineRenderInputPreparationResult::AlternativeOutcome outcome;
-			outcome.SourceAlternativeIndex = alternativeIndex;
-			outcome.PreparationStatus = profilePreparation.Alternatives[alternativeIndex].PreparationStatus;
-			output.Alternatives.push_back(outcome);
+			PrepareSplineProfileAlternatives(*source, profilePreparation);
+			output.Alternatives.reserve(profilePreparation.Alternatives.size());
+			for (std::size_t alternativeIndex = 0;
+				alternativeIndex < profilePreparation.Alternatives.size();
+				++alternativeIndex)
+			{
+				SplineRenderInputPreparationResult::AlternativeOutcome outcome;
+				outcome.SourceAlternativeIndex = alternativeIndex;
+				outcome.PreparationStatus = profilePreparation.Alternatives[alternativeIndex].PreparationStatus;
+				output.Alternatives.push_back(outcome);
+			}
 		}
 		if (!CheckSplineRenderInputPrerequisites(*source, resolvedPolicyIndex, resolvedPolicy, output))
 		{
 			return;
 		}
-		if (!AppendSplineRenderSurfaces(*resolvedPolicy, profilePreparation, output))
+		const bool surfacesPrepared = output.GeometryMode ==
+			BuildingCandidateSplineGeometryMode::SyntheticThinRibbon
+			? AppendSyntheticThinRibbon(*resolvedPolicy,
+				output.SyntheticThinRibbonHalfWidthMapUnits, output)
+			: AppendSplineRenderSurfaces(*resolvedPolicy, profilePreparation, output);
+		if (!surfacesPrepared)
 		{
-			return;
-		}
-		if (!publicationOwner->IsCurrent())
-		{
-			output.PreparationStatus = SplineRenderInputPreparationResult::Status::StalePublication;
 			return;
 		}
 		output.PreparationStatus = SplineRenderInputPreparationResult::Status::Composed;
@@ -1409,9 +1301,8 @@ namespace Services::Map::Buildings::Scheduling
 			output.PreparationStatus = Status::SourceNotComplete;
 			return false;
 		}
-		if (output.CurvePreparation.ProfileStatus != SplineProfileAcquisitionStatus::Complete)
+		if (!CheckSplineGeometryIntentPrerequisites(source, output))
 		{
-			output.PreparationStatus = Status::ProfilesNotComplete;
 			return false;
 		}
 		if (output.CurvePreparation.PreparationStatus != SplineCurvePreparationResult::CurveStatus::ConvertedWorldSpace ||
@@ -1426,6 +1317,61 @@ namespace Services::Map::Buildings::Scheduling
 			output.PreparationStatus = Status::RootTransformUnavailable;
 			return false;
 		}
+		return true;
+	}
+
+	/** Requires mode-specific profile evidence without inferring geometry from NotApplicable. */
+	bool SectionScheduler::CheckSplineGeometryIntentPrerequisites(
+		const BuildingCandidateSourceRecord& source,
+		SplineRenderInputPreparationResult& output)
+	{
+		using Status = SplineRenderInputPreparationResult::Status;
+		if (source.splineGeometryMode == BuildingCandidateSplineGeometryMode::AuthoredProfiles)
+		{
+			if (output.CurvePreparation.ProfileStatus == SplineProfileAcquisitionStatus::NotApplicable)
+			{
+				output.PreparationStatus = Status::CurveNotEligible;
+				return false;
+			}
+			if (output.CurvePreparation.ProfileStatus != SplineProfileAcquisitionStatus::Complete)
+			{
+				output.PreparationStatus = Status::ProfilesNotComplete;
+				return false;
+			}
+			return true;
+		}
+		if (source.splineGeometryMode == BuildingCandidateSplineGeometryMode::SyntheticThinRibbon &&
+			output.CurvePreparation.ProfileStatus == SplineProfileAcquisitionStatus::NotApplicable &&
+			std::isfinite(output.SyntheticThinRibbonHalfWidthMapUnits) &&
+			output.SyntheticThinRibbonHalfWidthMapUnits > 0.0)
+		{
+			return true;
+		}
+		output.PreparationStatus = Status::CurveNotEligible;
+		return false;
+	}
+
+	/** Appends one finite synthetic ribbon with world-up orientation and policy appearance. */
+	bool SectionScheduler::AppendSyntheticThinRibbon(
+		const SplinePolicy& policy,
+		double halfWidthMapUnits,
+		SplineRenderInputPreparationResult& output)
+	{
+		if (!std::isfinite(halfWidthMapUnits) || halfWidthMapUnits <= 0.0)
+		{
+			output.PreparationStatus = SplineRenderInputPreparationResult::Status::CurveNotEligible;
+			return false;
+		}
+		Visuals::BuildingSplineSurfaceRenderInput surface;
+		surface.Bounds.Extent = {0.0, halfWidthMapUnits, 0.0};
+		surface.CrossSection.Scale = {1.0, 1.0};
+		surface.CrossSection.Offset = {0.0, 0.0};
+		surface.CrossSection.Up = {0.0, 0.0, 1.0};
+		surface.Appearance.Mode = Visuals::SplineSurfaceAppearanceMode::SolidColor;
+		surface.Appearance.SolidRgb = policy.SolidRgb;
+		surface.Appearance.Opacity = policy.Opacity;
+		surface.ComponentTransformOverride.emplace();
+		output.SurfaceInputs.push_back(std::move(surface));
 		return true;
 	}
 
@@ -1560,10 +1506,8 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (requirement->kind != BuildingCandidateSourceKind::Sprite)
 		{
-			output.MayHaveUnknownRequirements = true;
 			return;
 		}
-		RecordSpriteSourceUncertainty(*requirement, output);
 		Cache::OwnedSpriteKey ownedKey;
 		if (!Cache::OwnedSpriteKey::TryCopy(requirement->canonicalClassPath, ownedKey))
 		{
@@ -1572,18 +1516,6 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 		PrepareSpriteRequirement(candidate.publicationOrdinal, *requirement, ownedKey, output, *outcome);
-	}
-
-	/** Records source uncertainty while preserving the existing cache-preparation path. */
-	void SectionScheduler::RecordSpriteSourceUncertainty(
-		const BuildingCandidateSourceRecord& requirement,
-		KnownSpritePreparationResult& output)
-	{
-		if (requirement.status != BuildingCandidateSourceStatus::Complete ||
-			requirement.spritePass == BuildingCandidateSpritePass::Unknown)
-		{
-			output.MayHaveUnknownRequirements = true;
-		}
 	}
 
 	/** Preserves acquisition outcomes and borrows actual payload metadata only for placed ready sprites. */
@@ -1742,20 +1674,6 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Withdraws borrowed prepared inputs if the fixed publication lost eligibility during processing. */
-	bool SectionScheduler::RevalidatePreparedPublication(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		KnownSpritePreparationResult& output) const noexcept
-	{
-		if (publicationOwner != nullptr && publicationOwner->IsCurrent())
-		{
-			return true;
-		}
-		output.PreparedSprites.clear();
-		output.PreparedSpriteIndicesByOrdinal.clear();
-		output.PreparationStatus = KnownSpritePreparationResult::Status::StalePublication;
-		return false;
-	}
 }
 
 #endif // MODLOADER_CLIENT_BUILD

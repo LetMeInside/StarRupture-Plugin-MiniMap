@@ -10,7 +10,9 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <span>
+#include <utility>
 #include <vector>
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -139,20 +141,10 @@ namespace Services::Map::Buildings
 	private:
 		friend class BuildingMapViewport;
 		friend class Scheduling::SectionSchedulingCoordinator;
-
-		/** Retains one publication with an observation borrowing its ordinal storage.
-		 * Observation spans remain valid only while PublicationOwner remains retained.
-		 */
-		struct SectionCandidateSource
-		{
-			/** Owner of the publication that stores the observation's borrowed ordinals. */
-			std::shared_ptr<const BuildingCandidatePublication> PublicationOwner;
-			/** Exact Section observation borrowing only from PublicationOwner. */
-			BuildingCandidateObservation Observation{};
-
-			/** Clears the owner and all borrowed observation views. */
-			void Reset() noexcept;
-		};
+		using SectionCoordinate = std::pair<std::int64_t, std::int64_t>;
+		using SectionPublicationMap = std::map<
+			SectionCoordinate,
+			std::shared_ptr<const BuildingCandidatePublication>>;
 
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		const BuildingMapSection* FindSectionAt(
@@ -192,8 +184,10 @@ namespace Services::Map::Buildings
 			std::int64_t endGridX,
 			std::int64_t endGridY) override;
 
-		/** Advances publication observation for one live viewport and then the shared coordinator once. */
+		/** Observes one live viewport's acquisition hash and advances shared Section scheduling once. */
 		bool AdvanceViewportScheduling(std::uint64_t viewportHandle) override;
+		/** Queues a one-shot Section hash comparison after a collector policy change. */
+		void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle) override;
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);
@@ -201,8 +195,68 @@ namespace Services::Map::Buildings
 		bool BeginCaptureGameWorldSession();
 		/** Ends gameplay scheduling and requests cancellation of active capture work. */
 		void StopCaptureGameWorldSession();
-		/** Detects one viewport's publication owner change and requeues its demanded range. */
-		void ObserveViewportCandidatePublicationChanges(BuildingMapViewport& viewport);
+		/** Adds every cell in a live viewport's current half-open grid range. */
+		void AddViewportGridCoordinates(
+			const BuildingMapViewport& viewport,
+			std::set<SectionCoordinate>& coordinates) const;
+		/** Requests one publication batch per applicable collector and retains first-valid results. */
+		void AcquireSectionPublicationBatches(
+			const std::set<SectionCoordinate>& coordinates,
+			std::uint64_t recheckedViewportHandle,
+			bool clearRecheckWhenCovered);
+		/** Acquires and validates one viewport's ordered Section publication batch. */
+		void AcquireViewportSectionPublicationBatch(
+			std::uint64_t viewportHandle,
+			BuildingMapViewport& viewport,
+			const std::set<SectionCoordinate>& coordinates,
+			bool clearRecheckWhenCovered);
+		/** Builds one viewport's exact region and coordinate arrays from the requested cells. */
+		bool BuildViewportSectionRequest(
+			const BuildingMapViewport& viewport,
+			const std::set<SectionCoordinate>& coordinates,
+			std::vector<SectionCoordinate>& requestedCoordinates,
+			std::vector<BuildingCollectionRegion>& requestedRegions) const;
+		/** Tests whether outstanding publications cover one viewport's full demanded grid. */
+		bool AreAllViewportSectionsSupplied(const BuildingMapViewport& viewport) const;
+		/** Observes acquisition content and reports whether demanded Section hashes need comparison. */
+		bool ObserveViewportAcquisitionHash(
+			std::uint64_t viewportHandle,
+			const IBuildingCollector& buildingCollector);
+		/** Chooses affected demand or waiting work that lacks a retained publication. */
+		std::set<SectionCoordinate> GetSectionRequestCoordinates(
+			const BuildingMapViewport& viewport,
+			bool compareViewportDemand);
+		/** Catches only collector request failures that mean its committed Section data is unavailable. */
+		bool TryAcquireSectionPublicationBatch(
+			BuildingMapViewport& viewport,
+			const std::vector<BuildingCollectionRegion>& requestedRegions,
+			std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications);
+		/** Validates ordered results and lets the first registered valid source win. */
+		void RetainSectionPublicationBatch(
+			std::uint64_t viewportHandle,
+			const std::vector<SectionCoordinate>& requestedCoordinates,
+			const std::vector<BuildingCollectionRegion>& requestedRegions,
+			const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+			bool completeRequestBatch,
+			bool clearRecheckWhenCovered);
+		/** Removes retained publications whose content is already successfully applied. */
+		void ReleasePendingPublicationsAlreadyApplied();
+		/** Releases pending publications in a changed viewport's old and new grid ranges. */
+		void InvalidatePendingPublicationsInRange(
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::int64_t endGridX,
+			std::int64_t endGridY);
+		/** Converts a signed grid cell to its exact finite map-space rectangle. */
+		bool TryCreateSectionRegion(
+			std::int64_t gridX,
+			std::int64_t gridY,
+			BuildingCollectionRegion& output) const noexcept;
+		/** Retains an applied hash only after an image or confirmed-empty commit. */
+		void RecordSectionAppliedHash(
+			std::int64_t gridX,
+			std::int64_t gridY,
+			std::uint64_t contentHash);
 
 		/** Checks whether any valid active viewport's one-cell-expanded range contains a Section coordinate.
 		 * @param gridX Signed global Section column to check.
@@ -214,49 +268,6 @@ namespace Services::Map::Buildings
 		/** Releases completed images outside all active viewport residency ranges without erasing Sections. */
 		void ReconcileSectionImageResidency();
 
-		/** Selects one live viewport publication for the requested signed Section coordinate.
-		 * Prefers complete source evidence and keeps first registration order for ties. Incomplete
-		 * evidence remains visible in the borrowed observation for later readiness decisions.
-		 * @param gridX Signed Section column to select.
-		 * @param gridY Signed Section row to select.
-		 * @param output Receives a retained publication and its same-publication observation.
-		 * @return True when a current eligible publication covers the exact target cell.
-		 */
-		bool TrySelectCandidatePublicationForSection(
-			std::int64_t gridX,
-			std::int64_t gridY,
-			SectionCandidateSource& output) const;
-
-		/** Considers one registered viewport without combining its publication with another.
-		 * @param viewportHandle Registration key used as the deterministic tie order.
-		 * @param viewport Live service registration to inspect.
-		 * @param gridX Signed target Section column.
-		 * @param gridY Signed target Section row.
-		 * @param sectionRegion Exact target map-space cell.
-		 * @param observationGrid One-cell grid requested from the publication.
-		 * @param selectedCandidate Retains the best same-publication owner and observation so far.
-		 * @param selectedEvidenceRank Quality tier of the retained candidate.
-		 */
-		void ConsiderViewportCandidateForSection(
-			std::uint64_t viewportHandle,
-			BuildingMapViewport* viewport,
-			std::int64_t gridX,
-			std::int64_t gridY,
-			const BuildingCollectionRegion& sectionRegion,
-			const BuildingSectionGrid& observationGrid,
-			SectionCandidateSource& selectedCandidate,
-			int& selectedEvidenceRank) const;
-
-		/** Checks that accepted requested coverage contains one complete half-open Section cell. */
-		static bool HasRequestedCoverageForSection(
-			const BuildingCandidateData& candidateData,
-			const BuildingCollectionRegion& sectionRegion) noexcept;
-
-		/** Confirms that a generated observation describes the exact selected Section cell. */
-		static bool IsObservationForSection(
-			const BuildingCandidateObservation& observation,
-			const BuildingCollectionRegion& sectionRegion) noexcept;
-
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
 		const std::vector<SplinePolicy> splinePolicies_;
@@ -264,6 +275,10 @@ namespace Services::Map::Buildings
 		double mapHeightMapUnits_ = 0.0;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
+		std::map<std::uint64_t, std::uint64_t> observedAcquisitionHashes_;
+		std::map<SectionCoordinate, std::uint64_t> appliedSectionHashes_;
+		SectionPublicationMap pendingSectionPublications_;
+		std::set<std::uint64_t> sectionHashRechecksRequested_;
 		std::uint64_t nextViewportHandle_ = 1;
 		bool sectionImageResidencyReconciliationPending_ = false;
 		std::unique_ptr<Scheduling::SectionSchedulingCoordinator> sectionSchedulingCoordinator_;

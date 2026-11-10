@@ -502,6 +502,7 @@ namespace MiniMapUI
 		Services::Map::Buildings::BuildingMapService* service_;
 		double sectionSizeMapUnits_;
 		std::unique_ptr<MiniMap::BuildingAcquisition::BuildingCollectorV2> buildingCollector_;
+		bool renderDroneRailsEnabled_ = true;
 		std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport_;
 		std::set<Coordinate> dirtyCoordinates_;
 		std::map<Coordinate, PendingPresentationUpdate> pendingUpdates_;

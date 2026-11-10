@@ -281,12 +281,21 @@ namespace MiniMapUI
 		return true;
 	}
 
-	/** Forwards presentation policy to the layer-owned V2 collector. */
+	/** Applies changed rail policy and requests Section-hash comparison on the next viewport update. */
 	void BuildingLayer::SetRenderDroneRails(bool enabled)
 	{
+		if (renderDroneRailsEnabled_ == enabled)
+		{
+			return;
+		}
+		renderDroneRailsEnabled_ = enabled;
 		if (buildingCollector_ != nullptr)
 		{
 			buildingCollector_->SetRenderDroneRails(enabled);
+		}
+		if (viewport_ != nullptr)
+		{
+			viewport_->RequestSectionHashRecheck();
 		}
 	}
 

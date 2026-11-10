@@ -1,5 +1,5 @@
-// Independently acquires StarRupture native building facts. All ABI-specific access
-// stays here; no rendering, legacy collector, service interface or runtime caller is used.
+// Acquires StarRupture building facts and distributes retained neutral values to requested Sections.
+// All ABI-specific access stays here; Section publications contain no native ownership.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingMapLoadingTrace.h"
 #include "DiagnosticExports.h"
@@ -20,13 +20,13 @@
 #include <MassExecutionContext.h>
 #include <MassArchetypeTypes.h>
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <map>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -460,7 +460,6 @@ namespace MiniMap::BuildingAcquisition
             Metric RegionalBookkeeping;
             Metric OwnedFactCopying;
             Metric Acquisition;
-            Metric Publication;
             std::uint64_t MembershipScans = 0;
             std::uint64_t Chunks = 0;
             std::uint64_t Examined = 0;
@@ -469,8 +468,6 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
             std::uint64_t FailedScans = 0;
-            std::uint64_t PublicationAttempts = 0;
-            std::uint64_t Publications = 0;
             WorstMembershipScan WorstScan;
 
             void Reset() noexcept
@@ -725,15 +722,9 @@ namespace MiniMap::BuildingAcquisition
         std::uint64_t AcquisitionContentHash = 0;
         Clock::time_point NextMembership{};
         bool MembershipComplete = false;
-        bool Dirty = true;
         bool HasRegion = false;
         bool IncludeDroneRails = true;
         Facts::Region RequestedRegion;
-        std::shared_ptr<const Facts> Published;
-        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> PublishedCandidates;
-        std::shared_ptr<std::atomic<bool>> PublicationEligibility;
-        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity> SourceChangeIdentity;
-        bool SourceChangeIdentityDirty = true;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
         static std::uint64_t Key(EntityId id) noexcept
@@ -746,17 +737,6 @@ namespace MiniMap::BuildingAcquisition
         Context CaptureContext() const noexcept
         {
             return {World, Manager, Generation, RequestGeneration, HasRegion, RequestedRegion};
-        }
-
-        /** Marks exposed bytes historical immediately; their retained CPU lifetime is unaffected. */
-        void Invalidate(bool sourceContentChanged = true) noexcept
-        {
-            Dirty = true;
-            SourceChangeIdentityDirty = SourceChangeIdentityDirty || sourceContentChanged;
-            if (PublicationEligibility)
-                PublicationEligibility->store(false, std::memory_order_release);
-            PublicationEligibility.reset();
-            PublishedCandidates.reset();
         }
 
         /** Obtains existing native shared-pointer storage; never fabricates shared ownership.
@@ -795,7 +775,6 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             Diagnostics.Reset();
 #endif
-            Invalidate();
             ++Generation;
             if (QueryConstructed)
                 MiniMapNative::Get()->mass.queryDestruct(Query.data());
@@ -808,8 +787,6 @@ namespace MiniMap::BuildingAcquisition
             Definitions.clear();
             NextMembership = {};
             MembershipComplete = false;
-            Published.reset();
-            PublishedCandidates.reset();
             if (clearRequest)
             {
                 HasRegion = false;
@@ -848,7 +825,6 @@ namespace MiniMap::BuildingAcquisition
                 std::uint8_t(SDK::EMassFragmentPresence::Optional));
             native.mass.addOptionalBuildingParametersRequirement(
                 Query.data(), std::uint8_t(SDK::EMassFragmentPresence::Optional));
-            Invalidate();
             return true;
         }
 
@@ -1122,7 +1098,6 @@ namespace MiniMap::BuildingAcquisition
             else
             {
                 entry.Data = std::move(data);
-                Invalidate();
             }
             if (!entry.Data.Complete)
             {
@@ -1192,7 +1167,6 @@ namespace MiniMap::BuildingAcquisition
             {
                 if (!reconciled.contains(previous.first))
                 {
-                    Invalidate();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++timing->Removed;
 #endif
@@ -1208,8 +1182,6 @@ namespace MiniMap::BuildingAcquisition
             Entities.swap(reconciled);
             Pending.swap(pending);
             AcquisitionContentHash = acquisitionHash;
-            if (!MembershipComplete)
-                Invalidate();
             MembershipComplete = true;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing->ReconciliationMs = std::chrono::duration<double, std::milli>(Clock::now() - reconciliationStarted).count();
@@ -1278,17 +1250,10 @@ namespace MiniMap::BuildingAcquisition
                 return;
             if (!complete)
             {
-                if (MembershipComplete)
-                    Invalidate();
-                else
-                    Invalidate(false);
                 MembershipComplete = false;
             }
-            else if (!MembershipComplete)
-            {
+            else
                 MembershipComplete = true;
-                Invalidate();
-            }
             NextMembership = Clock::now() + MembershipInterval;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing.Complete = complete;
@@ -1685,6 +1650,14 @@ namespace MiniMap::BuildingAcquisition
             else
             {
                 source.splinePolicyIndex = static_cast<std::uint16_t>(ClassifySplinePolicyId(building));
+                if (building.DefinitionFacts &&
+                    building.DefinitionFacts->ClassStatus == Status::Ready &&
+                    IsDroneRailDefinitionId(building.DefinitionFacts->BuildingId))
+                {
+                    source.splineGeometryMode =
+                        ::Services::Map::Buildings::BuildingCandidateSplineGeometryMode::SyntheticThinRibbon;
+                    source.syntheticThinRibbonHalfWidthMapUnits = 5.0;
+                }
                 if (building.DefinitionFacts)
                 {
                     source.splineProfiles = building.DefinitionFacts->SplineProfiles;
@@ -1698,142 +1671,395 @@ namespace MiniMap::BuildingAcquisition
             return source;
         }
 
-        /** Builds candidate and source vectors in one pass over the exact same frozen facts. */
-        static void BuildCandidateRecords(
-            const Facts& facts,
-            bool includeDroneRails,
-            std::vector<::Services::Map::Buildings::BuildingCandidateOccurrence>& occurrences,
-            std::vector<::Services::Map::Buildings::BuildingCandidateSourceRecord>& sourceRecords,
-            std::size_t& excludedInteriorOnlyCount,
-            std::size_t& excludedDroneRailCount)
+        using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
+        using CandidateSourceRecord = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
+        using CandidatePublication = ::Services::Map::Buildings::BuildingCandidatePublication;
+        using CollectionRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
+
+        /** Indexes one exact Section cell in the service's zero-origin grid. */
+        struct SectionCellCoordinate
         {
-            using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
-            occurrences.reserve(facts.Buildings.size());
-            sourceRecords.reserve(facts.Buildings.size());
-            excludedInteriorOnlyCount = 0;
-            excludedDroneRailCount = 0;
-            for (const Facts::Building& building : facts.Buildings)
-            {
-                if (building.DefinitionFacts &&
-                    building.DefinitionFacts->InteriorStatus == Status::Ready &&
-                    building.DefinitionFacts->InteriorOnly)
-                {
-                    ++excludedInteriorOnlyCount;
-                    continue;
-                }
-                if (!includeDroneRails && IsDroneRail(building))
-                {
-                    ++excludedDroneRailCount;
-                    continue;
-                }
-                CandidateOccurrence occurrence;
-                occurrence.hasMapPosition = BuildingCollectorV2::HasValidMapPosition(building);
-                if (occurrence.hasMapPosition)
-                {
-                    occurrence.xMapUnits = building.Position[0];
-                    occurrence.yMapUnits = building.Position[1];
-                }
-                occurrence.nativeFactsComplete = building.Complete;
-                occurrence.isPendingOrUnresolved = !building.Complete;
-                occurrence.contentSignature = BuildingCollectorV2::ComputeOccurrenceSignature(building);
-                occurrences.push_back(std::move(occurrence));
-                sourceRecords.push_back(BuildCandidateSourceRecord(building));
-            }
+            std::int64_t X = 0;
+            std::int64_t Y = 0;
+        };
+
+        /** Stores requested Sections by row so sparse batches avoid scanning absent cells. */
+        struct RequestedSectionLookup
+        {
+            std::map<std::int64_t, std::map<std::int64_t, std::vector<std::size_t>>> SectionsByRow;
+            double SectionSize = 0.0;
+            double MinimumX = 0.0;
+            double MinimumY = 0.0;
+            double MaximumRight = 0.0;
+            double MaximumBottom = 0.0;
+            bool HasBounds = false;
+            std::int64_t MinimumGridX = 0;
+            std::int64_t MinimumGridY = 0;
+            std::int64_t MaximumGridX = 0;
+            std::int64_t MaximumGridY = 0;
+        };
+
+        /** Keeps each selected candidate/source pair together until deterministic ordering. */
+        struct SectionContributor
+        {
+            std::uint64_t Identity = 0;
+            CandidateOccurrence Occurrence;
+            CandidateSourceRecord Source;
+        };
+
+        /** Validates a finite, positive rectangle with finite, distinct edges. */
+        static bool IsValidSectionRegion(const CollectionRegion& region) noexcept
+        {
+            const double right = region.xMapUnits + region.widthMapUnits;
+            const double bottom = region.yMapUnits + region.heightMapUnits;
+            return std::isfinite(region.xMapUnits) && std::isfinite(region.yMapUnits) &&
+                std::isfinite(region.widthMapUnits) && std::isfinite(region.heightMapUnits) &&
+                region.widthMapUnits > 0.0 && region.heightMapUnits > 0.0 &&
+                std::isfinite(right) && std::isfinite(bottom) &&
+                right > region.xMapUnits && bottom > region.yMapUnits;
         }
 
-        /** Produces neutral candidate occurrences and explicit coverage evidence from one fact owner. */
-        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
-        CreateCandidatePublication(
-            const std::shared_ptr<const Facts>& facts,
-            std::shared_ptr<std::atomic<bool>>& eligibility,
-            const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity>& sourceChangeIdentity)
+        /** Converts a service rectangle origin to its exact zero-origin grid index. */
+        static bool TryGetSectionGridIndex(
+            double coordinate,
+            double sectionSize,
+            std::int64_t& gridIndex) noexcept
         {
-            using CandidateOccurrence = ::Services::Map::Buildings::BuildingCandidateOccurrence;
-            using CandidateSourceRecord = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
-            using CandidateEvidence = ::Services::Map::Buildings::BuildingCandidateEvidence;
-            using CandidateRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
-            std::vector<CandidateOccurrence> occurrences;
-            std::vector<CandidateSourceRecord> sourceRecords;
-            std::size_t excludedInteriorOnlyCount = 0;
-            std::size_t excludedDroneRailCount = 0;
-            BuildCandidateRecords(
-                *facts,
-                IncludeDroneRails,
-                occurrences,
-                sourceRecords,
-                excludedInteriorOnlyCount,
-                excludedDroneRailCount);
-            CandidateEvidence evidence;
-            for (const CandidateOccurrence& occurrence : occurrences)
+            const double ratio = coordinate / sectionSize;
+            if (!std::isfinite(ratio))
             {
-                evidence.hasPendingOrUnresolvedOccurrences |= occurrence.isPendingOrUnresolved;
+                return false;
             }
-            evidence.membershipEnumerationComplete = facts->MembershipComplete;
-            evidence.nativeAcquisitionComplete = facts->AcquisitionComplete &&
-                !evidence.hasPendingOrUnresolvedOccurrences;
-            const bool allAuthoritativeOccurrencesAccounted =
-                occurrences.size() + excludedInteriorOnlyCount + excludedDroneRailCount ==
-                facts->Buildings.size();
-            // Only positively classified policy exclusions are omitted from candidates.
-            evidence.candidateCoverageComplete = facts->HasRequestedRegion &&
-                facts->MembershipComplete && allAuthoritativeOccurrencesAccounted;
-            const CandidateRegion requestedCoverage{
-                facts->RequestedRegion.X,
-                facts->RequestedRegion.Y,
-                facts->RequestedRegion.Width,
-                facts->RequestedRegion.Height};
-            eligibility = std::make_shared<std::atomic<bool>>(true);
-            return std::make_shared<::Services::Map::Buildings::BuildingCandidatePublication>(
-                std::move(occurrences),
-                std::move(sourceRecords),
-                evidence,
-                true,
-                requestedCoverage,
-                evidence.candidateCoverageComplete,
-                requestedCoverage,
-                eligibility,
-                sourceChangeIdentity);
+            const double rounded = std::round(ratio);
+            constexpr double maximumExactInteger = 9007199254740991.0;
+            if (rounded < -maximumExactInteger || rounded > maximumExactInteger)
+            {
+                return false;
+            }
+            const auto candidateIndex = static_cast<std::int64_t>(rounded);
+            if (static_cast<double>(candidateIndex) * sectionSize != coordinate)
+            {
+                return false;
+            }
+            gridIndex = candidateIndex;
+            return true;
         }
 
-        /** Freezes all occurrences only when relevant acquisition/request evidence changed. */
-        void Publish()
+        /** Checks that a requested Section lies within the acquired region's exact rectangle. */
+        bool IsSectionInsideAcquisition(const CollectionRegion& sectionRegion) const noexcept
         {
-            if (!Dirty || !MembershipComplete)
+            const double acquisitionRight = RequestedRegion.X + RequestedRegion.Width;
+            const double acquisitionBottom = RequestedRegion.Y + RequestedRegion.Height;
+            const double sectionRight = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
+            const double sectionBottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
+            return sectionRegion.xMapUnits >= RequestedRegion.X &&
+                sectionRegion.yMapUnits >= RequestedRegion.Y &&
+                sectionRight <= acquisitionRight && sectionBottom <= acquisitionBottom;
+        }
+
+        /** Validates common square size, acquisition containment and exact grid alignment. */
+        void BuildRequestedSectionLookup(
+            std::span<const CollectionRegion> sectionRegions,
+            RequestedSectionLookup& lookup) const
+        {
+            if (sectionRegions.empty())
+            {
                 return;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            ++Diagnostics.PublicationAttempts;
-            PhaseTiming publicationTiming{Diagnostics.Publication};
-#endif
-            auto facts = std::make_shared<Facts>();
-            facts->MembershipComplete = MembershipComplete;
-            facts->AcquisitionComplete = MembershipComplete && Pending.empty();
-            facts->HasRequestedRegion = HasRegion;
-            facts->RequestedRegion = RequestedRegion;
-            facts->Buildings.reserve(Entities.size());
-            for (const auto& item : Entities)
-                facts->Buildings.push_back(item.second.Data);
-            std::sort(facts->Buildings.begin(), facts->Buildings.end(), [](const auto& left, const auto& right)
-            {
-                return Key({left.Index, left.Serial}) < Key({right.Index, right.Serial});
-            });
-            std::shared_ptr<std::atomic<bool>> eligibility;
-            std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> candidates;
-            if (SourceChangeIdentityDirty || !SourceChangeIdentity)
-            {
-                SourceChangeIdentity = std::make_shared<const ::Services::Map::Buildings::BuildingCandidateSourceChangeIdentity>();
-                SourceChangeIdentityDirty = false;
             }
-            if (facts->HasRequestedRegion)
+            if (!IsValidSectionRegion(sectionRegions.front()))
             {
-                candidates = CreateCandidatePublication(facts, eligibility, SourceChangeIdentity);
+                throw std::invalid_argument("Section request contains an invalid rectangle.");
             }
-            Published = std::move(facts);
-            PublishedCandidates = std::move(candidates);
-            PublicationEligibility = std::move(eligibility);
-            Dirty = false;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            ++Diagnostics.Publications;
-#endif
+            lookup.SectionSize = sectionRegions.front().widthMapUnits;
+            if (sectionRegions.front().heightMapUnits != lookup.SectionSize)
+            {
+                throw std::invalid_argument("Section requests must be square grid cells.");
+            }
+            for (std::size_t index = 0; index < sectionRegions.size(); ++index)
+            {
+                const CollectionRegion& region = sectionRegions[index];
+                if (!IsValidSectionRegion(region) ||
+                    region.widthMapUnits != lookup.SectionSize ||
+                    region.heightMapUnits != lookup.SectionSize ||
+                    !IsSectionInsideAcquisition(region))
+                {
+                    throw std::invalid_argument(
+                        "Section batch has incompatible rectangles or exceeds acquired coverage.");
+                }
+                SectionCellCoordinate coordinate;
+                if (!TryGetSectionGridIndex(region.xMapUnits, lookup.SectionSize, coordinate.X) ||
+                    !TryGetSectionGridIndex(region.yMapUnits, lookup.SectionSize, coordinate.Y))
+                {
+                    throw std::invalid_argument("Section rectangle is not aligned to the service grid.");
+                }
+                lookup.SectionsByRow[coordinate.Y][coordinate.X].push_back(index);
+                UpdateRequestedSectionBounds(region, coordinate, lookup);
+            }
+        }
+
+        /** Expands the lookup's bounding envelope while preserving the sparse row index. */
+        static void UpdateRequestedSectionBounds(
+            const CollectionRegion& region,
+            const SectionCellCoordinate& coordinate,
+            RequestedSectionLookup& lookup) noexcept
+        {
+            const double right = region.xMapUnits + region.widthMapUnits;
+            const double bottom = region.yMapUnits + region.heightMapUnits;
+            if (!lookup.HasBounds)
+            {
+                lookup.MinimumX = region.xMapUnits;
+                lookup.MinimumY = region.yMapUnits;
+                lookup.MaximumRight = right;
+                lookup.MaximumBottom = bottom;
+                lookup.MinimumGridX = coordinate.X;
+                lookup.MinimumGridY = coordinate.Y;
+                lookup.MaximumGridX = coordinate.X;
+                lookup.MaximumGridY = coordinate.Y;
+                lookup.HasBounds = true;
+                return;
+            }
+            lookup.MinimumX = (std::min)(lookup.MinimumX, region.xMapUnits);
+            lookup.MinimumY = (std::min)(lookup.MinimumY, region.yMapUnits);
+            lookup.MaximumRight = (std::max)(lookup.MaximumRight, right);
+            lookup.MaximumBottom = (std::max)(lookup.MaximumBottom, bottom);
+            lookup.MinimumGridX = (std::min)(lookup.MinimumGridX, coordinate.X);
+            lookup.MinimumGridY = (std::min)(lookup.MinimumGridY, coordinate.Y);
+            lookup.MaximumGridX = (std::max)(lookup.MaximumGridX, coordinate.X);
+            lookup.MaximumGridY = (std::max)(lookup.MaximumGridY, coordinate.Y);
+        }
+
+        /** Bounds one building's reached cells to requested grid extents without overflow. */
+        static bool TryGetReachedGridRange(
+            double position,
+            double reach,
+            double sectionSize,
+            double minimumWorld,
+            double maximumWorld,
+            std::int64_t minimumGrid,
+            std::int64_t maximumGrid,
+            std::int64_t& firstGrid,
+            std::int64_t& lastGrid) noexcept
+        {
+            const double reachMinimum = position - reach;
+            const double reachMaximum = position + reach;
+            if (reachMaximum < minimumWorld || reachMinimum > maximumWorld)
+            {
+                return false;
+            }
+            const double clippedMinimum = (std::max)(reachMinimum, minimumWorld);
+            const double clippedMaximum = (std::min)(reachMaximum, maximumWorld);
+            const double minimumCell = std::floor(clippedMinimum / sectionSize) - 1.0;
+            const double maximumCell = std::floor(clippedMaximum / sectionSize) + 1.0;
+            firstGrid = (std::max)(minimumGrid, static_cast<std::int64_t>(minimumCell));
+            lastGrid = (std::min)(maximumGrid, static_cast<std::int64_t>(maximumCell));
+            return firstGrid <= lastGrid;
+        }
+
+        /** Applies exact half-open rectangle membership and the approved circular reach test. */
+        static bool IsContributorForSection(
+            const CollectionRegion& sectionRegion,
+            double positionX,
+            double positionY,
+            double resolvedReach) noexcept
+        {
+            const double right = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
+            const double bottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
+            if (positionX >= sectionRegion.xMapUnits && positionX < right &&
+                positionY >= sectionRegion.yMapUnits && positionY < bottom)
+            {
+                return true;
+            }
+            const double distanceX = (std::max)((std::max)(sectionRegion.xMapUnits - positionX, 0.0),
+                positionX - right);
+            const double distanceY = (std::max)((std::max)(sectionRegion.yMapUnits - positionY, 0.0),
+                positionY - bottom);
+            return std::hypot(distanceX, distanceY) <= resolvedReach;
+        }
+
+        /** Retains only contributors not excluded by established positive collector policy. */
+        bool ShouldIncludeCandidate(const Facts::Building& building) const
+        {
+            const auto& definition = building.DefinitionFacts;
+            if (definition && definition->InteriorStatus == Status::Ready && definition->InteriorOnly)
+            {
+                return false;
+            }
+            return IncludeDroneRails || !IsDroneRail(building);
+        }
+
+        /** Copies the neutral candidate fields from one completed retained occurrence. */
+        static CandidateOccurrence MakeCandidateOccurrence(const Facts::Building& building)
+        {
+            CandidateOccurrence occurrence;
+            occurrence.hasMapPosition = BuildingCollectorV2::HasValidMapPosition(building);
+            if (!occurrence.hasMapPosition)
+            {
+                throw std::runtime_error("Committed building occurrence has no finite XY origin.");
+            }
+            occurrence.xMapUnits = building.Position[0];
+            occurrence.yMapUnits = building.Position[1];
+            occurrence.nativeFactsComplete = building.Complete;
+            occurrence.isPendingOrUnresolved = !building.Complete;
+            return occurrence;
+        }
+
+        /** Holds conservative grid bounds reached by one building's XY origin and radius. */
+        struct SectionGridRange
+        {
+            std::int64_t FirstX = 0;
+            std::int64_t LastX = 0;
+            std::int64_t FirstY = 0;
+            std::int64_t LastY = 0;
+        };
+
+        /** Derives bounded grid ranges after clipping the reach box to requested Sections. */
+        static bool TryGetReachedSectionGridRange(
+            const Facts::Building& building,
+            const CandidateOccurrence& occurrence,
+            const RequestedSectionLookup& lookup,
+            SectionGridRange& range)
+        {
+            if (!std::isfinite(building.ResolvedReach) || building.ResolvedReach < 0.0)
+            {
+                throw std::runtime_error("Committed building has an invalid resolved reach.");
+            }
+            if (!TryGetReachedGridRange(occurrence.xMapUnits, building.ResolvedReach, lookup.SectionSize,
+                    lookup.MinimumX, lookup.MaximumRight, lookup.MinimumGridX, lookup.MaximumGridX,
+                    range.FirstX, range.LastX) ||
+                !TryGetReachedGridRange(occurrence.yMapUnits, building.ResolvedReach, lookup.SectionSize,
+                    lookup.MinimumY, lookup.MaximumBottom, lookup.MinimumGridY, lookup.MaximumGridY,
+                    range.FirstY, range.LastY))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /** Collects exact requested Section indices reached by one finite origin and radius. */
+        static void FindMatchingSections(
+            const Facts::Building& building,
+            const CandidateOccurrence& occurrence,
+            const SectionGridRange& range,
+            std::span<const CollectionRegion> sectionRegions,
+            const RequestedSectionLookup& lookup,
+            std::vector<std::size_t>& matchingSections)
+        {
+            matchingSections.clear();
+            auto row = lookup.SectionsByRow.lower_bound(range.FirstY);
+            while (row != lookup.SectionsByRow.end() && row->first <= range.LastY)
+            {
+                auto section = row->second.lower_bound(range.FirstX);
+                while (section != row->second.end() && section->first <= range.LastX)
+                {
+                    for (std::size_t sectionIndex : section->second)
+                    {
+                        if (IsContributorForSection(sectionRegions[sectionIndex],
+                            occurrence.xMapUnits, occurrence.yMapUnits, building.ResolvedReach))
+                        {
+                            matchingSections.push_back(sectionIndex);
+                        }
+                    }
+                    ++section;
+                }
+                ++row;
+            }
+        }
+
+        /** Appends one pre-converted occurrence and hash contribution to its exact Sections. */
+        static void AppendContributorToSections(
+            const Facts::Building& building,
+            const CandidateOccurrence& occurrence,
+            const CandidateSourceRecord& source,
+            std::uint64_t contentHash,
+            const std::vector<std::size_t>& matchingSections,
+            std::vector<std::vector<SectionContributor>>& contributorsBySection,
+            std::vector<AcquisitionHashAggregate>& hashesBySection)
+        {
+            const std::uint64_t identity = Key({building.Index, building.Serial});
+            for (std::size_t sectionIndex : matchingSections)
+            {
+                contributorsBySection[sectionIndex].push_back({identity, occurrence, source});
+                hashesBySection[sectionIndex].Add(contentHash);
+            }
+        }
+
+        /** Freezes each Section after identity sorting and contiguous local ordinal assignment. */
+        static std::vector<std::shared_ptr<const CandidatePublication>> FreezeSectionPublications(
+            std::span<const CollectionRegion> sectionRegions,
+            std::vector<std::vector<SectionContributor>>& contributorsBySection,
+            const std::vector<AcquisitionHashAggregate>& hashesBySection)
+        {
+            std::vector<std::shared_ptr<const CandidatePublication>> publications;
+            publications.reserve(sectionRegions.size());
+            for (std::size_t sectionIndex = 0; sectionIndex < sectionRegions.size(); ++sectionIndex)
+            {
+                auto& contributors = contributorsBySection[sectionIndex];
+                std::sort(contributors.begin(), contributors.end(), [](const auto& left, const auto& right)
+                {
+                    return left.Identity < right.Identity;
+                });
+                std::vector<CandidateOccurrence> occurrences;
+                std::vector<CandidateSourceRecord> sourceRecords;
+                occurrences.reserve(contributors.size());
+                sourceRecords.reserve(contributors.size());
+                for (const SectionContributor& contributor : contributors)
+                {
+                    CandidateOccurrence occurrence = contributor.Occurrence;
+                    occurrence.publicationOrdinal = static_cast<std::uint64_t>(occurrences.size());
+                    occurrences.push_back(std::move(occurrence));
+                    sourceRecords.push_back(contributor.Source);
+                }
+                publications.push_back(std::make_shared<const CandidatePublication>(
+                    sectionRegions[sectionIndex], std::move(occurrences), std::move(sourceRecords),
+                    FinalizeAcquisitionHash(hashesBySection[sectionIndex])));
+            }
+            return publications;
+        }
+
+        /** Builds ordered immutable Section results from the currently committed regional dataset. */
+        std::vector<std::shared_ptr<const CandidatePublication>> BuildSectionPublications(
+            std::span<const CollectionRegion> sectionRegions) const
+        {
+            if (sectionRegions.empty())
+            {
+                return {};
+            }
+            if (!QueryConstructed || !HasRegion || !MembershipComplete)
+            {
+                throw ::Services::Map::Buildings::SectionPublicationUnavailable(
+                    "No successful committed regional acquisition is available.");
+            }
+            RequestedSectionLookup lookup;
+            BuildRequestedSectionLookup(sectionRegions, lookup);
+            std::vector<std::vector<SectionContributor>> contributorsBySection(sectionRegions.size());
+            std::vector<AcquisitionHashAggregate> hashesBySection(sectionRegions.size());
+            std::vector<std::size_t> matchingSections;
+            matchingSections.reserve(8);
+            for (const auto& entity : Entities)
+            {
+                const Facts::Building& building = entity.second.Data;
+                if (!ShouldIncludeCandidate(building))
+                {
+                    continue;
+                }
+                CandidateOccurrence occurrence = MakeCandidateOccurrence(building);
+                SectionGridRange reachedRange;
+                if (!TryGetReachedSectionGridRange(building, occurrence, lookup, reachedRange))
+                {
+                    continue;
+                }
+                FindMatchingSections(building, occurrence, reachedRange, sectionRegions, lookup, matchingSections);
+                if (matchingSections.empty())
+                {
+                    continue;
+                }
+                CandidateSourceRecord source = BuildCandidateSourceRecord(building);
+                const std::uint64_t preliminary = ComputePreliminaryAcquisitionContribution(building);
+                const std::uint64_t contentHash = CompleteAcquisitionContribution(preliminary, building);
+                AppendContributorToSections(building, occurrence, source, contentHash, matchingSections,
+                    contributorsBySection, hashesBySection);
+            }
+            return FreezeSectionPublications(sectionRegions, contributorsBySection, hashesBySection);
         }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1841,19 +2067,17 @@ namespace MiniMap::BuildingAcquisition
         void ReportCollectorMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} deferredAcquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f pending:%llu publishAttempts:%llu publications:%llu",
+            LOG_INFO("MiniMap: BuildingMap collector intervalMs=%.1f updates={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} membership={totalMs:%.3f meanMs:%.3f maxMs:%.3f} deferredAcquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f pending:%llu}",
                 intervalMs,
                 static_cast<unsigned long long>(d.Update.Samples), d.Update.TotalMs, d.Update.MeanMs(), d.Update.MaxMs,
                 d.UpdateMembership.TotalMs, d.UpdateMembership.MeanMs(), d.UpdateMembership.MaxMs,
                 static_cast<unsigned long long>(d.Acquisition.Samples), d.Acquisition.TotalMs, d.Acquisition.MeanMs(), d.Acquisition.MaxMs,
-                static_cast<unsigned long long>(Pending.size()),
-                static_cast<unsigned long long>(d.PublicationAttempts), static_cast<unsigned long long>(d.Publications));
-            LOG_INFO("MiniMap: BuildingMap collector_phases intervalMs=%.1f chunkExecution={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ownedCopy={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} reconciliation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} publication={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
+                static_cast<unsigned long long>(Pending.size()));
+            LOG_INFO("MiniMap: BuildingMap collector_phases intervalMs=%.1f chunkExecution={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ownedCopy={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} reconciliation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f}",
                 intervalMs,
                 static_cast<unsigned long long>(d.ChunkExecution.Samples), d.ChunkExecution.TotalMs, d.ChunkExecution.MeanMs(), d.ChunkExecution.MaxMs,
                 static_cast<unsigned long long>(d.OwnedFactCopying.Samples), d.OwnedFactCopying.TotalMs, d.OwnedFactCopying.MeanMs(), d.OwnedFactCopying.MaxMs,
-                static_cast<unsigned long long>(d.RegionalBookkeeping.Samples), d.RegionalBookkeeping.TotalMs, d.RegionalBookkeeping.MeanMs(), d.RegionalBookkeeping.MaxMs,
-                static_cast<unsigned long long>(d.Publication.Samples), d.Publication.TotalMs, d.Publication.MeanMs(), d.Publication.MaxMs);
+                static_cast<unsigned long long>(d.RegionalBookkeeping.Samples), d.RegionalBookkeeping.TotalMs, d.RegionalBookkeeping.MeanMs(), d.RegionalBookkeeping.MaxMs);
         }
 
         /** Emits membership phase and outcome totals for one completed interval. */
@@ -1997,7 +2221,6 @@ namespace MiniMap::BuildingAcquisition
     /** Explicit lifecycle is mandatory; native retirement is never initiated from this destructor. */
     BuildingCollectorV2::~BuildingCollectorV2()
     {
-        state_->Invalidate();
         assert(!state_->QueryConstructed && !state_->Types && state_->Definitions.empty());
     }
 
@@ -2036,7 +2259,6 @@ namespace MiniMap::BuildingAcquisition
                 ++state_->RequestGeneration;
             state_->MembershipComplete = false;
             state_->NextMembership = {};
-            state_->Invalidate();
         }
         return true;
     }
@@ -2053,25 +2275,24 @@ namespace MiniMap::BuildingAcquisition
         return SetAcquisitionRegion(nativeRegion);
     }
 
-    /** Invalidates only the candidate selection when the caller changes rail visibility policy. */
+    /** Sets whether newly requested Section publications include known drone rails. */
     void BuildingCollectorV2::SetRenderDroneRails(bool enabled) noexcept
     {
-        if (state_->IncludeDroneRails == enabled)
-            return;
         state_->IncludeDroneRails = enabled;
-        state_->Invalidate();
     }
 
-    /** Returns only the current candidate owner; stale publications never fall back to another observation path. */
-    std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
-    BuildingCollectorV2::AcquireCandidatePublication() const
+    /** Reads the stored hash for the currently committed regional dataset. */
+    std::uint64_t BuildingCollectorV2::AcquisitionHash() const noexcept
     {
-        if (state_->Dirty || state_->PublishedCandidates == nullptr ||
-            !state_->PublishedCandidates->IsCurrent())
-        {
-            return {};
-        }
-        return state_->PublishedCandidates;
+        return state_->AcquisitionContentHash;
+    }
+
+    /** Builds exact Section publications from the last successful committed regional scan. */
+    std::vector<std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>>
+    BuildingCollectorV2::AcquireSectionPublications(
+        std::span<const ::Services::Map::Buildings::BuildingCollectionRegion> sectionRegions) const
+    {
+        return state_->BuildSectionPublications(sectionRegions);
     }
 
     /** Advances native acquisition using MiniMap's established gameplay world. */
@@ -2100,8 +2321,6 @@ namespace MiniMap::BuildingAcquisition
                     std::chrono::duration<double, std::milli>(State::Clock::now() - membershipStarted).count());
             }
 #endif
-            if (state_->IsContextCurrent(*native, context))
-                BM124D_RUN("regional publication", state_->Publish());
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             if (state_->Generation == context.Session)
             {
@@ -2113,8 +2332,8 @@ namespace MiniMap::BuildingAcquisition
         }
         catch (const std::bad_alloc&)
         {
-            // Keep owned entries/pending roots; never infer absence from failed bookkeeping.
-            state_->Invalidate();
+            // Retain the last committed dataset; failed scans remain unavailable through MembershipComplete.
+            state_->MembershipComplete = false;
         }
     }
 
@@ -2132,16 +2351,5 @@ namespace MiniMap::BuildingAcquisition
         state_->Types.reset();
     }
 
-    /** Returns retained CPU facts even if later acquisition has revoked their currentness. */
-    std::shared_ptr<const Facts> BuildingCollectorV2::GetFacts() const noexcept
-    {
-        return state_->Published;
-    }
-
-    /** Requires the currently exposed immutable owner and unchanged acquisition evidence. */
-    bool BuildingCollectorV2::IsCurrent(const std::shared_ptr<const Facts>& facts) const noexcept
-    {
-        return facts && facts == state_->Published && !state_->Dirty;
-    }
 }
 #endif

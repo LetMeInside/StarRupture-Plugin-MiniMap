@@ -655,7 +655,7 @@ static void OnTextureServiceTick(
                 diagnostics.ScenePreparation.TotalMs, meanMs(diagnostics.ScenePreparation), diagnostics.ScenePreparation.MaxMs,
                 static_cast<unsigned long long>(diagnostics.SceneBorrow.Samples),
                 diagnostics.SceneBorrow.TotalMs, meanMs(diagnostics.SceneBorrow), diagnostics.SceneBorrow.MaxMs);
-            LOG_INFO("MiniMap: BuildingMap section_render intervalMs=%.1f elapsed:cpuWall renderCommit={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} wholeAttempt={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} numerical={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} transparency={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} commit={invalidIncomplete:%llu stale:%llu numericalFailed:%llu adoptionRejected:%llu committed:%llu committedEmpty:%llu} removed:%llu notifications:%llu numericalStatus={complete:%llu invalidDestination:%llu incompleteDrawing:%llu destinationUnavailable:%llu destinationRejected:%llu finalizationFailed:%llu}",
+            LOG_INFO("MiniMap: BuildingMap section_render intervalMs=%.1f elapsed:cpuWall renderCommit={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} wholeAttempt={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} numerical={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} transparency={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} adoption={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} commit={invalidIncomplete:%llu numericalFailed:%llu adoptionRejected:%llu committed:%llu committedEmpty:%llu} removed:%llu notifications:%llu numericalStatus={complete:%llu completeWithOmissions:%llu invalidDestination:%llu incompleteDrawing:%llu destinationUnavailable:%llu destinationRejected:%llu finalizationFailed:%llu}",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.RenderAndCommit.Samples), diagnostics.RenderAndCommit.TotalMs,
                 meanMs(diagnostics.RenderAndCommit), diagnostics.RenderAndCommit.MaxMs,
@@ -672,7 +672,6 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.CommitStatusCounts[2]),
                 static_cast<unsigned long long>(diagnostics.CommitStatusCounts[3]),
                 static_cast<unsigned long long>(diagnostics.CommitStatusCounts[4]),
-                static_cast<unsigned long long>(diagnostics.CommitStatusCounts[5]),
                 static_cast<unsigned long long>(diagnostics.ExistingImagesRemoved),
                 static_cast<unsigned long long>(diagnostics.ImageChangeNotificationsSent),
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[0]),
@@ -680,7 +679,8 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[2]),
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[3]),
                 static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[4]),
-                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[5]));
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[5]),
+                static_cast<unsigned long long>(diagnostics.NumericalStatusCounts[6]));
             LOG_INFO("MiniMap: BuildingMap section_render_phases intervalMs=%.1f elapsed:cpuWall nestedWithinNumericalMs=true destinationConstruction={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} ordinarySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} occlusionIndexPreparation={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} splineDrawing={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} overlaySprites={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} destinationFinalization={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} unmeasuredGaps=small boundary and bookkeeping work",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.DestinationConstruction.Samples), diagnostics.DestinationConstruction.TotalMs,
@@ -695,7 +695,7 @@ static void OnTextureServiceTick(
                 meanMs(diagnostics.OverlaySprites), diagnostics.OverlaySprites.MaxMs,
                 static_cast<unsigned long long>(diagnostics.DestinationFinalization.Samples), diagnostics.DestinationFinalization.TotalMs,
                 meanMs(diagnostics.DestinationFinalization), diagnostics.DestinationFinalization.MaxMs);
-            LOG_INFO("MiniMap: BuildingMap section_readiness intervalMs=%.1f elapsed:cpuWall invalidPublication:%llu stalePublication:%llu invalidObservation:%llu incompleteCandidateCoverage:%llu pendingNativeSourceAcquisition:%llu pendingSpriteAcquisition:%llu temporarilyUnavailableResources:%llu unresolvedInputs:%llu completeSceneInputs:%llu",
+            LOG_INFO("MiniMap: BuildingMap section_readiness intervalMs=%.1f elapsed:cpuWall invalidPublication:%llu invalidSection:%llu invalidPreparationInputs:%llu pendingNativeSourceAcquisition:%llu pendingSpriteAcquisition:%llu temporarilyUnavailableResources:%llu unresolvedInputs:%llu completeSceneInputs:%llu",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[0]),
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[1]),
@@ -704,21 +704,37 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[4]),
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[5]),
                 static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[6]),
-                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[7]),
-                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[8]));
+                static_cast<unsigned long long>(diagnostics.SceneReadinessCounts[7]));
             if (diagnostics.Worst.Present)
             {
                 static constexpr const char* commitNames[] = {
-                    "InvalidOrIncompleteInput", "StalePublication", "NumericalRenderingFailed",
-                    "ImageAdoptionRejected", "Committed", "CommittedEmpty"};
+                    "InvalidOrIncompleteInput", "NumericalRenderingFailed", "ImageAdoptionRejected",
+                    "Committed", "CommittedEmpty"};
                 static constexpr const char* readinessNames[] = {
-                    "InvalidPublication", "StalePublication", "InvalidObservation", "IncompleteCandidateCoverage",
+                    "InvalidPublication", "InvalidSection", "InvalidPreparationInputs",
                     "PendingNativeSourceAcquisition", "PendingSpriteAcquisition", "TemporarilyUnavailableResources",
                     "UnresolvedInputs", "CompleteSceneInputs"};
                 static constexpr const char* numericalNames[] = {
-                    "Complete", "InvalidDestinationConfiguration", "IncompleteDrawing",
+                    "Complete", "CompleteWithOmissions", "InvalidDestinationConfiguration", "IncompleteDrawing",
                     "DestinationUnavailable", "DestinationRejected", "FinalizationFailed"};
+                static constexpr const char* failureStageNames[] = {
+                    "None", "SpriteGeometry", "DestinationSubmission", "OccluderGeometry",
+                    "SplineSampling", "SurfacePreparation", "Occlusion", "AppearanceValidation",
+                    "SurfaceSubmission"};
+                static constexpr const char* alternativeStatusNames[] = {
+                    "NotApplicable", "CandidateRejected", "Selected", "NoDrawableAlternative"};
+                static constexpr const char* samplingIssueNames[] = {
+                    "None", "InvalidCurve", "UnsupportedInterpolation", "NonFinite"};
+                static constexpr const char* surfaceIssueNames[] = {"None", "InvalidInput"};
+                static constexpr const char* occlusionStatusNames[] = {
+                    "Complete", "NotPrepared", "InvalidInput", "NumericalFailure", "AllocationFailure"};
+                static constexpr const char* submissionNames[] = {
+                    "Submitted", "Unavailable", "InvalidInput", "Culled", "Rejected"};
                 const auto& worst = diagnostics.Worst;
+                const auto enumName = [](const auto& names, std::size_t count, std::size_t index)
+                {
+                    return index < count ? names[index] : "unknown";
+                };
                 const char* readinessName = worst.HasSceneReadiness &&
                     worst.SceneReadiness < sizeof(readinessNames) / sizeof(readinessNames[0])
                     ? readinessNames[worst.SceneReadiness]
@@ -752,6 +768,101 @@ static void OnTextureServiceTick(
                         ? commitNames[worst.CommitStatus]
                         : "unknown",
                     readinessName, numericalName);
+                if (worst.HasNumericalStatus &&
+                    worst.NumericalStatus != static_cast<std::uint8_t>(
+                        ::Services::Map::Buildings::Rendering::SectionRendering::Status::Complete) &&
+                    worst.NumericalStatus != static_cast<std::uint8_t>(
+                        ::Services::Map::Buildings::Rendering::SectionRendering::Status::CompleteWithOmissions))
+                {
+                    const auto& failures = worst.NumericalPhases;
+                    const auto& ordinary = failures.OrdinarySpriteFailures;
+                    const auto& spline = failures.SplineSurfaceFailures;
+                    const auto& overlay = failures.OverlaySpriteFailures;
+                    const auto& firstFatalSpline = failures.FirstFatalSplineOutcome;
+                    LOG_INFO("MiniMap: BuildingMap section_failure grid=(%lld,%lld) numerical=%s occlusionPreparation=%s ordinary={count:%llu first:{present:%u contributor:%llu surface:%llu hasSurface:%u failure:%s alternative:%s sampling:%s surfaceIssue:%s rejectedCells:%llu geometryPrepared:%u samplingComplete:%u occlusion:%s submissionAttempted:%u submission:%s}} spline={count:%llu first:{present:%u contributor:%llu surface:%llu hasSurface:%u failure:%s alternative:%s sampling:%s surfaceIssue:%s rejectedCells:%llu geometryPrepared:%u samplingComplete:%u occlusion:%s submissionAttempted:%u submission:%s}} overlay={count:%llu first:{present:%u contributor:%llu surface:%llu hasSurface:%u failure:%s alternative:%s sampling:%s surfaceIssue:%s rejectedCells:%llu geometryPrepared:%u samplingComplete:%u occlusion:%s submissionAttempted:%u submission:%s}} rejectedSplineAlternatives:%llu fatalSplineOutcomes:%llu firstFatalSpline:{present:%u contributor:%llu surface:%llu hasSurface:%u failure:%s alternative:%s sampling:%s surfaceIssue:%s rejectedCells:%llu geometryPrepared:%u samplingComplete:%u occlusion:%s submissionAttempted:%u submission:%s}",
+                            static_cast<long long>(worst.GridX), static_cast<long long>(worst.GridY), numericalName,
+                            enumName(occlusionStatusNames, sizeof(occlusionStatusNames) / sizeof(occlusionStatusNames[0]),
+                                static_cast<std::size_t>(failures.OcclusionPreparationStatus)),
+                            static_cast<unsigned long long>(ordinary.Count), ordinary.HasFirst ? 1u : 0u,
+                            static_cast<unsigned long long>(ordinary.First.ContributorIndex),
+                            static_cast<unsigned long long>(ordinary.First.SurfaceIndex),
+                            ordinary.First.HasSurfaceIndex ? 1u : 0u,
+                            enumName(failureStageNames, sizeof(failureStageNames) / sizeof(failureStageNames[0]),
+                                static_cast<std::size_t>(ordinary.First.FailureStage)),
+                            enumName(alternativeStatusNames, sizeof(alternativeStatusNames) / sizeof(alternativeStatusNames[0]),
+                                static_cast<std::size_t>(ordinary.First.AlternativeStatus)),
+                            enumName(samplingIssueNames, sizeof(samplingIssueNames) / sizeof(samplingIssueNames[0]),
+                                static_cast<std::size_t>(ordinary.First.SamplingIssue)),
+                            enumName(surfaceIssueNames, sizeof(surfaceIssueNames) / sizeof(surfaceIssueNames[0]),
+                                static_cast<std::size_t>(ordinary.First.SurfaceIssue)),
+                            static_cast<unsigned long long>(ordinary.First.RejectedCells),
+                            ordinary.First.GeometryPrepared ? 1u : 0u, ordinary.First.SamplingComplete ? 1u : 0u,
+                            enumName(occlusionStatusNames, sizeof(occlusionStatusNames) / sizeof(occlusionStatusNames[0]),
+                                static_cast<std::size_t>(ordinary.First.OcclusionStatus)),
+                            ordinary.First.SubmissionAttempted ? 1u : 0u,
+                            enumName(submissionNames, sizeof(submissionNames) / sizeof(submissionNames[0]),
+                                static_cast<std::size_t>(ordinary.First.Submission)),
+                            static_cast<unsigned long long>(spline.Count), spline.HasFirst ? 1u : 0u,
+                            static_cast<unsigned long long>(spline.First.ContributorIndex),
+                            static_cast<unsigned long long>(spline.First.SurfaceIndex),
+                            spline.First.HasSurfaceIndex ? 1u : 0u,
+                            enumName(failureStageNames, sizeof(failureStageNames) / sizeof(failureStageNames[0]),
+                                static_cast<std::size_t>(spline.First.FailureStage)),
+                            enumName(alternativeStatusNames, sizeof(alternativeStatusNames) / sizeof(alternativeStatusNames[0]),
+                                static_cast<std::size_t>(spline.First.AlternativeStatus)),
+                            enumName(samplingIssueNames, sizeof(samplingIssueNames) / sizeof(samplingIssueNames[0]),
+                                static_cast<std::size_t>(spline.First.SamplingIssue)),
+                            enumName(surfaceIssueNames, sizeof(surfaceIssueNames) / sizeof(surfaceIssueNames[0]),
+                                static_cast<std::size_t>(spline.First.SurfaceIssue)),
+                            static_cast<unsigned long long>(spline.First.RejectedCells),
+                            spline.First.GeometryPrepared ? 1u : 0u, spline.First.SamplingComplete ? 1u : 0u,
+                            enumName(occlusionStatusNames, sizeof(occlusionStatusNames) / sizeof(occlusionStatusNames[0]),
+                                static_cast<std::size_t>(spline.First.OcclusionStatus)),
+                            spline.First.SubmissionAttempted ? 1u : 0u,
+                            enumName(submissionNames, sizeof(submissionNames) / sizeof(submissionNames[0]),
+                                static_cast<std::size_t>(spline.First.Submission)),
+                            static_cast<unsigned long long>(overlay.Count), overlay.HasFirst ? 1u : 0u,
+                            static_cast<unsigned long long>(overlay.First.ContributorIndex),
+                            static_cast<unsigned long long>(overlay.First.SurfaceIndex),
+                            overlay.First.HasSurfaceIndex ? 1u : 0u,
+                            enumName(failureStageNames, sizeof(failureStageNames) / sizeof(failureStageNames[0]),
+                                static_cast<std::size_t>(overlay.First.FailureStage)),
+                            enumName(alternativeStatusNames, sizeof(alternativeStatusNames) / sizeof(alternativeStatusNames[0]),
+                                static_cast<std::size_t>(overlay.First.AlternativeStatus)),
+                            enumName(samplingIssueNames, sizeof(samplingIssueNames) / sizeof(samplingIssueNames[0]),
+                                static_cast<std::size_t>(overlay.First.SamplingIssue)),
+                            enumName(surfaceIssueNames, sizeof(surfaceIssueNames) / sizeof(surfaceIssueNames[0]),
+                                static_cast<std::size_t>(overlay.First.SurfaceIssue)),
+                            static_cast<unsigned long long>(overlay.First.RejectedCells),
+                            overlay.First.GeometryPrepared ? 1u : 0u, overlay.First.SamplingComplete ? 1u : 0u,
+                            enumName(occlusionStatusNames, sizeof(occlusionStatusNames) / sizeof(occlusionStatusNames[0]),
+                                static_cast<std::size_t>(overlay.First.OcclusionStatus)),
+                            overlay.First.SubmissionAttempted ? 1u : 0u,
+                            enumName(submissionNames, sizeof(submissionNames) / sizeof(submissionNames[0]),
+                                static_cast<std::size_t>(overlay.First.Submission)),
+                            static_cast<unsigned long long>(failures.RejectedSplineAlternativeCount),
+                            static_cast<unsigned long long>(failures.FatalSplineOutcomeCount),
+                            failures.HasFirstFatalSplineOutcome ? 1u : 0u,
+                            static_cast<unsigned long long>(firstFatalSpline.ContributorIndex),
+                            static_cast<unsigned long long>(firstFatalSpline.SurfaceIndex),
+                            firstFatalSpline.HasSurfaceIndex ? 1u : 0u,
+                            enumName(failureStageNames, sizeof(failureStageNames) / sizeof(failureStageNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.FailureStage)),
+                            enumName(alternativeStatusNames, sizeof(alternativeStatusNames) / sizeof(alternativeStatusNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.AlternativeStatus)),
+                            enumName(samplingIssueNames, sizeof(samplingIssueNames) / sizeof(samplingIssueNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.SamplingIssue)),
+                            enumName(surfaceIssueNames, sizeof(surfaceIssueNames) / sizeof(surfaceIssueNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.SurfaceIssue)),
+                            static_cast<unsigned long long>(firstFatalSpline.RejectedCells),
+                            firstFatalSpline.GeometryPrepared ? 1u : 0u,
+                            firstFatalSpline.SamplingComplete ? 1u : 0u,
+                            enumName(occlusionStatusNames, sizeof(occlusionStatusNames) / sizeof(occlusionStatusNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.OcclusionStatus)),
+                            firstFatalSpline.SubmissionAttempted ? 1u : 0u,
+                            enumName(submissionNames, sizeof(submissionNames) / sizeof(submissionNames[0]),
+                                static_cast<std::size_t>(firstFatalSpline.Submission)));
+                }
             }
         }
 

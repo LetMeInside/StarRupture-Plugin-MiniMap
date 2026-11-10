@@ -80,6 +80,8 @@ namespace Services::Map::Buildings::Visuals
 	 */
 	struct BuildingSplineRenderInput
 	{
+		/** Section-local source occurrence ordinal retained through painter sorting. */
+		std::uint64_t SectionLocalOrdinal = 0;
 		std::span<const SplineCurveSegment> Segments;
 		SplineSamplingPolicy SamplingPolicy{};
 		SplineSurfaceTransform RootTransform{};

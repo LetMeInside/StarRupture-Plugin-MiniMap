@@ -24,13 +24,15 @@ namespace Services::Map::Buildings::Rendering
 		const Visuals::BuildingRenderSceneInput& scene,
 		Visuals::BuildingVisualsContext& context,
 		const Rgba16fImageGrid& grid,
-		std::vector<std::uint8_t>& output
+		std::vector<std::uint8_t>& output,
+		Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		, Visuals::BuildingVisualsPhaseTimings& phaseTimings
 #endif
 		)
 	{
 		output.clear();
+		omissionSummary = {};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		phaseTimings = {};
 #endif
@@ -55,6 +57,14 @@ namespace Services::Map::Buildings::Rendering
 				);
 		if (!drawingResult.Complete)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			phaseTimings.CaptureFailureEvidence(drawingResult);
+#endif
+		}
+		const bool completedWithOmissions = !drawingResult.Complete &&
+			TrySummarizeTerminalSplineOmissions(drawingResult, scene, omissionSummary);
+		if (!drawingResult.Complete && !completedWithOmissions)
+		{
 			return GetDrawingFailureStatus(drawingResult);
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -69,9 +79,10 @@ namespace Services::Map::Buildings::Rendering
 		if (!finalized)
 		{
 			output.clear();
+			omissionSummary = {};
 			return Status::FinalizationFailed;
 		}
-		return Status::Complete;
+		return completedWithOmissions ? Status::CompleteWithOmissions : Status::Complete;
 	}
 
 	/** Rejects malformed dimensions, non-finite origins and invalid pixel scale at the caller boundary. */
@@ -118,6 +129,72 @@ namespace Services::Map::Buildings::Rendering
 			return Status::DestinationRejected;
 		}
 		return Status::IncompleteDrawing;
+	}
+
+	/** Accepts only completed destination work with one or more no-drawable spline outcomes. */
+	bool SectionRendering::TrySummarizeTerminalSplineOmissions(
+		const Visuals::BuildingVisualsResult& result,
+		const Visuals::BuildingRenderSceneInput& scene,
+		Visuals::BuildingVisualsTerminalOmissionSummary& summary) noexcept
+	{
+		using Alternative = Visuals::BuildingSplineAlternativeStatus;
+		using Failure = Visuals::BuildingVisualsFailureStage;
+		Visuals::BuildingVisualsTerminalOmissionSummary candidateSummary;
+		if (result.OcclusionPreparationStatus != Visuals::SplineOcclusionStatus::Complete ||
+			!HasNoContributorFailures(result.OrdinarySprites) ||
+			!HasNoContributorFailures(result.OverlayLastSprites))
+		{
+			return false;
+		}
+		for (const auto& outcome : result.SplineSurfaces)
+		{
+			if (outcome.AlternativeStatus == Alternative::CandidateRejected)
+			{
+				if (outcome.SubmissionAttempted)
+				{
+					return false;
+				}
+				continue;
+			}
+			if (outcome.FailureStage == Failure::None)
+			{
+				continue;
+			}
+			if (outcome.AlternativeStatus != Alternative::NoDrawableAlternative ||
+				outcome.FailureStage != Failure::SurfacePreparation || outcome.HasSurfaceIndex ||
+				outcome.SubmissionAttempted || outcome.ContributorIndex >= scene.Splines.size())
+			{
+				return false;
+			}
+			if (candidateSummary.SplineContributorCount == 0)
+			{
+				candidateSummary.FirstSectionLocalOrdinal =
+					scene.Splines[outcome.ContributorIndex].SectionLocalOrdinal;
+				candidateSummary.FailureStage = outcome.FailureStage;
+				candidateSummary.AlternativeStatus = outcome.AlternativeStatus;
+			}
+			++candidateSummary.SplineContributorCount;
+		}
+		if (candidateSummary.SplineContributorCount == 0)
+		{
+			return false;
+		}
+		summary = candidateSummary;
+		return true;
+	}
+
+	/** Checks one positional contributor category for any fatal drawing result. */
+	bool SectionRendering::HasNoContributorFailures(
+		const std::vector<Visuals::BuildingVisualsContributorOutcome>& outcomes) noexcept
+	{
+		for (const auto& outcome : outcomes)
+		{
+			if (outcome.FailureStage != Visuals::BuildingVisualsFailureStage::None)
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 }
 

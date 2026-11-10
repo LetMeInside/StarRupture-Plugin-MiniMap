@@ -3,9 +3,7 @@
 
 #include <cstdint>
 #include <vector>
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "../Visuals/BuildingVisualsResult.h"
-#endif
 
 namespace Services::Map::Buildings
 {
@@ -15,9 +13,7 @@ namespace Services::Map::Buildings
 namespace Services::Map::Buildings::Visuals
 {
 	struct BuildingRenderSceneInput;
-	struct BuildingVisualsContributorOutcome;
 	class BuildingVisualsContext;
-	class BuildingVisualsResult;
 }
 
 namespace Services::Map::Buildings::Rendering
@@ -32,6 +28,7 @@ namespace Services::Map::Buildings::Rendering
 		enum class Status
 		{
 			Complete,
+			CompleteWithOmissions,
 			InvalidDestinationConfiguration,
 			IncompleteDrawing,
 			DestinationUnavailable,
@@ -42,12 +39,13 @@ namespace Services::Map::Buildings::Rendering
 		/**
 		 * Draws prepared neutral contributors once and finalizes one complete RGBA16F image.
 		 * The scene, grid and Section-owned context are borrowed for this synchronous call.
-		 * Output is cleared before work begins and contains bytes only when Status::Complete is returned.
+		 * Output is cleared before work begins and contains bytes only after successful finalization.
 		 *
 		 * @param scene Prepared neutral contributors and borrowed source spans.
 		 * @param context Numerical workspace borrowed from the owning BuildingMapSection.
 		 * @param grid Destination cell and pixel configuration supplied by the coordinator.
 		 * @param output Caller-owned final row-major little-endian RGBA16F bytes.
+		 * @param omissionSummary Receives fixed-size metadata only for accepted terminal spline omissions.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		 * @param phaseTimings Receives elapsed CPU wall time and invocation flags for the six measured phases.
 #endif
@@ -57,7 +55,8 @@ namespace Services::Map::Buildings::Rendering
 			const Visuals::BuildingRenderSceneInput& scene,
 			Visuals::BuildingVisualsContext& context,
 			const Rgba16fImageGrid& grid,
-			std::vector<std::uint8_t>& output
+			std::vector<std::uint8_t>& output,
+			Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, Visuals::BuildingVisualsPhaseTimings& phaseTimings
 #endif
@@ -74,5 +73,15 @@ namespace Services::Map::Buildings::Rendering
 
 		/** Identifies destination availability or raster rejection from retained drawing outcomes. */
 		static Status GetDrawingFailureStatus(const Visuals::BuildingVisualsResult& result) noexcept;
+
+		/** Accepts only no-drawable spline omissions and no other fatal scene outcome. */
+		static bool TrySummarizeTerminalSplineOmissions(
+			const Visuals::BuildingVisualsResult& result,
+			const Visuals::BuildingRenderSceneInput& scene,
+			Visuals::BuildingVisualsTerminalOmissionSummary& summary) noexcept;
+
+		/** Verifies that a contributor category contains no fatal drawing outcomes. */
+		static bool HasNoContributorFailures(
+			const std::vector<Visuals::BuildingVisualsContributorOutcome>& outcomes) noexcept;
 	};
 }

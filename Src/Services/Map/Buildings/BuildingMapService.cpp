@@ -3,7 +3,6 @@
 // Implements service-owned Sections and image residency, viewport source selection, image-change routing, and scheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
-#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -16,13 +15,6 @@
 
 namespace Services::Map::Buildings
 {
-	/** Clears borrowed views before releasing the publication that owns their storage. */
-	void BuildingMapService::SectionCandidateSource::Reset() noexcept
-	{
-		Observation = {};
-		PublicationOwner.reset();
-	}
-
 	/** Validates map/cache settings, copies policies and derives the owned Buildings path. */
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
@@ -95,6 +87,10 @@ namespace Services::Map::Buildings
 			viewportEntry.second->InvalidateService();
 		}
 		viewportsByHandle_.clear();
+		observedAcquisitionHashes_.clear();
+		appliedSectionHashes_.clear();
+		pendingSectionPublications_.clear();
+		sectionHashRechecksRequested_.clear();
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
 			sectionSchedulingCoordinator_->ClearViewportDemand();
@@ -169,7 +165,7 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Observes one registered viewport and advances the shared coordinator once. */
+	/** Observes acquisition content and supplies batched Section publications to one shared advancement. */
 	bool BuildingMapService::AdvanceViewportScheduling(std::uint64_t viewportHandle)
 	{
 		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
@@ -190,10 +186,327 @@ namespace Services::Map::Buildings
 		}
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
-			ObserveViewportCandidatePublicationChanges(*viewport);
-			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this);
+			const bool compareDemandedSectionHashes = ObserveViewportAcquisitionHash(
+				viewportHandle,
+				*viewport->buildingCollector_);
+			const std::set<SectionCoordinate> requestedCoordinates =
+				GetSectionRequestCoordinates(*viewport, compareDemandedSectionHashes);
+			AcquireSectionPublicationBatches(
+				requestedCoordinates,
+				viewportHandle,
+				compareDemandedSectionHashes);
+			ReleasePendingPublicationsAlreadyApplied();
+			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this, pendingSectionPublications_);
 		}
 		return true;
+	}
+
+	/** Selects affected viewport cells or waiting cells without an owned pending publication. */
+	std::set<BuildingMapService::SectionCoordinate> BuildingMapService::GetSectionRequestCoordinates(
+		const BuildingMapViewport& viewport,
+		bool compareViewportDemand)
+	{
+		std::set<SectionCoordinate> coordinates;
+		if (compareViewportDemand)
+		{
+			AddViewportGridCoordinates(viewport, coordinates);
+			InvalidatePendingPublicationsInRange(
+				viewport.gridRange_.firstX,
+				viewport.gridRange_.firstY,
+				viewport.gridRange_.endX,
+				viewport.gridRange_.endY);
+			for (const SectionCoordinate& coordinate : coordinates)
+			{
+				sectionSchedulingCoordinator_->RequestSectionWork(
+					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
+						coordinate.first,
+						coordinate.second});
+			}
+			return coordinates;
+		}
+		for (const auto& coordinate : sectionSchedulingCoordinator_->waitingSections_)
+		{
+			const SectionCoordinate key{coordinate.GridX, coordinate.GridY};
+			if (pendingSectionPublications_.find(key) == pendingSectionPublications_.end())
+			{
+				coordinates.insert(key);
+			}
+		}
+		return coordinates;
+	}
+
+	/** Observes hash zero as ordinary content by using map presence for initialization. */
+	bool BuildingMapService::ObserveViewportAcquisitionHash(
+		std::uint64_t viewportHandle,
+		const IBuildingCollector& buildingCollector)
+	{
+		const std::uint64_t acquisitionHash = buildingCollector.AcquisitionHash();
+		const auto previousHash = observedAcquisitionHashes_.find(viewportHandle);
+		const bool changed = previousHash == observedAcquisitionHashes_.end() || previousHash->second != acquisitionHash;
+		observedAcquisitionHashes_[viewportHandle] = acquisitionHash;
+		return changed || sectionHashRechecksRequested_.find(viewportHandle) != sectionHashRechecksRequested_.end();
+	}
+
+	/** Retains a narrow policy-triggered request until its affected Section batch succeeds. */
+	void BuildingMapService::RequestViewportSectionHashRecheck(std::uint64_t viewportHandle)
+	{
+		if (viewportsByHandle_.find(viewportHandle) != viewportsByHandle_.end())
+		{
+			sectionHashRechecksRequested_.insert(viewportHandle);
+		}
+	}
+
+	/** Adds every cell in one viewport's current demanded grid range. */
+	void BuildingMapService::AddViewportGridCoordinates(
+		const BuildingMapViewport& viewport,
+		std::set<SectionCoordinate>& coordinates) const
+	{
+		for (std::int64_t gridY = viewport.gridRange_.firstY; gridY < viewport.gridRange_.endY; ++gridY)
+		{
+			for (std::int64_t gridX = viewport.gridRange_.firstX; gridX < viewport.gridRange_.endX; ++gridX)
+			{
+				coordinates.emplace(gridX, gridY);
+			}
+		}
+	}
+
+	/** Requests one ordered Section batch from each applicable collector and retains selected results. */
+	void BuildingMapService::AcquireSectionPublicationBatches(
+		const std::set<SectionCoordinate>& coordinates,
+		std::uint64_t recheckedViewportHandle,
+		bool clearRecheckWhenCovered)
+	{
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			BuildingMapViewport* viewport = viewportEntry.second;
+			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+				viewport->viewportHandle_ != viewportEntry.first)
+			{
+				continue;
+			}
+			AcquireViewportSectionPublicationBatch(
+				viewportEntry.first,
+				*viewport,
+				coordinates,
+				clearRecheckWhenCovered && viewportEntry.first == recheckedViewportHandle);
+		}
+	}
+
+	/** Builds exact ordered requests, retains successful immutable results, and preserves failed rechecks. */
+	void BuildingMapService::AcquireViewportSectionPublicationBatch(
+		std::uint64_t viewportHandle,
+		BuildingMapViewport& viewport,
+		const std::set<SectionCoordinate>& coordinates,
+		bool clearRecheckWhenCovered)
+	{
+		std::vector<SectionCoordinate> requestedCoordinates;
+		std::vector<BuildingCollectionRegion> requestedRegions;
+		const bool completeRequestBatch = BuildViewportSectionRequest(
+			viewport,
+			coordinates,
+			requestedCoordinates,
+			requestedRegions);
+		if (requestedRegions.empty())
+		{
+			if (!completeRequestBatch)
+			{
+				sectionHashRechecksRequested_.insert(viewportHandle);
+			}
+			else if (clearRecheckWhenCovered && AreAllViewportSectionsSupplied(viewport))
+			{
+				sectionHashRechecksRequested_.erase(viewportHandle);
+			}
+			return;
+		}
+		std::vector<std::shared_ptr<const BuildingCandidatePublication>> publications;
+		if (!TryAcquireSectionPublicationBatch(viewport, requestedRegions, publications))
+		{
+			sectionHashRechecksRequested_.insert(viewportHandle);
+			return;
+		}
+		RetainSectionPublicationBatch(
+			viewportHandle,
+			requestedCoordinates,
+			requestedRegions,
+			publications,
+			completeRequestBatch,
+			clearRecheckWhenCovered);
+	}
+
+	/** Converts expected rejected/unavailable collector results into retryable lack of a publication. */
+	bool BuildingMapService::TryAcquireSectionPublicationBatch(
+		BuildingMapViewport& viewport,
+		const std::vector<BuildingCollectionRegion>& requestedRegions,
+		std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications)
+	{
+		try
+		{
+			publications = viewport.buildingCollector_->AcquireSectionPublications(requestedRegions);
+			return true;
+		}
+		catch (const SectionPublicationUnavailable&)
+		{
+			return false;
+		}
+	}
+
+	/** Rejects broken output correspondence and retains the first valid registered publication per cell. */
+	void BuildingMapService::RetainSectionPublicationBatch(
+		std::uint64_t viewportHandle,
+		const std::vector<SectionCoordinate>& requestedCoordinates,
+		const std::vector<BuildingCollectionRegion>& requestedRegions,
+		const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+		bool completeRequestBatch,
+		bool clearRecheckWhenCovered)
+	{
+		if (publications.size() != requestedCoordinates.size())
+		{
+			throw std::logic_error("Section publication batch did not preserve request cardinality.");
+		}
+		for (std::size_t index = 0; index < publications.size(); ++index)
+		{
+			const auto& publication = publications[index];
+			const BuildingCollectionRegion& expectedRegion = requestedRegions[index];
+			const BuildingCollectionRegion& actualRegion = publication != nullptr
+				? publication->SectionRegion()
+				: expectedRegion;
+			if (publication == nullptr || actualRegion.xMapUnits != expectedRegion.xMapUnits ||
+				actualRegion.yMapUnits != expectedRegion.yMapUnits ||
+				actualRegion.widthMapUnits != expectedRegion.widthMapUnits ||
+				actualRegion.heightMapUnits != expectedRegion.heightMapUnits)
+			{
+				throw std::logic_error("Section publication batch returned a null or mismatched Section.");
+			}
+			const SectionCoordinate& coordinate = requestedCoordinates[index];
+			pendingSectionPublications_.try_emplace(coordinate, publication);
+		}
+		if (!completeRequestBatch)
+		{
+			sectionHashRechecksRequested_.insert(viewportHandle);
+		}
+		else if (clearRecheckWhenCovered && AreAllViewportSectionsSupplied(*viewportsByHandle_.at(viewportHandle)))
+		{
+			sectionHashRechecksRequested_.erase(viewportHandle);
+		}
+	}
+
+	/** Clears waiting work and its retained publication when committed content already matches. */
+	void BuildingMapService::ReleasePendingPublicationsAlreadyApplied()
+	{
+		for (auto pending = pendingSectionPublications_.begin(); pending != pendingSectionPublications_.end();)
+		{
+			const auto applied = appliedSectionHashes_.find(pending->first);
+			if (applied != appliedSectionHashes_.end() && applied->second == pending->second->ContentHash())
+			{
+				sectionSchedulingCoordinator_->RecordSectionCompleted(
+					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
+						pending->first.first,
+						pending->first.second});
+				pending = pendingSectionPublications_.erase(pending);
+				continue;
+			}
+			++pending;
+		}
+	}
+
+	/** Releases pending immutable values in a viewport range whose source selection may change. */
+	void BuildingMapService::InvalidatePendingPublicationsInRange(
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::int64_t endGridX,
+		std::int64_t endGridY)
+	{
+		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
+		{
+			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
+			{
+				const SectionCoordinate coordinate{gridX, gridY};
+				pendingSectionPublications_.erase(coordinate);
+				if (sectionSchedulingCoordinator_ != nullptr)
+				{
+					sectionSchedulingCoordinator_->RequestSectionWork(
+						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
+				}
+			}
+		}
+	}
+
+	/** Preserves request/output alignment while rejecting unrepresentable grid rectangles. */
+	bool BuildingMapService::BuildViewportSectionRequest(
+		const BuildingMapViewport& viewport,
+		const std::set<SectionCoordinate>& coordinates,
+		std::vector<SectionCoordinate>& requestedCoordinates,
+		std::vector<BuildingCollectionRegion>& requestedRegions) const
+	{
+		bool completeRequestBatch = true;
+		for (const SectionCoordinate& coordinate : coordinates)
+		{
+			if (coordinate.first < viewport.gridRange_.firstX || coordinate.first >= viewport.gridRange_.endX ||
+				coordinate.second < viewport.gridRange_.firstY || coordinate.second >= viewport.gridRange_.endY)
+			{
+				continue;
+			}
+			if (pendingSectionPublications_.find(coordinate) != pendingSectionPublications_.end())
+			{
+				continue;
+			}
+			BuildingCollectionRegion region{};
+			if (!TryCreateSectionRegion(coordinate.first, coordinate.second, region))
+			{
+				completeRequestBatch = false;
+				continue;
+			}
+			requestedCoordinates.push_back(coordinate);
+			requestedRegions.push_back(region);
+		}
+		return completeRequestBatch;
+	}
+
+	/** Tests whether retained publications already cover every cell demanded by one viewport. */
+	bool BuildingMapService::AreAllViewportSectionsSupplied(const BuildingMapViewport& viewport) const
+	{
+		for (std::int64_t gridY = viewport.gridRange_.firstY; gridY < viewport.gridRange_.endY; ++gridY)
+		{
+			for (std::int64_t gridX = viewport.gridRange_.firstX; gridX < viewport.gridRange_.endX; ++gridX)
+			{
+				if (pendingSectionPublications_.find(SectionCoordinate{gridX, gridY}) ==
+					pendingSectionPublications_.end())
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** Creates the exact finite square Section rectangle used by collector batch requests. */
+	bool BuildingMapService::TryCreateSectionRegion(
+		std::int64_t gridX,
+		std::int64_t gridY,
+		BuildingCollectionRegion& output) const noexcept
+	{
+		const double x = static_cast<double>(gridX) * sectionSizeMapUnits_;
+		const double y = static_cast<double>(gridY) * sectionSizeMapUnits_;
+		const double right = x + sectionSizeMapUnits_;
+		const double bottom = y + sectionSizeMapUnits_;
+		if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(right) || !std::isfinite(bottom) ||
+			right <= x || bottom <= y || right - x != sectionSizeMapUnits_ || bottom - y != sectionSizeMapUnits_)
+		{
+			return false;
+		}
+		output = BuildingCollectionRegion{x, y, sectionSizeMapUnits_, sectionSizeMapUnits_};
+		return true;
+	}
+
+	/** Stores the Section hash only after SectionScheduler reports a successful image or empty commit. */
+	void BuildingMapService::RecordSectionAppliedHash(
+		std::int64_t gridX,
+		std::int64_t gridY,
+		std::uint64_t contentHash)
+	{
+		const SectionCoordinate coordinate{gridX, gridY};
+		appliedSectionHashes_[coordinate] = contentHash;
+		pendingSectionPublications_.erase(coordinate);
 	}
 
 	/** Tests one coordinate against every valid viewport's overflow-safe expanded grid range. */
@@ -229,6 +542,17 @@ namespace Services::Map::Buildings
 	/** Invalidates only completed image bytes for Sections outside the current viewport union. */
 	void BuildingMapService::ReconcileSectionImageResidency()
 	{
+		for (auto appliedHash = appliedSectionHashes_.begin(); appliedHash != appliedSectionHashes_.end();)
+		{
+			if (!IsSectionWithinAnyViewportResidencyRange(appliedHash->first.first, appliedHash->first.second))
+			{
+				appliedHash = appliedSectionHashes_.erase(appliedHash);
+			}
+			else
+			{
+				++appliedHash;
+			}
+		}
 		for (const auto& sectionEntry : sections_)
 		{
 			BuildingMapSection* section = sectionEntry.second.get();
@@ -239,54 +563,6 @@ namespace Services::Map::Buildings
 			if (!IsSectionWithinAnyViewportResidencyRange(sectionEntry.first.first, sectionEntry.first.second))
 			{
 				section->InvalidateCompletedImage();
-			}
-		}
-	}
-
-	/** Requeues this viewport's cells only when availability or source-content identity changes. */
-	void BuildingMapService::ObserveViewportCandidatePublicationChanges(BuildingMapViewport& viewport)
-	{
-		std::shared_ptr<const BuildingCandidatePublication> publication =
-			viewport.buildingCollector_->AcquireCandidatePublication();
-		if (publication != nullptr && !publication->IsCurrent())
-		{
-			publication.reset();
-		}
-		const std::weak_ptr<const BuildingCandidatePublication>& previousPublication =
-			viewport.observedCandidatePublication_;
-		const bool samePublicationOwner = !previousPublication.owner_before(publication) &&
-			!publication.owner_before(previousPublication);
-		if (samePublicationOwner)
-		{
-			return;
-		}
-		const bool wasAvailable = viewport.observedCandidatePublicationAvailable_;
-		const bool isAvailable = publication != nullptr;
-		bool sourceContentChanged = wasAvailable != isAvailable;
-		if (wasAvailable && isAvailable)
-		{
-			const auto previousIdentity = viewport.observedSourceChangeIdentity_.lock();
-			const auto nextIdentity = publication->GetSourceChangeIdentity();
-			const bool sameIdentity = previousIdentity != nullptr && nextIdentity != nullptr &&
-				!previousIdentity.owner_before(nextIdentity) && !nextIdentity.owner_before(previousIdentity);
-			sourceContentChanged = !sameIdentity;
-		}
-		viewport.observedCandidatePublication_ = publication;
-		viewport.observedCandidatePublicationAvailable_ = publication != nullptr;
-		viewport.observedSourceChangeIdentity_ = publication != nullptr
-			? publication->GetSourceChangeIdentity()
-			: std::weak_ptr<const BuildingCandidateSourceChangeIdentity>{};
-		if (!sourceContentChanged)
-		{
-			return;
-		}
-		const BuildingMapViewport::GridRange& gridRange = viewport.gridRange_;
-		for (std::int64_t gridY = gridRange.firstY; gridY < gridRange.endY; ++gridY)
-		{
-			for (std::int64_t gridX = gridRange.firstX; gridX < gridRange.endX; ++gridX)
-			{
-				sectionSchedulingCoordinator_->RequestSectionWork(
-					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
 			}
 		}
 	}
@@ -408,6 +684,14 @@ namespace Services::Map::Buildings
 				gridRange.endX,
 				gridRange.endY);
 		}
+		const auto& gridRange = viewport->second->gridRange_;
+		InvalidatePendingPublicationsInRange(
+			gridRange.firstX,
+			gridRange.firstY,
+			gridRange.endX,
+			gridRange.endY);
+		observedAcquisitionHashes_.erase(viewportHandle);
+		sectionHashRechecksRequested_.erase(viewportHandle);
 		viewportsByHandle_.erase(viewport);
 		ReconcileSectionImageResidency();
 		sectionImageResidencyReconciliationPending_ = false;
@@ -497,141 +781,19 @@ namespace Services::Map::Buildings
 			{
 				return false;
 			}
+			InvalidatePendingPublicationsInRange(
+				previousRange.firstX,
+				previousRange.firstY,
+				previousRange.endX,
+				previousRange.endY);
+			InvalidatePendingPublicationsInRange(
+				firstGridX,
+				firstGridY,
+				endGridX,
+				endGridY);
 			sectionImageResidencyReconciliationPending_ = true;
 		}
 		return true;
-	}
-
-	/** Chooses the best current publication among live viewports covering one Section cell. */
-	bool BuildingMapService::TrySelectCandidatePublicationForSection(
-		std::int64_t gridX,
-		std::int64_t gridY,
-		SectionCandidateSource& output) const
-	{
-		output.Reset();
-		const double xMapUnits = static_cast<double>(gridX) * sectionSizeMapUnits_;
-		const double yMapUnits = static_cast<double>(gridY) * sectionSizeMapUnits_;
-		const double rightMapUnits = xMapUnits + sectionSizeMapUnits_;
-		const double bottomMapUnits = yMapUnits + sectionSizeMapUnits_;
-		if (!std::isfinite(xMapUnits) || !std::isfinite(yMapUnits) ||
-			!std::isfinite(rightMapUnits) || !std::isfinite(bottomMapUnits) ||
-			rightMapUnits <= xMapUnits || bottomMapUnits <= yMapUnits)
-		{
-			return false;
-		}
-		const BuildingCollectionRegion sectionRegion{
-			xMapUnits,
-			yMapUnits,
-			sectionSizeMapUnits_,
-			sectionSizeMapUnits_};
-		const BuildingSectionGrid observationGrid{xMapUnits, yMapUnits, sectionSizeMapUnits_, 1, 1};
-		SectionCandidateSource selectedCandidate;
-		int selectedEvidenceRank = -1;
-		for (const auto& viewportEntry : viewportsByHandle_)
-		{
-			ConsiderViewportCandidateForSection(
-				viewportEntry.first,
-				viewportEntry.second,
-				gridX,
-				gridY,
-				sectionRegion,
-				observationGrid,
-				selectedCandidate,
-				selectedEvidenceRank);
-		}
-		if (selectedCandidate.PublicationOwner == nullptr || !selectedCandidate.PublicationOwner->IsCurrent())
-		{
-			return false;
-		}
-		output = std::move(selectedCandidate);
-		return true;
-	}
-
-	/** Inspects one current viewport publication and retains it only when it improves evidence quality. */
-	void BuildingMapService::ConsiderViewportCandidateForSection(
-		std::uint64_t viewportHandle,
-		BuildingMapViewport* viewport,
-		std::int64_t gridX,
-		std::int64_t gridY,
-		const BuildingCollectionRegion& sectionRegion,
-		const BuildingSectionGrid& observationGrid,
-		SectionCandidateSource& selectedCandidate,
-		int& selectedEvidenceRank) const
-	{
-		if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
-			viewport->viewportHandle_ != viewportHandle || gridX < viewport->gridRange_.firstX ||
-			gridX >= viewport->gridRange_.endX || gridY < viewport->gridRange_.firstY ||
-			gridY >= viewport->gridRange_.endY)
-		{
-			return;
-		}
-		std::shared_ptr<const BuildingCandidatePublication> publication =
-			viewport->buildingCollector_->AcquireCandidatePublication();
-		if (publication == nullptr || !publication->IsCurrent())
-		{
-			return;
-		}
-		const BuildingCandidateData candidateData = publication->BorrowCandidateData();
-		if (!HasRequestedCoverageForSection(candidateData, sectionRegion))
-		{
-			return;
-		}
-		std::array<BuildingCandidateObservation, 1> observations{};
-		publication->ObserveCandidates(observationGrid, observations);
-		if (!publication->IsCurrent())
-		{
-			return;
-		}
-		const BuildingCandidateObservation& observation = observations.front();
-		if (!IsObservationForSection(observation, sectionRegion))
-		{
-			return;
-		}
-		const BuildingCandidateEvidence& evidence = observation.evidence;
-		const int evidenceRank = evidence.membershipEnumerationComplete && evidence.candidateCoverageComplete
-			? (evidence.nativeAcquisitionComplete && !evidence.hasPendingOrUnresolvedOccurrences ? 2 : 1)
-			: 0;
-		if (evidenceRank <= selectedEvidenceRank)
-		{
-			return;
-		}
-		selectedCandidate.Observation = observation;
-		selectedCandidate.PublicationOwner = std::move(publication);
-		selectedEvidenceRank = evidenceRank;
-	}
-
-	/** Requires valid accepted request bounds to contain the entire target cell. */
-	bool BuildingMapService::HasRequestedCoverageForSection(
-		const BuildingCandidateData& candidateData,
-		const BuildingCollectionRegion& sectionRegion) noexcept
-	{
-		if (!candidateData.hasRequestedCoverage)
-		{
-			return false;
-		}
-		const BuildingCollectionRegion& requested = candidateData.requestedCoverage;
-		const double requestedRight = requested.xMapUnits + requested.widthMapUnits;
-		const double requestedBottom = requested.yMapUnits + requested.heightMapUnits;
-		const double sectionRight = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
-		const double sectionBottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
-		return std::isfinite(requested.xMapUnits) && std::isfinite(requested.yMapUnits) &&
-			std::isfinite(requested.widthMapUnits) && std::isfinite(requested.heightMapUnits) &&
-			requested.widthMapUnits > 0.0 && requested.heightMapUnits > 0.0 &&
-			std::isfinite(requestedRight) && std::isfinite(requestedBottom) &&
-			requestedRight > requested.xMapUnits && requestedBottom > requested.yMapUnits &&
-			sectionRegion.xMapUnits >= requested.xMapUnits && sectionRegion.yMapUnits >= requested.yMapUnits &&
-			sectionRight <= requestedRight && sectionBottom <= requestedBottom;
-	}
-
-	/** Accepts only the exact finite square cell requested from the selected publication. */
-	bool BuildingMapService::IsObservationForSection(
-		const BuildingCandidateObservation& observation,
-		const BuildingCollectionRegion& sectionRegion) noexcept
-	{
-		return observation.requestedRegion.xMapUnits == sectionRegion.xMapUnits &&
-			observation.requestedRegion.yMapUnits == sectionRegion.yMapUnits &&
-			observation.requestedRegion.widthMapUnits == sectionRegion.widthMapUnits &&
-			observation.requestedRegion.heightMapUnits == sectionRegion.heightMapUnits;
 	}
 
 	/** Returns the existing section or creates one owned by the sparse service grid. */

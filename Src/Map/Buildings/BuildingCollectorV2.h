@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <vector>
 
 namespace MiniMap::BuildingAcquisition
 {
@@ -34,32 +36,33 @@ namespace MiniMap::BuildingAcquisition
         bool InitializeResources();
         /** Accepts an exact finite positive request without excluding any entity; false leaves it unchanged. */
         bool SetAcquisitionRegion(const BuildingAcquiredFacts::Region& region) noexcept;
-        /** Sets the policy for publishing positively classified drone-rail occurrences.
-         * The default is enabled; a changed value invalidates the current publication and is
-         * applied by the next ordinary publication pass without initiating native acquisition.
+        /** Sets the policy applied when requested Section publications are constructed.
+         * The default is enabled; a changed value does not alter the acquired dataset or its hash.
          * @param enabled Whether known drone rails remain eligible for candidate publication.
          */
         void SetRenderDroneRails(bool enabled) noexcept;
         /** Converts neutral map units directly to StarRupture native centimetres and applies the common validator. */
         bool SetAcquisitionRegion(
             const ::Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
-        /** Retains the current immutable candidate source, or returns null when unavailable or stale. */
-        std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>
-            AcquireCandidatePublication() const override;
+        /** Reads the hash of the committed regional dataset without advancing acquisition. */
+        std::uint64_t AcquisitionHash() const noexcept override;
+        /** Builds ordered Section publications from the last successful committed regional scan.
+         * Throws when a non-empty request cannot be validated or the committed dataset is unavailable.
+         */
+        std::vector<std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>>
+            AcquireSectionPublications(
+                std::span<const ::Services::Map::Buildings::BuildingCollectionRegion> sectionRegions)
+                const override;
         /** Advances pending acquisition on the permitted game thread using MiniMapMap::GetWorld().
          * An unavailable world or uninitialized metadata leaves acquisition state untouched.
          * This does not establish, replace or terminate session ownership; native resources
          * remain the owner's responsibility.
          */
         void Update() override;
-        /** Revokes currentness and clears query/session roots while native services remain live. */
+        /** Clears the committed regional result and query/session roots while native services remain live. */
         void Reset();
         /** Clears session then releases metadata/conversion roots; required before destruction. */
         void ShutdownResources();
-        /** Returns immutable historical CPU values without advancing acquisition. */
-        std::shared_ptr<const BuildingAcquiredFacts> GetFacts() const noexcept;
-        /** Tests current eligibility separately from retained CPU lifetime, on the calling thread. */
-        bool IsCurrent(const std::shared_ptr<const BuildingAcquiredFacts>& facts) const noexcept;
 
     private:
         /** Creates the unchanged placement-content signature from one exact acquired occurrence. */

@@ -20,12 +20,11 @@ namespace Services::Map::Buildings
 		class IBuildingMapService;
 	}
 
-	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, owns one optional synchronous image-change handler, and keeps weak observations of its last publication and source identity.
+	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, and owns one optional synchronous image-change handler.
 	 * Local (0, 0) is the top-left cell; columns increase rightward and rows
 	 * increase downward with the corresponding grid coordinates. Its collector
 	 * pointer is non-owning and remains valid only while the caller keeps that
-	 * collector alive. The publication observation never extends a publication's
-	 * lifetime and is cleared when this viewport loses its service association.
+	 * collector alive.
 	 */
 	class BuildingMapViewport
 	{
@@ -59,6 +58,9 @@ namespace Services::Map::Buildings
 		 * @return True when the rectangle was accepted and its update operation executed.
 		 */
 		bool Update(double x1, double y1, double x2, double y2);
+
+		/** Requests a Section-hash recheck for a changed collector-side rendering policy. */
+		void RequestSectionHashRecheck();
 
 		/** Returns the current rectangle's upper-left X coordinate in map units. */
 		double GetXMapUnits() const;
@@ -155,10 +157,5 @@ namespace Services::Map::Buildings
 		double heightMapUnits_;
 		GridRange gridRange_;
 		SectionImageChangedHandler sectionImageChangedHandler_;
-		/** Non-owning control-block identity of the last publication observed by the service. */
-		std::weak_ptr<const BuildingCandidatePublication> observedCandidatePublication_;
-		/** Non-owning source-content identity from the last available publication. */
-		std::weak_ptr<const BuildingCandidateSourceChangeIdentity> observedSourceChangeIdentity_;
-		bool observedCandidatePublicationAvailable_ = false;
 	};
 }
