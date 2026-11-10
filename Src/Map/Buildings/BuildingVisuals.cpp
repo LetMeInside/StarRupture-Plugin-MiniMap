@@ -621,7 +621,9 @@ namespace
             MiniMap::Services::Quad p;C::Bounds bounds;
             if(!ProjectWorldQuad(sprite.World,transform,p,bounds) || !G::Intersects(bounds,viewport))continue;
             const auto& uv=sprite.UV;
-            ui.ImageQuad(dl,sprite.Texture,p,{{{uv[0].U,uv[0].V},{uv[1].U,uv[1].V},{uv[2].U,uv[2].V},{uv[3].U,uv[3].V}}},0xFFFFFFFFu);
+            // A token released since it was recorded is refused: skip the sprite, keep the other layers.
+            try{ui.ImageQuad(dl,sprite.Texture,p,{{{uv[0].U,uv[0].V},{uv[1].U,uv[1].V},{uv[2].U,uv[2].V},{uv[3].U,uv[3].V}}},0xFFFFFFFFu);}
+            catch(...){}
         }
     }
     // The UV admission SubmitQuad applies, so planned occluders are sprites that draw.
