@@ -120,6 +120,18 @@ namespace Services::Map::Buildings::Visuals
 		return result;
 	}
 
+	/** Exposes a read-only completed result owned by the caller's unchanged context. */
+	const BuildingVisualsResult* BuildingVisuals::TryGetCompletedSceneResult(
+		const BuildingVisualsContext& context,
+		const SceneCursor& cursor) noexcept
+	{
+		if (!cursor.Initialized || !cursor.Terminal)
+		{
+			return nullptr;
+		}
+		return &context.result_;
+	}
+
 	/** Allows only exhausted-phase transitions after the per-call quota has been consumed. */
 	bool BuildingVisuals::CanAdvanceScenePhaseWithoutWork(
 		const BuildingRenderSceneInput& scene,

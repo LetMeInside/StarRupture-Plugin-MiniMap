@@ -102,6 +102,14 @@ namespace Services::Map::Buildings::Visuals
 			, BuildingVisualsPhaseTimings& phaseTimings
 #endif
 			);
+		/** Returns the caller-owned result only after the supplied cursor completed its scene.
+		 * @param context Caller-owned context whose result is returned without copying.
+		 * @param cursor The same cursor used to advance the completed scene.
+		 * @return A read-only pointer valid while the context and its result remain unchanged, or nullptr.
+		 */
+		static const BuildingVisualsResult* TryGetCompletedSceneResult(
+			const BuildingVisualsContext& context,
+			const SceneCursor& cursor) noexcept;
 
 	private:
 		/** Distinguishes ordinary progress from a safe yield after zero-cost advancement. */
