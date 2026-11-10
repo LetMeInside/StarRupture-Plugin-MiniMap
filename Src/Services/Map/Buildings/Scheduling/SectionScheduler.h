@@ -1,4 +1,4 @@
-// Owns Building Map acquisition and synchronously renders and commits complete Section images.
+// Owns Building Map acquisition, synchronous Section commits and dormant retained-scene preparation.
 #pragma once
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -48,7 +48,8 @@ namespace Services::Map::Buildings::Capture
 namespace Services::Map::Buildings::Scheduling
 {
 
-	/** Owns persistent acquisition resources and unfinished Section publication jobs, and synchronously prepares, renders and commits Sections.
+	/** Owns persistent acquisition resources, unfinished publication jobs and optional pixel-free retained scenes.
+	 * Existing production scheduling still prepares, renders and commits Sections synchronously; retained-scene helpers are dormant.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
 	 * The renderer object survives gameplay stops under this plugin-lifetime owner. Construction creates
 	 * CPU-side owners only; the renderer lifecycle callback advances cancellation independently.
@@ -315,9 +316,10 @@ namespace Services::Map::Buildings::Scheduling
 		};
 
 		/** Owns one Section's numerical scene inputs and per-occurrence readiness evidence.
-		 * Sprite pixels remain borrowed from the CPU manager, and publication storage is
-		 * never retained. Spline vectors and pass arrays are caller-owned and must remain unchanged
-		 * through synchronous rendering. No final Section membership or image completion is implied.
+		 * Sprite pixels are borrowed from the CPU manager and publication storage is never retained.
+		 * A retained SectionJob clears sprite pixel spans before holding this result across calls;
+		 * transient scene views and caller-owned arrays stay stable only through immediate consumption.
+		 * No final Section membership or image completion is implied.
 		 */
 		struct SectionScenePreparationResult
 		{
@@ -352,7 +354,7 @@ namespace Services::Map::Buildings::Scheduling
 			/** Builds temporary views into caller-owned scratch and rejects incomplete inputs.
 			 * @param publicationOwner Retained owner whose Section occurrences were prepared.
 			 * @param scratch Receives borrowed views into SplinePreparations and must remain unchanged.
-			 * @param output Receives ordered sprite/spline spans for one synchronous render call.
+			 * @param output Receives ordered spans for one immediate scene-consumption call.
 			 * @return True when this publication's prepared scene is CompleteSceneInputs.
 			 */
 			bool BorrowRenderSceneInput(
@@ -426,6 +428,9 @@ namespace Services::Map::Buildings::Scheduling
 
 	private:
 		friend class SectionSchedulingCoordinator;
+		struct SectionJob;
+		struct RetainedSectionScene;
+		enum class RetainedSceneBorrowStatus;
 
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.
@@ -524,6 +529,110 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			SectionScenePreparationResult& output,
 			SectionImageCommitResult& commitResult) const;
+		/** Prepares one job's complete numerical scene once and retains no sprite pixel spans.
+		 * @param section Exact service-owned Section matched against the selected publication.
+		 * @param job Existing coordinate-keyed job retaining the selected immutable publication.
+		 * @param knownSpritePreparation Current same-publication sprite result with call-valid pixels.
+		 * @param splinePolicies Existing immutable service policy table.
+		 * @return Existing scene readiness; only CompleteSceneInputs installs retained state.
+		 */
+		SectionScenePreparationResult::Readiness PrepareRetainedSectionScene(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::span<const SplinePolicy> splinePolicies) const;
+		/** Reconstructs a call-local scene from retained values and fresh sprite pixel views.
+		 * @param job Existing job whose retained scene and publication remain stable during use.
+		 * @param knownSpritePreparation Fresh same-publication result for this advancement.
+		 * @param ordinarySprites Receives temporary painter-ordered ordinary inputs.
+		 * @param overlaySprites Receives temporary painter-ordered overlay inputs.
+		 * @param splineScratch Receives temporary descriptors borrowing retained spline values.
+		 * @param output Receives spans into the supplied temporaries and retained owned spline values.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged for this immediate use.
+		 */
+		RetainedSceneBorrowStatus TryBorrowRetainedSectionScene(
+			const SectionJob& job,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
+			std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
+			std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
+			Visuals::BuildingRenderSceneInput& output) const;
+		/** Rebuilds one sorted pass's ordinal sequence from the effective prepared scene and sprite result.
+		 * @param overlaySelectsSecondPass Chooses SecondPass when true, otherwise FirstPass.
+		 * @param knownSpritePreparation Current prepared occurrences, including sparse ordinal mapping.
+		 * @param scenePreparation Effective per-occurrence scene outcomes after source eligibility.
+		 * @param preparedInputs Existing pass values whose stable sorted order must be matched.
+		 * @param output Receives the aligned publication ordinals on exact correspondence.
+		 * @return True only when counts, ordinals, pass and geometry all match.
+		 */
+		static bool TryBuildRetainedSpriteOrdinals(
+			bool overlaySelectsSecondPass,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			const SectionScenePreparationResult& scenePreparation,
+			const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
+			std::vector<std::uint64_t>& output);
+		/** Validates one newly sorted sprite-to-ordinal pair before retaining its identity.
+		 * @param ordinal Publication-local occurrence represented by the sorted sprite.
+		 * @param preparedIndex Index in the current KnownSpritePreparationResult.
+		 * @param expectedPass Required ordinary or overlay pass.
+		 * @param preparedInput Existing sorted scene value to compare against.
+		 * @param knownSpritePreparation Authoritative result and sparse ordinal map.
+		 * @return True only for exact ready occurrence, pass and value geometry correspondence.
+		 */
+		static bool IsRetainedSpriteOrdinalMatch(
+			std::uint64_t ordinal,
+			std::size_t preparedIndex,
+			BuildingCandidateSpritePass expectedPass,
+			const Visuals::BuildingSpriteRenderInput& preparedInput,
+			const KnownSpritePreparationResult& knownSpritePreparation) noexcept;
+		/** Reborrows one retained pass in ordinal order, distinguishing temporary source absence.
+		 * @param ordinals Stable sorted Section-local ordinals for this pass.
+		 * @param preparedInputs Pixel-free retained geometry in the same order.
+		 * @param expectedPass Required FirstPass or SecondPass classification.
+		 * @param knownSpritePreparation Fresh source/result state for this advancement.
+		 * @param output Receives transient inputs borrowing only current pixel views.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryReborrowSpritePass(
+			const std::vector<std::uint64_t>& ordinals,
+			const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
+			BuildingCandidateSpritePass expectedPass,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			std::vector<Visuals::BuildingSpriteRenderInput>& output) const;
+		/** Reacquires and validates one current sprite input for immediate scene use.
+		 * @param ordinal Exact retained Section-local occurrence identity.
+		 * @param expectedInput Pixel-free geometry retained for this sorted position.
+		 * @param expectedPass Required source pass classification.
+		 * @param knownSpritePreparation Fresh source/result state for this advancement.
+		 * @param output Receives the current input only when ready and unchanged.
+		 * @return Ready, TemporarilyUnavailable or InvalidOrChanged.
+		 */
+		RetainedSceneBorrowStatus TryReborrowRetainedSprite(
+			std::uint64_t ordinal,
+			const Visuals::BuildingSpriteRenderInput& expectedInput,
+			BuildingCandidateSpritePass expectedPass,
+			const KnownSpritePreparationResult& knownSpritePreparation,
+			Visuals::BuildingSpriteRenderInput& output) const;
+		/** Classifies statuses that permit an ordinary future sprite-preparation retry.
+		 * @param status Latest occurrence preparation status.
+		 * @return True only for pending or temporarily unavailable source/resource states.
+		 */
+		static bool IsTemporarySpritePreparationStatus(
+			KnownSpritePreparationResult::OccurrenceOutcome::Status status) noexcept;
+		/** Compares actual value fields, excluding the borrowed pixel span and object representation.
+		 * @param left Retained pixel-free sprite geometry.
+		 * @param right Freshly prepared sprite geometry.
+		 * @return True when every geometry and source-dimension value matches exactly.
+		 */
+		static bool HaveMatchingSpriteGeometry(
+			const Visuals::BuildingSpriteRenderInput& left,
+			const Visuals::BuildingSpriteRenderInput& right) noexcept;
+		/** Rejects retained spline values that contain unsupported borrowed texture inputs.
+		 * @param preparation Existing owned spline preparation to inspect.
+		 * @return True only for the current solid-color policy with no borrowed texture pixels.
+		 */
+		static bool HasOnlyRetainableSplineAppearances(
+			const SectionScenePreparationResult& preparation) noexcept;
 
 		/** Validates completion after the existing numerical render call.
 		 * @param commitResult Result containing the numerical status and receiving validation failure.
@@ -912,10 +1021,27 @@ namespace Services::Map::Buildings::Scheduling
 			const Visuals::BuildingSpriteRenderInput& renderInput,
 			KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept;
 
-		/** Owns only the selected immutable publication for one unfinished Section. */
+		/** Owns pixel-free prepared scene values and sorted occurrence identity for one Section job. */
+		struct RetainedSectionScene
+		{
+			SectionScenePreparationResult Preparation;
+			std::vector<std::uint64_t> OrdinarySpriteOrdinals;
+			std::vector<std::uint64_t> OverlaySpriteOrdinals;
+		};
+
+		/** Identifies whether fresh borrowed scene inputs are usable for one immediate call. */
+		enum class RetainedSceneBorrowStatus
+		{
+			Ready,
+			TemporarilyUnavailable,
+			InvalidOrChanged
+		};
+
+		/** Owns the selected immutable publication and optional retained scene for one unfinished Section. */
 		struct SectionJob
 		{
 			std::shared_ptr<const BuildingCandidatePublication> publicationOwner;
+			std::unique_ptr<RetainedSectionScene> retainedScene;
 		};
 
 		const double sectionSizeMapUnits_;
