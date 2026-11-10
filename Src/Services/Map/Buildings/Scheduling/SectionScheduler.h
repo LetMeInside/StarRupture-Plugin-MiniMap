@@ -15,9 +15,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Services::Map::Buildings
@@ -46,7 +48,7 @@ namespace Services::Map::Buildings::Capture
 namespace Services::Map::Buildings::Scheduling
 {
 
-	/** Owns persistent acquisition resources and synchronously prepares, renders and commits Sections.
+	/** Owns persistent acquisition resources and unfinished Section publication jobs, and synchronously prepares, renders and commits Sections.
 	 * SpriteDiskCache outlives the CPU manager, which outlives BuildingScheduler and its renderer.
 	 * The renderer object survives gameplay stops under this plugin-lifetime owner. Construction creates
 	 * CPU-side owners only; the renderer lifecycle callback advances cancellation independently.
@@ -434,6 +436,23 @@ namespace Services::Map::Buildings::Scheduling
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
 			std::filesystem::path buildingsCacheDirectory);
+		/** Retains or replaces the selected publication owner for one unfinished Section.
+		 * Reuses an existing job only while it has the same shared ownership identity.
+		 * @param gridX Signed Section column used as the exact job key.
+		 * @param gridY Signed Section row used as the exact job key.
+		 * @param publicationOwner Non-null shared owner of the selected immutable publication.
+		 */
+		void EnsureSectionJob(
+			std::int64_t gridX,
+			std::int64_t gridY,
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
+		/** Erases one retained Section job without changing demand or completed image state.
+		 * @param gridX Signed Section column to cancel.
+		 * @param gridY Signed Section row to cancel.
+		 */
+		void CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept;
+		/** Destroys all retained jobs without clearing images or acquisition resources. */
+		void ClearSectionJobs() noexcept;
 
 		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
 		 * @return True when BuildingScheduler enters gameplay-active scheduling state.
@@ -893,8 +912,15 @@ namespace Services::Map::Buildings::Scheduling
 			const Visuals::BuildingSpriteRenderInput& renderInput,
 			KnownSpritePreparationResult::PreparedSpriteSupport& output) const noexcept;
 
+		/** Owns only the selected immutable publication for one unfinished Section. */
+		struct SectionJob
+		{
+			std::shared_ptr<const BuildingCandidatePublication> publicationOwner;
+		};
+
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
+		std::map<std::pair<std::int64_t, std::int64_t>, SectionJob> sectionJobs_;
 		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
 		std::unique_ptr<Cache::CpuSpriteSourceManager> cpuSpriteSourceManager_;
 		std::unique_ptr<BuildingScheduler> buildingScheduler_;

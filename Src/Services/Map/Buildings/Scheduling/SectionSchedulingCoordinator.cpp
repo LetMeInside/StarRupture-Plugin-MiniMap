@@ -116,11 +116,15 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Clears viewport demand bookkeeping without changing scheduler ownership or state. */
+	/** Clears viewport demand and waiting state, then releases all retained Section jobs. */
 	void SectionSchedulingCoordinator::ClearViewportDemand() noexcept
 	{
 		demandCounts_.clear();
 		waitingSections_.clear();
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->ClearSectionJobs();
+		}
 	}
 
 	/** Requeues one demanded Section after a future dependency invalidation report. */
@@ -132,10 +136,14 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Removes completed work from waiting while retaining its aggregate demand count. */
+	/** Removes completed work and its retained job while preserving aggregate demand. */
 	void SectionSchedulingCoordinator::RecordSectionCompleted(const SectionCoordinate& coordinate)
 	{
 		waitingSections_.erase(coordinate);
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->CancelSectionJob(coordinate.GridX, coordinate.GridY);
+		}
 	}
 
 	/** Advances sprite acquisition once and attempts every initially waiting coordinate once. */
@@ -189,6 +197,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		if (!IsDemanded(coordinate) || waitingSections_.find(coordinate) == waitingSections_.end())
 		{
+			sectionScheduler_->CancelSectionJob(coordinate.GridX, coordinate.GridY);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			BM124D_MARK("Section skipped: no longer eligible");
 			++diagnostics_.NoLongerEligibleCoordinates;
@@ -214,12 +223,17 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		if (!candidateSelected)
 		{
+			sectionScheduler_->CancelSectionJob(coordinate.GridX, coordinate.GridY);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			BM124D_MARK("Section skipped: no candidate source");
 			++diagnostics_.SourceSelectionMisses;
 #endif
 			return;
 		}
+		sectionScheduler_->EnsureSectionJob(
+			coordinate.GridX,
+			coordinate.GridY,
+			publicationOwner);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		++diagnostics_.ProcessingAttempts;
 #endif
@@ -423,6 +437,7 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		if (sectionScheduler_ != nullptr)
 		{
+			sectionScheduler_->ClearSectionJobs();
 			sectionScheduler_->StopCaptureGameWorldSession();
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -562,6 +577,10 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		demandCounts_.erase(demandCount);
 		waitingSections_.erase(coordinate);
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->CancelSectionJob(coordinate.GridX, coordinate.GridY);
+		}
 	}
 
 	/** Checks the union count without consulting BuildingMapService's Section ownership. */

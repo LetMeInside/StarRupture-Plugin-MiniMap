@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace Services::Map::Buildings::Scheduling
@@ -532,6 +533,44 @@ namespace Services::Map::Buildings::Scheduling
 
 	/** Destroys subordinates in reverse member order; native retirement remains service-directed. */
 	SectionScheduler::~SectionScheduler() = default;
+
+	/** Keeps a job when shared publication ownership matches and resets it otherwise. */
+	void SectionScheduler::EnsureSectionJob(
+		std::int64_t gridX,
+		std::int64_t gridY,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
+	{
+		if (publicationOwner == nullptr)
+		{
+			throw std::invalid_argument("A Section job requires a selected publication owner.");
+		}
+		const auto coordinate = std::make_pair(gridX, gridY);
+		const auto existingJob = sectionJobs_.find(coordinate);
+		if (existingJob == sectionJobs_.end())
+		{
+			sectionJobs_.emplace(coordinate, SectionJob{publicationOwner});
+			return;
+		}
+		const auto& retainedOwner = existingJob->second.publicationOwner;
+		const bool sameOwnership = !retainedOwner.owner_before(publicationOwner) &&
+			!publicationOwner.owner_before(retainedOwner);
+		if (!sameOwnership)
+		{
+			existingJob->second = SectionJob{publicationOwner};
+		}
+	}
+
+	/** Erases the exact job key while leaving demand, resource owners and images intact. */
+	void SectionScheduler::CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept
+	{
+		sectionJobs_.erase(std::make_pair(gridX, gridY));
+	}
+
+	/** Releases all retained publication owners without changing other scheduler state. */
+	void SectionScheduler::ClearSectionJobs() noexcept
+	{
+		sectionJobs_.clear();
+	}
 
 	/** Starts gameplay scheduling against the renderer created with service configuration. */
 	bool SectionScheduler::BeginCaptureGameWorldSession()

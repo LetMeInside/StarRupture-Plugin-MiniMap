@@ -206,7 +206,7 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
 			std::int64_t endGridY);
-		/** Clears all viewport demand counts and waiting coordinates, retaining the scheduler. */
+		/** Clears demand counts, waiting coordinates and retained Section jobs while retaining scheduler resources. */
 		void ClearViewportDemand() noexcept;
 
 		/** Requeues demanded work after a Section dependency changes.
@@ -219,7 +219,7 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		bool BeginCaptureGameWorldSession();
 
-		/** Ends gameplay scheduling and requests cancellation of active capture work once. */
+		/** Clears retained Section jobs, then stops scheduling and requests active capture cancellation. */
 		void StopCaptureGameWorldSession();
 		/** Returns the capturer target used by the plugin's direct engine callback. */
 		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
@@ -301,13 +301,13 @@ namespace Services::Map::Buildings::Scheduling
 		/** Adds one viewport reference and queues newly demanded incomplete work. */
 		void AddDemandCoordinate(const SectionCoordinate& coordinate);
 
-		/** Removes one viewport reference and withdraws work after the final demand leaves. */
+		/** Removes one viewport reference and cancels work after the final demand leaves. */
 		void RemoveDemandCoordinate(const SectionCoordinate& coordinate);
 
 		/** Reports whether any active viewport currently requires this coordinate. */
 		bool IsDemanded(const SectionCoordinate& coordinate) const noexcept;
 
-		/** Removes completed work after a SectionScheduler commit reports success.
+		/** Removes completed waiting work and its retained job after a successful commit.
 		 * Aggregate demand remains intact.
 		 * @param coordinate Signed service-grid coordinate whose image was committed.
 		 */
