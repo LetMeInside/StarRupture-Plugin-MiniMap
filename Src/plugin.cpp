@@ -7,6 +7,7 @@
 #include "Services/Runtime.h"
 #include "Services/RuntimeEvents.h"
 #include "Services/NativeHooks.h"
+#include "Map/MapTransform.h"
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
@@ -1302,6 +1303,8 @@ namespace MiniMap
         // These approved settings use native centimeters and the established direct-index policy table.
         constexpr double sectionSizeMapUnits = 12500.0;
         constexpr std::uint32_t sectionResolutionPixels = 256;
+		constexpr double spriteCaptureDensityPixelsPerMapUnit =
+			1.0 / (100.0 * MiniMapMap::MinimumMetersPerPixel);
         const std::array<::Services::Map::Buildings::SplinePolicy, 4> splinePolicies{{
             {0xFFFFFF, 1.0}, // Reserved index 0 is never resolved.
             {0x000000, 1.0}, // DroneRail index 1.
@@ -1310,6 +1313,7 @@ namespace MiniMap
         g_buildingMapService.reset(new ::Services::Map::Buildings::BuildingMapService(
             sectionSizeMapUnits,
             sectionResolutionPixels,
+			spriteCaptureDensityPixelsPerMapUnit,
             cacheRoot,
             splinePolicies));
         g_buildingSpriteRenderer = g_buildingMapService->GetCapturerLifecycleTarget();

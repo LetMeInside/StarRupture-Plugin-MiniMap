@@ -26,9 +26,9 @@
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Stores the map scale without preparing native resources. */
-	BuildingSpriteRenderer::BuildingSpriteRenderer(double pixelsPerMapUnit)
-		: pixelsPerMapUnit_(pixelsPerMapUnit)
+	/** Stores sprite capture density without preparing native resources. */
+	BuildingSpriteRenderer::BuildingSpriteRenderer(double spriteCaptureDensityPixelsPerMapUnit)
+		: spriteCaptureDensityPixelsPerMapUnit_(spriteCaptureDensityPixelsPerMapUnit)
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnosticsInterval();
@@ -1469,7 +1469,7 @@ namespace Services::Map::Buildings::Capture
 		Cache::SpriteCaptureMetadata metadata{
 			GetCaptureBounds(),
 			orthographicExtent,
-			pixelsPerMapUnit_};
+			spriteCaptureDensityPixelsPerMapUnit_};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Cache::SpriteProcessingResult result;
 		{

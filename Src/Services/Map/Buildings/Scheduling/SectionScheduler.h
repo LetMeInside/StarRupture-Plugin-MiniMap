@@ -461,11 +461,13 @@ namespace Services::Map::Buildings::Scheduling
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.
 		 * @param sectionResolutionPixels Width and height of the future square image in pixels.
+		 * @param spriteCaptureDensityPixelsPerMapUnit Pixels per map unit used for sprite capture processing.
 		 * @param buildingsCacheDirectory Service-validated absolute Buildings cache directory.
 		 */
 		SectionScheduler(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
+			double spriteCaptureDensityPixelsPerMapUnit,
 			std::filesystem::path buildingsCacheDirectory);
 		/** Retains the exact existing owner for equal content and replaces it for changed content.
 		 * Equal ContentHash retains all prepared views on their original shared owner.

@@ -100,12 +100,12 @@ namespace Services::Map::Buildings::Scheduling
 		/** Creates the persistent renderer and borrows the sibling cache/source manager.
 		 * @param cpuSpriteSourceManager Owner of resident processed sprites.
 		 * @param spriteDiskCache Cache used for capture persistence and by CPU source retrieval.
-		 * @param pixelsPerMapUnit Capture scale derived from service Section settings.
+		 * @param spriteCaptureDensityPixelsPerMapUnit Configured sprite capture density in pixels per map unit.
 		 */
 		BuildingScheduler(
 			Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
 			Cache::SpriteDiskCache* spriteDiskCache,
-			double pixelsPerMapUnit);
+			double spriteCaptureDensityPixelsPerMapUnit);
 		/** Releases the plugin-lifetime renderer object without implicit native cleanup. */
 		~BuildingScheduler();
 

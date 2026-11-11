@@ -225,7 +225,7 @@ namespace Services::Map::Buildings::Capture
 		};
 
 		/** Creates inert plugin-lifetime renderer state at the service-configured map scale. */
-		explicit BuildingSpriteRenderer(double pixelsPerMapUnit);
+		explicit BuildingSpriteRenderer(double spriteCaptureDensityPixelsPerMapUnit);
 		/** Prevents copies from creating ambiguous native-resource ownership. */
 		BuildingSpriteRenderer(const BuildingSpriteRenderer&) = delete;
 		/** Prevents copies from creating ambiguous native-resource ownership. */
@@ -391,7 +391,7 @@ namespace Services::Map::Buildings::Capture
 		SDK::UTextureRenderTarget2D* renderTarget_ = nullptr;
 		double boundsCenter_[3]{};
 		double boundsExtent_[3]{};
-		double pixelsPerMapUnit_ = 0.0;
+		double spriteCaptureDensityPixelsPerMapUnit_ = 0.0;
 		std::uint64_t admittedServiceIterations_ = 0;
 		std::uint64_t lastAcceptedRequestSequence_ = 0;
 		std::uint64_t preparedIteration_ = 0;

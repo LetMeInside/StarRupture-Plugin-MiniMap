@@ -145,11 +145,13 @@ namespace Services::Map::Buildings::Scheduling
 		/** Creates the owned SectionScheduler from service-validated immutable map settings.
 		 * @param sectionSizeMapUnits Width and height of each square Section in map units.
 		 * @param sectionResolutionPixels Width and height of the future Section image in pixels.
+		 * @param spriteCaptureDensityPixelsPerMapUnit Pixels per map unit used for sprite capture processing.
 		 * @param buildingsCacheDirectory Service-validated absolute sprite-cache directory.
 		 */
 		SectionSchedulingCoordinator(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
+			double spriteCaptureDensityPixelsPerMapUnit,
 			std::filesystem::path buildingsCacheDirectory);
 		SectionSchedulingCoordinator(const SectionSchedulingCoordinator&) = delete;
 		SectionSchedulingCoordinator& operator=(const SectionSchedulingCoordinator&) = delete;

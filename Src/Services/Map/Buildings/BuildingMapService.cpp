@@ -22,16 +22,19 @@ namespace Services::Map::Buildings
 	BuildingMapService::BuildingMapService(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
+		double spriteCaptureDensityPixelsPerMapUnit,
 		std::filesystem::path cacheRoot,
 		std::span<const SplinePolicy> splinePolicies)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
+		, spriteCaptureDensityPixelsPerMapUnit_(spriteCaptureDensityPixelsPerMapUnit)
 		, splinePolicies_(splinePolicies.begin(), splinePolicies.end())
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
-			sectionResolutionPixels_ == 0)
+			sectionResolutionPixels_ == 0 ||
+			!std::isfinite(spriteCaptureDensityPixelsPerMapUnit_) || spriteCaptureDensityPixelsPerMapUnit_ <= 0.0)
 		{
-			throw std::invalid_argument("Building Map settings require a finite positive section size and positive resolution.");
+			throw std::invalid_argument("Building Map settings require finite positive section size and sprite capture density, and positive resolution.");
 		}
 		if (cacheRoot.empty())
 		{
@@ -47,6 +50,7 @@ namespace Services::Map::Buildings
 		sectionSchedulingCoordinator_.reset(new Scheduling::SectionSchedulingCoordinator(
 			sectionSizeMapUnits_,
 			sectionResolutionPixels_,
+			spriteCaptureDensityPixelsPerMapUnit_,
 			std::move(buildingsCacheDirectory)));
 	}
 

@@ -28,10 +28,12 @@ namespace Services::Map::Buildings::Scheduling
 	SectionSchedulingCoordinator::SectionSchedulingCoordinator(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
+		double spriteCaptureDensityPixelsPerMapUnit,
 		std::filesystem::path buildingsCacheDirectory)
 		: sectionScheduler_(new SectionScheduler(
 			sectionSizeMapUnits,
 			sectionResolutionPixels,
+			spriteCaptureDensityPixelsPerMapUnit,
 			std::move(buildingsCacheDirectory)))
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

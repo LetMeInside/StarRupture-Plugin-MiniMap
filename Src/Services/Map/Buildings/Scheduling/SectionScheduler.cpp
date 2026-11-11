@@ -1115,17 +1115,16 @@ namespace Services::Map::Buildings::Scheduling
 	SectionScheduler::SectionScheduler(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
+		double spriteCaptureDensityPixelsPerMapUnit,
 		std::filesystem::path buildingsCacheDirectory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
 		, diagnosticsDirectory_(buildingsCacheDirectory / "Diagnostics")
 	{
-		const double pixelsPerMapUnit =
-			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
 		spriteDiskCache_.reset(new Cache::SpriteDiskCache(std::move(buildingsCacheDirectory)));
 		cpuSpriteSourceManager_.reset(new Cache::CpuSpriteSourceManager(spriteDiskCache_.get()));
 		buildingScheduler_.reset(new BuildingScheduler(
-			cpuSpriteSourceManager_.get(), spriteDiskCache_.get(), pixelsPerMapUnit));
+			cpuSpriteSourceManager_.get(), spriteDiskCache_.get(), spriteCaptureDensityPixelsPerMapUnit));
 	}
 
 	/** Destroys subordinates in reverse member order; native retirement remains service-directed. */

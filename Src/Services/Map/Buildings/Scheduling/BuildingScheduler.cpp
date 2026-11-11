@@ -17,10 +17,10 @@ namespace Services::Map::Buildings::Scheduling
 	BuildingScheduler::BuildingScheduler(
 		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
 		Cache::SpriteDiskCache* spriteDiskCache,
-		double pixelsPerMapUnit)
+		double spriteCaptureDensityPixelsPerMapUnit)
 		: cpuSpriteSourceManager_(cpuSpriteSourceManager)
 		, spriteDiskCache_(spriteDiskCache)
-		, captureRenderer_(new Capture::BuildingSpriteRenderer(pixelsPerMapUnit))
+		, captureRenderer_(new Capture::BuildingSpriteRenderer(spriteCaptureDensityPixelsPerMapUnit))
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnostics();

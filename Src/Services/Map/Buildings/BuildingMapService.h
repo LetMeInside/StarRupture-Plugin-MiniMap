@@ -46,7 +46,7 @@ namespace Services::Map::Buildings
 	{
 	public:
 		/** Creates a service whose settings define the shared grid and whose cache root contains its sprite files.
-		 * Throws std::invalid_argument unless section size is finite and positive,
+		 * Throws std::invalid_argument unless section size and sprite capture density are finite and positive,
 		 * resolution is positive, and the MiniMap cache root is nonempty and absolute.
 		 * The root is normalized and the service derives its Buildings subdirectory.
 		 * Construction does not require either directory to exist and performs no cache
@@ -55,12 +55,14 @@ namespace Services::Map::Buildings
 		 *
 		 * @param sectionSizeMapUnits Width and height of each square cell in map units.
 		 * @param sectionResolutionPixels Width and height of each future square image in pixels.
+		 * @param spriteCaptureDensityPixelsPerMapUnit Sprite capture pixels per map unit, independent of Section image resolution.
 		 * @param cacheRoot Absolute application-wide MiniMap/Cache directory.
 		 * @param splinePolicies Direct-indexed policies with reserved entry zero.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
+			double spriteCaptureDensityPixelsPerMapUnit,
 			std::filesystem::path cacheRoot,
 			std::span<const SplinePolicy> splinePolicies);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
@@ -290,6 +292,7 @@ namespace Services::Map::Buildings
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
+		const double spriteCaptureDensityPixelsPerMapUnit_;
 		Coordination::FrameBudgetController frameBudgetController_;
 		const std::vector<SplinePolicy> splinePolicies_;
 		double mapWidthMapUnits_ = 0.0;
