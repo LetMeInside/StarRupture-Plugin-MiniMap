@@ -171,7 +171,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool renderSectionImages);
 
 		/** Applies only the difference between the viewport's previous and accepted new ranges.
 		 * @param previousFirstGridX Previous inclusive first column.
@@ -194,7 +195,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t nextFirstGridX,
 			std::int64_t nextFirstGridY,
 			std::int64_t nextEndGridX,
-			std::int64_t nextEndGridY);
+			std::int64_t nextEndGridY,
+			bool renderSectionImages);
 
 		/** Withdraws one viewport's existing half-open range and preserves overlapping demand.
 		 * @param buildingMapService Service whose existing Sections may have unfinished state to reset.
@@ -208,7 +210,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool renderSectionImages);
 		/** Clears demand and unfinished state from existing service-owned Sections.
 		 * @param buildingMapService Service whose Sections own the state being released.
 		 */
@@ -260,6 +263,7 @@ namespace Services::Map::Buildings::Scheduling
 
 			State CurrentState = State::Pending;
 			std::size_t WorkUnitsConsumed = 0;
+			bool AwaitingImageDemand = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			bool HasSceneReadiness = false;
 			std::uint8_t SceneReadiness = 0;
@@ -374,7 +378,8 @@ namespace Services::Map::Buildings::Scheduling
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJobContinuationMode continuationMode,
-			std::chrono::steady_clock::time_point deadline);
+			std::chrono::steady_clock::time_point deadline,
+			bool renderSectionImages);
 		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.
 		 * @param coordinate Coordinate of the terminal Section attempt.
@@ -422,7 +427,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool renderSectionImages);
 
 		/** Removes each coordinate in a half-open range from aggregate viewport demand. */
 		void RemoveDemandRange(
@@ -430,15 +436,17 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool renderSectionImages);
 
 		/** Adds one viewport reference and queues newly demanded incomplete work. */
-		void AddDemandCoordinate(const SectionCoordinate& coordinate);
+		void AddDemandCoordinate(const SectionCoordinate& coordinate, bool renderSectionImages);
 
 		/** Removes one viewport reference and cancels work after the final demand leaves. */
 		void RemoveDemandCoordinate(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
-			const SectionCoordinate& coordinate);
+			const SectionCoordinate& coordinate,
+			bool renderSectionImages);
 		/** Resets one existing Section's unfinished state without inserting a sparse Section.
 		 * @param buildingMapService Service containing the existing Section when one was created.
 		 * @param coordinate Coordinate whose state is being cancelled.
@@ -449,6 +457,8 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Reports whether any active viewport currently requires this coordinate. */
 		bool IsDemanded(const SectionCoordinate& coordinate) const noexcept;
+		/** Reports whether at least one demanding viewport requests numerical images. */
+		bool HasImageDemand(const SectionCoordinate& coordinate) const noexcept;
 
 		/** Removes completed waiting work and its Section-owned state after a successful commit.
 		 * Aggregate demand remains intact.
@@ -463,7 +473,13 @@ namespace Services::Map::Buildings::Scheduling
 		void ResetDiagnostics() noexcept;
 #endif
 
-		std::map<SectionCoordinate, std::size_t> demandCounts_;
+		/** Holds total and image-requiring viewport references for one demanded Section. */
+		struct AggregateSectionDemand
+		{
+			std::size_t ViewportCount = 0;
+			std::size_t ImageViewportCount = 0;
+		};
+		std::map<SectionCoordinate, AggregateSectionDemand> demandCounts_;
 		std::set<SectionCoordinate> waitingSections_;
 		std::set<SectionCoordinate> deferredSectionsThisTick_;
 		std::optional<SectionCoordinate> focusedSection_;

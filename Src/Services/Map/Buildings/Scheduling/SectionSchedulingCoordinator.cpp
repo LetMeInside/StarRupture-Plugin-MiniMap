@@ -49,13 +49,14 @@ namespace Services::Map::Buildings::Scheduling
 		std::int64_t firstGridX,
 		std::int64_t firstGridY,
 		std::int64_t endGridX,
-		std::int64_t endGridY)
+		std::int64_t endGridY,
+		bool renderSectionImages)
 	{
 		if (!IsValidDemandRange(firstGridX, firstGridY, endGridX, endGridY))
 		{
 			return false;
 		}
-		AddDemandRange(firstGridX, firstGridY, endGridX, endGridY);
+		AddDemandRange(firstGridX, firstGridY, endGridX, endGridY, renderSectionImages);
 		return true;
 	}
 
@@ -69,7 +70,8 @@ namespace Services::Map::Buildings::Scheduling
 		std::int64_t nextFirstGridX,
 		std::int64_t nextFirstGridY,
 		std::int64_t nextEndGridX,
-		std::int64_t nextEndGridY)
+		std::int64_t nextEndGridY,
+		bool renderSectionImages)
 	{
 		if (!IsValidDemandRange(previousFirstGridX, previousFirstGridY, previousEndGridX, previousEndGridY) ||
 			!IsValidDemandRange(nextFirstGridX, nextFirstGridY, nextEndGridX, nextEndGridY))
@@ -83,7 +85,7 @@ namespace Services::Map::Buildings::Scheduling
 				const SectionCoordinate coordinate{gridX, gridY};
 				if (!ContainsCoordinate(nextFirstGridX, nextFirstGridY, nextEndGridX, nextEndGridY, coordinate))
 				{
-					RemoveDemandCoordinate(buildingMapService, coordinate);
+					RemoveDemandCoordinate(buildingMapService, coordinate, renderSectionImages);
 					RequestSectionWork(coordinate);
 				}
 			}
@@ -100,7 +102,7 @@ namespace Services::Map::Buildings::Scheduling
 					previousEndGridY,
 					coordinate))
 				{
-					AddDemandCoordinate(coordinate);
+					AddDemandCoordinate(coordinate, renderSectionImages);
 					RequestSectionWork(coordinate);
 				}
 			}
@@ -114,11 +116,18 @@ namespace Services::Map::Buildings::Scheduling
 		std::int64_t firstGridX,
 		std::int64_t firstGridY,
 		std::int64_t endGridX,
-		std::int64_t endGridY)
+		std::int64_t endGridY,
+		bool renderSectionImages)
 	{
 		if (IsValidDemandRange(firstGridX, firstGridY, endGridX, endGridY))
 		{
-			RemoveDemandRange(buildingMapService, firstGridX, firstGridY, endGridX, endGridY);
+			RemoveDemandRange(
+				buildingMapService,
+				firstGridX,
+				firstGridY,
+				endGridX,
+				endGridY,
+				renderSectionImages);
 		}
 	}
 
@@ -338,6 +347,17 @@ namespace Services::Map::Buildings::Scheduling
 			std::chrono::steady_clock::now() - sliceStarted).count();
 		RecordIncrementalDiagnostics(coordinate, sliceElapsedMs, result);
 #endif
+		if (result.AwaitingImageDemand)
+		{
+			waitingSections_.erase(coordinate);
+			if (focusedSection_.has_value() &&
+				focusedSection_->GridX == coordinate.GridX &&
+				focusedSection_->GridY == coordinate.GridY)
+			{
+				ClearFocusedSection();
+			}
+			return true;
+		}
 		deadlineYielded = result.CurrentState == IncrementalSectionAdvanceResult::State::Pending &&
 			result.WorkUnitsConsumed == 0 && !IsTickAllowanceAvailable();
 		return result.CurrentState != IncrementalSectionAdvanceResult::State::Pending ||
@@ -467,7 +487,8 @@ namespace Services::Map::Buildings::Scheduling
 			publicationOwner,
 			section,
 			continuationMode,
-			deadline);
+			deadline,
+			HasImageDemand(coordinate));
 	}
 
 	/** Advances one Section-owned job and handles only its actual terminal commit result. */
@@ -478,7 +499,8 @@ namespace Services::Map::Buildings::Scheduling
 		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJobContinuationMode continuationMode,
-		std::chrono::steady_clock::time_point deadline)
+		std::chrono::steady_clock::time_point deadline,
+		bool renderSectionImages)
 	{
 		IncrementalSectionAdvanceResult result;
 		SectionScheduler::SectionJobAdvanceResult jobResult = sectionScheduler_->AdvanceSectionJob(
@@ -486,8 +508,10 @@ namespace Services::Map::Buildings::Scheduling
 			publicationOwner,
 			continuationMode,
 			buildingMapService.splinePolicies_,
-			deadline);
+			deadline,
+			renderSectionImages);
 		result.WorkUnitsConsumed = jobResult.WorkUnitsConsumed;
+		result.AwaitingImageDemand = jobResult.AwaitingImageDemand;
 		if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::WaitingForResources)
 		{
 			result.CurrentState = IncrementalSectionAdvanceResult::State::WaitingForResources;
@@ -853,13 +877,14 @@ namespace Services::Map::Buildings::Scheduling
 		std::int64_t firstGridX,
 		std::int64_t firstGridY,
 		std::int64_t endGridX,
-		std::int64_t endGridY)
+		std::int64_t endGridY,
+		bool renderSectionImages)
 	{
 		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
 		{
 			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
 			{
-				AddDemandCoordinate(SectionCoordinate{gridX, gridY});
+				AddDemandCoordinate(SectionCoordinate{gridX, gridY}, renderSectionImages);
 			}
 		}
 	}
@@ -870,44 +895,62 @@ namespace Services::Map::Buildings::Scheduling
 		std::int64_t firstGridX,
 		std::int64_t firstGridY,
 		std::int64_t endGridX,
-		std::int64_t endGridY)
+		std::int64_t endGridY,
+		bool renderSectionImages)
 	{
 		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
 		{
 			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
 			{
-				RemoveDemandCoordinate(buildingMapService, SectionCoordinate{gridX, gridY});
+				RemoveDemandCoordinate(
+					buildingMapService,
+					SectionCoordinate{gridX, gridY},
+					renderSectionImages);
 			}
 		}
 	}
 
 	/** Adds one viewport reference and requeues shared coordinates for source reselection. */
-	void SectionSchedulingCoordinator::AddDemandCoordinate(const SectionCoordinate& coordinate)
+	void SectionSchedulingCoordinator::AddDemandCoordinate(
+		const SectionCoordinate& coordinate,
+		bool renderSectionImages)
 	{
 		auto demandCount = demandCounts_.find(coordinate);
 		if (demandCount != demandCounts_.end())
 		{
-			++demandCount->second;
+			++demandCount->second.ViewportCount;
+			if (renderSectionImages)
+			{
+				++demandCount->second.ImageViewportCount;
+			}
 			RequestSectionWork(coordinate);
 			return;
 		}
-		demandCounts_.emplace(coordinate, 1);
+		AggregateSectionDemand demand;
+		demand.ViewportCount = 1;
+		demand.ImageViewportCount = renderSectionImages ? 1 : 0;
+		demandCounts_.emplace(coordinate, demand);
 		waitingSections_.insert(coordinate);
 	}
 
 	/** Drops one reference, requeues shared demand, and withdraws work after the final departure. */
 	void SectionSchedulingCoordinator::RemoveDemandCoordinate(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
-		const SectionCoordinate& coordinate)
+		const SectionCoordinate& coordinate,
+		bool renderSectionImages)
 	{
 		const auto demandCount = demandCounts_.find(coordinate);
 		if (demandCount == demandCounts_.end())
 		{
 			return;
 		}
-		if (demandCount->second > 1)
+		if (renderSectionImages && demandCount->second.ImageViewportCount > 0)
 		{
-			--demandCount->second;
+			--demandCount->second.ImageViewportCount;
+		}
+		if (demandCount->second.ViewportCount > 1)
+		{
+			--demandCount->second.ViewportCount;
 			RequestSectionWork(coordinate);
 			return;
 		}
@@ -941,7 +984,15 @@ namespace Services::Map::Buildings::Scheduling
 	/** Checks the union count without consulting BuildingMapService's Section ownership. */
 	bool SectionSchedulingCoordinator::IsDemanded(const SectionCoordinate& coordinate) const noexcept
 	{
-		return demandCounts_.find(coordinate) != demandCounts_.end();
+		const auto demandCount = demandCounts_.find(coordinate);
+		return demandCount != demandCounts_.end() && demandCount->second.ViewportCount > 0;
+	}
+
+	/** Checks aggregate image demand independently from total Section demand. */
+	bool SectionSchedulingCoordinator::HasImageDemand(const SectionCoordinate& coordinate) const noexcept
+	{
+		const auto demandCount = demandCounts_.find(coordinate);
+		return demandCount != demandCounts_.end() && demandCount->second.ImageViewportCount > 0;
 	}
 }
 

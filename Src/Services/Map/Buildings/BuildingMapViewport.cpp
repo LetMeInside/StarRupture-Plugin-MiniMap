@@ -22,7 +22,8 @@ namespace Services::Map::Buildings
 		double xMapUnits,
 		double yMapUnits,
 		double widthMapUnits,
-		double heightMapUnits)
+		double heightMapUnits,
+		bool renderSectionImages)
 		: service_(&service)
 		, buildingCollector_(&buildingCollector)
 		, viewportHandle_(viewportHandle)
@@ -36,7 +37,14 @@ namespace Services::Map::Buildings
 			widthMapUnits,
 			heightMapUnits,
 			service.GetSectionSizeMapUnits()))
+		, renderSectionImages_(renderSectionImages)
 	{
+	}
+
+	/** Returns the immutable image-rendering demand selected by the service factory. */
+	bool BuildingMapViewport::RenderSectionImages() const noexcept
+	{
+		return renderSectionImages_;
 	}
 
 	/** Forwards a changed collector policy as a one-shot Section-content recheck request. */

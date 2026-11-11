@@ -452,6 +452,7 @@ namespace Services::Map::Buildings::Scheduling
 
 			State CurrentState = State::Pending;
 			std::size_t WorkUnitsConsumed = 0;
+			bool AwaitingImageDemand = false;
 			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
 			std::optional<SectionImageCommitResult> FinishedAttempt;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -508,7 +509,8 @@ namespace Services::Map::Buildings::Scheduling
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			SectionJobContinuationMode continuationMode,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline);
+			std::chrono::steady_clock::time_point deadline,
+			bool renderSectionImages);
 
 		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
 		 * @return True when BuildingScheduler enters gameplay-active scheduling state.
@@ -740,6 +742,7 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJobContinuationMode continuationMode,
 			std::span<const SplinePolicy> splinePolicies,
 			std::chrono::steady_clock::time_point deadline,
+			bool renderSectionImages,
 			SectionJobAdvanceResult& result);
 		/** Resumes occurrence preparation or preserves an established retained scene.
 		 * @param section Exact service-owned Section described by the publication.

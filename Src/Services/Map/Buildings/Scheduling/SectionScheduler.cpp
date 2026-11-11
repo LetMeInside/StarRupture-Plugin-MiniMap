@@ -1271,11 +1271,17 @@ namespace Services::Map::Buildings::Scheduling
 		SectionJobContinuationMode continuationMode,
 		std::span<const SplinePolicy> splinePolicies,
 		std::chrono::steady_clock::time_point deadline,
+		bool renderSectionImages,
 		SectionJobAdvanceResult& result)
 	{
 		if (!PrepareSectionJobSceneForAttempt(
 			section, job, continuationMode, splinePolicies, deadline, result))
 		{
+			return false;
+		}
+		if (!renderSectionImages)
+		{
+			result.AwaitingImageDemand = true;
 			return false;
 		}
 		if (!job.publicationOwner->BorrowCandidateData().occurrences.empty())
@@ -1538,7 +1544,8 @@ namespace Services::Map::Buildings::Scheduling
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		SectionJobContinuationMode continuationMode,
 		std::span<const SplinePolicy> splinePolicies,
-		std::chrono::steady_clock::time_point deadline)
+		std::chrono::steady_clock::time_point deadline,
+		bool renderSectionImages)
 	{
 		SectionJobAdvanceResult result;
 		if (!section.renderingState_)
@@ -1568,7 +1575,13 @@ namespace Services::Map::Buildings::Scheduling
 			return result;
 		}
 		if (!PrepareSectionJobAttempt(
-			section, job, continuationMode, splinePolicies, deadline, result))
+			section,
+			job,
+			continuationMode,
+			splinePolicies,
+			deadline,
+			renderSectionImages,
+			result))
 		{
 			return result;
 		}

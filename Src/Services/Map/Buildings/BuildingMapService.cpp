@@ -753,7 +753,8 @@ namespace Services::Map::Buildings
 				viewport.gridRange_.firstX,
 				viewport.gridRange_.firstY,
 				viewport.gridRange_.endX,
-				viewport.gridRange_.endY))
+				viewport.gridRange_.endY,
+				viewport.RenderSectionImages()))
 		{
 			viewportsByHandle_.erase(viewportHandle);
 			viewport.InvalidateService();
@@ -784,7 +785,8 @@ namespace Services::Map::Buildings
 			xMapUnits,
 			yMapUnits,
 			widthMapUnits,
-			heightMapUnits));
+			heightMapUnits,
+			true));
 		if (!RegisterViewport(*viewport))
 		{
 			return nullptr;
@@ -847,7 +849,8 @@ namespace Services::Map::Buildings
 				gridRange.firstX,
 				gridRange.firstY,
 				gridRange.endX,
-				gridRange.endY);
+				gridRange.endY,
+				viewport->second->RenderSectionImages());
 		}
 		const auto& gridRange = viewport->second->gridRange_;
 		InvalidatePendingPublicationsInRange(
@@ -943,7 +946,8 @@ namespace Services::Map::Buildings
 					firstGridX,
 					firstGridY,
 					endGridX,
-					endGridY))
+					endGridY,
+					viewportEntry->second->RenderSectionImages()))
 			{
 				return false;
 			}

@@ -84,6 +84,8 @@ namespace Services::Map::Buildings
 
 		/** Returns the shared section at a local cell, or null if absent or out of range. */
 		const BuildingMapSection* GetSectionAt(std::size_t localX, std::size_t localY) const;
+		/** Reports whether this viewport contributes demand for numerical Section images. */
+		bool RenderSectionImages() const noexcept;
 
 		/** Ends this viewport session; repeated calls have no effect. */
 		void Close();
@@ -119,7 +121,8 @@ namespace Services::Map::Buildings
 			double xMapUnits,
 			double yMapUnits,
 			double widthMapUnits,
-			double heightMapUnits);
+			double heightMapUnits,
+			bool renderSectionImages);
 
 	private:
 
@@ -153,6 +156,7 @@ namespace Services::Map::Buildings
 		double widthMapUnits_;
 		double heightMapUnits_;
 		GridRange gridRange_;
+		const bool renderSectionImages_;
 		SectionImageChangedHandler sectionImageChangedHandler_;
 	};
 }

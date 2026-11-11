@@ -21,7 +21,8 @@ namespace Services::Map::Buildings
 			xMapUnits,
 			yMapUnits,
 			widthMapUnits,
-			heightMapUnits)
+			heightMapUnits,
+			false)
 	{
 	}
 }
