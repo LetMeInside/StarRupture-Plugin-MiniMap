@@ -5,9 +5,7 @@
 
 #include <cmath>
 #include <cstdint>
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
-#endif
 
 namespace Services::Map::Buildings::Visuals
 {
@@ -50,12 +48,6 @@ namespace Services::Map::Buildings::Visuals
 		context.result_.OrdinarySprites.reserve(scene.OrdinarySprites.size());
 		context.occluders_.reserve(scene.OrdinarySprites.size());
 		context.preparedSplines_.resize(scene.Splines.size());
-		std::size_t surfaceCount = 0;
-		for (const auto& spline : scene.Splines)
-		{
-			surfaceCount += spline.Surfaces.size();
-		}
-		context.result_.SplineSurfaces.reserve(surfaceCount);
 		context.result_.OverlayLastSprites.reserve(scene.OverlayLastSprites.size());
 		cursor.Initialized = true;
 	}
@@ -66,7 +58,7 @@ namespace Services::Map::Buildings::Visuals
 		Rendering::Rgba16fImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
-		std::size_t maximumWorkUnits
+		std::chrono::steady_clock::time_point deadline
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		, BuildingVisualsPhaseTimings& phaseTimings
 #endif
@@ -78,7 +70,7 @@ namespace Services::Map::Buildings::Visuals
 			result.Complete = true;
 			return result;
 		}
-		if (maximumWorkUnits == 0)
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return result;
 		}
@@ -88,7 +80,7 @@ namespace Services::Map::Buildings::Visuals
 		}
 		while (!cursor.Terminal)
 		{
-			if (result.WorkUnitsConsumed >= maximumWorkUnits &&
+			if (std::chrono::steady_clock::now() >= deadline &&
 				!CanAdvanceScenePhaseWithoutWork(scene, cursor))
 			{
 				break;
@@ -103,7 +95,7 @@ namespace Services::Map::Buildings::Visuals
 				context,
 				cursor,
 				result,
-				maximumWorkUnits);
+				deadline);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			AccumulateScenePhaseTiming(
 				measuredPhase,
@@ -132,7 +124,7 @@ namespace Services::Map::Buildings::Visuals
 		return &context.result_;
 	}
 
-	/** Allows only exhausted-phase transitions after the per-call quota has been consumed. */
+	/** Allows only exhausted-phase transitions after the absolute deadline has been consumed. */
 	bool BuildingVisuals::CanAdvanceScenePhaseWithoutWork(
 		const BuildingRenderSceneInput& scene,
 		const SceneCursor& cursor) noexcept
@@ -159,7 +151,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		switch (cursor.CurrentPhase)
 		{
@@ -167,15 +159,16 @@ namespace Services::Map::Buildings::Visuals
 			if (cursor.OrdinarySpriteIndex == scene.OrdinarySprites.size())
 			{
 				cursor.CurrentPhase = SceneCursor::Phase::OcclusionIndex;
+				++result.WorkUnitsConsumed;
 				return SceneAdvanceResult::Progressed;
 			}
-			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return SceneAdvanceResult::YieldWithoutWork;
 			}
-			return AdvanceOrdinarySprite(scene, destination, context, cursor, result, maximumWorkUnits);
+			return AdvanceOrdinarySprite(scene, destination, context, cursor, result, deadline);
 		case SceneCursor::Phase::OcclusionIndex:
-			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return SceneAdvanceResult::YieldWithoutWork;
 			}
@@ -185,27 +178,30 @@ namespace Services::Map::Buildings::Visuals
 			if (cursor.SplineIndex == scene.Splines.size())
 			{
 				cursor.CurrentPhase = SceneCursor::Phase::OverlayLastSprites;
+				++result.WorkUnitsConsumed;
 				return SceneAdvanceResult::Progressed;
 			}
-			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return SceneAdvanceResult::YieldWithoutWork;
 			}
-			return AdvanceSpline(scene, destination, context, cursor, result, maximumWorkUnits);
+			return AdvanceSpline(scene, destination, context, cursor, result, deadline);
 		case SceneCursor::Phase::OverlayLastSprites:
 			if (cursor.OverlaySpriteIndex == scene.OverlayLastSprites.size())
 			{
 				cursor.CurrentPhase = SceneCursor::Phase::Complete;
 				cursor.Terminal = true;
+				++result.WorkUnitsConsumed;
 				return SceneAdvanceResult::Progressed;
 			}
-			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return SceneAdvanceResult::YieldWithoutWork;
 			}
-			return AdvanceOverlaySprite(scene, destination, context, cursor, result, maximumWorkUnits);
+			return AdvanceOverlaySprite(scene, destination, context, cursor, result, deadline);
 		case SceneCursor::Phase::Complete:
 			cursor.Terminal = true;
+			++result.WorkUnitsConsumed;
 			return SceneAdvanceResult::Progressed;
 		}
 		return SceneAdvanceResult::Progressed;
@@ -218,7 +214,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		const std::size_t index = cursor.OrdinarySpriteIndex;
 		const auto& sprite = scene.OrdinarySprites[index];
@@ -253,7 +249,7 @@ namespace Services::Map::Buildings::Visuals
 			context,
 			cursor,
 			result,
-			maximumWorkUnits);
+			deadline);
 	}
 
 	/** Reconstructs call-local source pixels and completes one ordinary or overlay sprite. */
@@ -265,7 +261,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		ImageSubmissionCommand command;
 		command.Source = {sprite.Pixels, sprite.PixelWidth, sprite.PixelHeight, sprite.PixelRegion};
@@ -275,13 +271,17 @@ namespace Services::Map::Buildings::Visuals
 		const auto slice = destination.StepSubmitImage(
 			command,
 			cursor.Submission,
-			maximumWorkUnits - result.WorkUnitsConsumed);
+			deadline);
 		result.WorkUnitsConsumed += slice.WorkUnitsConsumed;
 		if (!slice.CompletedOutcome.has_value())
 		{
-			return slice.WorkUnitsConsumed == 0
+			return std::chrono::steady_clock::now() >= deadline
 				? SceneAdvanceResult::YieldWithoutWork
 				: SceneAdvanceResult::Progressed;
+		}
+		if (slice.WorkUnitsConsumed == 0)
+		{
+			++result.WorkUnitsConsumed;
 		}
 		cursor.PendingOutcome.Submission = *slice.CompletedOutcome;
 		if (ordinary && cursor.PendingOutcome.Submission == ImageSubmission::Submitted)
@@ -371,7 +371,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		const auto& spline = scene.Splines[cursor.SplineIndex];
 		if (spline.SurfaceSelectionMode == BuildingSplineSurfaceSelectionMode::DrawAllSurfaces &&
@@ -379,6 +379,7 @@ namespace Services::Map::Buildings::Visuals
 		{
 			++cursor.SplineIndex;
 			ResetSplineProgress(cursor);
+			++result.WorkUnitsConsumed;
 			return SceneAdvanceResult::YieldWithoutWork;
 		}
 		if (!cursor.SplineSamplingPrepared)
@@ -391,7 +392,7 @@ namespace Services::Map::Buildings::Visuals
 			++result.WorkUnitsConsumed;
 			return SceneAdvanceResult::Progressed;
 		}
-		return AdvanceSplineSurface(spline, destination, context, cursor, result, maximumWorkUnits);
+		return AdvanceSplineSurface(spline, destination, context, cursor, result, deadline);
 	}
 
 	/** Advances one selected surface, rejected candidate or no-drawable contributor result. */
@@ -401,7 +402,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		const bool alternative = spline.SurfaceSelectionMode ==
 			BuildingSplineSurfaceSelectionMode::FirstNumericallyDrawableAlternative;
@@ -412,12 +413,14 @@ namespace Services::Map::Buildings::Visuals
 				context.preparedSplines_[cursor.SplineIndex],
 				context,
 				cursor);
+			++result.WorkUnitsConsumed;
 			return SceneAdvanceResult::Progressed;
 		}
 		if (!alternative && cursor.SplineSurfaceIndex == spline.Surfaces.size())
 		{
 			++cursor.SplineIndex;
 			ResetSplineProgress(cursor);
+			++result.WorkUnitsConsumed;
 			return SceneAdvanceResult::Progressed;
 		}
 		const auto& surface = spline.Surfaces[cursor.SplineSurfaceIndex];
@@ -452,7 +455,7 @@ namespace Services::Map::Buildings::Visuals
 			context,
 			cursor,
 			result,
-			maximumWorkUnits);
+			deadline);
 	}
 
 	/** Prepares and clips one surface, then converts its visible triangles exactly once. */
@@ -595,7 +598,7 @@ namespace Services::Map::Buildings::Visuals
 		return true;
 	}
 
-	/** Resumes one prepared solid or textured batch until its next quota boundary or terminal result. */
+	/** Resumes one prepared solid or textured batch until the shared deadline or terminal result. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSplineSurface(
 		const BuildingSplineRenderInput& spline,
 		const BuildingSplineSurfaceRenderInput& surface,
@@ -603,9 +606,9 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
-		if (!cursor.SurfaceReadyForSubmission || result.WorkUnitsConsumed >= maximumWorkUnits)
+		if (!cursor.SurfaceReadyForSubmission || std::chrono::steady_clock::now() >= deadline)
 		{
 			return SceneAdvanceResult::YieldWithoutWork;
 		}
@@ -614,13 +617,17 @@ namespace Services::Map::Buildings::Visuals
 			destination,
 			context,
 			cursor,
-			maximumWorkUnits - result.WorkUnitsConsumed);
+			deadline);
 		result.WorkUnitsConsumed += slice.WorkUnitsConsumed;
 		if (!slice.CompletedOutcome.has_value())
 		{
-			return slice.WorkUnitsConsumed == 0
+			return std::chrono::steady_clock::now() >= deadline
 				? SceneAdvanceResult::YieldWithoutWork
 				: SceneAdvanceResult::Progressed;
+		}
+		if (slice.WorkUnitsConsumed == 0)
+		{
+			++result.WorkUnitsConsumed;
 		}
 		cursor.PendingOutcome.Submission = *slice.CompletedOutcome;
 		if (cursor.PendingOutcome.Submission != ImageSubmission::Submitted &&
@@ -642,7 +649,7 @@ namespace Services::Map::Buildings::Visuals
 		Rendering::Rgba16fImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		cursor.PendingOutcome.SubmissionAttempted = true;
 		cursor.DestinationSubmissionActive = true;
@@ -652,7 +659,7 @@ namespace Services::Map::Buildings::Visuals
 				context.solidTriangles_,
 				surface.Appearance.SolidRgb,
 				cursor.PendingOpacity};
-			return destination.StepSubmitSolidTriangles(batch, cursor.Submission, maximumWorkUnits);
+			return destination.StepSubmitSolidTriangles(batch, cursor.Submission, deadline);
 		}
 		const Rgba8ImageSource texture{
 			surface.Appearance.Texture.Pixels,
@@ -668,7 +675,7 @@ namespace Services::Map::Buildings::Visuals
 			surface.Appearance.AddressV,
 			surface.Appearance.ModulationRgb,
 			cursor.PendingOpacity};
-		return destination.StepSubmitTexturedTriangles(batch, cursor.Submission, maximumWorkUnits);
+		return destination.StepSubmitTexturedTriangles(batch, cursor.Submission, deadline);
 	}
 
 	/** Records the selected/all-surface result and advances the matching painter-order position. */
@@ -721,7 +728,7 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		const std::size_t index = cursor.OverlaySpriteIndex;
 		const auto& sprite = scene.OverlayLastSprites[index];
@@ -756,7 +763,7 @@ namespace Services::Map::Buildings::Visuals
 			context,
 			cursor,
 			result,
-			maximumWorkUnits);
+			deadline);
 	}
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

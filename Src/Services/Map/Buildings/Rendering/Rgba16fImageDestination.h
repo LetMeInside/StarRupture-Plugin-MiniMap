@@ -4,6 +4,7 @@
 #include "../IImageDestination.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -121,6 +122,7 @@ namespace Services::Map::Buildings::Rendering
 			bool Terminal = false;
 			bool SubmittedAny = false;
 			bool ImageInitialized = false;
+			bool TexturedBatchValidated = false;
 		};
 
 		/** Identifies the terminal or pending result of incremental RGBA16F resolution. */
@@ -131,11 +133,12 @@ namespace Services::Map::Buildings::Rendering
 			Failed
 		};
 
-		/** Reports how many complete pixels one finalization slice resolved. */
+		/** Reports resolved pixels and exact transparency only when finalization completes. */
 		struct FinalizationSliceResult
 		{
 			FinalizationStepStatus Status = FinalizationStepStatus::Pending;
 			std::size_t PixelsResolved = 0;
+			bool FullyTransparent = false;
 		};
 
 		/** Retains output-object identity, the next pixel and terminal state for incremental resolution.
@@ -159,12 +162,23 @@ namespace Services::Map::Buildings::Rendering
 			std::uint64_t OperationId = 0;
 			std::size_t NextPixel = 0;
 			FinalizationStepStatus TerminalStatus = FinalizationStepStatus::Pending;
+			bool FullyTransparent = true;
 			bool Started = false;
 			bool Terminal = false;
 		};
 
-		/** Creates and initializes the destination grid; allocation failure leaves it unavailable. */
-		explicit Rgba16fImageDestination(Rgba16fImageGrid grid) noexcept;
+		/** Creates a validated destination; synchronous callers initialize samples immediately.
+		 * @param grid Global image grid and output dimensions.
+		 * @param initializeImmediately Whether to perform the complete clear during construction.
+		 */
+		explicit Rgba16fImageDestination(Rgba16fImageGrid grid, bool initializeImmediately = true) noexcept;
+		/** Initializes default samples incrementally while preserving progress across deadline yields.
+		 * @param deadline Absolute end of the caller's shared work allowance.
+		 * @return True when every sample has its established clear value.
+		 */
+		bool StepInitializeSamples(std::chrono::steady_clock::time_point deadline) noexcept;
+		/** Reports allocation or destination failure without exposing partial render output. */
+		bool IsFailed() const noexcept;
 		Rgba16fImageDestination(const Rgba16fImageDestination&) = delete;
 		Rgba16fImageDestination& operator=(const Rgba16fImageDestination&) = delete;
 		Rgba16fImageDestination(Rgba16fImageDestination&&) = delete;
@@ -178,59 +192,59 @@ namespace Services::Map::Buildings::Rendering
 
 		/** Synchronously rasterizes borrowed textured XYZ/UV triangles using caller-owned pixel storage. */
 		ImageSubmission SubmitTexturedTriangles(const TexturedTriangleBatch& batch) override;
-		/** Advances one image quad by at most maximumWorkUnits pixel visits/triangle setup units.
+		/** Advances one image quad until the absolute deadline at resumable triangle/pixel boundaries.
 		 * The same logical command and a valid borrowed source view must be supplied on every continuation.
 		 */
 		SubmissionSliceResult StepSubmitImage(
 			const ImageSubmissionCommand& command,
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits) noexcept;
-		/** Advances an ordered solid batch by at most maximumWorkUnits pixel visits/triangle setup units.
+			std::chrono::steady_clock::time_point deadline) noexcept;
+		/** Advances an ordered solid batch until the absolute deadline at resumable triangle/pixel boundaries.
 		 * The same logical batch must be supplied on every continuation.
 		 */
 		SubmissionSliceResult StepSubmitSolidTriangles(
 			const SolidTriangleBatch& batch,
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits) noexcept;
+			std::chrono::steady_clock::time_point deadline) noexcept;
 		/** Advances an ordered textured batch using only this call's borrowed pixels and triangles.
 		 * Equivalent immutable source and batch data must be supplied on every continuation.
 		 */
 		SubmissionSliceResult StepSubmitTexturedTriangles(
 			const TexturedTriangleBatch& batch,
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits) noexcept;
+			std::chrono::steady_clock::time_point deadline) noexcept;
 
 		/** Resolves the complete working buffer to row-major little-endian RGBA16F bytes. */
 		bool Finalize(std::vector<std::uint8_t>& output) const noexcept;
-		/** Resolves at most maximumPixels complete pixels to caller-owned RGBA16F output.
+		/** Resolves complete pixels to caller-owned RGBA16F output until the absolute deadline.
 		 * The caller must retain the output unchanged and perform no drawing while the cursor is pending.
 		 */
 		FinalizationSliceResult StepFinalize(
 			std::vector<std::uint8_t>& output,
 			FinalizationCursor& cursor,
-			std::size_t maximumPixels) const noexcept;
+			std::chrono::steady_clock::time_point deadline) const noexcept;
 
 	private:
 		/** Classifies a triangle's setup, culling and raster validation outcome. */
 		enum class RasterSetupResult
 		{
-			QuotaExhausted,
+			DeadlineReached,
 			Ready,
 			Skipped,
 			InvalidInput,
 			Rejected
 		};
-		/** Classifies whether one complete pixel consumed work, failed or needs quota. */
+		/** Classifies whether a pixel advanced, failed or reached the deadline. */
 		enum class RasterPixelStepResult
 		{
-			QuotaExhausted,
+			DeadlineReached,
 			Advanced,
 			Rejected
 		};
 		/** Classifies the progress from one setup or pixel step in an ordered batch. */
 		enum class RasterSequenceStepResult
 		{
-			QuotaExhausted,
+			DeadlineReached,
 			Progressed,
 			InvalidInput,
 			Rejected
@@ -294,34 +308,34 @@ namespace Services::Map::Buildings::Rendering
 			RasterProgress& progress) const noexcept;
 		/** Moves the retained raster position to the next Y-major, then X-major pixel. */
 		static void AdvanceRasterPixel(RasterProgress& progress) noexcept;
-		/** Resolves one quota-bounded triangle sequence using per-call setup and shade functions. */
+		/** Resolves one triangle sequence until its deadline using per-call setup and shade functions. */
 		template <typename PrepareFunction, typename ShadeFunction>
 		SubmissionSliceResult StepRasterTriangleSequence(
 			SubmissionCursor& cursor,
 			std::size_t triangleCount,
-			std::size_t maximumWorkUnits,
+			std::chrono::steady_clock::time_point deadline,
 			PrepareFunction&& prepare,
 			ShadeFunction&& shade) noexcept;
 		/** Advances one triangle by one setup or complete-pixel work unit. */
 		template <typename PrepareFunction, typename ShadeFunction>
 		RasterSequenceStepResult StepRasterTriangle(
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits,
+			std::chrono::steady_clock::time_point deadline,
 			SubmissionSliceResult& result,
 			PrepareFunction&& prepare,
 			ShadeFunction&& shade) noexcept;
-		/** Consumes one triangle-setup work unit when quota allows. */
+		/** Checks the deadline before one indivisible triangle setup. */
 		template <typename PrepareFunction>
 		RasterSetupResult StepRasterTriangleSetup(
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits,
+			std::chrono::steady_clock::time_point deadline,
 			SubmissionSliceResult& result,
 			PrepareFunction&& prepare) noexcept;
-		/** Visits one pixel and all four samples as one indivisible work unit. */
+		/** Visits one pixel and four samples as one indivisible operation. */
 		template <typename ShadeFunction>
 		RasterPixelStepResult StepRasterPixel(
 			SubmissionCursor& cursor,
-			std::size_t maximumWorkUnits,
+			std::chrono::steady_clock::time_point deadline,
 			SubmissionSliceResult& result,
 			ShadeFunction&& shade) noexcept;
 		/** Validates grid dimensions, world scale, allocation arithmetic, and signed-cell bounds. */
@@ -514,6 +528,7 @@ namespace Services::Map::Buildings::Rendering
 		Rgba16fImageGrid grid_{};
 		std::array<long double, 4> worldBounds_{};
 		SampleBuffer samples_;
+		std::size_t initializationCursor_ = 0;
 		mutable std::uint64_t nextOperationId_ = 1;
 		std::uint64_t activeSubmissionId_ = 0;
 		mutable std::uint64_t activeFinalizationId_ = 0;

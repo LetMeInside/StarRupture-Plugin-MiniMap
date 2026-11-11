@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns acquisition resources, session lifecycle, and synchronous one-Section image construction.
+// Owns acquisition resources and advances resumable Section-owned image construction.
 #include "SectionScheduler.h"
 
 #include "BuildingScheduler.h"
@@ -69,7 +69,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 	}
 
-	/** Borrows pass arrays and freshly constructs spline views for immediate synchronous consumption. */
+	/** Builds borrowed pass arrays for synchronous use or one-time retained-scene construction. */
 	bool SectionScheduler::SectionScenePreparationResult::BorrowRenderSceneInput(
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		std::vector<Visuals::BuildingSplineRenderInput>& scratch,
@@ -336,580 +336,532 @@ namespace Services::Map::Buildings::Scheduling
 			SectionScenePreparationResult::Readiness::CompleteSceneInputs;
 	}
 
-	/** Retains one complete source-composed scene while leaving every sprite pixel view transient. */
+	/** Retains one complete source-composed scene and builds stable render spans after ownership settles. */
 	SectionScheduler::SectionScenePreparationResult::Readiness
 		SectionScheduler::PrepareRetainedSectionScene(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
-			const KnownSpritePreparationResult& knownSpritePreparation,
-			std::span<const SplinePolicy> splinePolicies) const
+			std::span<const SplinePolicy> splinePolicies,
+			std::chrono::steady_clock::time_point deadline,
+			bool& deadlineDeferred)
 	{
 		using Readiness = SectionScenePreparationResult::Readiness;
-		if (job.publicationOwner == nullptr || !IsPublicationForSection(section, *job.publicationOwner))
+		deadlineDeferred = false;
+		if (job.Preparation.TerminalReadiness.has_value())
 		{
+			return *job.Preparation.TerminalReadiness;
+		}
+		if (job.publicationOwner == nullptr)
+		{
+			job.Preparation.TerminalReadiness = Readiness::InvalidPublication;
 			return Readiness::InvalidPublication;
 		}
 		if (job.retainedScene != nullptr)
 		{
-			return job.retainedScene->Preparation.PublicationIdentity == job.publicationOwner.get() &&
+			const Readiness readiness = job.retainedScene->Preparation.PublicationIdentity == job.publicationOwner.get() &&
 				job.retainedScene->Preparation.PreparationReadiness == Readiness::CompleteSceneInputs
 				? Readiness::CompleteSceneInputs
 				: Readiness::InvalidPreparationInputs;
+			if (readiness != Readiness::CompleteSceneInputs)
+			{
+				job.Preparation.TerminalReadiness = readiness;
+			}
+			return readiness;
 		}
-		SectionScenePreparationResult preparation;
-		SectionImageCommitResult commitEvidence;
-		if (!TryPrepareSectionSceneForCommit(
-			section,
+		if (!job.Preparation.Initialized && !IsPublicationForSection(section, *job.publicationOwner))
+		{
+			job.Preparation.TerminalReadiness = Readiness::InvalidSection;
+			return Readiness::InvalidSection;
+		}
+		if (!InitializeSectionPreparationProgress(job, job.publicationOwner))
+		{
+			job.Preparation.TerminalReadiness = Readiness::InvalidPublication;
+			return Readiness::InvalidPublication;
+		}
+		deadlineDeferred = AdvanceSectionOccurrencePreparation(
+			job,
 			job.publicationOwner,
-			knownSpritePreparation,
 			splinePolicies,
-			preparation,
-			commitEvidence))
+			deadline);
+		const Readiness readiness = GetSectionPreparationReadiness(job);
+		if (readiness != Readiness::CompleteSceneInputs)
 		{
-			return commitEvidence.SceneReadiness.value_or(preparation.PreparationReadiness);
+			return readiness;
 		}
-		if (!HasOnlyRetainableSplineAppearances(preparation))
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
+			return readiness;
+		}
+		if (!FinalizeRetainedSectionScene(job, job.publicationOwner))
+		{
+			job.Preparation.TerminalReadiness = Readiness::InvalidPreparationInputs;
 			return Readiness::InvalidPreparationInputs;
 		}
-		auto retained = std::make_unique<RetainedSectionScene>();
-		if (!TryBuildRetainedSpriteRequirements(
-			false, job.publicationOwner, knownSpritePreparation, preparation, preparation.OrdinarySprites,
-			retained->OrdinarySprites) ||
-			!TryBuildRetainedSpriteRequirements(
-				true, job.publicationOwner, knownSpritePreparation, preparation, preparation.OverlayLastSprites,
-				retained->OverlayLastSprites))
-		{
-			return Readiness::InvalidPreparationInputs;
-		}
-		for (Visuals::BuildingSpriteRenderInput& sprite : preparation.OrdinarySprites)
-		{
-			sprite.Pixels = {};
-		}
-		for (Visuals::BuildingSpriteRenderInput& sprite : preparation.OverlayLastSprites)
-		{
-			sprite.Pixels = {};
-		}
-		retained->Preparation = std::move(preparation);
-		job.retainedScene = std::move(retained);
 		return Readiness::CompleteSceneInputs;
 	}
 
-	/** Rebuilds only call-local sprite and spline views from a retained complete scene. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryBorrowRetainedSectionScene(
-		const SectionJob& job,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
-		std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
-		std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
-		Visuals::BuildingRenderSceneInput& output) const
+	/** Initializes per-ordinal evidence once for the exact selected publication owner. */
+	bool SectionScheduler::InitializeSectionPreparationProgress(
+		SectionJob& job,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
 	{
-		output = {};
-		ordinarySprites.clear();
-		overlaySprites.clear();
-		splineScratch.clear();
-		if (job.publicationOwner == nullptr || job.retainedScene == nullptr ||
-			job.retainedScene->Preparation.PublicationIdentity != job.publicationOwner.get() ||
-			job.retainedScene->Preparation.PreparationReadiness != SectionScenePreparationResult::Readiness::CompleteSceneInputs)
+		if (job.Preparation.Initialized)
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			return job.Preparation.SpritePreparation.PublicationIdentity == publicationOwner.get();
 		}
-		SectionScenePreparationResult::Readiness inputReadiness =
-			SectionScenePreparationResult::Readiness::InvalidPreparationInputs;
-		if (!ValidateSectionPreparationInputs(job.publicationOwner, knownSpritePreparation, inputReadiness))
+		if (publicationOwner == nullptr)
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			return false;
 		}
-		const RetainedSectionScene& retained = *job.retainedScene;
-		const auto ordinaryStatus = TryReborrowSpritePass(
-			retained.OrdinarySprites,
-			retained.Preparation.OrdinarySprites,
-			BuildingCandidateSpritePass::FirstPass,
-			knownSpritePreparation,
-			ordinarySprites);
-		if (ordinaryStatus != RetainedSceneBorrowStatus::Ready)
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		auto& preparation = job.Preparation;
+		if (!InitializeKnownSpriteOccurrences(candidateData, sourceData, preparation.SpritePreparation))
 		{
-			return ordinaryStatus;
+			preparation.SpritePreparation.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
+			return false;
 		}
-		const auto overlayStatus = TryReborrowSpritePass(
-			retained.OverlayLastSprites,
-			retained.Preparation.OverlayLastSprites,
-			BuildingCandidateSpritePass::SecondPass,
-			knownSpritePreparation,
-			overlaySprites);
-		if (overlayStatus != RetainedSceneBorrowStatus::Ready)
-		{
-			return overlayStatus;
-		}
-		if (!HasOnlyRetainableSplineAppearances(retained.Preparation) ||
-			!retained.Preparation.BorrowRenderSceneInput(job.publicationOwner, splineScratch, output))
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		output.OrdinarySprites = std::span<const Visuals::BuildingSpriteRenderInput>(ordinarySprites);
-		output.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(overlaySprites);
-		return RetainedSceneBorrowStatus::Ready;
+		preparation.SpritePreparation.PublicationIdentity = publicationOwner.get();
+		preparation.SpritePreparation.PreparationStatus =
+			KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
+		preparation.Occurrences.resize(candidateData.occurrences.size());
+		preparation.Initialized = true;
+		return true;
 	}
 
-	/** Rebuilds temporary inputs from retained geometry, current sprite payloads and owned spline values. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryBorrowRetainedSceneFromCurrentResources(
-		const SectionJob& job,
-		std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
-		std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
-		std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
-		Visuals::BuildingRenderSceneInput& output) const
-	{
-		output = {};
-		ordinarySprites.clear();
-		overlaySprites.clear();
-		splineScratch.clear();
-		if (job.publicationOwner == nullptr || job.retainedScene == nullptr ||
-			job.retainedScene->Preparation.PublicationIdentity != job.publicationOwner.get() ||
-			job.retainedScene->Preparation.PreparationReadiness !=
-				SectionScenePreparationResult::Readiness::CompleteSceneInputs)
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		const RetainedSectionScene& retained = *job.retainedScene;
-		const auto ordinaryStatus = TryReborrowRetainedSpritePass(
-			retained.OrdinarySprites,
-			retained.Preparation,
-			retained.Preparation.OrdinarySprites,
-			BuildingCandidateSpritePass::FirstPass,
-			ordinarySprites);
-		if (ordinaryStatus != RetainedSceneBorrowStatus::Ready)
-		{
-			return ordinaryStatus;
-		}
-		const auto overlayStatus = TryReborrowRetainedSpritePass(
-			retained.OverlayLastSprites,
-			retained.Preparation,
-			retained.Preparation.OverlayLastSprites,
-			BuildingCandidateSpritePass::SecondPass,
-			overlaySprites);
-		if (overlayStatus != RetainedSceneBorrowStatus::Ready)
-		{
-			return overlayStatus;
-		}
-		if (!HasOnlyRetainableSplineAppearances(retained.Preparation) ||
-			!retained.Preparation.BorrowRenderSceneInput(job.publicationOwner, splineScratch, output))
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		output.OrdinarySprites = std::span<const Visuals::BuildingSpriteRenderInput>(ordinarySprites);
-		output.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(overlaySprites);
-		return RetainedSceneBorrowStatus::Ready;
-	}
-
-	/** Dispatches scene borrowing without manufacturing a full preparation result for retained jobs. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryBorrowSectionSceneForContinuation(
-		const SectionJob& job,
-		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
-		std::vector<Visuals::BuildingSpriteRenderInput>& ordinarySprites,
-		std::vector<Visuals::BuildingSpriteRenderInput>& overlaySprites,
-		std::vector<Visuals::BuildingSplineRenderInput>& splineScratch,
-		Visuals::BuildingRenderSceneInput& output) const
-	{
-		if (continuationMode == SectionJobContinuationMode::ReborrowRetainedScene)
-		{
-			return TryBorrowRetainedSceneFromCurrentResources(
-				job, ordinarySprites, overlaySprites, splineScratch, output);
-		}
-		if (continuationMode != SectionJobContinuationMode::FullPreparation || knownSpritePreparation == nullptr)
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		return TryBorrowRetainedSectionScene(
-			job, *knownSpritePreparation, ordinarySprites, overlaySprites, splineScratch, output);
-	}
-
-	/** Retains validated keys for one stable painter-sorted drawable sprite pass. */
-	bool SectionScheduler::TryBuildRetainedSpriteRequirements(
-		bool overlaySelectsSecondPass,
+	/** Advances untouched ordinals once and visits only sprite resources still unavailable. */
+	bool SectionScheduler::AdvanceSectionOccurrencePreparation(
+		SectionJob& job,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		const SectionScenePreparationResult& scenePreparation,
-		const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
-		std::vector<RetainedSpriteRequirement>& output)
+		std::span<const SplinePolicy> splinePolicies,
+		std::chrono::steady_clock::time_point deadline)
 	{
-		output.clear();
-		std::vector<std::size_t> orderedIndices;
-		const BuildingCandidateSpritePass selectedPass = overlaySelectsSecondPass
-			? BuildingCandidateSpritePass::SecondPass
-			: BuildingCandidateSpritePass::FirstPass;
-		if (!TrySelectRetainedSpriteIndices(
-			selectedPass, knownSpritePreparation, scenePreparation, orderedIndices) ||
-			orderedIndices.size() != preparedInputs.size())
+		auto& preparation = job.Preparation;
+		const std::size_t retryCountAtStart = preparation.SpriteRetryCount;
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		while (preparation.NextOccurrenceOrdinal < preparation.Occurrences.size() &&
+			std::chrono::steady_clock::now() < deadline)
 		{
-			return false;
+			const std::size_t ordinal = preparation.NextOccurrenceOrdinal;
+			++preparation.NextOccurrenceOrdinal;
+			PrepareSectionOccurrence(
+				job,
+				*publicationOwner,
+				candidateData.occurrences[ordinal],
+				sourceData.records[ordinal],
+				ordinal,
+				splinePolicies);
 		}
-		output.reserve(orderedIndices.size());
-		for (std::size_t index = 0; index < orderedIndices.size(); ++index)
+		bool deadlineDeferred = preparation.NextOccurrenceOrdinal < preparation.Occurrences.size();
+		for (std::size_t retryIndex = 0; retryIndex < retryCountAtStart; ++retryIndex)
 		{
-			RetainedSpriteRequirement requirement;
-			if (!TryAppendRetainedSpriteRequirement(
-				publicationOwner,
-				knownSpritePreparation,
-				selectedPass,
-				orderedIndices[index],
-				preparedInputs[index],
-				requirement))
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
-				output.clear();
-				return false;
+				deadlineDeferred = true;
+				break;
 			}
-			output.push_back(std::move(requirement));
+			std::size_t ordinal = 0;
+			PopSectionSpriteRetry(job, ordinal);
+			RetrySectionSpriteResource(job, sourceData.records[ordinal], ordinal);
 		}
-		return true;
+		return deadlineDeferred;
 	}
 
-	/** Selects drawable prepared indexes and preserves their existing stable painter order. */
-	bool SectionScheduler::TrySelectRetainedSpriteIndices(
-		BuildingCandidateSpritePass selectedPass,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		const SectionScenePreparationResult& scenePreparation,
-		std::vector<std::size_t>& output)
+	/** Classifies and prepares one occurrence without revisiting its completed actions. */
+	void SectionScheduler::PrepareSectionOccurrence(
+		SectionJob& job,
+		const BuildingCandidatePublication& publication,
+		const BuildingCandidateOccurrence& candidate,
+		const BuildingCandidateSourceRecord& source,
+		std::size_t ordinal,
+		std::span<const SplinePolicy> splinePolicies)
 	{
-		output.clear();
-		for (std::size_t index = 0; index < knownSpritePreparation.PreparedSprites.size(); ++index)
+		auto& progress = job.Preparation;
+		auto& outcome = progress.SpritePreparation.OccurrenceOutcomes[ordinal];
+		const bool sourceBlocked = ProcessTerminalOrPendingSource(source, candidate, outcome);
+		if (source.kind == BuildingCandidateSourceKind::Spline)
 		{
-			const auto& preparedSprite = knownSpritePreparation.PreparedSprites[index];
-			if (preparedSprite.SpritePass != selectedPass)
-			{
-				continue;
-			}
-			const std::uint64_t ordinal = preparedSprite.PublicationOrdinal;
-			if (ordinal >= scenePreparation.OccurrenceOutcomes.size())
-			{
-				return false;
-			}
-			const auto& sceneOutcome = scenePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)];
-			if (sceneOutcome.PublicationOrdinal != ordinal)
-			{
-				return false;
-			}
-			if (sceneOutcome.PreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite)
-			{
-				continue;
-			}
-			if (sceneOutcome.SpritePass != selectedPass)
-			{
-				return false;
-			}
-			output.push_back(index);
+			progress.SplinePreparations.emplace_back();
+			PrepareSplineOccurrence(
+				job.publicationOwner,
+				ordinal,
+				source,
+				splinePolicies,
+				outcome,
+				progress.SplinePreparations.back());
 		}
-		std::stable_sort(output.begin(), output.end(), [&knownSpritePreparation](
-			std::size_t leftIndex, std::size_t rightIndex)
+		else if (source.kind == BuildingCandidateSourceKind::Sprite)
 		{
-			const auto& leftPosition = knownSpritePreparation.PreparedSprites[leftIndex].RenderInput.Placement.Position;
-			const auto& rightPosition = knownSpritePreparation.PreparedSprites[rightIndex].RenderInput.Placement.Position;
-			if (leftPosition[2] != rightPosition[2])
-			{
-				return leftPosition[2] < rightPosition[2];
-			}
-			if (leftPosition[1] != rightPosition[1])
-			{
-				return leftPosition[1] < rightPosition[1];
-			}
-			return leftPosition[0] < rightPosition[0];
-		});
-		return true;
+			PrepareSectionSpriteOccurrence(job, publication, source, ordinal, sourceBlocked);
+		}
+		SetSectionOccurrenceStatus(job, ordinal, outcome.PreparationStatus);
 	}
 
-	/** Copies one source key after proving its prepared ordinal, pass and retained geometry match. */
-	bool SectionScheduler::TryAppendRetainedSpriteRequirement(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		BuildingCandidateSpritePass selectedPass,
-		std::size_t preparedIndex,
-		const Visuals::BuildingSpriteRenderInput& preparedInput,
-		RetainedSpriteRequirement& output)
+	/** Validates one canonical key once and retains it only for this occurrence's generation. */
+	void SectionScheduler::PrepareSectionSpriteOccurrence(
+		SectionJob& job,
+		const BuildingCandidatePublication& publication,
+		const BuildingCandidateSourceRecord& source,
+		std::size_t ordinal,
+		bool sourcePreparationBlocked)
 	{
-		if (publicationOwner == nullptr || preparedIndex >= knownSpritePreparation.PreparedSprites.size())
+		auto& preparation = job.Preparation;
+		auto& outcome = preparation.SpritePreparation.OccurrenceOutcomes[ordinal];
+		const auto sceneStatus = outcome.PreparationStatus;
+		const BuildingCandidateSourceRecord* validatedSource = nullptr;
+		Cache::OwnedSpriteKey spriteKey;
+		if (!publication.TryGetSourceRecord(ordinal, validatedSource) || validatedSource == nullptr ||
+			source.kind != BuildingCandidateSourceKind::Sprite ||
+			validatedSource->kind != source.kind ||
+			!Cache::OwnedSpriteKey::TryCopy(validatedSource->canonicalClassPath, spriteKey))
 		{
-			return false;
+			const auto spriteStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::InvalidSpriteRequirement;
+			outcome.PreparationStatus = sourcePreparationBlocked ? sceneStatus : spriteStatus;
+			outcome.SpritePreparationStatus = spriteStatus;
+			return;
 		}
-		const std::uint64_t ordinal =
-			knownSpritePreparation.PreparedSprites[preparedIndex].PublicationOrdinal;
-		if (!IsRetainedSpriteOrdinalMatch(
-			ordinal, preparedIndex, selectedPass, preparedInput, knownSpritePreparation))
+		preparation.Occurrences[ordinal].SpriteKey = std::move(spriteKey);
+		PrepareSpriteRequirement(
+			ordinal,
+			source,
+			*preparation.Occurrences[ordinal].SpriteKey,
+			preparation.SpritePreparation,
+			outcome,
+			false);
+		const auto spriteStatus = outcome.PreparationStatus;
+		outcome.SpritePreparationStatus = spriteStatus;
+		if (sourcePreparationBlocked)
 		{
-			return false;
+			outcome.PreparationStatus = sceneStatus;
 		}
-		const BuildingCandidateSourceRecord* sourceRecord = nullptr;
-		if (!publicationOwner->TryGetSourceRecord(ordinal, sourceRecord) || sourceRecord == nullptr ||
-			sourceRecord->kind != BuildingCandidateSourceKind::Sprite || sourceRecord->spritePass != selectedPass)
+		if (IsSpriteResourceRetryStatus(spriteStatus) && IsSectionOccurrenceBlockingStatus(sceneStatus))
 		{
-			return false;
+			QueueSectionSpriteRetry(job, ordinal);
 		}
-		output.PublicationOrdinal = ordinal;
-		output.SpritePass = selectedPass;
-		if (!Cache::OwnedSpriteKey::TryCopy(sourceRecord->canonicalClassPath, output.SpriteKey))
+		else if (spriteStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
+			spriteStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSpritePass)
 		{
-			return false;
+			preparation.Occurrences[ordinal].SpriteKey.reset();
 		}
-		return true;
 	}
 
-	/** Checks one sorted prepared sprite against its authoritative ordinal, pass and geometry values. */
-	bool SectionScheduler::IsRetainedSpriteOrdinalMatch(
-		std::uint64_t ordinal,
-		std::size_t preparedIndex,
-		BuildingCandidateSpritePass expectedPass,
-		const Visuals::BuildingSpriteRenderInput& preparedInput,
-		const KnownSpritePreparationResult& knownSpritePreparation) noexcept
+	/** Retries only the validated resource lookup for one queued sprite occurrence. */
+	void SectionScheduler::RetrySectionSpriteResource(
+		SectionJob& job,
+		const BuildingCandidateSourceRecord& source,
+		std::size_t ordinal)
 	{
-		if (ordinal >= knownSpritePreparation.PreparedSpriteIndicesByOrdinal.size() ||
-			ordinal >= knownSpritePreparation.OccurrenceOutcomes.size() ||
-			preparedIndex >= knownSpritePreparation.PreparedSprites.size())
+		auto& progress = job.Preparation;
+		auto& occurrence = progress.Occurrences[ordinal];
+		auto& outcome = progress.SpritePreparation.OccurrenceOutcomes[ordinal];
+		const bool sourceBlocked = outcome.PreparationStatus != outcome.SpritePreparationStatus;
+		const auto sceneStatus = outcome.PreparationStatus;
+		PrepareSpriteRequirement(
+			ordinal,
+			source,
+			*occurrence.SpriteKey,
+			progress.SpritePreparation,
+			outcome,
+			false);
+		const auto spriteStatus = outcome.PreparationStatus;
+		outcome.SpritePreparationStatus = spriteStatus;
+		if (sourceBlocked)
 		{
-			return false;
+			outcome.PreparationStatus = sceneStatus;
 		}
-		const auto mappedIndex = knownSpritePreparation.PreparedSpriteIndicesByOrdinal[static_cast<std::size_t>(ordinal)];
-		const auto& occurrence = knownSpritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)];
-		const auto& prepared = knownSpritePreparation.PreparedSprites[preparedIndex];
-		return mappedIndex.has_value() && *mappedIndex == preparedIndex &&
-			occurrence.PublicationOrdinal == ordinal &&
-			occurrence.PreparationStatus == KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
-			occurrence.SpritePass == expectedPass && prepared.PublicationOrdinal == ordinal &&
-			prepared.SpritePass == expectedPass && !prepared.RenderInput.Pixels.empty() &&
-			HaveMatchingSpriteGeometry(preparedInput, prepared.RenderInput);
+		SetSectionOccurrenceStatus(job, ordinal, outcome.PreparationStatus);
+		if (IsSpriteResourceRetryStatus(spriteStatus))
+		{
+			QueueSectionSpriteRetry(job, ordinal);
+		}
+		else if (spriteStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
+			spriteStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSpritePass)
+		{
+			occurrence.SpriteKey.reset();
+		}
 	}
 
-	/** Reborrows the current pixels for each retained ordinal without changing prepared geometry. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryReborrowSpritePass(
-		const std::vector<RetainedSpriteRequirement>& requirements,
-		const std::vector<Visuals::BuildingSpriteRenderInput>& preparedInputs,
-		BuildingCandidateSpritePass expectedPass,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		std::vector<Visuals::BuildingSpriteRenderInput>& output) const
+	/** Stores one outcome and skips each newly resolved ordinal at most once. */
+	void SectionScheduler::SetSectionOccurrenceStatus(
+		SectionJob& job,
+		std::size_t ordinal,
+		KnownSpritePreparationResult::OccurrenceOutcome::Status status)
 	{
-		output.clear();
-		if (requirements.size() != preparedInputs.size())
+		auto& preparation = job.Preparation;
+		preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus = status;
+		if (ordinal != preparation.FirstUnresolvedOrdinal)
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			return;
 		}
-		output.reserve(requirements.size());
-		for (std::size_t index = 0; index < requirements.size(); ++index)
+		while (preparation.FirstUnresolvedOrdinal < preparation.NextOccurrenceOrdinal)
 		{
-			Visuals::BuildingSpriteRenderInput currentInput;
-			const RetainedSceneBorrowStatus status = TryReborrowRetainedSprite(
-				requirements[index].PublicationOrdinal,
-				preparedInputs[index],
-				expectedPass,
-				knownSpritePreparation,
-				currentInput);
-			if (status != RetainedSceneBorrowStatus::Ready)
+			const auto currentStatus = preparation.SpritePreparation.OccurrenceOutcomes[
+				preparation.FirstUnresolvedOrdinal].PreparationStatus;
+			if (IsSectionOccurrenceBlockingStatus(currentStatus))
 			{
-				output.clear();
-				return status;
+				break;
 			}
-			output.push_back(currentInput);
+			++preparation.FirstUnresolvedOrdinal;
 		}
-		return RetainedSceneBorrowStatus::Ready;
 	}
 
-	/** Reacquires one pixel view and verifies its current occurrence, pass and geometry. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryReborrowRetainedSprite(
-		std::uint64_t ordinal,
-		const Visuals::BuildingSpriteRenderInput& expectedInput,
-		BuildingCandidateSpritePass expectedPass,
-		const KnownSpritePreparationResult& knownSpritePreparation,
-		Visuals::BuildingSpriteRenderInput& output) const
+	/** Appends one pending sprite ordinal to the intrusive retry queue. */
+	void SectionScheduler::QueueSectionSpriteRetry(SectionJob& job, std::size_t ordinal)
 	{
-		using OutcomeStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status;
-		output = {};
-		if (!expectedInput.Pixels.empty() || ordinal >= knownSpritePreparation.OccurrenceOutcomes.size() ||
-			ordinal >= knownSpritePreparation.PreparedSpriteIndicesByOrdinal.size())
+		auto& preparation = job.Preparation;
+		auto& occurrence = preparation.Occurrences[ordinal];
+		occurrence.NextSpriteRetryOrdinal.reset();
+		if (preparation.SpriteRetryTail.has_value())
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			preparation.Occurrences[*preparation.SpriteRetryTail].NextSpriteRetryOrdinal = ordinal;
 		}
-		const auto& occurrence = knownSpritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)];
-		if (occurrence.PublicationOrdinal != ordinal)
+		else
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			preparation.SpriteRetryHead = ordinal;
 		}
-		if (occurrence.PreparationStatus != OutcomeStatus::ReadySprite)
-		{
-			return IsTemporarySpritePreparationStatus(occurrence.PreparationStatus)
-				? RetainedSceneBorrowStatus::TemporarilyUnavailable
-				: RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		const auto preparedIndex = knownSpritePreparation.PreparedSpriteIndicesByOrdinal[static_cast<std::size_t>(ordinal)];
-		if (!preparedIndex.has_value() || *preparedIndex >= knownSpritePreparation.PreparedSprites.size())
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		const auto& prepared = knownSpritePreparation.PreparedSprites[*preparedIndex];
-		if (prepared.PublicationOrdinal != ordinal || prepared.SpritePass != expectedPass ||
-			occurrence.SpritePass != expectedPass || prepared.RenderInput.Pixels.empty() ||
-			!HaveMatchingSpriteGeometry(expectedInput, prepared.RenderInput))
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		output = prepared.RenderInput;
-		return RetainedSceneBorrowStatus::Ready;
+		preparation.SpriteRetryTail = ordinal;
+		++preparation.SpriteRetryCount;
 	}
 
-	/** Reborrows each drawable occurrence in its retained order without rebuilding publication outcomes. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryReborrowRetainedSpritePass(
-		const std::vector<RetainedSpriteRequirement>& requirements,
-		const SectionScenePreparationResult& scenePreparation,
-		const std::vector<Visuals::BuildingSpriteRenderInput>& expectedInputs,
-		BuildingCandidateSpritePass expectedPass,
-		std::vector<Visuals::BuildingSpriteRenderInput>& output) const
+	/** Pops the next sprite-resource retry ordinal without scanning other occurrence state. */
+	void SectionScheduler::PopSectionSpriteRetry(SectionJob& job, std::size_t& ordinal) noexcept
 	{
-		output.clear();
-		if (requirements.size() != expectedInputs.size())
+		auto& preparation = job.Preparation;
+		ordinal = *preparation.SpriteRetryHead;
+		auto& occurrence = preparation.Occurrences[ordinal];
+		preparation.SpriteRetryHead = occurrence.NextSpriteRetryOrdinal;
+		if (!preparation.SpriteRetryHead.has_value())
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			preparation.SpriteRetryTail.reset();
 		}
-		output.reserve(requirements.size());
-		for (std::size_t index = 0; index < requirements.size(); ++index)
-		{
-			if (requirements[index].SpritePass != expectedPass || requirements[index].SpriteKey.Bytes().empty())
-			{
-				output.clear();
-				return RetainedSceneBorrowStatus::InvalidOrChanged;
-			}
-			const std::uint64_t ordinal = requirements[index].PublicationOrdinal;
-			if (ordinal >= scenePreparation.OccurrenceOutcomes.size())
-			{
-				output.clear();
-				return RetainedSceneBorrowStatus::InvalidOrChanged;
-			}
-			const auto& occurrence = scenePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)];
-			if (occurrence.PublicationOrdinal != ordinal ||
-				occurrence.SourceKind != BuildingCandidateSourceKind::Sprite ||
-				occurrence.PreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite ||
-				occurrence.SpritePreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite ||
-				occurrence.SpritePass != expectedPass)
-			{
-				output.clear();
-				return RetainedSceneBorrowStatus::InvalidOrChanged;
-			}
-			Visuals::BuildingSpriteRenderInput currentInput;
-			const RetainedSceneBorrowStatus status = TryReborrowCurrentSprite(
-				requirements[index], expectedInputs[index], currentInput);
-			if (status != RetainedSceneBorrowStatus::Ready)
-			{
-				output.clear();
-				return status;
-			}
-			output.push_back(std::move(currentInput));
-		}
-		return RetainedSceneBorrowStatus::Ready;
+		occurrence.NextSpriteRetryOrdinal.reset();
+		--preparation.SpriteRetryCount;
 	}
 
-	/** Checks current readiness, borrows the current payload and matches its metadata to retained geometry. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryReborrowCurrentSprite(
-		const RetainedSpriteRequirement& requirement,
-		const Visuals::BuildingSpriteRenderInput& expectedInput,
-		Visuals::BuildingSpriteRenderInput& output) const
+	/** Returns the existing readiness value of the lowest-ordinal unresolved occurrence. */
+	SectionScheduler::SectionScenePreparationResult::Readiness
+		SectionScheduler::GetSectionPreparationReadiness(const SectionJob& job) const noexcept
 	{
-		output = {};
-		if (!expectedInput.Pixels.empty())
+		using Readiness = SectionScenePreparationResult::Readiness;
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		if (!job.Preparation.Initialized)
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			return Readiness::InvalidPublication;
 		}
-		const Cache::ProcessedSpritePayload* payload = nullptr;
-		const RetainedSceneBorrowStatus payloadStatus =
-			TryGetCurrentSpritePayload(requirement.SpriteKey, payload);
-		if (payloadStatus != RetainedSceneBorrowStatus::Ready)
+		if (job.Preparation.NextOccurrenceOrdinal < job.Preparation.Occurrences.size())
 		{
-			return payloadStatus;
+			return Readiness::UnresolvedInputs;
 		}
-		const Cache::ProcessedSpritePayload& currentPayload = *payload;
-		Visuals::BuildingSpriteRenderInput currentInput = expectedInput;
-		currentInput.Pixels = currentPayload.Pixels();
-		currentInput.PixelWidth = currentPayload.Width();
-		currentInput.PixelHeight = currentPayload.Height();
-		currentInput.PixelRegion = {{0.0, 0.0, double(currentPayload.Width()), double(currentPayload.Height())}};
-		currentInput.ProjectionSourceSize = currentPayload.CaptureSize();
-		currentInput.CaptureBounds = currentPayload.Bounds();
-		currentInput.Projection = currentPayload.Projection();
-		if (!HaveMatchingSpriteGeometry(expectedInput, currentInput))
+		if (job.Preparation.FirstUnresolvedOrdinal >= job.Preparation.NextOccurrenceOrdinal)
 		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
+			return Readiness::CompleteSceneInputs;
 		}
-		output = currentInput;
-		return RetainedSceneBorrowStatus::Ready;
+		const Status status = job.Preparation.SpritePreparation.OccurrenceOutcomes[
+			job.Preparation.FirstUnresolvedOrdinal].PreparationStatus;
+		if (status == Status::PendingNativeSourceAcquisition)
+		{
+			return Readiness::PendingNativeSourceAcquisition;
+		}
+		if (status == Status::PendingSpriteAcquisition)
+		{
+			return Readiness::PendingSpriteAcquisition;
+		}
+		if (status == Status::TemporarilyUnavailableSource || status == Status::TemporarilyUnavailableSprite)
+		{
+			return Readiness::TemporarilyUnavailableResources;
+		}
+		return Readiness::UnresolvedInputs;
 	}
 
-	/** Resolves current readiness through existing acquisition owners and returns transient payload access. */
-	SectionScheduler::RetainedSceneBorrowStatus SectionScheduler::TryGetCurrentSpritePayload(
-		const Cache::OwnedSpriteKey& spriteKey,
-		const Cache::ProcessedSpritePayload*& output) const
-	{
-		output = nullptr;
-		if (buildingScheduler_ == nullptr || cpuSpriteSourceManager_ == nullptr)
-		{
-			return RetainedSceneBorrowStatus::TemporarilyUnavailable;
-		}
-		const BuildingScheduler::RequirementStatus readiness = buildingScheduler_->EnsureSpriteReady(spriteKey);
-		if (readiness == BuildingScheduler::RequirementStatus::Pending ||
-			readiness == BuildingScheduler::RequirementStatus::Unavailable)
-		{
-			return RetainedSceneBorrowStatus::TemporarilyUnavailable;
-		}
-		if (readiness == BuildingScheduler::RequirementStatus::Failed)
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult = cpuSpriteSourceManager_->GetSprite(spriteKey);
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Unavailable)
-		{
-			return RetainedSceneBorrowStatus::TemporarilyUnavailable;
-		}
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::CaptureRequired)
-		{
-			const BuildingScheduler::RequirementStatus retryStatus = buildingScheduler_->EnsureSpriteReady(spriteKey);
-			return retryStatus == BuildingScheduler::RequirementStatus::Pending ||
-				retryStatus == BuildingScheduler::RequirementStatus::Unavailable
-				? RetainedSceneBorrowStatus::TemporarilyUnavailable
-				: RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		if (spriteResult.Payload == nullptr ||
-			spriteResult.Payload->Format() != Cache::ProcessedSpritePayload::PixelFormat::StraightRgba8SrgbDisplay ||
-			spriteResult.Payload->Pixels().empty())
-		{
-			return RetainedSceneBorrowStatus::InvalidOrChanged;
-		}
-		output = spriteResult.Payload;
-		return RetainedSceneBorrowStatus::Ready;
-	}
-
-	/** Identifies pending acquisition and temporary payload absence without accepting terminal failure. */
-	bool SectionScheduler::IsTemporarySpritePreparationStatus(
+	/** Identifies only sprite-resource states that can change under the same publication. */
+	bool SectionScheduler::IsSpriteResourceRetryStatus(
 		KnownSpritePreparationResult::OccurrenceOutcome::Status status) noexcept
 	{
 		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
-		return status == Status::PendingNativeSourceAcquisition ||
-			status == Status::TemporarilyUnavailableSource ||
-			status == Status::PendingSpriteAcquisition ||
-			status == Status::TemporarilyUnavailableSprite;
+		return status == Status::PendingSpriteAcquisition || status == Status::TemporarilyUnavailableSprite;
 	}
 
-	/** Compares all retained sprite values field by field and deliberately ignores pixel-span identity. */
-	bool SectionScheduler::HaveMatchingSpriteGeometry(
-		const Visuals::BuildingSpriteRenderInput& left,
-		const Visuals::BuildingSpriteRenderInput& right) noexcept
+	/** Applies the established scene-readiness blocking policy to one occurrence status. */
+	bool SectionScheduler::IsSectionOccurrenceBlockingStatus(
+		KnownSpritePreparationResult::OccurrenceOutcome::Status status) noexcept
 	{
-		return left.PixelWidth == right.PixelWidth &&
-			left.PixelHeight == right.PixelHeight &&
-			left.PixelRegion == right.PixelRegion &&
-			left.Placement.Position == right.Placement.Position &&
-			left.Placement.SignedScale == right.Placement.SignedScale &&
-			left.Placement.Rotation == right.Placement.Rotation &&
-			left.ProjectionSourceSize.Width == right.ProjectionSourceSize.Width &&
-			left.ProjectionSourceSize.Height == right.ProjectionSourceSize.Height &&
-			left.CaptureBounds.Minimum == right.CaptureBounds.Minimum &&
-			left.CaptureBounds.Maximum == right.CaptureBounds.Maximum &&
-			left.Projection.Left == right.Projection.Left &&
-			left.Projection.Top == right.Projection.Top &&
-			left.Projection.Right == right.Projection.Right &&
-			left.Projection.Bottom == right.Projection.Bottom;
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		return status != Status::TerminalSourceFailure && status != Status::TerminalSpriteCaptureFailure &&
+			status != Status::ReadySprite && status != Status::ReadySpline;
+	}
+
+	/** Assembles complete ordinal results into the retained scene and transfers payload ownership once. */
+	bool SectionScheduler::FinalizeRetainedSectionScene(
+		SectionJob& job,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
+	{
+		auto& progress = job.Preparation;
+		auto& spritePreparation = progress.SpritePreparation;
+		SectionScenePreparationResult preparation;
+		preparation.PublicationIdentity = publicationOwner.get();
+		preparation.PreparationReadiness = SectionScenePreparationResult::Readiness::CompleteSceneInputs;
+		if (publicationOwner == nullptr ||
+			spritePreparation.PublicationIdentity != publicationOwner.get() ||
+			!progress.Initialized ||
+			progress.NextOccurrenceOrdinal != progress.Occurrences.size() ||
+			spritePreparation.OccurrenceOutcomes.size() != progress.Occurrences.size())
+		{
+			return false;
+		}
+		std::vector<std::size_t> preparedOrder;
+		if (!CollectReadySpriteOrder(job, preparedOrder))
+		{
+			return false;
+		}
+		preparation.OccurrenceOutcomes = std::move(spritePreparation.OccurrenceOutcomes);
+		preparation.SplinePreparations = std::move(progress.SplinePreparations);
+		SortPreparedSpriteOrder(spritePreparation, preparedOrder);
+		auto retained = std::make_unique<RetainedSectionScene>();
+		if (!MoveOrderedSpriteInputs(job, preparedOrder, *retained, preparation))
+		{
+			return false;
+		}
+		preparation.PreparationReadiness = SectionScenePreparationResult::Readiness::CompleteSceneInputs;
+		if (!HasOnlyRetainableSplineAppearances(preparation))
+		{
+			return false;
+		}
+		retained->Preparation = std::move(preparation);
+		if (!InitializeRetainedSceneInputs(*retained, publicationOwner))
+		{
+			return false;
+		}
+		job.retainedScene = std::move(retained);
+		job.Preparation = {};
+		return true;
+	}
+
+	/** Collects every ready sprite exactly once while checking its direct ordinal slot. */
+	bool SectionScheduler::CollectReadySpriteOrder(
+		const SectionJob& job,
+		std::vector<std::size_t>& output) const
+	{
+		const auto& progress = job.Preparation;
+		const auto& outcomes = progress.SpritePreparation.OccurrenceOutcomes;
+		const auto& preparedSprites = progress.SpritePreparation.PreparedSprites;
+		const auto& preparedIndices = progress.SpritePreparation.PreparedSpriteIndicesByOrdinal;
+		output.clear();
+		output.reserve(preparedSprites.size());
+		for (std::size_t ordinal = 0; ordinal < outcomes.size(); ++ordinal)
+		{
+			if (outcomes[ordinal].PreparationStatus !=
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite)
+			{
+				continue;
+			}
+			if (ordinal >= preparedIndices.size() || !preparedIndices[ordinal].has_value())
+			{
+				return false;
+			}
+			const std::size_t preparedIndex = *preparedIndices[ordinal];
+			if (preparedIndex >= preparedSprites.size() ||
+				preparedSprites[preparedIndex].PublicationOrdinal != ordinal)
+			{
+				return false;
+			}
+			output.push_back(preparedIndex);
+		}
+		return true;
+	}
+
+	/** Sorts prepared occurrences with the established stable Z/Y/X painter comparator. */
+	void SectionScheduler::SortPreparedSpriteOrder(
+		const KnownSpritePreparationResult& preparation,
+		std::vector<std::size_t>& order) const
+	{
+		std::stable_sort(order.begin(), order.end(), [&preparation](std::size_t leftIndex, std::size_t rightIndex)
+		{
+			const auto& left = preparation.PreparedSprites[leftIndex].RenderInput.Placement.Position;
+			const auto& right = preparation.PreparedSprites[rightIndex].RenderInput.Placement.Position;
+			if (left[2] != right[2])
+			{
+				return left[2] < right[2];
+			}
+			if (left[1] != right[1])
+			{
+				return left[1] < right[1];
+			}
+			return left[0] < right[0];
+		});
+	}
+
+	/** Moves sorted sprite views and their validated keys/payload owners into matching retained passes. */
+	bool SectionScheduler::MoveOrderedSpriteInputs(
+		SectionJob& job,
+		const std::vector<std::size_t>& preparedOrder,
+		RetainedSectionScene& retained,
+		SectionScenePreparationResult& preparation)
+	{
+		auto& progress = job.Preparation;
+		auto& preparedSprites = progress.SpritePreparation.PreparedSprites;
+		const BuildingCandidateSourceData sourceData = job.publicationOwner->BorrowSourceData();
+		for (const std::size_t preparedIndex : preparedOrder)
+		{
+			auto& prepared = preparedSprites[preparedIndex];
+			const std::size_t ordinal = static_cast<std::size_t>(prepared.PublicationOrdinal);
+			auto& occurrence = progress.Occurrences[ordinal];
+			const auto& source = sourceData.records[ordinal];
+			if (ordinal >= preparation.OccurrenceOutcomes.size() ||
+				preparation.OccurrenceOutcomes[ordinal].PublicationOrdinal != ordinal ||
+				preparation.OccurrenceOutcomes[ordinal].PreparationStatus !=
+					KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite ||
+				preparation.OccurrenceOutcomes[ordinal].SpritePass != prepared.SpritePass ||
+				!occurrence.SpriteKey.has_value() || prepared.Payload == nullptr ||
+				source.kind != BuildingCandidateSourceKind::Sprite ||
+				source.spritePass != prepared.SpritePass ||
+				prepared.RenderInput.Pixels.empty() ||
+				prepared.RenderInput.Pixels.data() != prepared.Payload->Pixels().data())
+			{
+				return false;
+			}
+			RetainedSpriteRequirement retainedSprite;
+			retainedSprite.PublicationOrdinal = prepared.PublicationOrdinal;
+			retainedSprite.SpritePass = prepared.SpritePass;
+			retainedSprite.SpriteKey = std::move(*occurrence.SpriteKey);
+			retainedSprite.Payload = std::move(prepared.Payload);
+			if (retainedSprite.SpritePass == BuildingCandidateSpritePass::FirstPass)
+			{
+				preparation.OrdinarySprites.push_back(prepared.RenderInput);
+				retained.OrdinarySprites.push_back(std::move(retainedSprite));
+			}
+			else if (retainedSprite.SpritePass == BuildingCandidateSpritePass::SecondPass)
+			{
+				preparation.OverlayLastSprites.push_back(prepared.RenderInput);
+				retained.OverlayLastSprites.push_back(std::move(retainedSprite));
+			}
+			else
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Creates the one sorted spline descriptor array and stable spans into retained scene storage. */
+	bool SectionScheduler::InitializeRetainedSceneInputs(
+		RetainedSectionScene& retained,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
+	{
+		std::vector<Visuals::BuildingSplineRenderInput> splineDescriptors;
+		Visuals::BuildingRenderSceneInput validatedScene;
+		if (!retained.Preparation.BorrowRenderSceneInput(
+			publicationOwner, splineDescriptors, validatedScene))
+		{
+			return false;
+		}
+		retained.Splines = std::move(splineDescriptors);
+		retained.RenderSceneInput.OrdinarySprites = std::span<const Visuals::BuildingSpriteRenderInput>(
+			retained.Preparation.OrdinarySprites);
+		retained.RenderSceneInput.Splines = std::span<const Visuals::BuildingSplineRenderInput>(retained.Splines);
+		retained.RenderSceneInput.OverlayLastSprites = std::span<const Visuals::BuildingSpriteRenderInput>(
+			retained.Preparation.OverlayLastSprites);
+		return true;
 	}
 
 	/** Restricts retained spline appearances to current owned solid values and empty texture views. */
@@ -1128,37 +1080,44 @@ namespace Services::Map::Buildings::Scheduling
 	/** Destroys subordinates in reverse member order; native retirement remains service-directed. */
 	SectionScheduler::~SectionScheduler() = default;
 
-	/** Keeps a job when shared publication ownership matches and resets it otherwise. */
-	void SectionScheduler::EnsureSectionJob(
-		std::int64_t gridX,
-		std::int64_t gridY,
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
+	/** Keeps the existing owner for equivalent Section content and resets genuine changes. */
+	std::shared_ptr<const BuildingCandidatePublication> SectionScheduler::EnsureSectionJob(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		bool& generationReplaced)
 	{
+		generationReplaced = false;
 		if (publicationOwner == nullptr)
 		{
 			throw std::invalid_argument("A Section job requires a selected publication owner.");
 		}
-		const auto coordinate = std::make_pair(gridX, gridY);
-		const auto existingJob = sectionJobs_.find(coordinate);
-		if (existingJob == sectionJobs_.end())
+		if (!section.renderingState_)
 		{
-			sectionJobs_.emplace(coordinate, SectionJob{publicationOwner});
-			return;
+			section.renderingState_ = std::make_shared<SectionJob>(SectionJob{publicationOwner});
+			return publicationOwner;
 		}
-		const auto& retainedOwner = existingJob->second.publicationOwner;
-		const bool sameOwnership = !retainedOwner.owner_before(publicationOwner) &&
+		SectionJob& job = *static_cast<SectionJob*>(section.renderingState_.get());
+		const auto& retainedOwner = job.publicationOwner;
+		const bool sameOwnership = retainedOwner.get() == publicationOwner.get() &&
+			!retainedOwner.owner_before(publicationOwner) &&
 			!publicationOwner.owner_before(retainedOwner);
 		if (!sameOwnership)
 		{
-			ResetSectionJobProgress(existingJob->second);
-			existingJob->second.publicationOwner = publicationOwner;
+			if (retainedOwner->ContentHash() == publicationOwner->ContentHash())
+			{
+				return retainedOwner;
+			}
+			ResetSectionJobProgress(job);
+			job.publicationOwner = publicationOwner;
+			generationReplaced = true;
+			return publicationOwner;
 		}
+		return retainedOwner;
 	}
 
 	/** Selects a continuation mode only when exact owner and retained scene state are internally consistent. */
 	SectionJobContinuationMode SectionScheduler::SelectSectionJobContinuationMode(
-		std::int64_t gridX,
-		std::int64_t gridY,
+		const ::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner) const noexcept
 	{
 		using Mode = SectionJobContinuationMode;
@@ -1166,12 +1125,19 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return Mode::FullPreparation;
 		}
-		const auto jobPosition = sectionJobs_.find(std::make_pair(gridX, gridY));
-		if (jobPosition == sectionJobs_.end())
+		if (!section.renderingState_)
 		{
 			return Mode::FullPreparation;
 		}
-		const SectionJob& job = jobPosition->second;
+		const SectionJob& job = *static_cast<const SectionJob*>(section.renderingState_.get());
+		const bool sameOwner = job.publicationOwner != nullptr &&
+			job.publicationOwner.get() == publicationOwner.get() &&
+			!job.publicationOwner.owner_before(publicationOwner) &&
+			!publicationOwner.owner_before(job.publicationOwner);
+		if (!sameOwner || job.retainedScene == nullptr)
+		{
+			return Mode::FullPreparation;
+		}
 		if (!HasValidRetainedSceneForContinuation(job, publicationOwner))
 		{
 			return Mode::FullPreparation;
@@ -1191,13 +1157,13 @@ namespace Services::Map::Buildings::Scheduling
 				: Mode::FullPreparation;
 		}
 		if (job.AttemptEvidence->NumericalStatus.has_value() || job.CompletedImageReady ||
-			job.TransparencyChecked || job.CompletedImageTransparent)
+			job.CompletedImageTransparent)
 		{
 			return Mode::FullPreparation;
 		}
 		if (job.NumericalOperation == nullptr || job.NumericalOperation->RequiresSceneInput())
 		{
-			return Mode::ReborrowRetainedScene;
+			return Mode::PreparedSceneInput;
 		}
 		return Mode::NoSceneInput;
 	}
@@ -1216,80 +1182,19 @@ namespace Services::Map::Buildings::Scheduling
 			job.retainedScene->Preparation.PreparationReadiness ==
 				SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
 			job.AttemptEvidence.has_value() &&
-			job.AttemptEvidence->SceneReadiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
-			IsRetainedSceneContinuationStateValid(*job.retainedScene);
-	}
-
-	/** Verifies retained drawable arrays still match their stored occurrence and pass identities. */
-	bool SectionScheduler::IsRetainedSceneContinuationStateValid(
-		const RetainedSectionScene& retained) noexcept
-	{
-		return IsRetainedSpritePassStateValid(
-			retained.OrdinarySprites,
-			retained.Preparation.OrdinarySprites,
-			retained.Preparation.OccurrenceOutcomes,
-			BuildingCandidateSpritePass::FirstPass) &&
-			IsRetainedSpritePassStateValid(
-				retained.OverlayLastSprites,
-				retained.Preparation.OverlayLastSprites,
-				retained.Preparation.OccurrenceOutcomes,
-				BuildingCandidateSpritePass::SecondPass);
-	}
-
-	/** Checks one retained pass's drawable source outcomes, keys, geometry slots and borrowed-pixel state. */
-	bool SectionScheduler::IsRetainedSpritePassStateValid(
-		const std::vector<RetainedSpriteRequirement>& requirements,
-		const std::vector<Visuals::BuildingSpriteRenderInput>& inputs,
-		const std::vector<KnownSpritePreparationResult::OccurrenceOutcome>& outcomes,
-		BuildingCandidateSpritePass expectedPass) noexcept
-	{
-		if (requirements.size() != inputs.size())
-		{
-			return false;
-		}
-		for (std::size_t index = 0; index < requirements.size(); ++index)
-		{
-			const RetainedSpriteRequirement& requirement = requirements[index];
-			if (requirement.SpritePass != expectedPass || requirement.SpriteKey.Bytes().empty() ||
-				!inputs[index].Pixels.empty() || requirement.PublicationOrdinal >= outcomes.size())
-			{
-				return false;
-			}
-			const auto& outcome = outcomes[static_cast<std::size_t>(requirement.PublicationOrdinal)];
-			if (outcome.PublicationOrdinal != requirement.PublicationOrdinal ||
-				outcome.SourceKind != BuildingCandidateSourceKind::Sprite ||
-				outcome.PreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite ||
-				outcome.SpritePreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite ||
-				outcome.SpritePass != expectedPass)
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/** Erases the exact job key while leaving demand, resource owners and images intact. */
-	void SectionScheduler::CancelSectionJob(std::int64_t gridX, std::int64_t gridY) noexcept
-	{
-		sectionJobs_.erase(std::make_pair(gridX, gridY));
-	}
-
-	/** Releases all retained publication owners without changing other scheduler state. */
-	void SectionScheduler::ClearSectionJobs() noexcept
-	{
-		sectionJobs_.clear();
+			job.AttemptEvidence->SceneReadiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs;
 	}
 
 	/** Releases operation state before the prepared scene while retaining its publication owner. */
 	void SectionScheduler::ResetSectionJobProgress(SectionJob& job) noexcept
 	{
 		job.NumericalOperation.reset();
+		job.Preparation = {};
 		job.retainedScene.reset();
 		job.CompletedImage.clear();
 		job.TerminalSplineOmissions = {};
 		job.NumericalStatus.reset();
 		job.CompletedImageReady = false;
-		job.TransparencyChecked = false;
 		job.CompletedImageTransparent = false;
 		job.AttemptEvidence.reset();
 	}
@@ -1314,21 +1219,20 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
 		if (!PrepareSectionJobSceneForAttempt(
-			section, job, continuationMode, knownSpritePreparation, splinePolicies, maximumWorkUnits, result))
+			section, job, continuationMode, splinePolicies, deadline, result))
 		{
 			return false;
 		}
 		if (!job.publicationOwner->BorrowCandidateData().occurrences.empty())
 		{
-			return result.WorkUnitsConsumed < maximumWorkUnits;
+			return std::chrono::steady_clock::now() < deadline;
 		}
-		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return false;
 		}
@@ -1338,19 +1242,18 @@ namespace Services::Map::Buildings::Scheduling
 		return false;
 	}
 
-	/** Establishes a fresh scene or validates the retained scene before numerical continuation. */
+	/** Resumes Section-owned occurrence preparation or accepts an already complete retained scene. */
 	bool SectionScheduler::PrepareSectionJobSceneForAttempt(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
 		if (continuationMode == SectionJobContinuationMode::FullPreparation &&
 			(job.retainedScene != nullptr || job.NumericalOperation != nullptr || job.NumericalStatus.has_value() ||
-				job.CompletedImageReady || job.TransparencyChecked || job.CompletedImageTransparent))
+				job.CompletedImageReady || job.CompletedImageTransparent))
 		{
 			ResetSectionJobProgress(job);
 		}
@@ -1360,33 +1263,23 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (job.retainedScene == nullptr)
 		{
-			if (continuationMode != SectionJobContinuationMode::FullPreparation ||
-				knownSpritePreparation == nullptr)
+			if (continuationMode != SectionJobContinuationMode::FullPreparation)
 			{
 				ResetSectionJobProgress(job);
 				result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 				return false;
 			}
-			if (result.WorkUnitsConsumed >= maximumWorkUnits)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return false;
 			}
-			if (!PrepareRetainedSceneForAttempt(section, job, *knownSpritePreparation, splinePolicies, result))
+			if (!PrepareRetainedSceneForAttempt(section, job, splinePolicies, deadline, result))
 			{
 				return false;
 			}
 		}
 		else
 		{
-			if (job.retainedScene->Preparation.PublicationIdentity != job.publicationOwner.get() ||
-				job.retainedScene->Preparation.PreparationReadiness !=
-					SectionScenePreparationResult::Readiness::CompleteSceneInputs ||
-				!IsRetainedSceneContinuationStateValid(*job.retainedScene))
-			{
-				ResetSectionJobProgress(job);
-				result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
-				return false;
-			}
 			result.SceneReadiness = SectionScenePreparationResult::Readiness::CompleteSceneInputs;
 			job.AttemptEvidence->SceneReadiness = result.SceneReadiness;
 		}
@@ -1397,20 +1290,32 @@ namespace Services::Map::Buildings::Scheduling
 	bool SectionScheduler::PrepareRetainedSceneForAttempt(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
-		const KnownSpritePreparationResult& knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto started = std::chrono::steady_clock::now();
 #endif
+		bool deadlineDeferred = false;
 		const auto readiness = PrepareRetainedSectionScene(
-			section, job, knownSpritePreparation, splinePolicies);
+			section, job, splinePolicies, deadline, deadlineDeferred);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		job.AttemptEvidence->Timing.ScenePreparationMs +=
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 #endif
 		++result.WorkUnitsConsumed;
+		if (deadlineDeferred)
+		{
+			result.CurrentState = SectionJobAdvanceResult::State::Pending;
+			return false;
+		}
+		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs &&
+			job.retainedScene == nullptr)
+		{
+			result.CurrentState = SectionJobAdvanceResult::State::Pending;
+			return false;
+		}
 		result.SceneReadiness = readiness;
 		job.AttemptEvidence->SceneReadiness = readiness;
 		if (readiness != SectionScenePreparationResult::Readiness::CompleteSceneInputs)
@@ -1422,7 +1327,7 @@ namespace Services::Map::Buildings::Scheduling
 			result.CurrentState = retryable
 				? SectionJobAdvanceResult::State::WaitingForResources
 				: SectionJobAdvanceResult::State::RestartRequired;
-			if (!retryable)
+			if (!retryable && !job.Preparation.TerminalReadiness.has_value())
 			{
 				ResetSectionJobProgress(job);
 			}
@@ -1431,116 +1336,39 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Reborrows scene views only while required and advances the retained numerical operation. */
+	/** Advances the persistent operation with its Section-owned scene spans when required. */
 	bool SectionScheduler::AdvanceSectionJobNumerical(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
-		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
 		if (job.NumericalStatus.has_value())
 		{
 			return true;
 		}
-		const std::size_t remaining = maximumWorkUnits - result.WorkUnitsConsumed;
 		if (job.NumericalOperation == nullptr)
 		{
-			if (remaining < 2)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
 				return false;
 			}
 			const auto grid = CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
 			job.NumericalOperation = std::make_unique<Rendering::SectionRendering::IncrementalOperation>(grid);
 		}
+		Visuals::BuildingRenderSceneInput emptyScene;
+		const Visuals::BuildingRenderSceneInput* sceneInput = &emptyScene;
 		if (job.NumericalOperation->RequiresSceneInput())
 		{
-			if (continuationMode == SectionJobContinuationMode::ReborrowRetainedScene)
-			{
-				return ReborrowAndAdvanceSectionJobNumerical(
-					section, job, continuationMode, nullptr, maximumWorkUnits, result);
-			}
-			if (continuationMode != SectionJobContinuationMode::FullPreparation ||
-				knownSpritePreparation == nullptr)
+			if (job.retainedScene == nullptr)
 			{
 				ResetSectionJobProgress(job);
 				result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 				return false;
 			}
-			return ReborrowAndAdvanceSectionJobNumerical(
-				section, job, continuationMode, knownSpritePreparation, maximumWorkUnits, result);
+			sceneInput = &job.retainedScene->RenderSceneInput;
 		}
-		if (continuationMode == SectionJobContinuationMode::ReborrowRetainedScene)
-		{
-			ResetSectionJobProgress(job);
-			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
-			return false;
-		}
-		Visuals::BuildingRenderSceneInput sceneInput;
-		return RunSectionNumericalSlice(section, job, sceneInput, maximumWorkUnits, result);
-	}
-
-	/** Holds every temporary borrowed view through the one immediate numerical advancement. */
-	bool SectionScheduler::ReborrowAndAdvanceSectionJobNumerical(
-		::Services::Map::Buildings::BuildingMapSection& section,
-		SectionJob& job,
-		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
-		std::size_t maximumWorkUnits,
-		SectionJobAdvanceResult& result)
-	{
-		const std::size_t remaining = maximumWorkUnits - result.WorkUnitsConsumed;
-		if (remaining < 2)
-		{
-			return false;
-		}
-		Visuals::BuildingRenderSceneInput sceneInput;
-		std::vector<Visuals::BuildingSpriteRenderInput> ordinarySprites;
-		std::vector<Visuals::BuildingSpriteRenderInput> overlaySprites;
-		std::vector<Visuals::BuildingSplineRenderInput> splineScratch;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const auto borrowStarted = std::chrono::steady_clock::now();
-#endif
-		const auto borrowStatus = TryBorrowSectionSceneForContinuation(
-			job,
-			continuationMode,
-			knownSpritePreparation,
-			ordinarySprites,
-			overlaySprites,
-			splineScratch,
-			sceneInput);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const double borrowElapsedMs = std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - borrowStarted).count();
-		job.AttemptEvidence->Timing.SceneBorrowMs += borrowElapsedMs;
-		if (continuationMode == SectionJobContinuationMode::ReborrowRetainedScene)
-		{
-			result.RetainedSpriteReborrowMeasured = true;
-			result.RetainedSpriteReborrowMs = borrowElapsedMs;
-		}
-#endif
-		++result.WorkUnitsConsumed;
-		if (borrowStatus == RetainedSceneBorrowStatus::TemporarilyUnavailable)
-		{
-			result.CurrentState = SectionJobAdvanceResult::State::WaitingForResources;
-			return false;
-		}
-		if (borrowStatus == RetainedSceneBorrowStatus::InvalidOrChanged)
-		{
-			ResetSectionJobProgress(job);
-			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
-			return false;
-		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		if (!job.AttemptEvidence->Timing.NumericalRenderingInvoked)
-		{
-			job.AttemptEvidence->Timing.OrdinarySpriteInputCount = sceneInput.OrdinarySprites.size();
-			job.AttemptEvidence->Timing.SplineContributorInputCount = sceneInput.Splines.size();
-			job.AttemptEvidence->Timing.OverlayLastSpriteInputCount = sceneInput.OverlayLastSprites.size();
-		}
-#endif
-		return RunSectionNumericalSlice(section, job, sceneInput, maximumWorkUnits, result);
+		return RunSectionNumericalSlice(section, job, *sceneInput, deadline, result);
 	}
 
 	/** Runs one numerical call and translates its terminal status without repeating prior work. */
@@ -1548,11 +1376,10 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		const Visuals::BuildingRenderSceneInput& sceneInput,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
-		const std::size_t numericalQuota = maximumWorkUnits - result.WorkUnitsConsumed;
-		if (numericalQuota == 0)
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return false;
 		}
@@ -1561,7 +1388,7 @@ namespace Services::Map::Buildings::Scheduling
 		job.AttemptEvidence->Timing.NumericalRenderingInvoked = true;
 #endif
 		const auto step = job.NumericalOperation->Advance(
-			sceneInput, section.GetOrCreateVisualsContext(), numericalQuota);
+			sceneInput, section.GetOrCreateVisualsContext(), deadline);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		job.AttemptEvidence->Timing.NumericalRenderingMs +=
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - numericalStarted).count();
@@ -1585,23 +1412,22 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Completes transparency and adoption as separate indivisible quota units. */
+	/** Routes finalized transparency or adopts complete image bytes before the deadline. */
 	void SectionScheduler::CommitSectionJobImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SectionJobAdvanceResult& result)
 	{
-		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		if (!job.CompletedImageReady)
 		{
-			return;
+			if (std::chrono::steady_clock::now() >= deadline ||
+				!ClassifyCompletedSectionImage(section, job, result))
+			{
+				return;
+			}
 		}
-		if (!job.TransparencyChecked &&
-			!ClassifyCompletedSectionImage(section, job, maximumWorkUnits, result))
-		{
-			return;
-		}
-		if (job.CompletedImageTransparent || result.WorkUnitsConsumed >= maximumWorkUnits)
+		if (job.CompletedImageTransparent || std::chrono::steady_clock::now() >= deadline)
 		{
 			return;
 		}
@@ -1625,21 +1451,19 @@ namespace Services::Map::Buildings::Scheduling
 		FinishSectionJobAttempt(job, result);
 	}
 
-	/** Takes finalized output and performs one bounded classification/empty-commit unit. */
+	/** Takes finalized output once and commits an exact-clear image as empty. */
 	bool SectionScheduler::ClassifyCompletedSectionImage(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
-		std::size_t maximumWorkUnits,
 		SectionJobAdvanceResult& result)
 	{
-		if (result.WorkUnitsConsumed >= maximumWorkUnits)
-		{
-			return false;
-		}
 		auto& evidence = *job.AttemptEvidence;
 		if (!job.CompletedImageReady)
 		{
-			if (!job.NumericalOperation->TakeCompletedImage(job.CompletedImage, job.TerminalSplineOmissions))
+			if (!job.NumericalOperation->TakeCompletedImage(
+				job.CompletedImage,
+				job.TerminalSplineOmissions,
+				job.CompletedImageTransparent))
 			{
 				evidence.CommitStatus = SectionImageCommitResult::Status::NumericalRenderingFailed;
 				evidence.TerminalSplineOmissions = {};
@@ -1648,18 +1472,6 @@ namespace Services::Map::Buildings::Scheduling
 			}
 			job.CompletedImageReady = true;
 		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const auto started = std::chrono::steady_clock::now();
-		evidence.Timing.TransparencyCheckInvoked = true;
-#endif
-		job.CompletedImageTransparent = IsFullyTransparentRgba16fImage(
-			std::span<const std::uint8_t>(job.CompletedImage));
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		evidence.Timing.TransparencyCheckMs +=
-			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-#endif
-		job.TransparencyChecked = true;
-		++result.WorkUnitsConsumed;
 		if (job.CompletedImageTransparent)
 		{
 			evidence.TerminalSplineOmissions = job.TerminalSplineOmissions;
@@ -1670,25 +1482,22 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Advances one existing job only for its selected owner and a positive deterministic quota. */
+	/** Advances one existing job for its exact publication owner until the shared deadline. */
 	SectionScheduler::SectionJobAdvanceResult SectionScheduler::AdvanceSectionJob(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		SectionJobContinuationMode continuationMode,
-		const KnownSpritePreparationResult* knownSpritePreparation,
 		std::span<const SplinePolicy> splinePolicies,
-		std::size_t maximumWorkUnits)
+		std::chrono::steady_clock::time_point deadline)
 	{
 		SectionJobAdvanceResult result;
-		const auto coordinate = std::make_pair(section.GetGridX(), section.GetGridY());
-		const auto jobPosition = sectionJobs_.find(coordinate);
-		if (jobPosition == sectionJobs_.end())
+		if (!section.renderingState_)
 		{
 			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 			return result;
 		}
-		SectionJob& job = jobPosition->second;
-		if (maximumWorkUnits == 0)
+		SectionJob& job = *static_cast<SectionJob*>(section.renderingState_.get());
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return result;
 		}
@@ -1702,24 +1511,20 @@ namespace Services::Map::Buildings::Scheduling
 			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 			return result;
 		}
-		if (continuationMode != SelectSectionJobContinuationMode(
-			section.GetGridX(), section.GetGridY(), publicationOwner) ||
-			(continuationMode == SectionJobContinuationMode::FullPreparation && knownSpritePreparation == nullptr) ||
-			(continuationMode != SectionJobContinuationMode::FullPreparation && knownSpritePreparation != nullptr))
+		if (continuationMode != SelectSectionJobContinuationMode(section, publicationOwner))
 		{
 			ResetSectionJobProgress(job);
 			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 			return result;
 		}
 		if (!PrepareSectionJobAttempt(
-			section, job, continuationMode, knownSpritePreparation, splinePolicies, maximumWorkUnits, result))
+			section, job, continuationMode, splinePolicies, deadline, result))
 		{
 			return result;
 		}
-		if (AdvanceSectionJobNumerical(
-			section, job, continuationMode, knownSpritePreparation, maximumWorkUnits, result))
+		if (AdvanceSectionJobNumerical(section, job, deadline, result))
 		{
-			CommitSectionJobImage(section, job, maximumWorkUnits, result);
+			CommitSectionJobImage(section, job, deadline, result);
 		}
 		return result;
 	}
@@ -1801,7 +1606,7 @@ namespace Services::Map::Buildings::Scheduling
 		output.PreparationStatus = KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
 	}
 
-	/** Resets per-publication counters, identity and short-lived borrowed pixel views. */
+	/** Resets per-publication counters, identity, prepared views and shared payload owners. */
 	void SectionScheduler::ResetKnownSpritePreparationResult(KnownSpritePreparationResult& output)
 	{
 		output.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
@@ -1880,22 +1685,28 @@ namespace Services::Map::Buildings::Scheduling
 		output.PreparationReadiness = readiness;
 		if (readiness == SectionScenePreparationResult::Readiness::CompleteSceneInputs)
 		{
-			const auto placementOrder = [](const Visuals::BuildingSpriteRenderInput& left,
-				const Visuals::BuildingSpriteRenderInput& right)
-			{
-				if (left.Placement.Position[2] != right.Placement.Position[2])
-				{
-					return left.Placement.Position[2] < right.Placement.Position[2];
-				}
-				if (left.Placement.Position[1] != right.Placement.Position[1])
-				{
-					return left.Placement.Position[1] < right.Placement.Position[1];
-				}
-				return left.Placement.Position[0] < right.Placement.Position[0];
-			};
-			std::stable_sort(output.OrdinarySprites.begin(), output.OrdinarySprites.end(), placementOrder);
-			std::stable_sort(output.OverlayLastSprites.begin(), output.OverlayLastSprites.end(), placementOrder);
+			SortSectionSpriteInputs(output);
 		}
+	}
+
+	/** Preserves the established stable painter ordering for ordinary and overlay sprite inputs. */
+	void SectionScheduler::SortSectionSpriteInputs(SectionScenePreparationResult& output)
+	{
+		const auto placementOrder = [](const Visuals::BuildingSpriteRenderInput& left,
+			const Visuals::BuildingSpriteRenderInput& right)
+		{
+			if (left.Placement.Position[2] != right.Placement.Position[2])
+			{
+				return left.Placement.Position[2] < right.Placement.Position[2];
+			}
+			if (left.Placement.Position[1] != right.Placement.Position[1])
+			{
+				return left.Placement.Position[1] < right.Placement.Position[1];
+			}
+			return left.Placement.Position[0] < right.Placement.Position[0];
+		};
+		std::stable_sort(output.OrdinarySprites.begin(), output.OrdinarySprites.end(), placementOrder);
+		std::stable_sort(output.OverlayLastSprites.begin(), output.OverlayLastSprites.end(), placementOrder);
 	}
 
 	/** Preserves invalid publication and mismatched sprite-result outcomes before preparation. */
@@ -2128,15 +1939,29 @@ namespace Services::Map::Buildings::Scheduling
 		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
 		SectionScenePreparationResult& output) const
 	{
+		SplineRenderInputPreparationResult preparation;
+		PrepareSplineOccurrence(publicationOwner, ordinal, source, splinePolicies, outcome, preparation);
+		output.SplinePreparations.push_back(std::move(preparation));
+	}
+
+	/** Composes one immutable spline occurrence and preserves its established readiness class. */
+	void SectionScheduler::PrepareSplineOccurrence(
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
+		std::uint64_t ordinal,
+		const BuildingCandidateSourceRecord& source,
+		std::span<const SplinePolicy> splinePolicies,
+		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
+		SplineRenderInputPreparationResult& preparation) const
+	{
 		const std::uint16_t policyIndex = source.splinePolicyIndex;
 		const SplinePolicy* policy = policyIndex != 0 && policyIndex < splinePolicies.size()
 			? &splinePolicies[policyIndex]
 			: nullptr;
-		SplineRenderInputPreparationResult preparation;
+		const bool classifyComposition = outcome.PreparationStatus ==
+			KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed;
 		ComposeSplineRenderInput(publicationOwner, ordinal, policyIndex, policy, preparation);
-		if (outcome.PreparationStatus != KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed)
+		if (!classifyComposition)
 		{
-			output.SplinePreparations.push_back(std::move(preparation));
 			return;
 		}
 		if (preparation.PreparationStatus == SplineRenderInputPreparationResult::Status::Composed)
@@ -2163,7 +1988,6 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedInputs;
 		}
-		output.SplinePreparations.push_back(std::move(preparation));
 	}
 
 	/** Completes only when every Section occurrence is ready or terminally omittable. */
@@ -2715,11 +2539,15 @@ namespace Services::Map::Buildings::Scheduling
 		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
 		KnownSpritePreparationResult& output,
-		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome,
+		bool updatePreparationCounts)
 	{
 		if (buildingScheduler_ == nullptr || cpuSpriteSourceManager_ == nullptr)
 		{
-			++output.UnavailableCount;
+			if (updatePreparationCounts)
+			{
+				++output.UnavailableCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
@@ -2728,21 +2556,30 @@ namespace Services::Map::Buildings::Scheduling
 			buildingScheduler_->EnsureSpriteReady(ownedKey);
 		if (readiness == BuildingScheduler::RequirementStatus::Pending)
 		{
-			++output.PendingCount;
+			if (updatePreparationCounts)
+			{
+				++output.PendingCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingSpriteAcquisition;
 			return;
 		}
 		if (readiness == BuildingScheduler::RequirementStatus::Failed)
 		{
-			++output.FailedCount;
+			if (updatePreparationCounts)
+			{
+				++output.FailedCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteCaptureFailure;
 			return;
 		}
 		if (readiness == BuildingScheduler::RequirementStatus::Unavailable)
 		{
-			++output.UnavailableCount;
+			if (updatePreparationCounts)
+			{
+				++output.UnavailableCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
@@ -2752,20 +2589,25 @@ namespace Services::Map::Buildings::Scheduling
 			requirement,
 			ownedKey,
 			output,
-			occurrenceOutcome);
+			occurrenceOutcome,
+			updatePreparationCounts);
 	}
 
-	/** Borrows the resident payload and appends an input only after its support has been established. */
+	/** Obtains the shared resident payload and appends only after support has been established. */
 	void SectionScheduler::PrepareReadySpriteRequirement(
 		std::uint64_t publicationOrdinal,
 		const BuildingCandidateSourceRecord& requirement,
 		const Cache::OwnedSpriteKey& ownedKey,
 		KnownSpritePreparationResult& output,
-		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome,
+		bool updatePreparationCounts)
 	{
 		if (cpuSpriteSourceManager_ == nullptr)
 		{
-			++output.UnavailableCount;
+			if (updatePreparationCounts)
+			{
+				++output.UnavailableCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
@@ -2776,32 +2618,45 @@ namespace Services::Map::Buildings::Scheduling
 			spriteResult.Payload == nullptr ||
 			spriteResult.Payload->Format() != Cache::ProcessedSpritePayload::PixelFormat::StraightRgba8SrgbDisplay)
 		{
-			++output.UnavailableCount;
-		occurrenceOutcome.PreparationStatus =
-			KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
+			if (updatePreparationCounts)
+			{
+				++output.UnavailableCount;
+			}
+			occurrenceOutcome.PreparationStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
 		if (!requirement.hasPlacement)
 		{
-			++output.ReadyWithoutPlacementCount;
+			if (updatePreparationCounts)
+			{
+				++output.ReadyWithoutPlacementCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::MissingSpritePlacement;
 			return;
 		}
-		AppendReadySpriteInput(publicationOrdinal, requirement, *spriteResult.Payload, output, occurrenceOutcome);
+		AppendReadySpriteInput(
+			publicationOrdinal,
+			requirement,
+			spriteResult.Payload,
+			output,
+			occurrenceOutcome,
+			updatePreparationCounts);
 	}
 
-	/** Appends the existing placement input and records its sparse index, never a vector pointer.
-	 * PrepareSpriteOccurrence validated the ordinal; initialization sized the mapping for this publication.
-	 * Pixels remain borrowed only for the existing immediate synchronous consumption.
+	/** Appends the placement input, shared payload owner and sparse ordinal index.
+	 * The input span borrows pixels from the payload retained in the paired prepared occurrence.
 	 */
 	void SectionScheduler::AppendReadySpriteInput(
 		std::uint64_t publicationOrdinal,
 		const BuildingCandidateSourceRecord& requirement,
-		const Cache::ProcessedSpritePayload& payload,
+		std::shared_ptr<const Cache::ProcessedSpritePayload> payloadOwner,
 		KnownSpritePreparationResult& output,
-		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome)
+		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome,
+		bool updatePreparationCounts)
 	{
+		const Cache::ProcessedSpritePayload& payload = *payloadOwner;
 		Visuals::BuildingSpriteRenderInput renderInput;
 		renderInput.Pixels = payload.Pixels();
 		renderInput.PixelWidth = payload.Width();
@@ -2814,7 +2669,10 @@ namespace Services::Map::Buildings::Scheduling
 		KnownSpritePreparationResult::PreparedSpriteSupport support;
 		if (!TryBuildPreparedSpriteSupport(renderInput, support))
 		{
-			++output.UnresolvedSpriteGeometryCount;
+			if (updatePreparationCounts)
+			{
+				++output.UnresolvedSpriteGeometryCount;
+			}
 			occurrenceOutcome.PreparationStatus =
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
 			return;
@@ -2823,6 +2681,7 @@ namespace Services::Map::Buildings::Scheduling
 		prepared.PublicationOrdinal = publicationOrdinal;
 		prepared.SpritePass = requirement.spritePass;
 		prepared.RenderInput = renderInput;
+		prepared.Payload = std::move(payloadOwner);
 		prepared.Support = support;
 		output.PreparedSprites.push_back(std::move(prepared));
 		output.PreparedSpriteIndicesByOrdinal[static_cast<std::size_t>(publicationOrdinal)] =

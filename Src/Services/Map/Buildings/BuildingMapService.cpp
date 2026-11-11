@@ -96,7 +96,7 @@ namespace Services::Map::Buildings
 		sectionHashRechecksRequested_.clear();
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
-			sectionSchedulingCoordinator_->ClearViewportDemand();
+			sectionSchedulingCoordinator_->ClearViewportDemand(*this);
 		}
 		sections_.clear();
 		sectionImageResidencyReconciliationPending_ = false;
@@ -199,7 +199,7 @@ namespace Services::Map::Buildings
 	{
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
-			sectionSchedulingCoordinator_->StopCaptureGameWorldSession();
+			sectionSchedulingCoordinator_->StopCaptureGameWorldSession(*this);
 		}
 	}
 
@@ -240,7 +240,7 @@ namespace Services::Map::Buildings
 		return true;
 	}
 
-	/** Selects affected viewport cells or waiting cells without an owned pending publication. */
+	/** Selects changed viewport cells or waiting cells without a selected publication. */
 	std::set<BuildingMapService::SectionCoordinate> BuildingMapService::GetSectionRequestCoordinates(
 		const BuildingMapViewport& viewport,
 		bool compareViewportDemand)
@@ -249,11 +249,6 @@ namespace Services::Map::Buildings
 		if (compareViewportDemand)
 		{
 			AddViewportGridCoordinates(viewport, coordinates);
-			InvalidatePendingPublicationsInRange(
-				viewport.gridRange_.firstX,
-				viewport.gridRange_.firstY,
-				viewport.gridRange_.endX,
-				viewport.gridRange_.endY);
 			for (const SectionCoordinate& coordinate : coordinates)
 			{
 				sectionSchedulingCoordinator_->RequestSectionWork(
@@ -261,7 +256,6 @@ namespace Services::Map::Buildings
 						coordinate.first,
 						coordinate.second});
 			}
-			return coordinates;
 		}
 		for (const auto& coordinate : sectionSchedulingCoordinator_->waitingSections_)
 		{
@@ -289,9 +283,16 @@ namespace Services::Map::Buildings
 	/** Retains a narrow policy-triggered request until its affected Section batch succeeds. */
 	void BuildingMapService::RequestViewportSectionHashRecheck(std::uint64_t viewportHandle)
 	{
-		if (viewportsByHandle_.find(viewportHandle) != viewportsByHandle_.end())
+		const auto viewport = viewportsByHandle_.find(viewportHandle);
+		if (viewport != viewportsByHandle_.end() && viewport->second != nullptr)
 		{
 			sectionHashRechecksRequested_.insert(viewportHandle);
+			const auto& range = viewport->second->gridRange_;
+			InvalidatePendingPublicationsInRange(
+				range.firstX,
+				range.firstY,
+				range.endX,
+				range.endY);
 		}
 	}
 
@@ -309,12 +310,13 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Requests one ordered Section batch from each applicable collector and retains selected results. */
+	/** Requests sources in viewport order, keeps equal-content owners, and clears unverified entries. */
 	void BuildingMapService::AcquireSectionPublicationBatches(
 		const std::set<SectionCoordinate>& coordinates,
 		std::uint64_t recheckedViewportHandle,
 		bool clearRecheckWhenCovered)
 	{
+		std::set<SectionCoordinate> selectedCoordinates;
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
 			BuildingMapViewport* viewport = viewportEntry.second;
@@ -327,7 +329,15 @@ namespace Services::Map::Buildings
 				viewportEntry.first,
 				*viewport,
 				coordinates,
+				selectedCoordinates,
 				clearRecheckWhenCovered && viewportEntry.first == recheckedViewportHandle);
+		}
+		for (const SectionCoordinate& coordinate : coordinates)
+		{
+			if (selectedCoordinates.find(coordinate) == selectedCoordinates.end())
+			{
+				pendingSectionPublications_.erase(coordinate);
+			}
 		}
 	}
 
@@ -336,6 +346,7 @@ namespace Services::Map::Buildings
 		std::uint64_t viewportHandle,
 		BuildingMapViewport& viewport,
 		const std::set<SectionCoordinate>& coordinates,
+		std::set<SectionCoordinate>& selectedCoordinates,
 		bool clearRecheckWhenCovered)
 	{
 		std::vector<SectionCoordinate> requestedCoordinates;
@@ -343,6 +354,7 @@ namespace Services::Map::Buildings
 		const bool completeRequestBatch = BuildViewportSectionRequest(
 			viewport,
 			coordinates,
+			selectedCoordinates,
 			requestedCoordinates,
 			requestedRegions);
 		if (requestedRegions.empty())
@@ -351,7 +363,8 @@ namespace Services::Map::Buildings
 			{
 				sectionHashRechecksRequested_.insert(viewportHandle);
 			}
-			else if (clearRecheckWhenCovered && AreAllViewportSectionsSupplied(viewport))
+			else if (clearRecheckWhenCovered &&
+				AreAllViewportSectionsSelected(viewport, selectedCoordinates))
 			{
 				sectionHashRechecksRequested_.erase(viewportHandle);
 			}
@@ -368,6 +381,7 @@ namespace Services::Map::Buildings
 			requestedCoordinates,
 			requestedRegions,
 			publications,
+			selectedCoordinates,
 			completeRequestBatch,
 			clearRecheckWhenCovered);
 	}
@@ -395,6 +409,7 @@ namespace Services::Map::Buildings
 		const std::vector<SectionCoordinate>& requestedCoordinates,
 		const std::vector<BuildingCollectionRegion>& requestedRegions,
 		const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+		std::set<SectionCoordinate>& selectedCoordinates,
 		bool completeRequestBatch,
 		bool clearRecheckWhenCovered)
 	{
@@ -417,13 +432,26 @@ namespace Services::Map::Buildings
 				throw std::logic_error("Section publication batch returned a null or mismatched Section.");
 			}
 			const SectionCoordinate& coordinate = requestedCoordinates[index];
-			pendingSectionPublications_.try_emplace(coordinate, publication);
+			if (!selectedCoordinates.insert(coordinate).second)
+			{
+				continue;
+			}
+			auto existing = pendingSectionPublications_.find(coordinate);
+			if (existing == pendingSectionPublications_.end())
+			{
+				pendingSectionPublications_.emplace(coordinate, publication);
+			}
+			else if (existing->second->ContentHash() != publication->ContentHash())
+			{
+				existing->second = publication;
+			}
 		}
 		if (!completeRequestBatch)
 		{
 			sectionHashRechecksRequested_.insert(viewportHandle);
 		}
-		else if (clearRecheckWhenCovered && AreAllViewportSectionsSupplied(*viewportsByHandle_.at(viewportHandle)))
+		else if (clearRecheckWhenCovered && AreAllViewportSectionsSelected(
+			*viewportsByHandle_.at(viewportHandle), selectedCoordinates))
 		{
 			sectionHashRechecksRequested_.erase(viewportHandle);
 		}
@@ -438,6 +466,7 @@ namespace Services::Map::Buildings
 			if (applied != appliedSectionHashes_.end() && applied->second == pending->second->ContentHash())
 			{
 				sectionSchedulingCoordinator_->RecordSectionCompleted(
+					*this,
 					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
 						pending->first.first,
 						pending->first.second});
@@ -470,10 +499,44 @@ namespace Services::Map::Buildings
 		}
 	}
 
+	/** Invalidates cells leaving one viewport without touching the old/new intersection. */
+	void BuildingMapService::InvalidateDepartedViewportPublications(
+		std::int64_t previousFirstGridX,
+		std::int64_t previousFirstGridY,
+		std::int64_t previousEndGridX,
+		std::int64_t previousEndGridY,
+		std::int64_t nextFirstGridX,
+		std::int64_t nextFirstGridY,
+		std::int64_t nextEndGridX,
+		std::int64_t nextEndGridY)
+	{
+		for (std::int64_t gridY = previousFirstGridY; gridY < previousEndGridY; ++gridY)
+		{
+			for (std::int64_t gridX = previousFirstGridX; gridX < previousEndGridX; ++gridX)
+			{
+				const SectionCoordinate coordinate{gridX, gridY};
+				if (coordinate.first >= nextFirstGridX && coordinate.first < nextEndGridX &&
+					coordinate.second >= nextFirstGridY && coordinate.second < nextEndGridY)
+				{
+					continue;
+				}
+				pendingSectionPublications_.erase(coordinate);
+				if (sectionSchedulingCoordinator_ != nullptr)
+				{
+					sectionSchedulingCoordinator_->RequestSectionWork(
+						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
+							coordinate.first,
+							coordinate.second});
+				}
+			}
+		}
+	}
+
 	/** Preserves request/output alignment while rejecting unrepresentable grid rectangles. */
 	bool BuildingMapService::BuildViewportSectionRequest(
 		const BuildingMapViewport& viewport,
 		const std::set<SectionCoordinate>& coordinates,
+		const std::set<SectionCoordinate>& selectedCoordinates,
 		std::vector<SectionCoordinate>& requestedCoordinates,
 		std::vector<BuildingCollectionRegion>& requestedRegions) const
 	{
@@ -485,7 +548,7 @@ namespace Services::Map::Buildings
 			{
 				continue;
 			}
-			if (pendingSectionPublications_.find(coordinate) != pendingSectionPublications_.end())
+			if (selectedCoordinates.find(coordinate) != selectedCoordinates.end())
 			{
 				continue;
 			}
@@ -501,15 +564,16 @@ namespace Services::Map::Buildings
 		return completeRequestBatch;
 	}
 
-	/** Tests whether retained publications already cover every cell demanded by one viewport. */
-	bool BuildingMapService::AreAllViewportSectionsSupplied(const BuildingMapViewport& viewport) const
+	/** Checks whether this acquisition pass selected every Section in one viewport range. */
+	bool BuildingMapService::AreAllViewportSectionsSelected(
+		const BuildingMapViewport& viewport,
+		const std::set<SectionCoordinate>& selectedCoordinates) const
 	{
 		for (std::int64_t gridY = viewport.gridRange_.firstY; gridY < viewport.gridRange_.endY; ++gridY)
 		{
 			for (std::int64_t gridX = viewport.gridRange_.firstX; gridX < viewport.gridRange_.endX; ++gridX)
 			{
-				if (pendingSectionPublications_.find(SectionCoordinate{gridX, gridY}) ==
-					pendingSectionPublications_.end())
+				if (selectedCoordinates.find(SectionCoordinate{gridX, gridY}) == selectedCoordinates.end())
 				{
 					return false;
 				}
@@ -718,6 +782,7 @@ namespace Services::Map::Buildings
 		{
 			const auto& gridRange = viewport->second->gridRange_;
 			sectionSchedulingCoordinator_->WithdrawViewportDemand(
+				*this,
 				gridRange.firstX,
 				gridRange.firstY,
 				gridRange.endX,
@@ -809,6 +874,7 @@ namespace Services::Map::Buildings
 		{
 			if (sectionSchedulingCoordinator_ == nullptr ||
 				!sectionSchedulingCoordinator_->ChangeViewportDemand(
+					*this,
 					previousRange.firstX,
 					previousRange.firstY,
 					previousRange.endX,
@@ -820,16 +886,16 @@ namespace Services::Map::Buildings
 			{
 				return false;
 			}
-			InvalidatePendingPublicationsInRange(
+			InvalidateDepartedViewportPublications(
 				previousRange.firstX,
 				previousRange.firstY,
 				previousRange.endX,
-				previousRange.endY);
-			InvalidatePendingPublicationsInRange(
+				previousRange.endY,
 				firstGridX,
 				firstGridY,
 				endGridX,
 				endGridY);
+			sectionHashRechecksRequested_.insert(viewportHandle);
 			sectionImageResidencyReconciliationPending_ = true;
 		}
 		return true;

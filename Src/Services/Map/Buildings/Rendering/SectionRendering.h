@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -66,21 +67,23 @@ namespace Services::Map::Buildings::Rendering
 			/** Advances drawing and finalization using fresh borrowed views of the same logical scene.
 			 * @param scene Fresh borrowed views of the same immutable ordered scene for this call only.
 			 * @param context The same Section-owned numerical workspace for the operation's full lifetime.
-			 * @param maximumWorkUnits Deterministic quota for destination construction, scene work and resolved pixels.
+			 * @param deadline Absolute end of the shared scheduling allowance.
 			 * @return Consumed units and a terminal status, or no status while the operation remains pending.
 			 */
 			StepResult Advance(
 				const Visuals::BuildingRenderSceneInput& scene,
 				Visuals::BuildingVisualsContext& context,
-				std::size_t maximumWorkUnits);
+				std::chrono::steady_clock::time_point deadline);
 			/** Moves fully finalized bytes and copies omission metadata once after successful completion.
 			 * @param output Receives the completed RGBA16F bytes only on success.
 			 * @param omissionSummary Receives fixed-size accepted terminal omission metadata only on success.
-			 * @return True only once after successful finalization; failure leaves both outputs unchanged.
+			 * @param imageFullyTransparent Receives exact clear-pixel classification from completed finalization.
+			 * @return True only once after successful finalization; failure leaves all outputs unchanged.
 			 */
 			bool TakeCompletedImage(
 				std::vector<std::uint8_t>& output,
-				Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary) noexcept;
+				Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary,
+				bool& imageFullyTransparent) noexcept;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			/** Provides read-only accumulated diagnostics for later scheduler reporting. */
 			const Visuals::BuildingVisualsPhaseTimings& PhaseTimings() const noexcept;
@@ -91,16 +94,16 @@ namespace Services::Map::Buildings::Rendering
 			void EvaluateDrawing(
 				const Visuals::BuildingRenderSceneInput& scene,
 				Visuals::BuildingVisualsContext& context) noexcept;
-			/** Advances one bounded scene slice and retains completion state for the next phase. */
+			/** Advances scene cursors until completion or the absolute deadline. */
 			bool AdvanceDrawing(
 				const Visuals::BuildingRenderSceneInput& scene,
 				Visuals::BuildingVisualsContext& context,
-				std::size_t maximumWorkUnits,
+				std::chrono::steady_clock::time_point deadline,
 				StepResult& result);
-			/** Validates and constructs the stable destination as one indivisible work unit. */
-			bool ConstructDestination() noexcept;
+			/** Constructs the destination once and resumes its default-sample initialization. */
+			bool ConstructDestination(std::chrono::steady_clock::time_point deadline) noexcept;
 			/** Advances output resolution and records its terminal outcome without exposing partial bytes. */
-			void AdvanceFinalization(std::size_t maximumPixels, StepResult& result) noexcept;
+			void AdvanceFinalization(std::chrono::steady_clock::time_point deadline, StepResult& result) noexcept;
 			/** Stores an immutable terminal status and moves the operation into its terminal phase. */
 			void Terminate(Status status) noexcept;
 

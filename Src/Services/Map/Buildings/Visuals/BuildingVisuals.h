@@ -6,6 +6,7 @@
 #include "../Rendering/Rgba16fImageDestination.h"
 
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 
 namespace Services::Map::Buildings::Visuals
@@ -88,7 +89,7 @@ namespace Services::Map::Buildings::Visuals
 			, BuildingVisualsPhaseTimings& phaseTimings
 #endif
 			);
-		/** Advances borrowed neutral scene inputs by at most maximumWorkUnits deterministic units.
+		/** Advances borrowed neutral scene inputs until the absolute rendering deadline.
 		 * The caller must retain the same context, destination and logical scene, and supply fresh valid source views.
 		 * Reset is allowed only for a fresh or terminal cursor; abandon unfinished work by destroying cursor and destination together.
 		 */
@@ -97,7 +98,7 @@ namespace Services::Map::Buildings::Visuals
 			Rendering::Rgba16fImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
-			std::size_t maximumWorkUnits
+			std::chrono::steady_clock::time_point deadline
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, BuildingVisualsPhaseTimings& phaseTimings
 #endif
@@ -131,12 +132,12 @@ namespace Services::Map::Buildings::Visuals
 		static void ResetSplineSurfaceProgress(SceneCursor& cursor) noexcept;
 		/** Resets per-spline sampling and alternative state after its ordered work is complete. */
 		static void ResetSplineProgress(SceneCursor& cursor) noexcept;
-		/** Initializes reusable context storage for the first positive-quota scene call. */
+		/** Initializes reusable context storage once before the first deadline-bounded scene step. */
 		static void InitializeScene(
 			const BuildingRenderSceneInput& scene,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor);
-		/** Returns whether the current state can advance a phase without consuming quota. */
+		/** Returns whether the current state can advance a phase without numerical work. */
 		static bool CanAdvanceScenePhaseWithoutWork(
 			const BuildingRenderSceneInput& scene,
 			const SceneCursor& cursor) noexcept;
@@ -147,7 +148,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Advances one ordinary sprite's setup, incremental submission or terminal bookkeeping. */
 		static SceneAdvanceResult AdvanceOrdinarySprite(
 			const BuildingRenderSceneInput& scene,
@@ -155,7 +156,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Reconstructs a call-local image command and resumes one prepared sprite submission. */
 		static SceneAdvanceResult SubmitPreparedSprite(
 			const BuildingSpriteRenderInput& sprite,
@@ -165,7 +166,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Runs occlusion-index preparation once and advances to the spline phase. */
 		static void PrepareSceneOcclusionIndex(
 			BuildingVisualsContext& context,
@@ -178,7 +179,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Advances one active surface, selected alternative or no-drawable summary. */
 		static SceneAdvanceResult AdvanceSplineSurface(
 			const BuildingSplineRenderInput& spline,
@@ -186,7 +187,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Prepares, clips and converts one spline surface once before destination slices. */
 		static SurfacePreparationResult PrepareIncrementalSplineSurface(
 			const BuildingSplineRenderInput& spline,
@@ -219,14 +220,14 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Builds the current borrowed appearance batch and advances its destination cursor. */
 		static Rendering::Rgba16fImageDestination::SubmissionSliceResult StepPreparedSplineSurface(
 			const BuildingSplineSurfaceRenderInput& surface,
 			Rendering::Rgba16fImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Finishes one surface outcome and advances its parent spline/candidate position. */
 		static void CompleteSplineSurface(
 			const BuildingSplineRenderInput& spline,
@@ -244,7 +245,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Accumulates one call-local elapsed interval into its existing diagnostic phase. */
 		static void AccumulateScenePhaseTiming(

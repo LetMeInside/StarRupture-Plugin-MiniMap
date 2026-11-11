@@ -12,22 +12,60 @@
 namespace Services::Map::Buildings::Rendering
 {
 	/** Creates one validated global grid and allocates its reusable four-sample buffer. */
-	Rgba16fImageDestination::Rgba16fImageDestination(Rgba16fImageGrid grid) noexcept
+	Rgba16fImageDestination::Rgba16fImageDestination(Rgba16fImageGrid grid, bool initializeImmediately) noexcept
 		: grid_(grid)
 	{
-		if (!IsValidGrid(grid_, worldBounds_)) return;
+		if (!IsValidGrid(grid_, worldBounds_))
+		{
+			failed_ = true;
+			return;
+		}
 		try
 		{
 			const std::size_t pixels = std::size_t(grid_.Width) * grid_.Height;
 			samples_.resize(pixels * SamplesPerPixel);
-			for (auto& sample : samples_) sample = {0.0f, 0.0f, 0.0f, 1.0f};
-			initialized_ = true;
+			if (initializeImmediately)
+			{
+				for (auto& sample : samples_)
+				{
+					sample = {0.0f, 0.0f, 0.0f, 1.0f};
+				}
+				initializationCursor_ = samples_.size();
+				initialized_ = true;
+			}
 		}
 		catch (...)
 		{
 			samples_.clear();
 			failed_ = true;
 		}
+	}
+
+	/** Initializes default multisamples in deadline-bounded batches, retaining the next sample index. */
+	bool Rgba16fImageDestination::StepInitializeSamples(
+		std::chrono::steady_clock::time_point deadline) noexcept
+	{
+		if (failed_)
+		{
+			return false;
+		}
+		while (initializationCursor_ < samples_.size())
+		{
+			if ((initializationCursor_ % 32 == 0) && std::chrono::steady_clock::now() >= deadline)
+			{
+				return false;
+			}
+			samples_[initializationCursor_] = {0.0f, 0.0f, 0.0f, 1.0f};
+			++initializationCursor_;
+		}
+		initialized_ = true;
+		return true;
+	}
+
+	/** Reports whether construction or later raster work made the destination unavailable. */
+	bool Rgba16fImageDestination::IsFailed() const noexcept
+	{
+		return failed_;
 	}
 
 	/** Resets all operation identity, terminal and raster progress for reuse. */
@@ -44,6 +82,7 @@ namespace Services::Map::Buildings::Rendering
 		Terminal = false;
 		SubmittedAny = false;
 		ImageInitialized = false;
+		TexturedBatchValidated = false;
 	}
 
 	/** Resets finalization identity and the next output pixel for a fresh resolve. */
@@ -54,6 +93,7 @@ namespace Services::Map::Buildings::Rendering
 		OutputIdentity = 0;
 		NextPixel = 0;
 		TerminalStatus = FinalizationStepStatus::Pending;
+		FullyTransparent = true;
 		Started = false;
 		Terminal = false;
 	}
@@ -167,25 +207,25 @@ namespace Services::Map::Buildings::Rendering
 		SubmissionCursor& cursor,
 		SubmissionSliceResult& output) noexcept
 	{
-		if (!IsValidImage(command))
+		if (!cursor.ImageInitialized)
 		{
-			CompleteSubmission(cursor, ImageSubmission::InvalidInput, output);
-			return false;
-		}
-		std::array<RasterVertex, 4> corners{};
-		constexpr std::array<std::array<double, 2>, 4> uv{{{{0.0, 0.0}}, {{1.0, 0.0}}, {{1.0, 1.0}}, {{0.0, 1.0}}}};
-		for (std::size_t index = 0; index < corners.size(); ++index)
-		{
-			const auto& position = command.Geometry.Corners[index];
-			if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
+			if (!IsValidImage(command))
 			{
 				CompleteSubmission(cursor, ImageSubmission::InvalidInput, output);
 				return false;
 			}
-			corners[index] = {position[0], position[1], uv[index][0], uv[index][1]};
-		}
-		if (!cursor.ImageInitialized)
-		{
+			std::array<RasterVertex, 4> corners{};
+			constexpr std::array<std::array<double, 2>, 4> uv{{{{0.0, 0.0}}, {{1.0, 0.0}}, {{1.0, 1.0}}, {{0.0, 1.0}}}};
+			for (std::size_t index = 0; index < corners.size(); ++index)
+			{
+				const auto& position = command.Geometry.Corners[index];
+				if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
+				{
+					CompleteSubmission(cursor, ImageSubmission::InvalidInput, output);
+					return false;
+				}
+				corners[index] = {position[0], position[1], uv[index][0], uv[index][1]};
+			}
 			if (!IntersectsGrid(command.Geometry))
 			{
 				CompleteSubmission(cursor, ImageSubmission::Culled, output);
@@ -457,17 +497,17 @@ namespace Services::Map::Buildings::Rendering
 		}
 	}
 
-	/** Consumes one triangle-setup work unit when quota allows. */
+	/** Consumes one triangle-setup work unit when deadline allows. */
 	template <typename PrepareFunction>
 	Rgba16fImageDestination::RasterSetupResult Rgba16fImageDestination::StepRasterTriangleSetup(
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SubmissionSliceResult& result,
 		PrepareFunction&& prepare) noexcept
 	{
-		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
-			return RasterSetupResult::QuotaExhausted;
+			return RasterSetupResult::DeadlineReached;
 		}
 		++result.WorkUnitsConsumed;
 		return prepare(cursor.TriangleIndex, cursor.Raster);
@@ -477,13 +517,14 @@ namespace Services::Map::Buildings::Rendering
 	template <typename ShadeFunction>
 	Rgba16fImageDestination::RasterPixelStepResult Rgba16fImageDestination::StepRasterPixel(
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SubmissionSliceResult& result,
 		ShadeFunction&& shade) noexcept
 	{
-		if (result.WorkUnitsConsumed >= maximumWorkUnits)
+		if ((result.WorkUnitsConsumed % 32 == 0) &&
+			std::chrono::steady_clock::now() >= deadline)
 		{
-			return RasterPixelStepResult::QuotaExhausted;
+			return RasterPixelStepResult::DeadlineReached;
 		}
 		constexpr std::array<std::array<double, 2>, 4> offsets{{
 			{{0.25, 0.25}}, {{0.75, 0.25}}, {{0.25, 0.75}}, {{0.75, 0.75}}}};
@@ -510,7 +551,7 @@ namespace Services::Map::Buildings::Rendering
 	Rgba16fImageDestination::RasterSequenceStepResult
 	Rgba16fImageDestination::StepRasterTriangle(
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		SubmissionSliceResult& result,
 		PrepareFunction&& prepare,
 		ShadeFunction&& shade) noexcept
@@ -519,12 +560,12 @@ namespace Services::Map::Buildings::Rendering
 		{
 			const RasterSetupResult setupResult = StepRasterTriangleSetup(
 				cursor,
-				maximumWorkUnits,
+				deadline,
 				result,
 				prepare);
-			if (setupResult == RasterSetupResult::QuotaExhausted)
+			if (setupResult == RasterSetupResult::DeadlineReached)
 			{
-				return RasterSequenceStepResult::QuotaExhausted;
+				return RasterSequenceStepResult::DeadlineReached;
 			}
 			if (setupResult == RasterSetupResult::InvalidInput)
 			{
@@ -545,12 +586,12 @@ namespace Services::Map::Buildings::Rendering
 		{
 			const RasterPixelStepResult pixelResult = StepRasterPixel(
 				cursor,
-				maximumWorkUnits,
+				deadline,
 				result,
 				shade);
-			if (pixelResult == RasterPixelStepResult::QuotaExhausted)
+			if (pixelResult == RasterPixelStepResult::DeadlineReached)
 			{
-				return RasterSequenceStepResult::QuotaExhausted;
+				return RasterSequenceStepResult::DeadlineReached;
 			}
 			if (pixelResult == RasterPixelStepResult::Rejected)
 			{
@@ -572,7 +613,7 @@ namespace Services::Map::Buildings::Rendering
 	Rgba16fImageDestination::StepRasterTriangleSequence(
 		SubmissionCursor& cursor,
 		std::size_t triangleCount,
-		std::size_t maximumWorkUnits,
+		std::chrono::steady_clock::time_point deadline,
 		PrepareFunction&& prepare,
 		ShadeFunction&& shade) noexcept
 	{
@@ -581,11 +622,11 @@ namespace Services::Map::Buildings::Rendering
 		{
 			const RasterSequenceStepResult stepResult = StepRasterTriangle(
 				cursor,
-				maximumWorkUnits,
+				deadline,
 				result,
 				prepare,
 				shade);
-			if (stepResult == RasterSequenceStepResult::QuotaExhausted)
+			if (stepResult == RasterSequenceStepResult::DeadlineReached)
 			{
 				break;
 			}
@@ -615,7 +656,7 @@ namespace Services::Map::Buildings::Rendering
 	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitImage(
 		const ImageSubmissionCommand& command,
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits) noexcept
+		std::chrono::steady_clock::time_point deadline) noexcept
 	{
 		SubmissionSliceResult result;
 		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::Image, result))
@@ -646,14 +687,14 @@ namespace Services::Map::Buildings::Rendering
 			const ImageShadeContext context{command, cursor.ImageCorners, cursor.TriangleIndex != 0};
 			return ShadeImage(context, first, second, third, output);
 		};
-		return StepRasterTriangleSequence(cursor, 2, maximumWorkUnits, prepare, shade);
+		return StepRasterTriangleSequence(cursor, 2, deadline, prepare, shade);
 	}
 
 	/** Resumes one ordered solid batch without retaining its borrowed triangle span. */
 	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitSolidTriangles(
 		const SolidTriangleBatch& batch,
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits) noexcept
+		std::chrono::steady_clock::time_point deadline) noexcept
 	{
 		SubmissionSliceResult result;
 		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::SolidTriangles, result))
@@ -679,14 +720,14 @@ namespace Services::Map::Buildings::Rendering
 			output = cursor.SolidColor;
 			return true;
 		};
-		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), maximumWorkUnits, prepare, shade);
+		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), deadline, prepare, shade);
 	}
 
 	/** Resumes one ordered textured batch while borrowing source pixels only for this slice. */
 	Rgba16fImageDestination::SubmissionSliceResult Rgba16fImageDestination::StepSubmitTexturedTriangles(
 		const TexturedTriangleBatch& batch,
 		SubmissionCursor& cursor,
-		std::size_t maximumWorkUnits) noexcept
+		std::chrono::steady_clock::time_point deadline) noexcept
 	{
 		SubmissionSliceResult result;
 		if (!BeginSubmission(cursor, SubmissionCursor::OperationKind::TexturedTriangles, result))
@@ -698,11 +739,12 @@ namespace Services::Map::Buildings::Rendering
 			CompleteSubmission(cursor, ImageSubmission::Unavailable, result);
 			return result;
 		}
-		if (!IsValidTexturedBatch(batch))
+		if (!cursor.TexturedBatchValidated && !IsValidTexturedBatch(batch))
 		{
 			CompleteSubmission(cursor, ImageSubmission::InvalidInput, result);
 			return result;
 		}
+		cursor.TexturedBatchValidated = true;
 		if (batch.Triangles.empty())
 		{
 			CompleteSubmission(cursor, ImageSubmission::Culled, result);
@@ -717,7 +759,7 @@ namespace Services::Map::Buildings::Rendering
 			const TextureShadeContext context{batch};
 			return ShadeTexture(context, cursor.Raster.SourceVertices, first, second, third, output);
 		};
-		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), maximumWorkUnits, prepare, shade);
+		return StepRasterTriangleSequence(cursor, batch.Triangles.size(), deadline, prepare, shade);
 	}
 
 	/** Validates the image command, then rasterizes its two source-ordered quad triangles. */
@@ -855,7 +897,7 @@ namespace Services::Map::Buildings::Rendering
 	Rgba16fImageDestination::FinalizationSliceResult Rgba16fImageDestination::StepFinalize(
 		std::vector<std::uint8_t>& output,
 		FinalizationCursor& cursor,
-		std::size_t maximumPixels) const noexcept
+		std::chrono::steady_clock::time_point deadline) const noexcept
 	{
 		FinalizationSliceResult result;
 		if (cursor.DestinationIdentity != 0 &&
@@ -873,9 +915,13 @@ namespace Services::Map::Buildings::Rendering
 		if (cursor.Terminal)
 		{
 			result.Status = cursor.TerminalStatus;
+			if (cursor.TerminalStatus == FinalizationStepStatus::Complete)
+			{
+				result.FullyTransparent = cursor.FullyTransparent;
+			}
 			return result;
 		}
-		if (maximumPixels == 0)
+		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return result;
 		}
@@ -885,11 +931,29 @@ namespace Services::Map::Buildings::Rendering
 			return result;
 		}
 		const std::size_t pixels = std::size_t(grid_.Width) * grid_.Height;
-		while (result.PixelsResolved < maximumPixels && cursor.NextPixel < pixels)
+		constexpr std::array<std::uint8_t, 8> transparentPixelBytes{
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C};
+		while (cursor.NextPixel < pixels)
 		{
+			if (result.PixelsResolved % 32 == 0 && std::chrono::steady_clock::now() >= deadline)
+			{
+				break;
+			}
 			if (!ResolveFinalizationPixel(output, cursor.NextPixel))
 			{
 				return FailFinalization(output, cursor, result);
+			}
+			if (cursor.FullyTransparent)
+			{
+				const std::size_t pixelByteOffset = cursor.NextPixel * transparentPixelBytes.size();
+				for (std::size_t channelByteOffset = 0; channelByteOffset < transparentPixelBytes.size(); ++channelByteOffset)
+				{
+					if (output[pixelByteOffset + channelByteOffset] != transparentPixelBytes[channelByteOffset])
+					{
+						cursor.FullyTransparent = false;
+						break;
+					}
+				}
 			}
 			++cursor.NextPixel;
 			++result.PixelsResolved;
@@ -900,6 +964,7 @@ namespace Services::Map::Buildings::Rendering
 			cursor.TerminalStatus = FinalizationStepStatus::Complete;
 			activeFinalizationId_ = 0;
 			result.Status = cursor.TerminalStatus;
+			result.FullyTransparent = cursor.FullyTransparent;
 		}
 		return result;
 	}

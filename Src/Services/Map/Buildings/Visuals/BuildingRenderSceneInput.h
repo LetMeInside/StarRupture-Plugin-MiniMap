@@ -1,5 +1,5 @@
-// Defines compact, game-independent inputs consumed synchronously by building rendering.
-// Pixel and geometry spans are borrowed; callers retain storage through consumption and receivers do not retain spans.
+// Defines compact, game-independent inputs consumed by building rendering.
+// Pixel and geometry spans are borrowed; callers retain stable backing storage for every consuming call.
 #pragma once
 
 #include "SpriteGeometry.h"
@@ -27,7 +27,7 @@ namespace Services::Map::Buildings::Visuals
 		SplineSurfaceAppearanceMode Mode = SplineSurfaceAppearanceMode::SolidColor;
 		/** sRGB 0xRRGGBB value used by the solid path. */
 		std::uint32_t SolidRgb = 0xFFFFFF;
-		/** Borrowed immutable RGBA8 source consumed synchronously by the textured path. */
+		/** Borrowed immutable RGBA8 source; its owner retains storage through every textured consuming call. */
 		Rgba8ImageSource Texture;
 		/** Maps canonical distance/lateral UVs into the texture address space. */
 		std::array<double, 2> UvScale{1.0, 1.0};
@@ -43,8 +43,8 @@ namespace Services::Map::Buildings::Visuals
 	/** Holds one immutable RGBA8 sprite source and the neutral values needed to project it into world space. */
 	struct BuildingSpriteRenderInput
 	{
-		/** Borrowed immutable RGBA8 pixels; producer keeps the payload alive during submission and
-		 * consumers must not retain this view after synchronous consumption returns.
+		/** Borrowed immutable RGBA8 pixels; the producer keeps the payload alive and unchanged through
+		 * each consuming call, while consumers must not retain this view after that call returns.
 		 */
 		std::span<const std::uint8_t> Pixels;
 		/** Dimensions of the borrowed processed-pixel view. */

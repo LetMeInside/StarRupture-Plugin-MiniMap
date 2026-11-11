@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements serialized resident sprite ownership and transparent cache retrieval.
+// Implements shared immutable sprite ownership and transparent disk-cache retrieval.
 #include "CpuSpriteSourceManager.h"
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -31,7 +31,7 @@ namespace Services::Map::Buildings::Cache
 			if (resident != payloadsByKey_.end())
 			{
 				lookupResult.Result = Status::Ready;
-				lookupResult.Payload = resident->second.get();
+				lookupResult.Payload = resident->second;
 				lookupResult.Diagnostics.Route = SpriteResult::LookupEvidence::LookupRoute::ResidentPayloadFound;
 				return lookupResult;
 			}
@@ -63,7 +63,7 @@ namespace Services::Map::Buildings::Cache
 					return lookupResult;
 				}
 				lookupResult.Result = Status::Ready;
-				lookupResult.Payload = adopted->second.get();
+				lookupResult.Payload = adopted->second;
 				lookupResult.Diagnostics.Route = SpriteResult::LookupEvidence::LookupRoute::DiskLoadedAndPayloadAdopted;
 				return lookupResult;
 			}
@@ -102,7 +102,7 @@ namespace Services::Map::Buildings::Cache
 		const auto resident = payloadsByKey_.find(key.Bytes());
 		if (resident != payloadsByKey_.end())
 		{
-			return {Status::Ready, resident->second.get()};
+			return {Status::Ready, resident->second};
 		}
 
 		if (spriteDiskCache_ == nullptr)
@@ -119,8 +119,8 @@ namespace Services::Map::Buildings::Cache
 			}
 			const auto adopted = payloadsByKey_.find(key.Bytes());
 			return adopted == payloadsByKey_.end()
-				? SpriteResult{Status::Unavailable, nullptr}
-				: SpriteResult{Status::Ready, adopted->second.get()};
+				? SpriteResult{Status::Unavailable, {}}
+				: SpriteResult{Status::Ready, adopted->second};
 		}
 
 		if (loaded.Status == SpriteDiskCache::LoadStatus::Missing ||
@@ -141,17 +141,18 @@ namespace Services::Map::Buildings::Cache
 		{
 			return false;
 		}
-		payloadsByKey_.insert_or_assign(key.Bytes(), std::move(payload));
+		std::shared_ptr<const ProcessedSpritePayload> sharedPayload(std::move(payload));
+		payloadsByKey_.insert_or_assign(key.Bytes(), std::move(sharedPayload));
 		return true;
 	}
 
-	/** Erases one resident payload and expires pointers borrowed from that entry. */
+	/** Erases one resident owner while existing shared results keep payload bytes alive. */
 	bool CpuSpriteSourceManager::Withdraw(const OwnedSpriteKey& key) noexcept
 	{
 		return payloadsByKey_.erase(key.Bytes()) != 0;
 	}
 
-	/** Releases all resident payloads and expires every borrowed payload pointer. */
+	/** Releases resident owners while payloads held by active Sections remain valid. */
 	void CpuSpriteSourceManager::Clear() noexcept
 	{
 		payloadsByKey_.clear();

@@ -15,9 +15,9 @@ namespace Services::Map::Buildings::Cache
 {
 	class SpriteDiskCache;
 
-	/** Owns one move-only immutable CPU payload per key and loads absent entries from disk.
-	 * All calls are serialized on the designated game thread. Returned payload pointers are
-	 * borrowed and remain valid only until their entry is replaced, withdrawn or cleared.
+	/** Owns immutable CPU payloads by key and loads absent entries from disk.
+	 * All calls are serialized on the designated game thread. Shared results remain valid
+	 * after an entry is replaced, withdrawn or cleared.
 	 */
 	class CpuSpriteSourceManager final
 	{
@@ -30,11 +30,11 @@ namespace Services::Map::Buildings::Cache
 			Unavailable
 		};
 
-		/** Returns status and borrowed access to a resident payload when ready. */
+		/** Returns status and shared access to a resident payload when ready. */
 		struct SpriteResult
 		{
 			Status Result = Status::Unavailable;
-			const ProcessedSpritePayload* Payload = nullptr;
+			std::shared_ptr<const ProcessedSpritePayload> Payload;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			/** Records the actual resident or disk retrieval outcome and elapsed lookup time. */
 			struct LookupEvidence
@@ -78,30 +78,30 @@ namespace Services::Map::Buildings::Cache
 
 		/** Returns a resident payload or loads and adopts one through the disk cache.
 		 * @param key Canonical owned sprite identity to retrieve.
-		 * @return Ready with borrowed payload, CaptureRequired for Missing/Invalid, or Unavailable.
+		 * @return Ready with shared payload ownership, CaptureRequired for Missing/Invalid, or Unavailable.
 		 */
 		SpriteResult GetSprite(const OwnedSpriteKey& key);
 
 		/** Adopts a captured immutable payload without copying its pixel vector.
-		 * Replacing the same key invalidates any borrowed pointer to its previous entry.
+		 * Existing shared owners keep the previous payload alive after replacement.
 		 * @param key Canonical owned sprite identity for the payload.
 		 * @param payload Exclusive payload ownership transferred into the resident map.
 		 * @return True when the payload is retained under a valid nonempty key.
 		 */
 		bool Adopt(const OwnedSpriteKey& key, std::unique_ptr<const ProcessedSpritePayload>&& payload);
 
-		/** Erases one resident entry; any pointer borrowed from it immediately expires.
+		/** Erases one resident entry; outstanding shared owners remain valid.
 		 * @param key Canonical owned sprite identity to withdraw.
 		 * @return True when a resident entry was removed.
 		 */
 		bool Withdraw(const OwnedSpriteKey& key) noexcept;
 
-		/** Clears all resident sprites and invalidates all borrowed payload pointers.
+		/** Clears all resident sprites while preserving outstanding shared owners.
 		 */
 		void Clear() noexcept;
 
 	private:
 		SpriteDiskCache* spriteDiskCache_ = nullptr;
-		std::unordered_map<std::string, std::unique_ptr<const ProcessedSpritePayload>> payloadsByKey_;
+		std::unordered_map<std::string, std::shared_ptr<const ProcessedSpritePayload>> payloadsByKey_;
 	};
 }

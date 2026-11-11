@@ -12,6 +12,7 @@
 
 namespace Services::Map::Buildings::Scheduling
 {
+	class SectionSchedulingCoordinator;
 	class SectionScheduler;
 }
 
@@ -82,6 +83,7 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapService;
+		friend class Scheduling::SectionSchedulingCoordinator;
 		friend class Scheduling::SectionScheduler;
 
 		/** Creates a section for the service-owned grid coordinate. */
@@ -152,6 +154,8 @@ namespace Services::Map::Buildings
 		 * @return The context exclusively owned by this Section.
 		 */
 		Visuals::BuildingVisualsContext& GetOrCreateVisualsContext();
+		/** Releases only unfinished scheduler state while preserving the numerical context and committed image. */
+		void ResetRenderingState() noexcept;
 
 		std::int64_t gridX_;
 		std::int64_t gridY_;
@@ -159,6 +163,8 @@ namespace Services::Map::Buildings
 		bool hasPreviousMembershipFingerprint_ = false;
 		std::uint64_t membershipFingerprint_ = 0;
 		std::unique_ptr<Visuals::BuildingVisualsContext> visualsContext_;
+		/** Opaque scheduler state owned only for this Section's unfinished render generation. */
+		std::shared_ptr<void> renderingState_;
 		std::optional<CompletedImage> completedImage_;
 	};
 }

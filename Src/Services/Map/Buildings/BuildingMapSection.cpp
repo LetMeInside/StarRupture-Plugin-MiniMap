@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 // Implements Section identity, membership observation tracking, private
-// completed-image storage, and lazy ownership of numerical rendering context.
+// completed-image storage, and Section-owned rendering state and context.
 #include "BuildingMapSection.h"
 
 #include "Visuals/BuildingVisualsContext.h"
@@ -156,6 +156,12 @@ namespace Services::Map::Buildings
 			visualsContext_ = std::make_unique<Visuals::BuildingVisualsContext>();
 		}
 		return *visualsContext_;
+	}
+
+	/** Releases unfinished render state without changing the context or published image. */
+	void BuildingMapSection::ResetRenderingState() noexcept
+	{
+		renderingState_.reset();
 	}
 }
 

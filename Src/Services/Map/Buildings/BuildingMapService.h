@@ -204,7 +204,7 @@ namespace Services::Map::Buildings
 		void AddViewportGridCoordinates(
 			const BuildingMapViewport& viewport,
 			std::set<SectionCoordinate>& coordinates) const;
-		/** Requests one publication batch per applicable collector and retains first-valid results. */
+		/** Requests applicable sources in order and preserves equivalent pending publication owners. */
 		void AcquireSectionPublicationBatches(
 			const std::set<SectionCoordinate>& coordinates,
 			std::uint64_t recheckedViewportHandle,
@@ -214,15 +214,19 @@ namespace Services::Map::Buildings
 			std::uint64_t viewportHandle,
 			BuildingMapViewport& viewport,
 			const std::set<SectionCoordinate>& coordinates,
+			std::set<SectionCoordinate>& selectedCoordinates,
 			bool clearRecheckWhenCovered);
 		/** Builds one viewport's exact region and coordinate arrays from the requested cells. */
 		bool BuildViewportSectionRequest(
 			const BuildingMapViewport& viewport,
 			const std::set<SectionCoordinate>& coordinates,
+			const std::set<SectionCoordinate>& selectedCoordinates,
 			std::vector<SectionCoordinate>& requestedCoordinates,
 			std::vector<BuildingCollectionRegion>& requestedRegions) const;
-		/** Tests whether outstanding publications cover one viewport's full demanded grid. */
-		bool AreAllViewportSectionsSupplied(const BuildingMapViewport& viewport) const;
+		/** Tests whether the current acquisition pass selected a publication for every viewport cell. */
+		bool AreAllViewportSectionsSelected(
+			const BuildingMapViewport& viewport,
+			const std::set<SectionCoordinate>& selectedCoordinates) const;
 		/** Observes acquisition content and reports whether demanded Section hashes need comparison. */
 		bool ObserveViewportAcquisitionHash(
 			std::uint64_t viewportHandle,
@@ -242,16 +246,27 @@ namespace Services::Map::Buildings
 			const std::vector<SectionCoordinate>& requestedCoordinates,
 			const std::vector<BuildingCollectionRegion>& requestedRegions,
 			const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+			std::set<SectionCoordinate>& selectedCoordinates,
 			bool completeRequestBatch,
 			bool clearRecheckWhenCovered);
 		/** Removes retained publications whose content is already successfully applied. */
 		void ReleasePendingPublicationsAlreadyApplied();
-		/** Releases pending publications in a changed viewport's old and new grid ranges. */
+		/** Invalidates selected publications for explicit source invalidation or viewport closure. */
 		void InvalidatePendingPublicationsInRange(
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
 			std::int64_t endGridY);
+		/** Invalidates prior-source publications only for cells that departed an updated viewport. */
+		void InvalidateDepartedViewportPublications(
+			std::int64_t previousFirstGridX,
+			std::int64_t previousFirstGridY,
+			std::int64_t previousEndGridX,
+			std::int64_t previousEndGridY,
+			std::int64_t nextFirstGridX,
+			std::int64_t nextFirstGridY,
+			std::int64_t nextEndGridX,
+			std::int64_t nextEndGridY);
 		/** Converts a signed grid cell to its exact finite map-space rectangle. */
 		bool TryCreateSectionRegion(
 			std::int64_t gridX,

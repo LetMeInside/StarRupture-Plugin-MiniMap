@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -78,11 +79,8 @@ namespace Services::Map::Buildings::Scheduling
 		Duration CoordinatorAdvancement;
 		Duration SpriteAcquisitionAdvancement;
 		Duration SourceSelection;
-		Duration KnownSpritePreparation;
 		Duration SectionSlice;
 		Duration ScenePreparation;
-		Duration SceneBorrow;
-		Duration RetainedSpriteReborrow;
 		Duration NumericalRendering;
 		Duration DestinationConstruction;
 		Duration OrdinarySprites;
@@ -118,7 +116,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 
 	/** Tracks deduplicated Section work required by active viewports.
-	 * It owns one SectionScheduler but neither Section objects nor per-Section render resources.
+	 * It owns one SectionScheduler but neither Section objects nor per-Section render state.
 	 * Waiting coordinates persist until demand is withdrawn or an explicit completed-work report
 	 * removes them. Its serialized Section advancement incrementally processes waiting Sections.
 	 * The renderer's lifecycle callback advances native request retirement independently of Section work.
@@ -182,9 +180,11 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param nextFirstGridY Accepted new inclusive first row.
 		 * @param nextEndGridX Accepted new exclusive end column.
 		 * @param nextEndGridY Accepted new exclusive end row.
+		 * @param buildingMapService Service used to reset state only on existing Sections whose demand ends.
 		 * @return True when both ranges are valid nonempty half-open rectangles.
 		 */
 		bool ChangeViewportDemand(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			std::int64_t previousFirstGridX,
 			std::int64_t previousFirstGridY,
 			std::int64_t previousEndGridX,
@@ -195,18 +195,22 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t nextEndGridY);
 
 		/** Withdraws one viewport's existing half-open range and preserves overlapping demand.
+		 * @param buildingMapService Service whose existing Sections may have unfinished state to reset.
 		 * @param firstGridX Inclusive first signed grid column.
 		 * @param firstGridY Inclusive first signed grid row.
 		 * @param endGridX Exclusive end signed grid column.
 		 * @param endGridY Exclusive end signed grid row.
 		 */
 		void WithdrawViewportDemand(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
 			std::int64_t endGridY);
-		/** Clears demand counts, waiting coordinates and retained Section jobs while retaining scheduler resources. */
-		void ClearViewportDemand() noexcept;
+		/** Clears demand and unfinished state from existing service-owned Sections.
+		 * @param buildingMapService Service whose Sections own the state being released.
+		 */
+		void ClearViewportDemand(::Services::Map::Buildings::BuildingMapService& buildingMapService) noexcept;
 
 		/** Requeues demanded work after a Section dependency changes.
 		 * @param coordinate Signed service-grid coordinate requiring regeneration.
@@ -218,8 +222,10 @@ namespace Services::Map::Buildings::Scheduling
 		 */
 		bool BeginCaptureGameWorldSession();
 
-		/** Clears retained Section jobs, then stops scheduling and requests active capture cancellation. */
-		void StopCaptureGameWorldSession();
+		/** Clears existing Section render state before stopping acquisition resources.
+		 * @param buildingMapService Service whose Sections own unfinished rendering state.
+		 */
+		void StopCaptureGameWorldSession(::Services::Map::Buildings::BuildingMapService& buildingMapService);
 		/** Returns the capturer target used by the plugin's direct engine callback. */
 		Capture::BuildingSpriteRenderer* GetCapturerLifecycleTarget() noexcept;
 		/** Delegates explicit building-cache clearing to the owned SectionScheduler.
@@ -238,9 +244,8 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 
 	private:
-		static constexpr std::size_t MaximumSectionVisitWorkUnits = 1024;
 		friend class ::Services::Map::Buildings::BuildingMapService;
-		/** Reports one Section-job state and the exact deterministic quota consumed. */
+		/** Reports one Section-job state and diagnostic work counts for that advancement. */
 		struct IncrementalSectionAdvanceResult
 		{
 			enum class State
@@ -255,16 +260,12 @@ namespace Services::Map::Buildings::Scheduling
 			std::size_t WorkUnitsConsumed = 0;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			bool HasSceneReadiness = false;
-			bool SceneBorrowMeasured = false;
 			std::uint8_t SceneReadiness = 0;
 			bool HasCommitStatus = false;
 			std::uint8_t CommitStatus = 0;
 			bool HasNumericalStatus = false;
 			std::uint8_t NumericalStatus = 0;
 			double ScenePreparationMs = 0.0;
-			double SceneBorrowMs = 0.0;
-			bool RetainedSpriteReborrowMeasured = false;
-			double RetainedSpriteReborrowMs = 0.0;
 			double NumericalRenderingMs = 0.0;
 			double TransparencyCheckMs = 0.0;
 			double ImageAdoptionMs = 0.0;
@@ -291,27 +292,31 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionPublicationBatch& publications);
 		/** Starts a fresh allowance only when the service-owned tick identity advances. */
 		void InitializeTickBudget(
-			const ::Services::Map::Buildings::BuildingMapService& buildingMapService);
+			const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			std::chrono::steady_clock::time_point allowanceStarted);
 		/** Advances the single existing sprite-acquisition path once for this coordinator call. */
 		void AdvanceSpriteAcquisitionOnce();
 
-		/** Copies the next waiting coordinate after the value cursor, skipping current pass and per-tick deferred work. */
-		bool TrySelectNextWaitingSection(
-			SectionCoordinate& output,
-			const std::set<SectionCoordinate>& visitedThisPass) const;
-		/** Advances eligible jobs in rotated order until time or per-tick deferral stops useful work. */
+		/** Copies the next waiting coordinate after the value cursor, skipping per-tick deferred work. */
+		bool TrySelectNextWaitingSection(SectionCoordinate& output) const;
+		/** Advances a focused progressing job before rotating to another eligible coordinate. */
 		void AdvanceWaitingSectionSlices(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
-			const SectionPublicationBatch& publications,
-			std::chrono::steady_clock::time_point advancementStarted);
-		/** Advances one selected coordinate once and reports whether it must wait until the next tick. */
+			const SectionPublicationBatch& publications);
+		/** Advances one selected coordinate and distinguishes a deadline yield from a blocked result.
+		 * @param buildingMapService Service owning the existing Section and selected sources.
+		 * @param coordinate Demanded coordinate to advance.
+		 * @param publications Current selected immutable publications.
+		 * @param deadlineYielded Receives true for zero-progress Pending after the shared deadline.
+		 * @return True when this coordinate should not be retried during the current tick.
+		 */
 		bool AdvanceOneWaitingSection(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionCoordinate& coordinate,
-			const SectionPublicationBatch& publications);
-		/** Tests the shared allowance using prior same-tick consumption and this call's elapsed time. */
-		bool IsTickAllowanceAvailable(
-			std::chrono::steady_clock::time_point advancementStarted) const noexcept;
+			const SectionPublicationBatch& publications,
+			bool& deadlineYielded);
+		/** Tests whether the absolute shared tick deadline leaves any scheduling time. */
+		bool IsTickAllowanceAvailable() const noexcept;
 		/** Adds this advancement's wall duration to per-tick consumption before returning. */
 		void FinalizeTickBudget(
 			std::chrono::steady_clock::time_point advancementStarted
@@ -321,6 +326,8 @@ namespace Services::Map::Buildings::Scheduling
 			);
 		/** Clears value-only round-robin and shared-budget state at full demand/session reset boundaries. */
 		void ResetSchedulingBudgetState() noexcept;
+		/** Clears focused Section tenure when that job is no longer eligible to continue. */
+		void ClearFocusedSection() noexcept;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Records one actual incremental state and terminal commit evidence in Debug aggregates. */
 		void RecordIncrementalDiagnostics(
@@ -342,21 +349,21 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param buildingMapService Service-owned Section and immutable spline-policy provider.
 		 * @param coordinate Exact signed Section coordinate selected by the future scheduler.
 		 * @param publicationOwner Selected shared publication retained through this advancement.
-		 * @param maximumWorkUnits Positive deterministic quota passed unchanged to SectionScheduler.
-		 * @return Actual job state and work units consumed; zero quota returns Pending without side effects.
+		 * @param deadline Absolute end of the current shared scheduling allowance.
+		 * @return Actual job state and diagnostic work counts.
 		 */
 		IncrementalSectionAdvanceResult AdvanceSelectedSectionJob(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionCoordinate& coordinate,
 			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
-			std::size_t maximumWorkUnits);
-		/** Selectively prepares or reborrows sprite views, advances once, and applies terminal completion events.
+			std::chrono::steady_clock::time_point deadline);
+		/** Selectively prepares a scene or reuses retained inputs, advances once, and applies terminal events.
 		 * @param buildingMapService Service providing the immutable spline policies.
 		 * @param coordinate Exact coordinate of the retained Section job.
 		 * @param publicationOwner Selected publication retained through this advancement.
 		 * @param section Service-owned Section whose numerical context remains stable across calls.
-		 * @param continuationMode Scheduler-owned full, retained-reborrow or scene-free mode.
-		 * @param maximumWorkUnits Deterministic quota passed unchanged to SectionScheduler.
+		 * @param continuationMode Scheduler-owned initial-preparation, retained-scene or scene-free mode.
+		 * @param deadline Absolute end of the current shared scheduling allowance.
 		 * @return The actual incremental state and work count reported by SectionScheduler.
 		 */
 		IncrementalSectionAdvanceResult AdvanceRetainedSectionJob(
@@ -365,7 +372,7 @@ namespace Services::Map::Buildings::Scheduling
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJobContinuationMode continuationMode,
-			std::size_t maximumWorkUnits);
+			std::chrono::steady_clock::time_point deadline);
 		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.
 		 * @param coordinate Coordinate of the terminal Section attempt.
@@ -417,6 +424,7 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Removes each coordinate in a half-open range from aggregate viewport demand. */
 		void RemoveDemandRange(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
@@ -426,16 +434,28 @@ namespace Services::Map::Buildings::Scheduling
 		void AddDemandCoordinate(const SectionCoordinate& coordinate);
 
 		/** Removes one viewport reference and cancels work after the final demand leaves. */
-		void RemoveDemandCoordinate(const SectionCoordinate& coordinate);
+		void RemoveDemandCoordinate(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate);
+		/** Resets one existing Section's unfinished state without inserting a sparse Section.
+		 * @param buildingMapService Service containing the existing Section when one was created.
+		 * @param coordinate Coordinate whose state is being cancelled.
+		 */
+		void CancelSectionJob(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate) noexcept;
 
 		/** Reports whether any active viewport currently requires this coordinate. */
 		bool IsDemanded(const SectionCoordinate& coordinate) const noexcept;
 
-		/** Removes completed waiting work and its retained job after a successful commit.
+		/** Removes completed waiting work and its Section-owned state after a successful commit.
 		 * Aggregate demand remains intact.
+		 * @param buildingMapService Service whose existing Section state is released.
 		 * @param coordinate Signed service-grid coordinate whose image was committed.
 		 */
-		void RecordSectionCompleted(const SectionCoordinate& coordinate);
+		void RecordSectionCompleted(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			const SectionCoordinate& coordinate);
 		/** Resets interval counters without changing demand, waiting work, or scheduler state. */
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		void ResetDiagnostics() noexcept;
@@ -444,12 +464,16 @@ namespace Services::Map::Buildings::Scheduling
 		std::map<SectionCoordinate, std::size_t> demandCounts_;
 		std::set<SectionCoordinate> waitingSections_;
 		std::set<SectionCoordinate> deferredSectionsThisTick_;
+		std::optional<SectionCoordinate> focusedSection_;
+		std::size_t focusedTickCount_ = 0;
 		SectionCoordinate roundRobinCursor_{};
 		bool roundRobinCursorAvailable_ = false;
 		std::uint64_t budgetTickSequence_ = 0;
 		double nominalTickBudgetMs_ = 0.0;
+		std::chrono::steady_clock::time_point tickDeadline_{};
 		double consumedSchedulingMs_ = 0.0;
 		bool budgetTickAvailable_ = false;
+		static constexpr std::size_t MaximumFocusedTickCount = 32;
 		std::unique_ptr<SectionScheduler> sectionScheduler_;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SectionSchedulingDiagnosticsSnapshot diagnostics_{};
