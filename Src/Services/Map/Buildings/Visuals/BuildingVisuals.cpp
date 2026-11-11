@@ -55,7 +55,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Advances one borrowed scene call while charging only completed deterministic work units. */
 	BuildingVisuals::SceneSliceResult BuildingVisuals::StepScene(
 		const BuildingRenderSceneInput& scene,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		std::chrono::steady_clock::time_point deadline
@@ -147,7 +147,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Dispatches one work operation or a single zero-cost state transition. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSceneStep(
 		const BuildingRenderSceneInput& scene,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -210,7 +210,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Prepares one sprite once, resumes its image command and records its terminal result once. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceOrdinarySprite(
 		const BuildingRenderSceneInput& scene,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -257,7 +257,7 @@ namespace Services::Map::Buildings::Visuals
 		const BuildingSpriteRenderInput& sprite,
 		std::size_t index,
 		bool ordinary,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -367,7 +367,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Samples one spline once and advances it through the current surface position. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSpline(
 		const BuildingRenderSceneInput& scene,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -398,7 +398,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Advances one selected surface, rejected candidate or no-drawable contributor result. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceSplineSurface(
 		const BuildingSplineRenderInput& spline,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -602,7 +602,7 @@ namespace Services::Map::Buildings::Visuals
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSplineSurface(
 		const BuildingSplineRenderInput& spline,
 		const BuildingSplineSurfaceRenderInput& surface,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,
@@ -643,10 +643,10 @@ namespace Services::Map::Buildings::Visuals
 	}
 
 	/** Advances one retained triangle batch using only this call's borrowed appearance view. */
-	Rendering::Rgba16fImageDestination::SubmissionSliceResult
+	IImageDestination::SubmissionSliceResult
 	BuildingVisuals::StepPreparedSplineSurface(
 		const BuildingSplineSurfaceRenderInput& surface,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		std::chrono::steady_clock::time_point deadline)
@@ -724,7 +724,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Prepares one overlay once, resumes its image command and records its outcome without occlusion. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvanceOverlaySprite(
 		const BuildingRenderSceneInput& scene,
-		Rendering::Rgba16fImageDestination& destination,
+		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result,

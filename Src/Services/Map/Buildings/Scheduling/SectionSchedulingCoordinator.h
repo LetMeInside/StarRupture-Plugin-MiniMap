@@ -106,7 +106,7 @@ namespace Services::Map::Buildings::Scheduling
 		double MaximumBudgetOverrunMs = 0.0;
 		std::uint64_t NoLongerEligibleCoordinates = 0;
 		std::uint64_t SourceSelectionMisses = 0;
-		std::array<std::uint64_t, 5> CommitStatusCounts{};
+		std::array<std::uint64_t, 4> CommitStatusCounts{};
 		std::array<std::uint64_t, 8> SceneReadinessCounts{};
 		std::array<std::uint64_t, 7> NumericalStatusCounts{};
 		std::uint64_t ExistingImagesRemoved = 0;

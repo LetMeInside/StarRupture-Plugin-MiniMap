@@ -124,7 +124,7 @@
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodec.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodecApartment.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpriteDiskCache.h" />
-    <ClInclude Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.h" />
+    <ClInclude Include="Services\Map\Buildings\Rendering\Rgba8ImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Rendering\SectionRendering.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingRenderSceneInput.h" />
@@ -271,7 +271,7 @@
     <ClCompile Include="Adapters\AlienX\RuntimeEvents.cpp" />
     <ClCompile Include="Adapters\AlienX\NativeHooks.cpp" />
     <ClCompile Include="Adapters\AlienX\Viewport.cpp" />
-    <ClCompile Include="Services\Map\Buildings\Rendering\Rgba16fImageDestination.cpp">
+    <ClCompile Include="Services\Map\Buildings\Rendering\Rgba8ImageDestination.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Rendering\SectionRendering.cpp">
     </ClCompile>

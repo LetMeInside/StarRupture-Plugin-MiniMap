@@ -16,9 +16,11 @@
 #endif
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace MiniMapUI
 {
@@ -108,7 +110,7 @@ namespace MiniMapUI
 	bool BuildingLayer::HasDiagnosticsActivity() const noexcept
 	{
 		if (diagnostics_.OpenViewport.Samples || diagnostics_.ViewportUpdate.Samples ||
-			diagnostics_.PrepareCpuImages.Samples || diagnostics_.ImageConversion.Samples ||
+			diagnostics_.PrepareCpuImages.Samples ||
 			diagnostics_.GpuPublicationPass.Samples || diagnostics_.TextureUploadCall.Samples ||
 			diagnostics_.TextureReleaseCall.Samples || diagnostics_.SuccessfulOpenViewports ||
 			diagnostics_.SuccessfulViewportUpdates || diagnostics_.RejectedViewportUpdates ||
@@ -206,7 +208,6 @@ namespace MiniMapUI
 		WithdrawAllPublishedTextures();
 		dirtyCoordinates_.clear();
 		pendingUpdates_.clear();
-		lastConversionFailureCoordinate_.reset();
 		viewport_.reset();
 		if (viewport == nullptr)
 		{
@@ -595,56 +596,19 @@ namespace MiniMapUI
 			return;
 		}
 		PendingPresentationUpdate replacement;
-#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		bool converted = false;
-		{
-			DurationScope durationScope(diagnostics_.ImageConversion);
-			converted = TryConvertCompletedImage(
-			image.PixelWidth,
-			image.PixelHeight,
-			image.Rgba16fBytes,
-			replacement);
-		}
-#else
-		const bool converted = TryConvertCompletedImage(
-			image.PixelWidth,
-			image.PixelHeight,
-			image.Rgba16fBytes,
-			replacement);
-#endif
-		if (!converted)
-		{
-#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			++diagnostics_.CoordinateResolutionCounts[
-				static_cast<std::size_t>(CoordinateResolution::ConversionFailed)];
-#endif
-			pendingUpdates_.erase(coordinate);
-			lastConversionFailureCoordinate_ = coordinate;
-			return;
-		}
+		replacement.Kind = PendingUpdateKind::Replacement;
 #if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		++diagnostics_.CoordinateResolutionCounts[
-			static_cast<std::size_t>(CoordinateResolution::Converted)];
+			static_cast<std::size_t>(CoordinateResolution::ReplacementReady)];
 #endif
 		StorePendingUpdate(coordinate, std::move(replacement));
-		ClearConversionFailureFor(coordinate);
 	}
 
-	/** Records image absence without treating it as a conversion failure. */
+	/** Records image absence as a deferred removal update. */
 	void BuildingLayer::RecordImageRemoval(const Coordinate& coordinate)
 	{
 		PendingPresentationUpdate removal;
 		StorePendingUpdate(coordinate, std::move(removal));
-		ClearConversionFailureFor(coordinate);
-	}
-
-	/** Clears the diagnostic marker only when the same coordinate was resolved. */
-	void BuildingLayer::ClearConversionFailureFor(const Coordinate& coordinate)
-	{
-		if (lastConversionFailureCoordinate_ == coordinate)
-		{
-			lastConversionFailureCoordinate_.reset();
-		}
 	}
 
 	/** Uploads one pending replacement with the fresh-name RGBA8 service operation. */
@@ -656,52 +620,74 @@ namespace MiniMapUI
 		{
 			return;
 		}
-		const MiniMap::Services::TextureSize size{update.PixelWidth, update.PixelHeight};
-		const MiniMap::Services::TextureRequest request{
-			std::string_view{},
-			std::optional<MiniMap::Services::TextureSize>{size}};
+		MiniMap::Services::TextureSize size{};
 		TextureEntry* entry = nullptr;
+		MiniMap::Services::UploadState result = MiniMap::Services::UploadState::Unavailable;
 		{
-			std::lock_guard<std::mutex> lock(presentationMutex_);
-			textureResources_.emplace_back();
-			entry = &textureResources_.back();
-			entry->GridCoordinate = coordinate;
-			entry->State = TextureResourceState::Acquiring;
-			++activeTextureOperations_;
-		}
+			std::size_t localX = 0;
+			std::size_t localY = 0;
+			if (!TryFindLocalCoordinate(coordinate, localX, localY))
+			{
+				return;
+			}
+			const Services::Map::Buildings::BuildingMapSection* section =
+				viewport_->GetSectionAt(localX, localY);
+			if (section == nullptr)
+			{
+				RecordImageRemoval(coordinate);
+				return;
+			}
+			Services::Map::Buildings::BuildingMapSection::CompletedImageView image;
+			if (!section->TryBorrowCompletedImage(image))
+			{
+				RecordImageRemoval(coordinate);
+				return;
+			}
+			size = MiniMap::Services::TextureSize{image.PixelWidth, image.PixelHeight};
+			const MiniMap::Services::TextureRequest request{
+				std::string_view{},
+				std::optional<MiniMap::Services::TextureSize>{size}};
+			{
+				std::lock_guard<std::mutex> lock(presentationMutex_);
+				textureResources_.emplace_back();
+				entry = &textureResources_.back();
+				entry->GridCoordinate = coordinate;
+				entry->State = TextureResourceState::Acquiring;
+				++activeTextureOperations_;
+			}
 #if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		MiniMap::Services::UploadState result;
-		{
-			DurationScope durationScope(diagnostics_.TextureUploadCall);
+			{
+				DurationScope durationScope(diagnostics_.TextureUploadCall);
+				result = textures_->UploadRGBA(
+					image.Rgba8Bytes,
+					size,
+					request,
+					entry->Owner);
+			}
+			++diagnostics_.TextureUploadStateCounts[static_cast<std::size_t>(result)];
+#else
 			result = textures_->UploadRGBA(
-				update.Rgba8Bytes,
+				image.Rgba8Bytes,
 				size,
 				request,
 				entry->Owner);
-		}
-		++diagnostics_.TextureUploadStateCounts[static_cast<std::size_t>(result)];
-#else
-		const MiniMap::Services::UploadState result = textures_->UploadRGBA(
-			update.Rgba8Bytes,
-			size,
-			request,
-			entry->Owner);
 #endif
+		}
 		{
 			std::lock_guard<std::mutex> lock(presentationMutex_);
 			--activeTextureOperations_;
 		}
-		HandleUploadResult(coordinate, std::move(update), result, *entry);
+		HandleUploadResult(coordinate, std::move(update), size, result, *entry);
 	}
 
-	/** Revalidates a returned receipt and preserves retryable CPU data on ordinary failure. */
+	/** Revalidates a returned receipt and preserves retryable replacement work on failure. */
 	void BuildingLayer::HandleUploadResult(
 		const Coordinate& coordinate,
 		PendingPresentationUpdate update,
+		MiniMap::Services::TextureSize expectedSize,
 		MiniMap::Services::UploadState result,
 		TextureEntry& entry)
 	{
-		const MiniMap::Services::TextureSize expectedSize{update.PixelWidth, update.PixelHeight};
 		if (result == MiniMap::Services::UploadState::Complete &&
 			IsUsableTextureReceipt(entry.Owner, expectedSize))
 		{
@@ -792,7 +778,7 @@ namespace MiniMapUI
 		return TryFindLocalCoordinate(coordinate, localX, localY);
 	}
 
-	/** Restores a failed upload buffer only while its coordinate remains current and visible. */
+	/** Restores a failed replacement marker only while its coordinate remains current and visible. */
 	void BuildingLayer::RestorePendingUpdateIfEligible(
 		const Coordinate& coordinate,
 		PendingPresentationUpdate update)
@@ -871,138 +857,6 @@ namespace MiniMapUI
 				++iterator;
 			}
 		}
-		if (lastConversionFailureCoordinate_.has_value() &&
-			visibleCoordinates.find(*lastConversionFailureCoordinate_) == visibleCoordinates.end())
-		{
-			lastConversionFailureCoordinate_.reset();
-		}
-	}
-
-	/** Validates dimensions and converts one complete image without retaining its source bytes. */
-	bool BuildingLayer::TryConvertCompletedImage(
-		std::uint32_t pixelWidth,
-		std::uint32_t pixelHeight,
-		std::span<const std::uint8_t> rgba16fBytes,
-		PendingPresentationUpdate& update)
-	{
-		update = {};
-		if (pixelWidth == 0 || pixelHeight == 0)
-		{
-			return false;
-		}
-		const std::size_t width = static_cast<std::size_t>(pixelWidth);
-		const std::size_t height = static_cast<std::size_t>(pixelHeight);
-		const std::size_t maximum = (std::numeric_limits<std::size_t>::max)();
-		if (width > maximum / height)
-		{
-			return false;
-		}
-		const std::size_t pixelCount = width * height;
-		if (pixelCount > maximum / 8 || rgba16fBytes.size() != pixelCount * 8)
-		{
-			return false;
-		}
-		update.Rgba8Bytes.resize(pixelCount * 4);
-		for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex)
-		{
-			const std::size_t sourceOffset = pixelIndex * 8;
-			const std::size_t targetOffset = pixelIndex * 4;
-			if (!TryConvertPixel(rgba16fBytes, sourceOffset, update.Rgba8Bytes.data() + targetOffset))
-			{
-				update = {};
-				return false;
-			}
-		}
-		update.Kind = PendingUpdateKind::Replacement;
-		update.PixelWidth = pixelWidth;
-		update.PixelHeight = pixelHeight;
-		return true;
-	}
-
-	/** Decodes one finite RGBA16F sample and writes straight-alpha display RGBA8. */
-	bool BuildingLayer::TryConvertPixel(
-		std::span<const std::uint8_t> rgba16fBytes,
-		std::size_t byteOffset,
-		std::uint8_t* rgba8Pixel)
-	{
-		double red = 0.0;
-		double green = 0.0;
-		double blue = 0.0;
-		double transmittance = 0.0;
-		if (!TryDecodeBinary16(rgba16fBytes, byteOffset, red) ||
-			!TryDecodeBinary16(rgba16fBytes, byteOffset + 2, green) ||
-			!TryDecodeBinary16(rgba16fBytes, byteOffset + 4, blue) ||
-			!TryDecodeBinary16(rgba16fBytes, byteOffset + 6, transmittance))
-		{
-			return false;
-		}
-		const double opacity = ClampUnit(1.0 - transmittance);
-		if (opacity == 0.0)
-		{
-			rgba8Pixel[0] = 0;
-			rgba8Pixel[1] = 0;
-			rgba8Pixel[2] = 0;
-			rgba8Pixel[3] = 0;
-			return true;
-		}
-		rgba8Pixel[0] = ToRgba8(EncodeSrgb(ClampUnit(red / opacity)));
-		rgba8Pixel[1] = ToRgba8(EncodeSrgb(ClampUnit(green / opacity)));
-		rgba8Pixel[2] = ToRgba8(EncodeSrgb(ClampUnit(blue / opacity)));
-		rgba8Pixel[3] = ToRgba8(opacity);
-		return true;
-	}
-
-	/** Decodes little-endian IEEE-754 binary16 including subnormal and signed-zero values. */
-	bool BuildingLayer::TryDecodeBinary16(
-		std::span<const std::uint8_t> bytes,
-		std::size_t byteOffset,
-		double& value) noexcept
-	{
-		value = 0.0;
-		if (byteOffset >= bytes.size() || bytes.size() - byteOffset < 2)
-		{
-			return false;
-		}
-		const std::uint16_t bits = static_cast<std::uint16_t>(bytes[byteOffset]) |
-			static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[byteOffset + 1]) << 8);
-		const std::uint16_t exponent = static_cast<std::uint16_t>((bits >> 10) & 0x1f);
-		const std::uint16_t fraction = static_cast<std::uint16_t>(bits & 0x03ff);
-		if (exponent == 0x1f)
-		{
-			return false;
-		}
-		const double sign = (bits & 0x8000) == 0 ? 1.0 : -1.0;
-		if (exponent == 0)
-		{
-			value = sign * std::ldexp(static_cast<double>(fraction), -24);
-		}
-		else
-		{
-			value = sign * std::ldexp(1024.0 + static_cast<double>(fraction), static_cast<int>(exponent) - 25);
-		}
-		return std::isfinite(value);
-	}
-
-	/** Clamps finite opacity or color values to the normalized display interval. */
-	double BuildingLayer::ClampUnit(double value) noexcept
-	{
-		return value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value);
-	}
-
-	/** Applies the standard piecewise linear-to-sRGB display transfer function. */
-	double BuildingLayer::EncodeSrgb(double linearComponent) noexcept
-	{
-		if (linearComponent <= 0.0031308)
-		{
-			return 12.92 * linearComponent;
-		}
-		return 1.055 * std::pow(linearComponent, 1.0 / 2.4) - 0.055;
-	}
-
-	/** Rounds a normalized channel to the nearest representable RGBA8 byte. */
-	std::uint8_t BuildingLayer::ToRgba8(double normalizedComponent) noexcept
-	{
-		return static_cast<std::uint8_t>(std::lround(ClampUnit(normalizedComponent) * 255.0));
 	}
 
 	/** Removes one matching snapshot and applies its latest replacement or removal. */
@@ -1220,7 +1074,6 @@ namespace MiniMapUI
 		viewport_.reset();
 		dirtyCoordinates_.clear();
 		pendingUpdates_.clear();
-		lastConversionFailureCoordinate_.reset();
 	}
 
 	/** Checks that no publication, receipt or backend operation remains outstanding. */

@@ -7,12 +7,8 @@
 #include <memory>
 #include <optional>
 #include <vector>
+#include "../IImageDestination.h"
 #include "../Visuals/BuildingVisualsResult.h"
-
-namespace Services::Map::Buildings
-{
-	enum class ImageSubmission : std::uint8_t;
-}
 
 namespace Services::Map::Buildings::Visuals
 {
@@ -22,8 +18,6 @@ namespace Services::Map::Buildings::Visuals
 
 namespace Services::Map::Buildings::Rendering
 {
-	struct Rgba16fImageGrid;
-
 	/** Reports synchronous and cursor-resumable numerical Section-image construction. */
 	class SectionRendering final
 	{
@@ -51,8 +45,8 @@ namespace Services::Map::Buildings::Rendering
 		class IncrementalOperation final
 		{
 		public:
-			/** Copies the grid configuration into a fresh operation; destination allocation is deferred. */
-			explicit IncrementalOperation(const Rgba16fImageGrid& grid);
+			/** Copies the neutral grid into a fresh operation; interface destination allocation is deferred. */
+			explicit IncrementalOperation(const ImageGrid& grid);
 			IncrementalOperation(const IncrementalOperation&) = delete;
 			IncrementalOperation& operator=(const IncrementalOperation&) = delete;
 			IncrementalOperation(IncrementalOperation&&) = delete;
@@ -75,7 +69,7 @@ namespace Services::Map::Buildings::Rendering
 				Visuals::BuildingVisualsContext& context,
 				std::chrono::steady_clock::time_point deadline);
 			/** Moves fully finalized bytes and copies omission metadata once after successful completion.
-			 * @param output Receives the completed RGBA16F bytes only on success.
+			 * @param output Receives the completed RGBA8 bytes only on success.
 			 * @param omissionSummary Receives fixed-size accepted terminal omission metadata only on success.
 			 * @param imageFullyTransparent Receives exact clear-pixel classification from completed finalization.
 			 * @return True only once after successful finalization; failure leaves all outputs unchanged.
@@ -100,9 +94,9 @@ namespace Services::Map::Buildings::Rendering
 				Visuals::BuildingVisualsContext& context,
 				std::chrono::steady_clock::time_point deadline,
 				StepResult& result);
-			/** Constructs the destination once and resumes its default-sample initialization. */
+			/** Creates the interface destination once and resumes transparent-pixel initialization. */
 			bool ConstructDestination(std::chrono::steady_clock::time_point deadline) noexcept;
-			/** Advances output resolution and records its terminal outcome without exposing partial bytes. */
+			/** Advances destination finalization and records its outcome without exposing partial bytes. */
 			void AdvanceFinalization(std::chrono::steady_clock::time_point deadline, StepResult& result) noexcept;
 			/** Stores an immutable terminal status and moves the operation into its terminal phase. */
 			void Terminate(Status status) noexcept;
@@ -112,14 +106,14 @@ namespace Services::Map::Buildings::Rendering
 		};
 
 		/**
-		 * Draws prepared neutral contributors once and finalizes one complete RGBA16F image.
+		 * Draws prepared neutral contributors once and finalizes one complete RGBA8 image.
 		 * The scene, grid and Section-owned context are borrowed for this synchronous call.
 		 * Output is cleared before work begins and contains bytes only after successful finalization.
 		 *
 		 * @param scene Prepared neutral contributors and borrowed source spans.
 		 * @param context Numerical workspace borrowed from the owning BuildingMapSection.
-		 * @param grid Destination cell and pixel configuration supplied by the coordinator.
-		 * @param output Caller-owned final row-major little-endian RGBA16F bytes.
+		 * @param grid Format-neutral destination cell and pixel configuration.
+		 * @param output Caller-owned final row-major RGBA8 bytes.
 		 * @param omissionSummary Receives fixed-size metadata only for accepted terminal spline omissions.
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		 * @param phaseTimings Receives elapsed CPU wall time and invocation flags for the six measured phases.
@@ -129,7 +123,7 @@ namespace Services::Map::Buildings::Rendering
 		static Status RenderSection(
 			const Visuals::BuildingRenderSceneInput& scene,
 			Visuals::BuildingVisualsContext& context,
-			const Rgba16fImageGrid& grid,
+			const ImageGrid& grid,
 			std::vector<std::uint8_t>& output,
 			Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -139,7 +133,7 @@ namespace Services::Map::Buildings::Rendering
 
 	private:
 		/** Checks destination grid fields that can be rejected without recomputing world bounds. */
-		static bool HasValidGridInputs(const Rgba16fImageGrid& grid) noexcept;
+		static bool HasValidGridInputs(const ImageGrid& grid) noexcept;
 
 		/** Finds a destination submission outcome in one positional result vector. */
 		static bool HasSubmissionOutcome(

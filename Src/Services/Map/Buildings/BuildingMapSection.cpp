@@ -6,7 +6,6 @@
 
 #include "Visuals/BuildingVisualsContext.h"
 
-#include <limits>
 #include <memory>
 #include <utility>
 
@@ -85,7 +84,7 @@ namespace Services::Map::Buildings
 		}
 		image.PixelWidth = completedImage_->PixelWidth;
 		image.PixelHeight = completedImage_->PixelHeight;
-		image.Rgba16fBytes = completedImage_->Rgba16fBytes;
+		image.Rgba8Bytes = completedImage_->Rgba8Bytes;
 		return true;
 	}
 
@@ -95,57 +94,17 @@ namespace Services::Map::Buildings
 		completedImage_.reset();
 	}
 
-	/** Validates image dimensions and replaces storage by moving the byte vector. */
-	bool BuildingMapSection::TryAdoptCompletedImage(
+	/** Replaces completed storage by moving a trusted finalized RGBA8 byte vector. */
+	void BuildingMapSection::AdoptCompletedImage(
 		std::uint32_t pixelWidth,
 		std::uint32_t pixelHeight,
-		std::vector<std::uint8_t>&& rgba16fBytes)
+		std::vector<std::uint8_t>&& rgba8Bytes)
 	{
-		std::size_t expectedByteCount = 0;
-		if (!TryGetCompletedImageByteCount(pixelWidth, pixelHeight, expectedByteCount))
-		{
-			return false;
-		}
-		if (rgba16fBytes.size() != expectedByteCount)
-		{
-			return false;
-		}
-
 		CompletedImage replacement;
 		replacement.PixelWidth = pixelWidth;
 		replacement.PixelHeight = pixelHeight;
-		replacement.Rgba16fBytes = std::move(rgba16fBytes);
+		replacement.Rgba8Bytes = std::move(rgba8Bytes);
 		completedImage_ = std::move(replacement);
-		return true;
-	}
-
-	/** Computes the exact byte count while rejecting zero dimensions and overflow. */
-	bool BuildingMapSection::TryGetCompletedImageByteCount(
-		std::uint32_t pixelWidth,
-		std::uint32_t pixelHeight,
-		std::size_t& byteCount)
-	{
-		if (pixelWidth == 0 || pixelHeight == 0)
-		{
-			return false;
-		}
-
-		const std::size_t width = static_cast<std::size_t>(pixelWidth);
-		const std::size_t height = static_cast<std::size_t>(pixelHeight);
-		const std::size_t maximum = (std::numeric_limits<std::size_t>::max)();
-		if (width > maximum / height)
-		{
-			return false;
-		}
-
-		const std::size_t pixelCount = width * height;
-		constexpr std::size_t bytesPerPixel = 8;
-		if (pixelCount > maximum / bytesPerPixel)
-		{
-			return false;
-		}
-		byteCount = pixelCount * bytesPerPixel;
-		return true;
 	}
 
 	/** Lazily creates and returns this Section's exclusively owned numerical context. */

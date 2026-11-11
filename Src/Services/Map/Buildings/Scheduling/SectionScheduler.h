@@ -384,7 +384,6 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				InvalidOrIncompleteInput,
 				NumericalRenderingFailed,
-				ImageAdoptionRejected,
 				Committed,
 				CommittedEmpty
 			};
@@ -838,6 +837,10 @@ namespace Services::Map::Buildings::Scheduling
 			const KnownSpritePreparationResult& knownSpritePreparation,
 			std::span<const SplinePolicy> splinePolicies,
 			SectionImageCommitResult& output) const;
+		/** Encodes borrowed completed pixels and overwrites the coordinate-named PNG. */
+		void ExportCompletedSectionImage(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			std::span<const std::uint8_t> rgba8Bytes) const noexcept;
 
 		/** Completes an empty Section after validated pre-render or post-render evidence.
 		 * The caller has validated the exact Section publication and CompleteSceneInputs readiness.
@@ -848,11 +851,11 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionImageCommitResult& output) const;
 
-		/** Validates the expected image byte count and checks exact transparent RGBA16F clear bytes.
-		 * @param imageBytes Borrowed completed row-major RGBA16F pixel bytes.
-		 * @return True only for a correctly sized image whose every pixel is exactly transparent.
+		/** Classifies renderer-finalized RGBA8 output as transparent using alpha bytes only.
+		 * @param imageBytes Borrowed completed row-major RGBA8 bytes with renderer-guaranteed size.
+		 * @return True when every destination pixel has zero alpha.
 		 */
-		bool IsFullyTransparentRgba16fImage(std::span<const std::uint8_t> imageBytes) const noexcept;
+		bool IsFullyTransparentRgba8Image(std::span<const std::uint8_t> imageBytes) const noexcept;
 
 		/** Validates that the publication's exact half-open cell corresponds to the supplied Section coordinates.
 		 * @param section Service-owned Section whose signed grid location is authoritative.
@@ -875,7 +878,7 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param sectionResolutionPixels Square destination dimension.
 		 * @return Grid configuration with complementary world-units-per-pixel scale.
 		 */
-		static Rendering::Rgba16fImageGrid CreateSectionRenderingGrid(
+		static ImageGrid CreateSectionRenderingGrid(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels);
@@ -892,7 +895,7 @@ namespace Services::Map::Buildings::Scheduling
 		static Rendering::SectionRendering::Status RenderIntoSectionContext(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const Visuals::BuildingRenderSceneInput& sceneInput,
-			const Rendering::Rgba16fImageGrid& grid,
+			const ImageGrid& grid,
 			std::vector<std::uint8_t>& imageBytes,
 			Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1281,6 +1284,7 @@ namespace Services::Map::Buildings::Scheduling
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
+		const std::filesystem::path diagnosticsDirectory_;
 		std::unique_ptr<Cache::SpriteDiskCache> spriteDiskCache_;
 		std::unique_ptr<Cache::CpuSpriteSourceManager> cpuSpriteSourceManager_;
 		std::unique_ptr<BuildingScheduler> buildingScheduler_;

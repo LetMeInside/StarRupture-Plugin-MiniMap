@@ -1,5 +1,5 @@
-// Owns V2 viewport presentation state, converts Section images, publishes GPU
-// texture receipts, retires resources and submits rotated Section quads.
+// Owns V2 viewport presentation state, publishes GPU texture receipts, retires
+// resources and submits rotated Section quads.
 #pragma once
 
 #include "../Services/Textures.h"
@@ -15,11 +15,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <set>
-#include <span>
 #include <utility>
-#include <vector>
 
 namespace Services::Map::Buildings
 {
@@ -87,9 +84,8 @@ namespace MiniMapUI
 			std::uint64_t RejectedViewportUpdates = 0;
 			Duration PrepareCpuImages;
 			std::uint64_t PreparedCoordinates = 0;
-			Duration ImageConversion;
-			/** NotCovered, SectionUnavailable, ImageUnavailable, Converted, ConversionFailed. */
-			std::array<std::uint64_t, 5> CoordinateResolutionCounts{};
+			/** NotCovered, SectionUnavailable, ImageUnavailable, ReplacementReady. */
+			std::array<std::uint64_t, 4> CoordinateResolutionCounts{};
 			Duration GpuPublicationPass;
 			std::uint64_t PublicationPassAlreadyActive = 0;
 			std::uint64_t OutstandingTextureOperationRejections = 0;
@@ -190,9 +186,9 @@ namespace MiniMapUI
 		void SetRenderDroneRails(bool enabled);
 
 		/**
-		 * Resolves dirty current Sections and records owned RGBA8 replacements or
-		 * removals. Borrowed Section bytes are consumed synchronously; this operation
-		 * does not schedule work, acquire sources, upload textures, or draw.
+		 * Resolves dirty current Sections and records replacement-upload markers or
+		 * removals. This operation does not schedule work, acquire sources, upload
+		 * textures, or draw.
 		 */
 		void PrepareCpuImages();
 
@@ -246,8 +242,7 @@ namespace MiniMapUI
 			NotCovered,
 			SectionUnavailable,
 			ImageUnavailable,
-			Converted,
-			ConversionFailed
+			ReplacementReady
 		};
 
 		/** Adds elapsed time to one game-thread-owned aggregate on scope exit. */
@@ -277,21 +272,18 @@ namespace MiniMapUI
 		/** Attaches a service-created viewport and resets prior CPU presentation state. */
 		void SetViewport(std::unique_ptr<Services::Map::Buildings::BuildingMapViewport> viewport);
 
-		/** Distinguishes a prepared image replacement from absent-image removal. */
+		/** Distinguishes a deferred replacement upload from absent-image removal. */
 		enum class PendingUpdateKind
 		{
 			Replacement,
 			Removal
 		};
 
-		/** Owns one pending RGBA8 image or represents removal of its prior presentation. */
+		/** Marks a replacement to upload later or removal of its prior presentation. */
 		struct PendingPresentationUpdate
 		{
 			PendingUpdateKind Kind = PendingUpdateKind::Removal;
-			std::uint32_t PixelWidth = 0;
-			std::uint32_t PixelHeight = 0;
 			std::uint64_t Revision = 0;
-			std::vector<std::uint8_t> Rgba8Bytes;
 		};
 
 		/** Tracks whether a receipt is published, awaiting release, or unresolved. */
@@ -327,7 +319,7 @@ namespace MiniMapUI
 
 		/**
 		 * Resolves one coordinate against the attached viewport and stores its latest
-		 * replacement, removal, or conversion-failure state.
+		 * replacement or removal state.
 		 * @param coordinate Signed global Section column and row.
 		 */
 		void PrepareCoordinate(const Coordinate& coordinate);
@@ -337,12 +329,6 @@ namespace MiniMapUI
 		 * @param coordinate Signed global Section column and row.
 		 */
 		void RecordImageRemoval(const Coordinate& coordinate);
-
-		/**
-		 * Clears the failure marker only when the same coordinate has recovered.
-		 * @param coordinate Signed global Section column and row just resolved.
-		 */
-		void ClearConversionFailureFor(const Coordinate& coordinate);
 
 		/**
 		 * Converts a signed grid coordinate to local offsets in the current rectangle.
@@ -357,66 +343,10 @@ namespace MiniMapUI
 			std::size_t& localY) const;
 
 		/**
-		 * Removes dirty work, pending updates and stale diagnostics outside the range.
+		 * Removes dirty work and pending updates outside the range.
 		 * @param visibleCoordinates Signed coordinates in the newly accepted range.
 		 */
 		void DiscardCoordinatesOutside(const std::set<Coordinate>& visibleCoordinates);
-
-		/**
-		 * Validates the complete borrowed RGBA16F payload and converts it into one
-		 * owned RGBA8 replacement without retaining its source span.
-		 * @param pixelWidth Actual source width in pixels.
-		 * @param pixelHeight Actual source height in pixels.
-		 * @param rgba16fBytes Borrowed row-major little-endian RGBA16F bytes.
-		 * @param update Receives the owned replacement only on success.
-		 * @return True only when dimensions, byte count and every pixel are valid.
-		 */
-		static bool TryConvertCompletedImage(
-			std::uint32_t pixelWidth,
-			std::uint32_t pixelHeight,
-			std::span<const std::uint8_t> rgba16fBytes,
-			PendingPresentationUpdate& update);
-
-		/**
-		 * Decodes one finite source pixel and writes straight-alpha display RGBA8.
-		 * @param rgba16fBytes Borrowed complete source image bytes.
-		 * @param byteOffset First byte of the source pixel.
-		 * @param rgba8Pixel Receives four output bytes in R, G, B, A order.
-		 * @return False when any source channel is nonfinite or truncated.
-		 */
-		static bool TryConvertPixel(
-			std::span<const std::uint8_t> rgba16fBytes,
-			std::size_t byteOffset,
-			std::uint8_t* rgba8Pixel);
-
-		/**
-		 * Decodes one little-endian IEEE-754 binary16 value, including subnormals.
-		 * @param bytes Borrowed bytes containing the encoded value.
-		 * @param byteOffset Index of the value's first byte.
-		 * @param value Receives the decoded finite value on success.
-		 * @return False for an out-of-span value, infinity or NaN.
-		 */
-		static bool TryDecodeBinary16(
-			std::span<const std::uint8_t> bytes,
-			std::size_t byteOffset,
-			double& value) noexcept;
-
-		/**
-		 * Clamps a finite component to the normalized display interval.
-		 * @param value Finite opacity or color component.
-		 * @return The value clamped to [0, 1].
-		 */
-		static double ClampUnit(double value) noexcept;
-
-		/**
-		 * Encodes one normalized linear RGB component with the standard sRGB curve.
-		 * @param linearComponent Clamped linear-light color component.
-		 * @return The display-encoded sRGB component.
-		 */
-		static double EncodeSrgb(double linearComponent) noexcept;
-
-		/** Rounds one normalized display channel to an eight-bit value. */
-		static std::uint8_t ToRgba8(double normalizedComponent) noexcept;
 
 		/** Withdraws all draw identities while retaining their owned receipts for release. */
 		void WithdrawAllPublishedTextures();
@@ -438,10 +368,11 @@ namespace MiniMapUI
 			const Coordinate& coordinate,
 			PendingPresentationUpdate update);
 
-		/** Revalidates an upload result and either publishes, retains or retries its CPU data. */
+		/** Revalidates receipt ownership and either publishes or retries the replacement marker. */
 		void HandleUploadResult(
 			const Coordinate& coordinate,
 			PendingPresentationUpdate update,
+			MiniMap::Services::TextureSize expectedSize,
 			MiniMap::Services::UploadState result,
 			TextureEntry& entry);
 
@@ -453,7 +384,7 @@ namespace MiniMapUI
 		/** Checks whether upload work is still current, visible and not superseded. */
 		bool IsCurrentUploadEligible(const Coordinate& coordinate) const;
 
-		/** Restores retryable CPU image data when no newer update has superseded it. */
+		/** Restores a retryable replacement marker when no newer update has superseded it. */
 		void RestorePendingUpdateIfEligible(
 			const Coordinate& coordinate,
 			PendingPresentationUpdate update);
@@ -507,8 +438,6 @@ namespace MiniMapUI
 		std::set<Coordinate> dirtyCoordinates_;
 		std::map<Coordinate, PendingPresentationUpdate> pendingUpdates_;
 		std::uint64_t nextPendingRevision_ = 1;
-		/** Retains only the most recent malformed/nonfinite coordinate for diagnostics. */
-		std::optional<Coordinate> lastConversionFailureCoordinate_;
 		mutable std::mutex presentationMutex_;
 		std::map<Coordinate, TextureEntry*> publishedTextures_;
 		std::list<TextureEntry> textureResources_;

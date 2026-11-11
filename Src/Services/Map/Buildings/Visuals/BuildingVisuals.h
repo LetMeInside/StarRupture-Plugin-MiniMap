@@ -3,7 +3,7 @@
 
 #include "BuildingRenderSceneInput.h"
 #include "BuildingVisualsContext.h"
-#include "../Rendering/Rgba16fImageDestination.h"
+#include "../IImageDestination.h"
 
 #include <cstddef>
 #include <chrono>
@@ -56,7 +56,7 @@ namespace Services::Map::Buildings::Visuals
 			SpriteWorldQuad PendingSpriteWorldQuad{};
 			ImageWorldQuad PendingSpriteImageGeometry{};
 			BuildingVisualsContributorOutcome PendingOutcome{};
-			Rendering::Rgba16fImageDestination::SubmissionCursor Submission{};
+			IImageDestination::SubmissionCursor Submission{};
 			std::uint8_t PendingOpacity = 0;
 			bool Initialized = false;
 			bool SpriteGeometryPrepared = false;
@@ -95,7 +95,7 @@ namespace Services::Map::Buildings::Visuals
 		 */
 		static SceneSliceResult StepScene(
 			const BuildingRenderSceneInput& scene,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			std::chrono::steady_clock::time_point deadline
@@ -144,7 +144,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one phase operation or performs one bounded phase transition. */
 		static SceneAdvanceResult AdvanceSceneStep(
 			const BuildingRenderSceneInput& scene,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
@@ -152,7 +152,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one ordinary sprite's setup, incremental submission or terminal bookkeeping. */
 		static SceneAdvanceResult AdvanceOrdinarySprite(
 			const BuildingRenderSceneInput& scene,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
@@ -162,7 +162,7 @@ namespace Services::Map::Buildings::Visuals
 			const BuildingSpriteRenderInput& sprite,
 			std::size_t index,
 			bool ordinary,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
@@ -175,7 +175,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one spline sample, surface or alternative-selection operation. */
 		static SceneAdvanceResult AdvanceSpline(
 			const BuildingRenderSceneInput& scene,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
@@ -183,7 +183,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one active surface, selected alternative or no-drawable summary. */
 		static SceneAdvanceResult AdvanceSplineSurface(
 			const BuildingSplineRenderInput& spline,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
@@ -216,15 +216,15 @@ namespace Services::Map::Buildings::Visuals
 		static SceneAdvanceResult SubmitPreparedSplineSurface(
 			const BuildingSplineRenderInput& spline,
 			const BuildingSplineSurfaceRenderInput& surface,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,
 			std::chrono::steady_clock::time_point deadline);
 		/** Builds the current borrowed appearance batch and advances its destination cursor. */
-		static Rendering::Rgba16fImageDestination::SubmissionSliceResult StepPreparedSplineSurface(
+		static IImageDestination::SubmissionSliceResult StepPreparedSplineSurface(
 			const BuildingSplineSurfaceRenderInput& surface,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			std::chrono::steady_clock::time_point deadline);
@@ -241,7 +241,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one overlay sprite's setup, incremental submission or terminal bookkeeping. */
 		static SceneAdvanceResult AdvanceOverlaySprite(
 			const BuildingRenderSceneInput& scene,
-			Rendering::Rgba16fImageDestination& destination,
+			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result,

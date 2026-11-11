@@ -6,8 +6,9 @@
 #include "BuildingScheduler.h"
 #include "../BuildingMapSection.h"
 #include "../Cache/CpuSpriteSourceManager.h"
+#include "../Cache/SpritePngCodec.h"
 #include "../Cache/SpriteDiskCache.h"
-#include "../Rendering/Rgba16fImageDestination.h"
+#include "../../../Log.h"
 #include "../Rendering/SectionRendering.h"
 #include "../Visuals/SpriteGeometry.h"
 #include "../Visuals/SplineGeometry.h"
@@ -17,8 +18,11 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace Services::Map::Buildings::Scheduling
@@ -256,7 +260,7 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		sceneBorrowTiming.Finish();
 #endif
-		const Rendering::Rgba16fImageGrid grid =
+		const ImageGrid grid =
 			CreateSectionRenderingGrid(section, sectionSizeMapUnits_, sectionResolutionPixels_);
 		std::vector<std::uint8_t> imageBytes;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -283,11 +287,12 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
+		ExportCompletedSectionImage(section, std::span<const std::uint8_t>(imageBytes));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		output.Timing.TransparencyCheckInvoked = true;
 		PhaseTimingScope transparencyCheckTiming{output.Timing.TransparencyCheckMs};
 #endif
-		const bool imageTransparent = IsFullyTransparentRgba16fImage(
+		const bool imageTransparent = IsFullyTransparentRgba8Image(
 			std::span<const std::uint8_t>(imageBytes));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		transparencyCheckTiming.Finish();
@@ -301,17 +306,73 @@ namespace Services::Map::Buildings::Scheduling
 		output.Timing.ImageAdoptionAttempted = true;
 		PhaseTimingScope imageAdoptionTiming{output.Timing.ImageAdoptionMs};
 #endif
-		const bool imageAdopted = section.TryAdoptCompletedImage(
+		section.AdoptCompletedImage(
 			sectionResolutionPixels_, sectionResolutionPixels_, std::move(imageBytes));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		imageAdoptionTiming.Finish();
 #endif
-		if (!imageAdopted)
-		{
-			output.CommitStatus = SectionImageCommitResult::Status::ImageAdoptionRejected;
-			return;
-		}
 		output.CommitStatus = SectionImageCommitResult::Status::Committed;
+	}
+
+	/** Exports one finalized image without changing its owner or pixel allocation. */
+	void SectionScheduler::ExportCompletedSectionImage(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		std::span<const std::uint8_t> rgba8Bytes) const noexcept
+	{
+		const std::int64_t gridX = section.GetGridX();
+		const std::int64_t gridY = section.GetGridY();
+		try
+		{
+			std::filesystem::create_directories(diagnosticsDirectory_);
+			std::vector<std::uint8_t> pngBytes;
+			const auto encoded = Cache::SpritePngCodec::Encode(
+				rgba8Bytes,
+				sectionResolutionPixels_,
+				sectionResolutionPixels_,
+				pngBytes);
+			if (encoded.Status != Cache::SpritePngCodec::ResultStatus::Complete)
+			{
+				throw std::runtime_error("PNG encoding failed");
+			}
+			const std::string fileName = "Section_" + std::to_string(gridX) + "_" +
+				std::to_string(gridY) + ".png";
+			std::ofstream output(
+				diagnosticsDirectory_ / fileName,
+				std::ios::binary | std::ios::trunc);
+			output.write(
+				reinterpret_cast<const char*>(pngBytes.data()),
+				static_cast<std::streamsize>(pngBytes.size()));
+			output.close();
+			if (!output)
+			{
+				throw std::runtime_error("PNG file open, write, or close failed");
+			}
+		}
+		catch (const std::exception& exception)
+		{
+			if (MiniMap::Services::ILog* log = MiniMap::Services::TryLog())
+			{
+				MiniMap::Services::Logf(
+					*log,
+					MiniMap::Services::Level::Error,
+					"MiniMap: Section PNG export failed for (%lld, %lld): %s",
+					static_cast<long long>(gridX),
+					static_cast<long long>(gridY),
+					exception.what());
+			}
+		}
+		catch (...)
+		{
+			if (MiniMap::Services::ILog* log = MiniMap::Services::TryLog())
+			{
+				MiniMap::Services::Logf(
+					*log,
+					MiniMap::Services::Level::Error,
+					"MiniMap: Section PNG export failed for (%lld, %lld): unknown exception",
+					static_cast<long long>(gridX),
+					static_cast<long long>(gridY));
+			}
+		}
 	}
 
 	/** Runs exact-cell validation, existing scene preparation and final readiness checks once. */
@@ -910,40 +971,29 @@ namespace Services::Map::Buildings::Scheduling
 		output.CommitStatus = SectionImageCommitResult::Status::CommittedEmpty;
 	}
 
-	/** Compares each validated pixel with the exact little-endian transparent RGBA16F clear value. */
-	bool SectionScheduler::IsFullyTransparentRgba16fImage(
+	/** Classifies finalized RGBA8 transparency by inspecting only each trusted pixel alpha byte. */
+	bool SectionScheduler::IsFullyTransparentRgba8Image(
 		std::span<const std::uint8_t> imageBytes) const noexcept
 	{
-		constexpr std::size_t bytesPerPixel = 8;
-		constexpr std::array<std::uint8_t, bytesPerPixel> transparentPixelBytes{
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C};
-		std::size_t expectedImageByteCount = 0;
-		if (!::Services::Map::Buildings::BuildingMapSection::TryGetCompletedImageByteCount(
-			sectionResolutionPixels_,
-			sectionResolutionPixels_,
-			expectedImageByteCount) ||
-			imageBytes.size() != expectedImageByteCount)
+		constexpr std::size_t bytesPerPixel = 4;
+		constexpr std::size_t alphaOffset = 3;
+		const std::size_t pixelCount = std::size_t(sectionResolutionPixels_) * sectionResolutionPixels_;
+		for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex)
 		{
-			return false;
-		}
-		for (std::size_t pixelByteOffset = 0; pixelByteOffset < imageBytes.size(); pixelByteOffset += bytesPerPixel)
-		{
-			for (std::size_t channelByteOffset = 0; channelByteOffset < bytesPerPixel; ++channelByteOffset)
+			const std::size_t alphaByteOffset = pixelIndex * bytesPerPixel + alphaOffset;
+			if (imageBytes[alphaByteOffset] != 0)
 			{
-				if (imageBytes[pixelByteOffset + channelByteOffset] != transparentPixelBytes[channelByteOffset])
-				{
-					return false;
-				}
+				return false;
 			}
 		}
-		return !imageBytes.empty();
+		return true;
 	}
 
 	/** Renders into the numerical context exclusively owned by the supplied Section. */
 	Rendering::SectionRendering::Status SectionScheduler::RenderIntoSectionContext(
 		::Services::Map::Buildings::BuildingMapSection& section,
 		const Visuals::BuildingRenderSceneInput& sceneInput,
-		const Rendering::Rgba16fImageGrid& grid,
+		const ImageGrid& grid,
 		std::vector<std::uint8_t>& imageBytes,
 		Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1007,12 +1057,12 @@ namespace Services::Map::Buildings::Scheduling
 	}
 
 	/** Creates the existing zero-origin global grid for one Section destination. */
-	Rendering::Rgba16fImageGrid SectionScheduler::CreateSectionRenderingGrid(
+	ImageGrid SectionScheduler::CreateSectionRenderingGrid(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels)
 	{
-		Rendering::Rgba16fImageGrid grid;
+		ImageGrid grid;
 		grid.WorldOriginX = 0.0;
 		grid.WorldOriginY = 0.0;
 		grid.CellX = section.GetGridX();
@@ -1068,6 +1118,7 @@ namespace Services::Map::Buildings::Scheduling
 		std::filesystem::path buildingsCacheDirectory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
+		, diagnosticsDirectory_(buildingsCacheDirectory / "Diagnostics")
 	{
 		const double pixelsPerMapUnit =
 			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
@@ -1436,18 +1487,15 @@ namespace Services::Map::Buildings::Scheduling
 		const auto adoptionStarted = std::chrono::steady_clock::now();
 		evidence.Timing.ImageAdoptionAttempted = true;
 #endif
-		const bool adopted = section.TryAdoptCompletedImage(
+		section.AdoptCompletedImage(
 			sectionResolutionPixels_, sectionResolutionPixels_, std::move(job.CompletedImage));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		evidence.Timing.ImageAdoptionMs +=
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - adoptionStarted).count();
 #endif
 		++result.WorkUnitsConsumed;
-		evidence.TerminalSplineOmissions = adopted ? job.TerminalSplineOmissions
-			: Visuals::BuildingVisualsTerminalOmissionSummary{};
-		evidence.CommitStatus = adopted
-			? SectionImageCommitResult::Status::Committed
-			: SectionImageCommitResult::Status::ImageAdoptionRejected;
+		evidence.TerminalSplineOmissions = job.TerminalSplineOmissions;
+		evidence.CommitStatus = SectionImageCommitResult::Status::Committed;
 		FinishSectionJobAttempt(job, result);
 	}
 
@@ -1471,6 +1519,9 @@ namespace Services::Map::Buildings::Scheduling
 				return false;
 			}
 			job.CompletedImageReady = true;
+			ExportCompletedSectionImage(
+				section,
+				std::span<const std::uint8_t>(job.CompletedImage));
 		}
 		if (job.CompletedImageTransparent)
 		{

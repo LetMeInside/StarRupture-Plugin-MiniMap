@@ -54,7 +54,7 @@ namespace Services::Map::Buildings
 
 		/**
 		 * Describes the actual dimensions and borrowed immutable bytes of a stored
-		 * completed RGBA16F Section image. The Section owns the storage; this view
+		 * completed straight-alpha sRGB RGBA8 Section image. The Section owns the storage; this view
 		 * does not extend its lifetime and is usable only under the borrowing
 		 * restrictions documented by TryBorrowCompletedImage.
 		 */
@@ -62,18 +62,16 @@ namespace Services::Map::Buildings
 		{
 			std::uint32_t PixelWidth = 0;
 			std::uint32_t PixelHeight = 0;
-			std::span<const std::uint8_t> Rgba16fBytes;
+			std::span<const std::uint8_t> Rgba8Bytes;
 		};
 
 		/**
-		 * Borrows immutable metadata and RGBA16F bytes from the completed image.
+		 * Borrows immutable metadata and RGBA8 bytes from the completed image.
 		 * The borrowed span is valid only while this Section remains alive, its
 		 * completed image remains unchanged, and the service's serialized
 		 * calling-thread contract is respected. Consume the bytes synchronously;
 		 * do not retain the span across image replacement or removal, residency
 		 * eviction, service destruction, or any other image-ownership mutation.
-		 * A caller may immediately convert the bytes into independently owned
-		 * presentation storage.
 		 *
 		 * @param image Receives actual pixel dimensions and a const borrowed byte span.
 		 *               It is reset to an empty view when no completed image exists.
@@ -90,16 +88,15 @@ namespace Services::Map::Buildings
 		BuildingMapSection(std::int64_t gridX, std::int64_t gridY);
 
 		/**
-		 * Owns one finalized row-major RGBA16F image for this Section. Image
-		 * presence represents availability; bytes are transferred by move. Each
-		 * pixel contains four little-endian binary16 channels: associated linear
-		 * RGB and transmittance.
+		 * Owns one finalized row-major straight-alpha sRGB RGBA8 image for this
+		 * Section. Image presence represents availability; bytes are transferred
+		 * by move without inspecting or copying their contents.
 		 */
 		struct CompletedImage
 		{
 			std::uint32_t PixelWidth = 0;
 			std::uint32_t PixelHeight = 0;
-			std::vector<std::uint8_t> Rgba16fBytes;
+			std::vector<std::uint8_t> Rgba8Bytes;
 		};
 
 		/**
@@ -118,33 +115,17 @@ namespace Services::Map::Buildings
 		void InvalidateCompletedImage();
 
 		/**
-		 * Validates shape and moves a completed RGBA16F image into this Section.
-		 * Rejection leaves both existing storage and the supplied bytes unchanged.
-		 * This validates shape only, not source or dependency freshness.
+		 * Takes ownership of a successfully finalized RGBA8 image, replacing the
+		 * previous completed image without inspecting or copying its contents.
 		 *
 		 * @param pixelWidth Image width in pixels.
 		 * @param pixelHeight Image height in pixels.
-		 * @param rgba16fBytes Finalized row-major little-endian RGBA16F bytes to move.
-		 * @return True when the validated image replaces the currently stored image.
+		 * @param rgba8Bytes Finalized row-major straight-alpha sRGB RGBA8 bytes to move.
 		 */
-		bool TryAdoptCompletedImage(
+		void AdoptCompletedImage(
 			std::uint32_t pixelWidth,
 			std::uint32_t pixelHeight,
-			std::vector<std::uint8_t>&& rgba16fBytes);
-
-		/**
-		 * Computes the exact RGBA16F byte count after rejecting zero dimensions
-		 * and size arithmetic overflow.
-		 *
-		 * @param pixelWidth Image width in pixels.
-		 * @param pixelHeight Image height in pixels.
-		 * @param byteCount Receives the required byte count on success.
-		 * @return True only when the dimensions produce a safe nonzero byte count.
-		 */
-		static bool TryGetCompletedImageByteCount(
-			std::uint32_t pixelWidth,
-			std::uint32_t pixelHeight,
-			std::size_t& byteCount);
+			std::vector<std::uint8_t>&& rgba8Bytes);
 
 		/**
 		 * Returns this Section's private rendering context, allocating it on the

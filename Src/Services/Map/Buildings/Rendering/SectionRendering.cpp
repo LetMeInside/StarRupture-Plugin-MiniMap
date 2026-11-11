@@ -3,7 +3,6 @@
 // Implements synchronous and cursor-resumable numerical Section-image construction.
 #include "SectionRendering.h"
 
-#include "Rgba16fImageDestination.h"
 #include "../Visuals/BuildingVisuals.h"
 #include "../Visuals/BuildingRenderSceneInput.h"
 #include "../Visuals/BuildingVisualsContext.h"
@@ -35,15 +34,15 @@ namespace Services::Map::Buildings::Rendering
 		};
 
 		/** Copies the immutable rendering grid retained across every advancement. */
-		explicit State(const Rgba16fImageGrid& grid)
+		explicit State(const ImageGrid& grid)
 			: Grid(grid)
 		{
 		}
 
-		const Rgba16fImageGrid Grid;
-		std::unique_ptr<Rgba16fImageDestination> Destination;
+		const ImageGrid Grid;
+		std::unique_ptr<IImageDestination> Destination;
 		Visuals::BuildingVisuals::SceneCursor SceneProgress;
-		Rgba16fImageDestination::FinalizationCursor FinalizationProgress;
+		IImageDestination::FinalizationCursor FinalizationProgress;
 		std::vector<std::uint8_t> Output;
 		Visuals::BuildingVisualsTerminalOmissionSummary OmissionSummary{};
 		std::optional<Status> TerminalStatus;
@@ -59,7 +58,7 @@ namespace Services::Map::Buildings::Rendering
 	};
 
 	/** Copies grid policy into a fresh operation and defers destination construction until positive work. */
-	SectionRendering::IncrementalOperation::IncrementalOperation(const Rgba16fImageGrid& grid)
+	SectionRendering::IncrementalOperation::IncrementalOperation(const ImageGrid& grid)
 		: state_(std::make_unique<State>(grid))
 	{
 	}
@@ -174,7 +173,7 @@ namespace Services::Map::Buildings::Rendering
 	}
 #endif
 
-	/** Validates the retained grid and constructs the destination directly at its stable owned address. */
+	/** Validates the retained grid and obtains its destination through the neutral interface factory. */
 	bool SectionRendering::IncrementalOperation::ConstructDestination(
 		std::chrono::steady_clock::time_point deadline) noexcept
 	{
@@ -188,7 +187,7 @@ namespace Services::Map::Buildings::Rendering
 				Terminate(Status::InvalidDestinationConfiguration);
 				return false;
 			}
-			state_->Destination.reset(new (std::nothrow) Rgba16fImageDestination(state_->Grid, false));
+			state_->Destination = IImageDestination::Create(state_->Grid, false);
 			state_->DestinationConstructionStarted = true;
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -201,7 +200,7 @@ namespace Services::Map::Buildings::Rendering
 			Terminate(Status::DestinationUnavailable);
 			return false;
 		}
-		if (!state_->Destination->StepInitializeSamples(deadline))
+		if (!state_->Destination->StepInitializePixels(deadline))
 		{
 			if (state_->Destination->IsFailed())
 			{
@@ -253,7 +252,7 @@ namespace Services::Map::Buildings::Rendering
 		state_->CurrentPhase = State::Phase::Terminal;
 	}
 
-	/** Advances one bounded output-resolution slice and records only actual resolved pixels. */
+	/** Advances one deadline-bounded destination finalization slice and records its result. */
 	void SectionRendering::IncrementalOperation::AdvanceFinalization(
 		std::chrono::steady_clock::time_point deadline,
 		StepResult& result) noexcept
@@ -271,14 +270,14 @@ namespace Services::Map::Buildings::Rendering
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 #endif
 		result.WorkUnitsConsumed += finalization.PixelsResolved;
-		if (finalization.Status == Rgba16fImageDestination::FinalizationStepStatus::Failed)
+		if (finalization.Status == IImageDestination::FinalizationStepStatus::Failed)
 		{
 			state_->Output.clear();
 			state_->OmissionSummary = {};
 			Terminate(Status::FinalizationFailed);
 			return;
 		}
-		if (finalization.Status == Rgba16fImageDestination::FinalizationStepStatus::Complete)
+		if (finalization.Status == IImageDestination::FinalizationStepStatus::Complete)
 		{
 			state_->FinalizationComplete = true;
 			state_->CompletedImageTransparent = finalization.FullyTransparent;
@@ -290,7 +289,7 @@ namespace Services::Map::Buildings::Rendering
 	SectionRendering::Status SectionRendering::RenderSection(
 		const Visuals::BuildingRenderSceneInput& scene,
 		Visuals::BuildingVisualsContext& context,
-		const Rgba16fImageGrid& grid,
+		const ImageGrid& grid,
 		std::vector<std::uint8_t>& output,
 		Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -310,14 +309,18 @@ namespace Services::Map::Buildings::Rendering
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto destinationConstructionStarted = std::chrono::steady_clock::now();
 #endif
-		Rgba16fImageDestination destination(grid);
+		std::unique_ptr<IImageDestination> destination = IImageDestination::Create(grid, true);
+		if (!destination)
+		{
+			return Status::DestinationUnavailable;
+		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		phaseTimings.DestinationConstruction.Invoked = true;
 		phaseTimings.DestinationConstruction.ElapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - destinationConstructionStarted).count();
 #endif
 		const Visuals::BuildingVisualsResult& drawingResult =
-			Visuals::BuildingVisuals::DrawScene(scene, destination, context
+			Visuals::BuildingVisuals::DrawScene(scene, *destination, context
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				, phaseTimings
 #endif
@@ -337,7 +340,7 @@ namespace Services::Map::Buildings::Rendering
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto finalizationStarted = std::chrono::steady_clock::now();
 #endif
-		const bool finalized = destination.Finalize(output);
+		const bool finalized = destination->Finalize(output);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		phaseTimings.DestinationFinalization.Invoked = true;
 		phaseTimings.DestinationFinalization.ElapsedMs = std::chrono::duration<double, std::milli>(
@@ -353,7 +356,7 @@ namespace Services::Map::Buildings::Rendering
 	}
 
 	/** Rejects malformed dimensions, non-finite origins and invalid pixel scale at the caller boundary. */
-	bool SectionRendering::HasValidGridInputs(const Rgba16fImageGrid& grid) noexcept
+	bool SectionRendering::HasValidGridInputs(const ImageGrid& grid) noexcept
 	{
 		return grid.Width != 0 && grid.Height != 0 && grid.Width <= INT_MAX && grid.Height <= INT_MAX &&
 			std::isfinite(grid.WorldOriginX) && std::isfinite(grid.WorldOriginY) &&
