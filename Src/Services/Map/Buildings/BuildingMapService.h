@@ -2,7 +2,6 @@
 #pragma once
 
 #include "IBuildingCollector.h"
-#include "Coordination/IBuildingMapService.h"
 #include "Coordination/FrameBudgetController.h"
 #include "SplinePolicy.h"
 
@@ -29,6 +28,7 @@ namespace Services::Map::Buildings
 
 	class BuildingMapSection;
 	class BuildingMapViewport;
+	class BuildingMapGpuViewport;
 	namespace Scheduling
 	{
 		class SectionSchedulingCoordinator;
@@ -42,7 +42,7 @@ namespace Services::Map::Buildings
 	 * foundation does not provide concurrent access or synchronization. The
 	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
 	 */
-	class BuildingMapService final : private Coordination::IBuildingMapService
+	class BuildingMapService final
 	{
 	public:
 		/** Creates a service whose settings define the shared grid and whose cache root contains its sprite files.
@@ -113,7 +113,7 @@ namespace Services::Map::Buildings
 #endif
 
 		/** Returns the configured square grid-cell width and height in map units. */
-		double GetSectionSizeMapUnits() const noexcept override;
+		double GetSectionSizeMapUnits() const noexcept;
 
 		/** Returns the configured square image dimension for future composition in pixels. */
 		std::uint32_t GetSectionResolutionPixels() const noexcept;
@@ -144,9 +144,26 @@ namespace Services::Map::Buildings
 			double yMapUnits,
 			double widthMapUnits,
 			double heightMapUnits);
+		/** Opens a GPU-specialized viewport through the same service registration path.
+		 * The caller retains collector ownership and must keep it alive until viewport closure or invalidation.
+		 * Throws for a null collector, duplicate collector association or invalid rectangle; returns null when
+		 * no gameplay session is active or the collector rejects its initial acquisition region.
+		 * @param buildingCollector Caller-owned collector used only by this viewport.
+		 * @param xMapUnits Upper-left map X coordinate in this service's map units.
+		 * @param yMapUnits Upper-left map Y coordinate in this service's map units.
+		 * @param widthMapUnits Positive viewport width in map units.
+		 * @param heightMapUnits Positive viewport height in map units.
+		 */
+		std::unique_ptr<BuildingMapGpuViewport> OpenGpuViewport(
+			IBuildingCollector* buildingCollector,
+			double xMapUnits,
+			double yMapUnits,
+			double widthMapUnits,
+			double heightMapUnits);
 
 	private:
 		friend class BuildingMapViewport;
+		friend class BuildingMapGpuViewport;
 		friend class Scheduling::SectionSchedulingCoordinator;
 		using SectionCoordinate = std::pair<std::int64_t, std::int64_t>;
 		using SectionPublicationMap = std::map<
@@ -156,10 +173,20 @@ namespace Services::Map::Buildings
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		const BuildingMapSection* FindSectionAt(
 			std::int64_t gridX,
-			std::int64_t gridY) const override;
+			std::int64_t gridY) const;
 
 		/** Releases a live viewport handle without affecting shared section state. */
-		void CloseViewport(std::uint64_t viewportHandle) override;
+		void CloseViewport(std::uint64_t viewportHandle);
+		/** Validates session and collector eligibility before allocating a registration handle.
+		 * @param buildingCollector Caller-owned collector to associate with the new viewport.
+		 * @param viewportHandle Receives the newly allocated handle on success.
+		 * @return False when no gameplay session is active; validation errors throw.
+		 */
+		bool PrepareViewportRegistration(
+			IBuildingCollector* buildingCollector,
+			std::uint64_t& viewportHandle);
+		/** Registers and initializes one caller-owned viewport, rolling back on rejection. */
+		bool RegisterViewport(BuildingMapViewport& viewport);
 
 		/** Routes one completed-image availability change to registered subscribed viewports that contain it.
 		 * Delivery follows handle registration order and carries no Section or image ownership.
@@ -189,12 +216,12 @@ namespace Services::Map::Buildings
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY) override;
+			std::int64_t endGridY);
 
 		/** Observes one live viewport's acquisition hash and advances shared Section scheduling once. */
-		bool AdvanceViewportScheduling(std::uint64_t viewportHandle) override;
+		bool AdvanceViewportScheduling(std::uint64_t viewportHandle);
 		/** Queues a one-shot Section hash comparison after a collector policy change. */
-		void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle) override;
+		void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle);
 
 		/** Creates a service-owned section only when an internal producer needs it. */
 		BuildingMapSection& GetOrCreateSectionAt(std::int64_t gridX, std::int64_t gridY);

@@ -97,6 +97,7 @@
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
     <ClInclude Include="Services\Map\Buildings\SplinePolicy.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
+    <ClInclude Include="Services\Map\Buildings\BuildingMapGpuViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapSection.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureRequest.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\CaptureResult.h" />
@@ -135,7 +136,6 @@
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineSurfaceGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineOcclusionPlanner.h" />
-    <ClInclude Include="Services\Map\Buildings\Coordination\IBuildingMapService.h" />
     <ClInclude Include="Services\Map\Buildings\Coordination\FrameBudgetController.h" />
     <ClInclude Include="Services\Log.h" />
     <ClInclude Include="Services\ServiceTypes.h" />
@@ -252,6 +252,8 @@
         <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp">
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\BuildingMapGpuViewport.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapSection.cpp">
     </ClCompile>

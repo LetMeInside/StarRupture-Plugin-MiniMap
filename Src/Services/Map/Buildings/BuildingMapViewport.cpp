@@ -5,7 +5,7 @@
 #include "BuildingMapLoadingTrace.h"
 #include "BuildingMapViewport.h"
 
-#include "Coordination/IBuildingMapService.h"
+#include "BuildingMapService.h"
 #include "BuildingMapSection.h"
 
 #include <cmath>
@@ -16,7 +16,7 @@ namespace Services::Map::Buildings
 {
 	/** Registers the viewport's initial rectangle and grid coverage. */
 	BuildingMapViewport::BuildingMapViewport(
-		Coordination::IBuildingMapService& service,
+		BuildingMapService& service,
 		IBuildingCollector& buildingCollector,
 		std::uint64_t viewportHandle,
 		double xMapUnits,
@@ -175,7 +175,7 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
-		Coordination::IBuildingMapService* service = service_;
+		BuildingMapService* service = service_;
 		service_ = nullptr;
 		buildingCollector_ = nullptr;
 		service->CloseViewport(viewportHandle_);

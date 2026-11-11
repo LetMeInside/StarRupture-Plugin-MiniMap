@@ -3,7 +3,6 @@
 // positive Y downward, and half-open bounds [x, right) by [y, bottom).
 #pragma once
 
-#include "Coordination/IBuildingMapService.h"
 #include "IBuildingCollector.h"
 
 #include <cstddef>
@@ -15,10 +14,6 @@ namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
 	class BuildingMapService;
-	namespace Coordination
-	{
-		class IBuildingMapService;
-	}
 
 	/** Tracks a 2D map rectangle, exposes nullable references to its Sections, and owns one optional synchronous image-change handler.
 	 * Local (0, 0) is the top-left cell; columns increase rightward and rows
@@ -41,7 +36,7 @@ namespace Services::Map::Buildings
 		/** Prevents moves from relocating an object tracked by its service. */
 		BuildingMapViewport& operator=(BuildingMapViewport&&) = delete;
 		/** Closes this viewport before its object storage is released. */
-		~BuildingMapViewport();
+		virtual ~BuildingMapViewport();
 
 		/**
 		 * Accepts an upper-left-origin half-open rectangle, advances this viewport's
@@ -104,7 +99,7 @@ namespace Services::Map::Buildings
 		 */
 		void SetSectionImageChangedHandler(SectionImageChangedHandler handler);
 
-	private:
+	protected:
 		friend class BuildingMapService;
 
 		/** Stores inclusive first and exclusive end column and row coordinates. */
@@ -116,15 +111,17 @@ namespace Services::Map::Buildings
 			std::int64_t endY;
 		};
 
-		/** Creates a viewport after the service has registered its handle. */
+		/** Creates a viewport using a registration handle allocated by its service. */
 		BuildingMapViewport(
-			Coordination::IBuildingMapService& service,
+			BuildingMapService& service,
 			IBuildingCollector& buildingCollector,
 			std::uint64_t viewportHandle,
 			double xMapUnits,
 			double yMapUnits,
 			double widthMapUnits,
 			double heightMapUnits);
+
+	private:
 
 		/** Validates bounds and converts them to a half-open grid range using the service cell size.
 		 *
@@ -148,7 +145,7 @@ namespace Services::Map::Buildings
 		/** Delivers one coordinate-only event when completed-image availability changes. */
 		void NotifySectionImageChanged(std::int64_t gridX, std::int64_t gridY);
 
-		Coordination::IBuildingMapService* service_;
+		BuildingMapService* service_;
 		IBuildingCollector* buildingCollector_;
 		std::uint64_t viewportHandle_;
 		double xMapUnits_;

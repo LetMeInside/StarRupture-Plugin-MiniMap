@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "BuildingMapSection.h"
+#include "BuildingMapGpuViewport.h"
 #include "BuildingMapViewport.h"
 #include "Scheduling/SectionSchedulingCoordinator.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -703,17 +704,14 @@ namespace Services::Map::Buildings
 		return static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
 	}
 
-	/** Validates the requested rectangle and registers a caller-owned viewport object. */
-	std::unique_ptr<BuildingMapViewport> BuildingMapService::OpenViewport(
+	/** Validates common viewport inputs and allocates the next opaque registration handle. */
+	bool BuildingMapService::PrepareViewportRegistration(
 		IBuildingCollector* buildingCollector,
-		double xMapUnits,
-		double yMapUnits,
-		double widthMapUnits,
-		double heightMapUnits)
+		std::uint64_t& viewportHandle)
 	{
 		if (mapWidthMapUnits_ == 0.0 || mapHeightMapUnits_ == 0.0)
 		{
-			return nullptr;
+			return false;
 		}
 		if (buildingCollector == nullptr)
 		{
@@ -730,36 +728,95 @@ namespace Services::Map::Buildings
 		{
 			throw std::overflow_error("Viewport handle space is exhausted.");
 		}
-		const std::uint64_t viewportHandle = nextViewportHandle_++;
+		viewportHandle = nextViewportHandle_++;
+		return true;
+	}
+
+	/** Registers the viewport and preserves collector setup, demand and rollback order. */
+	bool BuildingMapService::RegisterViewport(BuildingMapViewport& viewport)
+	{
+		const std::uint64_t viewportHandle = viewport.viewportHandle_;
+		viewportsByHandle_.emplace(viewportHandle, &viewport);
+		if (!UpdateViewportGridRange(
+			viewportHandle,
+			viewport.gridRange_.firstX,
+			viewport.gridRange_.firstY,
+			viewport.gridRange_.endX,
+			viewport.gridRange_.endY))
+		{
+			viewportsByHandle_.erase(viewportHandle);
+			viewport.InvalidateService();
+			return false;
+		}
+		if (sectionSchedulingCoordinator_ == nullptr ||
+			!sectionSchedulingCoordinator_->AddViewportDemand(
+				viewport.gridRange_.firstX,
+				viewport.gridRange_.firstY,
+				viewport.gridRange_.endX,
+				viewport.gridRange_.endY))
+		{
+			viewportsByHandle_.erase(viewportHandle);
+			viewport.InvalidateService();
+			return false;
+		}
+		return true;
+	}
+
+	/** Validates the requested rectangle and registers a caller-owned viewport object. */
+	std::unique_ptr<BuildingMapViewport> BuildingMapService::OpenViewport(
+		IBuildingCollector* buildingCollector,
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
+	{
+		std::uint64_t viewportHandle = 0;
+		if (!PrepareViewportRegistration(
+			buildingCollector,
+			viewportHandle))
+		{
+			return nullptr;
+		}
 		std::unique_ptr<BuildingMapViewport> viewport(new BuildingMapViewport(
-			static_cast<Coordination::IBuildingMapService&>(*this),
+			*this,
 			*buildingCollector,
 			viewportHandle,
 			xMapUnits,
 			yMapUnits,
 			widthMapUnits,
 			heightMapUnits));
-		viewportsByHandle_.emplace(viewportHandle, viewport.get());
-		if (!UpdateViewportGridRange(
-			viewportHandle,
-			viewport->gridRange_.firstX,
-			viewport->gridRange_.firstY,
-			viewport->gridRange_.endX,
-			viewport->gridRange_.endY))
+		if (!RegisterViewport(*viewport))
 		{
-			viewportsByHandle_.erase(viewportHandle);
-			viewport->InvalidateService();
 			return nullptr;
 		}
-		if (sectionSchedulingCoordinator_ == nullptr ||
-			!sectionSchedulingCoordinator_->AddViewportDemand(
-				viewport->gridRange_.firstX,
-				viewport->gridRange_.firstY,
-				viewport->gridRange_.endX,
-				viewport->gridRange_.endY))
+		return viewport;
+	}
+
+	/** Creates a GPU-specialized viewport through the shared base registration path. */
+	std::unique_ptr<BuildingMapGpuViewport> BuildingMapService::OpenGpuViewport(
+		IBuildingCollector* buildingCollector,
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
+	{
+		std::uint64_t viewportHandle = 0;
+		if (!PrepareViewportRegistration(
+			buildingCollector,
+			viewportHandle))
 		{
-			viewportsByHandle_.erase(viewportHandle);
-			viewport->InvalidateService();
+			return nullptr;
+		}
+		std::unique_ptr<BuildingMapGpuViewport> viewport(new BuildingMapGpuViewport(
+			*this,
+			*buildingCollector,
+			viewportHandle,
+			xMapUnits,
+			yMapUnits,
+			widthMapUnits,
+			heightMapUnits));
+		if (!RegisterViewport(*viewport))
+		{
 			return nullptr;
 		}
 		return viewport;
