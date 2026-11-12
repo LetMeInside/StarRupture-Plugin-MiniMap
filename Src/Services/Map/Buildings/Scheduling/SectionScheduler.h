@@ -455,6 +455,17 @@ namespace Services::Map::Buildings::Scheduling
 		struct SectionJob;
 		struct RetainedSectionScene;
 		struct RetainedSpriteRequirement;
+		/** Carries the coordinator's current allowance and initial-sprite stopping boundary. */
+		struct SectionPreparationVisit
+		{
+			std::chrono::steady_clock::time_point Deadline;
+			std::uint64_t TickSequence;
+			bool InitialSpritesOnly;
+		};
+		/** Reports whether this publication still needs initialization or initial sprite visits. */
+		static bool NeedsInitialSpriteVisit(
+			const ::Services::Map::Buildings::BuildingMapSection* section,
+			const BuildingCandidatePublication& publication) noexcept;
 		/** Describes one bounded advancement without conflating waits with render failures. */
 		struct SectionJobAdvanceResult
 		{
@@ -470,6 +481,7 @@ namespace Services::Map::Buildings::Scheduling
 			State CurrentState = State::Pending;
 			std::size_t WorkUnitsConsumed = 0;
 			bool AwaitingImageDemand = false;
+			bool HasSpriteRetries = false;
 			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
 			std::optional<SectionImageCommitResult> FinishedAttempt;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -492,12 +504,10 @@ namespace Services::Map::Buildings::Scheduling
 		 * Equal ContentHash retains all prepared views on their original shared owner.
 		 * @param section Service-owned Section whose unfinished state is accessed directly.
 		 * @param publicationOwner Non-null shared owner of the selected immutable publication.
-		 * @param generationReplaced Receives whether changed content reset this Section's generation.
 		 */
 		std::shared_ptr<const BuildingCandidatePublication> EnsureSectionJob(
 			::Services::Map::Buildings::BuildingMapSection& section,
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			bool& generationReplaced);
+			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
 		/** Selects initial preparation, retained-scene reuse or a scene-free continuation.
 		 * @param section Section carrying the rendering state to inspect.
 		 * @param publicationOwner Currently selected shared publication owner.
@@ -519,7 +529,7 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param publicationOwner Currently selected immutable publication for this coordinate.
 		 * @param continuationMode Scheduler-owned initial-preparation, retained-scene or scene-free mode.
 		 * @param splinePolicies Existing immutable spline policy table.
-		 * @param deadline Absolute end of the shared scheduling allowance.
+		 * @param visit Shared deadline, retry tick and initial sprite boundary.
 		 * @return Pending, waiting, restart-required, or a fully populated terminal attempt result.
 		 */
 		SectionJobAdvanceResult AdvanceSectionJob(
@@ -527,7 +537,7 @@ namespace Services::Map::Buildings::Scheduling
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			SectionJobContinuationMode continuationMode,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			bool renderSectionImages);
 
 		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
@@ -560,40 +570,55 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param section Exact service-owned Section matched against the selected publication.
 		 * @param job Existing Section-owned state retaining the selected immutable publication.
 		 * @param splinePolicies Existing immutable service policy table.
-		 * @param deadline Absolute end of the shared scheduling allowance.
-		 * @param deadlineDeferred Receives whether unfinished preparation was deferred by elapsed time.
+		 * @param visit Shared deadline and initial sprite boundary.
+		 * @param deadlineDeferred Receives whether the visit yielded before finalization.
 		 * @return Existing scene readiness; only CompleteSceneInputs installs retained state.
 		 */
 		SectionScenePreparationResult::Readiness PrepareRetainedSectionScene(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			bool& deadlineDeferred);
 		/** Initializes exact-publication occurrence state once and prepares only untouched ordinals.
 		 * @param job Section-owned generation state retaining source facts and completed actions.
 		 * @param publicationOwner Exact immutable publication selected for this Section.
-		 * @param splinePolicies Borrowed immutable policies used by each spline occurrence once.
 		 * @return True when all ordinal/source correspondence is valid for this generation.
 		 */
 		bool InitializeSectionPreparationProgress(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
+		/** Builds exact ordinal outcomes and a stable initial traversal for the selected publication. */
+		bool InitializeSectionOccurrenceOrder(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const BuildingCandidatePublication& publication);
 		/** Advances untouched ordinals and retries only pending sprite-resource operations.
 		 * @param job Section-owned progress with direct ordinal-indexed state.
 		 * @param publicationOwner Exact publication supplying immutable source values.
 		 * @param splinePolicies Existing service-owned immutable policy table.
-		 * @param deadline Absolute end of this shared scheduling allowance.
-		 * @return True when unfinished preparation was skipped because the deadline elapsed.
+		 * @param visit Shared deadline and initial sprite boundary.
+		 * @return True when the visit yields at the sprite boundary or deadline.
 		 */
 		bool AdvanceSectionOccurrencePreparation(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 			std::span<const SplinePolicy> splinePolicies,
+			const SectionPreparationVisit& visit);
+		/** Retains the geometry or terminal omission of an initially attempted ordinal. */
+		void RetainInitialOccurrence(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			std::size_t ordinal);
+		/** Retries eligible FIFO entries until the deadline or the first entry queued this tick. */
+		void AdvanceSectionSpriteRetries(
+			::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			const BuildingCandidateSourceData& sourceData,
 			std::chrono::steady_clock::time_point deadline);
-		/** Stores one ready occurrence's owned quad in first-appearance Section geometry.
+		/** Stores one ready occurrence's owned quad in the shared preparing scene.
 		 * @param section Owner whose PreparingScene receives this contribution.
 		 * @param job Source-owned preparation with direct ordinal-to-payload correspondence.
 		 * @param ordinal Exact publication-local occurrence to retain.
@@ -697,15 +722,11 @@ namespace Services::Map::Buildings::Scheduling
 			const std::vector<std::size_t>& preparedOrder,
 			RetainedSectionScene& retained,
 			SectionScenePreparationResult& preparation);
-		/** Stores one status transition and advances past resolved ordinals once.
+		/** Advances past resolved ordinals after the selected outcome changes.
 		 * @param job Section-owned progress with a monotonic readiness cursor.
 		 * @param ordinal Exact publication-local occurrence whose result changed.
-		 * @param status New preparation status for the occurrence.
 		 */
-		void SetSectionOccurrenceStatus(
-			SectionJob& job,
-			std::size_t ordinal,
-			KnownSpritePreparationResult::OccurrenceOutcome::Status status);
+		static void AdvanceFirstUnresolvedOrdinal(SectionJob& job, std::size_t ordinal) noexcept;
 		/** Adds one pending sprite ordinal to the Section-owned retry queue.
 		 * @param job Section-owned progress and queue endpoints.
 		 * @param ordinal Exact occurrence ordinal to enqueue.
@@ -739,7 +760,7 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param job Selected retained job and attempt state.
 		 * @param continuationMode Scheduler-selected occurrence, retained-scene or scene-free phase.
 		 * @param splinePolicies Borrowed immutable service policy values.
-		 * @param deadline Absolute end of the shared scheduling allowance.
+		 * @param visit Shared deadline, retry tick and initial sprite boundary.
 		 * @param result Receives readiness, state and consumed units.
 		 * @return True when numerical continuation may proceed.
 		 */
@@ -748,7 +769,7 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJob& job,
 			SectionJobContinuationMode continuationMode,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			bool renderSectionImages,
 			SectionJobAdvanceResult& result);
 		/** Advances numerical geometry directly into the Section's PreparingScene. */
@@ -762,7 +783,7 @@ namespace Services::Map::Buildings::Scheduling
 		 * @param job Selected retained job whose scene state may be rebuilt or reused.
 		 * @param continuationMode Selected initial-preparation, retained-scene or scene-free mode.
 		 * @param splinePolicies Borrowed immutable service policy values.
-		 * @param deadline Absolute end of the shared scheduling allowance.
+		 * @param visit Shared deadline, retry tick and initial sprite boundary.
 		 * @param result Receives preparation readiness and any restart/wait state.
 		 * @return True when a valid retained scene is available for this advancement.
 		 */
@@ -771,14 +792,14 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJob& job,
 			SectionJobContinuationMode continuationMode,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			SectionJobAdvanceResult& result);
 		/** Runs one source-composition attempt and records its readiness and Debug duration. */
 		bool PrepareRetainedSceneForAttempt(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			SectionJobAdvanceResult& result);
 		/** Advances the existing persistent operation with its retained scene or an empty scene view.
 		 * @param section Service-owned Section whose stable context is borrowed for rendering.
@@ -1263,15 +1284,14 @@ namespace Services::Map::Buildings::Scheduling
 			KnownSpritePreparationResult SpritePreparation;
 			std::vector<SectionOccurrenceProgress> Occurrences;
 			std::vector<SplineRenderInputPreparationResult> SplinePreparations;
-			std::vector<std::uint8_t> IsOrdinarySpriteByOrdinal;
-			std::vector<std::uint8_t> IsSplineByOrdinal;
-			std::size_t NextOccurrenceOrdinal = 0;
+			std::vector<std::size_t> OccurrenceOrder;
+			std::size_t InitialSpriteCount = 0;
+			std::size_t NextOccurrenceIndex = 0;
 			std::size_t FirstUnresolvedOrdinal = 0;
-			std::size_t UnresolvedOrdinarySpriteCount = 0;
-			std::size_t UnresolvedSplineCount = 0;
+			std::optional<std::uint64_t> RetryTickSequence;
+			std::optional<std::size_t> FirstRetryQueuedThisTick;
 			std::optional<std::size_t> SpriteRetryHead;
 			std::optional<std::size_t> SpriteRetryTail;
-			std::size_t SpriteRetryCount = 0;
 			std::optional<SectionScenePreparationResult::Readiness> TerminalReadiness;
 			bool Initialized = false;
 		};

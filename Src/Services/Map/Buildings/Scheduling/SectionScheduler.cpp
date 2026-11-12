@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Owns acquisition resources and advances resumable Section-owned image construction.
+// Owns acquisition resources and advances sprite-first Section geometry and optional image work.
 #include "SectionScheduler.h"
 
 #include "BuildingScheduler.h"
@@ -251,7 +251,7 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			std::span<const SplinePolicy> splinePolicies,
-			std::chrono::steady_clock::time_point deadline,
+			const SectionPreparationVisit& visit,
 			bool& deadlineDeferred)
 	{
 		using Readiness = SectionScenePreparationResult::Readiness;
@@ -260,42 +260,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return *job.Preparation.TerminalReadiness;
 		}
-		if (job.publicationOwner == nullptr)
-		{
-			REPORT_SECTION_FAILURE(section, std::nullopt, Readiness::InvalidPublication,
-				"source publication", "publication owner absent");
-			job.Preparation.TerminalReadiness = Readiness::InvalidPublication;
-			return Readiness::InvalidPublication;
-		}
-		if (job.retainedScene != nullptr)
-		{
-			const Readiness readiness = job.retainedScene->Preparation.PublicationIdentity == job.publicationOwner.get() &&
-				job.retainedScene->Preparation.PreparationReadiness == Readiness::CompleteSceneInputs
-				? Readiness::CompleteSceneInputs
-				: Readiness::InvalidPreparationInputs;
-			if (readiness != Readiness::CompleteSceneInputs)
-			{
-				REPORT_SECTION_FAILURE(section, job.publicationOwner->ContentHash(), readiness,
-					"retained scene assembly",
-					job.retainedScene->Preparation.PublicationIdentity != job.publicationOwner.get()
-					? "retained publication identity mismatch" : "retained readiness is incomplete",
-					-1, -1, static_cast<unsigned>(Readiness::CompleteSceneInputs),
-					static_cast<unsigned>(job.retainedScene->Preparation.PreparationReadiness));
-				job.Preparation.TerminalReadiness = readiness;
-			}
-			return readiness;
-		}
-		if (!job.Preparation.Initialized && !IsPublicationForSection(section, *job.publicationOwner))
-		{
-			REPORT_SECTION_FAILURE(section, job.publicationOwner->ContentHash(), Readiness::InvalidSection,
-				"source publication", "publication region does not match Section grid");
-			job.Preparation.TerminalReadiness = Readiness::InvalidSection;
-			return Readiness::InvalidSection;
-		}
 		if (!InitializeSectionPreparationProgress(section, job, job.publicationOwner))
 		{
-			job.Preparation.TerminalReadiness = Readiness::InvalidPublication;
-			return Readiness::InvalidPublication;
+			return *job.Preparation.TerminalReadiness;
 		}
 		const BuildingCandidateData candidateData = job.publicationOwner->BorrowCandidateData();
 		if (!job.GeometryComplete)
@@ -307,13 +274,17 @@ namespace Services::Map::Buildings::Scheduling
 			job,
 			job.publicationOwner,
 			splinePolicies,
-			deadline);
+			visit);
+		if (deadlineDeferred)
+		{
+			return Readiness::UnresolvedInputs;
+		}
 		const Readiness readiness = GetSectionPreparationReadiness(job);
 		if (readiness != Readiness::CompleteSceneInputs)
 		{
 			return readiness;
 		}
-		if (std::chrono::steady_clock::now() >= deadline)
+		if (std::chrono::steady_clock::now() >= visit.Deadline)
 		{
 			return readiness;
 		}
@@ -334,52 +305,68 @@ namespace Services::Map::Buildings::Scheduling
 		if (job.Preparation.Initialized)
 		{
 			const bool samePublication = job.Preparation.SpritePreparation.PublicationIdentity == publicationOwner.get();
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			if (!samePublication)
 			{
 				REPORT_SECTION_FAILURE(section, publicationOwner ? std::optional{publicationOwner->ContentHash()} : std::nullopt,
 					SectionScenePreparationResult::Readiness::InvalidPublication,
 					"source publication", "initialized occurrence publication identity mismatch");
+				job.Preparation.TerminalReadiness = SectionScenePreparationResult::Readiness::InvalidPublication;
 			}
-#endif
 			return samePublication;
 		}
+		using Readiness = SectionScenePreparationResult::Readiness;
 		if (publicationOwner == nullptr)
 		{
-			REPORT_SECTION_FAILURE(section, std::nullopt, SectionScenePreparationResult::Readiness::InvalidPublication,
+			REPORT_SECTION_FAILURE(section, std::nullopt, Readiness::InvalidPublication,
 				"source publication", "publication owner absent during occurrence initialization");
+			job.Preparation.TerminalReadiness = Readiness::InvalidPublication;
 			return false;
 		}
-		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
-		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		if (!IsPublicationForSection(section, *publicationOwner))
+		{
+			REPORT_SECTION_FAILURE(section, publicationOwner->ContentHash(), Readiness::InvalidSection,
+				"source publication", "publication region does not match Section grid");
+			job.Preparation.TerminalReadiness = Readiness::InvalidSection;
+			return false;
+		}
+		return InitializeSectionOccurrenceOrder(section, job, *publicationOwner);
+	}
+
+	/** Validates aligned outcomes and builds the single stable sprite-first traversal index. */
+	bool SectionScheduler::InitializeSectionOccurrenceOrder(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const BuildingCandidatePublication& publication)
+	{
+		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publication.BorrowSourceData();
 		auto& preparation = job.Preparation;
 		if (!InitializeKnownSpriteOccurrences(
-			section, publicationOwner->ContentHash(), candidateData, sourceData, preparation.SpritePreparation))
+			section, publication.ContentHash(), candidateData, sourceData, preparation.SpritePreparation))
 		{
 			preparation.SpritePreparation.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
+			preparation.TerminalReadiness = SectionScenePreparationResult::Readiness::InvalidPublication;
 			return false;
 		}
-		preparation.SpritePreparation.PublicationIdentity = publicationOwner.get();
+		preparation.SpritePreparation.PublicationIdentity = &publication;
 		preparation.SpritePreparation.PreparationStatus =
 			KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
 		preparation.Occurrences.resize(candidateData.occurrences.size());
-		preparation.IsOrdinarySpriteByOrdinal.resize(candidateData.occurrences.size());
-		preparation.IsSplineByOrdinal.resize(candidateData.occurrences.size());
+		preparation.OccurrenceOrder.resize(sourceData.records.size());
+		// Fill from both ends, then restore publication order for the non-sprite suffix.
+		std::size_t remainingBegin = preparation.OccurrenceOrder.size();
 		for (std::size_t ordinal = 0; ordinal < sourceData.records.size(); ++ordinal)
 		{
-			const auto& source = sourceData.records[ordinal];
-			if (source.kind == BuildingCandidateSourceKind::Sprite &&
-				source.spritePass == BuildingCandidateSpritePass::FirstPass)
+			if (sourceData.records[ordinal].kind == BuildingCandidateSourceKind::Sprite)
 			{
-				preparation.IsOrdinarySpriteByOrdinal[ordinal] = 1;
-				++preparation.UnresolvedOrdinarySpriteCount;
+				preparation.OccurrenceOrder[preparation.InitialSpriteCount++] = ordinal;
 			}
-			if (source.kind == BuildingCandidateSourceKind::Spline)
+			else
 			{
-				preparation.IsSplineByOrdinal[ordinal] = 1;
-				++preparation.UnresolvedSplineCount;
+				preparation.OccurrenceOrder[--remainingBegin] = ordinal;
 			}
 		}
+		std::reverse(preparation.OccurrenceOrder.begin() + remainingBegin, preparation.OccurrenceOrder.end());
 		preparation.Initialized = true;
 		return true;
 	}
@@ -390,51 +377,68 @@ namespace Services::Map::Buildings::Scheduling
 		SectionJob& job,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		std::span<const SplinePolicy> splinePolicies,
+		const SectionPreparationVisit& visit)
+	{
+		auto& preparation = job.Preparation;
+		if (preparation.RetryTickSequence != visit.TickSequence)
+		{
+			preparation.RetryTickSequence = visit.TickSequence;
+			preparation.FirstRetryQueuedThisTick.reset();
+		}
+		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
+		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
+		const std::size_t end = visit.InitialSpritesOnly
+			? preparation.InitialSpriteCount : preparation.OccurrenceOrder.size();
+		while (preparation.NextOccurrenceIndex < end &&
+			std::chrono::steady_clock::now() < visit.Deadline)
+		{
+			const std::size_t ordinal = preparation.OccurrenceOrder[preparation.NextOccurrenceIndex++];
+			PrepareSectionOccurrence(job, *publicationOwner, candidateData.occurrences[ordinal],
+				sourceData.records[ordinal], ordinal, splinePolicies);
+			RetainInitialOccurrence(section, job, ordinal);
+		}
+		if (visit.InitialSpritesOnly || preparation.NextOccurrenceIndex < end)
+		{
+			return true;
+		}
+		AdvanceSectionSpriteRetries(section, job, sourceData, visit.Deadline);
+		return std::chrono::steady_clock::now() >= visit.Deadline;
+	}
+
+	/** Retains ready sprite geometry or marks an initial terminal omission at the source ordinal. */
+	void SectionScheduler::RetainInitialOccurrence(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		std::size_t ordinal)
+	{
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		const auto status = job.Preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus;
+		if (status == Status::ReadySprite)
+		{
+			RetainProgressiveSpriteContribution(section, job, ordinal);
+		}
+		else if (!job.GeometryComplete &&
+			(status == Status::TerminalSourceFailure || status == Status::TerminalSpriteCaptureFailure))
+		{
+			auto* preparingScene = section.BeginPreparingScene(
+				job.publicationOwner->ContentHash(), job.Preparation.Occurrences.size());
+			preparingScene->TrySetContributionStatus(ordinal,
+				Visuals::PreparedBuildingGeometry::ContributionStatus::TerminalOmission);
+		}
+	}
+
+	/** Leaves new and requeued resources behind the current tick's retry boundary. */
+	void SectionScheduler::AdvanceSectionSpriteRetries(
+		::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		const BuildingCandidateSourceData& sourceData,
 		std::chrono::steady_clock::time_point deadline)
 	{
 		auto& preparation = job.Preparation;
-		const std::size_t retryCountAtStart = preparation.SpriteRetryCount;
-		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
-		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
-		while (preparation.NextOccurrenceOrdinal < preparation.Occurrences.size() &&
+		while (preparation.SpriteRetryHead.has_value() &&
+			preparation.SpriteRetryHead != preparation.FirstRetryQueuedThisTick &&
 			std::chrono::steady_clock::now() < deadline)
 		{
-			const std::size_t ordinal = preparation.NextOccurrenceOrdinal;
-			++preparation.NextOccurrenceOrdinal;
-			PrepareSectionOccurrence(
-				job,
-				*publicationOwner,
-				candidateData.occurrences[ordinal],
-				sourceData.records[ordinal],
-				ordinal,
-				splinePolicies);
-			if (preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus ==
-				KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite)
-			{
-				RetainProgressiveSpriteContribution(section, job, ordinal);
-			}
-			else if (preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus ==
-				KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSourceFailure ||
-				preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus ==
-				KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteCaptureFailure)
-			{
-				if (!job.GeometryComplete)
-				{
-					auto* preparingScene = section.BeginPreparingScene(
-						publicationOwner->ContentHash(), preparation.Occurrences.size());
-					preparingScene->TrySetContributionStatus(ordinal,
-						Visuals::PreparedBuildingGeometry::ContributionStatus::TerminalOmission);
-				}
-			}
-		}
-		bool deadlineDeferred = preparation.NextOccurrenceOrdinal < preparation.Occurrences.size();
-		for (std::size_t retryIndex = 0; retryIndex < retryCountAtStart; ++retryIndex)
-		{
-			if (std::chrono::steady_clock::now() >= deadline)
-			{
-				deadlineDeferred = true;
-				break;
-			}
 			std::size_t ordinal = 0;
 			PopSectionSpriteRetry(job, ordinal);
 			RetrySectionSpriteResource(job, sourceData.records[ordinal], ordinal);
@@ -444,7 +448,6 @@ namespace Services::Map::Buildings::Scheduling
 				RetainProgressiveSpriteContribution(section, job, ordinal);
 			}
 		}
-		return deadlineDeferred;
 	}
 
 	/** Retains a drawable sprite once its resource and projected world quad are ready. */
@@ -585,7 +588,7 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			PrepareSectionSpriteOccurrence(job, publication, source, ordinal, sourceBlocked);
 		}
-		SetSectionOccurrenceStatus(job, ordinal, outcome.PreparationStatus);
+		AdvanceFirstUnresolvedOrdinal(job, ordinal);
 	}
 
 	/** Validates one canonical key once and retains it only for this occurrence's generation. */
@@ -662,7 +665,7 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			outcome.PreparationStatus = sceneStatus;
 		}
-		SetSectionOccurrenceStatus(job, ordinal, outcome.PreparationStatus);
+		AdvanceFirstUnresolvedOrdinal(job, ordinal);
 		if (IsSpriteResourceRetryStatus(spriteStatus))
 		{
 			QueueSectionSpriteRetry(job, ordinal);
@@ -674,41 +677,18 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Stores one outcome and skips each newly resolved ordinal at most once. */
-	void SectionScheduler::SetSectionOccurrenceStatus(
-		SectionJob& job,
-		std::size_t ordinal,
-		KnownSpritePreparationResult::OccurrenceOutcome::Status status)
+	/** Advances the lowest unresolved source ordinal without passing untouched outcomes. */
+	void SectionScheduler::AdvanceFirstUnresolvedOrdinal(SectionJob& job, std::size_t ordinal) noexcept
 	{
 		auto& preparation = job.Preparation;
-		const auto previousStatus = preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus;
-		preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus = status;
-		if (IsSectionOccurrenceBlockingStatus(previousStatus) && !IsSectionOccurrenceBlockingStatus(status))
-		{
-			if (ordinal < preparation.IsOrdinarySpriteByOrdinal.size() &&
-				preparation.IsOrdinarySpriteByOrdinal[ordinal] != 0 &&
-				preparation.UnresolvedOrdinarySpriteCount > 0)
-			{
-				--preparation.UnresolvedOrdinarySpriteCount;
-			}
-			if (ordinal < preparation.IsSplineByOrdinal.size() &&
-				preparation.IsSplineByOrdinal[ordinal] != 0 && preparation.UnresolvedSplineCount > 0)
-			{
-				--preparation.UnresolvedSplineCount;
-			}
-		}
+		const auto& outcomes = preparation.SpritePreparation.OccurrenceOutcomes;
 		if (ordinal != preparation.FirstUnresolvedOrdinal)
 		{
 			return;
 		}
-		while (preparation.FirstUnresolvedOrdinal < preparation.NextOccurrenceOrdinal)
+		while (preparation.FirstUnresolvedOrdinal < outcomes.size() &&
+			!IsSectionOccurrenceBlockingStatus(outcomes[preparation.FirstUnresolvedOrdinal].PreparationStatus))
 		{
-			const auto currentStatus = preparation.SpritePreparation.OccurrenceOutcomes[
-				preparation.FirstUnresolvedOrdinal].PreparationStatus;
-			if (IsSectionOccurrenceBlockingStatus(currentStatus))
-			{
-				break;
-			}
 			++preparation.FirstUnresolvedOrdinal;
 		}
 	}
@@ -728,7 +708,10 @@ namespace Services::Map::Buildings::Scheduling
 			preparation.SpriteRetryHead = ordinal;
 		}
 		preparation.SpriteRetryTail = ordinal;
-		++preparation.SpriteRetryCount;
+		if (!preparation.FirstRetryQueuedThisTick.has_value())
+		{
+			preparation.FirstRetryQueuedThisTick = ordinal;
+		}
 	}
 
 	/** Pops the next sprite-resource retry ordinal without scanning other occurrence state. */
@@ -743,7 +726,6 @@ namespace Services::Map::Buildings::Scheduling
 			preparation.SpriteRetryTail.reset();
 		}
 		occurrence.NextSpriteRetryOrdinal.reset();
-		--preparation.SpriteRetryCount;
 	}
 
 	/** Returns the existing readiness value of the lowest-ordinal unresolved occurrence. */
@@ -756,11 +738,11 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return Readiness::InvalidPublication;
 		}
-		if (job.Preparation.NextOccurrenceOrdinal < job.Preparation.Occurrences.size())
+		if (job.Preparation.NextOccurrenceIndex < job.Preparation.OccurrenceOrder.size())
 		{
 			return Readiness::UnresolvedInputs;
 		}
-		if (job.Preparation.FirstUnresolvedOrdinal >= job.Preparation.NextOccurrenceOrdinal)
+		if (job.Preparation.FirstUnresolvedOrdinal == job.Preparation.Occurrences.size())
 		{
 			return Readiness::CompleteSceneInputs;
 		}
@@ -812,7 +794,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (publicationOwner == nullptr ||
 			spritePreparation.PublicationIdentity != publicationOwner.get() ||
 			!progress.Initialized ||
-			progress.NextOccurrenceOrdinal != progress.Occurrences.size() ||
+			progress.NextOccurrenceIndex != progress.Occurrences.size() ||
 			spritePreparation.OccurrenceOutcomes.size() != progress.Occurrences.size())
 		{
 			REPORT_SECTION_FAILURE(section, publicationOwner ? std::optional{publicationOwner->ContentHash()} : std::nullopt,
@@ -820,10 +802,10 @@ namespace Services::Map::Buildings::Scheduling
 				publicationOwner == nullptr ? "publication owner absent" :
 				spritePreparation.PublicationIdentity != publicationOwner.get() ? "sprite preparation publication identity mismatch" :
 				!progress.Initialized ? "occurrence progress not initialized" :
-				progress.NextOccurrenceOrdinal != progress.Occurrences.size() ? "occurrence traversal incomplete" :
+				progress.NextOccurrenceIndex != progress.Occurrences.size() ? "occurrence traversal incomplete" :
 				"occurrence outcome count mismatch", -1, -1, progress.Occurrences.size(),
-				progress.NextOccurrenceOrdinal != progress.Occurrences.size() ?
-				progress.NextOccurrenceOrdinal : spritePreparation.OccurrenceOutcomes.size());
+				progress.NextOccurrenceIndex != progress.Occurrences.size() ?
+				progress.NextOccurrenceIndex : spritePreparation.OccurrenceOutcomes.size());
 			return false;
 		}
 		std::vector<std::size_t> preparedOrder;
@@ -1364,10 +1346,8 @@ namespace Services::Map::Buildings::Scheduling
 	/** Keeps the existing owner for equivalent Section content and resets genuine changes. */
 	std::shared_ptr<const BuildingCandidatePublication> SectionScheduler::EnsureSectionJob(
 		::Services::Map::Buildings::BuildingMapSection& section,
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		bool& generationReplaced)
+		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
 	{
-		generationReplaced = false;
 		if (publicationOwner == nullptr)
 		{
 			throw std::invalid_argument("A Section job requires a selected publication owner.");
@@ -1392,10 +1372,28 @@ namespace Services::Map::Buildings::Scheduling
 			ResetSectionJobProgress(job, section);
 			section.InvalidatePreparingScene(publicationOwner->ContentHash());
 			job.publicationOwner = publicationOwner;
-			generationReplaced = true;
 			return publicationOwner;
 		}
 		return retainedOwner;
+	}
+
+	/** Checks sprite eligibility in constant time without replacing the selected generation. */
+	bool SectionScheduler::NeedsInitialSpriteVisit(
+		const ::Services::Map::Buildings::BuildingMapSection* section,
+		const BuildingCandidatePublication& publication) noexcept
+	{
+		if (section == nullptr || !section->renderingState_)
+		{
+			return true;
+		}
+		const auto& job = *static_cast<const SectionJob*>(section->renderingState_.get());
+		if (job.publicationOwner->ContentHash() != publication.ContentHash())
+		{
+			return true;
+		}
+		const auto& progress = job.Preparation;
+		return job.retainedScene == nullptr && !progress.TerminalReadiness.has_value() &&
+			(!progress.Initialized || progress.NextOccurrenceIndex < progress.InitialSpriteCount);
 	}
 
 	/** Selects a continuation mode only when exact owner and retained scene state are internally consistent. */
@@ -1510,7 +1508,7 @@ namespace Services::Map::Buildings::Scheduling
 		SectionJob& job,
 		SectionJobContinuationMode continuationMode,
 		std::span<const SplinePolicy> splinePolicies,
-		std::chrono::steady_clock::time_point deadline,
+		const SectionPreparationVisit& visit,
 		bool renderSectionImages,
 		SectionJobAdvanceResult& result)
 	{
@@ -1520,13 +1518,16 @@ namespace Services::Map::Buildings::Scheduling
 			return false;
 		}
 		const bool sceneReady = PrepareSectionJobSceneForAttempt(
-			section, job, continuationMode, splinePolicies, deadline, result);
+			section, job, continuationMode, splinePolicies, visit, result);
 		if (!sceneReady)
 		{
-			AdvanceSectionJobGeometry(section, job, deadline, result);
+			if (!visit.InitialSpritesOnly)
+			{
+				AdvanceSectionJobGeometry(section, job, visit.Deadline, result);
+			}
 			return false;
 		}
-		if (!AdvanceSectionJobGeometry(section, job, deadline, result))
+		if (!AdvanceSectionJobGeometry(section, job, visit.Deadline, result))
 		{
 			return false;
 		}
@@ -1537,9 +1538,9 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (!job.publicationOwner->BorrowCandidateData().occurrences.empty())
 		{
-			return std::chrono::steady_clock::now() < deadline;
+			return std::chrono::steady_clock::now() < visit.Deadline;
 		}
-		if (std::chrono::steady_clock::now() >= deadline)
+		if (std::chrono::steady_clock::now() >= visit.Deadline)
 		{
 			return false;
 		}
@@ -1629,7 +1630,7 @@ namespace Services::Map::Buildings::Scheduling
 		SectionJob& job,
 		SectionJobContinuationMode continuationMode,
 		std::span<const SplinePolicy> splinePolicies,
-		std::chrono::steady_clock::time_point deadline,
+		const SectionPreparationVisit& visit,
 		SectionJobAdvanceResult& result)
 	{
 		if (continuationMode == SectionJobContinuationMode::FullPreparation &&
@@ -1637,6 +1638,8 @@ namespace Services::Map::Buildings::Scheduling
 				job.CompletedImageReady || job.CompletedImageTransparent))
 		{
 			ResetSectionJobProgress(job, section);
+			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
+			return false;
 		}
 		job.GeometryComplete = section.HasCompletedSceneForContentHash(job.publicationOwner->ContentHash());
 		if (job.AttemptEvidence == std::nullopt)
@@ -1651,11 +1654,11 @@ namespace Services::Map::Buildings::Scheduling
 				result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 				return false;
 			}
-			if (std::chrono::steady_clock::now() >= deadline)
+			if (std::chrono::steady_clock::now() >= visit.Deadline)
 			{
 				return false;
 			}
-			if (!PrepareRetainedSceneForAttempt(section, job, splinePolicies, deadline, result))
+			if (!PrepareRetainedSceneForAttempt(section, job, splinePolicies, visit, result))
 			{
 				return false;
 			}
@@ -1673,7 +1676,7 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		std::span<const SplinePolicy> splinePolicies,
-		std::chrono::steady_clock::time_point deadline,
+		const SectionPreparationVisit& visit,
 		SectionJobAdvanceResult& result)
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1681,12 +1684,13 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		bool deadlineDeferred = false;
 		const auto readiness = PrepareRetainedSectionScene(
-			section, job, splinePolicies, deadline, deadlineDeferred);
+			section, job, splinePolicies, visit, deadlineDeferred);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		job.AttemptEvidence->Timing.ScenePreparationMs +=
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 #endif
 		++result.WorkUnitsConsumed;
+		result.HasSpriteRetries = job.Preparation.SpriteRetryHead.has_value();
 		if (deadlineDeferred)
 		{
 			result.CurrentState = SectionJobAdvanceResult::State::Pending;
@@ -1888,7 +1892,7 @@ namespace Services::Map::Buildings::Scheduling
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
 		SectionJobContinuationMode continuationMode,
 		std::span<const SplinePolicy> splinePolicies,
-		std::chrono::steady_clock::time_point deadline,
+		const SectionPreparationVisit& visit,
 		bool renderSectionImages)
 	{
 		SectionJobAdvanceResult result;
@@ -1898,7 +1902,7 @@ namespace Services::Map::Buildings::Scheduling
 			return result;
 		}
 		SectionJob& job = *static_cast<SectionJob*>(section.renderingState_.get());
-		if (std::chrono::steady_clock::now() >= deadline)
+		if (std::chrono::steady_clock::now() >= visit.Deadline)
 		{
 			return result;
 		}
@@ -1917,10 +1921,6 @@ namespace Services::Map::Buildings::Scheduling
 			result.CurrentState = SectionJobAdvanceResult::State::RestartRequired;
 			return result;
 		}
-		if (section.HasCompletedSceneForContentHash(publicationOwner->ContentHash()))
-		{
-			job.GeometryComplete = true;
-		}
 		if (continuationMode != SelectSectionJobContinuationMode(section, publicationOwner))
 		{
 			ResetSectionJobProgress(job, section);
@@ -1928,19 +1928,13 @@ namespace Services::Map::Buildings::Scheduling
 			return result;
 		}
 		if (!PrepareSectionJobAttempt(
-			section,
-			job,
-			continuationMode,
-			splinePolicies,
-			deadline,
-			renderSectionImages,
-			result))
+			section, job, continuationMode, splinePolicies, visit, renderSectionImages, result))
 		{
 			return result;
 		}
-		if (AdvanceSectionJobNumerical(section, job, deadline, result))
+		if (AdvanceSectionJobNumerical(section, job, visit.Deadline, result))
 		{
-			CommitSectionJobImage(section, job, deadline, result);
+			CommitSectionJobImage(section, job, visit.Deadline, result);
 		}
 		return result;
 	}

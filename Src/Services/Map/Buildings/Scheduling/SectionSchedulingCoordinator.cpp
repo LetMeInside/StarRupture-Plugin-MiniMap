@@ -24,6 +24,20 @@ namespace Services::Map::Buildings::Scheduling
 		return GridX < other.GridX || (GridX == other.GridX && GridY < other.GridY);
 	}
 
+	/** Orders waiting entries for direct stage lookup and deterministic rotation. */
+	bool SectionSchedulingCoordinator::WaitingSection::operator<(const WaitingSection& other) const noexcept
+	{
+		if (Kind != other.Kind)
+		{
+			return Kind < other.Kind;
+		}
+		if (EligibleTick != other.EligibleTick)
+		{
+			return EligibleTick < other.EligibleTick;
+		}
+		return RotationPosition < other.RotationPosition;
+	}
+
 	/** Creates one scheduler that borrows the service-owned source manager. */
 	SectionSchedulingCoordinator::SectionSchedulingCoordinator(
 		double sectionSizeMapUnits,
@@ -139,6 +153,7 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		demandCounts_.clear();
 		waitingSections_.clear();
+		roundRobinPosition_ = 0;
 		ResetSchedulingBudgetState();
 		for (auto& sectionEntry : buildingMapService.sections_)
 		{
@@ -146,31 +161,94 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Requeues one demanded Section after a future dependency invalidation report. */
+	/** Registers demand for source selection without disturbing an existing waiting entry. */
 	void SectionSchedulingCoordinator::RequestSectionWork(const SectionCoordinate& coordinate)
 	{
-		if (IsDemanded(coordinate))
+		const auto demand = demandCounts_.find(coordinate);
+		if (demand != demandCounts_.end() && !demand->second.Waiting.has_value())
 		{
-			waitingSections_.insert(coordinate);
+			SetWaitingSection(coordinate, WaitingKind::AwaitingPublication);
 		}
 	}
 
-	/** Removes completed work and its Section-owned state while preserving aggregate demand. */
+	/** Reclassifies a changed or newly available selection without replacing a Section job. */
+	void SectionSchedulingCoordinator::RecordSelectedPublication(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		const SectionCoordinate& coordinate,
+		const ::Services::Map::Buildings::BuildingCandidatePublication* publication,
+		bool selectionChanged)
+	{
+		const auto demand = demandCounts_.find(coordinate);
+		const bool hasWaiter = demand != demandCounts_.end() && demand->second.Waiting.has_value();
+		const auto kind = hasWaiter ? (*demand->second.Waiting)->Kind : WaitingKind::AwaitingPublication;
+		if (!selectionChanged && (!hasWaiter || kind != WaitingKind::AwaitingPublication))
+		{
+			return;
+		}
+		const auto* section = buildingMapService.FindSectionAt(coordinate.GridX, coordinate.GridY);
+		if (selectionChanged && section != nullptr)
+		{
+			::Services::Map::Buildings::BuildingMapSection::ScenePresentationView presentation;
+			if (section->TryBorrowPresentationScene(presentation) && !presentation.IsComplete)
+			{
+				buildingMapService.MarkGpuSectionPresentationChanged(coordinate.GridX, coordinate.GridY);
+			}
+		}
+		if (!hasWaiter)
+		{
+			return;
+		}
+		if (publication != nullptr)
+		{
+			SetWaitingSection(coordinate, SectionScheduler::NeedsInitialSpriteVisit(section, *publication)
+				? WaitingKind::InitialSprites : WaitingKind::Continuation);
+		}
+		else if (kind != WaitingKind::AwaitingPublication)
+		{
+			SetWaitingSection(coordinate, WaitingKind::AwaitingPublication);
+		}
+	}
+
+	/** Rotates a demanded coordinate within one ordered set, preserving its existing node. */
+	void SectionSchedulingCoordinator::SetWaitingSection(
+		const SectionCoordinate& coordinate,
+		WaitingKind kind,
+		std::uint64_t eligibleTick)
+	{
+		auto& waiting = demandCounts_.at(coordinate).Waiting;
+		const WaitingSection updated{
+			kind, (std::max)(eligibleTick, budgetTickSequence_), ++roundRobinPosition_, coordinate};
+		if (!waiting.has_value())
+		{
+			waiting = waitingSections_.insert(updated).first;
+			return;
+		}
+		auto node = waitingSections_.extract(*waiting);
+		node.value() = updated;
+		waiting = waitingSections_.insert(std::move(node)).position;
+	}
+
+	/** Removes a waiting entry through the existing coordinate index. */
+	void SectionSchedulingCoordinator::RemoveWaitingSection(const SectionCoordinate& coordinate) noexcept
+	{
+		const auto demand = demandCounts_.find(coordinate);
+		if (demand != demandCounts_.end() && demand->second.Waiting.has_value())
+		{
+			waitingSections_.erase(*demand->second.Waiting);
+			demand->second.Waiting.reset();
+		}
+	}
+
+	/** Releases a completed job while retaining aggregate viewport demand. */
 	void SectionSchedulingCoordinator::RecordSectionCompleted(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionCoordinate& coordinate)
 	{
-		waitingSections_.erase(coordinate);
-		if (focusedSection_.has_value() &&
-			focusedSection_->GridX == coordinate.GridX &&
-			focusedSection_->GridY == coordinate.GridY)
-		{
-			ClearFocusedSection();
-		}
+		RemoveWaitingSection(coordinate);
 		CancelSectionJob(buildingMapService, coordinate);
 	}
 
-	/** Advances acquisition first, then spends the shared deadline on focused Section work. */
+	/** Advances acquisition first, then rotates runnable Sections under the same deadline. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSections(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionPublicationBatch& publications)
@@ -207,18 +285,6 @@ namespace Services::Map::Buildings::Scheduling
 		tickDeadline_ = allowanceStarted +
 			std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 				std::chrono::duration<double, std::milli>(nominalTickBudgetMs_));
-		deferredSectionsThisTick_.clear();
-		if (focusedSection_.has_value())
-		{
-			if (focusedTickCount_ >= MaximumFocusedTickCount)
-			{
-				ClearFocusedSection();
-			}
-			else
-			{
-				++focusedTickCount_;
-			}
-		}
 	}
 
 	/** Advances acquisition once per coordinator call while the shared tick deadline remains. */
@@ -238,143 +304,92 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 	}
 
-	/** Continues one progressing job; bounded tenure then advances the ordered cursor. */
+	/** Advances one waiting set under the shared allowance, rotating after each visit. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSectionSlices(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionPublicationBatch& publications)
 	{
-		if (sectionScheduler_ == nullptr)
+		while (sectionScheduler_ != nullptr && !waitingSections_.empty() && IsTickAllowanceAvailable())
 		{
-			return;
-		}
-		while (!waitingSections_.empty() && IsTickAllowanceAvailable())
-		{
-			SectionCoordinate coordinate;
-			const bool focusedVisit = focusedSection_.has_value() &&
-				waitingSections_.find(*focusedSection_) != waitingSections_.end() &&
-				IsDemanded(*focusedSection_) &&
-				deferredSectionsThisTick_.find(*focusedSection_) == deferredSectionsThisTick_.end();
-			if (focusedSection_.has_value() && !focusedVisit)
-			{
-				ClearFocusedSection();
-			}
-			if (focusedVisit)
-			{
-				coordinate = *focusedSection_;
-			}
-			else if (!TrySelectNextWaitingSection(coordinate))
+			const auto selected = SelectNextWaitingSection();
+			if (selected == waitingSections_.end())
 			{
 				return;
 			}
-			roundRobinCursor_ = coordinate;
-			roundRobinCursorAvailable_ = true;
-			bool deadlineYielded = false;
-			if (AdvanceOneWaitingSection(
-				buildingMapService,
-				coordinate,
-				publications,
-				deadlineYielded))
-			{
-				deferredSectionsThisTick_.insert(coordinate);
-				if (deadlineYielded && !focusedVisit)
-				{
-					focusedSection_ = coordinate;
-					focusedTickCount_ = 1;
-				}
-				else if (!deadlineYielded && (focusedVisit ||
-					(focusedSection_.has_value() &&
-					focusedSection_->GridX == coordinate.GridX &&
-					focusedSection_->GridY == coordinate.GridY)))
-				{
-					ClearFocusedSection();
-				}
-			}
-			else if (!focusedVisit)
-			{
-				focusedSection_ = coordinate;
-				focusedTickCount_ = 1;
-			}
+			const WaitingSection waiting = *selected;
+			AdvanceOneWaitingSection(buildingMapService, waiting, publications);
 		}
 	}
 
-	/** Selects and advances the current publication once, returning true when a same-tick retry is blocked. */
-	bool SectionSchedulingCoordinator::AdvanceOneWaitingSection(
+	/** Visits the selected publication once and records the retained job's next scheduling state. */
+	void SectionSchedulingCoordinator::AdvanceOneWaitingSection(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
-		const SectionCoordinate& coordinate,
-		const SectionPublicationBatch& publications,
-		bool& deadlineYielded)
+		const WaitingSection& waiting,
+		const SectionPublicationBatch& publications)
 	{
-		deadlineYielded = false;
-		if (!IsDemanded(coordinate) || waitingSections_.find(coordinate) == waitingSections_.end())
-		{
-			CancelSectionJob(buildingMapService, coordinate);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			++diagnostics_.NoLongerEligibleCoordinates;
-#endif
-			return true;
-		}
-		std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner;
+		const auto& coordinate = waiting.Coordinate;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto sourceSelectionStarted = std::chrono::steady_clock::now();
 #endif
-		{
-			const auto publicationEntry = publications.find(std::make_pair(coordinate.GridX, coordinate.GridY));
-			if (publicationEntry != publications.end())
-			{
-				publicationOwner = publicationEntry->second;
-			}
-		}
+		const auto publication = publications.find({coordinate.GridX, coordinate.GridY});
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		diagnostics_.SourceSelection.Add(std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sourceSelectionStarted).count());
 #endif
-		if (publicationOwner == nullptr)
+		if (publication == publications.end() || publication->second == nullptr)
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			++diagnostics_.SourceSelectionMisses;
 #endif
-			return true;
+			SetWaitingSection(coordinate, WaitingKind::AwaitingPublication);
+			return;
 		}
 		IncrementalSectionAdvanceResult result;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto sliceStarted = std::chrono::steady_clock::now();
 #endif
 		BM124D_SECTION(coordinate.GridX, coordinate.GridY, result = AdvanceSelectedSectionJob(
-			buildingMapService,
-			coordinate,
-			publicationOwner,
-			tickDeadline_));
+			buildingMapService, coordinate, publication->second, waiting.Kind == WaitingKind::InitialSprites));
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double sliceElapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sliceStarted).count();
 		RecordIncrementalDiagnostics(coordinate, sliceElapsedMs, result);
 #endif
-		if (result.AwaitingImageDemand)
+		UpdateWaitingSectionAfterVisit(waiting, result);
+	}
+
+	/** Keeps resource polls behind runnable work and parks jobs that require new source facts. */
+	void SectionSchedulingCoordinator::UpdateWaitingSectionAfterVisit(
+		const WaitingSection& waiting,
+		const IncrementalSectionAdvanceResult& result)
+	{
+		using State = IncrementalSectionAdvanceResult::State;
+		const auto& coordinate = waiting.Coordinate;
+		if (result.AwaitingImageDemand || result.CurrentState == State::TerminalFailure)
 		{
-			waitingSections_.erase(coordinate);
-			if (focusedSection_.has_value() &&
-				focusedSection_->GridX == coordinate.GridX &&
-				focusedSection_->GridY == coordinate.GridY)
-			{
-				ClearFocusedSection();
-			}
-			return true;
+			RemoveWaitingSection(coordinate);
+			return;
 		}
-		if (result.CurrentState == IncrementalSectionAdvanceResult::State::TerminalFailure)
+		const auto& current = demandCounts_.at(coordinate).Waiting;
+		if (!current.has_value())
 		{
-			waitingSections_.erase(coordinate);
-			if (focusedSection_.has_value() &&
-				focusedSection_->GridX == coordinate.GridX &&
-				focusedSection_->GridY == coordinate.GridY)
-			{
-				ClearFocusedSection();
-			}
-			return true;
+			return; // Successful image commitment already removed the waiter.
 		}
-		deadlineYielded = result.CurrentState == IncrementalSectionAdvanceResult::State::Pending &&
-			result.WorkUnitsConsumed == 0 && !IsTickAllowanceAvailable();
-		return result.CurrentState != IncrementalSectionAdvanceResult::State::Pending ||
-			result.WorkUnitsConsumed == 0;
+		if (result.CurrentState == State::RestartRequired && !result.HasUnattemptedSprites)
+		{
+			SetWaitingSection(coordinate, WaitingKind::AwaitingSourceChange);
+			return;
+		}
+		if (result.CurrentState == State::WaitingForResources)
+		{
+			SetWaitingSection(coordinate, result.HasSpriteRetries
+				? WaitingKind::Continuation : WaitingKind::AwaitingSourceChange, budgetTickSequence_ + 1);
+			return;
+		}
+		const auto kind = result.HasUnattemptedSprites ? WaitingKind::InitialSprites : WaitingKind::Continuation;
+		const bool madeProgress = result.CurrentState == State::Pending &&
+			(result.WorkUnitsConsumed != 0 || waiting.Kind != kind);
+		SetWaitingSection(coordinate, kind, madeProgress ? budgetTickSequence_ : budgetTickSequence_ + 1);
 	}
 
 	/** Reports whether elapsed work leaves room for another indivisible Section visit. */
@@ -418,46 +433,49 @@ namespace Services::Map::Buildings::Scheduling
 		diagnostics_.CoordinatorAdvancement.Add(completedAdvancementMs);
 #endif
 	}
-	/** Selects the next eligible waiting coordinate after the current rotation cursor. */
-	bool SectionSchedulingCoordinator::TrySelectNextWaitingSection(
-		SectionCoordinate& output) const
+	/** Gives one continuation first access on every 32nd competing controller tick. */
+	SectionSchedulingCoordinator::WaitingSections::const_iterator
+	SectionSchedulingCoordinator::SelectNextWaitingSection()
 	{
-		const auto first = roundRobinCursorAvailable_
-			? waitingSections_.upper_bound(roundRobinCursor_)
-			: waitingSections_.begin();
-		for (auto candidate = first; candidate != waitingSections_.end(); ++candidate)
+		const auto end = waitingSections_.end();
+		const auto first = waitingSections_.begin();
+		if (first == end || first->Kind > WaitingKind::Continuation)
 		{
-			if (deferredSectionsThisTick_.find(*candidate) == deferredSectionsThisTick_.end())
-			{
-				output = *candidate;
-				return true;
-			}
+			return end;
 		}
-		for (auto candidate = waitingSections_.begin(); candidate != first; ++candidate)
+		const bool spritesReady = first->Kind == WaitingKind::InitialSprites &&
+			first->EligibleTick <= budgetTickSequence_;
+		if (spritesReady && lastSpritePriorityTick_ == budgetTickSequence_)
 		{
-			if (deferredSectionsThisTick_.find(*candidate) == deferredSectionsThisTick_.end())
-			{
-				output = *candidate;
-				return true;
-			}
+			return first;
 		}
-		return false;
+		const auto continuation = first->Kind == WaitingKind::Continuation
+			? first : waitingSections_.lower_bound(WaitingSection{WaitingKind::Continuation});
+		const bool continuationReady = continuation != end && continuation->Kind == WaitingKind::Continuation &&
+			continuation->EligibleTick <= budgetTickSequence_;
+		if (spritesReady)
+		{
+			lastSpritePriorityTick_ = budgetTickSequence_;
+			if (continuationReady && ++spritePriorityTickCount_ >= ContinuationFairnessIntervalTicks)
+			{
+				spritePriorityTickCount_ = 0;
+				return continuation;
+			}
+			return first;
+		}
+		if (continuationReady)
+		{
+			spritePriorityTickCount_ = 0;
+			return continuation;
+		}
+		return end;
 	}
 
-	/** Clears rotation, focus tenure and deferrals without replenishing an allowance within its tick. */
+	/** Clears fairness history without replenishing the current tick's allowance. */
 	void SectionSchedulingCoordinator::ResetSchedulingBudgetState() noexcept
 	{
-		deferredSectionsThisTick_.clear();
-		ClearFocusedSection();
-		roundRobinCursor_ = {};
-		roundRobinCursorAvailable_ = false;
-	}
-
-	/** Releases the coordinate focus and its consecutive-tick tenure. */
-	void SectionSchedulingCoordinator::ClearFocusedSection() noexcept
-	{
-		focusedSection_.reset();
-		focusedTickCount_ = 0;
+		lastSpritePriorityTick_.reset();
+		spritePriorityTickCount_ = 0;
 	}
 
 	/** Advances one selected publication through the active round-robin visit adapter. */
@@ -466,43 +484,30 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionCoordinate& coordinate,
 		std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
-		std::chrono::steady_clock::time_point deadline)
+		bool initialSpritesOnly)
 	{
-		IncrementalSectionAdvanceResult result;
-		if (std::chrono::steady_clock::now() >= deadline)
+		if (!IsTickAllowanceAvailable())
 		{
-			return result;
-		}
-		if (sectionScheduler_ == nullptr || publicationOwner == nullptr)
-		{
-			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
-			return result;
+			IncrementalSectionAdvanceResult deferred;
+			deferred.HasUnattemptedSprites = initialSpritesOnly;
+			return deferred;
 		}
 		::Services::Map::Buildings::BuildingMapSection& section =
 			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
-		bool generationReplaced = false;
-		publicationOwner = sectionScheduler_->EnsureSectionJob(
-			section,
-			publicationOwner,
-			generationReplaced);
-		if (generationReplaced)
-		{
-			PublishGpuPresentationChange(buildingMapService, section);
-			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
-			return result;
-		}
+		publicationOwner = sectionScheduler_->EnsureSectionJob(section, publicationOwner);
 		const SectionJobContinuationMode continuationMode =
 			sectionScheduler_->SelectSectionJobContinuationMode(
 				section,
 				publicationOwner);
-		result = AdvanceRetainedSectionJob(
+		auto result = AdvanceRetainedSectionJob(
 			buildingMapService,
 			coordinate,
 			publicationOwner,
 			section,
 			continuationMode,
-			deadline,
+			initialSpritesOnly,
 			HasImageDemand(coordinate));
+		result.HasUnattemptedSprites = SectionScheduler::NeedsInitialSpriteVisit(&section, *publicationOwner);
 		PublishGpuPresentationChange(buildingMapService, section);
 		return result;
 	}
@@ -526,7 +531,7 @@ namespace Services::Map::Buildings::Scheduling
 		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJobContinuationMode continuationMode,
-		std::chrono::steady_clock::time_point deadline,
+		bool initialSpritesOnly,
 		bool renderSectionImages)
 	{
 		IncrementalSectionAdvanceResult result;
@@ -535,10 +540,11 @@ namespace Services::Map::Buildings::Scheduling
 			publicationOwner,
 			continuationMode,
 			buildingMapService.splinePolicies_,
-			deadline,
+			SectionScheduler::SectionPreparationVisit{tickDeadline_, budgetTickSequence_, initialSpritesOnly},
 			renderSectionImages);
 		result.WorkUnitsConsumed = jobResult.WorkUnitsConsumed;
 		result.AwaitingImageDemand = jobResult.AwaitingImageDemand;
+		result.HasSpriteRetries = jobResult.HasSpriteRetries;
 		if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::WaitingForResources)
 		{
 			result.CurrentState = IncrementalSectionAdvanceResult::State::WaitingForResources;
@@ -965,7 +971,7 @@ namespace Services::Map::Buildings::Scheduling
 		demand.ViewportCount = 1;
 		demand.ImageViewportCount = renderSectionImages ? 1 : 0;
 		demandCounts_.emplace(coordinate, demand);
-		waitingSections_.insert(coordinate);
+		SetWaitingSection(coordinate, WaitingKind::AwaitingPublication);
 	}
 
 	/** Drops one reference, requeues shared demand, and withdraws work after the final departure. */
@@ -989,14 +995,8 @@ namespace Services::Map::Buildings::Scheduling
 			RequestSectionWork(coordinate);
 			return;
 		}
+		RemoveWaitingSection(coordinate);
 		demandCounts_.erase(demandCount);
-		waitingSections_.erase(coordinate);
-		if (focusedSection_.has_value() &&
-			focusedSection_->GridX == coordinate.GridX &&
-			focusedSection_->GridY == coordinate.GridY)
-		{
-			ClearFocusedSection();
-		}
 		if (sectionScheduler_ != nullptr)
 		{
 			CancelSectionJob(buildingMapService, coordinate);

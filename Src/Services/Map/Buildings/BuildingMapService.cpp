@@ -320,12 +320,21 @@ namespace Services::Map::Buildings
 						coordinate.second});
 			}
 		}
-		for (const auto& coordinate : sectionSchedulingCoordinator_->waitingSections_)
+		using Coordinator = Scheduling::SectionSchedulingCoordinator;
+		const auto& waiting = sectionSchedulingCoordinator_->waitingSections_;
+		auto entry = waiting.lower_bound(Coordinator::WaitingSection{Coordinator::WaitingKind::AwaitingPublication});
+		while (entry != waiting.end() && entry->Kind == Coordinator::WaitingKind::AwaitingPublication)
 		{
-			const SectionCoordinate key{coordinate.GridX, coordinate.GridY};
-			if (pendingSectionPublications_.find(key) == pendingSectionPublications_.end())
+			const auto grid = (entry++)->Coordinate;
+			const SectionCoordinate coordinate{grid.GridX, grid.GridY};
+			const auto selected = pendingSectionPublications_.find(coordinate);
+			if (selected == pendingSectionPublications_.end())
 			{
-				coordinates.insert(key);
+				coordinates.insert(coordinate);
+			}
+			else
+			{
+				sectionSchedulingCoordinator_->RecordSelectedPublication(*this, grid, selected->second.get(), false);
 			}
 		}
 		return coordinates;
@@ -399,7 +408,9 @@ namespace Services::Map::Buildings
 		{
 			if (selectedCoordinates.find(coordinate) == selectedCoordinates.end())
 			{
-				pendingSectionPublications_.erase(coordinate);
+				const bool selectionChanged = pendingSectionPublications_.erase(coordinate) != 0;
+				sectionSchedulingCoordinator_->RecordSelectedPublication(
+					*this, {coordinate.first, coordinate.second}, nullptr, selectionChanged);
 			}
 		}
 	}
@@ -480,6 +491,25 @@ namespace Services::Map::Buildings
 		{
 			throw std::logic_error("Section publication batch did not preserve request cardinality.");
 		}
+		RetainSelectedSectionPublications(requestedCoordinates, requestedRegions, publications, selectedCoordinates);
+		if (!completeRequestBatch)
+		{
+			sectionHashRechecksRequested_.insert(viewportHandle);
+		}
+		else if (clearRecheckWhenCovered && AreAllViewportSectionsSelected(
+			*viewportsByHandle_.at(viewportHandle), selectedCoordinates))
+		{
+			sectionHashRechecksRequested_.erase(viewportHandle);
+		}
+	}
+
+	/** Retains each winning source and notifies scheduling using the exact selected owner. */
+	void BuildingMapService::RetainSelectedSectionPublications(
+		const std::vector<SectionCoordinate>& requestedCoordinates,
+		const std::vector<BuildingCollectionRegion>& requestedRegions,
+		const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+		std::set<SectionCoordinate>& selectedCoordinates)
+	{
 		for (std::size_t index = 0; index < publications.size(); ++index)
 		{
 			const auto& publication = publications[index];
@@ -499,24 +529,14 @@ namespace Services::Map::Buildings
 			{
 				continue;
 			}
-			auto existing = pendingSectionPublications_.find(coordinate);
-			if (existing == pendingSectionPublications_.end())
-			{
-				pendingSectionPublications_.emplace(coordinate, publication);
-			}
-			else if (existing->second->ContentHash() != publication->ContentHash())
+			auto [existing, inserted] = pendingSectionPublications_.try_emplace(coordinate, publication);
+			const bool selectionChanged = inserted || existing->second->ContentHash() != publication->ContentHash();
+			if (selectionChanged && !inserted)
 			{
 				existing->second = publication;
 			}
-		}
-		if (!completeRequestBatch)
-		{
-			sectionHashRechecksRequested_.insert(viewportHandle);
-		}
-		else if (clearRecheckWhenCovered && AreAllViewportSectionsSelected(
-			*viewportsByHandle_.at(viewportHandle), selectedCoordinates))
-		{
-			sectionHashRechecksRequested_.erase(viewportHandle);
+			sectionSchedulingCoordinator_->RecordSelectedPublication(
+				*this, {coordinate.first, coordinate.second}, existing->second.get(), selectionChanged);
 		}
 	}
 
@@ -560,12 +580,7 @@ namespace Services::Map::Buildings
 			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
 			{
 				const SectionCoordinate coordinate{gridX, gridY};
-				pendingSectionPublications_.erase(coordinate);
-				if (sectionSchedulingCoordinator_ != nullptr)
-				{
-					sectionSchedulingCoordinator_->RequestSectionWork(
-						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{gridX, gridY});
-				}
+				InvalidateSelectedSectionPublication(coordinate);
 			}
 		}
 	}
@@ -591,15 +606,20 @@ namespace Services::Map::Buildings
 				{
 					continue;
 				}
-				pendingSectionPublications_.erase(coordinate);
-				if (sectionSchedulingCoordinator_ != nullptr)
-				{
-					sectionSchedulingCoordinator_->RequestSectionWork(
-						Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
-							coordinate.first,
-							coordinate.second});
-				}
+				InvalidateSelectedSectionPublication(coordinate);
 			}
+		}
+	}
+
+	/** Withdraws selection and leaves any demanded job dormant until a source is selected again. */
+	void BuildingMapService::InvalidateSelectedSectionPublication(const SectionCoordinate& coordinate)
+	{
+		const bool selectionChanged = pendingSectionPublications_.erase(coordinate) != 0;
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			const Scheduling::SectionSchedulingCoordinator::SectionCoordinate grid{coordinate.first, coordinate.second};
+			sectionSchedulingCoordinator_->RequestSectionWork(grid);
+			sectionSchedulingCoordinator_->RecordSelectedPublication(*this, grid, nullptr, selectionChanged);
 		}
 	}
 

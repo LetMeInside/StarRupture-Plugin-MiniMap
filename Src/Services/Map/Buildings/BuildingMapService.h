@@ -302,6 +302,14 @@ namespace Services::Map::Buildings
 			BuildingMapViewport& viewport,
 			const std::vector<BuildingCollectionRegion>& requestedRegions,
 			std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications);
+		/** Retains winning publications and updates the coordinator at the source-selection boundary. */
+		void RetainSelectedSectionPublications(
+			const std::vector<SectionCoordinate>& requestedCoordinates,
+			const std::vector<BuildingCollectionRegion>& requestedRegions,
+			const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
+			std::set<SectionCoordinate>& selectedCoordinates);
+		/** Clears one source selection and notifies the coordinator of the dependency change. */
+		void InvalidateSelectedSectionPublication(const SectionCoordinate& coordinate);
 		/** Validates ordered results and lets the first registered valid source win. */
 		void RetainSectionPublicationBatch(
 			std::uint64_t viewportHandle,
