@@ -5,6 +5,7 @@
 #include "DiagnosticExports.h"
 #include "plugin_helpers.h"
 #include "BuildingCollectorV2.h"
+#include "Native/MassLifecycle.h"
 #include "SplinePolicyId.h"
 #include "../Map.h"
 #include "Services/Map/Buildings/BuildingCandidatePublication.h"
@@ -58,6 +59,16 @@ namespace MiniMap::BuildingAcquisition
     struct BuildingCollectorV2::State
     {
         using Clock = std::chrono::steady_clock;
+        static constexpr auto MutationQuietPeriod = std::chrono::milliseconds(100);
+        static constexpr auto PeriodicFallbackInterval = std::chrono::seconds(10);
+
+        /** Classifies a collector scan for bounded success/failure diagnostics. */
+        enum class AcquisitionReason
+        {
+            Immediate,
+            Mutation,
+            Fallback
+        };
 
         /** Owns one native-constructed Shipping context for one synchronous traversal. */
         struct MassExecutionContextOwner
@@ -476,6 +487,10 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t RejectedCoverageReuse = 0;
             std::uint64_t PeriodicScans = 0;
             std::uint64_t ImmediateScans = 0;
+            std::uint64_t MutationScans = 0;
+            std::uint64_t FailedImmediateScans = 0;
+            std::uint64_t FailedMutationScans = 0;
+            std::uint64_t FailedFallbackScans = 0;
             WorstMembershipScan WorstScan;
 
             void Reset() noexcept
@@ -501,6 +516,7 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
             std::uint64_t Generation = 0;
+            AcquisitionReason Reason = AcquisitionReason::Immediate;
             bool Complete = false;
 
             explicit MembershipTiming(State& owner) noexcept : Owner(owner), Generation(owner.Generation) {}
@@ -526,6 +542,27 @@ namespace MiniMap::BuildingAcquisition
                 measurements.Added += Added;
                 measurements.Removed += Removed;
                 measurements.FailedScans += Complete ? 0 : 1;
+                if (Complete)
+                {
+                    if (Reason == AcquisitionReason::Immediate)
+                        ++measurements.ImmediateScans;
+                    else if (Reason == AcquisitionReason::Mutation)
+                        ++measurements.MutationScans;
+                    else
+                        ++measurements.PeriodicScans;
+                }
+                else if (Reason == AcquisitionReason::Immediate)
+                {
+                    ++measurements.FailedImmediateScans;
+                }
+                else if (Reason == AcquisitionReason::Mutation)
+                {
+                    ++measurements.FailedMutationScans;
+                }
+                else
+                {
+                    ++measurements.FailedFallbackScans;
+                }
                 if (totalMs >= measurements.WorstScan.TotalMs)
                 {
                     measurements.WorstScan = {totalMs, ChunkExecutionMs, OwnedFactCopyingMs, DeferredAcquisitionMs,
@@ -556,15 +593,15 @@ namespace MiniMap::BuildingAcquisition
         Measurements Diagnostics;
 #endif
 
-        const std::chrono::milliseconds MembershipInterval;
+        const std::chrono::milliseconds RetryInterval;
 
         /** Stores the immutable scan interval and rejects nonpositive values once. */
-        explicit State(std::chrono::milliseconds membershipInterval)
-            : MembershipInterval(membershipInterval)
+        explicit State(std::chrono::milliseconds retryInterval)
+            : RetryInterval(retryInterval)
         {
-            if (MembershipInterval <= std::chrono::milliseconds::zero())
+            if (RetryInterval <= std::chrono::milliseconds::zero())
             {
-                throw std::invalid_argument("BuildingCollectorV2 membership interval must be positive.");
+                throw std::invalid_argument("BuildingCollectorV2 retry interval must be positive.");
             }
         }
 
@@ -728,7 +765,12 @@ namespace MiniMap::BuildingAcquisition
         std::uint64_t RequestGeneration = 0;
         /** Content hash for the currently committed regional dataset; zero is a valid value. */
         std::uint64_t AcquisitionContentHash = 0;
-        Clock::time_point NextMembership{};
+        Clock::time_point NextFallback{};
+        Clock::time_point RetryNotBefore{};
+        std::uint64_t ObservedMutationRevision = 0;
+        std::uint64_t AcknowledgedMutationRevision = 0;
+        std::uint64_t LatestMutationTimestampNanoseconds = 0;
+        bool HasMutationBaseline = false;
         bool MembershipComplete = false;
         bool HasRegion = false;
         bool IncludeDroneRails = true;
@@ -773,6 +815,50 @@ namespace MiniMap::BuildingAcquisition
                 ReadManager(ManagerStorage(native, world)) == Manager;
         }
 
+        /** Establishes a new collector's revision baseline without importing prior-session dirtiness. */
+        void EstablishMutationBaseline() noexcept
+        {
+            MiniMapMassLifecycle::MutationSnapshot snapshot;
+            MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(snapshot);
+            ObservedMutationRevision = snapshot.Revision;
+            AcknowledgedMutationRevision = snapshot.Revision;
+            LatestMutationTimestampNanoseconds = snapshot.TimestampNanoseconds;
+            HasMutationBaseline = true;
+        }
+
+        /** Floors a newly observed revision to observation time so an older paired timestamp cannot trigger early acquisition. */
+        void ObserveMutationSnapshot(const MiniMapMassLifecycle::MutationSnapshot& snapshot) noexcept
+        {
+            if (!HasMutationBaseline)
+            {
+                EstablishMutationBaseline();
+            }
+            if (snapshot.Revision > ObservedMutationRevision)
+            {
+                ObservedMutationRevision = snapshot.Revision;
+                LatestMutationTimestampNanoseconds = (std::max)(
+                    snapshot.TimestampNanoseconds, CurrentSteadyNanoseconds());
+            }
+            else
+                LatestMutationTimestampNanoseconds = (std::max)(
+                    LatestMutationTimestampNanoseconds, snapshot.TimestampNanoseconds);
+        }
+
+        /** Reads the collector thread's steady-clock time in the signal's nanosecond epoch. */
+        static std::uint64_t CurrentSteadyNanoseconds() noexcept
+        {
+            return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Clock::now().time_since_epoch()).count());
+        }
+
+        /** Converts the monotonic callback nanoseconds to the same steady-clock epoch used for deadlines. */
+        Clock::time_point MutationQuietDeadline() const noexcept
+        {
+            const auto timestamp = std::chrono::duration_cast<Clock::duration>(
+                std::chrono::nanoseconds(LatestMutationTimestampNanoseconds));
+            return Clock::time_point(timestamp) + MutationQuietPeriod;
+        }
+
         /** Withdraws retained membership when the world or native query source is unavailable. */
         void InvalidateCoverageForUnavailableSource() noexcept
         {
@@ -780,7 +866,8 @@ namespace MiniMap::BuildingAcquisition
                 PendingSnapshotEligible || PendingReuseEligible;
             MembershipComplete = false;
             CommittedCoverageValid = false;
-            NextMembership = {};
+            NextFallback = {};
+            RetryNotBefore = {};
             ImmediateScanRequired = true;
             if (RegionChangePendingValidation)
             {
@@ -821,7 +908,7 @@ namespace MiniMap::BuildingAcquisition
                 CoverageWorld == World && CoverageWorld == world && CoverageManager == Manager &&
                 CoverageSession == Generation && CoverageRequest != 0 &&
                 CoverageContentHash == AcquisitionContentHash;
-            const bool beforeDeadline = now < NextMembership;
+            const bool beforeDeadline = NextFallback != Clock::time_point{} && now < NextFallback;
             const bool contained = snapshotCurrent && IsRegionContained(RequestedRegion, CommittedCoverage);
             if (PendingReuseEligible && contained && beforeDeadline)
             {
@@ -840,7 +927,7 @@ namespace MiniMap::BuildingAcquisition
             else if (!snapshotCurrent)
             {
                 ImmediateScanRequired = true;
-                NextMembership = {};
+                NextFallback = {};
                 CommittedCoverageValid = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (hadCoverageCandidate)
@@ -854,7 +941,7 @@ namespace MiniMap::BuildingAcquisition
                 ImmediateScanRequired = !PendingSnapshotEligible || !contained;
                 if (ImmediateScanRequired)
                 {
-                    NextMembership = {};
+                    NextFallback = {};
                 }
             }
             RegionChangePendingValidation = false;
@@ -969,7 +1056,12 @@ namespace MiniMap::BuildingAcquisition
             PendingReuseEligible = false;
             ImmediateScanRequired = true;
             Definitions.clear();
-            NextMembership = {};
+            NextFallback = {};
+            RetryNotBefore = {};
+            ObservedMutationRevision = 0;
+            AcknowledgedMutationRevision = 0;
+            LatestMutationTimestampNanoseconds = 0;
+            HasMutationBaseline = false;
             MembershipComplete = false;
             if (clearRequest)
             {
@@ -1009,6 +1101,7 @@ namespace MiniMap::BuildingAcquisition
                 std::uint8_t(SDK::EMassFragmentPresence::Optional));
             native.mass.addOptionalBuildingParametersRequirement(
                 Query.data(), std::uint8_t(SDK::EMassFragmentPresence::Optional));
+            EstablishMutationBaseline();
             return true;
         }
 
@@ -1419,16 +1512,50 @@ namespace MiniMap::BuildingAcquisition
             );
         }
 
-        /** Runs the due request scan and keeps failed or stale results incomplete. */
-        void ReconcileIfDue(const Native& native)
+        /** Chooses immediate coverage, expired mutation, or ordinary fallback work in priority order. */
+        bool TrySelectAcquisitionReason(
+            Clock::time_point now,
+            MiniMapMassLifecycle::MutationSnapshot& startSnapshot,
+            AcquisitionReason& reason)
         {
-            if (Clock::now() < NextMembership)
-                return;
-            const bool immediateScan = ImmediateScanRequired;
-            const auto context = CaptureContext();
+            if (!MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(startSnapshot))
+                return false;
+            ObserveMutationSnapshot(startSnapshot);
+            const bool mutationPending = ObservedMutationRevision > AcknowledgedMutationRevision;
+            if (ImmediateScanRequired)
+            {
+                reason = AcquisitionReason::Immediate;
+            }
+            else if (mutationPending && now >= MutationQuietDeadline())
+            {
+                reason = AcquisitionReason::Mutation;
+            }
+            else if (mutationPending)
+            {
+                return false;
+            }
+            else if (NextFallback == Clock::time_point{} || now >= NextFallback)
+            {
+                reason = AcquisitionReason::Fallback;
+            }
+            else
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /** Executes one selected scan and acknowledges only its captured revision after a current commit. */
+        void ExecuteAcquisition(
+            const Native& native,
+            const Context& context,
+            const MiniMapMassLifecycle::MutationSnapshot& startSnapshot,
+            AcquisitionReason reason)
+        {
             bool complete = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MembershipTiming timing{*this};
+            timing.Reason = reason;
 #endif
             try
             {
@@ -1444,26 +1571,39 @@ namespace MiniMap::BuildingAcquisition
             }
             if (!IsContextCurrent(native, context))
                 return;
+            const auto completedAt = Clock::now();
             if (!complete)
             {
                 MembershipComplete = false;
                 CommittedCoverageValid = false;
+                RetryNotBefore = completedAt + RetryInterval;
             }
             else
+            {
                 MembershipComplete = true;
-            NextMembership = Clock::now() + MembershipInterval;
-            ImmediateScanRequired = false;
+                AcknowledgedMutationRevision = (std::max)(
+                    AcknowledgedMutationRevision, startSnapshot.Revision);
+                NextFallback = completedAt + PeriodicFallbackInterval;
+                RetryNotBefore = {};
+                ImmediateScanRequired = false;
+            }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            if (immediateScan)
-            {
-                ++Diagnostics.ImmediateScans;
-            }
-            else
-            {
-                ++Diagnostics.PeriodicScans;
-            }
             timing.Complete = complete;
 #endif
+        }
+
+        /** Runs the due request scan and keeps failed or stale results incomplete. */
+        void ReconcileIfDue(const Native& native)
+        {
+            const auto context = CaptureContext();
+            const auto now = Clock::now();
+            if (!context.HasRegion || (RetryNotBefore != Clock::time_point{} && now < RetryNotBefore))
+                return;
+            MiniMapMassLifecycle::MutationSnapshot startSnapshot;
+            AcquisitionReason reason;
+            if (!TrySelectAcquisitionReason(now, startSnapshot, reason))
+                return;
+            ExecuteAcquisition(native, context, startSnapshot, reason);
         }
 
         /** Validates a copied fixed-size numerical value, never native memory. */
@@ -2300,7 +2440,7 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={periodic:%llu immediate:%llu}",
+            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={immediate:%llu mutation:%llu fallback:%llu} failedByReason={immediate:%llu mutation:%llu fallback:%llu}",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
@@ -2315,8 +2455,26 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<unsigned long long>(d.ImmediateRegionRequests),
                 static_cast<unsigned long long>(d.SuccessfulCoverageReuse),
                 static_cast<unsigned long long>(d.RejectedCoverageReuse),
+                static_cast<unsigned long long>(d.ImmediateScans),
+                static_cast<unsigned long long>(d.MutationScans),
                 static_cast<unsigned long long>(d.PeriodicScans),
-                static_cast<unsigned long long>(d.ImmediateScans));
+                static_cast<unsigned long long>(d.FailedImmediateScans),
+                static_cast<unsigned long long>(d.FailedMutationScans),
+                static_cast<unsigned long long>(d.FailedFallbackScans));
+            const bool mutationPending = ObservedMutationRevision > AcknowledgedMutationRevision;
+            const auto now = Clock::now();
+            const auto quietDeadline = MutationQuietDeadline();
+            const auto quietRemaining = mutationPending && quietDeadline > now
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(quietDeadline - now).count()
+                : 0;
+            const auto quietElapsed = mutationPending && now > quietDeadline
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(now - quietDeadline).count()
+                : 0;
+            LOG_INFO("MiniMap: BuildingMap mutation_schedule latestRevision:%llu acknowledgedRevision:%llu pending:%u quietRemainingMs:%lld quietElapsedMs:%lld",
+                static_cast<unsigned long long>(ObservedMutationRevision),
+                static_cast<unsigned long long>(AcknowledgedMutationRevision),
+                static_cast<unsigned>(mutationPending),
+                static_cast<long long>(quietRemaining), static_cast<long long>(quietElapsed));
         }
 
         /** Emits the numeric-only worst scan retained for one completed interval. */
@@ -2437,8 +2595,8 @@ namespace MiniMap::BuildingAcquisition
     }
 
     /** Creates inert CPU state and validates the immutable membership interval. */
-    BuildingCollectorV2::BuildingCollectorV2(std::chrono::milliseconds membershipInterval)
-        : state_(std::make_unique<State>(membershipInterval))
+    BuildingCollectorV2::BuildingCollectorV2(std::chrono::milliseconds retryInterval)
+        : state_(std::make_unique<State>(retryInterval))
     {
     }
 
@@ -2505,6 +2663,10 @@ namespace MiniMap::BuildingAcquisition
     /** Advances native acquisition using MiniMap's established gameplay world. */
     void BuildingCollectorV2::Update()
     {
+        MiniMapMassLifecycle::MutationSnapshot mutationSnapshot;
+        if (!MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(mutationSnapshot))
+            return;
+        (void)mutationSnapshot;
         const auto* native = MiniMapNative::Get();
         if (!native)
         {

@@ -21,12 +21,13 @@ namespace MiniMap::BuildingAcquisition
     class BuildingCollectorV2 final : public ::Services::Map::Buildings::IBuildingCollector
     {
     public:
-        /** Creates empty CPU state and fixes the minimum interval between membership scans.
-         * @param membershipInterval Positive delay between authoritative Mass membership scans.
-         * @throws std::invalid_argument when the interval is zero or negative.
+        /** Creates empty CPU state and fixes the retry delay after an unsuccessful native acquisition.
+         * Successful ordinary acquisitions use the fixed ten-second fallback; accepted mutations use a 100 ms trailing-edge quiet period.
+         * @param retryInterval Positive retry delay after a failed or stale acquisition attempt.
+         * @throws std::invalid_argument when the retry delay is zero or negative.
          */
         explicit BuildingCollectorV2(
-            std::chrono::milliseconds membershipInterval = std::chrono::milliseconds{1000});
+            std::chrono::milliseconds retryInterval = std::chrono::milliseconds{1000});
         /** Requires prior ShutdownResources; performs no implicit native shutdown. */
         ~BuildingCollectorV2() override;
         BuildingCollectorV2(const BuildingCollectorV2&) = delete;
@@ -53,7 +54,7 @@ namespace MiniMap::BuildingAcquisition
             AcquireSectionPublications(
                 std::span<const ::Services::Map::Buildings::BuildingCollectionRegion> sectionRegions)
                 const override;
-        /** Advances pending acquisition on the permitted game thread using MiniMapMap::GetWorld().
+        /** Advances due acquisition on the admitted game thread using MiniMapMap::GetWorld().
          * An unavailable world or uninitialized metadata leaves acquisition state untouched.
          * This does not establish, replace or terminate session ownership; native resources
          * remain the owner's responsibility.

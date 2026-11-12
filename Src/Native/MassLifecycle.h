@@ -1,4 +1,4 @@
-// Owns observational building lifecycle detours and bounded callback diagnostics for client gameplay sessions.
+// Owns accepted building-mutation publication, observational detours, and bounded callback diagnostics for client gameplay sessions.
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -11,23 +11,33 @@
 
 namespace MiniMapMassLifecycle
 {
-	/** Installs building Add/Remove sinks and owns bounded gameplay-session diagnostics. */
+	/** Collector watermark published by accepted callbacks; concurrent timestamp stores may be newer or older than the timestamp belonging to the observed revision. */
+	struct MutationSnapshot
+	{
+		std::uint64_t Revision = 0;
+		std::uint64_t TimestampNanoseconds = 0;
+	};
+
+	/** Installs building Add/Remove sinks and publishes accepted activity for collector-owned scheduling. */
 	class MassLifecycle final
 	{
 	public:
 		/** Installs the two fingerprint-resolved building callbacks through the existing loader hook service. */
 		static bool Initialize();
 
-		/** Closes diagnostic admission and requests removal of installed building hooks. */
+		/** Closes production callback admission and requests removal of installed building hooks. */
 		static void Shutdown() noexcept;
 
-		/** Resolves the current world's stability subsystem identity once on the game thread. */
+		/** Resolves and publishes the current world's stability subsystem identity once on the game thread. */
 		static void BeginWorld(SDK::UWorld* world);
 
-		/** Enables or disables callback classification for the admitted gameplay session. */
+		/** Opens or closes production callback admission for the established gameplay session. */
 		static void SetGameplayAdmitted(bool admitted) noexcept;
 
-		/** Clears the current world identity without resetting monotonic diagnostic counters. */
+		/** Reads revision then timestamp. Concurrent producers can make the pair conservative or stale; the collector floors a newly observed revision's time to its observation time. */
+		static bool TryGetMutationSnapshot(MutationSnapshot& snapshot) noexcept;
+
+		/** Closes admission and clears the current world identity without resetting monotonic counters. */
 		static void EndWorld() noexcept;
 
 		/** Samples the update thread and advances the tick sequence at the existing renderer callback. */

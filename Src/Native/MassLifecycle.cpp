@@ -1,6 +1,6 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements typed, observational building callbacks and bounded scalar lifecycle diagnostics.
+// Implements typed building callbacks, production mutation publication, and bounded scalar diagnostics.
 #include "MassLifecycle.h"
 
 #include "../Services/NativeHooks.h"
@@ -37,10 +37,10 @@ namespace
 	std::atomic<int> CreateInstallState{static_cast<int>(S::HookInstallState::Rejected)};
 	std::atomic<int> DestroyInstallState{static_cast<int>(S::HookInstallState::Rejected)};
 	std::atomic<bool> InstallationAttempted{false};
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	std::atomic<bool> GameplayAdmitted{false};
 	std::atomic<std::uintptr_t> CurrentStabilitySubsystem{0};
-#endif
+	std::atomic<std::uint64_t> AcceptedMutationRevision{0};
+	std::atomic<std::uint64_t> LatestAcceptedMutationNanoseconds{0};
 	std::atomic<BuildingFunction> CreateOriginal{nullptr};
 	std::atomic<BuildingFunction> DestroyOriginal{nullptr};
 
@@ -99,9 +99,9 @@ namespace MiniMapMassLifecycle
 		std::atomic<std::uint64_t>& destination,
 		std::uint64_t value) noexcept
 	{
-		std::uint64_t observed = destination.load(std::memory_order_relaxed);
+		std::uint64_t observed = destination.load(std::memory_order_acquire);
 		while (observed < value && !destination.compare_exchange_weak(
-			observed, value, std::memory_order_relaxed, std::memory_order_relaxed))
+			observed, value, std::memory_order_acq_rel, std::memory_order_acquire))
 		{
 		}
 	}
@@ -234,10 +234,11 @@ namespace MiniMapMassLifecycle
 	/** Stores only the active world subsystem address for later scalar callback comparison. */
 	void MassLifecycle::BeginWorld(SDK::UWorld* world)
 	{
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SetGameplayAdmitted(false);
-		CloseActiveBurst();
 		CurrentStabilitySubsystem.store(0, std::memory_order_release);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		CloseActiveBurst();
+#endif
 		if (world == nullptr)
 		{
 			return;
@@ -247,28 +248,29 @@ namespace MiniMapMassLifecycle
 				world, SDK::TSubclassOf<SDK::UWorldSubsystem>(
 					SDK::UCrBuildingStabilitySubsystem::StaticClass())));
 		CurrentStabilitySubsystem.store(reinterpret_cast<std::uintptr_t>(observer), std::memory_order_release);
-#else
-		(void)world;
-#endif
 	}
 
 	/** Changes only the atomic admission bit used to classify later callback observations. */
 	void MassLifecycle::SetGameplayAdmitted(bool admitted) noexcept
 	{
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		GameplayAdmitted.store(admitted, std::memory_order_release);
-#else
-		(void)admitted;
-#endif
+	}
+
+	/** Reads the two scalar watermarks; the collector handles any concurrent revision/timestamp mismatch conservatively. */
+	bool MassLifecycle::TryGetMutationSnapshot(MutationSnapshot& snapshot) noexcept
+	{
+		snapshot.Revision = AcceptedMutationRevision.load(std::memory_order_acquire);
+		snapshot.TimestampNanoseconds = LatestAcceptedMutationNanoseconds.load(std::memory_order_acquire);
+		return GameplayAdmitted.load(std::memory_order_acquire);
 	}
 
 	/** Ends callback admission and forgets the old subsystem address without dereferencing it. */
 	void MassLifecycle::EndWorld() noexcept
 	{
 		SetGameplayAdmitted(false);
+		CurrentStabilitySubsystem.store(0, std::memory_order_release);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		CloseActiveBurst();
-		CurrentStabilitySubsystem.store(0, std::memory_order_release);
 #endif
 	}
 
@@ -572,7 +574,6 @@ namespace MiniMapMassLifecycle
 		SDK::UCrBuildingStabilitySubsystem* subsystem,
 		bool creation) noexcept
 	{
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (!GameplayAdmitted.load(std::memory_order_acquire))
 		{
 			return;
@@ -584,15 +585,27 @@ namespace MiniMapMassLifecycle
 		}
 		if (expectedSubsystem == 0)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			MissingWorldIdentity.fetch_add(1, std::memory_order_relaxed);
+#endif
 			return;
 		}
 		if (reinterpret_cast<std::uintptr_t>(subsystem) != expectedSubsystem)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			WorldMismatches.fetch_add(1, std::memory_order_relaxed);
+#endif
+			return;
+		}
+		if (!GameplayAdmitted.load(std::memory_order_acquire))
+		{
 			return;
 		}
 		const std::uint64_t timestamp = CurrentNanoseconds();
+		// Separate producer stores can interleave; the collector floors a newly seen revision to observation time.
+		LatestAcceptedMutationNanoseconds.store(timestamp, std::memory_order_release);
+		AcceptedMutationRevision.fetch_add(1, std::memory_order_release);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (creation)
 		{
 			AcceptedCreationNotifications.fetch_add(1, std::memory_order_relaxed);
@@ -611,9 +624,6 @@ namespace MiniMapMassLifecycle
 		{
 			CrossThreadNotifications.fetch_add(1, std::memory_order_relaxed);
 		}
-#else
-		(void)subsystem;
-		(void)creation;
 #endif
 	}
 
