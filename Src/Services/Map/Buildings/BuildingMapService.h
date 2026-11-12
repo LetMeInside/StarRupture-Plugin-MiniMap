@@ -29,6 +29,10 @@ namespace Services::Map::Buildings
 	class BuildingMapSection;
 	class BuildingMapViewport;
 	class BuildingMapGpuViewport;
+	namespace Cache
+	{
+		class SpriteSourceManager;
+	}
 	namespace Scheduling
 	{
 		class SectionSchedulingCoordinator;
@@ -37,10 +41,10 @@ namespace Services::Map::Buildings
 #endif
 	}
 
-	/** Owns map configuration, shared Sections and their image residency, viewport registrations, source selection, image-change routing, the tick budget controller and scheduling coordinator.
+	/** Owns map configuration, shared sprite manager, Sections and image residency, viewport registrations, source selection, image-change routing, tick budget and scheduling coordinator.
 	 * Service and viewport calls must be made on one calling thread; this
 	 * foundation does not provide concurrent access or synchronization. The
-	 * coordinator owns the SectionScheduler and cache-aware acquisition resources.
+	 * coordinator owns the SectionScheduler, which borrows the shared sprite manager.
 	 */
 	class BuildingMapService final
 	{
@@ -80,6 +84,8 @@ namespace Services::Map::Buildings
 		 * @return True when the cache subtree was cleared without a filesystem error.
 		 */
 		bool ClearCache();
+		/** Returns read-only access to the shared, currently published sprite atlas. */
+		const Cache::SpriteSourceManager* PublishedSpriteAtlas() const noexcept;
 		/** Starts gameplay scheduling against the persistent renderer and stores map dimensions.
 		 * @param mapWidthMapUnits Active gameplay map width in map units.
 		 * @param mapHeightMapUnits Active gameplay map height in map units.
@@ -332,6 +338,7 @@ namespace Services::Map::Buildings
 		std::set<std::uint64_t> sectionHashRechecksRequested_;
 		std::uint64_t nextViewportHandle_ = 1;
 		bool sectionImageResidencyReconciliationPending_ = false;
+		std::unique_ptr<Cache::SpriteSourceManager> spriteSourceManager_;
 		std::unique_ptr<Scheduling::SectionSchedulingCoordinator> sectionSchedulingCoordinator_;
 	};
 }

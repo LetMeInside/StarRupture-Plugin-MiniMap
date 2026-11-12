@@ -18,6 +18,12 @@
 #include <utility>
 #include <vector>
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#define RECORD_IMAGE_FAILURE(...) (state_->Failure = Visuals::SectionFailureDetails{__VA_ARGS__})
+#else
+#define RECORD_IMAGE_FAILURE(...) ((void)0)
+#endif
+
 namespace Services::Map::Buildings::Rendering
 {
 	/** Owns all stable numerical resources and progress for one resumable Section render. */
@@ -54,6 +60,7 @@ namespace Services::Map::Buildings::Rendering
 		bool DestinationConstructionStarted = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Visuals::BuildingVisualsPhaseTimings PhaseTimings{};
+		Visuals::SectionFailureDetails Failure;
 #endif
 	};
 
@@ -77,6 +84,7 @@ namespace Services::Map::Buildings::Rendering
 	/** Advances destination creation, scene execution and finalization until the shared deadline. */
 	SectionRendering::StepResult SectionRendering::IncrementalOperation::Advance(
 		const Visuals::BuildingRenderSceneInput& scene,
+		const Visuals::PreparedBuildingGeometry& geometry,
 		Visuals::BuildingVisualsContext& context,
 		std::chrono::steady_clock::time_point deadline)
 	{
@@ -100,7 +108,7 @@ namespace Services::Map::Buildings::Rendering
 			}
 			if (state_->CurrentPhase == State::Phase::DrawScene)
 			{
-				if (!AdvanceDrawing(scene, context, deadline, result))
+				if (!AdvanceDrawing(scene, geometry, context, deadline, result))
 				{
 					break;
 				}
@@ -108,7 +116,7 @@ namespace Services::Map::Buildings::Rendering
 			}
 			if (state_->CurrentPhase == State::Phase::EvaluateDrawing)
 			{
-				EvaluateDrawing(scene, context);
+				EvaluateDrawing(scene, geometry, context);
 				++result.WorkUnitsConsumed;
 				continue;
 			}
@@ -122,20 +130,18 @@ namespace Services::Map::Buildings::Rendering
 	/** Runs one scene slice and advances only when BuildingVisuals reports terminal execution. */
 	bool SectionRendering::IncrementalOperation::AdvanceDrawing(
 		const Visuals::BuildingRenderSceneInput& scene,
+		const Visuals::PreparedBuildingGeometry& geometry,
 		Visuals::BuildingVisualsContext& context,
 		std::chrono::steady_clock::time_point deadline,
 		StepResult& result)
 	{
-		const auto sceneSlice = Visuals::BuildingVisuals::StepScene(
+		const auto sceneSlice = Visuals::BuildingVisuals::StepPreparedScene(
+			geometry,
 			scene,
 			*state_->Destination,
 			context,
 			state_->SceneProgress,
-			deadline
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, state_->PhaseTimings
-#endif
-			);
+			deadline);
 		result.WorkUnitsConsumed += sceneSlice.WorkUnitsConsumed;
 		if (!sceneSlice.Complete)
 		{
@@ -155,6 +161,12 @@ namespace Services::Map::Buildings::Rendering
 			(*state_->TerminalStatus != Status::Complete &&
 				*state_->TerminalStatus != Status::CompleteWithOmissions))
 		{
+			RECORD_IMAGE_FAILURE("image commitment",
+				!state_->TerminalStatus.has_value() ? "TakeCompletedImage has no terminal status" :
+				!state_->FinalizationComplete ? "TakeCompletedImage requires completed finalization" :
+				state_->ImageTaken ? "TakeCompletedImage output already transferred" :
+				"TakeCompletedImage requires successful terminal status", -1, -1, 0, 0, -1,
+				state_->TerminalStatus.has_value() ? static_cast<int>(*state_->TerminalStatus) : -1);
 			return false;
 		}
 		output = std::move(state_->Output);
@@ -171,6 +183,13 @@ namespace Services::Map::Buildings::Rendering
 	{
 		return state_->PhaseTimings;
 	}
+
+	/** Returns the last terminal image-operation failure for the Section scheduler to report. */
+	const Visuals::SectionFailureDetails&
+		SectionRendering::IncrementalOperation::FailureDetails() const noexcept
+	{
+		return state_->Failure;
+	}
 #endif
 
 	/** Validates the retained grid and obtains its destination through the neutral interface factory. */
@@ -184,6 +203,7 @@ namespace Services::Map::Buildings::Rendering
 		{
 			if (!SectionRendering::HasValidGridInputs(state_->Grid))
 			{
+				RECORD_IMAGE_FAILURE("raster destination initialization", "invalid image grid dimensions, origin or scale");
 				Terminate(Status::InvalidDestinationConfiguration);
 				return false;
 			}
@@ -197,6 +217,7 @@ namespace Services::Map::Buildings::Rendering
 #endif
 		if (!state_->Destination)
 		{
+			RECORD_IMAGE_FAILURE("raster destination initialization", "destination factory returned null");
 			Terminate(Status::DestinationUnavailable);
 			return false;
 		}
@@ -204,6 +225,7 @@ namespace Services::Map::Buildings::Rendering
 		{
 			if (state_->Destination->IsFailed())
 			{
+				RECORD_IMAGE_FAILURE("raster destination initialization", "destination pixel initialization failed");
 				Terminate(Status::DestinationUnavailable);
 			}
 			return false;
@@ -214,34 +236,44 @@ namespace Services::Map::Buildings::Rendering
 
 	/** Applies the synchronous completed-scene failure and terminal-omission classification. */
 	void SectionRendering::IncrementalOperation::EvaluateDrawing(
-		const Visuals::BuildingRenderSceneInput& scene,
+		const Visuals::BuildingRenderSceneInput&,
+		const Visuals::PreparedBuildingGeometry& geometry,
 		Visuals::BuildingVisualsContext& context) noexcept
 	{
 		const Visuals::BuildingVisualsResult* drawingResult =
 			Visuals::BuildingVisuals::TryGetCompletedSceneResult(context, state_->SceneProgress);
 		if (drawingResult == nullptr)
 		{
+			RECORD_IMAGE_FAILURE("prepared raster evaluation", "completed drawing result absent");
 			Terminate(Status::IncompleteDrawing);
 			return;
 		}
 		if (drawingResult->Complete)
 		{
-			state_->DrawingStatus = Status::Complete;
+			state_->DrawingStatus = geometry.TerminalSplineOmissionOrdinals().empty()
+				? Status::Complete
+				: Status::CompleteWithOmissions;
+			if (!geometry.TerminalSplineOmissionOrdinals().empty())
+			{
+				state_->OmissionSummary.FirstSectionLocalOrdinal =
+					geometry.TerminalSplineOmissionOrdinals().front();
+				state_->OmissionSummary.SplineContributorCount =
+					geometry.TerminalSplineOmissionOrdinals().size();
+				state_->OmissionSummary.FailureStage = Visuals::BuildingVisualsFailureStage::SurfacePreparation;
+				state_->OmissionSummary.AlternativeStatus =
+					Visuals::BuildingSplineAlternativeStatus::NoDrawableAlternative;
+			}
 			state_->CurrentPhase = State::Phase::Finalize;
 			return;
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		state_->PhaseTimings.CaptureFailureEvidence(*drawingResult);
-#endif
-		if (SectionRendering::TrySummarizeTerminalSplineOmissions(
-			*drawingResult,
-			scene,
-			state_->OmissionSummary))
+		state_->Failure = state_->SceneProgress.FailureDetails();
+		if (state_->Failure.Condition == nullptr)
 		{
-			state_->DrawingStatus = Status::CompleteWithOmissions;
-			state_->CurrentPhase = State::Phase::Finalize;
-			return;
+			RECORD_IMAGE_FAILURE("prepared raster evaluation", "drawing result is incomplete");
 		}
+#endif
 		Terminate(SectionRendering::GetDrawingFailureStatus(*drawingResult));
 	}
 
@@ -274,6 +306,8 @@ namespace Services::Map::Buildings::Rendering
 		{
 			state_->Output.clear();
 			state_->OmissionSummary = {};
+			RECORD_IMAGE_FAILURE("image finalization", "StepFinalize returned Failed",
+				-1, -1, 0, 0, -1, static_cast<int>(finalization.Status));
 			Terminate(Status::FinalizationFailed);
 			return;
 		}
@@ -283,76 +317,6 @@ namespace Services::Map::Buildings::Rendering
 			state_->CompletedImageTransparent = finalization.FullyTransparent;
 			Terminate(state_->DrawingStatus);
 		}
-	}
-
-	/** Draws once into a fresh destination and exposes bytes only after complete drawing and finalization. */
-	SectionRendering::Status SectionRendering::RenderSection(
-		const Visuals::BuildingRenderSceneInput& scene,
-		Visuals::BuildingVisualsContext& context,
-		const ImageGrid& grid,
-		std::vector<std::uint8_t>& output,
-		Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		, Visuals::BuildingVisualsPhaseTimings& phaseTimings
-#endif
-		)
-	{
-		output.clear();
-		omissionSummary = {};
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		phaseTimings = {};
-#endif
-		if (!HasValidGridInputs(grid))
-		{
-			return Status::InvalidDestinationConfiguration;
-		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const auto destinationConstructionStarted = std::chrono::steady_clock::now();
-#endif
-		std::unique_ptr<IImageDestination> destination = IImageDestination::Create(grid, true);
-		if (!destination)
-		{
-			return Status::DestinationUnavailable;
-		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		phaseTimings.DestinationConstruction.Invoked = true;
-		phaseTimings.DestinationConstruction.ElapsedMs = std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - destinationConstructionStarted).count();
-#endif
-		const Visuals::BuildingVisualsResult& drawingResult =
-			Visuals::BuildingVisuals::DrawScene(scene, *destination, context
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-				, phaseTimings
-#endif
-				);
-		if (!drawingResult.Complete)
-		{
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			phaseTimings.CaptureFailureEvidence(drawingResult);
-#endif
-		}
-		const bool completedWithOmissions = !drawingResult.Complete &&
-			TrySummarizeTerminalSplineOmissions(drawingResult, scene, omissionSummary);
-		if (!drawingResult.Complete && !completedWithOmissions)
-		{
-			return GetDrawingFailureStatus(drawingResult);
-		}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const auto finalizationStarted = std::chrono::steady_clock::now();
-#endif
-		const bool finalized = destination->Finalize(output);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		phaseTimings.DestinationFinalization.Invoked = true;
-		phaseTimings.DestinationFinalization.ElapsedMs = std::chrono::duration<double, std::milli>(
-			std::chrono::steady_clock::now() - finalizationStarted).count();
-#endif
-		if (!finalized)
-		{
-			output.clear();
-			omissionSummary = {};
-			return Status::FinalizationFailed;
-		}
-		return completedWithOmissions ? Status::CompleteWithOmissions : Status::Complete;
 	}
 
 	/** Rejects malformed dimensions, non-finite origins and invalid pixel scale at the caller boundary. */
@@ -401,71 +365,8 @@ namespace Services::Map::Buildings::Rendering
 		return Status::IncompleteDrawing;
 	}
 
-	/** Accepts only completed destination work with one or more no-drawable spline outcomes. */
-	bool SectionRendering::TrySummarizeTerminalSplineOmissions(
-		const Visuals::BuildingVisualsResult& result,
-		const Visuals::BuildingRenderSceneInput& scene,
-		Visuals::BuildingVisualsTerminalOmissionSummary& summary) noexcept
-	{
-		using Alternative = Visuals::BuildingSplineAlternativeStatus;
-		using Failure = Visuals::BuildingVisualsFailureStage;
-		Visuals::BuildingVisualsTerminalOmissionSummary candidateSummary;
-		if (result.OcclusionPreparationStatus != Visuals::SplineOcclusionStatus::Complete ||
-			!HasNoContributorFailures(result.OrdinarySprites) ||
-			!HasNoContributorFailures(result.OverlayLastSprites))
-		{
-			return false;
-		}
-		for (const auto& outcome : result.SplineSurfaces)
-		{
-			if (outcome.AlternativeStatus == Alternative::CandidateRejected)
-			{
-				if (outcome.SubmissionAttempted)
-				{
-					return false;
-				}
-				continue;
-			}
-			if (outcome.FailureStage == Failure::None)
-			{
-				continue;
-			}
-			if (outcome.AlternativeStatus != Alternative::NoDrawableAlternative ||
-				outcome.FailureStage != Failure::SurfacePreparation || outcome.HasSurfaceIndex ||
-				outcome.SubmissionAttempted || outcome.ContributorIndex >= scene.Splines.size())
-			{
-				return false;
-			}
-			if (candidateSummary.SplineContributorCount == 0)
-			{
-				candidateSummary.FirstSectionLocalOrdinal =
-					scene.Splines[outcome.ContributorIndex].SectionLocalOrdinal;
-				candidateSummary.FailureStage = outcome.FailureStage;
-				candidateSummary.AlternativeStatus = outcome.AlternativeStatus;
-			}
-			++candidateSummary.SplineContributorCount;
-		}
-		if (candidateSummary.SplineContributorCount == 0)
-		{
-			return false;
-		}
-		summary = candidateSummary;
-		return true;
 	}
 
-	/** Checks one positional contributor category for any fatal drawing result. */
-	bool SectionRendering::HasNoContributorFailures(
-		const std::vector<Visuals::BuildingVisualsContributorOutcome>& outcomes) noexcept
-	{
-		for (const auto& outcome : outcomes)
-		{
-			if (outcome.FailureStage != Visuals::BuildingVisualsFailureStage::None)
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-}
+#undef RECORD_IMAGE_FAILURE
 
 #endif // MODLOADER_CLIENT_BUILD

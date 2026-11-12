@@ -52,7 +52,7 @@ namespace Services::Map::Buildings::Scheduling
 	 * collection requests. This resolver is not part of those building-oriented consumer APIs.
 	 * SectionScheduler will privately provide it from existing resources; BuildingScheduler retains
 	 * acquisition status, duplicate suppression, cache-aware readiness and capture FIFO responsibility.
-	 * CpuSpriteSourceManager remains the exclusive owner of immutable resident CPU sprite pixels.
+	 * SpriteSourceManager remains the exclusive owner of immutable resident CPU sprite pixels.
 	 * A future BuildingCollector borrows this resolver only during an explicit source-support refresh.
 	 * This interface owns none of those objects, pixels, cache files or capture-world state, exposes
 	 * no native game objects and certifies neither source completeness nor Section membership.

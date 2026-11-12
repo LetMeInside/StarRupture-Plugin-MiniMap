@@ -24,17 +24,19 @@ namespace Services::Map::Buildings::Scheduling
 		return GridX < other.GridX || (GridX == other.GridX && GridY < other.GridY);
 	}
 
-	/** Creates exactly one scheduler and transfers cache-resource ownership beneath it. */
+	/** Creates one scheduler that borrows the service-owned source manager. */
 	SectionSchedulingCoordinator::SectionSchedulingCoordinator(
 		double sectionSizeMapUnits,
 		std::uint32_t sectionResolutionPixels,
 		double spriteCaptureDensityPixelsPerMapUnit,
-		std::filesystem::path buildingsCacheDirectory)
+		std::filesystem::path buildingsCacheDirectory,
+		Cache::SpriteSourceManager* spriteSourceManager)
 		: sectionScheduler_(new SectionScheduler(
 			sectionSizeMapUnits,
 			sectionResolutionPixels,
 			spriteCaptureDensityPixelsPerMapUnit,
-			std::move(buildingsCacheDirectory)))
+			std::move(buildingsCacheDirectory),
+			spriteSourceManager))
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnostics();
@@ -358,6 +360,17 @@ namespace Services::Map::Buildings::Scheduling
 			}
 			return true;
 		}
+		if (result.CurrentState == IncrementalSectionAdvanceResult::State::TerminalFailure)
+		{
+			waitingSections_.erase(coordinate);
+			if (focusedSection_.has_value() &&
+				focusedSection_->GridX == coordinate.GridX &&
+				focusedSection_->GridY == coordinate.GridY)
+			{
+				ClearFocusedSection();
+			}
+			return true;
+		}
 		deadlineYielded = result.CurrentState == IncrementalSectionAdvanceResult::State::Pending &&
 			result.WorkUnitsConsumed == 0 && !IsTickAllowanceAvailable();
 		return result.CurrentState != IncrementalSectionAdvanceResult::State::Pending ||
@@ -515,6 +528,10 @@ namespace Services::Map::Buildings::Scheduling
 		if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::WaitingForResources)
 		{
 			result.CurrentState = IncrementalSectionAdvanceResult::State::WaitingForResources;
+		}
+		else if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::TerminalFailure)
+		{
+			result.CurrentState = IncrementalSectionAdvanceResult::State::TerminalFailure;
 		}
 		else if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::RestartRequired)
 		{
@@ -751,6 +768,10 @@ namespace Services::Map::Buildings::Scheduling
 		else if (result.CurrentState == IncrementalSectionAdvanceResult::State::RestartRequired)
 		{
 			++diagnostics_.RestartRequiredResults;
+		}
+		else if (result.CurrentState == IncrementalSectionAdvanceResult::State::TerminalFailure)
+		{
+			++diagnostics_.FailedTerminalAttempts;
 		}
 		else
 		{

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace Services::Map::Buildings::Visuals
 {
@@ -43,6 +44,10 @@ namespace Services::Map::Buildings::Visuals
 	/** Holds one immutable RGBA8 sprite source and the neutral values needed to project it into world space. */
 	struct BuildingSpriteRenderInput
 	{
+		/** Section-local source occurrence identity; equal keys remain separate occurrences. */
+		std::uint64_t SectionLocalOrdinal = 0;
+		/** Borrowed canonical source key copied into owned geometry during preparation. */
+		std::string_view CanonicalSpriteKey;
 		/** Borrowed immutable RGBA8 pixels; the producer keeps the payload alive and unchanged through
 		 * each consuming call, while consumers must not retain this view after that call returns.
 		 */

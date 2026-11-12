@@ -19,6 +19,10 @@ namespace Services::Map::Buildings::Scheduling
 namespace Services::Map::Buildings::Visuals
 {
 	class BuildingVisualsContext;
+	class PreparedBuildingGeometry;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	struct SectionFailureDetails;
+#endif
 }
 
 namespace Services::Map::Buildings
@@ -65,6 +69,21 @@ namespace Services::Map::Buildings
 			std::span<const std::uint8_t> Rgba8Bytes;
 		};
 
+		/** Borrows the current presentation scene for one serialized read interval.
+		 * A completed scene wins during replacement; otherwise the available preparing
+		 * contributions are exposed with IsComplete false until atomic adoption.
+		 */
+		struct ScenePresentationView
+		{
+			const Visuals::PreparedBuildingGeometry* Scene = nullptr;
+			bool IsComplete = false;
+		};
+
+		/** Borrows the completed scene, or first-appearance contributions while preparing.
+		 * The view ends at the next scene mutation or Section destruction and must not be retained.
+		 */
+		bool TryBorrowPresentationScene(ScenePresentationView& view) const noexcept;
+
 		/**
 		 * Borrows immutable metadata and RGBA8 bytes from the completed image.
 		 * The borrowed span is valid only while this Section remains alive, its
@@ -78,6 +97,9 @@ namespace Services::Map::Buildings
 		 * @return True only when a completed image is stored.
 		 */
 		bool TryBorrowCompletedImage(CompletedImageView& image) const;
+
+		/** Reports whether a fully completed scene matches the supplied source hash. */
+		bool HasCompletedSceneForContentHash(std::uint64_t sourceContentHash) const noexcept;
 
 	private:
 		friend class BuildingMapService;
@@ -126,6 +148,23 @@ namespace Services::Map::Buildings
 			std::uint32_t pixelWidth,
 			std::uint32_t pixelHeight,
 			std::vector<std::uint8_t>&& rgba8Bytes);
+		/** Starts or resumes an owned replacement scene while preserving CompletedScene. */
+		Visuals::PreparedBuildingGeometry* BeginPreparingScene(
+			std::uint64_t sourceContentHash,
+			std::size_t contributionCount);
+		/** Atomically promotes the matching complete PreparingScene, including an empty scene. */
+		bool CompletePreparingScene(std::uint64_t sourceContentHash) noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Emits a single failure record for this Section and the selected source hash, when known. */
+		void ReportFailure(
+			std::optional<std::uint64_t> sourceContentHash,
+			int status,
+			const Visuals::SectionFailureDetails& failure) const noexcept;
+#endif
+		/** Removes only an obsolete replacement, leaving CompletedScene and its image intact. */
+		void InvalidatePreparingScene(std::uint64_t currentSourceContentHash) noexcept;
+		/** Discards an abandoned incomplete replacement while preserving CompletedScene and the image. */
+		void DiscardPreparingScene() noexcept;
 
 		/**
 		 * Returns this Section's private rendering context, allocating it on the
@@ -135,7 +174,9 @@ namespace Services::Map::Buildings
 		 * @return The context exclusively owned by this Section.
 		 */
 		Visuals::BuildingVisualsContext& GetOrCreateVisualsContext();
-		/** Releases only unfinished scheduler state while preserving the numerical context and committed image. */
+		/** Returns scratch exclusively reserved for the independent Section geometry operation. */
+		Visuals::BuildingVisualsContext& GetOrCreateGeometryContext();
+		/** Releases unfinished scheduler state and replacement scene while preserving the completed scene, context and image. */
 		void ResetRenderingState() noexcept;
 
 		std::int64_t gridX_;
@@ -144,8 +185,14 @@ namespace Services::Map::Buildings
 		bool hasPreviousMembershipFingerprint_ = false;
 		std::uint64_t membershipFingerprint_ = 0;
 		std::unique_ptr<Visuals::BuildingVisualsContext> visualsContext_;
+		std::unique_ptr<Visuals::BuildingVisualsContext> geometryContext_;
 		/** Opaque scheduler state owned only for this Section's unfinished render generation. */
 		std::shared_ptr<void> renderingState_;
 		std::optional<CompletedImage> completedImage_;
+		/** Immutable presentation scene survives replacement preparation and image changes. */
+		std::unique_ptr<const Visuals::PreparedBuildingGeometry> completedScene_;
+		/** Mutable Section-owned contributions for the currently selected replacement. */
+		std::unique_ptr<Visuals::PreparedBuildingGeometry> preparingScene_;
+		std::uint64_t preparingSceneSourceContentHash_ = 0;
 	};
 }

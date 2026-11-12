@@ -125,6 +125,7 @@ namespace Services::Map::Buildings
 			bool renderSectionImages);
 
 	private:
+		friend class BuildingMapGpuViewport;
 
 		/** Validates bounds and converts them to a half-open grid range using the service cell size.
 		 *

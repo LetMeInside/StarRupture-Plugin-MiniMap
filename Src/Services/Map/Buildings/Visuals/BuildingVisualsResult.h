@@ -76,6 +76,21 @@ namespace Services::Map::Buildings::Visuals
 	};
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Stores the first failed operation as static text and scalar evidence, without borrowing scene data. */
+	struct SectionFailureDetails
+	{
+		const char* Stage = nullptr;
+		const char* Condition = nullptr;
+		long long PublicationOrdinal = -1;
+		long long DescriptorIndex = -1;
+		unsigned long long Expected = 0;
+		unsigned long long Actual = 0;
+		long long SurfaceIndex = -1;
+		int OperationStatus = -1;
+		long long PublicationCount = -1;
+		const char* StatusName = nullptr;
+	};
+
 	/** Carries Debug-only numerical phase timings and bounded drawing-failure evidence. */
 	struct BuildingVisualsPhaseTimings
 	{

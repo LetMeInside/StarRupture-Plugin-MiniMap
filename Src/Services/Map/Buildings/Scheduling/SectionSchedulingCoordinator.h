@@ -1,4 +1,4 @@
-// Owns multi-viewport Section demand and the single SectionScheduler resource owner.
+// Owns multi-viewport Section demand and delegates Section work to one scheduler.
 #pragma once
 
 #include <chrono>
@@ -29,6 +29,11 @@ namespace Services::Map::Buildings
 namespace Services::Map::Buildings::Capture
 {
 	class BuildingSpriteRenderer;
+}
+
+namespace Services::Map::Buildings::Cache
+{
+	class SpriteSourceManager;
 }
 
 namespace Services::Map::Buildings::Visuals
@@ -152,7 +157,8 @@ namespace Services::Map::Buildings::Scheduling
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
 			double spriteCaptureDensityPixelsPerMapUnit,
-			std::filesystem::path buildingsCacheDirectory);
+			std::filesystem::path buildingsCacheDirectory,
+			Cache::SpriteSourceManager* spriteSourceManager);
 		SectionSchedulingCoordinator(const SectionSchedulingCoordinator&) = delete;
 		SectionSchedulingCoordinator& operator=(const SectionSchedulingCoordinator&) = delete;
 		SectionSchedulingCoordinator(SectionSchedulingCoordinator&&) = delete;
@@ -257,6 +263,7 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				Pending,
 				WaitingForResources,
+				TerminalFailure,
 				RestartRequired,
 				AttemptFinished
 			};

@@ -15,10 +15,10 @@ namespace Services::Map::Buildings::Scheduling
 {
 	/** Retains references to the CPU source manager and configured disk cache. */
 	BuildingScheduler::BuildingScheduler(
-		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
+		Cache::SpriteSourceManager* spriteSourceManager,
 		Cache::SpriteDiskCache* spriteDiskCache,
 		double spriteCaptureDensityPixelsPerMapUnit)
-		: cpuSpriteSourceManager_(cpuSpriteSourceManager)
+		: spriteSourceManager_(spriteSourceManager)
 		, spriteDiskCache_(spriteDiskCache)
 		, captureRenderer_(new Capture::BuildingSpriteRenderer(spriteCaptureDensityPixelsPerMapUnit))
 	{
@@ -53,14 +53,14 @@ namespace Services::Map::Buildings::Scheduling
 			}
 		}
 
-		if (cpuSpriteSourceManager_ == nullptr)
+		if (spriteSourceManager_ == nullptr)
 		{
 			return RequirementStatus::Unavailable;
 		}
 
-		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult =
-			cpuSpriteSourceManager_->GetSprite(key);
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Ready &&
+		const Cache::SpriteSourceManager::SpriteResult spriteResult =
+			spriteSourceManager_->GetSprite(key);
+		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Ready &&
 			spriteResult.Payload != nullptr)
 		{
 			if (captureRenderer_)
@@ -69,7 +69,7 @@ namespace Services::Map::Buildings::Scheduling
 			}
 			return RequirementStatus::Ready;
 		}
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Unavailable)
+		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Unavailable)
 		{
 			if (captureRenderer_)
 			{
@@ -102,15 +102,15 @@ namespace Services::Map::Buildings::Scheduling
 				return RequirementStatus::Failed;
 			}
 		}
-		if (cpuSpriteSourceManager_ == nullptr)
+		if (spriteSourceManager_ == nullptr)
 		{
 			++diagnostics_.MissingCpuSourceManager;
 			return RequirementStatus::Unavailable;
 		}
-		const Cache::CpuSpriteSourceManager::SpriteResult spriteResult =
-			cpuSpriteSourceManager_->GetSprite(key);
+		const Cache::SpriteSourceManager::SpriteResult spriteResult =
+			spriteSourceManager_->GetSprite(key);
 		RecordDemandSpriteLookup(spriteResult);
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Ready &&
+		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Ready &&
 			spriteResult.Payload != nullptr)
 		{
 			if (captureRenderer_)
@@ -119,7 +119,7 @@ namespace Services::Map::Buildings::Scheduling
 			}
 			return RequirementStatus::Ready;
 		}
-		if (spriteResult.Result == Cache::CpuSpriteSourceManager::Status::Unavailable)
+		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Unavailable)
 		{
 			if (captureRenderer_)
 			{
@@ -269,7 +269,7 @@ namespace Services::Map::Buildings::Scheduling
 		Capture::CaptureFeedback&& feedback,
 		SpriteStatus& status)
 	{
-		if (cpuSpriteSourceManager_ == nullptr || !feedback.Payload || feedback.Payload->Pixels().empty())
+		if (spriteSourceManager_ == nullptr || !feedback.Payload || feedback.Payload->Pixels().empty())
 		{
 			status.MarkTemporarilyUnavailable();
 			return;
@@ -277,7 +277,7 @@ namespace Services::Map::Buildings::Scheduling
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		DiagnosticsDurationScope adoptionTimer(diagnostics_.CapturePayloadAdoption);
-		if (!cpuSpriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
+		if (!spriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
 		{
 			adoptionTimer.Finish();
 			++diagnostics_.CaptureAdoptionOutcomeCounts[1];
@@ -287,19 +287,19 @@ namespace Services::Map::Buildings::Scheduling
 		adoptionTimer.Finish();
 		++diagnostics_.CaptureAdoptionOutcomeCounts[0];
 #else
-		if (!cpuSpriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
+		if (!spriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
 		{
 			status.MarkTemporarilyUnavailable();
 			return;
 		}
 #endif
 
-		const Cache::CpuSpriteSourceManager::SpriteResult publishedSource =
-			cpuSpriteSourceManager_->GetSprite(feedback.SpriteRequirement);
+		const Cache::SpriteSourceManager::SpriteResult publishedSource =
+			spriteSourceManager_->GetSprite(feedback.SpriteRequirement);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		diagnostics_.PostAdoptionLookup.Add(publishedSource.Diagnostics.TotalMs);
 #endif
-		if (publishedSource.Result != Cache::CpuSpriteSourceManager::Status::Ready ||
+		if (publishedSource.Result != Cache::SpriteSourceManager::Status::Ready ||
 			publishedSource.Payload == nullptr)
 		{
 			status.MarkTemporarilyUnavailable();
@@ -435,9 +435,9 @@ namespace Services::Map::Buildings::Scheduling
 
 	/** Aggregates demand-side source evidence without counting post-adoption validation as a hit. */
 	void BuildingScheduler::RecordDemandSpriteLookup(
-		const Cache::CpuSpriteSourceManager::SpriteResult& result) noexcept
+		const Cache::SpriteSourceManager::SpriteResult& result) noexcept
 	{
-		using LookupRoute = Cache::CpuSpriteSourceManager::SpriteResult::LookupEvidence::LookupRoute;
+		using LookupRoute = Cache::SpriteSourceManager::SpriteResult::LookupEvidence::LookupRoute;
 		const LookupRoute route = result.Diagnostics.Route;
 		const auto routeIndex = static_cast<std::size_t>(route);
 		if (routeIndex < diagnostics_.SpriteLookupRouteCounts.size())

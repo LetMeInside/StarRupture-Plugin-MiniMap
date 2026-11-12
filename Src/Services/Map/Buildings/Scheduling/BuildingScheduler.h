@@ -1,7 +1,7 @@
 // Coordinates cache-aware sprite retrieval, per-key status, FIFO capture and renderer retirement.
 #pragma once
 
-#include "../Cache/CpuSpriteSourceManager.h"
+#include "../Cache/SpriteSourceManager.h"
 #include "../Capture/CaptureFeedback.h"
 #include "../Capture/CaptureRequest.h"
 #include "SpriteFeedbackQueue.h"
@@ -80,7 +80,7 @@ namespace Services::Map::Buildings::Scheduling
 			Duration SpritePersistence;
 			/** Entries follow the existing RequirementStatus enum declaration order. */
 			std::array<std::uint64_t, 4> RequirementStatusCounts{};
-			/** Entries follow CpuSpriteSourceManager::SpriteResult::LookupRoute order. */
+			/** Entries follow SpriteSourceManager::SpriteResult::LookupRoute order. */
 			std::array<std::uint64_t, 11> SpriteLookupRouteCounts{};
 			std::uint64_t CapturePendingShortCircuits = 0;
 			std::uint64_t MissingCpuSourceManager = 0;
@@ -98,12 +98,12 @@ namespace Services::Map::Buildings::Scheduling
 	#endif
 
 		/** Creates the persistent renderer and borrows the sibling cache/source manager.
-		 * @param cpuSpriteSourceManager Owner of resident processed sprites.
+		 * @param spriteSourceManager Owner of resident processed sprites.
 		 * @param spriteDiskCache Cache used for capture persistence and by CPU source retrieval.
 		 * @param spriteCaptureDensityPixelsPerMapUnit Configured sprite capture density in pixels per map unit.
 		 */
 		BuildingScheduler(
-			Cache::CpuSpriteSourceManager* cpuSpriteSourceManager,
+			Cache::SpriteSourceManager* spriteSourceManager,
 			Cache::SpriteDiskCache* spriteDiskCache,
 			double spriteCaptureDensityPixelsPerMapUnit);
 		/** Releases the plugin-lifetime renderer object without implicit native cleanup. */
@@ -155,7 +155,7 @@ namespace Services::Map::Buildings::Scheduling
 		/** Runs the existing acquisition path while recording path-specific evidence. */
 		RequirementStatus EnsureSpriteReadyWithDiagnostics(const Cache::OwnedSpriteKey& key);
 		/** Consumes one demand-side GetSprite route and its existing timing evidence. */
-		void RecordDemandSpriteLookup(const Cache::CpuSpriteSourceManager::SpriteResult& result) noexcept;
+		void RecordDemandSpriteLookup(const Cache::SpriteSourceManager::SpriteResult& result) noexcept;
 		/** Resets only scheduler diagnostic observations and restarts their interval. */
 		void ResetDiagnostics() noexcept;
 #endif
@@ -193,7 +193,7 @@ namespace Services::Map::Buildings::Scheduling
 			const Cache::ProcessedSpritePayload& payload);
 #endif
 
-		Cache::CpuSpriteSourceManager* cpuSpriteSourceManager_ = nullptr;
+		Cache::SpriteSourceManager* spriteSourceManager_ = nullptr;
 		Cache::SpriteDiskCache* spriteDiskCache_ = nullptr;
 		std::uint64_t nextRequestSequence_ = 1;
 		bool sessionActive_ = false;

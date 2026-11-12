@@ -5,16 +5,20 @@
 #include "../IImageDestination.h"
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace Services::Map::Buildings::Visuals
 {
+	class BuildingGeometryPreparation;
+
 	/** Retains numerical values and vector capacity for one caller's BuildingVisuals scene operations.
 	 * The caller owns this context and may retain it across calls; it contains no borrowed input pointers.
 	 */
 	class BuildingVisualsContext final
 	{
 		friend class BuildingVisuals;
+		friend class BuildingGeometryPreparation;
 
 	public:
 		/** Creates an empty context whose reusable storage remains independent of all other contexts. */

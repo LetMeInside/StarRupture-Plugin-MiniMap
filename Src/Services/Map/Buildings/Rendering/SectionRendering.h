@@ -1,4 +1,4 @@
-	// Builds synchronous images or advances one persistent numerical Section operation over neutral scene inputs.
+	// Owns a deadline-resumable Section image operation over prepared world-space geometry.
 #pragma once
 
 #include <cstddef>
@@ -14,11 +14,12 @@ namespace Services::Map::Buildings::Visuals
 {
 	struct BuildingRenderSceneInput;
 	class BuildingVisualsContext;
+	class PreparedBuildingGeometry;
 }
 
 namespace Services::Map::Buildings::Rendering
 {
-	/** Reports synchronous and cursor-resumable numerical Section-image construction. */
+	/** Reports cursor-resumable Section-image construction from prepared geometry. */
 	class SectionRendering final
 	{
 	public:
@@ -66,6 +67,7 @@ namespace Services::Map::Buildings::Rendering
 			 */
 			StepResult Advance(
 				const Visuals::BuildingRenderSceneInput& scene,
+				const Visuals::PreparedBuildingGeometry& geometry,
 				Visuals::BuildingVisualsContext& context,
 				std::chrono::steady_clock::time_point deadline);
 			/** Moves fully finalized bytes and copies omission metadata once after successful completion.
@@ -81,16 +83,20 @@ namespace Services::Map::Buildings::Rendering
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			/** Provides read-only accumulated diagnostics for later scheduler reporting. */
 			const Visuals::BuildingVisualsPhaseTimings& PhaseTimings() const noexcept;
+			/** Borrows the failed raster, finalization or handoff decision for this operation. */
+			const Visuals::SectionFailureDetails& FailureDetails() const noexcept;
 #endif
 
 		private:
 			/** Advances the completed scene through existing failure and omission classification. */
 			void EvaluateDrawing(
 				const Visuals::BuildingRenderSceneInput& scene,
+				const Visuals::PreparedBuildingGeometry& geometry,
 				Visuals::BuildingVisualsContext& context) noexcept;
 			/** Advances scene cursors until completion or the absolute deadline. */
 			bool AdvanceDrawing(
 				const Visuals::BuildingRenderSceneInput& scene,
+				const Visuals::PreparedBuildingGeometry& geometry,
 				Visuals::BuildingVisualsContext& context,
 				std::chrono::steady_clock::time_point deadline,
 				StepResult& result);
@@ -105,32 +111,6 @@ namespace Services::Map::Buildings::Rendering
 			std::unique_ptr<State> state_;
 		};
 
-		/**
-		 * Draws prepared neutral contributors once and finalizes one complete RGBA8 image.
-		 * The scene, grid and Section-owned context are borrowed for this synchronous call.
-		 * Output is cleared before work begins and contains bytes only after successful finalization.
-		 *
-		 * @param scene Prepared neutral contributors and borrowed source spans.
-		 * @param context Numerical workspace borrowed from the owning BuildingMapSection.
-		 * @param grid Format-neutral destination cell and pixel configuration.
-		 * @param output Caller-owned final row-major RGBA8 bytes.
-		 * @param omissionSummary Receives fixed-size metadata only for accepted terminal spline omissions.
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		 * @param phaseTimings Receives elapsed CPU wall time and invocation flags for the six measured phases.
-#endif
-		 * @return The numerical rendering, destination or finalization outcome.
-		 */
-		static Status RenderSection(
-			const Visuals::BuildingRenderSceneInput& scene,
-			Visuals::BuildingVisualsContext& context,
-			const ImageGrid& grid,
-			std::vector<std::uint8_t>& output,
-			Visuals::BuildingVisualsTerminalOmissionSummary& omissionSummary
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, Visuals::BuildingVisualsPhaseTimings& phaseTimings
-#endif
-			);
-
 	private:
 		/** Checks destination grid fields that can be rejected without recomputing world bounds. */
 		static bool HasValidGridInputs(const ImageGrid& grid) noexcept;
@@ -143,14 +123,5 @@ namespace Services::Map::Buildings::Rendering
 		/** Identifies destination availability or raster rejection from retained drawing outcomes. */
 		static Status GetDrawingFailureStatus(const Visuals::BuildingVisualsResult& result) noexcept;
 
-		/** Accepts only no-drawable spline omissions and no other fatal scene outcome. */
-		static bool TrySummarizeTerminalSplineOmissions(
-			const Visuals::BuildingVisualsResult& result,
-			const Visuals::BuildingRenderSceneInput& scene,
-			Visuals::BuildingVisualsTerminalOmissionSummary& summary) noexcept;
-
-		/** Verifies that a contributor category contains no fatal drawing outcomes. */
-		static bool HasNoContributorFailures(
-			const std::vector<Visuals::BuildingVisualsContributorOutcome>& outcomes) noexcept;
 	};
 }

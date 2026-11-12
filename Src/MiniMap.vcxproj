@@ -120,7 +120,7 @@
     <ClInclude Include="Services\Map\Buildings\IImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\OwnedSpriteKey.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\ProcessedSpritePayload.h" />
-    <ClInclude Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.h" />
+    <ClInclude Include="Services\Map\Buildings\Cache\SpriteSourceManager.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpriteProcessing.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodec.h" />
     <ClInclude Include="Services\Map\Buildings\Cache\SpritePngCodecApartment.h" />
@@ -130,6 +130,7 @@
     <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingRenderSceneInput.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisuals.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\BuildingGeometryPreparation.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisualsContext.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisualsResult.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SplineGeometry.h" />
@@ -261,7 +262,7 @@
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Cache\SpriteDiskCache.cpp">
     </ClCompile>
-    <ClCompile Include="Services\Map\Buildings\Cache\CpuSpriteSourceManager.cpp">
+    <ClCompile Include="Services\Map\Buildings\Cache\SpriteSourceManager.cpp">
     </ClCompile>
     <ClCompile Include="Services\Runtime.cpp" />
     <ClCompile Include="Adapters\AlienX\Bootstrap.cpp" />
@@ -279,6 +280,10 @@
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\Visuals\BuildingVisuals.cpp">
       <ObjectFileName>$(IntDir)BuildingMapSceneVisuals.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Visuals\BuildingGeometryPreparation.cpp">
+    </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Visuals\PreparedBuildingGeometry.cpp">
     </ClCompile>
     <ClCompile Include="Adapters\AlienX\Textures.cpp">
     </ClCompile>

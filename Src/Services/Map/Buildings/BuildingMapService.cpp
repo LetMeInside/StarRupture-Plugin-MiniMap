@@ -12,7 +12,9 @@
 #include "BuildingMapSection.h"
 #include "BuildingMapGpuViewport.h"
 #include "BuildingMapViewport.h"
+#include "Cache/SpriteSourceManager.h"
 #include "Scheduling/SectionSchedulingCoordinator.h"
+#include "Services/Runtime.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Log.h"
 #endif
@@ -48,11 +50,13 @@ namespace Services::Map::Buildings
 			throw std::invalid_argument("Building Map requires an absolute MiniMap cache root.");
 		}
 		std::filesystem::path buildingsCacheDirectory = cacheRoot / L"Buildings";
+		spriteSourceManager_.reset(new Cache::SpriteSourceManager(buildingsCacheDirectory, MiniMap::Services::TryTextures()));
 		sectionSchedulingCoordinator_.reset(new Scheduling::SectionSchedulingCoordinator(
 			sectionSizeMapUnits_,
 			sectionResolutionPixels_,
 			spriteCaptureDensityPixelsPerMapUnit_,
-			std::move(buildingsCacheDirectory)));
+			std::move(buildingsCacheDirectory),
+			spriteSourceManager_.get()));
 	}
 
 	/** Delegates explicit cache invalidation through the owned scheduler hierarchy. */
@@ -60,6 +64,12 @@ namespace Services::Map::Buildings
 	{
 		return sectionSchedulingCoordinator_ != nullptr &&
 			sectionSchedulingCoordinator_->ClearCache();
+	}
+
+	/** Provides the service-owned atlas manager as a read-only viewport dependency. */
+	const Cache::SpriteSourceManager* BuildingMapService::PublishedSpriteAtlas() const noexcept
+	{
+		return spriteSourceManager_.get();
 	}
 
 	/** Starts a gameplay session against the renderer already owned by the service. */
@@ -90,6 +100,10 @@ namespace Services::Map::Buildings
 			return;
 		}
 		StopCaptureGameWorldSession();
+		if (spriteSourceManager_ != nullptr)
+		{
+			spriteSourceManager_->ReleaseAtlasTexture();
+		}
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
 			viewportEntry.second->InvalidateService();
@@ -241,6 +255,10 @@ namespace Services::Map::Buildings
 				compareDemandedSectionHashes);
 			ReleasePendingPublicationsAlreadyApplied();
 			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this, pendingSectionPublications_);
+		}
+		if (spriteSourceManager_ != nullptr)
+		{
+			spriteSourceManager_->FlushAtlasToGPU();
 		}
 		return true;
 	}
@@ -462,13 +480,21 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Clears waiting work and its retained publication when committed content already matches. */
+	/** Clears a publication only after both its image commitment and complete scene are current. */
 	void BuildingMapService::ReleasePendingPublicationsAlreadyApplied()
 	{
 		for (auto pending = pendingSectionPublications_.begin(); pending != pendingSectionPublications_.end();)
 		{
 			const auto applied = appliedSectionHashes_.find(pending->first);
-			if (applied != appliedSectionHashes_.end() && applied->second == pending->second->ContentHash())
+			const BuildingMapSection* section = FindSectionAt(pending->first.first, pending->first.second);
+			const std::uint64_t sourceContentHash = pending->second->ContentHash();
+			const bool imageIsCurrent = applied != appliedSectionHashes_.end() && applied->second == sourceContentHash;
+			const bool sceneIsCurrent = section != nullptr && section->HasCompletedSceneForContentHash(sourceContentHash);
+			const bool imageIsRequired = sectionSchedulingCoordinator_->HasImageDemand(
+				Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
+					pending->first.first,
+					pending->first.second});
+			if (sceneIsCurrent && (!imageIsRequired || imageIsCurrent))
 			{
 				sectionSchedulingCoordinator_->RecordSectionCompleted(
 					*this,
