@@ -1100,9 +1100,9 @@ namespace Services::Map::Buildings::Scheduling
 			const SplinePolicy* resolvedPolicy,
 			SplineRenderInputPreparationResult& output);
 
-		/** Derives PixelsPerUnit and preserves every other existing sampling-policy default.
-		 * @param output Receives the configured policy only after finite positive density validation.
-		 * @return True when the immutable Section configuration yields finite positive pixel density.
+		/** Applies the fixed legacy minimum-map-resolution density and keeps other policy defaults.
+		 * @param output Receives the policy only after finite positive density validation.
+		 * @return True when the fixed spline pixel density is finite and positive.
 		 */
 		bool TryPrepareSplineSamplingPolicy(SplineRenderInputPreparationResult& output) const;
 

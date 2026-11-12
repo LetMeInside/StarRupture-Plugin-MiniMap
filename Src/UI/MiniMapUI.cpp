@@ -312,13 +312,12 @@ namespace MiniMapUI
 {
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     bool BeginBuildingLayerSession(
-        ::Services::Map::Buildings::BuildingMapService& service,
-        MiniMap::Services::ITextures& textures)
+        ::Services::Map::Buildings::BuildingMapService& service)
     {
         std::shared_ptr<BuildingLayer> layer;
         try
         {
-            layer = std::make_shared<::MiniMapUI::BuildingLayer>(textures, service);
+            layer = std::make_shared<::MiniMapUI::BuildingLayer>(service);
         }
         catch (const std::exception& exception)
         {
@@ -388,8 +387,6 @@ namespace MiniMapUI
         const auto settings = MiniMapConfig::GetRenderSettings();
         layer->SetRenderDroneRails(settings.Buildings.RenderDroneRails);
         BM124D_RUN("BuildingLayer::Update", layer->Update(x1, y1, x2, y2));
-        BM124D_RUN("PrepareCpuImages", layer->PrepareCpuImages());
-        BM124D_RUN("PublishGpuImages", layer->PublishGpuImages());
     }
 
     bool EndBuildingLayerSession()
@@ -411,8 +408,7 @@ namespace MiniMapUI
     }
 
 #if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    bool TakeBuildingLayerPresentationDiagnosticsSnapshot(
-        BuildingLayer::DiagnosticsSnapshot& output) noexcept
+    bool TakeBuildingLayerDiagnosticsSnapshot(BuildingLayer::DiagnosticsSnapshot& output) noexcept
     {
         std::shared_ptr<BuildingLayer> layer;
         {
@@ -420,17 +416,6 @@ namespace MiniMapUI
             layer = g_buildingLayer;
         }
         return layer != nullptr && layer->TakeDiagnosticsSnapshot(output);
-    }
-
-    bool TakeBuildingLayerRenderDiagnosticsSnapshot(
-        BuildingLayer::RenderDiagnosticsSnapshot& output) noexcept
-    {
-        std::shared_ptr<BuildingLayer> layer;
-        {
-            std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
-            layer = g_buildingLayer;
-        }
-        return layer != nullptr && layer->TakeRenderDiagnosticsSnapshot(output);
     }
 #endif
 #endif

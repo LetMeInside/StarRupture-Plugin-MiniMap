@@ -88,6 +88,12 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (spriteSourceManager_ != nullptr)
+		{
+			spriteSourceManager_->BeginDiagnosticsSession();
+		}
+	#endif
 		mapWidthMapUnits_ = mapWidthMapUnits;
 		mapHeightMapUnits_ = mapHeightMapUnits;
 		return true;
@@ -212,6 +218,13 @@ namespace Services::Map::Buildings
 	{
 		return sectionSchedulingCoordinator_ != nullptr &&
 			sectionSchedulingCoordinator_->TakeSpriteAcquisitionDiagnosticsSnapshot(output);
+	}
+
+	/** Forwards one interval of atlas costs and outcomes from the service-owned manager. */
+	bool BuildingMapService::TakeSpriteAtlasDiagnosticsSnapshot(
+		Cache::SpriteAtlasDiagnosticsSnapshot& output) noexcept
+	{
+		return spriteSourceManager_ != nullptr && spriteSourceManager_->TakeDiagnosticsSnapshot(output);
 	}
 #endif
 

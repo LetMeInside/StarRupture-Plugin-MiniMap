@@ -26,6 +26,7 @@
 #include "Services/Map/Buildings/BuildingMapService.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
 #include "Services/Map/Buildings/Scheduling/SectionSchedulingCoordinator.h"
+#include "Services/Map/Buildings/Cache/SpriteSourceManager.h"
 #endif
 #include "Services/Map/Buildings/Capture/BuildingSpriteRenderer.h"
 #include "PluginPaths.h"
@@ -621,11 +622,19 @@ static void OnTextureServiceTick(
 #endif
     MiniMapTexturePublication::Service();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+    bool gpuLayerDiagnosticsIntervalDue = false;
+    double gpuLayerDiagnosticsIntervalMs = 0.0;
+#endif
     if (g_buildingMapService != nullptr)
     {
         ::Services::Map::Buildings::Scheduling::SectionSchedulingDiagnosticsSnapshot diagnostics;
         if (g_buildingMapService->TakeSectionSchedulingDiagnosticsSnapshot(diagnostics))
         {
+#if !MINIMAP_USE_LEGACY_BUILDINGS
+            gpuLayerDiagnosticsIntervalDue = true;
+            gpuLayerDiagnosticsIntervalMs = diagnostics.IntervalMs;
+#endif
             const auto meanMs = [](const auto& duration)
             {
                 return duration.Samples == 0
@@ -820,98 +829,57 @@ static void OnTextureServiceTick(
     }
 
 #if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    MiniMapUI::BuildingLayer::DiagnosticsSnapshot presentationDiagnostics;
-    if (MiniMapUI::TakeBuildingLayerPresentationDiagnosticsSnapshot(presentationDiagnostics))
+    if (gpuLayerDiagnosticsIntervalDue)
     {
-        const auto meanMs = [](const auto& duration)
+        MiniMapUI::BuildingLayer::DiagnosticsSnapshot presentationDiagnostics;
+        if (MiniMapUI::TakeBuildingLayerDiagnosticsSnapshot(presentationDiagnostics))
         {
-            return duration.Samples == 0
-                ? 0.0
-                : duration.TotalMs / static_cast<double>(duration.Samples);
-        };
-        LOG_INFO("MiniMap: BuildingMap presentation_viewport intervalMs=%.1f elapsed:cpuWall open={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} successfulOpens:%llu update={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} successfulUpdates:%llu rejectedUpdates:%llu",
-            presentationDiagnostics.IntervalMs,
-            static_cast<unsigned long long>(presentationDiagnostics.OpenViewport.Samples),
-            presentationDiagnostics.OpenViewport.TotalMs,
-            meanMs(presentationDiagnostics.OpenViewport),
-            presentationDiagnostics.OpenViewport.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.SuccessfulOpenViewports),
-            static_cast<unsigned long long>(presentationDiagnostics.ViewportUpdate.Samples),
-            presentationDiagnostics.ViewportUpdate.TotalMs,
-            meanMs(presentationDiagnostics.ViewportUpdate),
-            presentationDiagnostics.ViewportUpdate.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.SuccessfulViewportUpdates),
-            static_cast<unsigned long long>(presentationDiagnostics.RejectedViewportUpdates));
-        LOG_INFO("MiniMap: BuildingMap presentation_cpu intervalMs=%.1f elapsed:cpuWall prepare={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} preparedCoordinates:%llu resolution={notCovered:%llu sectionUnavailable:%llu imageUnavailable:%llu replacementReady:%llu}",
-            presentationDiagnostics.IntervalMs,
-            static_cast<unsigned long long>(presentationDiagnostics.PrepareCpuImages.Samples),
-            presentationDiagnostics.PrepareCpuImages.TotalMs,
-            meanMs(presentationDiagnostics.PrepareCpuImages),
-            presentationDiagnostics.PrepareCpuImages.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.PreparedCoordinates),
-            static_cast<unsigned long long>(presentationDiagnostics.CoordinateResolutionCounts[0]),
-            static_cast<unsigned long long>(presentationDiagnostics.CoordinateResolutionCounts[1]),
-            static_cast<unsigned long long>(presentationDiagnostics.CoordinateResolutionCounts[2]),
-            static_cast<unsigned long long>(presentationDiagnostics.CoordinateResolutionCounts[3]));
-        LOG_INFO("MiniMap: BuildingMap presentation_textures intervalMs=%.1f elapsed:cpuWall publicationPass={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} alreadyActive:%llu outstandingOperationRejected:%llu uploadCall={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} uploadState={complete:%llu rejected:%llu unavailable:%llu ownershipUncertain:%llu} validatedPublications:%llu processedRemovals:%llu",
-            presentationDiagnostics.IntervalMs,
-            static_cast<unsigned long long>(presentationDiagnostics.GpuPublicationPass.Samples),
-            presentationDiagnostics.GpuPublicationPass.TotalMs,
-            meanMs(presentationDiagnostics.GpuPublicationPass),
-            presentationDiagnostics.GpuPublicationPass.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.PublicationPassAlreadyActive),
-            static_cast<unsigned long long>(presentationDiagnostics.OutstandingTextureOperationRejections),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureUploadCall.Samples),
-            presentationDiagnostics.TextureUploadCall.TotalMs,
-            meanMs(presentationDiagnostics.TextureUploadCall),
-            presentationDiagnostics.TextureUploadCall.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.TextureUploadStateCounts[0]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureUploadStateCounts[1]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureUploadStateCounts[2]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureUploadStateCounts[3]),
-            static_cast<unsigned long long>(presentationDiagnostics.ValidatedTexturePublications),
-            static_cast<unsigned long long>(presentationDiagnostics.ProcessedRemovalUpdates));
-        LOG_INFO("MiniMap: BuildingMap presentation_textures intervalMs=%.1f elapsed:cpuWall releaseCall={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} releaseState={empty:%llu returned:%llu unavailableRetained:%llu ownershipUncertain:%llu} dischargedReceipts:%llu",
-            presentationDiagnostics.IntervalMs,
-            static_cast<unsigned long long>(presentationDiagnostics.TextureReleaseCall.Samples),
-            presentationDiagnostics.TextureReleaseCall.TotalMs,
-            meanMs(presentationDiagnostics.TextureReleaseCall),
-            presentationDiagnostics.TextureReleaseCall.MaxMs,
-            static_cast<unsigned long long>(presentationDiagnostics.TextureReleaseStateCounts[0]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureReleaseStateCounts[1]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureReleaseStateCounts[2]),
-            static_cast<unsigned long long>(presentationDiagnostics.TextureReleaseStateCounts[3]),
-            static_cast<unsigned long long>(presentationDiagnostics.DischargedTextureReceipts));
-    }
+            LOG_INFO("MiniMap: BuildingMap GPU layer opens=%llu successfulOpens=%llu updates=%llu successfulUpdates=%llu renderCallbacks=%llu hiddenDraws=%llu invalidTransforms=%llu shutdowns=%llu",
+                static_cast<unsigned long long>(presentationDiagnostics.OpenAttempts),
+                static_cast<unsigned long long>(presentationDiagnostics.OpenSuccesses),
+                static_cast<unsigned long long>(presentationDiagnostics.UpdateAttempts),
+                static_cast<unsigned long long>(presentationDiagnostics.UpdateSuccesses),
+                static_cast<unsigned long long>(presentationDiagnostics.RenderCallbacks),
+                static_cast<unsigned long long>(presentationDiagnostics.HiddenDraws),
+                static_cast<unsigned long long>(presentationDiagnostics.InvalidTransforms),
+                static_cast<unsigned long long>(presentationDiagnostics.ShutdownAttempts));
+        }
 
-    MiniMapUI::BuildingLayer::RenderDiagnosticsSnapshot renderDiagnostics;
-    if (MiniMapUI::TakeBuildingLayerRenderDiagnosticsSnapshot(renderDiagnostics))
-    {
-        const auto meanMs = [](const auto& duration)
+        ::Services::Map::Buildings::Cache::SpriteAtlasDiagnosticsSnapshot atlasDiagnostics;
+        if (g_buildingMapService != nullptr &&
+            g_buildingMapService->TakeSpriteAtlasDiagnosticsSnapshot(atlasDiagnostics))
         {
-            return duration.Samples == 0
-                ? 0.0
-                : duration.TotalMs / static_cast<double>(duration.Samples);
-        };
-        LOG_INFO("MiniMap: BuildingMap presentation_render intervalMs=%.1f elapsed:cpuWall mutexWait={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} lockedExecution={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} outcomes={hidden:%llu shutdown:%llu invalidClip:%llu validClip:%llu} entries:%llu invalidIdentity:%llu projectionFailed:%llu outsideClip:%llu imageQuadCalls:%llu",
-            renderDiagnostics.IntervalMs,
-            static_cast<unsigned long long>(renderDiagnostics.RenderMutexWait.Samples),
-            renderDiagnostics.RenderMutexWait.TotalMs,
-            meanMs(renderDiagnostics.RenderMutexWait),
-            renderDiagnostics.RenderMutexWait.MaxMs,
-            static_cast<unsigned long long>(renderDiagnostics.RenderLockedExecution.Samples),
-            renderDiagnostics.RenderLockedExecution.TotalMs,
-            meanMs(renderDiagnostics.RenderLockedExecution),
-            renderDiagnostics.RenderLockedExecution.MaxMs,
-            static_cast<unsigned long long>(renderDiagnostics.RenderOutcomeCounts[0]),
-            static_cast<unsigned long long>(renderDiagnostics.RenderOutcomeCounts[1]),
-            static_cast<unsigned long long>(renderDiagnostics.RenderOutcomeCounts[2]),
-            static_cast<unsigned long long>(renderDiagnostics.RenderOutcomeCounts[3]),
-            static_cast<unsigned long long>(renderDiagnostics.PublishedEntriesExamined),
-            static_cast<unsigned long long>(renderDiagnostics.InvalidDrawIdentitySkipped),
-            static_cast<unsigned long long>(renderDiagnostics.QuadProjectionFailed),
-            static_cast<unsigned long long>(renderDiagnostics.QuadOutsideClip),
-            static_cast<unsigned long long>(renderDiagnostics.ImageQuadSubmissions));
+            LOG_INFO("MiniMap: BuildingMap GPU atlas intervalMs=%.1f cpuSize:%ux%u gpuSize:%ux%u sourcesAdmitted:%llu pendingPacking:%llu publicationPending:%u capacityRejected:%llu packingCalls:%llu packingMs:%.3f growths:%llu uploadAttempts:%llu published:%llu unavailable:%llu rejected:%llu ownershipUncertain:%llu uploadMs:%.3f",
+                gpuLayerDiagnosticsIntervalMs,
+				static_cast<unsigned>(atlasDiagnostics.AtlasWidth),
+				static_cast<unsigned>(atlasDiagnostics.AtlasHeight),
+				static_cast<unsigned>(atlasDiagnostics.PublishedAtlasWidth),
+				static_cast<unsigned>(atlasDiagnostics.PublishedAtlasHeight),
+                static_cast<unsigned long long>(atlasDiagnostics.CpuSourcesAdmitted),
+                static_cast<unsigned long long>(atlasDiagnostics.PendingSprites),
+				static_cast<unsigned>(atlasDiagnostics.PublicationPending),
+                static_cast<unsigned long long>(atlasDiagnostics.CapacityRejectedSources),
+                static_cast<unsigned long long>(atlasDiagnostics.PackingCalls),
+                atlasDiagnostics.Packing.TotalMs,
+                static_cast<unsigned long long>(atlasDiagnostics.AtlasGrowths),
+                static_cast<unsigned long long>(atlasDiagnostics.UploadAttempts),
+                static_cast<unsigned long long>(atlasDiagnostics.SuccessfulPublications),
+                static_cast<unsigned long long>(atlasDiagnostics.UnavailableUploads),
+                static_cast<unsigned long long>(atlasDiagnostics.RejectedPublications),
+                static_cast<unsigned long long>(atlasDiagnostics.OwnershipUncertainUploads),
+                atlasDiagnostics.Upload.TotalMs);
+            LOG_INFO("MiniMap: BuildingMap GPU atlas retirement attempts:%llu returned:%llu failed:%llu uncertain:%llu pending:%llu releaseMs:%.3f png={saved:%llu failed:%llu publicationSequence:%llu encodeWriteMs:%.3f}",
+                static_cast<unsigned long long>(atlasDiagnostics.RetirementReleaseAttempts),
+                static_cast<unsigned long long>(atlasDiagnostics.RetirementReleaseSuccesses),
+                static_cast<unsigned long long>(atlasDiagnostics.RetirementReleaseFailures),
+                static_cast<unsigned long long>(atlasDiagnostics.RetirementOwnershipUncertain),
+                static_cast<unsigned long long>(atlasDiagnostics.PendingTextureRetirements),
+                atlasDiagnostics.RetirementRelease.TotalMs,
+                static_cast<unsigned long long>(atlasDiagnostics.DiagnosticPngSuccesses),
+                static_cast<unsigned long long>(atlasDiagnostics.DiagnosticPngFailures),
+                static_cast<unsigned long long>(atlasDiagnostics.PublicationSequence),
+                atlasDiagnostics.DiagnosticExport.TotalMs);
+        }
     }
 #endif
 
@@ -1113,8 +1081,7 @@ static bool TryStartBuildingMapSession()
         SetServicesAdmitted(false);
         return false;
     }
-    auto* textures = MiniMap::Services::TryTextures();
-    if (textures == nullptr || !MiniMapUI::BeginBuildingLayerSession(*g_buildingMapService, *textures))
+    if (!MiniMapUI::BeginBuildingLayerSession(*g_buildingMapService))
     {
         LOG_ERROR("MiniMap: BuildingLayer presentation session could not be created; gameplay remains unadmitted");
         StopBuildingMapGameplaySession();

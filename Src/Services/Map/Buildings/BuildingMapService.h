@@ -37,6 +37,9 @@ namespace Services::Map::Buildings
 	namespace Cache
 	{
 		class SpriteSourceManager;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		struct SpriteAtlasDiagnosticsSnapshot;
+#endif
 	}
 	namespace Scheduling
 	{
@@ -122,6 +125,8 @@ namespace Services::Map::Buildings
 		 */
 		bool TakeSpriteAcquisitionDiagnosticsSnapshot(
 			Scheduling::BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
+		/** Forwards atlas publication and retirement aggregates to periodic diagnostics. */
+		bool TakeSpriteAtlasDiagnosticsSnapshot(Cache::SpriteAtlasDiagnosticsSnapshot& output) noexcept;
 #endif
 
 		/** Returns the configured square grid-cell width and height in map units. */

@@ -58,6 +58,14 @@ namespace Services::Map::Buildings::Cache
 		 * @return Persisted only after the complete temporary file was closed and published.
 		 */
 		WriteStatus TryWrite(const OwnedSpriteKey& key, const ProcessedSpritePayload& payload) noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Encodes published atlas pixels and atomically writes the caller-sequenced diagnostics filename. */
+		bool WriteAtlasDiagnosticPng(
+			const std::wstring& fileName,
+			std::span<const std::uint8_t> rgba,
+			std::uint32_t width,
+			std::uint32_t height) noexcept;
+#endif
 
 	private:
 		/** Holds validated version-1 metadata decoded from the packed 84-byte header. */
@@ -99,15 +107,17 @@ namespace Services::Map::Buildings::Cache
 		/** Reconstructs original-coordinate projection metadata from the version-1 header. */
 		bool BuildPayload(const SpriteHeaderFields&, std::vector<std::uint8_t>&&,
 			std::unique_ptr<const ProcessedSpritePayload>&) const;
-		/** Joins encoded PNG and header bytes before any persistent file is opened. */
+		/** Joins encoded PNG and optional metadata before a persistent file is opened. */
 		WriteStatus SerializeAndPersist(const std::filesystem::path&, const ProcessedSpritePayload&,
 			const std::vector<std::uint8_t>&);
-		/** Writes header and PNG bytes to a sibling temporary and atomically publishes it. */
+		/** Writes optional metadata and PNG bytes to a sibling temporary and atomically publishes them. */
 		WriteStatus PersistFile(const std::filesystem::path&, const std::uint8_t*, std::span<const std::uint8_t>);
-		/** Checks complete WriteFile length and successful temporary handle closure. */
+		/** Checks complete optional metadata/PNG writes and successful temporary handle closure. */
 		bool WriteAndClose(HANDLE, const std::uint8_t*, std::span<const std::uint8_t>) noexcept;
 		/** Removes a temporary path created by this cache operation. */
 		void CleanupTemporary(const std::filesystem::path&) noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#endif
 		/** Encodes a 16-bit integer in little-endian order. */
 		static void WriteUInt16(std::uint8_t*, std::uint16_t) noexcept;
 		/** Encodes a 32-bit integer into its exact little-endian field representation. */

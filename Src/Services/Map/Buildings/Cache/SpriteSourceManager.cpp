@@ -4,9 +4,7 @@
 // and one whole-texture GPU publication at the service's synchronous flush boundary.
 #include "SpriteSourceManager.h"
 
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
-#endif
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -17,6 +15,55 @@
 
 namespace Services::Map::Buildings::Cache
 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	void SpriteAtlasDiagnosticsSnapshot::Duration::Add(double elapsedMs) noexcept
+	{
+		TotalMs += elapsedMs;
+	}
+
+	/** Records one scalar duration without allocating or retaining an operation record. */
+	void SpriteSourceManager::AddDiagnosticDuration(
+		SpriteAtlasDiagnosticsSnapshot::Duration& aggregate,
+		double elapsedMs) noexcept
+	{
+		aggregate.Add(elapsedMs);
+	}
+
+	/** Consumes interval activity while exposing the current session publication sequence. */
+	bool SpriteSourceManager::TakeDiagnosticsSnapshot(SpriteAtlasDiagnosticsSnapshot& output) noexcept
+	{
+		output = diagnostics_;
+		output.PendingSprites = pendingKeys_.size();
+		output.PublicationPending = atlasDirty_;
+		output.AtlasWidth = atlasWidth_;
+		output.AtlasHeight = atlasHeight_;
+		output.PublishedAtlasWidth = publishedTexture_.HasRecord() ? publishedSize_.width : 0;
+		output.PublishedAtlasHeight = publishedTexture_.HasRecord() ? publishedSize_.height : 0;
+		output.PendingTextureRetirements = retiredTextures_.size();
+		output.PublicationSequence = sessionPublicationSequence_;
+		if (output.PendingSprites == 0 && !output.PublicationPending && output.PendingTextureRetirements == 0 &&
+			output.CpuSourcesAdmitted == 0 && output.CapacityRejectedSources == 0 &&
+			output.PackingCalls == 0 && output.AtlasGrowths == 0 && output.UploadAttempts == 0 &&
+			output.SuccessfulPublications == 0 && output.UnavailableUploads == 0 &&
+			output.RejectedPublications == 0 && output.OwnershipUncertainUploads == 0 &&
+			output.RetirementReleaseAttempts == 0 &&
+			output.RetirementReleaseFailures == 0 && output.DiagnosticPngSuccesses == 0 &&
+			output.DiagnosticPngFailures == 0)
+		{
+			return false;
+		}
+		diagnostics_ = {};
+		return true;
+	}
+
+	/** Resets atlas counters and numbering at the successful gameplay-session boundary. */
+	void SpriteSourceManager::BeginDiagnosticsSession() noexcept
+	{
+		diagnostics_ = {};
+		sessionPublicationSequence_ = 0;
+	}
+#endif
+
 	/** Retains borrowed cache and texture services and initializes one persistent transparent atlas. */
 	SpriteSourceManager::SpriteSourceManager(
 		std::filesystem::path buildingsCacheDirectory,
@@ -175,7 +222,6 @@ namespace Services::Map::Buildings::Cache
 		std::shared_ptr<const ProcessedSpritePayload> sharedPayload(std::move(payload));
 		const std::string keyBytes = key.Bytes();
 		payloadsByKey_.insert_or_assign(keyBytes, std::move(sharedPayload));
-		publishedDrawingChanged_ = publishedEntriesByKey_.erase(keyBytes) != 0 || publishedDrawingChanged_;
 		auto atlasEntry = atlasEntriesByKey_.find(keyBytes);
 		const ProcessedSpritePayload& adoptedPayload = *payloadsByKey_.at(keyBytes);
 		if (atlasEntry != atlasEntriesByKey_.end() &&
@@ -183,8 +229,15 @@ namespace Services::Map::Buildings::Cache
 			atlasEntry->second.Content.Height == adoptedPayload.Height())
 		{
 			RemovePendingKey(keyBytes);
+			if (!atlasDirty_)
+			{
+				firstUnpublishedChange_ = std::chrono::steady_clock::now();
+			}
 			CopySpriteToAtlas(adoptedPayload, atlasEntry->second);
 			admissionByKey_.insert_or_assign(keyBytes, AtlasAdmission::Admitted);
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.CpuSourcesAdmitted;
+		#endif
 			atlasDirty_ = true;
 		}
 		else
@@ -195,6 +248,10 @@ namespace Services::Map::Buildings::Cache
 			}
 			if (pendingKeySet_.insert(keyBytes).second)
 			{
+				if (!atlasDirty_ && pendingKeys_.empty())
+				{
+					firstUnpublishedChange_ = std::chrono::steady_clock::now();
+				}
 				pendingKeys_.push_back(keyBytes);
 			}
 			admissionByKey_.insert_or_assign(keyBytes, AtlasAdmission::Pending);
@@ -243,6 +300,8 @@ namespace Services::Map::Buildings::Cache
 		freeRectangles_.clear();
 		freeRectangles_.push_back({0, 0, atlasWidth_, atlasHeight_});
 		atlasDirty_ = false;
+		admittedSourcesSincePublication_ = 0;
+		firstUnpublishedChange_ = {};
 	}
 
 	/** Removes one key from both pending containers without changing atlas pixels. */
@@ -262,13 +321,27 @@ namespace Services::Map::Buildings::Cache
 	/** Packs a whole pending batch, uploads one complete image and atomically publishes its registry. */
 	MiniMap::Services::UploadState SpriteSourceManager::FlushAtlasToGPU()
 	{
-		if ((!atlasDirty_ && pendingKeys_.empty()) || ownershipUncertain_)
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::optional<std::chrono::steady_clock::time_point> packingStarted;
+		if (!pendingKeys_.empty())
 		{
-			return ownershipUncertain_
-				? MiniMap::Services::UploadState::Unavailable
-				: MiniMap::Services::UploadState::Complete;
+			++diagnostics_.PackingCalls;
+			packingStarted = std::chrono::steady_clock::now();
 		}
-		if (!PackPendingSprites())
+	#endif
+		const bool packed = PackPendingSprites();
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (packingStarted)
+		{
+			AddDiagnosticDuration(diagnostics_.Packing,
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *packingStarted).count());
+		}
+	#endif
+		if (!packed)
+		{
+			return MiniMap::Services::UploadState::Unavailable;
+		}
+		if (ownershipUncertain_)
 		{
 			return MiniMap::Services::UploadState::Unavailable;
 		}
@@ -276,8 +349,18 @@ namespace Services::Map::Buildings::Cache
 		{
 			return MiniMap::Services::UploadState::Complete;
 		}
+		const bool batchThresholdReached = admittedSourcesSincePublication_ >= PublicationBatchSourceThreshold;
+		const bool latencyExpired = std::chrono::steady_clock::now() - firstUnpublishedChange_ >=
+			PublicationMaximumLatency;
+		if (!batchThresholdReached && !latencyExpired)
+		{
+			return MiniMap::Services::UploadState::Complete;
+		}
 		if (textures_ == nullptr || !textures_->Available())
 		{
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.UnavailableUploads;
+		#endif
 			return MiniMap::Services::UploadState::Unavailable;
 		}
 		std::unordered_map<std::string, AtlasSpriteEntry> candidateEntries;
@@ -297,27 +380,10 @@ namespace Services::Map::Buildings::Cache
 	{
 		MiniMap::Services::OwnedTexture candidate;
 		const MiniMap::Services::TextureSize size{atlasWidth_, atlasHeight_};
-		const MiniMap::Services::UploadState upload = textures_->UploadRGBA(
-			atlasPixels_, size, MiniMap::Services::TextureRequest{"", size}, candidate);
-		const std::optional<MiniMap::Services::TextureSize> uploadedSize = candidate.Size();
-		if (upload != MiniMap::Services::UploadState::Complete || !candidate.IsValidated() ||
-			!uploadedSize || uploadedSize->width != size.width || uploadedSize->height != size.height)
+		const MiniMap::Services::UploadState upload = UploadAtlasPixels(size, candidate);
+		if (!IsValidAtlasUpload(upload, candidate, size))
 		{
-			bool releaseUncertain = false;
-			if (candidate.HasRecord() && upload != MiniMap::Services::UploadState::OwnershipUncertain)
-			{
-				const MiniMap::Services::ReleaseState release = textures_->Release(candidate);
-				releaseUncertain = release != MiniMap::Services::ReleaseState::Empty &&
-					release != MiniMap::Services::ReleaseState::Returned;
-			}
-			if (upload == MiniMap::Services::UploadState::OwnershipUncertain || releaseUncertain)
-			{
-				unresolvedTexture_.Swap(candidate);
-				ownershipUncertain_ = true;
-			}
-			return upload == MiniMap::Services::UploadState::Complete
-				? MiniMap::Services::UploadState::Rejected
-				: upload;
+			return HandleFailedAtlasUpload(upload, candidate);
 		}
 		publishedTexture_.Swap(candidate);
 		publishedSize_ = size;
@@ -327,9 +393,113 @@ namespace Services::Map::Buildings::Cache
 		RetireTexture(candidate, oldLease);
 		publishedDrawingChanged_ = true;
 		atlasDirty_ = false;
+		admittedSourcesSincePublication_ = 0;
+		firstUnpublishedChange_ = {};
 		DrainRetiredTextures();
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		RecordPublishedAtlasDiagnostics();
+	#endif
 		return MiniMap::Services::UploadState::Complete;
 	}
+
+	/** Uploads the whole current CPU atlas and measures only the backend call in Debug. */
+	MiniMap::Services::UploadState SpriteSourceManager::UploadAtlasPixels(
+		MiniMap::Services::TextureSize size,
+		MiniMap::Services::OwnedTexture& candidate)
+	{
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.UploadAttempts;
+		const auto uploadStarted = std::chrono::steady_clock::now();
+	#endif
+		const MiniMap::Services::UploadState upload = textures_->UploadRGBA(
+			atlasPixels_, size, MiniMap::Services::TextureRequest{"", size}, candidate);
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		AddDiagnosticDuration(diagnostics_.Upload,
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStarted).count());
+	#endif
+		return upload;
+	}
+
+	/** Requires a complete, validated receipt with the exact submitted atlas dimensions. */
+	bool SpriteSourceManager::IsValidAtlasUpload(
+		MiniMap::Services::UploadState upload,
+		const MiniMap::Services::OwnedTexture& candidate,
+		MiniMap::Services::TextureSize expectedSize) const noexcept
+	{
+		const auto uploadedSize = candidate.Size();
+		return upload == MiniMap::Services::UploadState::Complete && candidate.IsValidated() &&
+			uploadedSize && uploadedSize->width == expectedSize.width && uploadedSize->height == expectedSize.height;
+	}
+
+	/** Accounts for one failed receipt while preserving established uncertain-ownership handling. */
+	MiniMap::Services::UploadState SpriteSourceManager::HandleFailedAtlasUpload(
+		MiniMap::Services::UploadState upload,
+		MiniMap::Services::OwnedTexture& candidate)
+	{
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (upload == MiniMap::Services::UploadState::OwnershipUncertain)
+		{
+			++diagnostics_.OwnershipUncertainUploads;
+		}
+		else if (upload == MiniMap::Services::UploadState::Unavailable)
+		{
+			++diagnostics_.UnavailableUploads;
+		}
+		else
+		{
+			++diagnostics_.RejectedPublications;
+		}
+	#endif
+		bool releaseUncertain = false;
+		if (candidate.HasRecord() && upload != MiniMap::Services::UploadState::OwnershipUncertain)
+		{
+			const MiniMap::Services::ReleaseState release = textures_->Release(candidate);
+			releaseUncertain = release != MiniMap::Services::ReleaseState::Empty &&
+				release != MiniMap::Services::ReleaseState::Returned;
+		}
+		if (upload == MiniMap::Services::UploadState::OwnershipUncertain || releaseUncertain)
+		{
+			unresolvedTexture_.Swap(candidate);
+			ownershipUncertain_ = true;
+		}
+		return upload == MiniMap::Services::UploadState::Complete
+			? MiniMap::Services::UploadState::Rejected
+			: upload;
+	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Numbers and exports the committed atlas in Debug without affecting its GPU publication. */
+	void SpriteSourceManager::RecordPublishedAtlasDiagnostics()
+	{
+		++diagnostics_.SuccessfulPublications;
+		if (sessionPublicationSequence_ != (std::numeric_limits<std::uint64_t>::max)()) ++sessionPublicationSequence_;
+		const auto exportStarted = std::chrono::steady_clock::now();
+		bool exported = false;
+		try
+		{
+			std::wstring fileName = std::to_wstring(sessionPublicationSequence_);
+			if (fileName.size() < 4) fileName.insert(0, 4 - fileName.size(), L'0');
+			fileName.insert(0, L"Atlas_GPU_");
+			fileName.append(L".png");
+			exported = spriteDiskCache_ != nullptr && spriteDiskCache_->WriteAtlasDiagnosticPng(
+				fileName, atlasPixels_, atlasWidth_, atlasHeight_);
+		}
+		catch (...)
+		{
+			exported = false;
+		}
+		AddDiagnosticDuration(diagnostics_.DiagnosticExport,
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - exportStarted).count());
+		if (exported)
+		{
+			++diagnostics_.DiagnosticPngSuccesses;
+		}
+		else
+		{
+			++diagnostics_.DiagnosticPngFailures;
+		}
+	}
+#endif
 
 	/** Retires the published atlas without invalidating snapshots that still borrow it. */
 	MiniMap::Services::ReleaseState SpriteSourceManager::ReleaseAtlasTexture()
@@ -342,6 +512,7 @@ namespace Services::Map::Buildings::Cache
 		publishedEntriesByKey_.clear();
 		publishedSize_ = {0, 0};
 		atlasDirty_ = true;
+		firstUnpublishedChange_ = std::chrono::steady_clock::now();
 		publishedDrawingChanged_ = true;
 		DrainRetiredTextures();
 		return hadTexture && !retiredTextures_.empty()
@@ -397,17 +568,34 @@ namespace Services::Map::Buildings::Cache
 				++retired;
 				continue;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++diagnostics_.RetirementReleaseAttempts;
+			const auto releaseStarted = std::chrono::steady_clock::now();
+#endif
 			const MiniMap::Services::ReleaseState result = textures_ != nullptr
 				? textures_->Release(retired->Owner)
 				: MiniMap::Services::ReleaseState::UnavailableRetained;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			AddDiagnosticDuration(diagnostics_.RetirementRelease,
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - releaseStarted).count());
+#endif
 			if (result == MiniMap::Services::ReleaseState::Empty || result == MiniMap::Services::ReleaseState::Returned)
 			{
+			#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.RetirementReleaseSuccesses;
+			#endif
 				retired = retiredTextures_.erase(retired);
 			}
 			else
 			{
+			#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.RetirementReleaseFailures;
+			#endif
 				if (result == MiniMap::Services::ReleaseState::OwnershipUncertain)
 				{
+				#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					++diagnostics_.RetirementOwnershipUncertain;
+				#endif
 					ownershipUncertain_ = true;
 					retired->OwnershipUncertain = true;
 				}
@@ -465,20 +653,39 @@ namespace Services::Map::Buildings::Cache
 			if (!TryAllocateRectangle(payload.Width() + 4, payload.Height() + 4, entry.Allocated) &&
 				(atlasWidth_ == 512 && GrowAtlas() && TryAllocateRectangle(payload.Width() + 4, payload.Height() + 4, entry.Allocated)))
 			{
+				if (!atlasDirty_)
+				{
+					firstUnpublishedChange_ = std::chrono::steady_clock::now();
+				}
 				CopySpriteToAtlas(payload, entry);
 				atlasEntriesByKey_.insert_or_assign(key, entry);
 				admissionByKey_.insert_or_assign(key, AtlasAdmission::Admitted);
+			#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.CpuSourcesAdmitted;
+			#endif
+				++admittedSourcesSincePublication_;
 				continue;
 			}
 			if (entry.Allocated.Width == 0)
 			{
 				admissionByKey_.insert_or_assign(key, AtlasAdmission::CapacityExceeded);
+			#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.CapacityRejectedSources;
+			#endif
 			}
 			else
 			{
+				if (!atlasDirty_)
+				{
+					firstUnpublishedChange_ = std::chrono::steady_clock::now();
+				}
 				CopySpriteToAtlas(payload, entry);
 				atlasEntriesByKey_.insert_or_assign(key, entry);
 				admissionByKey_.insert_or_assign(key, AtlasAdmission::Admitted);
+			#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.CpuSourcesAdmitted;
+			#endif
+				++admittedSourcesSincePublication_;
 			}
 		}
 		pendingKeys_.clear();
@@ -586,6 +793,9 @@ namespace Services::Map::Buildings::Cache
 		atlasPixels_.swap(grown);
 		atlasWidth_ = 1024;
 		atlasHeight_ = 1024;
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++diagnostics_.AtlasGrowths;
+	#endif
 		freeRectangles_.push_back({512, 0, 512, 1024});
 		freeRectangles_.push_back({0, 512, 512, 512});
 		RecalculateAtlasUvs();

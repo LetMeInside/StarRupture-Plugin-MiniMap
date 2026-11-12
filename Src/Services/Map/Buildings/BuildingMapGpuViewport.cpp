@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cmath>
 
 namespace Services::Map::Buildings
 {
@@ -370,14 +371,49 @@ namespace Services::Map::Buildings
 		const CanvasTransform& transform,
 		const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections) const
 	{
+		if (!std::isfinite(transform.ClipMinimum.x) || !std::isfinite(transform.ClipMinimum.y) ||
+			!std::isfinite(transform.ClipMaximum.x) || !std::isfinite(transform.ClipMaximum.y) ||
+			transform.ClipMinimum.x >= transform.ClipMaximum.x ||
+			transform.ClipMinimum.y >= transform.ClipMaximum.y)
+		{
+			return;
+		}
 		for (const auto& section : sections)
 		{
 			for (const BuildingMapSectionPresentation::SolidTriangle& triangle : section->PreparedGeometry->SolidSurfaces)
 			{
 				std::array<MiniMap::Services::Vec2, 3> positions{};
+				bool finite = true;
 				for (std::size_t index = 0; index < positions.size(); ++index)
 				{
 					positions[index] = TransformWorldPoint(triangle.World[index], transform);
+					finite = finite && std::isfinite(positions[index].x) && std::isfinite(positions[index].y);
+				}
+				if (!finite)
+				{
+					continue;
+				}
+				const double area =
+					(static_cast<double>(positions[1].x) - positions[0].x) *
+					(static_cast<double>(positions[2].y) - positions[0].y) -
+					(static_cast<double>(positions[1].y) - positions[0].y) *
+					(static_cast<double>(positions[2].x) - positions[0].x);
+				if (!std::isfinite(area) || area == 0.0)
+				{
+					continue;
+				}
+				const float minimumX = (std::min)({positions[0].x, positions[1].x, positions[2].x});
+				const float maximumX = (std::max)({positions[0].x, positions[1].x, positions[2].x});
+				const float minimumY = (std::min)({positions[0].y, positions[1].y, positions[2].y});
+				const float maximumY = (std::max)({positions[0].y, positions[1].y, positions[2].y});
+				if (maximumX <= transform.ClipMinimum.x || minimumX >= transform.ClipMaximum.x ||
+					maximumY <= transform.ClipMinimum.y || minimumY >= transform.ClipMaximum.y)
+				{
+					continue;
+				}
+				if (area < 0.0)
+				{
+					std::swap(positions[1], positions[2]);
 				}
 				const std::uint32_t color = ((std::uint32_t(triangle.Opacity) << 24) |
 					((triangle.Rgb & 0xFFu) << 16) | (triangle.Rgb & 0x00FF00u) |

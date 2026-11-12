@@ -35,6 +35,32 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	{
 	}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Encodes one published atlas and atomically writes it under the configured diagnostics directory. */
+	bool SpriteDiskCache::WriteAtlasDiagnosticPng(
+		const std::wstring& fileName,
+		std::span<const std::uint8_t> rgba,
+		std::uint32_t width,
+		std::uint32_t height) noexcept
+	{
+		try
+		{
+			std::vector<std::uint8_t> png;
+			if (SpritePngCodec::Encode(rgba, width, height, png).Status != SpritePngCodec::ResultStatus::Complete ||
+				png.empty())
+			{
+				return false;
+			}
+			const auto destination = m_buildingsRoot / L"Diagnostics" / std::filesystem::path(fileName).filename();
+			return PersistFile(destination, nullptr, png) == WriteStatus::Persisted;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+#endif
+
 	/** Removes only the configured Buildings subtree and reports filesystem errors. */
 	bool SpriteDiskCache::ClearCache()
 	{
@@ -306,7 +332,7 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 		return true;
 	}
 
-	/** Creates the configured cache directory, writes and closes a sibling temporary, then atomically replaces. */
+	/** Creates the destination directory, writes an optional header and PNG to a sibling temporary, then replaces atomically. */
 	SpriteDiskCache::WriteStatus SpriteDiskCache::PersistFile(
 		const std::filesystem::path& path,
 		const std::uint8_t* header,
@@ -339,7 +365,11 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 		std::span<const std::uint8_t> png) noexcept
 	{
 		DWORD written = 0;
-		const bool headerWritten = WriteFile(file, header, DWORD(kHeaderBytes), &written, nullptr) && written == kHeaderBytes;
+		bool headerWritten = true;
+		if (header != nullptr)
+		{
+			headerWritten = WriteFile(file, header, DWORD(kHeaderBytes), &written, nullptr) && written == kHeaderBytes;
+		}
 		written = 0;
 		const bool pngWritten = headerWritten && png.size() <= (std::numeric_limits<DWORD>::max)() &&
 			WriteFile(file, png.data(), DWORD(png.size()), &written, nullptr) && written == png.size();

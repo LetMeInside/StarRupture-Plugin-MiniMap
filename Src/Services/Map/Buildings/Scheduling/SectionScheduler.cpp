@@ -2744,19 +2744,14 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Uses configured image resolution and leaves XY, height, depth and sample-limit defaults intact. */
+	/** Uses legacy minimum-map-resolution density without depending on Section image dimensions. */
 	bool SectionScheduler::TryPrepareSplineSamplingPolicy(
 		SplineRenderInputPreparationResult& output) const
 	{
 		using Status = SplineRenderInputPreparationResult::Status;
-		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
-			sectionResolutionPixels_ == 0)
-		{
-			output.PreparationStatus = Status::InvalidSamplingDensity;
-			return false;
-		}
-		const double pixelsPerUnit =
-			static_cast<double>(sectionResolutionPixels_) / sectionSizeMapUnits_;
+		constexpr double minimumMetersPerPixel = 0.125;
+		constexpr double mapUnitsPerMeter = 100.0;
+		constexpr double pixelsPerUnit = 1.0 / (mapUnitsPerMeter * minimumMetersPerPixel);
 		if (!std::isfinite(pixelsPerUnit) || pixelsPerUnit <= 0.0)
 		{
 			output.PreparationStatus = Status::InvalidSamplingDensity;

@@ -6,6 +6,7 @@
 #include "ProcessedSpritePayload.h"
 
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <list>
 #include <array>
@@ -21,6 +22,47 @@
 namespace Services::Map::Buildings::Cache
 {
 	class SpriteDiskCache;
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Aggregates source admission, atlas publication and retirement work for periodic diagnostics. */
+	struct SpriteAtlasDiagnosticsSnapshot
+	{
+		/** Stores a bounded duration aggregate without retaining per-operation records. */
+		struct Duration
+		{
+			double TotalMs = 0.0;
+			/** Adds one elapsed operation duration to the interval total. */
+			void Add(double elapsedMs) noexcept;
+		};
+
+		std::uint64_t CpuSourcesAdmitted = 0;
+		std::uint64_t PendingSprites = 0;
+		bool PublicationPending = false;
+		std::uint32_t AtlasWidth = 0;
+		std::uint32_t AtlasHeight = 0;
+		std::uint32_t PublishedAtlasWidth = 0;
+		std::uint32_t PublishedAtlasHeight = 0;
+		std::uint64_t CapacityRejectedSources = 0;
+		std::uint64_t PackingCalls = 0;
+		std::uint64_t AtlasGrowths = 0;
+		std::uint64_t UploadAttempts = 0;
+		std::uint64_t SuccessfulPublications = 0;
+		std::uint64_t UnavailableUploads = 0;
+		std::uint64_t RejectedPublications = 0;
+		std::uint64_t OwnershipUncertainUploads = 0;
+		std::uint64_t RetirementReleaseAttempts = 0;
+		std::uint64_t RetirementReleaseSuccesses = 0;
+		std::uint64_t RetirementReleaseFailures = 0;
+		std::uint64_t RetirementOwnershipUncertain = 0;
+		std::uint64_t PendingTextureRetirements = 0;
+		std::uint64_t DiagnosticPngSuccesses = 0;
+		std::uint64_t DiagnosticPngFailures = 0;
+		std::uint64_t PublicationSequence = 0;
+		Duration Packing;
+		Duration Upload;
+		Duration DiagnosticExport;
+		Duration RetirementRelease;
+	};
+	#endif
 	/** Owns immutable CPU payloads, persistent atlas storage, published sprite metadata and its GPU texture.
 	 * All calls are serialized on the designated game thread. Shared results remain valid
 	 * after an entry is replaced, withdrawn or cleared.
@@ -115,7 +157,7 @@ namespace Services::Map::Buildings::Cache
 		 */
 		SpriteResult GetSprite(const OwnedSpriteKey& key);
 
-		/** Uploads the complete dirty atlas once and publishes matching texture metadata on success. */
+		/** Packs pending CPU sources immediately and publishes a due whole-atlas GPU batch. */
 		MiniMap::Services::UploadState FlushAtlasToGPU();
 		/** Retires the currently published GPU atlas and releases it after snapshot leases expire. */
 		MiniMap::Services::ReleaseState ReleaseAtlasTexture();
@@ -133,6 +175,12 @@ namespace Services::Map::Buildings::Cache
 		bool HasPendingTextureRetirement() const noexcept;
 		/** Consumes an event set when published drawable atlas bindings have changed. */
 		bool ConsumePublishedDrawingChange() noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Transfers and resets counters accumulated since the caller's periodic report. */
+		bool TakeDiagnosticsSnapshot(SpriteAtlasDiagnosticsSnapshot& output) noexcept;
+		/** Resets interval counters and publication numbering when a gameplay session starts. */
+		void BeginDiagnosticsSession() noexcept;
+#endif
 
 		/** Adopts a captured immutable payload without copying its pixel vector.
 		 * Existing shared owners keep the previous payload alive after replacement.
@@ -159,6 +207,8 @@ namespace Services::Map::Buildings::Cache
 		void Clear() noexcept;
 
 	private:
+		static constexpr std::uint32_t PublicationBatchSourceThreshold = 8;
+		static constexpr std::chrono::milliseconds PublicationMaximumLatency{250};
 		/** Packs newly admitted sources in deterministic order and grows once if required. */
 		bool PackPendingSprites();
 		/** Copies one processed sprite and its edge-extruded gutter into the persistent image. */
@@ -176,6 +226,23 @@ namespace Services::Map::Buildings::Cache
 		/** Submits candidate pixels and adopts their registry only after receipt validation. */
 		MiniMap::Services::UploadState UploadAtlasCandidate(
 			std::unordered_map<std::string, AtlasSpriteEntry>&& candidateEntries);
+		/** Uploads persistent atlas pixels and records the backend-call duration in Debug. */
+		MiniMap::Services::UploadState UploadAtlasPixels(
+			MiniMap::Services::TextureSize size,
+			MiniMap::Services::OwnedTexture& candidate);
+		/** Validates a whole-atlas upload receipt against its requested dimensions. */
+		bool IsValidAtlasUpload(
+			MiniMap::Services::UploadState upload,
+			const MiniMap::Services::OwnedTexture& candidate,
+			MiniMap::Services::TextureSize expectedSize) const noexcept;
+		/** Preserves existing ownership rules after a failed or invalid atlas upload. */
+		MiniMap::Services::UploadState HandleFailedAtlasUpload(
+			MiniMap::Services::UploadState upload,
+			MiniMap::Services::OwnedTexture& candidate);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Numbers and exports the just-committed CPU pixels in Debug. */
+		void RecordPublishedAtlasDiagnostics();
+#endif
 		/** Moves an old texture owner into retirement tied to its immutable snapshot lease. */
 		void RetireTexture(
 			MiniMap::Services::OwnedTexture& texture,
@@ -188,6 +255,10 @@ namespace Services::Map::Buildings::Cache
 		SpriteResult AdoptDiskPayload(const OwnedSpriteKey& key, std::unique_ptr<const ProcessedSpritePayload>&& payload);
 		/** Applies the existing cache miss, invalid-entry and retrieval-error mapping. */
 		SpriteResult BuildDiskLoadFailure(bool captureRequired, std::uint8_t lookupRoute) const noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records one scalar duration without allocating or retaining an operation record. */
+		static void AddDiagnosticDuration(SpriteAtlasDiagnosticsSnapshot::Duration& aggregate, double elapsedMs) noexcept;
+#endif
 
 		std::unique_ptr<SpriteDiskCache> spriteDiskCache_;
 		MiniMap::Services::ITextures* textures_ = nullptr;
@@ -221,7 +292,13 @@ namespace Services::Map::Buildings::Cache
 		std::uint32_t atlasWidth_ = 512;
 		std::uint32_t atlasHeight_ = 512;
 		bool atlasDirty_ = false;
+		std::chrono::steady_clock::time_point firstUnpublishedChange_{};
+		std::uint32_t admittedSourcesSincePublication_ = 0;
 		bool publishedDrawingChanged_ = false;
 		bool ownershipUncertain_ = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		SpriteAtlasDiagnosticsSnapshot diagnostics_{};
+		std::uint64_t sessionPublicationSequence_ = 0;
+#endif
 	};
 }
