@@ -12,6 +12,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "Native/Fingerprints.h"
 #include "Native/NativeApi.h"
+#include "Native/MassLifecycle.h"
 #include "Native/TexturePublication.h"
 #if MINIMAP_USE_LEGACY_BUILDINGS
 #include "Native/ReadbackNativeAdapter.h"
@@ -392,6 +393,7 @@ static void SetServicesAdmitted(bool ready)
 {
     const bool changed=MiniMapMap::GameplayReady()!=ready;
     MiniMapMap::SetGameplayReady(ready);
+    MiniMapMassLifecycle::MassLifecycle::SetGameplayAdmitted(ready);
     if(changed)MiniMapUI::RefreshVisibility();
 }
 #if MINIMAP_USE_LEGACY_BUILDINGS
@@ -576,6 +578,7 @@ static void OnTextureServiceTick(
     Services::Map::Buildings::Capture::BuildingSpriteRenderer* renderer,
     float deltaTime)
 {
+    MiniMapMassLifecycle::MassLifecycle::ObserveUpdateThread();
 #if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
     const bool traceCallback = ::MiniMap::Diagnostics::BuildingMapLoadingTrace::ClaimCallback();
     ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Run("renderer lifecycle", [&]()
@@ -593,6 +596,7 @@ static void OnTextureServiceTick(
     {
         MiniMapTexturePublication::Service();
         ObserveWorldIdentity("after-texture-publication");
+        MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
         return;
     }
     MiniMapBuildingVisuals::TickSpriteCapture(deltaTime,MiniMapMap::GameplayReady());
@@ -607,6 +611,7 @@ static void OnTextureServiceTick(
     MiniMapTexturePublication::Service();
     ObserveWorldIdentity("after-texture-publication");
     ObserveWorldIdentity("after-mass-buildingcomplex");
+    MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
 #else
 	if (g_buildingMapService != nullptr)
 	{
@@ -834,15 +839,18 @@ static void OnTextureServiceTick(
         MiniMapUI::BuildingLayer::DiagnosticsSnapshot presentationDiagnostics;
         if (MiniMapUI::TakeBuildingLayerDiagnosticsSnapshot(presentationDiagnostics))
         {
-            LOG_INFO("MiniMap: BuildingMap GPU layer opens=%llu successfulOpens=%llu updates=%llu successfulUpdates=%llu renderCallbacks=%llu hiddenDraws=%llu invalidTransforms=%llu shutdowns=%llu",
+            LOG_INFO("MiniMap: BuildingMap GPU layer openAttempts=%llu openSuccesses=%llu updateAttempts=%llu updateReturnsTrue=%llu renderCallbacks=%llu hiddenDraws=%llu invalidTransforms=%llu shutdowns=%llu lastCommittedAcquisitionHash=%s0x%016llx committedHashChanges=%llu",
                 static_cast<unsigned long long>(presentationDiagnostics.OpenAttempts),
                 static_cast<unsigned long long>(presentationDiagnostics.OpenSuccesses),
                 static_cast<unsigned long long>(presentationDiagnostics.UpdateAttempts),
-                static_cast<unsigned long long>(presentationDiagnostics.UpdateSuccesses),
+                static_cast<unsigned long long>(presentationDiagnostics.UpdateReturnsTrue),
                 static_cast<unsigned long long>(presentationDiagnostics.RenderCallbacks),
                 static_cast<unsigned long long>(presentationDiagnostics.HiddenDraws),
                 static_cast<unsigned long long>(presentationDiagnostics.InvalidTransforms),
-                static_cast<unsigned long long>(presentationDiagnostics.ShutdownAttempts));
+                static_cast<unsigned long long>(presentationDiagnostics.ShutdownAttempts),
+                presentationDiagnostics.HasAcquisitionHash ? "" : "unavailable/",
+                static_cast<unsigned long long>(presentationDiagnostics.AcquisitionHash),
+                static_cast<unsigned long long>(presentationDiagnostics.AcquisitionHashChanges));
         }
 
         ::Services::Map::Buildings::Cache::SpriteAtlasDiagnosticsSnapshot atlasDiagnostics;
@@ -1011,6 +1019,7 @@ static void OnTextureServiceTick(
     }
 #endif
 #endif
+    MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
 }
 
 #if !MINIMAP_USE_LEGACY_BUILDINGS
@@ -1031,6 +1040,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
     StopBuildingMapGameplaySession();
 #endif
     ++g_worldGeneration;
+    MiniMapMassLifecycle::MassLifecycle::BeginWorld(world);
     g_preparedGeneration=0;
     g_worldEnding=false;
     // A replacement world can begin before the owned world's EndPlay. Keep the
@@ -1097,6 +1107,7 @@ static void OnExperienceLoadComplete()
     if(!MiniMapMap::HasWorld()||g_worldEnding||g_preparedGeneration==g_worldGeneration)return;
     // Mark the attempt before preparation so duplicate events cannot repeat it.
     g_preparedGeneration=g_worldGeneration;
+    MiniMapMassLifecycle::MassLifecycle::BeginWorld(MiniMapMap::GetWorld());
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     LOG_INFO("MiniMap: preparing gameplay services for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
 #endif
@@ -1144,6 +1155,7 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    MiniMapMassLifecycle::MassLifecycle::EndWorld();
     MiniMapUI::Hide();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     StopBuildingMapGameplaySession();
@@ -1180,6 +1192,7 @@ static void OnAfterWorldEndPlay(
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    MiniMapMassLifecycle::MassLifecycle::EndWorld();
     MiniMapUI::Hide();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     StopBuildingMapGameplaySession();
@@ -1247,6 +1260,25 @@ namespace MiniMap
         {
             LOG_ERROR("MiniMap: native API must be initialized before building capture services");
             return false;
+        }
+
+        /** Removes observational hooks if later core initialization returns early. */
+        struct MassLifecycleHookInitGuard
+        {
+            bool Keep = false;
+            /** Requests native hook removal while the lifecycle owner remains loaded. */
+            ~MassLifecycleHookInitGuard()
+            {
+                if (!Keep)
+                {
+                    MiniMapMassLifecycle::MassLifecycle::Shutdown();
+                }
+            }
+        } massLifecycleHookInitGuard;
+
+        if (!MiniMapMassLifecycle::MassLifecycle::Initialize())
+        {
+            LOG_ERROR("MiniMap: building mutation hooks were not fully installed; see bounded hook diagnostics");
         }
 
         if (g_buildingMapService != nullptr)
@@ -1545,6 +1577,7 @@ namespace MiniMap
         }
 
         buildingMapServiceInitGuard.Keep = true;
+        massLifecycleHookInitGuard.Keep = true;
 
 #endif
 
@@ -1566,6 +1599,7 @@ namespace MiniMap
         bool buildingMapTextureRetirementComplete = false;
         g_worldEnding=true;
         SetServicesAdmitted(false);
+        MiniMapMassLifecycle::MassLifecycle::Shutdown();
         MiniMapUI::StopInput();
         minimapCallbacksQuiescent = MiniMapUI::Shutdown();
 #if !MINIMAP_USE_LEGACY_BUILDINGS

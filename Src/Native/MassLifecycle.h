@@ -1,49 +1,88 @@
+// Owns observational building lifecycle detours and bounded callback diagnostics for client gameplay sessions.
 #pragma once
+
 #if defined(MODLOADER_CLIENT_BUILD)
+
 #include "NativeApi.h"
-#include <span>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 
 namespace MiniMapMassLifecycle
 {
-    enum class EventKind : uint8_t { Add, Remove };
-    struct Event
-    {
-        uint64_t Epoch = 0, Sequence = 0;
-        MiniMapNative::MassEntityHandle Entity;
-        uintptr_t Observer = 0;
-        uint32_t PersistentId = 0; // Provenance only; never the membership key.
-        EventKind Kind = EventKind::Add;
-    };
-    struct LifecycleStatus
-    {
-        uint64_t WorldGeneration = 0, Epoch = 0, RestoreToken = 0, Sequence = 0, LossRevision = 0;
-        size_t Queued = 0;
-        uint32_t InFlight = 0;
-        bool Available = false, Admitted = false, Consumer = false;
-        bool RestoreObserved = false, MassInitialized = false, PostSaveCompleted = false;
-        bool Cancelled = true, ObservationLost = false, SeedRequired = true;
-    };
-    struct SeedToken { uint64_t Epoch = 0, Watermark = 0, LossRevision = 0; };
-    // Called only by the existing plugin lifecycle. No second event dispatcher.
-    bool Initialize();
-    void Shutdown() noexcept;
-    void BeginWorld(SDK::UWorld*, uint64_t generation);
-    void AdmitWorld(bool admitted) noexcept;
-    void EndWorld() noexcept;
+	/** Installs only the building Add/Remove sinks and tracks scalar session diagnostics. */
+	class MassLifecycle final
+	{
+	public:
+		/** Installs the two fingerprint-resolved building callbacks through the existing loader hook service. */
+		static bool Initialize();
 
-    // One future world-service consumer. Null is the default dormant policy:
-    // hooks retain original semantics but do not enqueue entity notifications.
-    using ServiceFn = void (*)();
-    bool SetConsumer(ServiceFn) noexcept;
-    void Service(); // Existing admitted GT callback; no work/callback when dormant.
-    LifecycleStatus Status() noexcept;
-    bool InAdmittedService() noexcept;
-    // These functions succeed only within Service's admitted GT scope, outside
-    // all native notification stacks. No producer borrows reach this boundary.
-    size_t Drain(std::span<Event> output) noexcept;
-    bool CanAcquire(bool engineSaveLoading) noexcept;
-    SeedToken BeginSeed(bool engineSaveLoading) noexcept;
-    // Caller supplies current typed IsLoading and has seeded/replayed >Watermark.
-    bool AcceptSeed(SeedToken, bool engineSaveLoading) noexcept;
+		/** Closes diagnostic admission and requests removal of installed building hooks. */
+		static void Shutdown() noexcept;
+
+		/** Resolves the current world's stability subsystem identity once on the game thread. */
+		static void BeginWorld(SDK::UWorld* world);
+
+		/** Enables or disables callback classification for the admitted gameplay session. */
+		static void SetGameplayAdmitted(bool admitted) noexcept;
+
+		/** Clears the current world identity without resetting monotonic diagnostic counters. */
+		static void EndWorld() noexcept;
+
+		/** Samples the game-thread identity from the existing renderer/update callback. */
+		static void ObserveUpdateThread() noexcept;
+
+		/** Records the start boundary for one existing BuildingLayer update attempt. */
+		static void BeginCollectorUpdate() noexcept;
+
+		/** Emits one bounded development summary when its existing ten-second interval is due. */
+		static void ReportDiagnosticsIfDue() noexcept;
+
+	private:
+		/** Reads the monotonic diagnostic clock without touching native state. */
+		static std::uint64_t CurrentNanoseconds() noexcept;
+
+		/** Retains a maximum scalar with lock-free compare/exchange where supported. */
+		static void StoreMaximum(std::atomic<std::uint64_t>& destination, std::uint64_t value) noexcept;
+
+		/** Names one bounded hook installation status for development reporting. */
+		static const char* HookStateName(int state) noexcept;
+
+		/** Reports installation and removal receipts on the existing update thread. */
+		static void ReportHookDiagnostics() noexcept;
+
+		/** Reports notification counts, timestamps and collector-attempt correlation. */
+		static void ReportNotificationDiagnostics(std::uint64_t now) noexcept;
+
+		/** Publishes the backend trampoline into the typed callback owner. */
+		template<typename Function>
+		static void PublishOriginal(void* owner, void* original) noexcept;
+
+		/** Installs one typed member-function detour and retains its loader token. */
+		template<typename Function>
+		static bool InstallBuildingHook(
+			std::size_t slot,
+			Function target,
+			void* detour,
+			std::atomic<Function>& original,
+			std::atomic<int>& state);
+
+		/** Records one callback without accessing native entity data or service state. */
+		static void RecordNotification(
+			SDK::UCrBuildingStabilitySubsystem* subsystem,
+			bool creation) noexcept;
+
+		/** Forwards one creation notification to its original native method exactly once. */
+		static void __fastcall CreateBuildingDetour(
+			SDK::UCrBuildingStabilitySubsystem* subsystem,
+			MiniMapNative::PersistentEntityId persistentEntityId) noexcept;
+
+		/** Forwards one destruction notification to its original native method exactly once. */
+		static void __fastcall DestroyBuildingDetour(
+			SDK::UCrBuildingStabilitySubsystem* subsystem,
+			MiniMapNative::PersistentEntityId persistentEntityId) noexcept;
+	};
 }
+
 #endif

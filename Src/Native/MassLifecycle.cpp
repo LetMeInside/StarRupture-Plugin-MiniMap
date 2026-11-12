@@ -1,259 +1,418 @@
 #if defined(MODLOADER_CLIENT_BUILD)
+
+// Implements typed, observational building callbacks and bounded scalar lifecycle diagnostics.
 #include "MassLifecycle.h"
+
 #include "../Services/NativeHooks.h"
 #include "../Services/Runtime.h"
+
 #include <SDK/Chimera_classes.hpp>
 #include <Windows.h>
+
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 
 namespace
 {
-    namespace B = MiniMapMassLifecycle;
-    namespace N = MiniMapNative;
-    namespace S = MiniMap::Services;
-    using BuildingFn = N::MassLifecycleApi::BuildingNotificationFn;
-    using RestoreFn = N::MassLifecycleApi::RestoreNotificationFn;
-    constexpr size_t Capacity = 65536;
-    SRWLOCK Mutex = SRWLOCK_INIT;
-    struct Lock
-    {
-        Lock() noexcept { AcquireSRWLockExclusive(&Mutex); }
-        ~Lock() { ReleaseSRWLockExclusive(&Mutex); }
-    };
-    std::array<B::Event, Capacity> Journal{};
-    size_t Head = 0, Count = 0;
-    B::LifecycleStatus State;
-    B::ServiceFn Consumer = nullptr;
-    SDK::UCrBuildingStabilitySubsystem* Observer = nullptr;
-    SDK::UCrMassSaveSubsystem* Save = nullptr;
-    std::atomic<uint32_t> InFlight{0};
-    std::atomic<BuildingFn> CreateOriginal{nullptr}, DestroyOriginal{nullptr};
-    std::atomic<RestoreFn> SaveOriginal{nullptr}, PostOriginal{nullptr};
-    std::array<S::Hook, 4> Hooks{};
-    bool EverInstalled = false;
-    thread_local bool InService = false;
+	namespace N = MiniMapNative;
+	namespace S = MiniMap::Services;
+	using BuildingFunction = N::MassLifecycleApi::BuildingNotificationFn;
+	using Clock = std::chrono::steady_clock;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	constexpr auto DiagnosticInterval = std::chrono::seconds(10);
+#endif
+	std::array<S::Hook, 2> HookHandles{};
+	std::array<std::atomic<bool>, 2> HookRemovalRequested{};
+	std::array<std::atomic<int>, 2> HookRemovalRegistryState{
+		static_cast<int>(S::RegistryRemoval::NotRequested),
+		static_cast<int>(S::RegistryRemoval::NotRequested)};
+	std::array<std::atomic<int>, 2> HookRemovalCoreState{
+		static_cast<int>(S::CoreDrain::Unknown),
+		static_cast<int>(S::CoreDrain::Unknown)};
+	std::atomic<int> CreateInstallState{static_cast<int>(S::HookInstallState::Rejected)};
+	std::atomic<int> DestroyInstallState{static_cast<int>(S::HookInstallState::Rejected)};
+	std::atomic<bool> InstallationAttempted{false};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	std::atomic<bool> GameplayAdmitted{false};
+	std::atomic<std::uintptr_t> CurrentStabilitySubsystem{0};
+#endif
+	std::atomic<BuildingFunction> CreateOriginal{nullptr};
+	std::atomic<BuildingFunction> DestroyOriginal{nullptr};
 
-    bool GameThread() noexcept
-    {
-        const auto* n = N::Get();
-        __try { return n && n->player.isGameThread && n->player.isGameThread(); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    }
-    void Lose() noexcept { State.ObservationLost = true; State.SeedRequired = true; ++State.LossRevision; }
-    void Cancel() noexcept
-    {
-        ++State.Epoch;
-        State.Cancelled = true; State.Admitted = false;
-        State.RestoreObserved = State.MassInitialized = State.PostSaveCompleted = false;
-        State.SeedRequired = true;
-        Head = Count = 0;
-    }
-    void Publish(SDK::UCrBuildingStabilitySubsystem* observer, N::PersistentEntityId id, B::EventKind kind) noexcept
-    {
-        Lock lock;
-        if (!State.Available || State.Cancelled || !Consumer || observer != Observer) return;
-        const uint64_t sequence = ++State.Sequence;
-        if (id.CachedHandle.Index < 0 || id.CachedHandle.SerialNumber <= 0 || Count == Capacity)
-        { Lose(); return; }
-        Journal[(Head + Count) % Capacity] = {State.Epoch, sequence, id.CachedHandle,
-            reinterpret_cast<uintptr_t>(observer), id.Id, kind};
-        ++Count;
-    }
-    void Fault() noexcept { Lock lock; Lose(); State.Cancelled = true; }
-    // Original calls are leaf boundaries: identical by-value lowering, one
-    // invocation. SEH/C++ faults close this facility, never cross its detour.
-    bool CallBuilding(BuildingFn fn, SDK::UCrBuildingStabilitySubsystem* self, N::PersistentEntityId id)
-    {
-        __try { fn(self, id); return true; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    }
-    bool CallRestore(RestoreFn fn, SDK::UCrMassSaveSubsystem* self)
-    {
-        __try { fn(self); return true; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    }
-    void BuildingCall(std::atomic<BuildingFn>& original, SDK::UCrBuildingStabilitySubsystem* self,
-        N::PersistentEntityId id, B::EventKind kind) noexcept
-    {
-        InFlight.fetch_add(1, std::memory_order_acq_rel);
-        // Own the entire cached handle before the original can mutate anything.
-        Publish(self, id, kind);
-        try { if (!CallBuilding(original.load(std::memory_order_acquire), self, id)) Fault(); }
-        catch (...) { Fault(); }
-        InFlight.fetch_sub(1, std::memory_order_release);
-    }
-    void __fastcall Create(SDK::UCrBuildingStabilitySubsystem* self, N::PersistentEntityId id) noexcept
-    { BuildingCall(CreateOriginal, self, id, B::EventKind::Add); }
-    void __fastcall Destroy(SDK::UCrBuildingStabilitySubsystem* self, N::PersistentEntityId id) noexcept
-    { BuildingCall(DestroyOriginal, self, id, B::EventKind::Remove); }
-    void RestoreCall(std::atomic<RestoreFn>& original, SDK::UCrMassSaveSubsystem* self, bool post) noexcept
-    {
-        InFlight.fetch_add(1, std::memory_order_acq_rel);
-        uint64_t epoch = 0, token = 0;
-        {
-            Lock lock;
-            if (State.Available && !State.Cancelled && self == Save)
-            {
-                if (!post)
-                {
-                    ++State.Epoch; ++State.RestoreToken;
-                    Head = Count = 0;
-                    State.RestoreObserved = true;
-                    State.MassInitialized = State.PostSaveCompleted = false;
-                    State.SeedRequired = true;
-                }
-                epoch = State.Epoch; token = State.RestoreToken;
-            }
-        }
-        bool returned = false;
-        try { returned = CallRestore(original.load(std::memory_order_acquire), self); }
-        catch (...) {}
-        {
-            Lock lock;
-            if (epoch && epoch == State.Epoch && token == State.RestoreToken && !State.Cancelled)
-            {
-                if (!returned) { Lose(); State.Cancelled = true; }
-                else if (post) State.PostSaveCompleted = true;
-                else State.MassInitialized = true;
-            }
-        }
-        InFlight.fetch_sub(1, std::memory_order_release);
-    }
-    void __fastcall SaveLoaded(SDK::UCrMassSaveSubsystem* self) noexcept { RestoreCall(SaveOriginal, self, false); }
-    void __fastcall PostLoaded(SDK::UCrMassSaveSubsystem* self) noexcept { RestoreCall(PostOriginal, self, true); }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	std::atomic<std::uint64_t> AcceptedCreationNotifications{0};
+	std::atomic<std::uint64_t> AcceptedDestructionNotifications{0};
+	std::atomic<std::uint64_t> WorldMismatches{0};
+	std::atomic<std::uint64_t> MissingWorldIdentity{0};
+	std::atomic<std::uint64_t> CrossThreadNotifications{0};
+	std::atomic<std::uint64_t> NotificationSequence{0};
+	std::atomic<std::uint64_t> LatestNotificationNanoseconds{0};
+	std::atomic<std::uint64_t> UpdateThreadId{0};
+	std::atomic<std::uint64_t> CollectorUpdateAttemptSequence{0};
+	std::atomic<std::uint64_t> LastNotificationSequenceObservedAtUpdate{0};
+	std::atomic<std::uint64_t> LastNotificationObservedAtCollectorAttempt{0};
+	std::atomic<std::uint64_t> NotificationSequenceAtLastCollectorAttempt{0};
+	std::uint64_t lastObservedNotificationSequence = 0;
+	std::uint64_t lastReportedAtNanoseconds = 0;
+#endif
 
-    template<class Fn> bool Install(size_t slot, Fn target, void* entry, std::atomic<Fn>& original)
-    {
-        auto* hooks = S::TryNativeHooks();
-        if (!hooks || !target) return false;
-        const auto receipt = hooks->Install({reinterpret_cast<uintptr_t>(target), entry,
-            [](void* owner, void* value) noexcept {
-                static_cast<std::atomic<Fn>*>(owner)->store(reinterpret_cast<Fn>(value), std::memory_order_release);
-            }, &original});
-        Hooks[slot] = receipt.handle;
-        return receipt.state == S::HookInstallState::Active;
-    }
-    bool Boundary() noexcept
-    { return InService && State.Available && State.Admitted && !State.Cancelled && !InFlight.load(std::memory_order_acquire); }
 }
 
 namespace MiniMapMassLifecycle
 {
-    bool Initialize()
-    {
-        // Legacy hook removal has no physical drain certificate: never reinstall
-        // into callback storage that may still be reachable from an old backend.
-        if (EverInstalled) return false;
-        const auto* n = N::Get();
-        const auto* hooks = S::TryNativeHooks();
-        if (!n || !hooks) return false;
-        EverInstalled = true;
-        const auto& api = n->massLifecycle;
-        try
-        {
-            if (!Install(0, api.onCreate, reinterpret_cast<void*>(&Create), CreateOriginal) ||
-                !Install(1, api.onDestroy, reinterpret_cast<void*>(&Destroy), DestroyOriginal) ||
-                !Install(2, api.onSaveLoaded, reinterpret_cast<void*>(&SaveLoaded), SaveOriginal) ||
-                !Install(3, api.onPostSaveLoaded, reinterpret_cast<void*>(&PostLoaded), PostOriginal))
-            { Shutdown(); return false; }
-        }
-        catch (...) { Shutdown(); return false; }
-        Lock lock; State.Available = true;
-        return true;
-    }
-    void Shutdown() noexcept
-    {
-        { Lock lock; Cancel(); State.Available = false; Consumer = nullptr; Observer = nullptr; Save = nullptr; }
-        // No lifecycle lock while invoking backend removal. Original pointers,
-        // journal and callback storage survive pending/unknown removal evidence.
-        try
-        {
-            if (auto* hooks = S::TryNativeHooks())
-                for (auto handle : Hooks) if (handle.id) hooks->Remove(handle);
-        }
-        catch (...) {} // No retry of uncertain backend mutations.
-    }
-    void BeginWorld(SDK::UWorld* world, uint64_t generation)
-    {
-        if (!GameThread()) return;
-        EndWorld();
-        if (!world || !Status().Available) return;
-        auto* observer = static_cast<SDK::UCrBuildingStabilitySubsystem*>(SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(
-            world, SDK::TSubclassOf<SDK::UWorldSubsystem>(SDK::UCrBuildingStabilitySubsystem::StaticClass())));
-        auto* save = static_cast<SDK::UCrMassSaveSubsystem*>(SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(
-            world, SDK::TSubclassOf<SDK::UWorldSubsystem>(SDK::UCrMassSaveSubsystem::StaticClass())));
-        Lock lock;
-        Observer = observer; Save = save;
-        State.WorldGeneration = generation;
-        State.Cancelled = !State.Available || !observer || !save;
-        State.ObservationLost = false;
-        // No observed restore is a late/current-world attachment, not evidence
-        // of historical handler completion. CanAcquire still requires !IsLoading.
-    }
-    void AdmitWorld(bool admitted) noexcept { Lock lock; State.Admitted = admitted && !State.Cancelled; }
-    void EndWorld() noexcept { Lock lock; Cancel(); Observer = nullptr; Save = nullptr; }
-    bool SetConsumer(ServiceFn consumer) noexcept
-    {
-        if (!GameThread() || InService) return false;
-        Lock lock;
-        if (!State.Available) return false;
-        if (Consumer != consumer)
-        {
-            Consumer = consumer; Head = Count = 0;
-            State.SeedRequired = true; // A fresh census must cover the dormant prefix.
-        }
-        return true;
-    }
-    void Service()
-    {
-        if (InService) return;
-        ServiceFn callback = nullptr;
-        { Lock lock; if (State.Available && State.Admitted && !State.Cancelled && !InFlight.load()) callback = Consumer; }
-        if (!callback || !GameThread()) return;
-        InService = true;
-        try { callback(); }
-        catch (...) { Fault(); }
-        InService = false;
-    }
-    LifecycleStatus Status() noexcept
-    {
-        Lock lock; auto result = State;
-        result.Queued = Count; result.InFlight = InFlight.load(std::memory_order_acquire);
-        result.Consumer = Consumer != nullptr;
-        return result;
-    }
-    size_t Drain(std::span<Event> output) noexcept
-    {
-        Lock lock;
-        if (!Boundary()) return 0;
-        size_t copied = 0;
-        while (copied < output.size() && Count)
-        { output[copied++] = Journal[Head]; Head = (Head + 1) % Capacity; --Count; }
-        return copied;
-    }
-    bool InAdmittedService() noexcept { Lock lock; return Boundary(); }
-    bool CanAcquire(bool engineSaveLoading) noexcept
-    {
-        Lock lock;
-        return Boundary() && !engineSaveLoading && (!State.RestoreObserved ||
-            (State.MassInitialized && State.PostSaveCompleted));
-    }
-    SeedToken BeginSeed(bool engineSaveLoading) noexcept
-    {
-        Lock lock;
-        return Boundary() && !engineSaveLoading && (!State.RestoreObserved ||
-            (State.MassInitialized && State.PostSaveCompleted)) ?
-            SeedToken{State.Epoch, State.Sequence, State.LossRevision} : SeedToken{};
-    }
-    bool AcceptSeed(SeedToken token, bool engineSaveLoading) noexcept
-    {
-        Lock lock;
-        if (!Boundary() || engineSaveLoading || !token.Epoch || token.Epoch != State.Epoch || token.Watermark > State.Sequence ||
-            token.LossRevision != State.LossRevision || Count ||
-            (State.RestoreObserved && (!State.MassInitialized || !State.PostSaveCompleted))) return false;
-        State.ObservationLost = false; State.SeedRequired = false;
-        return true;
-    }
+	/** Returns the current steady-clock timestamp as nanoseconds from its fixed epoch. */
+	std::uint64_t MassLifecycle::CurrentNanoseconds() noexcept
+	{
+		return static_cast<std::uint64_t>(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+	}
+
+	/** Atomically retains the greater scalar value without taking a callback lock. */
+	void MassLifecycle::StoreMaximum(
+		std::atomic<std::uint64_t>& destination,
+		std::uint64_t value) noexcept
+	{
+		std::uint64_t observed = destination.load(std::memory_order_relaxed);
+		while (observed < value && !destination.compare_exchange_weak(
+			observed, value, std::memory_order_relaxed, std::memory_order_relaxed))
+		{
+		}
+	}
+
+	/** Names one bounded hook installation status for development reporting. */
+	const char* MassLifecycle::HookStateName(int state) noexcept
+	{
+		if (state == static_cast<int>(S::HookInstallState::Active))
+		{
+			return "active";
+		}
+		if (state == static_cast<int>(S::HookInstallState::BackendUnknown))
+		{
+			return "backend-unknown";
+		}
+		return "rejected";
+	}
+
+	/** Publishes the typed trampoline exactly as returned by the native hook backend. */
+	template<typename Function>
+	void MassLifecycle::PublishOriginal(void* owner, void* original) noexcept
+	{
+		static_cast<std::atomic<Function>*>(owner)->store(
+			reinterpret_cast<Function>(original), std::memory_order_release);
+	}
+
+	/** Installs one verified native target through the existing AlienX hook adapter. */
+	template<typename Function>
+	bool MassLifecycle::InstallBuildingHook(
+		std::size_t slot,
+		Function target,
+		void* detour,
+		std::atomic<Function>& original,
+		std::atomic<int>& state)
+	{
+		auto* hooks = S::TryNativeHooks();
+		if (hooks == nullptr || target == nullptr)
+		{
+			state.store(static_cast<int>(S::HookInstallState::Rejected), std::memory_order_release);
+			return false;
+		}
+		const S::HookInstallation installation = hooks->Install({
+			reinterpret_cast<std::uintptr_t>(target),
+			detour,
+			&MassLifecycle::PublishOriginal<Function>,
+			&original});
+		HookHandles[slot] = installation.handle;
+		state.store(static_cast<int>(installation.state), std::memory_order_release);
+		return installation.state == S::HookInstallState::Active;
+	}
+
+	/** Installs only the creation and destruction observers after native fingerprint resolution. */
+	bool MassLifecycle::Initialize()
+	{
+		if (InstallationAttempted.exchange(true, std::memory_order_acq_rel))
+		{
+			return CreateInstallState.load(std::memory_order_acquire) ==
+				static_cast<int>(S::HookInstallState::Active) &&
+				DestroyInstallState.load(std::memory_order_acquire) ==
+				static_cast<int>(S::HookInstallState::Active) &&
+				!HookRemovalRequested[0].load(std::memory_order_acquire) &&
+				!HookRemovalRequested[1].load(std::memory_order_acquire);
+		}
+		const auto* native = N::Get();
+		if (native == nullptr)
+		{
+			return false;
+		}
+		bool createInstalled = false;
+		bool destroyInstalled = false;
+		try
+		{
+			createInstalled = InstallBuildingHook(0, native->massLifecycle.onCreate,
+				reinterpret_cast<void*>(&MassLifecycle::CreateBuildingDetour), CreateOriginal, CreateInstallState);
+			if (createInstalled)
+			{
+				destroyInstalled = InstallBuildingHook(1, native->massLifecycle.onDestroy,
+					reinterpret_cast<void*>(&MassLifecycle::DestroyBuildingDetour), DestroyOriginal, DestroyInstallState);
+			}
+		}
+		catch (...)
+		{
+			Shutdown();
+			return false;
+		}
+		if (!createInstalled || !destroyInstalled)
+		{
+			Shutdown();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (auto* log = S::TryLog())
+			{
+				S::Logf(*log, S::Level::Error,
+					"MiniMap: building mutation hook install failed create=%s destroy=%s",
+					HookStateName(CreateInstallState.load(std::memory_order_acquire)),
+					HookStateName(DestroyInstallState.load(std::memory_order_acquire)));
+			}
+#endif
+			return false;
+		}
+		return true;
+	}
+
+	/** Closes session classification before requesting removal of installed native detours. */
+	void MassLifecycle::Shutdown() noexcept
+	{
+		EndWorld();
+		auto* hooks = S::TryNativeHooks();
+		if (hooks == nullptr)
+		{
+			return;
+		}
+		for (std::size_t slot = 0; slot < HookHandles.size(); ++slot)
+		{
+			if (HookHandles[slot].id == 0 || HookRemovalRequested[slot].exchange(true, std::memory_order_acq_rel))
+			{
+				continue;
+			}
+			try
+			{
+				const S::Removal removal = hooks->Remove(HookHandles[slot]);
+				HookRemovalRegistryState[slot].store(static_cast<int>(removal.registry), std::memory_order_release);
+				HookRemovalCoreState[slot].store(static_cast<int>(removal.core), std::memory_order_release);
+			}
+			catch (...)
+			{
+			}
+		}
+	}
+
+	/** Stores only the active world subsystem address for later scalar callback comparison. */
+	void MassLifecycle::BeginWorld(SDK::UWorld* world)
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		SetGameplayAdmitted(false);
+		CurrentStabilitySubsystem.store(0, std::memory_order_release);
+		if (world == nullptr)
+		{
+			return;
+		}
+		auto* observer = static_cast<SDK::UCrBuildingStabilitySubsystem*>(
+			SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(
+				world, SDK::TSubclassOf<SDK::UWorldSubsystem>(
+					SDK::UCrBuildingStabilitySubsystem::StaticClass())));
+		CurrentStabilitySubsystem.store(reinterpret_cast<std::uintptr_t>(observer), std::memory_order_release);
+#else
+		(void)world;
+#endif
+	}
+
+	/** Changes only the atomic admission bit used to classify later callback observations. */
+	void MassLifecycle::SetGameplayAdmitted(bool admitted) noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		GameplayAdmitted.store(admitted, std::memory_order_release);
+#else
+		(void)admitted;
+#endif
+	}
+
+	/** Ends callback admission and forgets the old subsystem address without dereferencing it. */
+	void MassLifecycle::EndWorld() noexcept
+	{
+		SetGameplayAdmitted(false);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		CurrentStabilitySubsystem.store(0, std::memory_order_release);
+#endif
+	}
+
+	/** Captures the OS thread identity at the existing renderer/update callback. */
+	void MassLifecycle::ObserveUpdateThread() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		UpdateThreadId.store(static_cast<std::uint64_t>(GetCurrentThreadId()), std::memory_order_release);
+#endif
+	}
+
+	/** Records the notification watermark at an update-attempt start and advances its sequence. */
+	void MassLifecycle::BeginCollectorUpdate() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const std::uint64_t sequence = NotificationSequence.load(std::memory_order_acquire);
+		const std::uint64_t attemptSequence = CollectorUpdateAttemptSequence.load(std::memory_order_relaxed);
+		if (sequence != lastObservedNotificationSequence)
+		{
+			lastObservedNotificationSequence = sequence;
+			LastNotificationSequenceObservedAtUpdate.store(sequence, std::memory_order_release);
+			LastNotificationObservedAtCollectorAttempt.store(attemptSequence, std::memory_order_release);
+		}
+		CollectorUpdateAttemptSequence.fetch_add(1, std::memory_order_relaxed);
+		NotificationSequenceAtLastCollectorAttempt.store(sequence, std::memory_order_release);
+#endif
+	}
+
+	/** Emits cumulative counters and latest-event timing outside native notification callbacks. */
+	void MassLifecycle::ReportDiagnosticsIfDue() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const std::uint64_t now = CurrentNanoseconds();
+		if (lastReportedAtNanoseconds != 0 && now - lastReportedAtNanoseconds <
+			static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(DiagnosticInterval).count()))
+		{
+			return;
+		}
+		lastReportedAtNanoseconds = now;
+		ReportHookDiagnostics();
+		ReportNotificationDiagnostics(now);
+#endif
+	}
+
+	/** Reports per-hook install and removal evidence without touching callback state. */
+	void MassLifecycle::ReportHookDiagnostics() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (auto* log = S::TryLog())
+		{
+			S::Logf(*log, S::Level::Info,
+				"MiniMap: building_mutation_hook_status intervalMs=10000 "
+				"installed={create:%s destroy:%s} "
+				"removal={create:{attempted:%u registry:%d core:%d} destroy:{attempted:%u registry:%d core:%d}}",
+				HookStateName(CreateInstallState.load(std::memory_order_acquire)),
+				HookStateName(DestroyInstallState.load(std::memory_order_acquire)),
+				static_cast<unsigned>(HookRemovalRequested[0].load(std::memory_order_acquire)),
+				HookRemovalRegistryState[0].load(std::memory_order_acquire),
+				HookRemovalCoreState[0].load(std::memory_order_acquire),
+				static_cast<unsigned>(HookRemovalRequested[1].load(std::memory_order_acquire)),
+				HookRemovalRegistryState[1].load(std::memory_order_acquire),
+				HookRemovalCoreState[1].load(std::memory_order_acquire));
+		}
+#endif
+	}
+
+	/** Reports monotonic notification totals and their latest timing correlation. */
+	void MassLifecycle::ReportNotificationDiagnostics(std::uint64_t now) noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const std::uint64_t lastNotification = LatestNotificationNanoseconds.load(std::memory_order_acquire);
+		const std::uint64_t latestSequence = NotificationSequence.load(std::memory_order_acquire);
+		const std::uint64_t observedSequence = LastNotificationSequenceObservedAtUpdate.load(std::memory_order_acquire);
+		const std::uint64_t lastUpdateAttempt = LastNotificationObservedAtCollectorAttempt.load(std::memory_order_acquire);
+		const std::uint64_t updateAttempts = CollectorUpdateAttemptSequence.load(std::memory_order_acquire);
+		const std::uint64_t latestSequenceAfterSnapshot = NotificationSequence.load(std::memory_order_acquire);
+		const bool latestNotificationObservedAtUpdate = latestSequence != 0 &&
+			latestSequence == observedSequence && latestSequence == latestSequenceAfterSnapshot;
+		const std::uint64_t attemptsAfterLatestNotification = latestNotificationObservedAtUpdate &&
+			updateAttempts >= lastUpdateAttempt
+			? updateAttempts - lastUpdateAttempt
+			: 0;
+		const std::uint64_t ageMs = lastNotification == 0 ? 0 : (now - lastNotification) / 1'000'000;
+		if (auto* log = S::TryLog())
+		{
+			S::Logf(*log, S::Level::Info,
+				"MiniMap: building_mutation_hooks intervalMs=10000 "
+				"accepted={create:%llu destroy:%llu sequence:%llu lastAgeMs:%llu "
+				"threadMismatch:%llu subsystemMismatch:%llu subsystemIdentityUnavailable:%llu} "
+				"activity={collectorUpdateAttempts:%llu "
+				"notificationSequenceAtLastUpdateAttempt:%llu attemptsFromFirstObservationOfLatestNotification:%llu}",
+				static_cast<unsigned long long>(AcceptedCreationNotifications.load(std::memory_order_relaxed)),
+				static_cast<unsigned long long>(AcceptedDestructionNotifications.load(std::memory_order_relaxed)),
+				static_cast<unsigned long long>(latestSequence),
+				static_cast<unsigned long long>(ageMs),
+				static_cast<unsigned long long>(CrossThreadNotifications.load(std::memory_order_relaxed)),
+				static_cast<unsigned long long>(WorldMismatches.load(std::memory_order_relaxed)),
+			static_cast<unsigned long long>(MissingWorldIdentity.load(std::memory_order_relaxed)),
+			static_cast<unsigned long long>(updateAttempts),
+			static_cast<unsigned long long>(NotificationSequenceAtLastCollectorAttempt.load(std::memory_order_relaxed)),
+			static_cast<unsigned long long>(attemptsAfterLatestNotification));
+		}
+#endif
+	}
+
+	/** Counts one callback and compares only its scalar subsystem address and thread identity. */
+	void MassLifecycle::RecordNotification(
+		SDK::UCrBuildingStabilitySubsystem* subsystem,
+		bool creation) noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!GameplayAdmitted.load(std::memory_order_acquire))
+		{
+			return;
+		}
+		const std::uintptr_t expectedSubsystem = CurrentStabilitySubsystem.load(std::memory_order_acquire);
+		if (!GameplayAdmitted.load(std::memory_order_acquire))
+		{
+			return;
+		}
+		if (expectedSubsystem == 0)
+		{
+			MissingWorldIdentity.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (reinterpret_cast<std::uintptr_t>(subsystem) != expectedSubsystem)
+		{
+			WorldMismatches.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		const std::uint64_t timestamp = CurrentNanoseconds();
+		if (creation)
+		{
+			AcceptedCreationNotifications.fetch_add(1, std::memory_order_relaxed);
+		}
+		else
+		{
+			AcceptedDestructionNotifications.fetch_add(1, std::memory_order_relaxed);
+		}
+		NotificationSequence.fetch_add(1, std::memory_order_relaxed);
+		StoreMaximum(LatestNotificationNanoseconds, timestamp);
+		const std::uint64_t updateThread = UpdateThreadId.load(std::memory_order_acquire);
+		const std::uint64_t callbackThread = static_cast<std::uint64_t>(GetCurrentThreadId());
+		if (updateThread != 0 && updateThread != callbackThread)
+		{
+			CrossThreadNotifications.fetch_add(1, std::memory_order_relaxed);
+		}
+#else
+		(void)subsystem;
+		(void)creation;
+#endif
+	}
+
+	/** Records the creation notification before forwarding its untouched value exactly once. */
+	void __fastcall MassLifecycle::CreateBuildingDetour(
+		SDK::UCrBuildingStabilitySubsystem* subsystem,
+		N::PersistentEntityId persistentEntityId) noexcept
+	{
+		RecordNotification(subsystem, true);
+		CreateOriginal.load(std::memory_order_acquire)(subsystem, persistentEntityId);
+	}
+
+	/** Records the destruction notification before forwarding its untouched value exactly once. */
+	void __fastcall MassLifecycle::DestroyBuildingDetour(
+		SDK::UCrBuildingStabilitySubsystem* subsystem,
+		N::PersistentEntityId persistentEntityId) noexcept
+	{
+		RecordNotification(subsystem, false);
+		DestroyOriginal.load(std::memory_order_acquire)(subsystem, persistentEntityId);
+	}
 }
+
 #endif

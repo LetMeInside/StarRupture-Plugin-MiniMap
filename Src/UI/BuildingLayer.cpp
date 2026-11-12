@@ -6,6 +6,7 @@
 #include "../Map/Buildings/BuildingCollectorV2.h"
 #include "../Map/MapTransform.h"
 #include "../Services/Map/Buildings/BuildingMapService.h"
+#include "../Native/MassLifecycle.h"
 #include "Services/Viewport.h"
 
 #include <cmath>
@@ -36,6 +37,8 @@ namespace MiniMapUI
 		}
 		output = diagnostics_;
 		diagnostics_ = {};
+		diagnostics_.AcquisitionHash = lastAcquisitionHash_;
+		diagnostics_.HasAcquisitionHash = hasLastAcquisitionHash_;
 		return true;
 	}
 #endif
@@ -86,14 +89,30 @@ namespace MiniMapUI
 		}
 	#endif
 		const auto viewport = AcquireViewport();
-		if (shutdownRequested_ || viewport == nullptr || !viewport->Update(x1, y1, x2, y2))
+		if (shutdownRequested_ || viewport == nullptr)
+		{
+			return false;
+		}
+	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		MiniMapMassLifecycle::MassLifecycle::BeginCollectorUpdate();
+	#endif
+		if (!viewport->Update(x1, y1, x2, y2))
 		{
 			return false;
 		}
 	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
-			++diagnostics_.UpdateSuccesses;
+			++diagnostics_.UpdateReturnsTrue;
+			const std::uint64_t acquisitionHash = buildingCollector_->AcquisitionHash();
+			if (hasLastAcquisitionHash_ && acquisitionHash != lastAcquisitionHash_)
+			{
+				++diagnostics_.AcquisitionHashChanges;
+			}
+			lastAcquisitionHash_ = acquisitionHash;
+			hasLastAcquisitionHash_ = true;
+			diagnostics_.AcquisitionHash = acquisitionHash;
+			diagnostics_.HasAcquisitionHash = true;
 		}
 	#endif
 		return true;

@@ -40,11 +40,14 @@ namespace MiniMapUI
 			std::uint64_t OpenAttempts = 0;
 			std::uint64_t OpenSuccesses = 0;
 			std::uint64_t UpdateAttempts = 0;
-			std::uint64_t UpdateSuccesses = 0;
+			std::uint64_t UpdateReturnsTrue = 0;
 			std::uint64_t RenderCallbacks = 0;
 			std::uint64_t HiddenDraws = 0;
 			std::uint64_t InvalidTransforms = 0;
 			std::uint64_t ShutdownAttempts = 0;
+			std::uint64_t AcquisitionHash = 0;
+			std::uint64_t AcquisitionHashChanges = 0;
+			bool HasAcquisitionHash = false;
 		};
 
 		/** Copies and clears counters observed since the previous call. */
@@ -99,5 +102,9 @@ namespace MiniMapUI
 #endif
 		bool renderDroneRailsEnabled_ = true;
 		bool shutdownRequested_ = false;
+#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::uint64_t lastAcquisitionHash_ = 0;
+		bool hasLastAcquisitionHash_ = false;
+#endif
 	};
 }
