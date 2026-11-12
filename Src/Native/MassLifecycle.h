@@ -11,7 +11,7 @@
 
 namespace MiniMapMassLifecycle
 {
-	/** Installs only the building Add/Remove sinks and tracks scalar session diagnostics. */
+	/** Installs building Add/Remove sinks and owns bounded gameplay-session diagnostics. */
 	class MassLifecycle final
 	{
 	public:
@@ -30,7 +30,7 @@ namespace MiniMapMassLifecycle
 		/** Clears the current world identity without resetting monotonic diagnostic counters. */
 		static void EndWorld() noexcept;
 
-		/** Samples the game-thread identity from the existing renderer/update callback. */
+		/** Samples the update thread and advances the tick sequence at the existing renderer callback. */
 		static void ObserveUpdateThread() noexcept;
 
 		/** Records the start boundary for one existing BuildingLayer update attempt. */
@@ -54,6 +54,28 @@ namespace MiniMapMassLifecycle
 
 		/** Reports notification counts, timestamps and collector-attempt correlation. */
 		static void ReportNotificationDiagnostics(std::uint64_t now) noexcept;
+
+		/** Reports completed and active burst aggregates without retaining event history. */
+		static void ReportBurstDiagnostics() noexcept;
+
+		/** Adds one accepted callback to the bounded burst aggregates when uncontended. */
+		static void RecordBurstSample(
+			SDK::UCrBuildingStabilitySubsystem* subsystem,
+			std::uint64_t timestamp,
+			std::uint64_t tickSequence,
+			bool creation) noexcept;
+
+		/** Adds callback counts and tick samples to a new or existing active burst. */
+		static void RecordBurstCallback(
+			std::uint64_t timestamp,
+			std::uint64_t tickSequence,
+			bool creation) noexcept;
+
+		/** Completes the active burst and updates lifetime maximum aggregates. */
+		static void CompleteActiveBurst() noexcept;
+
+		/** Closes an active diagnostic burst at the existing world boundary. */
+		static void CloseActiveBurst() noexcept;
 
 		/** Publishes the backend trampoline into the typed callback owner. */
 		template<typename Function>

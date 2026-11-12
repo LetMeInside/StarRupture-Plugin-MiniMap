@@ -9,6 +9,7 @@
 #include <SDK/Chimera_classes.hpp>
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -22,6 +23,7 @@ namespace
 	using BuildingFunction = N::MassLifecycleApi::BuildingNotificationFn;
 	using Clock = std::chrono::steady_clock;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	constexpr std::uint64_t BurstQuietGapNanoseconds = 500'000'000;
 	constexpr auto DiagnosticInterval = std::chrono::seconds(10);
 #endif
 	std::array<S::Hook, 2> HookHandles{};
@@ -51,6 +53,28 @@ namespace
 	std::atomic<std::uint64_t> NotificationSequence{0};
 	std::atomic<std::uint64_t> LatestNotificationNanoseconds{0};
 	std::atomic<std::uint64_t> UpdateThreadId{0};
+	std::atomic<std::uint64_t> ObservedTickSequence{0};
+	std::atomic<std::uint64_t> BurstSampleDrops{0};
+	std::atomic<std::uint64_t> BurstTickUnavailableSamples{0};
+	std::atomic_flag BurstStateLock = ATOMIC_FLAG_INIT;
+	bool HasActiveBurst = false;
+	std::uint64_t ActiveBurstCreationCount = 0;
+	std::uint64_t ActiveBurstDestructionCount = 0;
+	std::uint64_t ActiveBurstFirstTimestamp = 0;
+	std::uint64_t ActiveBurstLastTimestamp = 0;
+	std::uint64_t ActiveBurstMaximumGap = 0;
+	std::uint64_t ActiveBurstFirstTickSequence = 0;
+	std::uint64_t ActiveBurstLastTickSequence = 0;
+	std::uint64_t ActiveBurstLastDistinctTickSequence = 0;
+	std::uint64_t ActiveBurstDistinctTickCount = 0;
+	std::uint64_t CompletedBurstCount = 0;
+	std::uint64_t MaximumCallbacksPerBurst = 0;
+	std::uint64_t MaximumBurstDurationNanoseconds = 0;
+	std::uint64_t MaximumIntraBurstGapNanoseconds = 0;
+	std::uint64_t MaximumTickSequenceSpan = 0;
+	std::uint64_t MaximumDistinctCallbackTicks = 0;
+	std::uint64_t LargestBurstCreationCount = 0;
+	std::uint64_t LargestBurstDestructionCount = 0;
 	std::atomic<std::uint64_t> CollectorUpdateAttemptSequence{0};
 	std::atomic<std::uint64_t> LastNotificationSequenceObservedAtUpdate{0};
 	std::atomic<std::uint64_t> LastNotificationObservedAtCollectorAttempt{0};
@@ -212,6 +236,7 @@ namespace MiniMapMassLifecycle
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SetGameplayAdmitted(false);
+		CloseActiveBurst();
 		CurrentStabilitySubsystem.store(0, std::memory_order_release);
 		if (world == nullptr)
 		{
@@ -242,6 +267,7 @@ namespace MiniMapMassLifecycle
 	{
 		SetGameplayAdmitted(false);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		CloseActiveBurst();
 		CurrentStabilitySubsystem.store(0, std::memory_order_release);
 #endif
 	}
@@ -251,6 +277,7 @@ namespace MiniMapMassLifecycle
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		UpdateThreadId.store(static_cast<std::uint64_t>(GetCurrentThreadId()), std::memory_order_release);
+		ObservedTickSequence.fetch_add(1, std::memory_order_relaxed);
 #endif
 	}
 
@@ -284,6 +311,198 @@ namespace MiniMapMassLifecycle
 		lastReportedAtNanoseconds = now;
 		ReportHookDiagnostics();
 		ReportNotificationDiagnostics(now);
+		ReportBurstDiagnostics();
+#endif
+	}
+
+	/** Completes the active burst and folds its required maxima into cumulative diagnostics. */
+	void MassLifecycle::CompleteActiveBurst() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!HasActiveBurst)
+		{
+			return;
+		}
+		const std::uint64_t callbackCount = ActiveBurstCreationCount + ActiveBurstDestructionCount;
+		const std::uint64_t duration = ActiveBurstLastTimestamp - ActiveBurstFirstTimestamp;
+		++CompletedBurstCount;
+		if (callbackCount > MaximumCallbacksPerBurst)
+		{
+			MaximumCallbacksPerBurst = callbackCount;
+			LargestBurstCreationCount = ActiveBurstCreationCount;
+			LargestBurstDestructionCount = ActiveBurstDestructionCount;
+		}
+		MaximumBurstDurationNanoseconds = (std::max)(MaximumBurstDurationNanoseconds, duration);
+		MaximumIntraBurstGapNanoseconds = (std::max)(MaximumIntraBurstGapNanoseconds, ActiveBurstMaximumGap);
+		if (ActiveBurstDistinctTickCount != 0)
+		{
+			const std::uint64_t tickSpan = ActiveBurstLastTickSequence - ActiveBurstFirstTickSequence + 1;
+			MaximumTickSequenceSpan = (std::max)(MaximumTickSequenceSpan, tickSpan);
+		}
+		MaximumDistinctCallbackTicks = (std::max)(MaximumDistinctCallbackTicks, ActiveBurstDistinctTickCount);
+		HasActiveBurst = false;
+#endif
+	}
+
+	/** Completes an active burst at the existing gameplay world boundary. */
+	void MassLifecycle::CloseActiveBurst() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		while (BurstStateLock.test_and_set(std::memory_order_acquire))
+		{
+		}
+		CompleteActiveBurst();
+		BurstStateLock.clear(std::memory_order_release);
+#endif
+	}
+
+	/** Records one accepted callback sample without waiting for concurrent diagnostic work. */
+	void MassLifecycle::RecordBurstSample(
+		SDK::UCrBuildingStabilitySubsystem* subsystem,
+		std::uint64_t timestamp,
+		std::uint64_t tickSequence,
+		bool creation) noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (BurstStateLock.test_and_set(std::memory_order_acquire))
+		{
+			BurstSampleDrops.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (!GameplayAdmitted.load(std::memory_order_acquire) ||
+			reinterpret_cast<std::uintptr_t>(subsystem) !=
+				CurrentStabilitySubsystem.load(std::memory_order_acquire) ||
+				(HasActiveBurst && timestamp < ActiveBurstLastTimestamp) ||
+				(HasActiveBurst && tickSequence != 0 && ActiveBurstLastTickSequence != 0 &&
+					tickSequence < ActiveBurstLastTickSequence))
+		{
+			BurstSampleDrops.fetch_add(1, std::memory_order_relaxed);
+			BurstStateLock.clear(std::memory_order_release);
+			return;
+		}
+		if (HasActiveBurst)
+		{
+			const std::uint64_t gap = timestamp - ActiveBurstLastTimestamp;
+			if (gap > BurstQuietGapNanoseconds)
+			{
+				CompleteActiveBurst();
+			}
+			else
+			{
+				ActiveBurstMaximumGap = (std::max)(ActiveBurstMaximumGap, gap);
+			}
+		}
+		RecordBurstCallback(timestamp, tickSequence, creation);
+		BurstStateLock.clear(std::memory_order_release);
+#else
+		(void)subsystem;
+		(void)timestamp;
+		(void)tickSequence;
+		(void)creation;
+#endif
+	}
+
+	/** Updates active callback counts and distinct tick values for one accepted sample. */
+	void MassLifecycle::RecordBurstCallback(
+		std::uint64_t timestamp,
+		std::uint64_t tickSequence,
+		bool creation) noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!HasActiveBurst)
+		{
+			HasActiveBurst = true;
+			ActiveBurstCreationCount = creation ? 1 : 0;
+			ActiveBurstDestructionCount = creation ? 0 : 1;
+			ActiveBurstFirstTimestamp = timestamp;
+			ActiveBurstMaximumGap = 0;
+			ActiveBurstFirstTickSequence = tickSequence;
+			ActiveBurstLastTickSequence = tickSequence;
+			ActiveBurstLastDistinctTickSequence = tickSequence;
+			ActiveBurstDistinctTickCount = tickSequence == 0 ? 0 : 1;
+		}
+		else if (creation)
+		{
+			++ActiveBurstCreationCount;
+		}
+		else
+		{
+			++ActiveBurstDestructionCount;
+		}
+		ActiveBurstLastTimestamp = timestamp;
+		if (tickSequence == 0)
+		{
+			BurstTickUnavailableSamples.fetch_add(1, std::memory_order_relaxed);
+		}
+		else if (ActiveBurstFirstTickSequence == 0 && tickSequence != 0)
+		{
+			ActiveBurstFirstTickSequence = tickSequence;
+			ActiveBurstLastTickSequence = tickSequence;
+			ActiveBurstLastDistinctTickSequence = tickSequence;
+			ActiveBurstDistinctTickCount = 1;
+		}
+		else if (tickSequence > ActiveBurstLastDistinctTickSequence)
+		{
+			ActiveBurstLastTickSequence = tickSequence;
+			ActiveBurstLastDistinctTickSequence = tickSequence;
+			++ActiveBurstDistinctTickCount;
+		}
+#else
+		(void)timestamp;
+		(void)tickSequence;
+		(void)creation;
+#endif
+	}
+
+	/** Expires quiet bursts and reports one compact aggregate outside native callbacks. */
+	void MassLifecycle::ReportBurstDiagnostics() noexcept
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const std::uint64_t now = CurrentNanoseconds();
+		while (BurstStateLock.test_and_set(std::memory_order_acquire))
+		{
+		}
+		if (HasActiveBurst && now - ActiveBurstLastTimestamp >= BurstQuietGapNanoseconds)
+		{
+			CompleteActiveBurst();
+		}
+		const bool active = HasActiveBurst;
+		const std::uint64_t activeCallbacks = active
+			? ActiveBurstCreationCount + ActiveBurstDestructionCount
+			: 0;
+		const std::uint64_t activeSpan = active ? ActiveBurstLastTimestamp - ActiveBurstFirstTimestamp : 0;
+		const std::uint64_t completed = CompletedBurstCount;
+		const std::uint64_t maximumCallbacks = MaximumCallbacksPerBurst;
+		const std::uint64_t maximumDuration = MaximumBurstDurationNanoseconds;
+		const std::uint64_t maximumGap = MaximumIntraBurstGapNanoseconds;
+		const std::uint64_t maximumTickSpan = MaximumTickSequenceSpan;
+		const std::uint64_t maximumDistinctTicks = MaximumDistinctCallbackTicks;
+		const std::uint64_t largestCreate = LargestBurstCreationCount;
+		const std::uint64_t largestDestroy = LargestBurstDestructionCount;
+		BurstStateLock.clear(std::memory_order_release);
+		if (auto* log = S::TryLog())
+		{
+			S::Logf(*log, S::Level::Info,
+				"MiniMap: building_mutation_bursts intervalMs=10000 thresholdMs=%llu "
+				"completed=%llu active=%u activeCallbacks=%llu activeObservedSpanMs=%.3f "
+				"maxCallbacksPerBurst=%llu maxDurationMs=%.3f maxIntraBurstGapMs=%.3f "
+				"maxTickSpan=%llu maxDistinctCallbackTicks=%llu largestBurst={create:%llu destroy:%llu} "
+				"sampleDrops=%llu tickSamplesUnavailable=%llu",
+				static_cast<unsigned long long>(BurstQuietGapNanoseconds / 1'000'000),
+				static_cast<unsigned long long>(completed),
+				static_cast<unsigned>(active),
+				static_cast<unsigned long long>(activeCallbacks),
+				static_cast<double>(activeSpan) / 1'000'000.0,
+				static_cast<unsigned long long>(maximumCallbacks),
+				static_cast<double>(maximumDuration) / 1'000'000.0,
+				static_cast<double>(maximumGap) / 1'000'000.0,
+				static_cast<unsigned long long>(maximumTickSpan),
+				static_cast<unsigned long long>(maximumDistinctTicks),
+				static_cast<unsigned long long>(largestCreate),
+				static_cast<unsigned long long>(largestDestroy),
+				static_cast<unsigned long long>(BurstSampleDrops.load(std::memory_order_relaxed)),
+				static_cast<unsigned long long>(BurstTickUnavailableSamples.load(std::memory_order_relaxed)));
+		}
 #endif
 	}
 
@@ -384,6 +603,8 @@ namespace MiniMapMassLifecycle
 		}
 		NotificationSequence.fetch_add(1, std::memory_order_relaxed);
 		StoreMaximum(LatestNotificationNanoseconds, timestamp);
+		const std::uint64_t tickSequence = ObservedTickSequence.load(std::memory_order_acquire);
+		RecordBurstSample(subsystem, timestamp, tickSequence, creation);
 		const std::uint64_t updateThread = UpdateThreadId.load(std::memory_order_acquire);
 		const std::uint64_t callbackThread = static_cast<std::uint64_t>(GetCurrentThreadId());
 		if (updateThread != 0 && updateThread != callbackThread)
