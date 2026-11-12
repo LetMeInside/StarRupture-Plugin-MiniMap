@@ -468,6 +468,14 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
             std::uint64_t FailedScans = 0;
+            std::uint64_t EqualRegionRequests = 0;
+            std::uint64_t ChangedRegionRequests = 0;
+            std::uint64_t ContainedRegionRequests = 0;
+            std::uint64_t ImmediateRegionRequests = 0;
+            std::uint64_t SuccessfulCoverageReuse = 0;
+            std::uint64_t RejectedCoverageReuse = 0;
+            std::uint64_t PeriodicScans = 0;
+            std::uint64_t ImmediateScans = 0;
             WorstMembershipScan WorstScan;
 
             void Reset() noexcept
@@ -725,6 +733,17 @@ namespace MiniMap::BuildingAcquisition
         bool HasRegion = false;
         bool IncludeDroneRails = true;
         Facts::Region RequestedRegion;
+        Facts::Region CommittedCoverage;
+        SDK::UWorld* CoverageWorld = nullptr;
+        const void* CoverageManager = nullptr;
+        std::uint64_t CoverageSession = 0;
+        std::uint64_t CoverageRequest = 0;
+        std::uint64_t CoverageContentHash = 0;
+        bool CommittedCoverageValid = false;
+        bool RegionChangePendingValidation = false;
+        bool PendingSnapshotEligible = false;
+        bool PendingReuseEligible = false;
+        bool ImmediateScanRequired = true;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
         static std::uint64_t Key(EntityId id) noexcept
@@ -737,6 +756,160 @@ namespace MiniMap::BuildingAcquisition
         Context CaptureContext() const noexcept
         {
             return {World, Manager, Generation, RequestGeneration, HasRegion, RequestedRegion};
+        }
+
+        /** Checks exact inclusive-edge containment between already validated positive rectangles. */
+        static bool IsRegionContained(const Facts::Region& requested, const Facts::Region& coverage) noexcept
+        {
+            return requested.X >= coverage.X && requested.Y >= coverage.Y &&
+                requested.X + requested.Width <= coverage.X + coverage.Width &&
+                requested.Y + requested.Height <= coverage.Y + coverage.Height;
+        }
+
+        /** Confirms that retained membership still belongs to this world's current native query source. */
+        bool IsNativeSourceCurrent(const Native& native, SDK::UWorld* world) const
+        {
+            return world && QueryConstructed && Types && World == world && Manager &&
+                ReadManager(ManagerStorage(native, world)) == Manager;
+        }
+
+        /** Withdraws retained membership when the world or native query source is unavailable. */
+        void InvalidateCoverageForUnavailableSource() noexcept
+        {
+            const bool hadCoverageCandidate = CommittedCoverageValid ||
+                PendingSnapshotEligible || PendingReuseEligible;
+            MembershipComplete = false;
+            CommittedCoverageValid = false;
+            NextMembership = {};
+            ImmediateScanRequired = true;
+            if (RegionChangePendingValidation)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                if (hadCoverageCandidate)
+                {
+                    ++Diagnostics.RejectedCoverageReuse;
+                }
+                ++Diagnostics.ImmediateRegionRequests;
+#endif
+                RegionChangePendingValidation = false;
+                PendingSnapshotEligible = false;
+                PendingReuseEligible = false;
+            }
+        }
+
+        /** Confirms the source before reuse and completes any deferred contained-region decision. */
+        bool PrepareCurrentUpdate(const Native& native, SDK::UWorld* world)
+        {
+            if (!IsNativeSourceCurrent(native, world))
+            {
+                InvalidateCoverageForUnavailableSource();
+                return false;
+            }
+            ValidatePendingRegionReuse(world);
+            return true;
+        }
+
+        /** Restores eligibility only after game-thread source checks and exact coverage validation. */
+        void ValidatePendingRegionReuse(SDK::UWorld* world)
+        {
+            if (!RegionChangePendingValidation)
+                return;
+            const bool hadCoverageCandidate = CommittedCoverageValid ||
+                PendingSnapshotEligible || PendingReuseEligible;
+            const auto now = Clock::now();
+            const bool snapshotCurrent = CommittedCoverageValid &&
+                CoverageWorld == World && CoverageWorld == world && CoverageManager == Manager &&
+                CoverageSession == Generation && CoverageRequest != 0 &&
+                CoverageContentHash == AcquisitionContentHash;
+            const bool beforeDeadline = now < NextMembership;
+            const bool contained = snapshotCurrent && IsRegionContained(RequestedRegion, CommittedCoverage);
+            if (PendingReuseEligible && contained && beforeDeadline)
+            {
+                MembershipComplete = true;
+                ImmediateScanRequired = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++Diagnostics.SuccessfulCoverageReuse;
+#endif
+            }
+            else if (snapshotCurrent && contained && PendingReuseEligible)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++Diagnostics.RejectedCoverageReuse;
+#endif
+            }
+            else if (!snapshotCurrent)
+            {
+                ImmediateScanRequired = true;
+                NextMembership = {};
+                CommittedCoverageValid = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                if (hadCoverageCandidate)
+                {
+                    ++Diagnostics.RejectedCoverageReuse;
+                }
+#endif
+            }
+            else
+            {
+                ImmediateScanRequired = !PendingSnapshotEligible || !contained;
+                if (ImmediateScanRequired)
+                {
+                    NextMembership = {};
+                }
+            }
+            RegionChangePendingValidation = false;
+            PendingSnapshotEligible = false;
+            PendingReuseEligible = false;
+        }
+
+        /** Accepts exact geometry and schedules validation or an immediate uncovered scan. */
+        bool AcceptRequestedRegion(const Facts::Region& region) noexcept
+        {
+            const double right = region.X + region.Width;
+            const double bottom = region.Y + region.Height;
+            if (!std::isfinite(region.X) || !std::isfinite(region.Y) || !std::isfinite(region.Width) ||
+                !std::isfinite(region.Height) || region.Width <= 0 || region.Height <= 0 ||
+                !std::isfinite(right) || !std::isfinite(bottom) || right <= region.X || bottom <= region.Y ||
+                !std::isfinite(std::hypot(region.Width, region.Height)))
+            {
+                return false;
+            }
+            if (HasRegion && RequestedRegion == region)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++Diagnostics.EqualRegionRequests;
+#endif
+                return true;
+            }
+            const bool sameCommittedSnapshot = CommittedCoverageValid && MembershipComplete &&
+                CoverageWorld == World && CoverageManager == Manager && CoverageSession == Generation &&
+                CoverageRequest != 0 && CoverageContentHash == AcquisitionContentHash;
+            const bool pendingSnapshotEligible = RegionChangePendingValidation
+                ? PendingSnapshotEligible
+                : sameCommittedSnapshot;
+            const bool containedByCoverage = CommittedCoverageValid && IsRegionContained(region, CommittedCoverage);
+            const bool contained = pendingSnapshotEligible && containedByCoverage;
+            RequestedRegion = region;
+            HasRegion = true;
+            ++RequestGeneration;
+            if (RequestGeneration == 0)
+                ++RequestGeneration;
+            MembershipComplete = false;
+            RegionChangePendingValidation = true;
+            PendingSnapshotEligible = pendingSnapshotEligible;
+            PendingReuseEligible = contained;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++Diagnostics.ChangedRegionRequests;
+            if (containedByCoverage)
+            {
+                ++Diagnostics.ContainedRegionRequests;
+            }
+            if (!contained)
+            {
+                ++Diagnostics.ImmediateRegionRequests;
+            }
+#endif
+            return true;
         }
 
         /** Obtains existing native shared-pointer storage; never fabricates shared ownership.
@@ -784,6 +957,17 @@ namespace MiniMap::BuildingAcquisition
             Pending.clear();
             Entities.clear();
             AcquisitionContentHash = 0;
+            CommittedCoverage = {};
+            CoverageWorld = nullptr;
+            CoverageManager = nullptr;
+            CoverageSession = 0;
+            CoverageRequest = 0;
+            CoverageContentHash = 0;
+            CommittedCoverageValid = false;
+            RegionChangePendingValidation = false;
+            PendingSnapshotEligible = false;
+            PendingReuseEligible = false;
+            ImmediateScanRequired = true;
             Definitions.clear();
             NextMembership = {};
             MembershipComplete = false;
@@ -1182,7 +1366,18 @@ namespace MiniMap::BuildingAcquisition
             Entities.swap(reconciled);
             Pending.swap(pending);
             AcquisitionContentHash = acquisitionHash;
+            CommittedCoverage = context.Region;
+            CoverageWorld = context.World;
+            CoverageManager = context.Manager;
+            CoverageSession = context.Session;
+            CoverageRequest = context.Request;
+            CoverageContentHash = acquisitionHash;
+            CommittedCoverageValid = true;
             MembershipComplete = true;
+            RegionChangePendingValidation = false;
+            PendingSnapshotEligible = false;
+            PendingReuseEligible = false;
+            ImmediateScanRequired = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing->ReconciliationMs = std::chrono::duration<double, std::milli>(Clock::now() - reconciliationStarted).count();
 #endif
@@ -1229,6 +1424,7 @@ namespace MiniMap::BuildingAcquisition
         {
             if (Clock::now() < NextMembership)
                 return;
+            const bool immediateScan = ImmediateScanRequired;
             const auto context = CaptureContext();
             bool complete = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1251,11 +1447,21 @@ namespace MiniMap::BuildingAcquisition
             if (!complete)
             {
                 MembershipComplete = false;
+                CommittedCoverageValid = false;
             }
             else
                 MembershipComplete = true;
             NextMembership = Clock::now() + MembershipInterval;
+            ImmediateScanRequired = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (immediateScan)
+            {
+                ++Diagnostics.ImmediateScans;
+            }
+            else
+            {
+                ++Diagnostics.PeriodicScans;
+            }
             timing.Complete = complete;
 #endif
         }
@@ -1752,9 +1958,16 @@ namespace MiniMap::BuildingAcquisition
             const double acquisitionBottom = RequestedRegion.Y + RequestedRegion.Height;
             const double sectionRight = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
             const double sectionBottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
-            return sectionRegion.xMapUnits >= RequestedRegion.X &&
+            return CommittedCoverageValid &&
+                CoverageWorld == World && CoverageManager == Manager && CoverageSession == Generation &&
+                CoverageRequest != 0 && CoverageContentHash == AcquisitionContentHash &&
+                sectionRegion.xMapUnits >= RequestedRegion.X &&
                 sectionRegion.yMapUnits >= RequestedRegion.Y &&
-                sectionRight <= acquisitionRight && sectionBottom <= acquisitionBottom;
+                sectionRight <= acquisitionRight && sectionBottom <= acquisitionBottom &&
+                sectionRegion.xMapUnits >= CommittedCoverage.X &&
+                sectionRegion.yMapUnits >= CommittedCoverage.Y &&
+                sectionRight <= CommittedCoverage.X + CommittedCoverage.Width &&
+                sectionBottom <= CommittedCoverage.Y + CommittedCoverage.Height;
         }
 
         /** Validates common square size, acquisition containment and exact grid alignment. */
@@ -2024,7 +2237,10 @@ namespace MiniMap::BuildingAcquisition
             {
                 return {};
             }
-            if (!QueryConstructed || !HasRegion || !MembershipComplete)
+            if (!QueryConstructed || !HasRegion || !MembershipComplete || !CommittedCoverageValid ||
+                CoverageWorld != World || CoverageManager != Manager || CoverageSession != Generation ||
+                CoverageRequest == 0 || CoverageContentHash != AcquisitionContentHash ||
+                !IsRegionContained(RequestedRegion, CommittedCoverage))
             {
                 throw ::Services::Map::Buildings::SectionPublicationUnavailable(
                     "No successful committed regional acquisition is available.");
@@ -2084,7 +2300,7 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu",
+            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={periodic:%llu immediate:%llu}",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
@@ -2092,7 +2308,15 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<unsigned long long>(d.Admitted), static_cast<unsigned long long>(d.MissingOrigin),
                 static_cast<unsigned long long>(d.Added), static_cast<unsigned long long>(d.Removed),
                 static_cast<unsigned long long>(d.FailedScans), static_cast<unsigned long long>(Entities.size()),
-                static_cast<unsigned long long>(Pending.size()));
+                static_cast<unsigned long long>(Pending.size()),
+                static_cast<unsigned long long>(d.EqualRegionRequests),
+                static_cast<unsigned long long>(d.ChangedRegionRequests),
+                static_cast<unsigned long long>(d.ContainedRegionRequests),
+                static_cast<unsigned long long>(d.ImmediateRegionRequests),
+                static_cast<unsigned long long>(d.SuccessfulCoverageReuse),
+                static_cast<unsigned long long>(d.RejectedCoverageReuse),
+                static_cast<unsigned long long>(d.PeriodicScans),
+                static_cast<unsigned long long>(d.ImmediateScans));
         }
 
         /** Emits the numeric-only worst scan retained for one completed interval. */
@@ -2243,24 +2467,7 @@ namespace MiniMap::BuildingAcquisition
     /** Accepts the exact half-open rectangle used by this collector's regional admission request. */
     bool BuildingCollectorV2::SetAcquisitionRegion(const Facts::Region& region) noexcept
     {
-        const double right = region.X + region.Width;
-        const double bottom = region.Y + region.Height;
-        if (!std::isfinite(region.X) || !std::isfinite(region.Y) || !std::isfinite(region.Width) ||
-            !std::isfinite(region.Height) || region.Width <= 0 || region.Height <= 0 ||
-            !std::isfinite(right) || !std::isfinite(bottom) || right <= region.X || bottom <= region.Y ||
-            !std::isfinite(std::hypot(region.Width, region.Height)))
-            return false;
-        if (!state_->HasRegion || !(state_->RequestedRegion == region))
-        {
-            state_->RequestedRegion = region;
-            state_->HasRegion = true;
-            ++state_->RequestGeneration;
-            if (state_->RequestGeneration == 0)
-                ++state_->RequestGeneration;
-            state_->MembershipComplete = false;
-            state_->NextMembership = {};
-        }
-        return true;
+        return state_->AcceptRequestedRegion(region);
     }
 
     /** Maps service units directly to native centimetres and reuses the accepted-request transaction. */
@@ -2299,14 +2506,24 @@ namespace MiniMap::BuildingAcquisition
     void BuildingCollectorV2::Update()
     {
         const auto* native = MiniMapNative::Get();
-        if (!native || !native->player.isGameThread())
+        if (!native)
+        {
+            state_->InvalidateCoverageForUnavailableSource();
+            return;
+        }
+        if (!native->player.isGameThread())
             return;
         SDK::UWorld* world = MiniMapMap::GetWorld();
         if (!world)
+        {
+            state_->InvalidateCoverageForUnavailableSource();
             return;
+        }
         try
         {
             if (!state_->Types || !state_->EnsureSession(*native, world))
+                return;
+            if (!state_->PrepareCurrentUpdate(*native, world))
                 return;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             const auto updateStarted = State::Clock::now();
@@ -2334,6 +2551,7 @@ namespace MiniMap::BuildingAcquisition
         {
             // Retain the last committed dataset; failed scans remain unavailable through MembershipComplete.
             state_->MembershipComplete = false;
+            state_->CommittedCoverageValid = false;
         }
     }
 
