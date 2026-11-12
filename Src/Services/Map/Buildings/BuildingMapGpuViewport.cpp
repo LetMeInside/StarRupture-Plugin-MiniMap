@@ -41,21 +41,23 @@ namespace Services::Map::Buildings
 
 	/** Reuses unchanged Section transfer data and publishes one complete immutable render value. */
 	void BuildingMapGpuViewport::RefreshPresentationSnapshot(
-		Cache::SpriteSourceManager& atlas,
-		bool atlasBindingsChanged)
+		Cache::SpriteSourceManager& atlas)
 	{
 		const auto previous = presentationSnapshot_.load(std::memory_order_acquire);
 		const MiniMap::Services::Texture atlasTexture = atlas.PublishedTexture();
 		const MiniMap::Services::TextureSize atlasSize = atlas.PublishedAtlasSize();
+		const std::uint64_t atlasDrawingRevision = atlas.PublishedDrawingRevision();
 		const std::shared_ptr<const void> atlasLease = atlas.PublishedTextureLease();
 		std::shared_ptr<PresentationSnapshot> next;
 		if (!previous || previous->AtlasTexture.id != atlasTexture.id ||
 			previous->AtlasSize.width != atlasSize.width || previous->AtlasSize.height != atlasSize.height ||
+			previous->AtlasDrawingRevision != atlasDrawingRevision ||
 			previous->AtlasLease != atlasLease)
 		{
 			next = std::make_shared<PresentationSnapshot>();
 			next->AtlasTexture = atlasTexture;
 			next->AtlasSize = atlasSize;
+			next->AtlasDrawingRevision = atlasDrawingRevision;
 			next->AtlasLease = atlasLease;
 		}
 		std::size_t sectionIndex = 0;
@@ -70,9 +72,9 @@ namespace Services::Map::Buildings
 				return;
 			}
 			const auto presentation = GetOrBuildSectionPresentation(
-				*section, geometry, atlas, atlasBindingsChanged);
+				*section, geometry, atlas);
 			AppendSnapshotSection(next, previous, presentation, sectionIndex,
-				atlasTexture, atlasSize, atlasLease);
+				atlasTexture, atlasSize, atlasDrawingRevision, atlasLease);
 			++sectionIndex;
 		});
 		if (!next && previous && sectionIndex != previous->Sections.size())
@@ -80,6 +82,7 @@ namespace Services::Map::Buildings
 			next = std::make_shared<PresentationSnapshot>();
 			next->AtlasTexture = atlasTexture;
 			next->AtlasSize = atlasSize;
+			next->AtlasDrawingRevision = atlasDrawingRevision;
 			next->AtlasLease = atlasLease;
 			next->Sections = previous->Sections;
 			next->Sections.resize(sectionIndex);
@@ -96,9 +99,9 @@ namespace Services::Map::Buildings
 	BuildingMapGpuViewport::GetOrBuildSectionPresentation(
 		BuildingMapSection& section,
 		const Visuals::PreparedBuildingGeometry& geometry,
-		Cache::SpriteSourceManager& atlas,
-		bool atlasBindingsChanged)
+		Cache::SpriteSourceManager& atlas)
 	{
+		const std::uint64_t atlasDrawingRevision = atlas.PublishedDrawingRevision();
 		auto existing = section.gpuPresentation_;
 		if (existing == nullptr)
 		{
@@ -106,24 +109,22 @@ namespace Services::Map::Buildings
 			replacement->PreparedGeometry = BuildSectionGeometry(geometry);
 			BuildSpriteBindings(geometry.OrdinarySprites(), atlas, replacement->OrdinaryBindings);
 			BuildSpriteBindings(geometry.OverlayLastSprites(), atlas, replacement->OverlayBindings);
-			section.gpuPresentationAtlasBindingSignature_ = CalculateAtlasBindingSignature(geometry, atlas);
-			section.gpuPresentationAtlasBindingSignatureValid_ = true;
+			section.gpuPresentationAtlasRevision_ = atlasDrawingRevision;
+			section.gpuPresentationAtlasRevisionValid_ = true;
 			section.gpuPresentation_ = replacement;
 			return replacement;
 		}
-		if (atlasBindingsChanged || !section.gpuPresentationAtlasBindingSignatureValid_)
+		if (!section.gpuPresentationAtlasRevisionValid_ ||
+			atlasDrawingRevision != section.gpuPresentationAtlasRevision_)
 		{
-			const std::uint64_t bindingSignature = CalculateAtlasBindingSignature(geometry, atlas);
-			if (bindingSignature != section.gpuPresentationAtlasBindingSignature_)
-			{
-				auto replacement = std::make_shared<BuildingMapSectionPresentation>();
-				replacement->PreparedGeometry = existing->PreparedGeometry;
-				BuildSpriteBindings(geometry.OrdinarySprites(), atlas, replacement->OrdinaryBindings);
-				BuildSpriteBindings(geometry.OverlayLastSprites(), atlas, replacement->OverlayBindings);
-				section.gpuPresentationAtlasBindingSignature_ = bindingSignature;
-				section.gpuPresentation_ = replacement;
-				existing = std::move(replacement);
-			}
+			auto replacement = std::make_shared<BuildingMapSectionPresentation>();
+			replacement->PreparedGeometry = existing->PreparedGeometry;
+			BuildSpriteBindings(geometry.OrdinarySprites(), atlas, replacement->OrdinaryBindings);
+			BuildSpriteBindings(geometry.OverlayLastSprites(), atlas, replacement->OverlayBindings);
+			section.gpuPresentationAtlasRevision_ = atlasDrawingRevision;
+			section.gpuPresentationAtlasRevisionValid_ = true;
+			section.gpuPresentation_ = replacement;
+			existing = std::move(replacement);
 		}
 		return existing;
 	}
@@ -136,6 +137,7 @@ namespace Services::Map::Buildings
 		std::size_t sectionIndex,
 		MiniMap::Services::Texture atlasTexture,
 		MiniMap::Services::TextureSize atlasSize,
+		std::uint64_t atlasDrawingRevision,
 		const std::shared_ptr<const void>& atlasLease) const
 	{
 		if (!next && (sectionIndex >= previous->Sections.size() || previous->Sections[sectionIndex] != section))
@@ -143,6 +145,7 @@ namespace Services::Map::Buildings
 			next = std::make_shared<PresentationSnapshot>();
 			next->AtlasTexture = atlasTexture;
 			next->AtlasSize = atlasSize;
+			next->AtlasDrawingRevision = atlasDrawingRevision;
 			next->AtlasLease = atlasLease;
 			const std::size_t prefixCount = (std::min)(sectionIndex, previous->Sections.size());
 			next->Sections.insert(next->Sections.end(), previous->Sections.begin(),
@@ -209,43 +212,6 @@ namespace Services::Map::Buildings
 			}
 			output.push_back(binding);
 		}
-	}
-
-	/** Hashes canonical keys and exact published content rectangles without allocating per sprite. */
-	std::uint64_t BuildingMapGpuViewport::CalculateAtlasBindingSignature(
-		const Visuals::PreparedBuildingGeometry& geometry,
-		Cache::SpriteSourceManager& atlas) const noexcept
-	{
-		std::uint64_t signature = 1469598103934665603ull;
-		const MiniMap::Services::TextureSize size = atlas.PublishedAtlasSize();
-		signature = (signature ^ size.width) * 1099511628211ull;
-		signature = (signature ^ size.height) * 1099511628211ull;
-		const auto append = [&](const auto& occurrences)
-		{
-			for (const auto& occurrence : occurrences)
-			{
-				signature = (signature ^ occurrence.SourceKey.Bytes().size()) * 1099511628211ull;
-				for (const unsigned char character : occurrence.SourceKey.Bytes())
-				{
-					signature = (signature ^ character) * 1099511628211ull;
-				}
-				Cache::SpriteSourceManager::AtlasSpriteEntry entry;
-				const bool available = atlas.TryGetPublishedSprite(occurrence.SourceKey, entry) && entry.DrawingEligible;
-				signature = (signature ^ std::uint64_t(available)) * 1099511628211ull;
-				if (available)
-				{
-					const std::array<std::uint32_t, 4> bounds{
-						entry.Content.X, entry.Content.Y, entry.Content.Width, entry.Content.Height};
-					for (std::uint32_t value : bounds)
-					{
-						signature = (signature ^ value) * 1099511628211ull;
-					}
-				}
-			}
-		};
-		append(geometry.OrdinarySprites());
-		append(geometry.OverlayLastSprites());
-		return signature;
 	}
 
 	/** Resolves source-image UVs into the published content rectangle without using gutter pixels. */

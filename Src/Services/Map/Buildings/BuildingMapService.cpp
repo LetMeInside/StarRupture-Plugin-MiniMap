@@ -1014,7 +1014,7 @@ namespace Services::Map::Buildings
 			}
 			if (affected)
 			{
-				gpuViewport->RefreshPresentationSnapshot(*spriteSourceManager_, atlasBindingsChanged);
+				gpuViewport->RefreshPresentationSnapshot(*spriteSourceManager_);
 			}
 		}
 		gpuPresentationChangedSections_.clear();

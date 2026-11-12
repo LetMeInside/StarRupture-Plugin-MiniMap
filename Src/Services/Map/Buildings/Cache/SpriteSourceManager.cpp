@@ -278,7 +278,12 @@ namespace Services::Map::Buildings::Cache
 		const bool removed = payloadsByKey_.erase(key.Bytes()) != 0;
 		RemovePendingKey(key.Bytes());
 		admissionByKey_.erase(key.Bytes());
-		publishedDrawingChanged_ = publishedEntriesByKey_.erase(key.Bytes()) != 0 || publishedDrawingChanged_;
+		const bool publishedEntryRemoved = publishedEntriesByKey_.erase(key.Bytes()) != 0;
+		publishedDrawingChanged_ = publishedEntryRemoved || publishedDrawingChanged_;
+		if (publishedEntryRemoved)
+		{
+			++publishedDrawingRevision_;
+		}
 		const auto allocation = atlasEntriesByKey_.find(key.Bytes());
 		if (allocation != atlasEntriesByKey_.end())
 		{
@@ -291,6 +296,10 @@ namespace Services::Map::Buildings::Cache
 	void SpriteSourceManager::Clear() noexcept
 	{
 		publishedDrawingChanged_ = !publishedEntriesByKey_.empty() || publishedDrawingChanged_;
+		if (!publishedEntriesByKey_.empty())
+		{
+			++publishedDrawingRevision_;
+		}
 		payloadsByKey_.clear();
 		atlasEntriesByKey_.clear();
 		publishedEntriesByKey_.clear();
@@ -392,6 +401,7 @@ namespace Services::Map::Buildings::Cache
 		publishedTextureLease_ = std::make_shared<const std::uint8_t>(0);
 		RetireTexture(candidate, oldLease);
 		publishedDrawingChanged_ = true;
+		++publishedDrawingRevision_;
 		atlasDirty_ = false;
 		admittedSourcesSincePublication_ = 0;
 		firstUnpublishedChange_ = {};
@@ -506,6 +516,8 @@ namespace Services::Map::Buildings::Cache
 	{
 		if (textures_ == nullptr) return MiniMap::Services::ReleaseState::Empty;
 		const bool hadTexture = publishedTexture_.HasRecord();
+		const bool hadPublishedDrawing = hadTexture || !publishedEntriesByKey_.empty() ||
+			publishedSize_.width != 0 || publishedSize_.height != 0;
 		const std::weak_ptr<const void> oldLease = publishedTextureLease_;
 		RetireTexture(publishedTexture_, oldLease);
 		publishedTextureLease_.reset();
@@ -514,6 +526,10 @@ namespace Services::Map::Buildings::Cache
 		atlasDirty_ = true;
 		firstUnpublishedChange_ = std::chrono::steady_clock::now();
 		publishedDrawingChanged_ = true;
+		if (hadPublishedDrawing)
+		{
+			++publishedDrawingRevision_;
+		}
 		DrainRetiredTextures();
 		return hadTexture && !retiredTextures_.empty()
 			? MiniMap::Services::ReleaseState::UnavailableRetained
@@ -542,6 +558,12 @@ namespace Services::Map::Buildings::Cache
 	MiniMap::Services::TextureSize SpriteSourceManager::PublishedAtlasSize() const noexcept
 	{
 		return publishedSize_;
+	}
+
+	/** Returns the O(1) identity shared by the current published texture and drawable registry. */
+	std::uint64_t SpriteSourceManager::PublishedDrawingRevision() const noexcept
+	{
+		return publishedDrawingRevision_;
 	}
 
 	/** Returns the immutable lease paired with the current published texture and registry. */

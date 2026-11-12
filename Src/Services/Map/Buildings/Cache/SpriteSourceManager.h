@@ -167,6 +167,8 @@ namespace Services::Map::Buildings::Cache
 		bool TryGetPublishedSprite(const OwnedSpriteKey& key, AtlasSpriteEntry& output) const noexcept;
 		/** Returns the published texture dimensions, or empty before the first upload. */
 		MiniMap::Services::TextureSize PublishedAtlasSize() const noexcept;
+		/** Returns the identity of the currently published texture and drawable sprite registry. */
+		std::uint64_t PublishedDrawingRevision() const noexcept;
 		/** Returns a token that keeps the matching published texture owner alive for snapshots. */
 		std::shared_ptr<const void> PublishedTextureLease() const noexcept;
 		/** Releases retired owners whose presentation snapshots no longer reference them. */
@@ -289,6 +291,7 @@ namespace Services::Map::Buildings::Cache
 		std::list<RetiredTexture> retiredTextures_;
 		MiniMap::Services::OwnedTexture unresolvedTexture_;
 		MiniMap::Services::TextureSize publishedSize_{512, 512};
+		std::uint64_t publishedDrawingRevision_ = 0;
 		std::uint32_t atlasWidth_ = 512;
 		std::uint32_t atlasHeight_ = 512;
 		bool atlasDirty_ = false;

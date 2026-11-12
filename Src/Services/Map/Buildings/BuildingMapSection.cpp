@@ -189,7 +189,7 @@ namespace Services::Map::Buildings
 		completedScene_ = std::move(preparingScene_);
 		preparingSceneSourceContentHash_ = 0;
 		gpuPresentation_.reset();
-		gpuPresentationAtlasBindingSignatureValid_ = false;
+		gpuPresentationAtlasRevisionValid_ = false;
 		gpuPresentationChanged_ = true;
 		return true;
 	}
@@ -248,7 +248,7 @@ namespace Services::Map::Buildings
 			return;
 		}
 		gpuPresentation_.reset();
-		gpuPresentationAtlasBindingSignatureValid_ = false;
+		gpuPresentationAtlasRevisionValid_ = false;
 		gpuPresentationChanged_ = true;
 	}
 

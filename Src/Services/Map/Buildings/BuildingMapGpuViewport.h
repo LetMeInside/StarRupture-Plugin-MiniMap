@@ -75,6 +75,7 @@ namespace Services::Map::Buildings
 		{
 			MiniMap::Services::Texture AtlasTexture{};
 			MiniMap::Services::TextureSize AtlasSize{};
+			std::uint64_t AtlasDrawingRevision = 0;
 			std::shared_ptr<const void> AtlasLease;
 			std::vector<std::shared_ptr<const BuildingMapSectionPresentation>> Sections;
 		};
@@ -89,13 +90,12 @@ namespace Services::Map::Buildings
 			double widthMapUnits,
 			double heightMapUnits);
 		/** Rebuilds only on a queued Section, range or atlas publication transition. */
-		void RefreshPresentationSnapshot(Cache::SpriteSourceManager& atlas, bool atlasBindingsChanged);
+		void RefreshPresentationSnapshot(Cache::SpriteSourceManager& atlas);
 		/** Reuses the Section-owned presentation or rebuilds it for scene or atlas changes. */
 		std::shared_ptr<const BuildingMapSectionPresentation> GetOrBuildSectionPresentation(
 			BuildingMapSection& section,
 			const Visuals::PreparedBuildingGeometry& geometry,
-			Cache::SpriteSourceManager& atlas,
-			bool atlasBindingsChanged);
+			Cache::SpriteSourceManager& atlas);
 		/** Appends one Section while lazily creating a replacement only after observable change. */
 		void AppendSnapshotSection(
 			std::shared_ptr<PresentationSnapshot>& next,
@@ -104,6 +104,7 @@ namespace Services::Map::Buildings
 			std::size_t sectionIndex,
 			MiniMap::Services::Texture atlasTexture,
 			MiniMap::Services::TextureSize atlasSize,
+			std::uint64_t atlasDrawingRevision,
 			const std::shared_ptr<const void>& atlasLease) const;
 		/** Copies drawable world triangles once while retaining their processed-image UVs. */
 		std::shared_ptr<const BuildingMapSectionPresentation::Geometry> BuildSectionGeometry(
@@ -113,10 +114,6 @@ namespace Services::Map::Buildings
 			const std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
 			Cache::SpriteSourceManager& atlas,
 			std::vector<BuildingMapSectionPresentation::SpriteBinding>& output) const;
-		/** Fingerprints only sprite bindings relevant to this Section's prepared occurrences. */
-		std::uint64_t CalculateAtlasBindingSignature(
-			const Visuals::PreparedBuildingGeometry& geometry,
-			Cache::SpriteSourceManager& atlas) const noexcept;
 		/** Copies one occurrence's already clipped world positions and processed-image UVs. */
 		void AppendSpriteOccurrence(
 			const Visuals::PreparedBuildingGeometry::SpriteOccurrence& occurrence,

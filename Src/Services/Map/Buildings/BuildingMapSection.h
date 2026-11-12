@@ -241,8 +241,8 @@ namespace Services::Map::Buildings
 		std::unique_ptr<Visuals::PreparedBuildingGeometry> preparingScene_;
 		std::uint64_t preparingSceneSourceContentHash_ = 0;
 		std::shared_ptr<const BuildingMapSectionPresentation> gpuPresentation_;
-		std::uint64_t gpuPresentationAtlasBindingSignature_ = 0;
-		bool gpuPresentationAtlasBindingSignatureValid_ = false;
+		std::uint64_t gpuPresentationAtlasRevision_ = 0;
+		bool gpuPresentationAtlasRevisionValid_ = false;
 		bool gpuPresentationChanged_ = false;
 	};
 }
