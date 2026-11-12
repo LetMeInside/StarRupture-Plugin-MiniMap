@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <list>
 #include <array>
 #include <filesystem>
 #include <span>
@@ -116,14 +117,22 @@ namespace Services::Map::Buildings::Cache
 
 		/** Uploads the complete dirty atlas once and publishes matching texture metadata on success. */
 		MiniMap::Services::UploadState FlushAtlasToGPU();
-		/** Explicitly releases the currently owned GPU atlas through its issuing backend. */
-		MiniMap::Services::ReleaseState ReleaseAtlasTexture() noexcept;
+		/** Retires the currently published GPU atlas and releases it after snapshot leases expire. */
+		MiniMap::Services::ReleaseState ReleaseAtlasTexture();
 		/** Returns the published atlas texture identity without transferring ownership. */
 		MiniMap::Services::Texture PublishedTexture() const noexcept;
 		/** Returns dimensions and metadata from the currently published GPU atlas. */
 		bool TryGetPublishedSprite(const OwnedSpriteKey& key, AtlasSpriteEntry& output) const noexcept;
 		/** Returns the published texture dimensions, or empty before the first upload. */
 		MiniMap::Services::TextureSize PublishedAtlasSize() const noexcept;
+		/** Returns a token that keeps the matching published texture owner alive for snapshots. */
+		std::shared_ptr<const void> PublishedTextureLease() const noexcept;
+		/** Releases retired owners whose presentation snapshots no longer reference them. */
+		void DrainRetiredTextures() noexcept;
+		/** Reports whether any texture receipt still needs this manager to retain its owner. */
+		bool HasPendingTextureRetirement() const noexcept;
+		/** Consumes an event set when published drawable atlas bindings have changed. */
+		bool ConsumePublishedDrawingChange() noexcept;
 
 		/** Adopts a captured immutable payload without copying its pixel vector.
 		 * Existing shared owners keep the previous payload alive after replacement.
@@ -167,6 +176,10 @@ namespace Services::Map::Buildings::Cache
 		/** Submits candidate pixels and adopts their registry only after receipt validation. */
 		MiniMap::Services::UploadState UploadAtlasCandidate(
 			std::unordered_map<std::string, AtlasSpriteEntry>&& candidateEntries);
+		/** Moves an old texture owner into retirement tied to its immutable snapshot lease. */
+		void RetireTexture(
+			MiniMap::Services::OwnedTexture& texture,
+			std::weak_ptr<const void> lease);
 		/** Resolves the resident-first path before entering disk retrieval. */
 		SpriteResult GetSpriteCore(const OwnedSpriteKey& key);
 		/** Loads one missing key, adopts valid data and records exact Debug lookup evidence. */
@@ -195,11 +208,20 @@ namespace Services::Map::Buildings::Cache
 		std::vector<FreeRectangle> freeRectangles_;
 		std::vector<std::uint8_t> atlasPixels_;
 		MiniMap::Services::OwnedTexture publishedTexture_;
+		std::shared_ptr<const void> publishedTextureLease_;
+		struct RetiredTexture
+		{
+			MiniMap::Services::OwnedTexture Owner;
+			std::weak_ptr<const void> Lease;
+			bool OwnershipUncertain = false;
+		};
+		std::list<RetiredTexture> retiredTextures_;
 		MiniMap::Services::OwnedTexture unresolvedTexture_;
 		MiniMap::Services::TextureSize publishedSize_{512, 512};
 		std::uint32_t atlasWidth_ = 512;
 		std::uint32_t atlasHeight_ = 512;
 		bool atlasDirty_ = false;
+		bool publishedDrawingChanged_ = false;
 		bool ownershipUncertain_ = false;
 	};
 }

@@ -94,22 +94,34 @@ namespace Services::Map::Buildings
 	}
 
 	/** Stops one gameplay session and clears its viewport/demand/Section state without waiting. */
-	void BuildingMapService::StopGameSession()
+	bool BuildingMapService::StopGameSession()
 	{
 		if (mapWidthMapUnits_ == 0.0 && mapHeightMapUnits_ == 0.0)
 		{
-			return;
+			if (spriteSourceManager_ != nullptr)
+			{
+				spriteSourceManager_->DrainRetiredTextures();
+				return !spriteSourceManager_->HasPendingTextureRetirement();
+			}
+			return true;
 		}
 		StopCaptureGameWorldSession();
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			if (auto* gpuViewport = dynamic_cast<BuildingMapGpuViewport*>(viewportEntry.second))
+			{
+				gpuViewport->ClearPresentationSnapshot();
+			}
+			viewportEntry.second->InvalidateService();
+		}
 		if (spriteSourceManager_ != nullptr)
 		{
 			spriteSourceManager_->ReleaseAtlasTexture();
-		}
-		for (const auto& viewportEntry : viewportsByHandle_)
-		{
-			viewportEntry.second->InvalidateService();
+			spriteSourceManager_->DrainRetiredTextures();
 		}
 		viewportsByHandle_.clear();
+		gpuPresentationChangedSections_.clear();
+		gpuViewportRangesChanged_.clear();
 		observedAcquisitionHashes_.clear();
 		appliedSectionHashes_.clear();
 		pendingSectionPublications_.clear();
@@ -122,6 +134,8 @@ namespace Services::Map::Buildings
 		sectionImageResidencyReconciliationPending_ = false;
 		mapWidthMapUnits_ = 0.0;
 		mapHeightMapUnits_ = 0.0;
+		return spriteSourceManager_ == nullptr ||
+			!spriteSourceManager_->HasPendingTextureRetirement();
 	}
 
 	/** Advances the game-thread tick estimator and emits one completed Debug aggregate when due.
@@ -130,6 +144,10 @@ namespace Services::Map::Buildings
 	void BuildingMapService::OnGameTick(float engineDeltaSeconds) noexcept
 	{
 		frameBudgetController_.OnTick(static_cast<double>(engineDeltaSeconds));
+		if (spriteSourceManager_ != nullptr)
+		{
+			spriteSourceManager_->DrainRetiredTextures();
+		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Coordination::FrameBudgetController::DiagnosticsSnapshot diagnostics;
 		if (frameBudgetController_.TakeDiagnosticsSnapshot(diagnostics))
@@ -202,9 +220,15 @@ namespace Services::Map::Buildings
 	{
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
+			if (auto* gpuViewport = dynamic_cast<BuildingMapGpuViewport*>(viewportEntry.second))
+			{
+				gpuViewport->ClearPresentationSnapshot();
+			}
 			viewportEntry.second->InvalidateService();
 		}
 		viewportsByHandle_.clear();
+		gpuPresentationChangedSections_.clear();
+		gpuViewportRangesChanged_.clear();
 	}
 
 	/** Starts gameplay scheduling against the coordinator's persistent renderer. */
@@ -260,6 +284,8 @@ namespace Services::Map::Buildings
 		if (spriteSourceManager_ != nullptr)
 		{
 			spriteSourceManager_->FlushAtlasToGPU();
+			RefreshGpuPresentationSnapshots(spriteSourceManager_->ConsumePublishedDrawingChange());
+			spriteSourceManager_->DrainRetiredTextures();
 		}
 		return true;
 	}
@@ -787,6 +813,10 @@ namespace Services::Map::Buildings
 			viewport.InvalidateService();
 			return false;
 		}
+		if (dynamic_cast<BuildingMapGpuViewport*>(&viewport) != nullptr)
+		{
+			MarkGpuViewportRangeChanged(viewportHandle);
+		}
 		return true;
 	}
 
@@ -851,7 +881,14 @@ namespace Services::Map::Buildings
 		return viewport;
 	}
 
-	/** Looks up a section without inserting absent coordinates into the sparse grid. */
+	/** Looks up a mutable Section without inserting an absent sparse-grid coordinate. */
+	BuildingMapSection* BuildingMapService::FindSectionAt(std::int64_t gridX, std::int64_t gridY)
+	{
+		const auto section = sections_.find(std::make_pair(gridX, gridY));
+		return section == sections_.end() ? nullptr : section->second.get();
+	}
+
+	/** Looks up a const Section without inserting an absent sparse-grid coordinate. */
 	const BuildingMapSection* BuildingMapService::FindSectionAt(
 		std::int64_t gridX,
 		std::int64_t gridY) const
@@ -908,6 +945,49 @@ namespace Services::Map::Buildings
 		}
 	}
 
+	/** Queues the coordinate for the existing post-scheduling presentation refresh. */
+	void BuildingMapService::MarkGpuSectionPresentationChanged(std::int64_t gridX, std::int64_t gridY)
+	{
+		gpuPresentationChangedSections_.emplace(gridX, gridY);
+	}
+
+	/** Queues the GPU viewport whose range was just registered or moved. */
+	void BuildingMapService::MarkGpuViewportRangeChanged(std::uint64_t viewportHandle)
+	{
+		gpuViewportRangesChanged_.insert(viewportHandle);
+	}
+
+	/** Refreshes snapshots only for relevant source, range or published atlas transitions. */
+	void BuildingMapService::RefreshGpuPresentationSnapshots(bool atlasBindingsChanged)
+	{
+		if (spriteSourceManager_ == nullptr || (!atlasBindingsChanged &&
+			gpuPresentationChangedSections_.empty() && gpuViewportRangesChanged_.empty()))
+		{
+			return;
+		}
+		for (const auto& entry : viewportsByHandle_)
+		{
+			auto* gpuViewport = dynamic_cast<BuildingMapGpuViewport*>(entry.second);
+			if (gpuViewport == nullptr)
+			{
+				continue;
+			}
+			bool affected = atlasBindingsChanged || gpuViewportRangesChanged_.contains(entry.first);
+			for (const SectionCoordinate& changed : gpuPresentationChangedSections_)
+			{
+				const auto& range = gpuViewport->gridRange_;
+				affected = affected || (changed.first >= range.firstX && changed.first < range.endX &&
+					changed.second >= range.firstY && changed.second < range.endY);
+			}
+			if (affected)
+			{
+				gpuViewport->RefreshPresentationSnapshot(*spriteSourceManager_, atlasBindingsChanged);
+			}
+		}
+		gpuPresentationChangedSections_.clear();
+		gpuViewportRangesChanged_.clear();
+	}
+
 	/** Removes session registration while preserving all shared section objects. */
 	void BuildingMapService::CloseViewport(std::uint64_t viewportHandle)
 	{
@@ -935,6 +1015,7 @@ namespace Services::Map::Buildings
 			gridRange.endY);
 		observedAcquisitionHashes_.erase(viewportHandle);
 		sectionHashRechecksRequested_.erase(viewportHandle);
+		gpuViewportRangesChanged_.erase(viewportHandle);
 		viewportsByHandle_.erase(viewport);
 		ReconcileSectionImageResidency();
 		sectionImageResidencyReconciliationPending_ = false;
@@ -1037,6 +1118,10 @@ namespace Services::Map::Buildings
 				endGridY);
 			sectionHashRechecksRequested_.insert(viewportHandle);
 			sectionImageResidencyReconciliationPending_ = true;
+			if (dynamic_cast<BuildingMapGpuViewport*>(viewportEntry->second) != nullptr)
+			{
+				MarkGpuViewportRangeChanged(viewportHandle);
+			}
 		}
 		return true;
 	}

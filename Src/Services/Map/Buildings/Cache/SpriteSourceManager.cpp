@@ -175,7 +175,7 @@ namespace Services::Map::Buildings::Cache
 		std::shared_ptr<const ProcessedSpritePayload> sharedPayload(std::move(payload));
 		const std::string keyBytes = key.Bytes();
 		payloadsByKey_.insert_or_assign(keyBytes, std::move(sharedPayload));
-		publishedEntriesByKey_.erase(keyBytes);
+		publishedDrawingChanged_ = publishedEntriesByKey_.erase(keyBytes) != 0 || publishedDrawingChanged_;
 		auto atlasEntry = atlasEntriesByKey_.find(keyBytes);
 		const ProcessedSpritePayload& adoptedPayload = *payloadsByKey_.at(keyBytes);
 		if (atlasEntry != atlasEntriesByKey_.end() &&
@@ -221,7 +221,7 @@ namespace Services::Map::Buildings::Cache
 		const bool removed = payloadsByKey_.erase(key.Bytes()) != 0;
 		RemovePendingKey(key.Bytes());
 		admissionByKey_.erase(key.Bytes());
-		publishedEntriesByKey_.erase(key.Bytes());
+		publishedDrawingChanged_ = publishedEntriesByKey_.erase(key.Bytes()) != 0 || publishedDrawingChanged_;
 		const auto allocation = atlasEntriesByKey_.find(key.Bytes());
 		if (allocation != atlasEntriesByKey_.end())
 		{
@@ -233,6 +233,7 @@ namespace Services::Map::Buildings::Cache
 	/** Releases resident owners while payloads held by active Sections remain valid. */
 	void SpriteSourceManager::Clear() noexcept
 	{
+		publishedDrawingChanged_ = !publishedEntriesByKey_.empty() || publishedDrawingChanged_;
 		payloadsByKey_.clear();
 		atlasEntriesByKey_.clear();
 		publishedEntriesByKey_.clear();
@@ -321,34 +322,31 @@ namespace Services::Map::Buildings::Cache
 		publishedTexture_.Swap(candidate);
 		publishedSize_ = size;
 		publishedEntriesByKey_.swap(candidateEntries);
+		const std::weak_ptr<const void> oldLease = publishedTextureLease_;
+		publishedTextureLease_ = std::make_shared<const std::uint8_t>(0);
+		RetireTexture(candidate, oldLease);
+		publishedDrawingChanged_ = true;
 		atlasDirty_ = false;
-		if (candidate.HasRecord())
-		{
-			const MiniMap::Services::ReleaseState released = textures_->Release(candidate);
-			if ((released != MiniMap::Services::ReleaseState::Empty && released != MiniMap::Services::ReleaseState::Returned) &&
-				candidate.HasRecord())
-			{
-				unresolvedTexture_.Swap(candidate);
-				ownershipUncertain_ = true;
-			}
-		}
+		DrainRetiredTextures();
 		return MiniMap::Services::UploadState::Complete;
 	}
 
-	/** Releases a texture only at the explicit service shutdown boundary. */
-	MiniMap::Services::ReleaseState SpriteSourceManager::ReleaseAtlasTexture() noexcept
+	/** Retires the published atlas without invalidating snapshots that still borrow it. */
+	MiniMap::Services::ReleaseState SpriteSourceManager::ReleaseAtlasTexture()
 	{
 		if (textures_ == nullptr) return MiniMap::Services::ReleaseState::Empty;
-		const MiniMap::Services::ReleaseState released = publishedTexture_.HasRecord()
-			? textures_->Release(publishedTexture_)
-			: MiniMap::Services::ReleaseState::Empty;
-		if (released == MiniMap::Services::ReleaseState::Empty || released == MiniMap::Services::ReleaseState::Returned)
-		{
-			publishedEntriesByKey_.clear();
-			publishedSize_ = {0, 0};
-			atlasDirty_ = true;
-		}
-		return released;
+		const bool hadTexture = publishedTexture_.HasRecord();
+		const std::weak_ptr<const void> oldLease = publishedTextureLease_;
+		RetireTexture(publishedTexture_, oldLease);
+		publishedTextureLease_.reset();
+		publishedEntriesByKey_.clear();
+		publishedSize_ = {0, 0};
+		atlasDirty_ = true;
+		publishedDrawingChanged_ = true;
+		DrainRetiredTextures();
+		return hadTexture && !retiredTextures_.empty()
+			? MiniMap::Services::ReleaseState::UnavailableRetained
+			: MiniMap::Services::ReleaseState::Returned;
 	}
 
 	/** Returns the draw identity of the matching published atlas. */
@@ -373,6 +371,69 @@ namespace Services::Map::Buildings::Cache
 	MiniMap::Services::TextureSize SpriteSourceManager::PublishedAtlasSize() const noexcept
 	{
 		return publishedSize_;
+	}
+
+	/** Returns the immutable lease paired with the current published texture and registry. */
+	std::shared_ptr<const void> SpriteSourceManager::PublishedTextureLease() const noexcept
+	{
+		return publishedTextureLease_;
+	}
+
+	/** Reports and clears one atlas-registry change event for service snapshot refresh. */
+	bool SpriteSourceManager::ConsumePublishedDrawingChange() noexcept
+	{
+		const bool changed = publishedDrawingChanged_;
+		publishedDrawingChanged_ = false;
+		return changed;
+	}
+
+	/** Releases old texture owners only after no immutable snapshot can submit their identity. */
+	void SpriteSourceManager::DrainRetiredTextures() noexcept
+	{
+		for (auto retired = retiredTextures_.begin(); retired != retiredTextures_.end();)
+		{
+			if (!retired->Lease.expired() || retired->OwnershipUncertain)
+			{
+				++retired;
+				continue;
+			}
+			const MiniMap::Services::ReleaseState result = textures_ != nullptr
+				? textures_->Release(retired->Owner)
+				: MiniMap::Services::ReleaseState::UnavailableRetained;
+			if (result == MiniMap::Services::ReleaseState::Empty || result == MiniMap::Services::ReleaseState::Returned)
+			{
+				retired = retiredTextures_.erase(retired);
+			}
+			else
+			{
+				if (result == MiniMap::Services::ReleaseState::OwnershipUncertain)
+				{
+					ownershipUncertain_ = true;
+					retired->OwnershipUncertain = true;
+				}
+				++retired;
+			}
+		}
+	}
+
+	/** Keeps the manager alive while current, uncertain or retired texture receipts remain. */
+	bool SpriteSourceManager::HasPendingTextureRetirement() const noexcept
+	{
+		return publishedTexture_.HasRecord() || unresolvedTexture_.HasRecord() || !retiredTextures_.empty();
+	}
+
+	/** Retains a texture owner until its last published presentation snapshot is gone. */
+	void SpriteSourceManager::RetireTexture(
+		MiniMap::Services::OwnedTexture& texture,
+		std::weak_ptr<const void> lease)
+	{
+		if (!texture.HasRecord())
+		{
+			return;
+		}
+		retiredTextures_.emplace_back();
+		retiredTextures_.back().Owner.Swap(texture);
+		retiredTextures_.back().Lease = std::move(lease);
 	}
 
 	/** Places pending sprites in canonical deterministic order, growing once before rejecting overflow. */

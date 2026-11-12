@@ -387,6 +387,10 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJobContinuationMode continuationMode,
 			std::chrono::steady_clock::time_point deadline,
 			bool renderSectionImages);
+		/** Transfers a Section-local drawable change into the service's targeted refresh queue. */
+		void PublishGpuPresentationChange(
+			::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			::Services::Map::Buildings::BuildingMapSection& section);
 		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.
 		 * @param coordinate Coordinate of the terminal Section attempt.

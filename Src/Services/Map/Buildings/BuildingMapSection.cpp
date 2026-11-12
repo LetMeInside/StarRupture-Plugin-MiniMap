@@ -150,6 +150,10 @@ namespace Services::Map::Buildings
 			preparingScene_->sourceContentHash_ = sourceContentHash;
 			preparingScene_->InitializeContributionStates(contributionCount);
 			preparingSceneSourceContentHash_ = sourceContentHash;
+			if (completedScene_ == nullptr)
+			{
+				MarkGpuPresentationChanged();
+			}
 		}
 		return preparingScene_.get();
 	}
@@ -184,6 +188,9 @@ namespace Services::Map::Buildings
 		}
 		completedScene_ = std::move(preparingScene_);
 		preparingSceneSourceContentHash_ = 0;
+		gpuPresentation_.reset();
+		gpuPresentationAtlasBindingSignatureValid_ = false;
+		gpuPresentationChanged_ = true;
 		return true;
 	}
 
@@ -217,14 +224,40 @@ namespace Services::Map::Buildings
 		{
 			preparingScene_.reset();
 			preparingSceneSourceContentHash_ = 0;
+			MarkGpuPresentationChanged();
 		}
 	}
 
 	/** Drops incomplete scene values when their scheduler cursor is abandoned. */
 	void BuildingMapSection::DiscardPreparingScene() noexcept
 	{
+		const bool wasVisible = preparingScene_ != nullptr && completedScene_ == nullptr;
 		preparingScene_.reset();
 		preparingSceneSourceContentHash_ = 0;
+		if (wasVisible)
+		{
+			MarkGpuPresentationChanged();
+		}
+	}
+
+	/** Drops presentation data only when the selected drawable scene is first-appearance state. */
+	void BuildingMapSection::MarkGpuPresentationChanged() noexcept
+	{
+		if (completedScene_ != nullptr)
+		{
+			return;
+		}
+		gpuPresentation_.reset();
+		gpuPresentationAtlasBindingSignatureValid_ = false;
+		gpuPresentationChanged_ = true;
+	}
+
+	/** Hands the change signal to the coordinator without adding a geometry revision. */
+	bool BuildingMapSection::ConsumeGpuPresentationChanged() noexcept
+	{
+		const bool changed = gpuPresentationChanged_;
+		gpuPresentationChanged_ = false;
+		return changed;
 	}
 
 	/** Lazily creates and returns this Section's exclusively owned numerical context. */

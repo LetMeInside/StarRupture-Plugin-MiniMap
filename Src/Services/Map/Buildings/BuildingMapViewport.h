@@ -88,7 +88,7 @@ namespace Services::Map::Buildings
 		bool RenderSectionImages() const noexcept;
 
 		/** Ends this viewport session; repeated calls have no effect. */
-		void Close();
+		virtual void Close();
 
 		/**
 		 * Installs this viewport's sole synchronous same-module image-change handler;

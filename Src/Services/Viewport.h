@@ -25,6 +25,21 @@ namespace MiniMap::Services
         virtual void PopClip(DrawLayer) = 0;
         virtual void Image(DrawLayer, Texture, Vec2 min, Vec2 max, Vec2 uvMin, Vec2 uvMax, Color tint) = 0;
         virtual void ImageQuad(DrawLayer, Texture, const Quad& positions, const Quad& uv, Color tint) = 0;
+        /**
+         * Submits one textured triangle using only the portable image-quad operation.
+         * @param layer Canvas draw list that receives the primitive.
+         * @param texture Borrowed texture identity valid for the synchronous canvas call.
+         * @param positions Three canvas-space points in prepared triangle order.
+         * @param uv Three matching normalized texture coordinates.
+         * @param tint Straight RGBA tint in the existing 0xAABBGGRR format.
+         */
+        virtual void TexturedTriangle(DrawLayer layer, Texture texture,
+            const std::array<Vec2, 3>& positions, const std::array<Vec2, 3>& uv, Color tint)
+        {
+            const Quad quadPositions{positions[0], positions[1], positions[2], positions[2]};
+            const Quad quadUv{uv[0], uv[1], uv[2], uv[2]};
+            ImageQuad(layer, texture, quadPositions, quadUv, tint);
+        }
         virtual void FilledRect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding) = 0;
         virtual void Rect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding, float thickness) = 0;
         virtual void FilledCircle(DrawLayer, Vec2 center, float radius, Color, int segments) = 0;

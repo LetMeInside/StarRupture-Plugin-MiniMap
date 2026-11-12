@@ -100,7 +100,8 @@ namespace Services::Map::Buildings
 		/** Ends one gameplay session, requests active-capture cancellation, and clears gameplay state.
 		 * Returns without waiting for renderer-owned native retirement.
 		 */
-		void StopGameSession();
+		/** Stops ownership and reports whether every atlas texture receipt was retired. */
+		bool StopGameSession();
 		/** Forwards one game-thread tick delta to the service-owned timing controller.
 		 * @param engineDeltaSeconds Engine-provided delta retained for Debug diagnostics only.
 		 */
@@ -182,6 +183,8 @@ namespace Services::Map::Buildings
 			std::shared_ptr<const BuildingCandidatePublication>>;
 
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
+		BuildingMapSection* FindSectionAt(std::int64_t gridX, std::int64_t gridY);
+		/** Finds a borrowed service-owned Section for const geometry enumeration. */
 		const BuildingMapSection* FindSectionAt(
 			std::int64_t gridX,
 			std::int64_t gridY) const;
@@ -193,6 +196,12 @@ namespace Services::Map::Buildings
 				std::int64_t,
 				const Visuals::PreparedBuildingGeometry&,
 				bool)>& handler) const;
+		/** Queues one Section presentation whose selected prepared scene changed. */
+		void MarkGpuSectionPresentationChanged(std::int64_t gridX, std::int64_t gridY);
+		/** Queues one GPU viewport after its registered Section range changes. */
+		void MarkGpuViewportRangeChanged(std::uint64_t viewportHandle);
+		/** Refreshes only GPU viewports affected by Section, range or atlas changes. */
+		void RefreshGpuPresentationSnapshots(bool atlasBindingsChanged);
 
 		/** Releases a live viewport handle without affecting shared section state. */
 		void CloseViewport(std::uint64_t viewportHandle);
@@ -347,6 +356,8 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::map<std::uint64_t, std::uint64_t> observedAcquisitionHashes_;
 		std::map<SectionCoordinate, std::uint64_t> appliedSectionHashes_;
+		std::set<SectionCoordinate> gpuPresentationChangedSections_;
+		std::set<std::uint64_t> gpuViewportRangesChanged_;
 		SectionPublicationMap pendingSectionPublications_;
 		std::set<std::uint64_t> sectionHashRechecksRequested_;
 		std::uint64_t nextViewportHandle_ = 1;

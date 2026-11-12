@@ -69,18 +69,26 @@ namespace
             g_blockingMenuMask.load(std::memory_order_acquire) == 0;
     }
 
-    void RemoveWidget()
+    /** Removes the overlay and reports whether every adapter callback has drained. */
+    bool RemoveWidget()
     {
-        if (g_widget.id) if (auto* viewport = S::TryViewport())
+        if (!g_widget.id)
         {
-            const auto removal = viewport->Remove(g_widget);
-            if (removal.registry == S::RegistryRemoval::RequestReturned &&
-                removal.core == S::CoreDrain::Quiescent)
-            {
-                g_widget = {};
-                g_widgetAcceptance = S::Acceptance::Rejected;
-            }
+            return true;
         }
+        auto* viewport = S::TryViewport();
+        if (viewport == nullptr)
+        {
+            return false;
+        }
+        const auto removal = viewport->Remove(g_widget);
+        if (removal.core != S::CoreDrain::Quiescent)
+        {
+            return false;
+        }
+        g_widget = {};
+        g_widgetAcceptance = S::Acceptance::Rejected;
+        return true;
     }
 
     void Render(void*, S::ICanvas& ui)
@@ -521,16 +529,21 @@ namespace MiniMapUI
         unregister(g_zoomOutBinding);
     }
 
-    void Shutdown()
+    /** Hides and removes the overlay before releasing its render-owned layer state. */
+    bool Shutdown()
     {
+        StopInput();
+        g_userVisible.store(false, std::memory_order_release);
+        if (g_widget.id) if (auto* viewport = S::TryViewport())
+            viewport->SetVisible(g_widget, false);
+        if (!RemoveWidget())
+        {
+            return false;
+        }
 #if !MINIMAP_USE_LEGACY_BUILDINGS
         EndBuildingLayerSession();
 #endif
-        StopInput();
-        if (g_widget.id) if (auto* viewport = S::TryViewport())
-            viewport->SetVisible(g_widget, false);
-        RemoveWidget();
-        g_userVisible.store(false, std::memory_order_release);
+        return true;
     }
 
     void Show()

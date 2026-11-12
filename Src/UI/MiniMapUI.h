@@ -34,7 +34,8 @@ namespace MiniMapUI
         BuildingLayer::RenderDiagnosticsSnapshot& output) noexcept;
 #endif
 
-    void Shutdown();
+    /** Stops UI input and reports whether overlay callbacks are quiescent for resource shutdown. */
+    bool Shutdown();
     void StopInput();
     bool RefreshKeybinds(); // Existing live-edit callers may ignore a failed absent-action request.
 

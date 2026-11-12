@@ -1047,11 +1047,10 @@ static void OnTextureServiceTick(
 
 #if !MINIMAP_USE_LEGACY_BUILDINGS
 // Detaches and retires this gameplay session's presentation before stopping its borrowed service.
-static void StopBuildingMapGameplaySession()
+static bool StopBuildingMapGameplaySession()
 {
     MiniMapUI::EndBuildingLayerSession();
-    if (g_buildingMapService != nullptr)
-        g_buildingMapService->StopGameSession();
+    return g_buildingMapService == nullptr || g_buildingMapService->StopGameSession();
 }
 #endif
 
@@ -1059,6 +1058,7 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
 {
     if(!world||(world==MiniMapMap::GetWorld()&&!g_worldEnding))return;
     SetServicesAdmitted(false);
+    MiniMapUI::Hide();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     StopBuildingMapGameplaySession();
 #endif
@@ -1070,7 +1070,6 @@ static void OnWorldBeginPlay(SDK::UWorld* world)
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
 #endif
-    MiniMapUI::Hide();
     MiniMapMap::SetWorld(world);
     MiniMapFogOfWar::Reset();
     MiniMapFoundables::Reset();
@@ -1178,13 +1177,13 @@ static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
     if(!world||world!=MiniMapMap::GetWorld())return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    MiniMapUI::Hide();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     StopBuildingMapGameplaySession();
 #endif
 #if MINIMAP_USE_LEGACY_BUILDINGS
     EndBuildingSession();
 #endif
-    MiniMapUI::Hide();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     const uint32_t blockingMenuMask =
 #endif
@@ -1214,6 +1213,7 @@ static void OnAfterWorldEndPlay(
 
     g_worldEnding=true;
     SetServicesAdmitted(false);
+    MiniMapUI::Hide();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
     StopBuildingMapGameplaySession();
 #endif
@@ -1221,8 +1221,6 @@ static void OnAfterWorldEndPlay(
     EndBuildingSession(); // Idempotent fallback if BeforeEndPlay was not delivered.
 #endif
     g_preparedGeneration=0;
-    MiniMapUI::Hide();
-
     MiniMapFoundables::Reset();
     MiniMapAlienActors::Reset();
 #if MINIMAP_USE_LEGACY_BUILDINGS
@@ -1597,11 +1595,21 @@ namespace MiniMap
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+        bool minimapCallbacksQuiescent = true;
+        bool buildingMapTextureRetirementComplete = false;
         g_worldEnding=true;
         SetServicesAdmitted(false);
         MiniMapUI::StopInput();
+        minimapCallbacksQuiescent = MiniMapUI::Shutdown();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
-        StopBuildingMapGameplaySession();
+        if (minimapCallbacksQuiescent)
+        {
+            buildingMapTextureRetirementComplete = StopBuildingMapGameplaySession();
+        }
+        else
+        {
+            LOG_ERROR("MiniMap: retaining Building Map resources because overlay callback removal is not quiescent");
+        }
 #endif
         MiniMapTexturePublication::Shutdown();
         MiniMapConfig::Shutdown();
@@ -1647,15 +1655,16 @@ namespace MiniMap
         MiniMapFogOfWar::Shutdown();
         MiniMapTerrain::Shutdown();
         MiniMapMap::Shutdown();
-        MiniMapUI::Shutdown();
 
         MiniMapCacheIdentity::ClearOnExit();
 #if !MINIMAP_USE_LEGACY_BUILDINGS
-        const bool buildingLayerShutdownComplete = MiniMapUI::EndBuildingLayerSession();
-        if (buildingLayerShutdownComplete)
+        const bool buildingLayerShutdownComplete = minimapCallbacksQuiescent &&
+            MiniMapUI::EndBuildingLayerSession();
+        if (buildingLayerShutdownComplete && minimapCallbacksQuiescent &&
+            buildingMapTextureRetirementComplete)
             g_buildingMapService.reset();
         else
-            LOG_ERROR("MiniMap: retaining the Building Map service while detached BuildingLayer texture receipts remain unresolved");
+            LOG_ERROR("MiniMap: retaining the Building Map service while overlay callbacks or GPU texture receipts remain active");
         g_buildingSpriteRenderer = nullptr;
 #else
         g_buildingMapService.reset();

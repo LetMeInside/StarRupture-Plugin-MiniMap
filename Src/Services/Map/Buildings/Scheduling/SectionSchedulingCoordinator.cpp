@@ -487,6 +487,7 @@ namespace Services::Map::Buildings::Scheduling
 			generationReplaced);
 		if (generationReplaced)
 		{
+			PublishGpuPresentationChange(buildingMapService, section);
 			result.CurrentState = IncrementalSectionAdvanceResult::State::RestartRequired;
 			return result;
 		}
@@ -494,7 +495,7 @@ namespace Services::Map::Buildings::Scheduling
 			sectionScheduler_->SelectSectionJobContinuationMode(
 				section,
 				publicationOwner);
-		return AdvanceRetainedSectionJob(
+		result = AdvanceRetainedSectionJob(
 			buildingMapService,
 			coordinate,
 			publicationOwner,
@@ -502,6 +503,19 @@ namespace Services::Map::Buildings::Scheduling
 			continuationMode,
 			deadline,
 			HasImageDemand(coordinate));
+		PublishGpuPresentationChange(buildingMapService, section);
+		return result;
+	}
+
+	/** Queues only Sections whose scheduler invalidated selected drawable geometry. */
+	void SectionSchedulingCoordinator::PublishGpuPresentationChange(
+		::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		::Services::Map::Buildings::BuildingMapSection& section)
+	{
+		if (section.ConsumeGpuPresentationChanged())
+		{
+			buildingMapService.MarkGpuSectionPresentationChanged(section.GetGridX(), section.GetGridY());
+		}
 	}
 
 	/** Advances one Section-owned job and handles only its actual terminal commit result. */

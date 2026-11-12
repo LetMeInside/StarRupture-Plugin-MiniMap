@@ -498,9 +498,14 @@ namespace Services::Map::Buildings::Scheduling
 			: preparingScene->ordinarySprites_;
 		const bool hasSectionDrawableGeometry = occurrence.SectionTriangleCount != 0;
 		InsertPreparedSpriteOccurrence(destination, std::move(occurrence));
-		return preparingScene->TrySetContributionStatus(ordinal, hasSectionDrawableGeometry
+		const bool contributionUpdated = preparingScene->TrySetContributionStatus(ordinal, hasSectionDrawableGeometry
 			? Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared
 			: Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission);
+		if (contributionUpdated && hasSectionDrawableGeometry)
+		{
+			section.MarkGpuPresentationChanged();
+		}
+		return contributionUpdated;
 	}
 
 	/** Copies stable occurrence metadata and clips the already projected quad once. */
@@ -1573,6 +1578,9 @@ namespace Services::Map::Buildings::Scheduling
 		const std::size_t contributionCount = candidateData.occurrences.size();
 		auto* output = section.BeginPreparingScene(
 			job.publicationOwner->ContentHash(), contributionCount);
+		const std::size_t ordinaryCount = output->ordinarySprites_.size();
+		const std::size_t splineCount = output->splineSurfaces_.size();
+		const std::size_t overlayCount = output->overlayLastSprites_.size();
 		const auto step = Visuals::BuildingGeometryPreparation::Advance(
 			job.retainedScene->RenderSceneInput,
 			job.publicationOwner->SectionRegion(),
@@ -1581,6 +1589,12 @@ namespace Services::Map::Buildings::Scheduling
 			job.GeometryCursor,
 			deadline);
 		result.WorkUnitsConsumed += step.WorkUnitsConsumed;
+		if (output->ordinarySprites_.size() != ordinaryCount ||
+			output->splineSurfaces_.size() != splineCount ||
+			output->overlayLastSprites_.size() != overlayCount)
+		{
+			section.MarkGpuPresentationChanged();
+		}
 		if (step.CurrentStatus == Visuals::BuildingGeometryPreparation::Status::Pending)
 		{
 			return false;

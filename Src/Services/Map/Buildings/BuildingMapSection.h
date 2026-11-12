@@ -1,10 +1,10 @@
-// Represents one service-owned cell in the shared sparse Building Map grid and
-// stores the latest certified source-membership observation and at most one
-// privately owned completed numerical image.
+// Owns one sparse Building Map cell's prepared numerical scenes, RGBA8 image,
+// contexts and immutable Section presentation shared with render snapshots.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <optional>
 #include <span>
@@ -27,6 +27,44 @@ namespace Services::Map::Buildings::Visuals
 
 namespace Services::Map::Buildings
 {
+	class BuildingMapGpuViewport;
+	/** Compact immutable GPU transfer geometry shared by snapshots while this Section lives. */
+	struct BuildingMapSectionPresentation final
+	{
+		/** One prepared source-image sprite triangle, independent of atlas publication. */
+		struct SpriteTriangle
+		{
+			std::array<std::array<double, 3>, 3> World{};
+			std::array<std::array<float, 2>, 3> ProcessedUv{};
+		};
+		/** Maps one occurrence's contiguous triangle range into its current atlas content. */
+		struct SpriteBinding
+		{
+			std::size_t FirstTriangle = 0;
+			std::size_t TriangleCount = 0;
+			std::array<std::uint32_t, 4> ContentRectangle{};
+		};
+		/** One solid spline triangle with the only material fields used by Draw. */
+		struct SolidTriangle
+		{
+			std::array<std::array<double, 3>, 3> World{};
+			std::uint32_t Rgb = 0xFFFFFF;
+			std::uint8_t Opacity = 255;
+		};
+
+		/** Shares unchanged world geometry when only atlas content bindings change. */
+		struct Geometry final
+		{
+			std::vector<SpriteTriangle> OrdinaryTriangles;
+			std::vector<SolidTriangle> SolidSurfaces;
+			std::vector<SpriteTriangle> OverlayTriangles;
+		};
+
+		std::shared_ptr<const Geometry> PreparedGeometry;
+		std::vector<SpriteBinding> OrdinaryBindings;
+		std::vector<SpriteBinding> OverlayBindings;
+	};
+
 	/**
 	 * Identifies one fixed service-owned map cell and retains its private numerical
 	 * rendering context for the Section lifetime. X columns and Y rows increase
@@ -108,6 +146,7 @@ namespace Services::Map::Buildings
 		friend class BuildingMapService;
 		friend class Scheduling::SectionSchedulingCoordinator;
 		friend class Scheduling::SectionScheduler;
+		friend class BuildingMapGpuViewport;
 
 		/** Creates a section for the service-owned grid coordinate. */
 		BuildingMapSection(std::int64_t gridX, std::int64_t gridY);
@@ -168,6 +207,10 @@ namespace Services::Map::Buildings
 		void InvalidatePreparingScene(std::uint64_t currentSourceContentHash) noexcept;
 		/** Discards an abandoned incomplete replacement while preserving CompletedScene and the image. */
 		void DiscardPreparingScene() noexcept;
+		/** Invalidates cached transfer data when selected drawable geometry changes. */
+		void MarkGpuPresentationChanged() noexcept;
+		/** Consumes the Section-local change signal after its scheduler reports the coordinate. */
+		bool ConsumeGpuPresentationChanged() noexcept;
 
 		/**
 		 * Returns this Section's private rendering context, allocating it on the
@@ -197,5 +240,9 @@ namespace Services::Map::Buildings
 		/** Mutable Section-owned contributions for the currently selected replacement. */
 		std::unique_ptr<Visuals::PreparedBuildingGeometry> preparingScene_;
 		std::uint64_t preparingSceneSourceContentHash_ = 0;
+		std::shared_ptr<const BuildingMapSectionPresentation> gpuPresentation_;
+		std::uint64_t gpuPresentationAtlasBindingSignature_ = 0;
+		bool gpuPresentationAtlasBindingSignatureValid_ = false;
+		bool gpuPresentationChanged_ = false;
 	};
 }
