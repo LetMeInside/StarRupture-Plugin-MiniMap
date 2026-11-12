@@ -467,7 +467,8 @@ namespace Services::Map::Buildings::Scheduling
 		Visuals::PreparedBuildingGeometry* preparingScene =
 			section.BeginPreparingScene(job.publicationOwner->ContentHash(), job.Preparation.Occurrences.size());
 		auto& contributionState = preparingScene->contributionStates_[ordinal];
-		if (contributionState == Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared)
+		if (contributionState == Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared ||
+			contributionState == Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission)
 		{
 			return true;
 		}
@@ -483,20 +484,45 @@ namespace Services::Map::Buildings::Scheduling
 				Visuals::PreparedBuildingGeometry::ContributionStatus::Failed);
 			return false;
 		}
+		const BuildingCollectionRegion& sectionRegion = job.publicationOwner->SectionRegion();
 		Visuals::PreparedBuildingGeometry::SpriteOccurrence occurrence;
-		occurrence.SectionLocalOrdinal = preparedSprite.PublicationOrdinal;
-		occurrence.PlacementPosition = preparedSprite.RenderInput.Placement.Position;
-		occurrence.SourceKey = *job.Preparation.Occurrences[ordinal].SpriteKey;
-		occurrence.WorldQuad = preparedSprite.Support.WorldQuad;
-		occurrence.OccluderTopHeight = preparedSprite.Support.OccluderTopHeight;
-		occurrence.IsOccluder = preparedSprite.Support.IsOccluder &&
-			preparedSprite.SpritePass == BuildingCandidateSpritePass::FirstPass;
+		if (!TryPrepareClippedSpriteOccurrence(preparedSprite,
+			*job.Preparation.Occurrences[ordinal].SpriteKey, sectionRegion, occurrence))
+		{
+			preparingScene->TrySetContributionStatus(ordinal,
+				Visuals::PreparedBuildingGeometry::ContributionStatus::Failed);
+			return false;
+		}
 		auto& destination = preparedSprite.SpritePass == BuildingCandidateSpritePass::SecondPass
 			? preparingScene->overlayLastSprites_
 			: preparingScene->ordinarySprites_;
+		const bool hasSectionDrawableGeometry = occurrence.SectionTriangleCount != 0;
 		InsertPreparedSpriteOccurrence(destination, std::move(occurrence));
-		return preparingScene->TrySetContributionStatus(ordinal,
-			Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared);
+		return preparingScene->TrySetContributionStatus(ordinal, hasSectionDrawableGeometry
+			? Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared
+			: Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission);
+	}
+
+	/** Copies stable occurrence metadata and clips the already projected quad once. */
+	bool SectionScheduler::TryPrepareClippedSpriteOccurrence(
+		const KnownSpritePreparationResult::PreparedSpriteOccurrence& preparedSprite,
+		const Cache::OwnedSpriteKey& sourceKey,
+		const BuildingCollectionRegion& sectionRegion,
+		Visuals::PreparedBuildingGeometry::SpriteOccurrence& output)
+	{
+		output.SectionLocalOrdinal = preparedSprite.PublicationOrdinal;
+		output.PlacementPosition = preparedSprite.RenderInput.Placement.Position;
+		output.SourceKey = sourceKey;
+		output.SourceWorldQuad = preparedSprite.Support.WorldQuad;
+		if (!Visuals::BuildingGeometryPreparation::TryClipSpriteToSection(
+			output.SourceWorldQuad, sectionRegion, output.SectionTriangles, output.SectionTriangleCount))
+		{
+			return false;
+		}
+		output.OccluderTopHeight = preparedSprite.Support.OccluderTopHeight;
+		output.IsOccluder = preparedSprite.Support.IsOccluder &&
+			preparedSprite.SpritePass == BuildingCandidateSpritePass::FirstPass;
+		return true;
 	}
 
 	/** Inserts by painter position with publication ordinal as the stable tie break. */
@@ -1549,6 +1575,7 @@ namespace Services::Map::Buildings::Scheduling
 			job.publicationOwner->ContentHash(), contributionCount);
 		const auto step = Visuals::BuildingGeometryPreparation::Advance(
 			job.retainedScene->RenderSceneInput,
+			job.publicationOwner->SectionRegion(),
 			section.GetOrCreateGeometryContext(),
 			*output,
 			job.GeometryCursor,

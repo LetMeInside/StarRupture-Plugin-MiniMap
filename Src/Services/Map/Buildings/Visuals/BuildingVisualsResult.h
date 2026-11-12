@@ -57,6 +57,8 @@ namespace Services::Map::Buildings::Visuals
 		SplineOcclusionStatus OcclusionStatus = SplineOcclusionStatus::Complete;
 		std::size_t RejectedCells = 0;
 		bool GeometryPrepared = false;
+		/** True when valid prepared geometry has no area inside its owning Section. */
+		bool SectionClippedAway = false;
 		bool OccluderGeometryPrepared = false;
 		bool SamplingComplete = true;
 		bool SubmissionAttempted = false;

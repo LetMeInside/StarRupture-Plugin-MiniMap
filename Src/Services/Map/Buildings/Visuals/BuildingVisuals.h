@@ -127,6 +127,13 @@ namespace Services::Map::Buildings::Visuals
 			SceneSliceResult& result,
 			std::chrono::steady_clock::time_point deadline,
 			bool overlay);
+		/** Records a valid zero-area Section sprite as culled without destination work. */
+		static SceneAdvanceResult FinishSectionExcludedSprite(
+			std::size_t sceneIndex,
+			bool overlay,
+			BuildingVisualsContext& context,
+			SceneCursor& cursor,
+			SceneSliceResult& result);
 		/** Records an exact source/geometry correspondence failure without drawing a substitute. */
 		static SceneAdvanceResult FailPreparedSpriteInput(
 			bool overlay,

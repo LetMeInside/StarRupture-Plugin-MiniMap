@@ -69,9 +69,12 @@ namespace Services::Map::Buildings
 			std::span<const std::uint8_t> Rgba8Bytes;
 		};
 
-		/** Borrows the current presentation scene for one serialized read interval.
+		/** Borrows the selected presentation scene for one serialized synchronous read interval.
 		 * A completed scene wins during replacement; otherwise the available preparing
-		 * contributions are exposed with IsComplete false until atomic adoption.
+		 * contributions are exposed with IsComplete false until atomic adoption. The scene
+		 * and its category vectors remain valid until this callback returns because service,
+		 * scheduler and viewport mutations share one calling thread; the borrower must not
+		 * reenter those mutation paths or retain the view.
 		 */
 		struct ScenePresentationView
 		{

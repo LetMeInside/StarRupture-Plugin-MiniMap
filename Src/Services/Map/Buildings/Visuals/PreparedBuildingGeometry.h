@@ -38,7 +38,7 @@ namespace Services::Map::Buildings::Visuals
 		friend class ::Services::Map::Buildings::BuildingMapSection;
 
 	public:
-		/** Owns one sprite occurrence's source identity, projected quad and occluder metadata. */
+		/** Owns one Section-clipped sprite occurrence and its original image/occlusion source quad. */
 		struct SpriteOccurrence
 		{
 			std::uint64_t SectionLocalOrdinal = 0;
@@ -46,7 +46,11 @@ namespace Services::Map::Buildings::Visuals
 			std::optional<std::size_t> SceneIndex;
 			std::array<double, 3> PlacementPosition{};
 			Cache::OwnedSpriteKey SourceKey;
-			SpriteWorldQuad WorldQuad;
+			/** Original projected quad retained for RGBA8 raster input and full occluder evidence. */
+			SpriteWorldQuad SourceWorldQuad;
+			/** Fixed maximum: clipping a convex quad by a rectangle yields at most eight vertices/six triangles. */
+			std::array<TexturedTriangle, 6> SectionTriangles{};
+			std::size_t SectionTriangleCount = 0;
 			double OccluderTopHeight = 0.0;
 			bool IsOccluder = false;
 		};
@@ -58,6 +62,7 @@ namespace Services::Map::Buildings::Visuals
 			Unresolved,
 			Prepared,
 			TerminalOmission,
+			GeometricOmission,
 			Failed
 		};
 

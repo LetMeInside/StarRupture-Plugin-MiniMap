@@ -40,6 +40,8 @@ namespace Services::Map::Buildings::Visuals
 		SplineOcclusionWorkspace occlusionWorkspace_;
 		std::vector<SolidTriangle> solidTriangles_;
 		std::vector<TexturedTriangle> texturedTriangles_;
+		std::vector<SolidTriangle> sectionClippedSolidTriangles_;
+		std::vector<TexturedTriangle> sectionClippedTexturedTriangles_;
 		BuildingVisualsResult result_;
 	};
 }

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -29,6 +30,10 @@ namespace Services::Map::Buildings
 	class BuildingMapSection;
 	class BuildingMapViewport;
 	class BuildingMapGpuViewport;
+	namespace Visuals
+	{
+		class PreparedBuildingGeometry;
+	}
 	namespace Cache
 	{
 		class SpriteSourceManager;
@@ -180,6 +185,14 @@ namespace Services::Map::Buildings
 		const BuildingMapSection* FindSectionAt(
 			std::int64_t gridX,
 			std::int64_t gridY) const;
+		/** Enumerates available geometry in this GPU viewport's current range using borrowed Section storage. */
+		void EnumerateDrawableSections(
+			const BuildingMapGpuViewport& viewport,
+			const std::function<void(
+				std::int64_t,
+				std::int64_t,
+				const Visuals::PreparedBuildingGeometry&,
+				bool)>& handler) const;
 
 		/** Releases a live viewport handle without affecting shared section state. */
 		void CloseViewport(std::uint64_t viewportHandle);

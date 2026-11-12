@@ -169,10 +169,10 @@ namespace Services::Map::Buildings::Visuals
 	{
 		ImageSubmissionCommand command;
 		command.Source = {source.Pixels, source.PixelWidth, source.PixelHeight, source.PixelRegion};
-		for (std::size_t corner = 0; corner < occurrence.WorldQuad.Corners.size(); ++corner)
+		for (std::size_t corner = 0; corner < occurrence.SourceWorldQuad.Corners.size(); ++corner)
 		{
 			command.Geometry.Corners[corner] = {
-				occurrence.WorldQuad.Corners[corner][0], occurrence.WorldQuad.Corners[corner][1]};
+				occurrence.SourceWorldQuad.Corners[corner][0], occurrence.SourceWorldQuad.Corners[corner][1]};
 		}
 		if (!cursor.DestinationSubmissionActive)
 		{
@@ -437,8 +437,28 @@ namespace Services::Map::Buildings::Visuals
 				source.SectionLocalOrdinal, occurrence.SectionLocalOrdinal);
 			return FailPreparedSpriteInput(overlay, sceneIndex, context, cursor, result);
 		}
+		if (occurrence.SectionTriangleCount == 0)
+		{
+			return FinishSectionExcludedSprite(sceneIndex, overlay, context, cursor, result);
+		}
 		return SubmitPreparedSpriteImage(
 			occurrence, source, overlay, destination, context, cursor, result, deadline);
+	}
+
+	/** Completes a source-valid sprite whose clipped Section polygon has no positive area. */
+	BuildingVisuals::SceneAdvanceResult BuildingVisuals::FinishSectionExcludedSprite(
+		std::size_t sceneIndex,
+		bool overlay,
+		BuildingVisualsContext& context,
+		SceneCursor& cursor,
+		SceneSliceResult& result)
+	{
+		cursor.PendingOutcome = {};
+		cursor.PendingOutcome.ContributorIndex = sceneIndex;
+		cursor.PendingOutcome.GeometryPrepared = true;
+		cursor.PendingOutcome.SubmissionAttempted = true;
+		cursor.PendingOutcome.Submission = ImageSubmission::Culled;
+		return FinishPreparedSpriteSubmission(overlay, context, cursor, result, 0);
 	}
 
 	/** Exposes a read-only completed result owned by the caller's unchanged context. */

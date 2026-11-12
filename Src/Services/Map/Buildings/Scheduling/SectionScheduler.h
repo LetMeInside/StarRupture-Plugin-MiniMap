@@ -603,6 +603,18 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			std::size_t ordinal);
+		/** Builds one Section-clipped prepared occurrence without changing its source correspondence.
+		 * @param preparedSprite Ready source occurrence with its already projected world quad.
+		 * @param sourceKey Canonical key retained by the current publication ordinal.
+		 * @param sectionRegion Exact rectangle owned by the Section.
+		 * @param output Receives the original quad and clipped drawable triangles.
+		 * @return True when the Section clipping operation succeeds, including valid exclusion.
+		 */
+		static bool TryPrepareClippedSpriteOccurrence(
+			const KnownSpritePreparationResult::PreparedSpriteOccurrence& preparedSprite,
+			const Cache::OwnedSpriteKey& sourceKey,
+			const BuildingCollectionRegion& sectionRegion,
+			Visuals::PreparedBuildingGeometry::SpriteOccurrence& output);
 		/** Inserts one sprite occurrence at its stable Z/Y/X drawing position.
 		 * @param destination Ordinary or overlay pass owned by the preparing Section scene.
 		 * @param occurrence Complete owned sprite geometry and source identity.

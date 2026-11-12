@@ -14,6 +14,7 @@
 #include "BuildingMapViewport.h"
 #include "Cache/SpriteSourceManager.h"
 #include "Scheduling/SectionSchedulingCoordinator.h"
+#include "Visuals/PreparedBuildingGeometry.h"
 #include "Services/Runtime.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Log.h"
@@ -857,6 +858,54 @@ namespace Services::Map::Buildings
 	{
 		const auto section = sections_.find(std::make_pair(gridX, gridY));
 		return section == sections_.end() ? nullptr : section->second.get();
+	}
+
+	/** Borrows only current-range Sections, preserving PreparingScene currentness and stable ordering. */
+	void BuildingMapService::EnumerateDrawableSections(
+		const BuildingMapGpuViewport& viewport,
+		const std::function<void(
+			std::int64_t,
+			std::int64_t,
+			const Visuals::PreparedBuildingGeometry&,
+			bool)>& handler) const
+	{
+		if (viewport.service_ != this || !handler)
+		{
+			return;
+		}
+		for (std::int64_t gridY = viewport.gridRange_.firstY; gridY < viewport.gridRange_.endY; ++gridY)
+		{
+			for (std::int64_t gridX = viewport.gridRange_.firstX; gridX < viewport.gridRange_.endX; ++gridX)
+			{
+				const BuildingMapSection* section = FindSectionAt(gridX, gridY);
+				if (section == nullptr)
+				{
+					continue;
+				}
+				BuildingMapSection::ScenePresentationView presentation;
+				if (!section->TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
+				{
+					continue;
+				}
+				if (!presentation.IsComplete)
+				{
+					const auto publication = pendingSectionPublications_.find({gridX, gridY});
+					if (publication == pendingSectionPublications_.end() ||
+						publication->second == nullptr ||
+						publication->second->ContentHash() != presentation.Scene->SourceContentHash())
+					{
+						continue;
+					}
+				}
+				if (presentation.Scene->OrdinarySprites().empty() &&
+					presentation.Scene->SplineSurfaces().empty() &&
+					presentation.Scene->OverlayLastSprites().empty())
+				{
+					continue;
+				}
+				handler(gridX, gridY, *presentation.Scene, presentation.IsComplete);
+			}
+		}
 	}
 
 	/** Removes session registration while preserving all shared section objects. */

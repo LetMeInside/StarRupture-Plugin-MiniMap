@@ -5,7 +5,9 @@
 #include "BuildingVisualsContext.h"
 #include "BuildingVisualsResult.h"
 #include "PreparedBuildingGeometry.h"
+#include "../BuildingMapRegion.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +75,9 @@ namespace Services::Map::Buildings::Visuals
 			std::uint8_t PendingOpacity = 0;
 			bool Initialized = false;
 			bool SplineSamplingPrepared = false;
+			bool SplineHasDrawableSurface = false;
+			bool HasSectionRegion = false;
+			BuildingCollectionRegion SectionRegion{};
 			bool HasAcceptedOmissions = false;
 			Status TerminalStatus = Status::Pending;
 			BuildingVisualsResult Results;
@@ -90,12 +95,108 @@ namespace Services::Map::Buildings::Visuals
 		 */
 		static StepResult Advance(
 			const BuildingRenderSceneInput& scene,
+			const BuildingCollectionRegion& sectionRegion,
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
 			std::chrono::steady_clock::time_point deadline);
+		/** Clips one projected sprite quad into fixed Section-owned triangle storage.
+		 * @param worldQuad Original finite XYZ quad in source-corner order.
+		 * @param sectionRegion Exact half-open Section rectangle in the same world/map units.
+		 * @param triangles Receives up to six triangles with canonical sprite UVs in [0, 1].
+		 * @param triangleCount Receives the drawable triangle count; zero is valid geometric exclusion.
+		 * @return False only for invalid bounds or non-finite/interpolation failure.
+		 */
+		static bool TryClipSpriteToSection(
+			const SpriteWorldQuad& worldQuad,
+			const BuildingCollectionRegion& sectionRegion,
+			std::array<TexturedTriangle, 6>& triangles,
+			std::size_t& triangleCount) noexcept;
 
 	private:
+		/** Identifies the four ordered half-plane clips of a Section rectangle. */
+		enum class SectionClipBoundary
+		{
+			Left,
+			Right,
+			Top,
+			Bottom
+		};
+
+		/** Validates finite map-unit bounds with representable positive half-open edges. */
+		static bool IsValidSectionRegion(const BuildingCollectionRegion& sectionRegion) noexcept;
+		/** Confirms a continuation uses the exact same Section rectangle as its first slice. */
+		static bool MatchesSectionRegion(
+			const BuildingCollectionRegion& first,
+			const BuildingCollectionRegion& second) noexcept;
+		/** Clips one polygon vertex buffer against all four Section boundaries. */
+		static bool TryClipPolygonToSection(
+			const std::array<TexturedTriangleVertex, 8>& input,
+			std::size_t inputCount,
+			const BuildingCollectionRegion& sectionRegion,
+			std::array<TexturedTriangleVertex, 8>& output,
+			std::size_t& outputCount) noexcept;
+		/** Clips one ordered polygon against a single rectangle half-plane. */
+		static bool TryClipPolygonAgainstBoundary(
+			const std::array<TexturedTriangleVertex, 8>& input,
+			std::size_t inputCount,
+			const BuildingCollectionRegion& sectionRegion,
+			SectionClipBoundary boundary,
+			std::array<TexturedTriangleVertex, 8>& output,
+			std::size_t& outputCount) noexcept;
+		/** Interpolates world XYZ and UV at an exact Section boundary crossing. */
+		static bool TryInterpolateSectionBoundaryVertex(
+			const TexturedTriangleVertex& first,
+			const TexturedTriangleVertex& second,
+			const BuildingCollectionRegion& sectionRegion,
+			SectionClipBoundary boundary,
+			TexturedTriangleVertex& output) noexcept;
+		/** Appends one finite polygon vertex while removing exact adjacent duplicates. */
+		static bool TryAppendClipVertex(
+			const TexturedTriangleVertex& vertex,
+			std::array<TexturedTriangleVertex, 8>& output,
+			std::size_t& outputCount) noexcept;
+		/** Triangulates a clipped sprite polygon and drops zero-area XY triangles. */
+		static bool TryTriangulateSpritePolygon(
+			const std::array<TexturedTriangleVertex, 8>& polygon,
+			std::size_t polygonCount,
+			std::array<TexturedTriangle, 6>& triangles,
+			std::size_t& triangleCount) noexcept;
+		/** Clips converted spline triangles into reusable Section-owned context vectors. */
+		static bool ClipVisibleTrianglesToSection(
+			const BuildingCollectionRegion& sectionRegion,
+			BuildingVisualsContext& scratch);
+		/** Clips one solid triangle, preserving XYZ and deterministic fan ordering. */
+		static bool ClipSolidTriangleToSection(
+			const SolidTriangle& triangle,
+			const BuildingCollectionRegion& sectionRegion,
+			std::vector<SolidTriangle>& output);
+		/** Clips one textured triangle, interpolating every XYZ and UV component. */
+		static bool ClipTexturedTriangleToSection(
+			const TexturedTriangle& triangle,
+			const BuildingCollectionRegion& sectionRegion,
+			std::vector<TexturedTriangle>& output);
+		/** Reports whether a world-space XYZ triangle has finite, nonzero projected XY area. */
+		static bool HasPositiveFiniteProjectedArea(const SolidTriangle& triangle) noexcept;
+		/** Reports whether a textured triangle has finite, nonzero projected XY area. */
+		static bool HasPositiveFiniteProjectedArea(const TexturedTriangle& triangle) noexcept;
+		/** Calculates signed doubled XY area for one textured triangle. */
+		static double ProjectedSignedArea(const TexturedTriangle& triangle) noexcept;
+		/** Advances the four half-plane clips without changing source coordinate orientation. */
+		static bool IsInsideSectionBoundary(
+			const TexturedTriangleVertex& vertex,
+			const BuildingCollectionRegion& sectionRegion,
+			SectionClipBoundary boundary) noexcept;
+		/** Returns the X/Y coordinate of one selected Section edge. */
+		static double SectionBoundaryCoordinate(
+			const BuildingCollectionRegion& sectionRegion,
+			SectionClipBoundary boundary) noexcept;
+		/** Tests whether all XYZ and UV attributes of one clipping vertex are finite. */
+		static bool IsFiniteClipVertex(const TexturedTriangleVertex& vertex) noexcept;
+		/** Compares every interpolated attribute to suppress exact adjacent polygon duplicates. */
+		static bool AreClipVerticesEqual(
+			const TexturedTriangleVertex& first,
+			const TexturedTriangleVertex& second) noexcept;
 		/** Validates a fresh output and initializes reusable numerical scratch once. */
 		static bool Initialize(
 			const BuildingRenderSceneInput& scene,
@@ -165,6 +266,7 @@ namespace Services::Map::Buildings::Visuals
 			const BuildingSpriteRenderInput& sprite,
 			std::size_t sceneIndex,
 			bool overlay,
+			const BuildingCollectionRegion& sectionRegion,
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor);
@@ -182,6 +284,7 @@ namespace Services::Map::Buildings::Visuals
 			std::size_t sceneIndex,
 			bool overlay,
 			const SpriteWorldQuad& worldQuad,
+			const BuildingCollectionRegion& sectionRegion,
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
@@ -227,6 +330,14 @@ namespace Services::Map::Buildings::Visuals
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
 			BuildingVisualsContributorOutcome& outcome);
+		/** Records a valid surface with no post-occlusion area inside this Section. */
+		static Status FinishSplineSectionExclusion(
+			const BuildingSplineRenderInput& spline,
+			std::size_t splineIndex,
+			bool alternative,
+			PreparedBuildingGeometry& output,
+			PreparationCursor& cursor,
+			BuildingVisualsContributorOutcome& outcome);
 		/** Clips and owns one successfully prepared surface's numeric triangles and appearance. */
 		static Status RetainPreparedSurface(
 			const BuildingSplineRenderInput& spline,
@@ -240,6 +351,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Performs clipping and active solid/textured vertex conversion in reusable scratch. */
 		static bool PrepareVisibleTriangles(
 			const BuildingSplineSurfaceRenderInput& surface,
+			const BuildingCollectionRegion& sectionRegion,
 			BuildingVisualsContext& scratch,
 			PreparationCursor& cursor,
 			BuildingVisualsContributorOutcome& outcome);

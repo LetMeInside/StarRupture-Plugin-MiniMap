@@ -12,6 +12,15 @@ namespace Services::Map::Buildings
 		return service_ != nullptr ? service_->PublishedSpriteAtlas() : nullptr;
 	}
 
+	/** Delegates deterministic borrowed reads to the service that owns every Section. */
+	void BuildingMapGpuViewport::EnumerateDrawableSections(const DrawableSectionHandler& handler) const
+	{
+		if (service_ != nullptr && handler)
+		{
+			service_->EnumerateDrawableSections(*this, handler);
+		}
+	}
+
 	/** Delegates all registration state and behavior to the existing base viewport. */
 	BuildingMapGpuViewport::BuildingMapGpuViewport(
 		BuildingMapService& service,

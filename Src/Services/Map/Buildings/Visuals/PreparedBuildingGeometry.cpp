@@ -38,7 +38,9 @@ namespace Services::Map::Buildings::Visuals
 			return true;
 		}
 		const bool currentTerminal = current == ContributionStatus::Prepared ||
-			current == ContributionStatus::TerminalOmission || current == ContributionStatus::Failed;
+			current == ContributionStatus::TerminalOmission ||
+			current == ContributionStatus::GeometricOmission ||
+			current == ContributionStatus::Failed;
 		if (currentTerminal || (current == ContributionStatus::NotProcessed && status == ContributionStatus::NotProcessed))
 		{
 			return false;
@@ -48,6 +50,7 @@ namespace Services::Map::Buildings::Visuals
 			return false;
 		}
 		if (status == ContributionStatus::Prepared || status == ContributionStatus::TerminalOmission ||
+			status == ContributionStatus::GeometricOmission ||
 			status == ContributionStatus::Failed)
 		{
 			if (unfinishedContributionCount_ == 0)
@@ -56,7 +59,8 @@ namespace Services::Map::Buildings::Visuals
 			}
 			--unfinishedContributionCount_;
 			failedContributionCount_ += status == ContributionStatus::Failed ? 1 : 0;
-			terminalOmissionCount_ += status == ContributionStatus::TerminalOmission ? 1 : 0;
+			terminalOmissionCount_ += status == ContributionStatus::TerminalOmission ||
+				status == ContributionStatus::GeometricOmission ? 1 : 0;
 		}
 		current = status;
 		return true;
