@@ -17,6 +17,7 @@
 #include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
+#include <SDK/MassEntity_structs.hpp>
 #include "Native/ReadbackUEConfiguration.h"
 #include <MassExecutionContext.h>
 #include <MassArchetypeTypes.h>
@@ -44,6 +45,10 @@ namespace MiniMap::BuildingAcquisition
     using EntityId = MiniMapNative::MassEntityHandle;
     using DefinitionOwner = BuildingDefinitionAcquisition::DefinitionOwner;
 
+    static_assert(sizeof(SDK::FMassEntityQuery) == 0x350,
+        "BuildingCollectorV2 fixed query storage must match the generated Client SDK query size");
+    static_assert(alignof(SDK::FMassEntityQuery) == 0x10,
+        "BuildingCollectorV2 fixed query storage must match the generated Client SDK query alignment");
     static_assert(sizeof(FMassExecutionContext) == 0x4E0);
     static_assert(alignof(FMassExecutionContext) == 8);
     static_assert(sizeof(FMassExecuteFunction) == 0x30);

@@ -45,6 +45,12 @@ namespace
     constexpr std::ptrdiff_t kStateOffset = 0x01;
     constexpr std::ptrdiff_t kTranslationOffset = 0x20;
     constexpr std::size_t kQuerySize = 0x350;
+    constexpr std::size_t kQueryAlignment = 0x10;
+
+    static_assert(kQuerySize == sizeof(SDK::FMassEntityQuery),
+        "AlienActors fixed query storage must match the generated Client SDK query size");
+    static_assert(kQueryAlignment == alignof(SDK::FMassEntityQuery),
+        "AlienActors fixed query storage must match the generated Client SDK query alignment");
 
     struct AlienRecord
     {
@@ -69,7 +75,7 @@ namespace
     SDK::UWorld* g_queryWorld = nullptr;
     SDK::UMassEntitySubsystem* g_subsystem = nullptr;
     const void* g_manager = nullptr;
-    alignas(0x10) std::array<std::byte, kQuerySize> g_queryStorage = {};
+    alignas(kQueryAlignment) std::array<std::byte, kQuerySize> g_queryStorage = {};
 
     std::mutex g_snapshotMutex;
     uint64_t g_worldGeneration = 0;

@@ -24,6 +24,7 @@
 #include "SDK/ChimeraUI_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/AuItems_classes.hpp"
+#include "SDK/MassEntity_structs.hpp"
 
 #include <algorithm>
 #include <array>
@@ -58,6 +59,11 @@ namespace
 
     constexpr std::size_t kMassQuerySize = 0x350;
     constexpr std::size_t kMassQueryAlignment = 0x10;
+
+    static_assert(kMassQuerySize == sizeof(SDK::FMassEntityQuery),
+        "Foundables fixed query storage must match the generated Client SDK query size");
+    static_assert(kMassQueryAlignment == alignof(SDK::FMassEntityQuery),
+        "Foundables fixed query storage must match the generated Client SDK query alignment");
 
     struct FoundableRecord
     {

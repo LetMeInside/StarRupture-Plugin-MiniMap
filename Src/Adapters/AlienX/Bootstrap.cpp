@@ -12,10 +12,12 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
 
+#include <cstdint>
 #include <optional>
 
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "SDK.hpp"
+#include "SDK/MassEntity_structs.hpp"
 #include "plugin_map.h"
 #include "Native/NativeApi.h"
 #endif
@@ -42,6 +44,53 @@ namespace
     const MiniMap::Services::Runtime g_runtime{g_log, &g_configuration};
 #endif
     std::optional<MiniMap::Services::Detail::RuntimeBinding> g_binding;
+
+#if defined(MODLOADER_CLIENT_BUILD)
+    /** Checks the reflected query layout before a Client subsystem can construct fixed native query storage. */
+    class ClientMassQueryStorageContract
+    {
+    public:
+        /** Requires the running MassEntity struct to match the SDK size and alignment used by all query owners. */
+        static bool IsCompatible(const IPluginSelf* self)
+        {
+            try
+            {
+                const SDK::UScriptStruct* queryType = SDK::UObject::FindObject<SDK::UScriptStruct>(
+                    "ScriptStruct MassEntity.MassEntityQuery", SDK::EClassCastFlags::ScriptStruct);
+                if (queryType == nullptr)
+                {
+                    if (self && self->logger && self->logger->Error)
+                        self->logger->Error(self,
+                            "MiniMap: Client admission refused: MassEntity.MassEntityQuery is unavailable");
+                    return false;
+                }
+
+                const unsigned sdkSize = static_cast<unsigned>(sizeof(SDK::FMassEntityQuery));
+                const unsigned sdkAlignment = static_cast<unsigned>(alignof(SDK::FMassEntityQuery));
+                if (queryType->Size != static_cast<std::int32_t>(sdkSize) ||
+                    queryType->MinAlignment != static_cast<std::int32_t>(sdkAlignment))
+                {
+                    if (self && self->logger && self->logger->Error)
+                        self->logger->Error(self,
+                            "MiniMap: Client admission refused: FMassEntityQuery SDK size=0x%X align=0x%X, "
+                            "running size=0x%X align=0x%X",
+                            sdkSize, sdkAlignment, static_cast<unsigned>(queryType->Size),
+                            static_cast<unsigned>(queryType->MinAlignment));
+                    return false;
+                }
+
+                return true;
+            }
+            catch (...)
+            {
+                if (self && self->logger && self->logger->Error)
+                    self->logger->Error(self,
+                        "MiniMap: Client admission refused: FMassEntityQuery metadata lookup failed");
+                return false;
+            }
+        }
+    };
+#endif
 
     struct HookBaseline
     {
@@ -192,6 +241,11 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Log)
             self->logger->Log(PluginLogLevel::Error, self,
                 "MiniMap: SDK runtime initialization failed; loader game globals are unavailable");
+        return false;
+    }
+    if (!ClientMassQueryStorageContract::IsCompatible(self))
+    {
+        MiniMapNative::Shutdown();
         return false;
     }
 #endif
