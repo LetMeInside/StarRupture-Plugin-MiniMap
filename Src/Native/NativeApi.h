@@ -124,8 +124,6 @@ namespace MiniMapNative
 
     struct PlayerApi
     {
-        SDK::UEngine* const* engineStorage = nullptr;
-
         using RegisterComponentFn = void (*)(SDK::UActorComponent*, SDK::UWorld*, void*);
         RegisterComponentFn registerComponent = nullptr;
         using UnregisterComponentFn = void (*)(SDK::UActorComponent*);
@@ -231,9 +229,7 @@ namespace MiniMapNative
     struct MassLifecycleApi
     {
         using BuildingNotificationFn = void (__fastcall*)(SDK::UCrBuildingStabilitySubsystem*, PersistentEntityId);
-        using RestoreNotificationFn = void (__fastcall*)(SDK::UCrMassSaveSubsystem*);
         BuildingNotificationFn onCreate = nullptr, onDestroy = nullptr;
-        RestoreNotificationFn onSaveLoaded = nullptr, onPostSaveLoaded = nullptr;
     };
 
     struct ConstByteView64 { const uint8_t* Data = nullptr; int64_t Num = 0; };
@@ -329,9 +325,6 @@ namespace MiniMapNative
         AddFragmentRequirementFn addTransformRequirement = nullptr;
         AddFragmentRequirementFn addOptionalSplineRequirement = nullptr;
         AddFragmentRequirementFn addOptionalAPRequirement = nullptr;
-        using EntityCheckFn = bool (__fastcall*)(const void*, MassEntityHandle);
-        EntityCheckFn isEntityValid = nullptr;
-        EntityCheckFn isEntityBuilt = nullptr;
         AddEnemyStateRequirementFn addEnemyStateRequirement = nullptr;
         AddTagRequirementFn addTagRequirement = nullptr;
         StaticStructFn enemyStateFragmentStaticStruct = nullptr;
@@ -351,38 +344,6 @@ namespace MiniMapNative
     };
 
 
-    // CL-127004 FCrGridEntityHandle: handle + TSharedPtr<Data, ESPMode::ThreadSafe>.
-    // Opaque shared-pointer words are owned by native code, never copied out.
-    struct GridEntityHandle
-    {
-        MassEntityHandle Entity;
-        void* Data = nullptr;
-        void* ReferenceController = nullptr;
-    };
-    static_assert(sizeof(GridEntityHandle) == 0x18);
-    static_assert(alignof(GridEntityHandle) == 8);
-    static_assert(offsetof(GridEntityHandle, Data) == 0x08);
-    static_assert(offsetof(GridEntityHandle, ReferenceController) == 0x10);
-
-    struct GridDiagnosticApi
-    {
-        // Verified CL-127004 TFunctionRef: Callable +0, Storage.Object +8.
-        // Synchronous borrowed callback; no native ownership/destruction.
-        struct VisitorRef
-        {
-            using InvokeFn = bool (__fastcall*)(void*, const GridEntityHandle&);
-            InvokeFn Callable = nullptr;
-            void* Object = nullptr;
-        };
-        static_assert(sizeof(VisitorRef) == 0x10);
-        static_assert(offsetof(VisitorRef, Object) == 8);
-        using ForEachCellInRadiusFn = void (__fastcall*)(void*, const SDK::FVector&,
-            float, const VisitorRef&, bool testEntityRadius);
-        using GetSubsystemFn = void* (__fastcall*)(const SDK::UWorld*);
-        GetSubsystemFn getSubsystem = nullptr;
-        ForEachCellInRadiusFn forEachCellInRadius = nullptr;
-    };
-
     struct TextureApi
     {
         using CreateTransientFn = SDK::UTexture2D* (__fastcall*)(int32_t, int32_t,
@@ -399,10 +360,6 @@ namespace MiniMapNative
         using SubmitRenderCommandFn = void (*)(void*, const wchar_t*, uint32_t&, TStatId,
             TUniqueFunction<void(FRHICommandListImmediate&)>&&);
         SubmitRenderCommandFn submitRenderCommand = nullptr;
-        using ImmediateCommandListFn = FRHICommandListImmediate& (*)();
-        ImmediateCommandListFn immediateCommandList = nullptr;
-        using CreateRHITextureFn = TRefCountPtr<FRHITexture> (*)(FDynamicRHI*, FRHICommandListBase&, const FRHITextureCreateDesc&);
-        CreateRHITextureFn createRHITexture = nullptr; // Compared to native RHI vtable; not called here.
         using ReadbackConstructFn = FRHIGPUTextureReadback* (*)(FRHIGPUTextureReadback*, FName);
         ReadbackConstructFn readbackConstruct = nullptr;
         using ReadbackDestroyFn = void (*)(FRHIGPUTextureReadback*);
@@ -413,14 +370,9 @@ namespace MiniMapNative
         ReadbackLockFn readbackLock = nullptr;
         using ReadbackUnlockFn = void (*)(FRHIGPUTextureReadback*);
         ReadbackUnlockFn readbackUnlock = nullptr;
-        using PollGPUFenceFn = bool (*)(FRHIGPUFence*);
-        PollGPUFenceFn pollGPUFence = nullptr;
         using MarkRHIResourceForDeleteFn = void (*)(const FRHIResource*);
         MarkRHIResourceForDeleteFn markRHIResourceForDelete = nullptr;
-        FDynamicRHI* const* dynamicRHI = nullptr;
         void* renderCommandPipe = nullptr;
-        const bool* threadedRendering = nullptr;
-        const bool* supportsRHIMultithreading = nullptr;
         const uint32_t* explicitGpuCount = nullptr;
 
         using InitRenderTargetFn = void (*)(SDK::UTextureRenderTarget2D*, uint32_t, uint32_t, uint8_t, bool);
@@ -559,25 +511,15 @@ namespace MiniMapNative
         using InitWorldFn = void (*)(uintptr_t, WorldInitializationValues);
         using UpdateWorldComponentsFn = void (*)(uintptr_t, bool, bool, void*);
         using CleanupWorldFn = void (*)(uintptr_t, bool, bool, uintptr_t);
-        using GetWorldContextFromWorldFn = uintptr_t (*)(uintptr_t, uintptr_t);
-        // Collection this + plain UClass*; not the reflected TSubclassOf wrapper.
-        using GetSubsystemInternalFn = uintptr_t (*)(uintptr_t, uintptr_t);
         using PredicateFn = bool (*)();
-        // Adjusted FTickableGameObject subobject this, not UWorldSubsystem this.
-        using GetTickableTickTypeFn = uint8_t (*)(uintptr_t);
-        using IsVisibilityRequestPendingFn = bool (*)(uintptr_t);
         using DestroyActorFn = bool (*)(uintptr_t, bool, bool);
         CreateWorldFn createWorld = nullptr;
         InitWorldFn initWorld = nullptr;
         UpdateWorldComponentsFn updateWorldComponents = nullptr;
         CleanupWorldFn cleanupWorld = nullptr;
-        GetWorldContextFromWorldFn getWorldContextFromWorld = nullptr;
-        GetSubsystemInternalFn getSubsystemInternal = nullptr;
         PredicateFn isGarbageCollectingAndLocking = nullptr;
         PredicateFn isIncrementalPurgePending = nullptr;
         PredicateFn isIncrementalReachabilityPending = nullptr;
-        GetTickableTickTypeFn getTickableTickType = nullptr;
-        IsVisibilityRequestPendingFn isVisibilityRequestPending = nullptr;
         DestroyActorFn destroyActor = nullptr;
     };
 
@@ -612,7 +554,6 @@ namespace MiniMapNative
         PointsOfInterestApi pointsOfInterest;
         MassApi mass;
         SplinePayloadApi splinePayload;
-        GridDiagnosticApi gridDiagnostic;
         TextureApi texture;
     };
 

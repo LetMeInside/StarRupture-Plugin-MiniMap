@@ -1788,46 +1788,6 @@ namespace MiniMapFingerprints
                 static_cast<unsigned long long>(addresses.addTagRequirement));
         }
 
-        // Mandatory grid/collector functions. Each pattern is unique in CL-127004
-        // executable and its target ABI was checked against the matching PDB.
-        // These resolve functions, not hooks. Scanner failures refuse plugin admission.
-        const auto resolveGridDiagnostic = [&](const char* name, const char* pattern,
-            int32_t followAt, uintptr_t& target)
-        {
-            RequiredScan request{};
-            request.name = name;
-            request.idaPattern = pattern;
-            request.kind = AddressKind::FunctionEntry;
-            if (followAt >= 0) request.followRel32At = static_cast<uint32_t>(followAt);
-            request.resultOffset = 0;
-
-            target = resolveRequired(request);
-            LOG_DEBUG("MiniMap: building native: resolve %s = 0x%llX", name,
-                static_cast<unsigned long long>(target));
-        };
-        constexpr const char* entityBuiltPattern =
-            "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 "
-            "E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? "
-            "41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??";
-        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityBuilt",
-            entityBuiltPattern, -1, addresses.isMassEntityBuilt);
-        resolveGridDiagnostic("MiniMap::FMassEntityManager::IsEntityValid",
-            entityBuiltPattern, 21, addresses.isMassEntityValid);
-        resolveGridDiagnostic("MiniMap::UWorld::GetSubsystem<UCrEntityGridSubsystem>",
-            "48 89 74 24 20 57 48 81 EC 90 00 00 00 48 8B F9 E8 ?? ?? ?? ?? "
-            "48 85 C0 0F 84 F8 00 00 00 48 8B C8 E8 ?? ?? ?? ?? 48 8B F0 "
-            "48 85 C0 0F 84 E4 00 00 00", 0x21, addresses.getEntityGridSubsystem);
-        constexpr const char* gridBoxPattern =
-            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 "
-            "48 81 EC B0 00 00 00 41 83 78 0C 00 49 8D 78 0C 0F 29 70 E8 "
-            "48 8B F2 41 8B 50 08 48 8B E9 49 8B 08 4D 8B F1 0F 29 78 D8 "
-            "49 8B D8 44 0F 29 40 C8 7C 0C E8 ?? ?? ?? ?? 33 C0";
-        // CL-127004: unique existing box anchor, call at +14D -> 07714720.
-        // PDB: (const FVector&, float, const TFunctionRef<bool(const
-        // FCrGridEntityHandle&)>&, bool). Final bool gates IsInRadius only;
-        // cell selection is XY at both hierarchy levels regardless of Z.
-        resolveGridDiagnostic("MiniMap::UCrEntityGridSubsystem::ForEachCellInRadius",
-            gridBoxPattern, 0x14D, addresses.gridForEachCellInRadius);
 #if defined(MODLOADER_CLIENT_BUILD)
         {
             RequiredScan request{};
@@ -1976,26 +1936,6 @@ namespace MiniMapFingerprints
         }
         {
             RequiredScan request{};
-            request.name = "MiniMap::Readback::Immediate";
-            request.idaPattern = "48 8D 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 30 33 C0 48 63 DA 44 8B C3 48 8B F9 48 63 49 28 41 F7 D0 41 C1 E8 1F 3B D9 41 0F 4C C0 85 C0";
-            request.kind = AddressKind::Code;
-
-            request.resultOffset = 0;
-            addresses.readbackImmediate = resolveRequired(request);
-            if (!addresses.readbackImmediate) return false;
-        }
-        {
-            RequiredScan request{};
-            request.name = "MiniMap::Readback::Create";
-            request.idaPattern = "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 41 56 48 83 EC 40 49 83 79 48 00 49 8B F9 48 8B 01 49 8B F0 4C 8B F2 48 C7 44 24 20 00 00 00 00 41 0F 95 C1 48 8D 54 24 30";
-            request.kind = AddressKind::FunctionEntry;
-
-            request.resultOffset = 0;
-            addresses.readbackCreate = resolveRequired(request);
-            if (!addresses.readbackCreate) return false;
-        }
-        {
-            RequiredScan request{};
             request.name = "MiniMap::Readback::Construct";
             request.idaPattern = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 03 33 C0 48 89 43 18 48 89 43 20 48 89 43 28 48 89 43 30 48 89 43 38 48 89 43 40 48 89 43 48 48 89 43 50 48 8B C3 48 83 C4 20 5B C3 CC CC CC CC CC CC CC CC CC CC CC CC CC 48 89 7C 24 08";
             request.kind = AddressKind::FunctionEntry;
@@ -2043,16 +1983,6 @@ namespace MiniMapFingerprints
             request.resultOffset = 0;
             addresses.readbackUnlock = resolveRequired(request);
             if (!addresses.readbackUnlock) return false;
-        }
-        {
-            RequiredScan request{};
-            request.name = "MiniMap::Readback::Poll";
-            request.idaPattern = "48 8B C1 BA 01 00 00 00 8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00";
-            request.kind = AddressKind::Code;
-
-            request.resultOffset = 0;
-            addresses.readbackPoll = resolveRequired(request);
-            if (!addresses.readbackPoll) return false;
         }
         {
             RequiredScan request{};
@@ -2170,14 +2100,8 @@ namespace MiniMapFingerprints
             const uintptr_t anchor = resolveRequired(request);
             return anchor && decodeGlobal(name, anchor, displacementOffset, instructionSize, opcode, 8, 1, output);
         };
-        if (!resolveReadbackGlobal("MiniMap::Readback::DynamicRHI",
-            "48 8B 0D ?? ?? ?? ?? 4C 8D 44 24 20 C7 44 24 20 01 03 01 07 48 8D 54 24 40 C7 44 24 24 00 00 02 00 C7 44 24 28 07 00 00 00 66 C7 44 24 2C FF F4 48 8B 01 FF 50 58 48 8B 1D ?? ?? ?? ??", 3, 7, {0x48,0x8b,0x0d}, addresses.readbackDynamicRHI)) return false;
         if (!resolveReadbackGlobal("MiniMap::Readback::Pipe",
             "48 8D 0D ?? ?? ?? ?? 48 89 45 E7 48 8D 45 E7 48 89 44 24 20 E8 ?? ?? ?? ?? 48 39 7D E7 0F 84 ?? ?? ?? ?? 48 8B 45 0F 48 8D 4D F7 48 85 C0 48 0F 45 C8 48 8B 01 FF 50 10", 3, 7, {0x48,0x8d,0x0d}, addresses.readbackPipe)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::Threaded",
-            "80 3D ?? ?? ?? ?? 00 74 ?? 8B 05 ?? ?? ?? ?? 83 F8 01 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 E5 00 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 8B 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D0 48 8D 8B B0 00 00 00 E8 ?? ?? ?? ?? 48 83 BB C0 00 00 00 00", 2, 7, {0x80,0x3d,0}, addresses.readbackThreaded)) return false;
-        if (!resolveReadbackGlobal("MiniMap::Readback::Multithreaded",
-            "80 3D ?? ?? ?? ?? 00 41 8B F9 49 8B E8 48 8B F2 74 ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 4C 8B 88 38 02 00 00 83 FF FF 75 ?? 0F BC 82 BC 01 00 00 BF 20 00 00 00 0F 45 F8 44 8B C7", 2, 7, {0x80,0x3d,0}, addresses.readbackMultithreaded)) return false;
         if (!resolveReadbackGlobal("MiniMap::Readback::GpuCount",
             "8B 0D ?? ?? ?? ?? D3 E2 48 8B C8 FF CA E9 ?? ?? ?? ?? CC CC CC CC CC CC 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 FB FF FF 48 81 EC 78 05 00 00 48 8B 05 ?? ?? ?? ??", 2, 6, {0x8b,0x0d,0}, addresses.readbackGpuCount)) return false;
 #endif
@@ -2237,12 +2161,6 @@ namespace MiniMapFingerprints
         if (!resolvePrivateWorld("MiniMap::PrivateWorld::cleanupWorld",
             "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 FF 05 ?? ?? ?? ?? 48 8D 3D ?? ?? ?? ?? F6 81 8B 01 00 00 40 49 8B F1 41 0F B6 E8 44 0F B6 F2 48 8B D9",
             AddressKind::FunctionEntry, addresses.cleanupWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getWorldContextFromWorld",
-            "48 8B 81 C8 11 00 00 48 63 89 D0 11 00 00 48 8D 0C C8 48 3B C1 74 ?? 66 0F 1F 84 00 00 00 00 00 4C 8B 00 49 39 90 C0 02 00 00 74 ?? 48 83 C0 08 48 3B C1 75 ?? 33 C0 C3 49 8B C0 C3",
-            AddressKind::Code, addresses.getWorldContextFromWorld)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getSubsystemInternal",
-            "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 30 48 8B FA 48 8B F1 48 85 D2 75 ?? 48 8D 05 ?? ?? ?? ?? 44 8D 4A 35 48 89 44 24 20 4C 8D 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 ?? 90 CC 33 C0",
-            AddressKind::FunctionEntry, addresses.getSubsystemInternal)) return false;
         if (!resolvePrivateWorld("MiniMap::PrivateWorld::isGarbageCollectingAndLocking",
             "0F B6 05 ?? ?? ?? ?? 90 C3 CC CC CC CC CC CC CC 40 53 48 83 EC 20 48 8B 1D ?? ?? ?? ?? 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 B2 00 00 00",
             AddressKind::Code, addresses.isGarbageCollectingAndLocking)) return false;
@@ -2252,27 +2170,16 @@ namespace MiniMapFingerprints
         if (!resolvePrivateWorld("MiniMap::PrivateWorld::isIncrementalReachabilityPending",
             "0F B6 05 ?? ?? ?? ?? C3 CC CC CC CC CC CC CC CC 8B 05 ?? ?? ?? ?? 39 05 ?? ?? ?? ?? 7C ?? 80 3D ?? ?? ?? ?? 00 75 ?? 32 C0 C3 B0 01 C3",
             AddressKind::Code, addresses.isIncrementalReachabilityPending)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::getTickableTickType",
-            "40 53 48 83 EC 20 48 8B D9 BA 30 00 00 00 48 83 C1 D0 E8 ?? ?? ?? ?? 84 C0 75 ?? 38 43 08 74 ?? 48 83 C4 20 5B C3 B0 02 48 83 C4 20 5B C3",
-            AddressKind::FunctionEntry, addresses.getTickableTickType)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::isVisibilityRequestPending",
-            "40 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 ?? 48 89 5C 24 30 48 8D 9F 18 01 00 00 48 85 DB 75 ?? 4C 8D 0D ?? ?? ?? ?? 44 8D 43 1C",
-            AddressKind::FunctionEntry, addresses.isVisibilityRequestPending)) return false;
         if (!resolvePrivateWorld("MiniMap::PrivateWorld::destroyActor",
             "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 F6 41 5D 02 41 0F B6 F0 0F B6 EA 48 8B F9 75 ?? 8B 41 08 C1 E8 1E F6 D0 A8 01 74 ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? 44 0F B6 CE 44 0F B6 C5 48 8B D7 48 8B C8 E8 ?? ?? ?? ??",
             AddressKind::FunctionEntry, addresses.destroyActor)) return false;
 
-        uintptr_t activeGCAnchor = 0, engineAnchor = 0;
+        uintptr_t activeGCAnchor = 0;
         if (!resolvePrivateWorld("MiniMap::PrivateWorld::ActiveGarbageCollection",
             "0F B6 35 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 FF 15 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 0F 57 C0 39 05 ?? ?? ?? ?? F2 48 0F 2A 44 24 50",
             AddressKind::Code, activeGCAnchor) ||
             !decodeGlobal("MiniMap::PrivateWorld::ActiveGarbageCollection", activeGCAnchor,
                 3, 7, {0x0f,0xb6,0x35}, 1, 1, addresses.activeGarbageCollection)) return false;
-        if (!resolvePrivateWorld("MiniMap::PrivateWorld::EngineStorage",
-            "48 8B 3D ?? ?? ?? ?? 49 8B F1 49 8B E8 4C 8B F2 48 8B D9 48 85 FF 74 ?? 48 83 BF ?? ?? ?? ?? 00 75 ??",
-            AddressKind::Code, engineAnchor) ||
-            !decodeGlobal("MiniMap::PrivateWorld::EngineStorage", engineAnchor,
-                3, 7, {0x48,0x8b,0x3d}, 8, 8, addresses.engineStorage)) return false;
         // Reuse the already resolved guarded Release wrapper, without another scan.
         if (!decodeGlobal("MiniMap::Release", addresses.releaseObject,
                 2, 7, {0x80,0x3d,0}, 1, 1, addresses.exitPurge)) return false;
@@ -2331,13 +2238,6 @@ namespace MiniMapFingerprints
         if (!foundation("MiniMap::BuildingComplex::OnDestroyBuildingEntity",
             "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
             addresses.buildingOnDestroy)) return false;
-        if (!foundation("MiniMap::BuildingComplex::OnSaveLoaded",
-            "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 55 41 56 48 8D AC 24 60 FA FF FF 48 81 EC A0 06 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 40 05 00 00 41 BC 01 00 00 00 48 89 4D 90 41 8B C4 4C 8B E9 86 81 18 07 00 00",
-            addresses.massOnSaveLoaded)) return false;
-        if (!foundation("MiniMap::BuildingComplex::OnPostSaveLoaded",
-            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8D B0 F0 09 00 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 48 8B D8 74 0F 48 85 C0 74 33 "
-            "48 8B C8 E8 ?? ?? ?? ?? EB 05 48 85 DB 74 24 E8 ?? ?? ?? ?? 48 85 C0 74 1A 48 8D 50 30 48 63 40 38 3B 43 38 7F 0D 48 8B C8 48 8B 43 30 48 39 14 C8 74 02 33 DB 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 8B C8",
-            addresses.massOnPostSaveLoaded)) return false;
         if (!foundation("MiniMap::BuildingComplex::CreateTransient",
             "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
             addresses.textureCreateTransient)) return false;
