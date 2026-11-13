@@ -8,6 +8,9 @@
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
+#include "SDK/ChimeraUI_structs.hpp"
+#include "SDK/CoreUObject_structs.hpp"
+#include "SDK/SlateCore_structs.hpp"
 
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
@@ -17,6 +20,57 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
+
+static_assert(sizeof(void*) == 0x8);
+static_assert(sizeof(int32_t) == 0x4);
+static_assert(sizeof(SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>) == 0x28);
+static_assert(alignof(SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>) == alignof(void*));
+static_assert(sizeof(decltype(SDK::TPersistentObjectPtr<
+    SDK::FakeSoftObjectPtr::FSoftObjectPath>::WeakPtr)) == 0x8);
+static_assert(sizeof(decltype(SDK::TPersistentObjectPtr<
+    SDK::FakeSoftObjectPtr::FSoftObjectPath>::ObjectID)) == 0x20);
+static_assert(offsetof(SDK::TPersistentObjectPtr<
+    SDK::FakeSoftObjectPtr::FSoftObjectPath>, WeakPtr) == 0x0);
+static_assert(offsetof(SDK::TPersistentObjectPtr<
+    SDK::FakeSoftObjectPtr::FSoftObjectPath>, ObjectID) == 0x8);
+static_assert(offsetof(SDK::UCrMapMenuDevSettings, TerrainData) == 0x3C8);
+static_assert(sizeof(decltype(SDK::UCrMapMenuDevSettings::TerrainData)) == 0x28);
+static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint)) == 0xC);
+static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainSegmentSize)) == 0xC);
+static_assert(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainTopLeftPivotPoint) == 0x30);
+static_assert(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainSegmentSize) == 0x3C);
+static_assert(offsetof(SDK::UCrMapMenuTerrainData, TerrainSegmentsData) == 0x70);
+static_assert(sizeof(SDK::FVector3f) == 0xC);
+static_assert(alignof(SDK::FVector3f) == alignof(float));
+static_assert(offsetof(SDK::FVector3f, X) == 0x0);
+static_assert(offsetof(SDK::FVector3f, Y) == 0x4);
+static_assert(offsetof(SDK::FVector3f, Z) == 0x8);
+static_assert(sizeof(decltype(SDK::FVector3f::X)) == 0x4);
+static_assert(std::numeric_limits<float>::is_iec559);
+static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)) == 0x10);
+static_assert(alignof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)) == alignof(void*));
+static_assert(sizeof(SDK::FCrTerrainSegmentData) == 0x170);
+static_assert(alignof(SDK::FCrTerrainSegmentData) == alignof(SDK::FSlateBrush));
+static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentGridIndex) == 0x0);
+static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentGridIndex)) == 0x8);
+static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTexture) == 0x10);
+static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTexture)) == 0xB0);
+static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTextureRadiation2) == 0xC0);
+static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTextureRadiation2)) == 0xB0);
+static_assert(sizeof(SDK::FIntPoint) == 0x8);
+static_assert(alignof(SDK::FIntPoint) == alignof(int32_t));
+static_assert(offsetof(SDK::FIntPoint, X) == 0x0);
+static_assert(offsetof(SDK::FIntPoint, Y) == 0x4);
+static_assert(sizeof(decltype(SDK::FIntPoint::X)) == sizeof(int32_t));
+static_assert(sizeof(SDK::FSlateBrush) == 0xB0);
+static_assert(alignof(SDK::FSlateBrush) == 0x10);
+static_assert(std::is_same_v<
+    decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated), int32_t>);
+static_assert(offsetof(SDK::ACrMapMenuDataReplicationHelper, CurrentRadiationLevelReplicated) == 0x468);
+static_assert(sizeof(decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated)) == 0x4);
+static_assert(offsetof(SDK::UWorld, GameState) == 0x1B0);
+static_assert(offsetof(SDK::ACrGameStateBase, MapMenuDataReplicationHelper) == 0x368);
 
 namespace
 {

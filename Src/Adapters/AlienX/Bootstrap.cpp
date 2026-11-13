@@ -61,6 +61,7 @@ namespace
     bool g_buildingMassFieldsResolved = false;
     bool g_fowDataFieldResolved = false;
     bool g_playerMapDataComponentFieldResolved = false;
+    bool g_terrainFieldsResolved = false;
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -84,6 +85,82 @@ namespace
         static_cast<int32_t>(offsetof(
             SDK::ACrCharacterPlayerBase,
             PlayerMapMenuDataComponent))
+    };
+
+    /** Requires exact reflected layouts for fields read by TerrainSource. */
+    class ClientTerrainFieldContract
+    {
+    public:
+        /** Resolves consumed Terrain fields through the active loader scanner session. */
+        static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "UCrMapMenuDevSettings::TerrainData", "UCrMapMenuDevSettings", "TerrainData",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuDevSettings::TerrainData)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuDevSettings, TerrainData)) },
+                { "UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint", "UCrMapMenuTerrainData",
+                    "MapTerrainTopLeftPivotPoint", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainTopLeftPivotPoint)) },
+                { "UCrMapMenuTerrainData::MapTerrainSegmentSize", "UCrMapMenuTerrainData",
+                    "MapTerrainSegmentSize", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainSegmentSize)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainSegmentSize)) },
+                { "UCrMapMenuTerrainData::TerrainSegmentsData", "UCrMapMenuTerrainData",
+                    "TerrainSegmentsData", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, TerrainSegmentsData)) },
+                { "FVector3f::X", "FVector3f", "X", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector3f::X)),
+                    static_cast<int32_t>(offsetof(SDK::FVector3f, X)) },
+                { "FVector3f::Y", "FVector3f", "Y", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector3f::Y)),
+                    static_cast<int32_t>(offsetof(SDK::FVector3f, Y)) },
+                { "FVector3f::Z", "FVector3f", "Z", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector3f::Z)),
+                    static_cast<int32_t>(offsetof(SDK::FVector3f, Z)) },
+                { "FIntPoint::X", "FIntPoint", "X", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FIntPoint::X)),
+                    static_cast<int32_t>(offsetof(SDK::FIntPoint, X)) },
+                { "FIntPoint::Y", "FIntPoint", "Y", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FIntPoint::Y)),
+                    static_cast<int32_t>(offsetof(SDK::FIntPoint, Y)) },
+                { "FCrTerrainSegmentData::TerrainSegmentGridIndex", "FCrTerrainSegmentData",
+                    "TerrainSegmentGridIndex", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentGridIndex)),
+                    static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentGridIndex)) },
+                { "FCrTerrainSegmentData::TerrainSegmentTexture", "FCrTerrainSegmentData",
+                    "TerrainSegmentTexture", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTexture)),
+                    static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTexture)) },
+                { "FCrTerrainSegmentData::TerrainSegmentTextureRadiation2", "FCrTerrainSegmentData",
+                    "TerrainSegmentTextureRadiation2", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTextureRadiation2)),
+                    static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTextureRadiation2)) },
+                { "UWorld::GameState", "UWorld", "GameState", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UWorld::GameState)),
+                    static_cast<int32_t>(offsetof(SDK::UWorld, GameState)) },
+                { "ACrGameStateBase::MapMenuDataReplicationHelper", "ACrGameStateBase",
+                    "MapMenuDataReplicationHelper", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrGameStateBase::MapMenuDataReplicationHelper)),
+                    static_cast<int32_t>(offsetof(SDK::ACrGameStateBase, MapMenuDataReplicationHelper)) },
+                { "ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated",
+                    "ACrMapMenuDataReplicationHelper", "CurrentRadiationLevelReplicated",
+                    PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated)),
+                    static_cast<int32_t>(offsetof(
+                        SDK::ACrMapMenuDataReplicationHelper, CurrentRadiationLevelReplicated)) }
+            };
+
+            bool allResolved = true;
+            for (PluginFieldSpec& field : fields)
+            {
+                field.offset = -1;
+                field.resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
+            }
+            return allResolved;
+        }
     };
 
     PluginFieldSpec g_buildingDefinitionFields[] = {
@@ -658,6 +735,19 @@ namespace
             return false;
         }
 
+        /** Requires exact resident Terrain record and member layouts used by typed traversal. */
+        static bool CheckTerrainTypes(const IPluginSelf* self)
+        {
+            return CheckType(self, "ScriptStruct ChimeraUI.CrTerrainSegmentData", "FCrTerrainSegmentData",
+                    sizeof(SDK::FCrTerrainSegmentData), alignof(SDK::FCrTerrainSegmentData)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Vector3f", "FVector3f",
+                    sizeof(SDK::FVector3f), alignof(SDK::FVector3f)) &&
+                CheckType(self, "ScriptStruct CoreUObject.IntPoint", "FIntPoint",
+                    sizeof(SDK::FIntPoint), alignof(SDK::FIntPoint)) &&
+                CheckType(self, "ScriptStruct SlateCore.SlateBrush", "FSlateBrush",
+                    sizeof(SDK::FSlateBrush), alignof(SDK::FSlateBrush));
+        }
+
     public:
         /** Requires each consumed Mass fragment and typed subobject to match resident Client metadata. */
         static bool IsCompatible(const IPluginSelf* self)
@@ -701,13 +791,14 @@ namespace
                         alignof(SDK::FCrMassFoundableParameters)) &&
                     CheckBuildingDefinitionTypes(self) &&
                     CheckSplineTypes(self) &&
+                    CheckTerrainTypes(self) &&
                     CheckSplinePayloadType(self);
             }
             catch (...)
             {
                 if (self && self->logger && self->logger->Error)
                     self->logger->Error(self,
-                        "MiniMap: Client admission refused: required Mass type metadata lookup failed");
+                        "MiniMap: Client admission refused: required script-struct metadata lookup failed");
                 return false;
             }
         }
@@ -865,6 +956,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_buildingMassFieldsResolved = false;
     g_fowDataFieldResolved = false;
     g_playerMapDataComponentFieldResolved = false;
+    g_terrainFieldsResolved = false;
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -960,6 +1052,13 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_playerMapDataComponentFieldResolved = true;
+
+        if (!ClientTerrainFieldContract::Resolve(scanner, self))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_terrainFieldsResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -1016,6 +1115,14 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: player map-data component field was not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_terrainFieldsResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: required Terrain fields were not validated");
         MiniMapNative::Shutdown();
         return false;
     }
