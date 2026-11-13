@@ -59,6 +59,32 @@ namespace
 #if defined(MODLOADER_CLIENT_BUILD)
     // Bridges the scanner-session field checks to PluginInit without retaining scanner metadata.
     bool g_buildingMassFieldsResolved = false;
+    bool g_fowDataFieldResolved = false;
+    bool g_playerMapDataComponentFieldResolved = false;
+
+    PluginFieldSpec g_fowDataField{
+        "UCrPlayerMapMenuDataComponent::FOWData",
+        "UCrPlayerMapMenuDataComponent",
+        "FOWData",
+        PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+        0x10,
+        0x100
+    };
+
+    constexpr PluginFieldCandidate kFowDataCandidates[] = {
+        { 127004, 0x100, 0x10, 0, nullptr }
+    };
+
+    PluginFieldSpec g_playerMapDataComponentField{
+        "ACrCharacterPlayerBase::PlayerMapMenuDataComponent",
+        "ACrCharacterPlayerBase",
+        "PlayerMapMenuDataComponent",
+        PLUGIN_FIELD_CHECK,
+        sizeof(decltype(SDK::ACrCharacterPlayerBase::PlayerMapMenuDataComponent)),
+        static_cast<int32_t>(offsetof(
+            SDK::ACrCharacterPlayerBase,
+            PlayerMapMenuDataComponent))
+    };
 
     PluginFieldSpec g_buildingDefinitionFields[] = {
                 { "UAuActorPlacementData::BuildingID", "UAuActorPlacementData", "BuildingID",
@@ -837,6 +863,8 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     if (g_binding) return;
 #if defined(MODLOADER_CLIENT_BUILD)
     g_buildingMassFieldsResolved = false;
+    g_fowDataFieldResolved = false;
+    g_playerMapDataComponentFieldResolved = false;
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -896,6 +924,42 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_buildingMassFieldsResolved = true;
+
+        g_fowDataField.offset = -1;
+        g_fowDataField.resolvedSize = 0;
+        if (!PluginMap::ResolveField(
+            scanner,
+            self,
+            g_fowDataField,
+            kFowDataCandidates,
+            static_cast<uint32_t>(
+                sizeof(kFowDataCandidates) / sizeof(kFowDataCandidates[0]))))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        if (g_fowDataField.offset != 0x100 ||
+            g_fowDataField.resolvedSize != 0x10)
+        {
+            requiredScanner.Fail(
+                "UCrPlayerMapMenuDataComponent::FOWData",
+                "resolved FOWData does not match CL-127004 offset 0x100 and extent 0x10");
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_fowDataFieldResolved = true;
+
+        g_playerMapDataComponentField.offset = -1;
+        g_playerMapDataComponentField.resolvedSize = 0;
+        if (!PluginMap::ResolveField(
+            scanner,
+            self,
+            g_playerMapDataComponentField))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_playerMapDataComponentFieldResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -936,6 +1000,22 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: required Mass fields were not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_fowDataFieldResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: native FOWData layout was not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_playerMapDataComponentFieldResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: player map-data component field was not validated");
         MiniMapNative::Shutdown();
         return false;
     }

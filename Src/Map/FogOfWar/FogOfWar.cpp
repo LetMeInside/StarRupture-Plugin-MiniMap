@@ -117,6 +117,62 @@ namespace
         sizeof(RawTArray) ==
         0x10);
 
+    static_assert(
+        alignof(RawTArray) ==
+        alignof(SDK::TArray<uint8_t>));
+
+    static_assert(
+        alignof(RawTArray) ==
+        0x08);
+
+    static_assert(
+        sizeof(RawTArray) ==
+        sizeof(SDK::TArray<uint8_t>));
+
+    static_assert(
+        offsetof(RawTArray, Data) ==
+        0x00);
+
+    static_assert(
+        sizeof(decltype(RawTArray::Data)) ==
+        0x08);
+
+    static_assert(
+        offsetof(RawTArray, Num) ==
+        0x08);
+
+    static_assert(
+        sizeof(decltype(RawTArray::Num)) ==
+        0x04);
+
+    static_assert(
+        offsetof(RawTArray, Max) ==
+        0x0C);
+
+    static_assert(
+        sizeof(decltype(RawTArray::Max)) ==
+        0x04);
+
+    static_assert(
+        sizeof(RawTArray) ==
+        kFogSegmentNativeSize);
+
+    static_assert(
+        kSegmentCount ==
+        36);
+
+    static_assert(
+        kSegmentByteCount ==
+        16384);
+
+    static_assert(
+        kLogicalMaskSize ==
+        768);
+
+    static_assert(
+        kFOWDataOffset + sizeof(RawTArray) <=
+        sizeof(SDK::UCrPlayerMapMenuDataComponent));
+
     struct Snapshot
     {
         SDK::UCrPlayerMapMenuDataComponent* Component =
