@@ -37,6 +37,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -62,6 +63,54 @@ namespace
         "Foundables fixed query storage must match the generated Client SDK query size");
     static_assert(kMassQueryAlignment == alignof(SDK::FMassEntityQuery),
         "Foundables fixed query storage must match the generated Client SDK query alignment");
+    static_assert(sizeof(void*) == 0x08);
+    static_assert(sizeof(decltype(SDK::FCrItemsStorageContainer::Items)) == 0x10);
+    static_assert(alignof(decltype(SDK::FCrItemsStorageContainer::Items)) == 0x08);
+    static_assert(sizeof(SDK::FCrInventoryFragment) == 0x250);
+    static_assert(alignof(SDK::FCrInventoryFragment) == 0x08);
+    static_assert(offsetof(SDK::FCrInventoryFragment, InputInventoryContainer) == 0x00);
+    static_assert(sizeof(decltype(SDK::FCrInventoryFragment::InputInventoryContainer)) == 0x120);
+    static_assert(offsetof(SDK::FCrInventoryFragment, MainInventoryContainer) == 0x120);
+    static_assert(sizeof(decltype(SDK::FCrInventoryFragment::MainInventoryContainer)) == 0x120);
+    static_assert(sizeof(SDK::FCrItemsStorageContainer) == 0x120);
+    static_assert(alignof(SDK::FCrItemsStorageContainer) == 0x08);
+    static_assert(offsetof(SDK::FCrItemsStorageContainer, Items) == 0x108);
+    static_assert(sizeof(SDK::FCrStorageItem) == 0x68);
+    static_assert(alignof(SDK::FCrStorageItem) == 0x08);
+    static_assert(offsetof(SDK::FCrStorageItem, Item) == 0x10);
+    static_assert(sizeof(decltype(SDK::FCrStorageItem::Item)) == 0x30);
+    static_assert(sizeof(SDK::FAuSimpleItem) == 0x30);
+    static_assert(alignof(SDK::FAuSimpleItem) == 0x08);
+    static_assert(offsetof(SDK::FAuSimpleItem, ItemId) == 0x0C);
+    static_assert(sizeof(decltype(SDK::FAuSimpleItem::ItemId)) == 0x10);
+    static_assert(offsetof(SDK::FAuSimpleItem, ItemDataBase) == 0x20);
+    static_assert(sizeof(decltype(SDK::FAuSimpleItem::ItemDataBase)) == sizeof(void*));
+    static_assert(std::is_same_v<decltype(SDK::FAuSimpleItem::ItemDataBase), SDK::UAuItemDataBase*>);
+    static_assert(offsetof(SDK::FAuSimpleItem, Count) == 0x28);
+    static_assert(sizeof(decltype(SDK::FAuSimpleItem::Count)) == 0x04);
+    static_assert(std::is_same_v<decltype(SDK::FAuSimpleItem::Count), int32_t>);
+    static_assert(sizeof(SDK::FAuItemId) == 0x10);
+    static_assert(alignof(SDK::FAuItemId) == 0x04);
+    static_assert(offsetof(SDK::FAuItemId, Handle) == 0x00);
+    static_assert(sizeof(decltype(SDK::FAuItemId::Handle)) == 0x10);
+    static_assert(std::is_same_v<decltype(SDK::FAuItemId::Handle), SDK::FGuid>);
+    static_assert(sizeof(SDK::FGuid) == 0x10);
+    static_assert(alignof(SDK::FGuid) == 0x04);
+    static_assert(offsetof(SDK::UAuItemDataBase, UIItemType) == 0x329);
+    static_assert(sizeof(decltype(SDK::UAuItemDataBase::UIItemType)) == 0x01);
+    static_assert(std::is_same_v<decltype(SDK::UAuItemDataBase::UIItemType), SDK::EUIItemType>);
+    static_assert(sizeof(SDK::FCrMassFoundableParameters) == 0x0C);
+    static_assert(alignof(SDK::FCrMassFoundableParameters) == 0x04);
+    static_assert(offsetof(SDK::FCrMassFoundableParameters, FoundableType) == 0x00);
+    static_assert(sizeof(decltype(SDK::FCrMassFoundableParameters::FoundableType)) == 0x01);
+    static_assert(std::is_same_v<decltype(SDK::FCrMassFoundableParameters::FoundableType), SDK::ECrFoundableType>);
+    static_assert(std::is_same_v<std::underlying_type_t<SDK::ECrFoundableType>, uint8_t>);
+    static_assert(kUndefinedType == 0x00);
+    static_assert(kDeadBodyType == 0x01);
+    static_assert(kDroneType == 0x02);
+    static_assert(sizeof(std::underlying_type_t<SDK::EUIItemType>) == 0x01);
+    static_assert(std::is_same_v<std::underlying_type_t<SDK::EUIItemType>, uint8_t>);
+    static_assert(static_cast<uint8_t>(SDK::EUIItemType::BlueprintItem) == 0x0B);
 
     struct FoundableRecord
     {

@@ -18,6 +18,9 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "SDK.hpp"
+#include "SDK/AuItems_classes.hpp"
+#include "SDK/AuItems_structs.hpp"
+#include "SDK/Chimera_structs.hpp"
 #include "SDK/MassEntity_structs.hpp"
 #include "plugin_map.h"
 #include "Native/NativeApi.h"
@@ -50,9 +53,57 @@ namespace
     // Bridges the scanner-session field checks to PluginInit without retaining scanner metadata.
     bool g_buildingMassFieldsResolved = false;
 
-    /** Resolves the required Building Map and Alien Actors Mass field layouts during the scanner session. */
+    /** Resolves required Client Mass field layouts during the active scanner session. */
     class ClientBuildingMassFieldContract
     {
+        /** Requires exact reflected offsets and extents for fields read by Foundables. */
+        static bool ResolveFoundablesFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FCrInventoryFragment::InputInventoryContainer", "FCrInventoryFragment",
+                    "InputInventoryContainer", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FCrItemsStorageContainer),
+                    static_cast<int32_t>(offsetof(SDK::FCrInventoryFragment, InputInventoryContainer)) },
+                { "FCrInventoryFragment::MainInventoryContainer", "FCrInventoryFragment",
+                    "MainInventoryContainer", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FCrItemsStorageContainer),
+                    static_cast<int32_t>(offsetof(SDK::FCrInventoryFragment, MainInventoryContainer)) },
+                { "FCrItemsStorageContainer::Items", "FCrItemsStorageContainer", "Items",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FCrItemsStorageContainer::Items)),
+                    static_cast<int32_t>(offsetof(SDK::FCrItemsStorageContainer, Items)) },
+                { "FCrStorageItem::Item", "FCrStorageItem", "Item", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FAuSimpleItem),
+                    static_cast<int32_t>(offsetof(SDK::FCrStorageItem, Item)) },
+                { "FAuSimpleItem::ItemId", "FAuSimpleItem", "ItemId", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FAuItemId),
+                    static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, ItemId)) },
+                { "FAuSimpleItem::ItemDataBase", "FAuSimpleItem", "ItemDataBase", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::UAuItemDataBase*),
+                    static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, ItemDataBase)) },
+                { "FAuSimpleItem::Count", "FAuSimpleItem", "Count", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FAuSimpleItem::Count)),
+                    static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, Count)) },
+                { "FAuItemId::Handle", "FAuItemId", "Handle", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FGuid), static_cast<int32_t>(offsetof(SDK::FAuItemId, Handle)) },
+                { "UAuItemDataBase::UIItemType", "UAuItemDataBase", "UIItemType", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::EUIItemType),
+                    static_cast<int32_t>(offsetof(SDK::UAuItemDataBase, UIItemType)) },
+                { "FCrMassFoundableParameters::FoundableType", "FCrMassFoundableParameters",
+                    "FoundableType", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrMassFoundableParameters::FoundableType)),
+                    static_cast<int32_t>(offsetof(SDK::FCrMassFoundableParameters, FoundableType)) }
+            };
+
+            bool allResolved = true;
+            for (PluginFieldSpec& field : fields)
+            {
+                field.offset = -1;
+                field.resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
+            }
+            return allResolved;
+        }
+
     public:
         /** Requires exact compiled offsets and extents through the active loader scanner session. */
         static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
@@ -100,14 +151,15 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
-            return allResolved;
+            const bool foundablesResolved = ResolveFoundablesFields(scanner, self);
+            return allResolved && foundablesResolved;
         }
     };
 
-    /** Compares resident Client script-struct size and alignment with the fixed Mass SDK layouts. */
+    /** Compares resident Client script-struct size and alignment with the compiled Mass SDK layouts. */
     class ClientBuildingMassTypeContract
     {
-        /** Requires a reflected script struct to match the SDK size and alignment used by V2. */
+        /** Requires a reflected script struct to match the compiled Client SDK size and alignment. */
         static bool CheckType(
             const IPluginSelf* self,
             const char* objectPath,
@@ -160,13 +212,28 @@ namespace
                         "FAuSplineConnectionFragment", sizeof(SDK::FAuSplineConnectionFragment),
                         alignof(SDK::FAuSplineConnectionFragment)) &&
                     CheckType(self, "ScriptStruct Chimera.CrBuildingParameters", "FCrBuildingParameters",
-                        sizeof(SDK::FCrBuildingParameters), alignof(SDK::FCrBuildingParameters));
+                        sizeof(SDK::FCrBuildingParameters), alignof(SDK::FCrBuildingParameters)) &&
+                    CheckType(self, "ScriptStruct Chimera.CrInventoryFragment", "FCrInventoryFragment",
+                        sizeof(SDK::FCrInventoryFragment), alignof(SDK::FCrInventoryFragment)) &&
+                    CheckType(self, "ScriptStruct Chimera.CrItemsStorageContainer", "FCrItemsStorageContainer",
+                        sizeof(SDK::FCrItemsStorageContainer), alignof(SDK::FCrItemsStorageContainer)) &&
+                    CheckType(self, "ScriptStruct Chimera.CrStorageItem", "FCrStorageItem",
+                        sizeof(SDK::FCrStorageItem), alignof(SDK::FCrStorageItem)) &&
+                    CheckType(self, "ScriptStruct AuItems.AuSimpleItem", "FAuSimpleItem",
+                        sizeof(SDK::FAuSimpleItem), alignof(SDK::FAuSimpleItem)) &&
+                    CheckType(self, "ScriptStruct AuItems.AuItemId", "FAuItemId",
+                        sizeof(SDK::FAuItemId), alignof(SDK::FAuItemId)) &&
+                    CheckType(self, "ScriptStruct CoreUObject.Guid", "FGuid",
+                        sizeof(SDK::FGuid), alignof(SDK::FGuid)) &&
+                    CheckType(self, "ScriptStruct Chimera.CrMassFoundableParameters",
+                        "FCrMassFoundableParameters", sizeof(SDK::FCrMassFoundableParameters),
+                        alignof(SDK::FCrMassFoundableParameters));
             }
             catch (...)
             {
                 if (self && self->logger && self->logger->Error)
                     self->logger->Error(self,
-                        "MiniMap: Client admission refused: Mass fragment metadata lookup failed");
+                        "MiniMap: Client admission refused: required Mass type metadata lookup failed");
                 return false;
             }
         }
