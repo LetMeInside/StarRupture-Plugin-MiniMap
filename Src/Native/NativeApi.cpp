@@ -181,7 +181,6 @@ namespace MiniMapNative
         if (!addresses.readbackUnlock) return false;
         if (!addresses.readbackMarkForDelete) return false;
         if (!addresses.readbackMalloc) return false;
-        if (!addresses.readbackFree) return false;
         if (!addresses.readbackPipe) return false;
         if (!addresses.readbackGpuCount) return false;
         if (!addresses.spawnObject) return false;
@@ -411,7 +410,7 @@ namespace MiniMapNative
 
         g_nativeApi.texture.memoryFree =
             reinterpret_cast<TextureApi::MemoryFreeFn>(
-                addresses.readbackFree);
+                addresses.memoryFree);
 
         g_nativeApi.asset.objectArray = reinterpret_cast<const void*>(addresses.objectArray);
         g_nativeApi.asset.fromValidEName = reinterpret_cast<decltype(g_nativeApi.asset.fromValidEName)>(addresses.readbackFromValidEName);
