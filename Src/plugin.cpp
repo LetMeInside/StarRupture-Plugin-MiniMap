@@ -805,7 +805,14 @@ static void OnTextureServiceTick(
 static bool StopBuildingMapGameplaySession()
 {
     MiniMapUI::EndBuildingLayerSession();
-    return g_buildingMapService == nullptr || g_buildingMapService->StopGameSession();
+    const bool serviceStopComplete =
+        g_buildingMapService == nullptr || g_buildingMapService->StopGameSession();
+    if (g_buildingSpriteRenderer != nullptr)
+    {
+        g_buildingSpriteRenderer->ProcessLifecycle();
+    }
+    return serviceStopComplete &&
+        (g_buildingSpriteRenderer == nullptr || g_buildingSpriteRenderer->IsStopComplete());
 }
 
 static void OnWorldBeginPlay(SDK::UWorld* world)
@@ -1311,7 +1318,7 @@ namespace MiniMap
 #ifdef MODLOADER_CLIENT_BUILD
 
         bool minimapCallbacksQuiescent = true;
-        bool buildingMapTextureRetirementComplete = false;
+        bool buildingMapStopComplete = false;
         g_worldEnding=true;
         SetServicesAdmitted(false);
         MiniMapMassLifecycle::MassLifecycle::Shutdown();
@@ -1319,7 +1326,7 @@ namespace MiniMap
         minimapCallbacksQuiescent = MiniMapUI::Shutdown();
         if (minimapCallbacksQuiescent)
         {
-            buildingMapTextureRetirementComplete = StopBuildingMapGameplaySession();
+            buildingMapStopComplete = StopBuildingMapGameplaySession();
         }
         else
         {
@@ -1367,10 +1374,10 @@ namespace MiniMap
         const bool buildingLayerShutdownComplete = minimapCallbacksQuiescent &&
             MiniMapUI::EndBuildingLayerSession();
         if (buildingLayerShutdownComplete && minimapCallbacksQuiescent &&
-            buildingMapTextureRetirementComplete)
+            buildingMapStopComplete)
             g_buildingMapService.reset();
         else
-            LOG_ERROR("MiniMap: retaining the Building Map service while overlay callbacks or GPU texture receipts remain active");
+            LOG_ERROR("MiniMap: retaining the Building Map service while callbacks, capture teardown, or GPU texture receipts remain active");
         g_buildingSpriteRenderer = nullptr;
 
         // NativeApi should be the last subsystem torn down.

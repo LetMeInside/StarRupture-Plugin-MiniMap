@@ -46,7 +46,7 @@ namespace Services::Map::Buildings::Capture
 	 * Queue-driven advancement admits one moved request and reports terminal feedback through
 	 * the independent FIFOs. The renderer never observes scheduler status or disk/cache ownership.
 	 * All methods that touch UObject or NativeApi state require the game thread. Gameplay-session stop
-	 * retires only active request resources; the shared world and lighting remain renderer-owned.
+	 * retires active request resources and the session-bound private world while preserving this renderer.
 	 * Submitted scene work remains owned until readback or an ordered retirement fence proves safety.
 	 */
 	class BuildingSpriteRenderer final
@@ -127,6 +127,8 @@ namespace Services::Map::Buildings::Capture
 		void RequestExit() noexcept;
 		/** Processes the requested lifecycle command on the Unreal game thread. */
 		void ProcessLifecycle();
+		/** Reports completed cleanup and requires the same game thread as lifecycle advancement. */
+		bool IsStopComplete() const noexcept;
 
 		/** Capturer lifecycle command requested by its plugin/service owner. */
 		enum class CapturerLifecycleState : std::uint8_t
@@ -288,6 +290,8 @@ namespace Services::Map::Buildings::Capture
 		bool CleanupPersistentWorld();
 		/** Releases retained light roots and cleans the private-world root in dependency order. */
 		bool ReleasePersistentWorldRoots();
+		/** Releases each light root after component destruction has completed. */
+		bool ReleaseDirectionalLightRoots();
 		/** Releases terminal request state after its feedback value enters the FIFO. */
 		void AcknowledgeCompletion(CaptureRequest::Correlation correlation);
 		/** Continues or cancels HDR work after BM-07 proves scene/readback retirement. */
@@ -375,6 +379,10 @@ namespace Services::Map::Buildings::Capture
 		void AdvanceStopLifecycle();
 		/** Retires request ownership and releases persistent native objects for Exit. */
 		void AdvanceExitLifecycle();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Reports bounded lifecycle state without dereferencing retained UObject pointers. */
+		void ReportLifecycleDiagnostic(const char* event) const noexcept;
+#endif
 
 		CaptureRequest activeRequest_;
 		CaptureResult::Completion completion_;

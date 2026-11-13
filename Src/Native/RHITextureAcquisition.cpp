@@ -1,4 +1,4 @@
-// Resolves a retained Unreal render target to an owning FTexture RHI reference.
+// Passes the game-thread-managed target resource to render-thread RHI acquisition.
 #if defined(MODLOADER_CLIENT_BUILD)
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
@@ -43,19 +43,29 @@
 #include "RHITextureAcquisition.h"
 #include "RenderResource.h"
 
-// Resolves the resource in the rendering callback and retains its RHI texture
-// before later asynchronous GPU work can depend on it.
-bool MiniMapBuildingMapNative::RHITextureAcquisition::Acquire(
-    SDK::UTextureRenderTarget2D* renderTarget,
-    FTextureRHIRef& ownedTexture)
+// Returns the borrowed target resource pointer without dereferencing it.
+// The renderer must retain and avoid reinitializing the target until the render callback acquires its RHI reference.
+void* MiniMapBuildingMapNative::RHITextureAcquisition::GetRenderTargetResourceOnGameThread(
+    SDK::UTextureRenderTarget2D* renderTarget)
 {
     const auto* api = MiniMapNative::Get();
-    if (!renderTarget || !api || !api->texture.getRenderTargetResource)
+    if (!renderTarget || !api || !api->player.isGameThread || !api->player.isGameThread() ||
+        !api->texture.getRenderTargetResource)
     {
-        return false;
+        return nullptr;
     }
 
-    void* renderTargetResource = api->texture.getRenderTargetResource(renderTarget);
+    return api->texture.getRenderTargetResource(renderTarget);
+}
+
+// Copies the resource's RHI reference into ownedTexture from the render-command callback.
+// @param renderTargetResource Borrowed resource returned by the game-thread getter.
+// @param ownedTexture Receives an independently retained RHI reference.
+// @return True when a non-null texture reference is acquired.
+bool MiniMapBuildingMapNative::RHITextureAcquisition::Acquire(
+    void* renderTargetResource,
+    FTextureRHIRef& ownedTexture)
+{
     if (!renderTargetResource)
     {
         return false;

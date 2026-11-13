@@ -52,7 +52,9 @@
 
 namespace Services::Map::Buildings::Capture
 {
-	/** Stores render-thread-only readback state and release-published packed pixels. */
+	/** Owns callback readback state while borrowing the target resource until RHI acquisition.
+	 * The renderer keeps the target rooted and unreinitialized through callback retirement.
+	 */
 	struct BuildingSpriteReadback::State final
 	{
 		std::atomic<Status> Current{Status::Pending};
@@ -60,7 +62,7 @@ namespace Services::Map::Buildings::Capture
 		std::atomic<bool> CopySubmitted{false};
 		std::atomic<bool> CallbackRetired{true};
 		std::atomic<bool> ResourcesRetired{false};
-		SDK::UTextureRenderTarget2D* RenderTarget = nullptr;
+		void* RenderTargetResource = nullptr;
 		FTextureRHIRef Texture;
 		FRHIGPUTextureReadback* Readback = nullptr;
 		std::vector<std::uint16_t> PackedPixels;
@@ -88,17 +90,23 @@ namespace Services::Map::Buildings::Capture
 		return GNumExplicitGPUsForRendering == gpuCount;
 	}
 
-	/** Starts a readback while the renderer continues retaining its render target. */
+	/** Gets the borrowed resource on the game thread while the renderer retains the target. */
 	bool BuildingSpriteReadback::Start(SDK::UTextureRenderTarget2D* renderTarget)
 	{
-		if (state_ || !renderTarget || !InitializeNativeCapture())
+		if (state_ || !renderTarget)
+		{
+			return false;
+		}
+		void* renderTargetResource =
+			MiniMapBuildingMapNative::RHITextureAcquisition::GetRenderTargetResourceOnGameThread(renderTarget);
+		if (!renderTargetResource || !InitializeNativeCapture())
 		{
 			return false;
 		}
 		try
 		{
 			state_ = std::make_shared<State>();
-			state_->RenderTarget = renderTarget;
+			state_->RenderTargetResource = renderTargetResource;
 			state_->PackedPixels.reserve(256u * 256u * 4u);
 		}
 		catch (...)
@@ -130,11 +138,11 @@ namespace Services::Map::Buildings::Capture
 		if (!nativeApi || !nativeApi->texture.submitRenderCommand || !nativeApi->texture.readbackConstruct ||
 			!nativeApi->texture.readbackDestroy || !nativeApi->texture.readbackCopy ||
 			!nativeApi->texture.readbackLock || !nativeApi->texture.readbackUnlock ||
-			!nativeApi->texture.transitionResources || !nativeApi->texture.getRenderTargetResource ||
+			!nativeApi->texture.transitionResources ||
 			!nativeApi->asset.memoryMalloc ||
 			!nativeApi->texture.memoryFree)
 		{
-			state_->RenderTarget = nullptr;
+			state_->RenderTargetResource = nullptr;
 			state_->CommandOutstanding.store(false, std::memory_order_release);
 			state_->CallbackRetired.store(true, std::memory_order_release);
 			state_->ResourcesRetired.store(true, std::memory_order_release);
@@ -200,22 +208,22 @@ namespace Services::Map::Buildings::Capture
 		RetireCallback(state);
 	}
 
-	/** Acquires a retained typed RHI reference and issues a fenced copy on the render thread. */
+	/** Acquires the handed-off resource's typed RHI reference and issues its fenced copy. */
 	void BuildingSpriteReadback::SubmitTextureCopy(
 		const std::shared_ptr<State>& state,
 		FRHICommandListImmediate& commandList)
 	{
 		const auto* nativeApi = MiniMapNative::Get();
 		if (!MiniMapBuildingMapNative::RHITextureAcquisition::Acquire(
-			state->RenderTarget, state->Texture))
+			state->RenderTargetResource, state->Texture))
 		{
-			state->RenderTarget = nullptr;
+			state->RenderTargetResource = nullptr;
 			RetireReadbackObjects(state);
 			state->ResourcesRetired.store(true, std::memory_order_release);
 			state->Current.store(Status::Failed, std::memory_order_release);
 			return;
 		}
-		state->RenderTarget = nullptr;
+		state->RenderTargetResource = nullptr;
 		FRHITexture* texture = state->Texture.GetReference();
 		if (!IsCaptureTextureValid(texture))
 		{

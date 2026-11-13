@@ -1,7 +1,7 @@
 #pragma once
 
-// Native Unreal RHI boundary for resolving a render-target UObject to an
-// independently owned FTexture RHI reference using the verified FTexture ABI.
+// Native Unreal RHI boundary for passing a render-target resource from the
+// game thread to render-thread acquisition of an independently owned RHI ref.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "RHIResources.h"
 
@@ -12,16 +12,23 @@ namespace SDK
 
 namespace MiniMapBuildingMapNative
 {
-    // Performs the verified render-target resource conversion without exposing
-    // Unreal layout assumptions to Building Map code.
+    // Separates game-thread resource lookup from render-thread RHI acquisition
+    // without exposing Unreal layout assumptions to Building Map code.
     class RHITextureAcquisition final
     {
     public:
-        // Resolves the resource on the rendering thread and copies its borrowed
+        // Gets the game-thread-managed resource pointer without dereferencing it.
+        // The caller must keep the render target rooted and unreinitialized until
+        // the render thread has acquired its RHI reference.
+        // Returns null when the target, API, or game-thread contract is unavailable.
+        static void* GetRenderTargetResourceOnGameThread(
+            SDK::UTextureRenderTarget2D* renderTarget);
+
+        // Dereferences the borrowed resource on the render thread and copies its
         // FTexture RHI reference into ownedTexture.
         // Returns false if the resource or RHI texture is unavailable.
         static bool Acquire(
-            SDK::UTextureRenderTarget2D* renderTarget,
+            void* renderTargetResource,
             FTextureRHIRef& ownedTexture);
 
     private:

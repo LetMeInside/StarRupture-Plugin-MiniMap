@@ -9,6 +9,7 @@
 #include "CaptureFeedback.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
+#include "Services/Log.h"
 
 #include <Engine_classes.hpp>
 #include <Engine_parameters.hpp>
@@ -275,6 +276,31 @@ namespace Services::Map::Buildings::Capture
 		diagnosticsIntervalStart_ = std::chrono::steady_clock::now();
 	}
 
+	/** Reports lifecycle progress using scalar state only; it never inspects a UObject. */
+	void BuildingSpriteRenderer::ReportLifecycleDiagnostic(const char* event) const noexcept
+	{
+		auto* logger = MiniMap::Services::TryLog();
+		if (!logger)
+		{
+			return;
+		}
+		MiniMap::Services::Logf(
+			*logger,
+			MiniMap::Services::Level::Info,
+			"MiniMap: capture_lifecycle event=%s state=%u substate=%u activeRequest=%u phase=%u readbackStarted=%u readbackRetired={hdr:%u final:%u} sceneSubmitted=%u fence=%u world=%u",
+			event,
+			static_cast<unsigned int>(capturerState_.load()),
+			static_cast<unsigned int>(capturerSubState_),
+			hasActiveRequest_ ? 1u : 0u,
+			static_cast<unsigned int>(phase_),
+			readbackStarted_ ? 1u : 0u,
+			hdrReadback_.IsRetired() ? 1u : 0u,
+			finalReadback_.IsRetired() ? 1u : 0u,
+			sceneWorkSubmitted_ ? 1u : 0u,
+			static_cast<unsigned int>(fencePurpose_),
+			privateWorld_ != nullptr ? 1u : 0u);
+	}
+
 	/** Detects numeric work without retaining request or native-object history. */
 	bool BuildingSpriteRenderer::HasDiagnosticsActivity() const noexcept
 	{
@@ -386,6 +412,15 @@ namespace Services::Map::Buildings::Capture
 		AdvanceLifecycleState(capturerState_.load());
 	}
 
+	/** Reports whether the lifecycle state indicates completed Stop cleanup. */
+	bool BuildingSpriteRenderer::IsStopComplete() const noexcept
+	{
+		const CapturerLifecycleState requestedState = capturerState_.load();
+		return requestedState == CapturerLifecycleState::Init &&
+			capturerSubState_ != CapturerSubState::StopReleasing &&
+			capturerSubState_ != CapturerSubState::ExitCleanup;
+	}
+
 	/** Keeps request admission closed until the active request has safely retired. */
 	void BuildingSpriteRenderer::AdvanceLifecycleState(CapturerLifecycleState requestedState)
 	{
@@ -415,6 +450,7 @@ namespace Services::Map::Buildings::Capture
 	/** Activates the persistent renderer after its one-time initialization state. */
 	void BuildingSpriteRenderer::AdvanceStartLifecycle()
 	{
+		const bool restartingAfterStop = capturerSubState_ == CapturerSubState::StopCompleted;
 		if (capturerSubState_ == CapturerSubState::None)
 		{
 			capturerSubState_ = CapturerSubState::InitCompleted;
@@ -424,23 +460,53 @@ namespace Services::Map::Buildings::Capture
 		{
 			capturerSubState_ = CapturerSubState::Active;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (restartingAfterStop)
+			{
+				ReportLifecycleDiagnostic("restart_initiated");
+			}
+#endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			ResetDiagnosticsInterval();
 #endif
 		}
 	}
 
-	/** Retires session request ownership and acknowledges completed Stop. */
+	/** Retires request work and the private world before acknowledging restartable Stop. */
 	void BuildingSpriteRenderer::AdvanceStopLifecycle()
 	{
-		if (capturerSubState_ != CapturerSubState::StopReleasing)
+		const bool firstStopAdvance = capturerSubState_ != CapturerSubState::StopReleasing;
+		if (firstStopAdvance)
 		{
 			capturerSubState_ = CapturerSubState::StopReleasing;
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ReportLifecycleDiagnostic("stop_requested");
+		#endif
 			if (hasActiveRequest_)
 			{
 				Cancel(activeRequest_.RequestIdentity);
 			}
 		}
 		AdvanceLifecycleRetirement();
+		if (hasActiveRequest_)
+		{
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (firstStopAdvance)
+			{
+				ReportLifecycleDiagnostic("stop_deferred");
+			}
+		#endif
+			return;
+		}
+		if (!CleanupPersistentWorld())
+		{
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (firstStopAdvance)
+			{
+				ReportLifecycleDiagnostic("stop_deferred");
+			}
+		#endif
+			return;
+		}
 		if (!hasActiveRequest_)
 		{
 			capturerSubState_ = CapturerSubState::StopCompleted;
@@ -473,7 +539,8 @@ namespace Services::Map::Buildings::Capture
 		CaptureResult::Acceptance acceptance;
 		acceptance.Correlation = request.RequestIdentity;
 		if (capturerState_.load() != CapturerLifecycleState::Start ||
-			capturerSubState_ != CapturerSubState::Active || hasActiveRequest_ || !sharedWorldUsable_)
+			capturerSubState_ != CapturerSubState::Active || hasActiveRequest_ ||
+			!sharedWorldUsable_)
 		{
 			acceptance.Result = CaptureResult::Acceptance::Status::RejectedUnavailable;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -587,7 +654,8 @@ namespace Services::Map::Buildings::Capture
 	bool BuildingSpriteRenderer::CanAdmitQueuedRequest() const
 	{
 		return !hasActiveRequest_ && phase_ == Phase::Idle &&
-			sharedWorldUsable_ && !sceneWorkSubmitted_ && !readbackStarted_ &&
+			sharedWorldUsable_ &&
+			!sceneWorkSubmitted_ && !readbackStarted_ &&
 			fencePurpose_ == FencePurpose::None && hdrReadback_.IsRetired() && finalReadback_.IsRetired() &&
 			!actorClass_ && !subjectActor_ && !captureComponent_ && !renderTarget_;
 	}
@@ -900,26 +968,75 @@ namespace Services::Map::Buildings::Capture
 	/** Resolves and roots the generated class represented by the copied object path. */
 	bool BuildingSpriteRenderer::ResolveAndRetainActorClass(std::string_view objectPath)
 	{
+		const auto reportFailure = [objectPath](const char* reason, bool includePath)
+		{
+			auto* logger = MiniMap::Services::TryLog();
+			if (!logger)
+			{
+				return;
+			}
+			if (!includePath)
+			{
+				MiniMap::Services::Logf(*logger, MiniMap::Services::Level::Warn,
+					"MiniMap: capture subject unavailable reason=%s", reason);
+				return;
+			}
+			const std::size_t pathLength = (std::min)(objectPath.size(), std::size_t(240));
+			MiniMap::Services::Logf(*logger, MiniMap::Services::Level::Warn,
+				"MiniMap: capture subject unavailable reason=%s classPath='%.*s'%s",
+				reason, static_cast<int>(pathLength), objectPath.data(),
+				objectPath.size() > pathLength ? "..." : "");
+		};
+
 		std::wstring widePath;
 		if (!ConvertObjectPath(objectPath, widePath))
 		{
+			reportFailure("InvalidClassPath", false);
 			return false;
 		}
-		actorClass_ = FindResidentClass(widePath);
+		if (!IsGameThread())
+		{
+			reportFailure("WrongThread", true);
+			return false;
+		}
+		std::uintptr_t blueprintGeneratedClassMetaObject = 0;
+		constexpr wchar_t blueprintGeneratedClassMetaPath[] = L"/Script/Engine.BlueprintGeneratedClass";
+		if (!MiniMapResidentMetadata::FindResident(
+			nullptr, blueprintGeneratedClassMetaPath, false, blueprintGeneratedClassMetaObject))
+		{
+			reportFailure("BlueprintGeneratedClassMetaUnavailable", true);
+			return false;
+		}
+		std::uintptr_t foundClass = 0;
+		if (!MiniMapResidentMetadata::FindResident(
+			reinterpret_cast<SDK::UClass*>(blueprintGeneratedClassMetaObject),
+			widePath.c_str(), true, foundClass))
+		{
+			reportFailure("GeneratedClassLookupMiss", true);
+			return false;
+		}
+		actorClass_ = reinterpret_cast<SDK::UClass*>(foundClass);
 		if (!actorClass_)
 		{
+			reportFailure("GeneratedClassLookupMiss", true);
 			return false;
 		}
 		const auto* nativeApi = MiniMapNative::Get();
 		if (!nativeApi || !nativeApi->asset.retainObject)
 		{
 			actorClass_ = nullptr;
+			reportFailure("NativeRetainUnavailable", true);
 			return false;
 		}
 		nativeApi->asset.retainObject(actorClass_);
 		SDK::UClass* actorBaseClass = FindResidentClass(L"/Script/Engine.Actor");
-		return actorBaseClass && SDK::UKismetMathLibrary::ClassIsChildOf(
-			SDK::TSubclassOf<SDK::UObject>(actorClass_), SDK::TSubclassOf<SDK::UObject>(actorBaseClass));
+		if (!actorBaseClass || !SDK::UKismetMathLibrary::ClassIsChildOf(
+			SDK::TSubclassOf<SDK::UObject>(actorClass_), SDK::TSubclassOf<SDK::UObject>(actorBaseClass)))
+		{
+			reportFailure("ClassNotActorDerived", true);
+			return false;
+		}
+		return true;
 	}
 
 	/** Lazily creates, initializes, and retains the shared private world through NativeApi. */
@@ -944,6 +1061,7 @@ namespace Services::Map::Buildings::Capture
 		}
 		privateWorld_ = reinterpret_cast<SDK::UWorld*>(world);
 		privateWorldCleaned_ = false;
+		exitCleanupFenceComplete_ = false;
 		nativeApi->asset.retainObject(privateWorld_);
 		nativeApi->world.initWorld(world, initializationValues);
 		nativeApi->world.updateWorldComponents(world, false, false, nullptr);
@@ -978,14 +1096,42 @@ namespace Services::Map::Buildings::Capture
 			return true;
 		}
 		lightingRigReady_ = true;
+		sharedWorldUsable_ = true;
 		return true;
 	}
 
 	/** Creates the requested actor through deferred spawn, finishes construction, and records bounds. */
 	bool BuildingSpriteRenderer::SpawnSubjectAndAcquireBounds()
 	{
-		if (!privateWorld_ || !actorClass_ || !IsGameThread())
+		const auto reportFailure = [this](const char* reason)
 		{
+			auto* logger = MiniMap::Services::TryLog();
+			if (!logger)
+			{
+				return;
+			}
+			const std::string_view objectPath = activeRequest_.SpriteRequirement.Bytes();
+			const std::size_t pathLength = (std::min)(objectPath.size(), std::size_t(240));
+			const char* pathText = objectPath.empty() ? "" : objectPath.data();
+			MiniMap::Services::Logf(*logger, MiniMap::Services::Level::Warn,
+				"MiniMap: capture subject unavailable reason=%s classPath='%.*s'%s",
+				reason, static_cast<int>(pathLength), pathText,
+				objectPath.size() > pathLength ? "..." : "");
+		};
+
+		if (!privateWorld_)
+		{
+			reportFailure("PrivateWorldUnavailable");
+			return false;
+		}
+		if (!actorClass_)
+		{
+			reportFailure("ClassNotActorDerived");
+			return false;
+		}
+		if (!IsGameThread())
+		{
+			reportFailure("WrongThread");
 			return false;
 		}
 		SDK::FTransform transform{};
@@ -997,18 +1143,21 @@ namespace Services::Map::Buildings::Capture
 			SDK::ESpawnActorScaleMethod::MultiplyWithRoot);
 		if (!deferredActor)
 		{
+			reportFailure("DeferredSpawnFailed");
 			return false;
 		}
 		subjectActor_ = deferredActor;
 		const auto* nativeApi = MiniMapNative::Get();
 		if (!nativeApi || !nativeApi->asset.retainObject)
 		{
+			reportFailure("NativeRetainUnavailable");
 			return false;
 		}
 		nativeApi->asset.retainObject(subjectActor_);
 		if (SDK::UGameplayStatics::FinishSpawningActor(
 			subjectActor_, transform, SDK::ESpawnActorScaleMethod::MultiplyWithRoot) != subjectActor_)
 		{
+			reportFailure("FinishSpawnFailed");
 			return false;
 		}
 		return AcquireSubjectBounds();
@@ -1305,6 +1454,8 @@ namespace Services::Map::Buildings::Capture
 		SDK::UClass* lightClass = FindResidentClass(L"/Script/Engine.DirectionalLightComponent");
 		SDK::UObject* object = CreateRetainedObject(lightClass, reinterpret_cast<SDK::UObject*>(privateWorld_));
 		directionalLights_[lightIndex] = reinterpret_cast<SDK::UDirectionalLightComponent*>(object);
+		directionalLightRegistered_[lightIndex] = false;
+		directionalLightDestroyed_[lightIndex] = false;
 		if (!object || !ConfigureDirectionalLight(lightIndex))
 		{
 			return false;
@@ -1378,13 +1529,9 @@ namespace Services::Map::Buildings::Capture
 	/** Releases retained light roots and cleans the private-world root in dependency order. */
 	bool BuildingSpriteRenderer::ReleasePersistentWorldRoots()
 	{
-		for (std::size_t lightIndex = 0; lightIndex < directionalLights_.size(); ++lightIndex)
+		if (!ReleaseDirectionalLightRoots())
 		{
-			if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(directionalLights_[lightIndex])))
-			{
-				return false;
-			}
-			directionalLights_[lightIndex] = nullptr;
+			return false;
 		}
 		if (privateWorld_ && !privateWorldCleaned_)
 		{
@@ -1395,6 +1542,9 @@ namespace Services::Map::Buildings::Capture
 			}
 			nativeApi->world.cleanupWorld(reinterpret_cast<std::uintptr_t>(privateWorld_), true, true, 0);
 			privateWorldCleaned_ = true;
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ReportLifecycleDiagnostic("world_cleanup_completed");
+		#endif
 		}
 		if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(privateWorld_)))
 		{
@@ -1404,7 +1554,21 @@ namespace Services::Map::Buildings::Capture
 		privateWorldInitialized_ = false;
 		lightingRigSetupStarted_ = false;
 		lightingRigReady_ = false;
-		sharedWorldUsable_ = false;
+		sharedWorldUsable_ = true;
+		return true;
+	}
+
+	/** Releases each light root after component destruction has completed. */
+	bool BuildingSpriteRenderer::ReleaseDirectionalLightRoots()
+	{
+		for (std::size_t lightIndex = 0; lightIndex < directionalLights_.size(); ++lightIndex)
+		{
+			if (!ReleaseObject(reinterpret_cast<SDK::UObject*>(directionalLights_[lightIndex])))
+			{
+				return false;
+			}
+			directionalLights_[lightIndex] = nullptr;
+		}
 		return true;
 	}
 

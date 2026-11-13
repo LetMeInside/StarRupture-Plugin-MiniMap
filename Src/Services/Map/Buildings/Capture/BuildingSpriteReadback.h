@@ -34,8 +34,8 @@ namespace Services::Map::Buildings::Capture
 			Failed
 		};
 
-		/** Starts an asynchronous copy from a renderer-rooted render-target UObject.
-		 * @param renderTarget UObject retained by the renderer through readback retirement.
+		/** Gets the game-thread resource handoff while the renderer retains the target.
+		 * @param renderTarget UObject retained and not reinitialized until readback retirement.
 		 * @return True when a request is initialized for later nonblocking advancement.
 		 */
 		bool Start(SDK::UTextureRenderTarget2D* renderTarget);
