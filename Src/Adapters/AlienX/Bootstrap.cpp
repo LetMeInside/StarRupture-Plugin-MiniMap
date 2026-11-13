@@ -15,6 +15,8 @@
 #include <optional>
 
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "SDK.hpp"
+#include "plugin_map.h"
 #include "Native/NativeApi.h"
 #endif
 
@@ -183,6 +185,16 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
 
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 {
+#if defined(MODLOADER_CLIENT_BUILD)
+    if (!PluginSdkRuntime::Init(self ? self->hooks : nullptr))
+    {
+        MiniMapNative::Shutdown();
+        if (self && self->logger && self->logger->Log)
+            self->logger->Log(PluginLogLevel::Error, self,
+                "MiniMap: SDK runtime initialization failed; loader game globals are unavailable");
+        return false;
+    }
+#endif
     if (g_binding) return false; // Never replace an active composition/identity.
     g_baseline = {};
     g_self = self;
