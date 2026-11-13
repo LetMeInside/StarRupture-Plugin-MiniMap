@@ -5,6 +5,7 @@
 #include <array>
 #include <cstring>
 #include <optional>
+#include <string_view>
 
 // ---------------------------------------------------------------------------
 // Native pattern resolution.
@@ -2219,25 +2220,29 @@ namespace MiniMapFingerprints
         // only here. No optional second pass or consumer-local scanner exists.
         auto foundation = [&](const char* name, const char* pattern, uintptr_t& out,
             AddressKind kind = AddressKind::FunctionEntry,
-            std::optional<std::uint32_t> followRel32At = std::nullopt)
+            std::optional<std::uint32_t> followRel32At = std::nullopt,
+            const char* versionMapKey = nullptr)
         {
             RequiredScan request{};
             request.name = name;
             request.idaPattern = pattern;
             request.kind = kind;
             request.followRel32At = followRel32At;
+            if (versionMapKey)
+                request.versionMapKey = std::string_view{versionMapKey};
             out = resolveRequired(request);
             return out != 0;
         };
-        // The two sinks have identical instruction shapes. Retain the matched
-        // final call displacement to distinguish Add/Remove viewport work.
-        // These are deliberately version-bound code signatures, never RVAs.
+        // Keep local fallback signatures for both notification functions. The
+        // map's global function entries and these signatures must agree.
         if (!foundation("MiniMap::BuildingComplex::OnCreateBuildingEntity",
             "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 D0 CA 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnCreate)) return false;
+            addresses.buildingOnCreate, AddressKind::FunctionEntry, std::nullopt,
+            "UCrBuildingStabilitySubsystem::OnCreateBuildingEntity")) return false;
         if (!foundation("MiniMap::BuildingComplex::OnDestroyBuildingEntity",
             "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
-            addresses.buildingOnDestroy)) return false;
+            addresses.buildingOnDestroy, AddressKind::FunctionEntry, std::nullopt,
+            "UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity")) return false;
         if (!foundation("MiniMap::BuildingComplex::CreateTransient",
             "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4C 8B AD C0 00 00 00 44 8B E1 41 0F B6 C0 44 8B FA 88 44 24 50 49 8B D9",
             addresses.textureCreateTransient)) return false;

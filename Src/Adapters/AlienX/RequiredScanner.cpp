@@ -25,17 +25,21 @@ namespace MiniMap::Adapters::AlienX
         // call; reject embedded NULs rather than silently scanning a prefix.
         if (scan.name.empty() || scan.idaPattern.empty() ||
             scan.name.find('\0') != std::string_view::npos ||
-            scan.idaPattern.find('\0') != std::string_view::npos)
+            scan.idaPattern.find('\0') != std::string_view::npos ||
+            (scan.versionMapKey && (scan.versionMapKey->empty() ||
+                scan.versionMapKey->find('\0') != std::string_view::npos)))
         {
-            Fail(scan.name, "invalid required scan name or pattern");
-            return {std::nullopt, {Error::InvalidArgument, "invalid required scan name or pattern"}};
+            Fail(scan.name, "invalid required scan name, pattern, or version-map key");
+            return {std::nullopt, {Error::InvalidArgument, "invalid required scan name, pattern, or version-map key"}};
         }
 
-        PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
-        const std::string name(scan.name);
         const std::string pattern(scan.idaPattern);
-        request.hookName = name.c_str();
+        const std::string hookName(scan.versionMapKey.value_or(scan.name));
+        PluginScanRequest request = PLUGIN_SCAN_REQUEST_INIT;
+        request.hookName = hookName.c_str();
         request.pattern = pattern.c_str();
+        if (scan.versionMapKey)
+            request.flags |= PLUGIN_SCAN_FLAG_MAP_KEY;
         switch (scan.kind)
         {
         case AddressKind::FunctionEntry: request.kind = PLUGIN_SCAN_FUNCTION_START; break;
@@ -54,7 +58,7 @@ namespace MiniMap::Adapters::AlienX
                 Fail(scan.name, "required scan rel32 offset exceeds AlienX int32 range");
                 return {std::nullopt, {Error::InvalidArgument, "unrepresentable rel32 offset"}};
             }
-            request.flags = PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+            request.flags |= PLUGIN_SCAN_FLAG_FOLLOW_REL32;
             request.followRel32At = static_cast<std::int32_t>(*scan.followRel32At);
         }
 

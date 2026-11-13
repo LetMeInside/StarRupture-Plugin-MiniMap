@@ -16,6 +16,8 @@ namespace MiniMap::Services
         AddressKind kind;
         std::int32_t resultOffset = 0;
         std::optional<std::uint32_t> followRel32At;
+        // Opts this required function request into the loader's global symbol map.
+        std::optional<std::string_view> versionMapKey;
     };
 
     // Borrowed only during load admission; never retained in Runtime.
