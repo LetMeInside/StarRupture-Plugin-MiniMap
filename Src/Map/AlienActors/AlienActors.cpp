@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -41,8 +42,7 @@ namespace
     constexpr uint32_t kHostileColor = 0xF04040FFu; // ImGui ABGR
     constexpr std::size_t kMaximumRecords = 512;
     constexpr int32_t kMaximumReasonableHandleCount = 1000000;
-    constexpr std::ptrdiff_t kStateOffset = 0x01;
-    constexpr std::ptrdiff_t kTranslationOffset = 0x20;
+    constexpr std::ptrdiff_t kStateOffset = 0x01; // Required native-field check enforces this offset and extent.
     constexpr std::size_t kQuerySize = 0x350;
     constexpr std::size_t kQueryAlignment = 0x10;
 
@@ -50,6 +50,26 @@ namespace
         "AlienActors fixed query storage must match the generated Client SDK query size");
     static_assert(kQueryAlignment == alignof(SDK::FMassEntityQuery),
         "AlienActors fixed query storage must match the generated Client SDK query alignment");
+    static_assert(sizeof(SDK::FMassEnemyStateFragment) == 0x10,
+        "AlienActors state access requires the CL-127004 enemy-state fragment extent");
+    static_assert(alignof(SDK::FMassEnemyStateFragment) == 0x04,
+        "AlienActors state access requires the CL-127004 enemy-state fragment alignment");
+    static_assert(kStateOffset == 0x01,
+        "AlienActors state access must match the validated native State field offset");
+    static_assert(std::is_enum_v<SDK::EMassEnemyInitializationState>);
+    static_assert(std::is_same_v<std::underlying_type_t<SDK::EMassEnemyInitializationState>, uint8_t>);
+    static_assert(sizeof(std::underlying_type_t<SDK::EMassEnemyInitializationState>) == 0x01);
+    static_assert(sizeof(SDK::EMassEnemyInitializationState) == 0x01);
+    static_assert(static_cast<std::underlying_type_t<SDK::EMassEnemyInitializationState>>(
+        SDK::EMassEnemyInitializationState::Active) == 0x04);
+    static_assert(sizeof(SDK::FVector) == 0x18);
+    static_assert(alignof(SDK::FVector) == 0x08);
+    static_assert(offsetof(SDK::FVector, X) == 0x00);
+    static_assert(offsetof(SDK::FVector, Y) == 0x08);
+    static_assert(sizeof(decltype(SDK::FVector::X)) == sizeof(double));
+    static_assert(sizeof(decltype(SDK::FVector::Y)) == sizeof(double));
+    static_assert(std::is_same_v<decltype(SDK::FVector::X), double>);
+    static_assert(std::is_same_v<decltype(SDK::FVector::Y), double>);
 
     struct AlienRecord
     {
@@ -317,7 +337,7 @@ namespace
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             ++measurement.Active;
 #endif
-            const auto* transform = static_cast<const uint8_t*>(
+            const auto* transform = static_cast<const SDK::FTransformFragment*>(
                 native->mass.getFragmentDataPtr(g_manager, id, transformType));
             if (transform == nullptr)
             {
@@ -326,8 +346,8 @@ namespace
             AlienRecord record = {};
             record.WorldGeneration = generation;
             record.Id = id;
-            std::memcpy(&record.WorldX, transform + kTranslationOffset, sizeof(double));
-            std::memcpy(&record.WorldY, transform + kTranslationOffset + sizeof(double), sizeof(double));
+            record.WorldX = transform->Transform.Translation.X;
+            record.WorldY = transform->Transform.Translation.Y;
             const double dx = record.WorldX - pose.WorldX;
             const double dy = record.WorldY - pose.WorldY;
             if (!std::isfinite(record.WorldX) || !std::isfinite(record.WorldY) ||

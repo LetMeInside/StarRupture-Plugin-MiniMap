@@ -50,11 +50,11 @@ namespace
     // Bridges the scanner-session field checks to PluginInit without retaining scanner metadata.
     bool g_buildingMassFieldsResolved = false;
 
-    /** Resolves every reflected field whose compiled offset and extent V2 consumes. */
+    /** Resolves the required Building Map and Alien Actors Mass field layouts during the scanner session. */
     class ClientBuildingMassFieldContract
     {
     public:
-        /** Requires exact compiled offsets and sizes through the active loader scanner session. */
+        /** Requires exact compiled offsets and extents through the active loader scanner session. */
         static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
             static PluginFieldSpec fields[] = {
@@ -73,6 +73,9 @@ namespace
                 { "FTransform::Scale3D", "FTransform", "Scale3D", PLUGIN_FIELD_CHECK,
                     sizeof(decltype(SDK::FTransform::Scale3D)),
                     static_cast<int32_t>(offsetof(SDK::FTransform, Scale3D)) },
+                { "FMassEnemyStateFragment::State", "FMassEnemyStateFragment", "State",
+                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::EMassEnemyInitializationState), 0x01 },
                 { "FAuAPMassFragment::Payload", "FAuAPMassFragment", "Payload", PLUGIN_FIELD_CHECK,
                     sizeof(SDK::FAuAPPayloadDataHandle),
                     static_cast<int32_t>(offsetof(SDK::FAuAPMassFragment, Payload)) },
@@ -101,7 +104,7 @@ namespace
         }
     };
 
-    /** Compares resident Client script-struct size and alignment with the fixed SDK layouts. */
+    /** Compares resident Client script-struct size and alignment with the fixed Mass SDK layouts. */
     class ClientBuildingMassTypeContract
     {
         /** Requires a reflected script struct to match the SDK size and alignment used by V2. */
@@ -133,7 +136,7 @@ namespace
         }
 
     public:
-        /** Requires each V2 fragment and typed subobject to match resident Client metadata. */
+        /** Requires each consumed Mass fragment and typed subobject to match resident Client metadata. */
         static bool IsCompatible(const IPluginSelf* self)
         {
             try
@@ -144,6 +147,10 @@ namespace
                         sizeof(SDK::FTransformFragment), alignof(SDK::FTransformFragment)) &&
                     CheckType(self, "ScriptStruct CoreUObject.Transform", "FTransform",
                         sizeof(SDK::FTransform), alignof(SDK::FTransform)) &&
+                    CheckType(self,
+                        "ScriptStruct MassAIPrototypeEnemyRuntime.MassEnemyStateFragment",
+                        "FMassEnemyStateFragment", sizeof(SDK::FMassEnemyStateFragment),
+                        alignof(SDK::FMassEnemyStateFragment)) &&
                     CheckType(self, "ScriptStruct AuActorPlacement.AuAPMassFragment", "FAuAPMassFragment",
                         sizeof(SDK::FAuAPMassFragment), alignof(SDK::FAuAPMassFragment)) &&
                     CheckType(self, "ScriptStruct AuActorPlacement.AuAPPayloadDataHandle",
@@ -413,7 +420,7 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     {
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
-                "MiniMap: Client admission refused: required Building Map Mass fields were not validated");
+                "MiniMap: Client admission refused: required Mass fields were not validated");
         MiniMapNative::Shutdown();
         return false;
     }
