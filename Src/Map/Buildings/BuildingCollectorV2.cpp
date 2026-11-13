@@ -991,15 +991,15 @@ namespace MiniMap::BuildingAcquisition
             return true;
         }
 
-        /** Obtains existing native shared-pointer storage; never fabricates shared ownership.
-         * StarRupture/UE 5.6.1 ABI: subsystem +0x38 is a 16-byte TSharedPtr, first
-         * word manager, second controller. This is version-specific, not an SDK property.
-         */
+        /** Obtains existing native shared-pointer storage; never fabricates shared ownership. */
         static const std::byte* ManagerStorage(const Native& native, SDK::UWorld* world)
         {
             static_assert(sizeof(void*) == 8);
             auto* subsystem = world ? native.mass.getMassEntitySubsystem(world) : nullptr;
-            return subsystem ? reinterpret_cast<const std::byte*>(subsystem) + 0x38 : nullptr;
+            if (!subsystem || native.mass.entityManagerFieldOffset < 0)
+                return nullptr;
+            return reinterpret_cast<const std::byte*>(subsystem) +
+                native.mass.entityManagerFieldOffset;
         }
 
         /** Borrows only the object word; query construction separately receives the full storage address. */

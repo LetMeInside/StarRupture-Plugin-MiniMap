@@ -55,8 +55,6 @@ namespace
     constexpr uint8_t kDroneType = static_cast<uint8_t>(SDK::ECrFoundableType::Drone);
     constexpr uint8_t kUndefinedType = static_cast<uint8_t>(SDK::ECrFoundableType::Undefined);
 
-    constexpr std::ptrdiff_t kMassSubsystemManagerOffset = 0x38;
-
     constexpr std::size_t kMassQuerySize = 0x350;
     constexpr std::size_t kMassQueryAlignment = 0x10;
 
@@ -410,6 +408,7 @@ namespace
 
         if (world == nullptr ||
             native == nullptr ||
+            native->mass.entityManagerFieldOffset < 0 ||
             native->mass.getMassEntitySubsystem == nullptr ||
             native->mass.queryConstruct == nullptr ||
             native->mass.addInventoryRequirement == nullptr ||
@@ -431,11 +430,13 @@ namespace
 
         const uint8_t* subsystemBytes =
             reinterpret_cast<const uint8_t*>(subsystem);
+        const uint8_t* sharedPtrStorage =
+            subsystemBytes + native->mass.entityManagerFieldOffset;
 
         const void* manager = nullptr;
         std::memcpy(
             &manager,
-            subsystemBytes + kMassSubsystemManagerOffset,
+            sharedPtrStorage,
             sizeof(manager));
 
         if (manager == nullptr)
@@ -459,9 +460,6 @@ namespace
         }
 
         DestroyQuery();
-
-        const void* sharedPtrStorage =
-            subsystemBytes + kMassSubsystemManagerOffset;
 
         g_queryStorage.fill(std::byte{ 0 });
 

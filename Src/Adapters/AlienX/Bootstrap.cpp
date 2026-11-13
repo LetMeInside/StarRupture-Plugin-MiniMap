@@ -211,8 +211,38 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
         }
         MiniMap::Adapters::AlienX::RequiredScanner requiredScanner(*self, *scanner);
         MiniMap::Adapters::AlienX::ResolveNativeDependencies(requiredScanner);
-        if (requiredScanner.HasFailures() && MiniMapNative::IsInitialized())
+        if (requiredScanner.HasFailures())
+        {
             MiniMapNative::Shutdown();
+            return;
+        }
+
+        PluginMap::MassEntityManagerField.offset = -1;
+        PluginMap::MassEntityManagerField.resolvedSize = 0;
+        if (!PluginMap::ResolveMassEntityManager(scanner, self))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+
+        const int32_t managerOffset = PluginMap::MassEntityManagerField.offset;
+        const uint32_t managerSize = PluginMap::MassEntityManagerField.resolvedSize;
+        if (managerOffset != 0x38 || managerSize != 0x10)
+        {
+            requiredScanner.Fail(
+                "MiniMap::MassEntityManagerField",
+                "resolved EntityManager field does not match CL-127004 offset 0x38 and size 0x10");
+            MiniMapNative::Shutdown();
+            return;
+        }
+
+        if (!MiniMapNative::PublishMassEntityManagerField(managerOffset, managerSize))
+        {
+            requiredScanner.Fail(
+                "MiniMap::MassEntityManagerField",
+                "validated EntityManager field could not be published by NativeApi");
+            MiniMapNative::Shutdown();
+        }
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -245,6 +275,14 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     }
     if (!ClientMassQueryStorageContract::IsCompatible(self))
     {
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (MiniMapNative::Get() == nullptr)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: native Mass EntityManager field was not validated");
         MiniMapNative::Shutdown();
         return false;
     }

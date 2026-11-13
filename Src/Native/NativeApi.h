@@ -315,6 +315,8 @@ namespace MiniMapNative
             SDK::UScriptStruct* (__fastcall*)();
 
         GetMassEntitySubsystemFn getMassEntitySubsystem = nullptr;
+        // Published once after Client load-hook field validation; -1 means unavailable.
+        int32_t entityManagerFieldOffset = -1;
         QueryConstructFn queryConstruct = nullptr;
         QueryDestructFn queryDestruct = nullptr;
         ForEachEntityChunkFn forEachEntityChunk = nullptr;
@@ -560,6 +562,11 @@ namespace MiniMapNative
 
     bool Initialize(
         const MiniMapFingerprints::ResolvedAddresses& addresses);
+
+    /** Publishes the exact validated native shared-pointer member for this binding lifecycle. */
+    bool PublishMassEntityManagerField(
+        int32_t offset,
+        uint32_t size) noexcept;
 
     bool IsMemoryRangeReadable(
         uintptr_t address,

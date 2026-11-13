@@ -16,12 +16,32 @@
 namespace
 {
     MiniMapNative::NativeApi g_nativeApi = {};
+    bool g_bindingsInitialized = false;
     bool g_initialized = false;
 }
 
 
 namespace MiniMapNative
 {
+    bool PublishMassEntityManagerField(
+        int32_t offset,
+        uint32_t size) noexcept
+    {
+        if (!g_bindingsInitialized ||
+            g_initialized ||
+            offset != 0x38 ||
+            size != 0x10 ||
+            g_nativeApi.mass.entityManagerFieldOffset != -1)
+        {
+            return false;
+        }
+
+        g_nativeApi.mass.entityManagerFieldOffset = offset;
+        g_initialized = true;
+        return true;
+    }
+
+
     bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
     {
         // EXPENSIVE: Calls VirtualQuery directly.
@@ -465,7 +485,7 @@ namespace MiniMapNative
             reinterpret_cast<MassApi::StaticStructFn>(addresses.splineActorPayloadStaticStruct)();
         if (!g_nativeApi.splinePayload.payloadType) return false;
 
-        g_initialized = true;
+        g_bindingsInitialized = true;
 
         LOG_INFO(
             "MiniMap: native API initialized");
@@ -477,6 +497,7 @@ namespace MiniMapNative
     void Shutdown()
     {
         g_nativeApi = {};
+        g_bindingsInitialized = false;
         g_initialized = false;
     }
 

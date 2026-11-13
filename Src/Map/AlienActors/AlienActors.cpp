@@ -41,7 +41,6 @@ namespace
     constexpr uint32_t kHostileColor = 0xF04040FFu; // ImGui ABGR
     constexpr std::size_t kMaximumRecords = 512;
     constexpr int32_t kMaximumReasonableHandleCount = 1000000;
-    constexpr std::ptrdiff_t kManagerOffset = 0x38;
     constexpr std::ptrdiff_t kStateOffset = 0x01;
     constexpr std::ptrdiff_t kTranslationOffset = 0x20;
     constexpr std::size_t kQuerySize = 0x350;
@@ -179,11 +178,16 @@ namespace
         }
         auto* subsystem = native.mass.getMassEntitySubsystem(world);
         const void* manager = nullptr;
-        if (subsystem != nullptr)
+        if (subsystem != nullptr && native.mass.entityManagerFieldOffset >= 0)
         {
             std::memcpy(&manager,
-                reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset,
+                reinterpret_cast<const uint8_t*>(subsystem) +
+                    native.mass.entityManagerFieldOffset,
                 sizeof(manager));
+        }
+        else if (subsystem != nullptr)
+        {
+            return false;
         }
         if (g_queryConstructed && world == g_queryWorld &&
             subsystem == g_subsystem && manager == g_manager)
@@ -208,7 +212,8 @@ namespace
         }
         // Same shared-manager constructor and requirements base as Foundables.
         native.mass.queryConstruct(g_queryStorage.data(),
-            reinterpret_cast<const uint8_t*>(subsystem) + kManagerOffset);
+            reinterpret_cast<const uint8_t*>(subsystem) +
+                native.mass.entityManagerFieldOffset);
         g_queryConstructed = true;
         native.mass.addTransformRequirement(g_queryStorage.data(),
             static_cast<uint8_t>(SDK::EMassFragmentAccess::ReadOnly),
