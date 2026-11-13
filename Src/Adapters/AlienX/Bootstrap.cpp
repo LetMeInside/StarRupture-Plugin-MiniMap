@@ -67,6 +67,7 @@ namespace
     bool g_playerMapDataComponentFieldResolved = false;
     bool g_terrainFieldsResolved = false;
     bool g_poiStoryFieldsResolved = false;
+    bool g_playerTextureFieldsResolved = false;
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -170,7 +171,12 @@ namespace
 
     PluginBitField g_actorBeingDestroyedField{
         { "AActor::bActorIsBeingDestroyed", "AActor", "bActorIsBeingDestroyed",
-            PLUGIN_FIELD_BITFIELD | PLUGIN_FIELD_CHECK, 1, 0x5D }
+            PLUGIN_FIELD_BITFIELD, 1, -1 }
+    };
+
+    PluginBitField g_textureSRGBField{
+        { "UTexture::SRGB", "UTexture", "SRGB",
+            PLUGIN_FIELD_BITFIELD | PLUGIN_FIELD_CHECK, 1, -1 }
     };
 
     /** Requires exact reflected layouts for POI, story-record, category, and actor fields. */
@@ -363,6 +369,86 @@ namespace
                 return false;
             }
             return true;
+        }
+    };
+
+    /** Requires exact player-tracking properties and the reflected texture SRGB bitfield. */
+    class ClientPlayerTextureFieldContract
+    {
+    public:
+        /** Resolves the consumed tracking fields and verifies the CL-127004 SRGB bit. */
+        static bool Resolve(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            bool allResolved = ResolvePlayerFields(scanner, self);
+            const bool srgbResolved = ResolveTextureSRGB(scanner, self, requiredScanner);
+            return allResolved && srgbResolved;
+        }
+
+    private:
+        /** Resolves every reflected player/controller property consumed by Map.cpp. */
+        static bool ResolvePlayerFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "ACrPlayerControllerBase::PlayerMainCharacter", "ACrPlayerControllerBase",
+                    "PlayerMainCharacter", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrPlayerControllerBase::PlayerMainCharacter)),
+                    static_cast<int32_t>(offsetof(SDK::ACrPlayerControllerBase, PlayerMainCharacter)) },
+                { "ACrCharacterPlayerBase::bDead", "ACrCharacterPlayerBase", "bDead",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrCharacterPlayerBase::bDead)),
+                    static_cast<int32_t>(offsetof(SDK::ACrCharacterPlayerBase, bDead)) },
+                { "ACrCharacterPlayerBase::BuildingDrone", "ACrCharacterPlayerBase", "BuildingDrone",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrCharacterPlayerBase::BuildingDrone)),
+                    static_cast<int32_t>(offsetof(SDK::ACrCharacterPlayerBase, BuildingDrone)) },
+                { "ACrCharacterDroneBase::OwnerPlayer", "ACrCharacterDroneBase", "OwnerPlayer",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrCharacterDroneBase::OwnerPlayer)),
+                    static_cast<int32_t>(offsetof(SDK::ACrCharacterDroneBase, OwnerPlayer)) },
+                { "APlayerController::bIsLocalPlayerController", "APlayerController",
+                    "bIsLocalPlayerController", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::APlayerController::bIsLocalPlayerController)),
+                    static_cast<int32_t>(offsetof(SDK::APlayerController, bIsLocalPlayerController)) },
+                { "AController::Pawn", "AController", "Pawn", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::AController::Pawn)),
+                    static_cast<int32_t>(offsetof(SDK::AController, Pawn)) },
+                { "APawn::Controller", "APawn", "Controller", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::APawn::Controller)),
+                    static_cast<int32_t>(offsetof(SDK::APawn, Controller)) },
+                { "ACrCharacterPlayerBase::Status", "ACrCharacterPlayerBase", "Status",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrCharacterPlayerBase::Status)),
+                    static_cast<int32_t>(offsetof(SDK::ACrCharacterPlayerBase, Status)) }
+            };
+
+            bool allResolved = true;
+            for (size_t index = 0; index < std::size(fields); ++index)
+            {
+                fields[index].offset = -1;
+                fields[index].resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
+            }
+            return allResolved;
+        }
+
+        /** Requires the mapped UTexture bitfield to match the compiled CL-127004 ABI. */
+        static bool ResolveTextureSRGB(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            g_textureSRGBField.offset = -1;
+            g_textureSRGBField.resolvedSize = 0;
+            g_textureSRGBField.boolMask = 0;
+            const bool srgbResolved = PluginMap::ResolveField(scanner, self, g_textureSRGBField);
+            if (srgbResolved && (g_textureSRGBField.offset != 0x106 ||
+                g_textureSRGBField.resolvedSize != 1 || g_textureSRGBField.boolMask != 0x01))
+            {
+                requiredScanner.Fail(
+                    "UTexture::SRGB",
+                    "resolved SRGB bit does not match CL-127004 offset 0x106, extent 1, and mask 0x01");
+                return false;
+            }
+            return srgbResolved;
         }
     };
 
@@ -1178,6 +1264,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_playerMapDataComponentFieldResolved = false;
     g_terrainFieldsResolved = false;
     g_poiStoryFieldsResolved = false;
+    g_playerTextureFieldsResolved = false;
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -1287,6 +1374,13 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_poiStoryFieldsResolved = true;
+
+        if (!ClientPlayerTextureFieldContract::Resolve(scanner, self, requiredScanner))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_playerTextureFieldsResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -1359,6 +1453,14 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: required POI and story fields were not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_playerTextureFieldsResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: required player-tracking and texture fields were not validated");
         MiniMapNative::Shutdown();
         return false;
     }

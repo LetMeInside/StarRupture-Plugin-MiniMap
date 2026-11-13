@@ -3,13 +3,48 @@
 #include "Map.h"
 #include "../Config/Config.h"
 #include "SDK/Chimera_classes.hpp"
+#include "SDK/Chimera_structs.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
 #include "../Native/NativeApi.h"
 #include "../plugin_helpers.h"
 #include "../DiagnosticExports.h"
+#include <cstddef>
 #include <cmath>
 #include <atomic>
+#include <type_traits>
+
+static_assert(sizeof(void*) == 0x08);
+static_assert(offsetof(SDK::ACrPlayerControllerBase, PlayerMainCharacter) == 0x788);
+static_assert(sizeof(decltype(SDK::ACrPlayerControllerBase::PlayerMainCharacter)) == sizeof(void*));
+static_assert(std::is_same_v<
+    decltype(SDK::ACrPlayerControllerBase::PlayerMainCharacter), SDK::ACrCharacterPlayerBase*>);
+static_assert(offsetof(SDK::ACrCharacterPlayerBase, bDead) == 0xD60);
+static_assert(sizeof(decltype(SDK::ACrCharacterPlayerBase::bDead)) == 0x01);
+static_assert(std::is_same_v<decltype(SDK::ACrCharacterPlayerBase::bDead), bool>);
+static_assert(offsetof(SDK::ACrCharacterPlayerBase, BuildingDrone) == 0xB30);
+static_assert(sizeof(decltype(SDK::ACrCharacterPlayerBase::BuildingDrone)) == sizeof(void*));
+static_assert(std::is_same_v<
+    decltype(SDK::ACrCharacterPlayerBase::BuildingDrone), SDK::ACrCharacterDroneBase*>);
+static_assert(offsetof(SDK::ACrCharacterDroneBase, OwnerPlayer) == 0x360);
+static_assert(sizeof(decltype(SDK::ACrCharacterDroneBase::OwnerPlayer)) == sizeof(void*));
+static_assert(std::is_same_v<
+    decltype(SDK::ACrCharacterDroneBase::OwnerPlayer), SDK::ACrCharacterPlayerBase*>);
+static_assert(offsetof(SDK::APlayerController, bIsLocalPlayerController) == 0x6DC);
+static_assert(sizeof(decltype(SDK::APlayerController::bIsLocalPlayerController)) == 0x01);
+static_assert(std::is_same_v<decltype(SDK::APlayerController::bIsLocalPlayerController), bool>);
+static_assert(offsetof(SDK::AController, Pawn) == 0x2F8);
+static_assert(sizeof(decltype(SDK::AController::Pawn)) == sizeof(void*));
+static_assert(std::is_same_v<decltype(SDK::AController::Pawn), SDK::APawn*>);
+static_assert(offsetof(SDK::APawn, Controller) == 0x2D8);
+static_assert(sizeof(decltype(SDK::APawn::Controller)) == sizeof(void*));
+static_assert(std::is_same_v<decltype(SDK::APawn::Controller), SDK::AController*>);
+static_assert(offsetof(SDK::ACrCharacterPlayerBase, Status) == 0x1180);
+static_assert(sizeof(decltype(SDK::ACrCharacterPlayerBase::Status)) == 0x04);
+static_assert(std::is_same_v<
+    decltype(SDK::ACrCharacterPlayerBase::Status), SDK::EPlayerCharacterStatus>);
+static_assert(std::is_same_v<
+    std::underlying_type_t<SDK::EPlayerCharacterStatus>, uint32_t>);
 
 namespace
 {

@@ -2,9 +2,11 @@
 
 #include "TextureAccess.h"
 #include "NativeApi.h"
+#include "SDK/Engine_classes.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace
 {
@@ -72,6 +74,14 @@ namespace
 
     constexpr uint8_t kUTextureSRGBFlag =
         0x01;
+
+    static_assert(offsetof(SDK::UTexture, Availability) == 0x105);
+    static_assert(sizeof(decltype(SDK::UTexture::Availability)) == 0x01);
+    static_assert(kUTextureSRGBFlagsOffset ==
+        offsetof(SDK::UTexture, Availability) + sizeof(decltype(SDK::UTexture::Availability)));
+    static_assert(sizeof(decltype(SDK::UTexture::SRGB)) == 0x01);
+    static_assert(std::is_same_v<decltype(SDK::UTexture::SRGB), uint8_t>);
+    static_assert(kUTextureSRGBFlag == 0x01);
 }
 
 
