@@ -18,9 +18,16 @@
 
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "SDK.hpp"
+#include "SDK/AuActorPlacement_structs.hpp"
 #include "SDK/AuItems_classes.hpp"
 #include "SDK/AuItems_structs.hpp"
 #include "SDK/Chimera_structs.hpp"
+#include "SDK/Engine_classes.hpp"
+#include "SDK/Engine_parameters.hpp"
+#include "SDK/Engine_structs.hpp"
+#include "SDK/MassRepresentation_classes.hpp"
+#include "SDK/MassSpawner_classes.hpp"
+#include "SDK/MassSpawner_structs.hpp"
 #include "SDK/MassEntity_structs.hpp"
 #include "plugin_map.h"
 #include "Native/NativeApi.h"
@@ -53,9 +60,177 @@ namespace
     // Bridges the scanner-session field checks to PluginInit without retaining scanner metadata.
     bool g_buildingMassFieldsResolved = false;
 
+    PluginFieldSpec g_buildingDefinitionFields[] = {
+                { "UAuActorPlacementData::BuildingID", "UAuActorPlacementData", "BuildingID",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UAuActorPlacementData::BuildingID)),
+                    static_cast<int32_t>(offsetof(SDK::UAuActorPlacementData, BuildingID)) },
+                { "UAuActorPlacementData::ActorClass", "UAuActorPlacementData", "ActorClass",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UAuActorPlacementData::ActorClass)),
+                    static_cast<int32_t>(offsetof(SDK::UAuActorPlacementData, ActorClass)) },
+                { "UAuActorPlacementData::EntityType", "UAuActorPlacementData", "EntityType",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FAuAPMassSpawnedEntityType),
+                    static_cast<int32_t>(offsetof(SDK::UAuActorPlacementData, EntityType)) },
+                { "FAuAPMassSpawnedEntityType::EntityConfig", "FAuAPMassSpawnedEntityType", "EntityConfig",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfig)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfig)) },
+                { "FAuAPMassSpawnedEntityType::EntityConfigPtr", "FAuAPMassSpawnedEntityType", "EntityConfigPtr",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfigPtr)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfigPtr)) },
+                { "UCrBuildingData::Tags", "UCrBuildingData", "Tags", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrBuildingData::Tags)),
+                    static_cast<int32_t>(offsetof(SDK::UCrBuildingData, Tags)) },
+                { "UMassEntityConfigAsset::Config", "UMassEntityConfigAsset", "Config",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FMassEntityConfig),
+                    static_cast<int32_t>(offsetof(SDK::UMassEntityConfigAsset, Config)) },
+                { "FMassEntityConfig::Parent", "FMassEntityConfig", "Parent", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FMassEntityConfig::Parent)),
+                    static_cast<int32_t>(offsetof(SDK::FMassEntityConfig, Parent)) },
+                { "FMassEntityConfig::Traits", "FMassEntityConfig", "Traits", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FMassEntityConfig::Traits)),
+                    static_cast<int32_t>(offsetof(SDK::FMassEntityConfig, Traits)) },
+                { "UCrMassRepVisCosmeticsTrait::HighResTemplateActor", "UCrMassRepVisCosmeticsTrait",
+                    "HighResTemplateActor", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMassRepVisCosmeticsTrait::HighResTemplateActor)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMassRepVisCosmeticsTrait, HighResTemplateActor)) },
+                { "UCrMassRepVisCosmeticsTrait::LowResTemplateActor", "UCrMassRepVisCosmeticsTrait",
+                    "LowResTemplateActor", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMassRepVisCosmeticsTrait::LowResTemplateActor)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMassRepVisCosmeticsTrait, LowResTemplateActor)) },
+                { "UMassVisualizationTrait::HighResTemplateActor", "UMassVisualizationTrait",
+                    "HighResTemplateActor", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UMassVisualizationTrait::HighResTemplateActor)),
+                    static_cast<int32_t>(offsetof(SDK::UMassVisualizationTrait, HighResTemplateActor)) },
+                { "UMassVisualizationTrait::LowResTemplateActor", "UMassVisualizationTrait",
+                    "LowResTemplateActor", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UMassVisualizationTrait::LowResTemplateActor)),
+                    static_cast<int32_t>(offsetof(SDK::UMassVisualizationTrait, LowResTemplateActor)) },
+                { "UBlueprintGeneratedClass::ComponentTemplates", "UBlueprintGeneratedClass",
+                    "ComponentTemplates", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UBlueprintGeneratedClass::ComponentTemplates)),
+                    static_cast<int32_t>(offsetof(SDK::UBlueprintGeneratedClass, ComponentTemplates)) },
+                { "ACrModularRampWalkway::SplineMesh", "ACrModularRampWalkway", "SplineMesh",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrModularRampWalkway::SplineMesh)),
+                    static_cast<int32_t>(offsetof(SDK::ACrModularRampWalkway, SplineMesh)) },
+                { "UStaticMeshComponent::StaticMesh", "UStaticMeshComponent", "StaticMesh",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UStaticMeshComponent::StaticMesh)),
+                    static_cast<int32_t>(offsetof(SDK::UStaticMeshComponent, StaticMesh)) },
+                { "UStaticMesh::ExtendedBounds", "UStaticMesh", "ExtendedBounds", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FBoxSphereBounds), static_cast<int32_t>(offsetof(SDK::UStaticMesh, ExtendedBounds)) },
+                { "USplineMeshComponent::SplineParams", "USplineMeshComponent", "SplineParams",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FSplineMeshParams),
+                    static_cast<int32_t>(offsetof(SDK::USplineMeshComponent, SplineParams)) },
+                { "USplineMeshComponent::SplineUpDir", "USplineMeshComponent", "SplineUpDir",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::USplineMeshComponent::SplineUpDir)),
+                    static_cast<int32_t>(offsetof(SDK::USplineMeshComponent, SplineUpDir)) },
+                { "USplineMeshComponent::ForwardAxis", "USplineMeshComponent", "ForwardAxis",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::USplineMeshComponent::ForwardAxis)),
+                    static_cast<int32_t>(offsetof(SDK::USplineMeshComponent, ForwardAxis)) },
+                { "USceneComponent::RelativeLocation", "USceneComponent", "RelativeLocation",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::USceneComponent::RelativeLocation)),
+                    static_cast<int32_t>(offsetof(SDK::USceneComponent, RelativeLocation)) },
+                { "USceneComponent::RelativeRotation", "USceneComponent", "RelativeRotation",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::USceneComponent::RelativeRotation)),
+                    static_cast<int32_t>(offsetof(SDK::USceneComponent, RelativeRotation)) },
+                { "USceneComponent::RelativeScale3D", "USceneComponent", "RelativeScale3D",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::USceneComponent::RelativeScale3D)),
+                    static_cast<int32_t>(offsetof(SDK::USceneComponent, RelativeScale3D)) },
+                { "FSplineMeshParams::StartScale", "FSplineMeshParams", "StartScale", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::StartScale)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, StartScale)) },
+                { "FSplineMeshParams::EndScale", "FSplineMeshParams", "EndScale", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::EndScale)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, EndScale)) },
+                { "FSplineMeshParams::StartOffset", "FSplineMeshParams", "StartOffset", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::StartOffset)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, StartOffset)) },
+                { "FSplineMeshParams::EndOffset", "FSplineMeshParams", "EndOffset", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::EndOffset)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, EndOffset)) },
+                { "FSplineMeshParams::StartRoll", "FSplineMeshParams", "StartRoll", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::StartRoll)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, StartRoll)) },
+                { "FSplineMeshParams::EndRoll", "FSplineMeshParams", "EndRoll", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineMeshParams::EndRoll)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineMeshParams, EndRoll)) },
+                { "FBoxSphereBounds::Origin", "FBoxSphereBounds", "Origin", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FBoxSphereBounds::Origin)),
+                    static_cast<int32_t>(offsetof(SDK::FBoxSphereBounds, Origin)) },
+                { "FBoxSphereBounds::BoxExtent", "FBoxSphereBounds", "BoxExtent", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FBoxSphereBounds::BoxExtent)),
+                    static_cast<int32_t>(offsetof(SDK::FBoxSphereBounds, BoxExtent)) },
+                { "FBoxSphereBounds::SphereRadius", "FBoxSphereBounds", "SphereRadius", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FBoxSphereBounds::SphereRadius)),
+                    static_cast<int32_t>(offsetof(SDK::FBoxSphereBounds, SphereRadius)) },
+                { "FVector::X", "FVector", "X", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector::X)), static_cast<int32_t>(offsetof(SDK::FVector, X)) },
+                { "FVector::Y", "FVector", "Y", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector::Y)), static_cast<int32_t>(offsetof(SDK::FVector, Y)) },
+                { "FVector::Z", "FVector", "Z", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector::Z)), static_cast<int32_t>(offsetof(SDK::FVector, Z)) },
+                { "FVector2D::X", "FVector2D", "X", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector2D::X)), static_cast<int32_t>(offsetof(SDK::FVector2D, X)) },
+                { "FVector2D::Y", "FVector2D", "Y", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FVector2D::Y)), static_cast<int32_t>(offsetof(SDK::FVector2D, Y)) },
+                { "FRotator::Pitch", "FRotator", "Pitch", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FRotator::Pitch)), static_cast<int32_t>(offsetof(SDK::FRotator, Pitch)) },
+                { "FRotator::Yaw", "FRotator", "Yaw", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FRotator::Yaw)), static_cast<int32_t>(offsetof(SDK::FRotator, Yaw)) },
+                { "FRotator::Roll", "FRotator", "Roll", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FRotator::Roll)), static_cast<int32_t>(offsetof(SDK::FRotator, Roll)) },
+                { "FSoftObjectPath::AssetPath", "FSoftObjectPath", "AssetPath", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FTopLevelAssetPath),
+                    static_cast<int32_t>(offsetof(SDK::FSoftObjectPath, AssetPath)) },
+                { "FTopLevelAssetPath::PackageName", "FTopLevelAssetPath", "PackageName",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FTopLevelAssetPath::PackageName)),
+                    static_cast<int32_t>(offsetof(SDK::FTopLevelAssetPath, PackageName)) },
+                { "KismetSystemLibrary_Conv_SoftClassReferenceToString::SoftClassReference",
+                    "KismetSystemLibrary_Conv_SoftClassReferenceToString", "SoftClassReference",
+                    PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString::SoftClassReference)),
+                    static_cast<int32_t>(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString,
+                        SoftClassReference)) },
+                { "KismetSystemLibrary_Conv_SoftClassReferenceToString::ReturnValue",
+                    "KismetSystemLibrary_Conv_SoftClassReferenceToString", "ReturnValue",
+                    PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString::ReturnValue)),
+                    static_cast<int32_t>(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString,
+                        ReturnValue)) },
+                { "KismetSystemLibrary_Conv_SoftObjectReferenceToString::SoftObjectReference",
+                    "KismetSystemLibrary_Conv_SoftObjectReferenceToString", "SoftObjectReference",
+                    PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString::SoftObjectReference)),
+                    static_cast<int32_t>(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString,
+                        SoftObjectReference)) },
+                { "KismetSystemLibrary_Conv_SoftObjectReferenceToString::ReturnValue",
+                    "KismetSystemLibrary_Conv_SoftObjectReferenceToString", "ReturnValue",
+                    PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString::ReturnValue)),
+                    static_cast<int32_t>(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString,
+                        ReturnValue)) },
+                { "KismetSystemLibrary_Conv_SoftClassReferenceToString",
+                    "KismetSystemLibrary_Conv_SoftClassReferenceToString", nullptr, PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString), -1 },
+                { "KismetSystemLibrary_Conv_SoftObjectReferenceToString",
+                    "KismetSystemLibrary_Conv_SoftObjectReferenceToString", nullptr, PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString), -1 }
+            };
+
     /** Resolves required Client Mass field layouts during the active scanner session. */
     class ClientBuildingMassFieldContract
     {
+        /** Requires exact reflected layouts for fields read by V2 definition acquisition. */
+        static bool ResolveBuildingDefinitionFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            bool allResolved = true;
+            for (PluginFieldSpec& field : g_buildingDefinitionFields)
+            {
+                field.offset = -1;
+                field.resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
+            }
+            return allResolved;
+        }
+
         /** Requires exact reflected offsets and extents for fields read by Foundables. */
         static bool ResolveFoundablesFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
@@ -152,7 +327,8 @@ namespace
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
             const bool foundablesResolved = ResolveFoundablesFields(scanner, self);
-            return allResolved && foundablesResolved;
+            const bool definitionsResolved = ResolveBuildingDefinitionFields(scanner, self);
+            return allResolved && foundablesResolved && definitionsResolved;
         }
     };
 
@@ -185,6 +361,30 @@ namespace
                 return false;
             }
             return true;
+        }
+
+        /** Requires exact resident layouts for nested definition and spline-profile values. */
+        static bool CheckBuildingDefinitionTypes(const IPluginSelf* self)
+        {
+            return CheckType(self, "ScriptStruct AuActorPlacement.AuAPMassSpawnedEntityType",
+                    "FAuAPMassSpawnedEntityType", sizeof(SDK::FAuAPMassSpawnedEntityType),
+                    alignof(SDK::FAuAPMassSpawnedEntityType)) &&
+                CheckType(self, "ScriptStruct MassSpawner.MassEntityConfig", "FMassEntityConfig",
+                    sizeof(SDK::FMassEntityConfig), alignof(SDK::FMassEntityConfig)) &&
+                CheckType(self, "ScriptStruct Engine.SplineMeshParams", "FSplineMeshParams",
+                    sizeof(SDK::FSplineMeshParams), alignof(SDK::FSplineMeshParams)) &&
+                CheckType(self, "ScriptStruct CoreUObject.BoxSphereBounds", "FBoxSphereBounds",
+                    sizeof(SDK::FBoxSphereBounds), alignof(SDK::FBoxSphereBounds)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Vector", "FVector",
+                    sizeof(SDK::FVector), alignof(SDK::FVector)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Vector2D", "FVector2D",
+                    sizeof(SDK::FVector2D), alignof(SDK::FVector2D)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Rotator", "FRotator",
+                    sizeof(SDK::FRotator), alignof(SDK::FRotator)) &&
+                CheckType(self, "ScriptStruct CoreUObject.SoftObjectPath", "FSoftObjectPath",
+                    sizeof(SDK::FSoftObjectPath), alignof(SDK::FSoftObjectPath)) &&
+                CheckType(self, "ScriptStruct CoreUObject.TopLevelAssetPath", "FTopLevelAssetPath",
+                    sizeof(SDK::FTopLevelAssetPath), alignof(SDK::FTopLevelAssetPath));
         }
 
     public:
@@ -227,7 +427,8 @@ namespace
                         sizeof(SDK::FGuid), alignof(SDK::FGuid)) &&
                     CheckType(self, "ScriptStruct Chimera.CrMassFoundableParameters",
                         "FCrMassFoundableParameters", sizeof(SDK::FCrMassFoundableParameters),
-                        alignof(SDK::FCrMassFoundableParameters));
+                        alignof(SDK::FCrMassFoundableParameters)) &&
+                    CheckBuildingDefinitionTypes(self);
             }
             catch (...)
             {

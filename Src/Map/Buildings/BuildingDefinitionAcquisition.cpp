@@ -5,9 +5,13 @@
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
+#include <SDK/AuActorPlacement_classes.hpp>
+#include <SDK/AuActorPlacement_structs.hpp>
+#include <SDK/CoreUObject_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/Engine_classes.hpp>
 #include <SDK/Engine_parameters.hpp>
+#include <SDK/Engine_structs.hpp>
 #include <SDK/MassRepresentation_classes.hpp>
 #include <SDK/MassSpawner_classes.hpp>
 #include <SDK/MassSpawner_structs.hpp>
@@ -16,11 +20,126 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+static_assert(sizeof(void*) == 0x08);
+static_assert(sizeof(SDK::UObject) == 0x28);
+static_assert(alignof(SDK::UObject) == 0x08);
+static_assert(offsetof(SDK::UObject, Index) == 0x0C);
+static_assert(sizeof(decltype(SDK::UObject::Index)) == 0x04);
+static_assert(offsetof(SDK::UStruct, SuperStruct) == 0x40);
+static_assert(sizeof(decltype(SDK::UStruct::SuperStruct)) == 0x08);
+static_assert(offsetof(SDK::UClass, ClassDefaultObject) == 0x110);
+static_assert(sizeof(decltype(SDK::UClass::ClassDefaultObject)) == 0x08);
+static_assert(sizeof(SDK::FString) == 0x10);
+static_assert(alignof(SDK::FString) == 0x08);
+static_assert(sizeof(SDK::FAuAPMassSpawnedEntityType) == 0x38);
+static_assert(alignof(SDK::FAuAPMassSpawnedEntityType) == 0x08);
+static_assert(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfig) == 0x00);
+static_assert(sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfig)) == 0x28);
+static_assert(std::is_same_v<decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfig),
+    SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>>);
+static_assert(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfigPtr) == 0x30);
+static_assert(sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfigPtr)) == 0x08);
+static_assert(std::is_same_v<decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfigPtr),
+    SDK::UMassEntityConfigAsset*>);
+static_assert(sizeof(SDK::FMassEntityConfig) == 0x30);
+static_assert(alignof(SDK::FMassEntityConfig) == 0x08);
+static_assert(offsetof(SDK::FMassEntityConfig, Parent) == 0x00);
+static_assert(offsetof(SDK::FMassEntityConfig, Traits) == 0x08);
+static_assert(sizeof(decltype(SDK::FMassEntityConfig::Traits)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FMassEntityConfig::Parent), SDK::UMassEntityConfigAsset*>);
+static_assert(std::is_same_v<decltype(SDK::FMassEntityConfig::Traits),
+    SDK::TArray<SDK::UMassEntityTraitBase*>>);
+static_assert(offsetof(SDK::UAuActorPlacementData, ActorClass) == 0x38);
+static_assert(sizeof(decltype(SDK::UAuActorPlacementData::ActorClass)) == 0x28);
+static_assert(offsetof(SDK::UAuActorPlacementData, EntityType) == 0x120);
+static_assert(sizeof(decltype(SDK::UAuActorPlacementData::EntityType)) == 0x38);
+static_assert(offsetof(SDK::UAuActorPlacementData, BuildingID) == 0x170);
+static_assert(sizeof(decltype(SDK::UAuActorPlacementData::BuildingID)) == 0x04);
+static_assert(std::is_same_v<decltype(SDK::UAuActorPlacementData::ActorClass),
+    SDK::TSoftClassPtr<SDK::UClass>>);
+static_assert(std::is_same_v<decltype(SDK::UAuActorPlacementData::BuildingID), SDK::ECrBuildingID>);
+static_assert(std::is_same_v<std::underlying_type_t<SDK::ECrBuildingID>, uint32_t>);
+static_assert(offsetof(SDK::UCrBuildingData, Tags) == 0x3B0);
+static_assert(sizeof(decltype(SDK::UCrBuildingData::Tags)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::UCrBuildingData::Tags), SDK::TArray<SDK::FName>>);
+static_assert(offsetof(SDK::UMassEntityConfigAsset, Config) == 0x30);
+static_assert(sizeof(decltype(SDK::UMassEntityConfigAsset::Config)) == 0x30);
+static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait, HighResTemplateActor) == 0xD0);
+static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait, LowResTemplateActor) == 0xD8);
+static_assert(offsetof(SDK::UMassVisualizationTrait, HighResTemplateActor) == 0xD0);
+static_assert(offsetof(SDK::UMassVisualizationTrait, LowResTemplateActor) == 0xD8);
+static_assert(offsetof(SDK::UBlueprintGeneratedClass, ComponentTemplates) == 0x220);
+static_assert(sizeof(decltype(SDK::UBlueprintGeneratedClass::ComponentTemplates)) == 0x10);
+static_assert(offsetof(SDK::ACrModularRampWalkway, SplineMesh) == 0x6F8);
+static_assert(offsetof(SDK::UStaticMeshComponent, StaticMesh) == 0x588);
+static_assert(offsetof(SDK::UStaticMesh, ExtendedBounds) == 0x240);
+static_assert(offsetof(SDK::USceneComponent, RelativeLocation) == 0x140);
+static_assert(offsetof(SDK::USceneComponent, RelativeRotation) == 0x158);
+static_assert(offsetof(SDK::USceneComponent, RelativeScale3D) == 0x170);
+static_assert(offsetof(SDK::USplineMeshComponent, SplineParams) == 0x630);
+static_assert(offsetof(SDK::USplineMeshComponent, SplineUpDir) == 0x6E0);
+static_assert(offsetof(SDK::USplineMeshComponent, ForwardAxis) == 0x754);
+static_assert(sizeof(SDK::FSplineMeshParams) == 0xB0);
+static_assert(alignof(SDK::FSplineMeshParams) == 0x08);
+static_assert(offsetof(SDK::FSplineMeshParams, StartScale) == 0x30);
+static_assert(offsetof(SDK::FSplineMeshParams, StartRoll) == 0x40);
+static_assert(offsetof(SDK::FSplineMeshParams, EndRoll) == 0x44);
+static_assert(offsetof(SDK::FSplineMeshParams, StartOffset) == 0x48);
+static_assert(offsetof(SDK::FSplineMeshParams, EndScale) == 0x70);
+static_assert(offsetof(SDK::FSplineMeshParams, EndOffset) == 0x98);
+static_assert(sizeof(SDK::FBoxSphereBounds) == 0x38);
+static_assert(alignof(SDK::FBoxSphereBounds) == 0x08);
+static_assert(offsetof(SDK::FBoxSphereBounds, Origin) == 0x00);
+static_assert(offsetof(SDK::FBoxSphereBounds, BoxExtent) == 0x18);
+static_assert(offsetof(SDK::FBoxSphereBounds, SphereRadius) == 0x30);
+static_assert(sizeof(SDK::FVector) == 0x18);
+static_assert(alignof(SDK::FVector) == 0x08);
+static_assert(offsetof(SDK::FVector, X) == 0x00);
+static_assert(offsetof(SDK::FVector, Y) == 0x08);
+static_assert(offsetof(SDK::FVector, Z) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FVector::X), double>);
+static_assert(sizeof(SDK::FVector2D) == 0x10);
+static_assert(alignof(SDK::FVector2D) == 0x08);
+static_assert(offsetof(SDK::FVector2D, X) == 0x00);
+static_assert(offsetof(SDK::FVector2D, Y) == 0x08);
+static_assert(sizeof(SDK::FRotator) == 0x18);
+static_assert(alignof(SDK::FRotator) == 0x08);
+static_assert(offsetof(SDK::FRotator, Pitch) == 0x00);
+static_assert(offsetof(SDK::FRotator, Yaw) == 0x08);
+static_assert(offsetof(SDK::FRotator, Roll) == 0x10);
+static_assert(std::is_same_v<std::underlying_type_t<SDK::ESplineMeshAxis>, uint8_t>);
+static_assert(static_cast<uint8_t>(SDK::ESplineMeshAxis::X) == 0x00);
+static_assert(static_cast<uint8_t>(SDK::ESplineMeshAxis::Y) == 0x01);
+static_assert(static_cast<uint8_t>(SDK::ESplineMeshAxis::Z) == 0x02);
+static_assert(sizeof(SDK::FTopLevelAssetPath) == 0x10);
+static_assert(alignof(SDK::FTopLevelAssetPath) == 0x04);
+static_assert(offsetof(SDK::FTopLevelAssetPath, PackageName) == 0x00);
+static_assert(sizeof(SDK::FSoftObjectPath) == 0x20);
+static_assert(alignof(SDK::FSoftObjectPath) == 0x08);
+static_assert(offsetof(SDK::FSoftObjectPath, AssetPath) == 0x00);
+static_assert(sizeof(SDK::FName) == 0x08);
+static_assert(alignof(SDK::FName) == 0x04);
+static_assert(offsetof(SDK::FName, ComparisonIndex) == 0x00);
+static_assert(std::is_same_v<decltype(SDK::FName::ComparisonIndex), int32_t>);
+static_assert(offsetof(SDK::FName, Number) == 0x04);
+static_assert(std::is_same_v<decltype(SDK::FName::Number), uint32_t>);
+static_assert(sizeof(SDK::TSoftClassPtr<SDK::UClass>) == 0x28);
+static_assert(alignof(SDK::TSoftClassPtr<SDK::UClass>) == 0x08);
+static_assert(sizeof(SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>) == 0x28);
+static_assert(sizeof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString) == 0x38);
+static_assert(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString, SoftClassReference) == 0x00);
+static_assert(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString, ReturnValue) == 0x28);
+static_assert(sizeof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString) == 0x38);
+static_assert(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString, SoftObjectReference) == 0x00);
+static_assert(offsetof(SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString, ReturnValue) == 0x28);
 
 namespace MiniMap::BuildingAcquisition
 {
