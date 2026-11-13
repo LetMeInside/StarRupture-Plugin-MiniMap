@@ -68,6 +68,7 @@ namespace
     bool g_terrainFieldsResolved = false;
     bool g_poiStoryFieldsResolved = false;
     bool g_playerTextureFieldsResolved = false;
+    bool g_captureFieldsResolved = false;
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -449,6 +450,302 @@ namespace
                 return false;
             }
             return srgbResolved;
+        }
+    };
+
+    /** Requires the reflected capture properties and packed flags used by V2 sprite capture. */
+    class ClientCaptureFieldContract
+    {
+        /** Pairs each reflected capture bit with its exact CL-127004 byte and mask. */
+        struct BitFieldExpectation
+        {
+            PluginBitField Field;
+            int32_t ExpectedOffset;
+            uint8_t ExpectedMask;
+        };
+
+        /** Resolves one required set of ordinary reflected capture properties. */
+        static bool ResolvePropertySet(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            PluginFieldSpec* fields,
+            size_t fieldCount)
+        {
+            bool allResolved = true;
+            for (size_t index = 0; index < fieldCount; ++index)
+            {
+                fields[index].offset = -1;
+                fields[index].resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
+            }
+            return allResolved;
+        }
+
+        /** Resolves component and base-capture properties using their declaring owners. */
+        static bool ResolveBaseProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "UActorComponent::PrimaryComponentTick", "UActorComponent", "PrimaryComponentTick",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FActorComponentTickFunction), 0x38 },
+                { "USceneComponent::Mobility", "USceneComponent", "Mobility",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::EComponentMobility), 0x1A3 },
+                { "ULightComponentBase::Intensity", "ULightComponentBase", "Intensity",
+                    PLUGIN_FIELD_CHECK, sizeof(float), 0x274 },
+                { "ULightComponentBase::LightColor", "ULightComponentBase", "LightColor",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FColor), 0x278 },
+                { "USceneCaptureComponent::PrimitiveRenderMode", "USceneCaptureComponent", "PrimitiveRenderMode",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCapturePrimitiveRenderMode), 0x250 },
+                { "USceneCaptureComponent::CaptureSource", "USceneCaptureComponent", "CaptureSource",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCaptureSource), 0x251 },
+                { "USceneCaptureComponent::bAlwaysPersistRenderingState", "USceneCaptureComponent",
+                    "bAlwaysPersistRenderingState", PLUGIN_FIELD_CHECK, sizeof(bool), 0x253 },
+                { "USceneCaptureComponent::bUseRayTracingIfEnabled", "USceneCaptureComponent",
+                    "bUseRayTracingIfEnabled", PLUGIN_FIELD_CHECK, sizeof(bool), 0x2A4 }
+            };
+            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves 2D capture properties using the declaring 2D component type. */
+        static bool ResolveCapture2DProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "USceneCaptureComponent2D::ProjectionType", "USceneCaptureComponent2D", "ProjectionType",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::ECameraProjectionMode), 0x338 },
+                { "USceneCaptureComponent2D::OrthoWidth", "USceneCaptureComponent2D", "OrthoWidth",
+                    PLUGIN_FIELD_CHECK, sizeof(float), 0x348 },
+                { "USceneCaptureComponent2D::bAutoCalculateOrthoPlanes", "USceneCaptureComponent2D",
+                    "bAutoCalculateOrthoPlanes", PLUGIN_FIELD_CHECK, sizeof(bool), 0x34C },
+                { "USceneCaptureComponent2D::bUpdateOrthoPlanes", "USceneCaptureComponent2D",
+                    "bUpdateOrthoPlanes", PLUGIN_FIELD_CHECK, sizeof(bool), 0x354 },
+                { "USceneCaptureComponent2D::bUseCameraHeightAsViewTarget", "USceneCaptureComponent2D",
+                    "bUseCameraHeightAsViewTarget", PLUGIN_FIELD_CHECK, sizeof(bool), 0x355 },
+                { "USceneCaptureComponent2D::TextureTarget", "USceneCaptureComponent2D", "TextureTarget",
+                    PLUGIN_FIELD_CHECK, sizeof(void*), 0x360 },
+                { "USceneCaptureComponent2D::CompositeMode", "USceneCaptureComponent2D", "CompositeMode",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCaptureCompositeMode), 0x368 },
+                { "USceneCaptureComponent2D::PostProcessBlendWeight", "USceneCaptureComponent2D",
+                    "PostProcessBlendWeight", PLUGIN_FIELD_CHECK, sizeof(float), 0xAD0 },
+                { "USceneCaptureComponent2D::bUseCustomProjectionMatrix", "USceneCaptureComponent2D",
+                    "bUseCustomProjectionMatrix", PLUGIN_FIELD_CHECK, sizeof(bool), 0xADC },
+                { "USceneCaptureComponent2D::bEnableOrthographicTiling", "USceneCaptureComponent2D",
+                    "bEnableOrthographicTiling", PLUGIN_FIELD_CHECK, sizeof(bool), 0xB61 },
+                { "USceneCaptureComponent2D::bEnableClipPlane", "USceneCaptureComponent2D",
+                    "bEnableClipPlane", PLUGIN_FIELD_CHECK, sizeof(bool), 0xB6C },
+                { "USceneCaptureComponent2D::bRenderInMainRenderer", "USceneCaptureComponent2D",
+                    "bRenderInMainRenderer", PLUGIN_FIELD_CHECK, sizeof(bool), 0xBA0 }
+            };
+            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves directly written base and 2D render-target properties. */
+        static bool ResolveRenderTargetProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "UTextureRenderTarget::TargetGamma", "UTextureRenderTarget", "TargetGamma",
+                    PLUGIN_FIELD_CHECK, sizeof(float), 0x140 },
+                { "UTextureRenderTarget2D::ClearColor", "UTextureRenderTarget2D", "ClearColor",
+                    PLUGIN_FIELD_CHECK, sizeof(SDK::FLinearColor), 0x150 }
+            };
+            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves directly written directional-light properties at their compiled offsets. */
+        static bool ResolveDirectionalLightProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "UDirectionalLightComponent::ForwardShadingPriority", "UDirectionalLightComponent",
+                    "ForwardShadingPriority", PLUGIN_FIELD_CHECK, sizeof(int32_t), 0x3FC },
+                { "UDirectionalLightComponent::LightSourceAngle", "UDirectionalLightComponent",
+                    "LightSourceAngle", PLUGIN_FIELD_CHECK, sizeof(float), 0x400 }
+            };
+            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves every ordinary capture property set. */
+        static bool ResolveProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            const bool baseResolved = ResolveBaseProperties(scanner, self);
+            const bool capture2DResolved = ResolveCapture2DProperties(scanner, self);
+            const bool targetResolved = ResolveRenderTargetProperties(scanner, self);
+            const bool lightResolved = ResolveDirectionalLightProperties(scanner, self);
+            return baseResolved && capture2DResolved && targetResolved && lightResolved;
+        }
+
+        /** Resolves one bitfield set and refuses any offset, extent, or mask drift. */
+        static bool ResolveBitFieldSet(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            BitFieldExpectation* fields,
+            size_t fieldCount)
+        {
+            bool allResolved = true;
+            for (size_t index = 0; index < fieldCount; ++index)
+            {
+                BitFieldExpectation& expectation = fields[index];
+                PluginBitField& field = expectation.Field;
+                field.offset = -1;
+                field.resolvedSize = 0;
+                field.boolMask = 0;
+                const bool resolved = PluginMap::ResolveField(scanner, self, field);
+                if (!resolved || field.offset != expectation.ExpectedOffset || field.resolvedSize != 1 ||
+                    field.boolMask != expectation.ExpectedMask)
+                {
+                    requiredScanner.Fail(field.key,
+                        "reflected capture bitfield does not match the exact CL-127004 byte, extent, and mask");
+                    allResolved = false;
+                }
+            }
+            return allResolved;
+        }
+
+        /** Resolves tick and actor-component packed fields. */
+        static bool ResolveComponentBitFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            static BitFieldExpectation fields[] = {
+                { { { "FTickFunction::bCanEverTick", "FTickFunction", "bCanEverTick",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0A, 0x02 },
+                { { { "UActorComponent::bReplicates", "UActorComponent", "bReplicates",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x94, 0x80 },
+                { { { "UActorComponent::bAutoActivate", "UActorComponent", "bAutoActivate",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x96, 0x08 },
+                { { { "UActorComponent::bCanEverAffectNavigation", "UActorComponent",
+                    "bCanEverAffectNavigation", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x96, 0x80 },
+                { { { "ULightComponent::bUseTemperature", "ULightComponent", "bUseTemperature",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x2A4, 0x01 },
+                { { { "ULightComponentBase::bAffectsWorld", "ULightComponentBase", "bAffectsWorld",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x01 },
+                { { { "ULightComponentBase::CastShadows", "ULightComponentBase", "CastShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x02 },
+                { { { "ULightComponentBase::CastStaticShadows", "ULightComponentBase", "CastStaticShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x04 },
+                { { { "ULightComponentBase::CastDynamicShadows", "ULightComponentBase", "CastDynamicShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x08 },
+                { { { "ULightComponentBase::bAffectTranslucentLighting", "ULightComponentBase",
+                    "bAffectTranslucentLighting", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x10 }
+            };
+            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+        }
+
+        /** Resolves capture-component packed fields. */
+        static bool ResolveCaptureBitFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            static BitFieldExpectation fields[] = {
+                { { { "USceneCaptureComponent::bCaptureEveryFrame", "USceneCaptureComponent",
+                    "bCaptureEveryFrame", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x252, 0x01 },
+                { { { "USceneCaptureComponent::bCaptureOnMovement", "USceneCaptureComponent",
+                    "bCaptureOnMovement", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x252, 0x02 },
+                { { { "USceneCaptureComponent2D::bMainViewFamily", "USceneCaptureComponent2D",
+                    "bMainViewFamily", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x10 },
+                { { { "USceneCaptureComponent2D::bMainViewResolution", "USceneCaptureComponent2D",
+                    "bMainViewResolution", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x20 },
+                { { { "USceneCaptureComponent2D::bMainViewCamera", "USceneCaptureComponent2D",
+                    "bMainViewCamera", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x40 },
+                { { { "USceneCaptureComponent2D::bInheritMainViewCameraPostProcessSettings",
+                    "USceneCaptureComponent2D", "bInheritMainViewCameraPostProcessSettings",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x80 }
+            };
+            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+        }
+
+        /** Resolves render-target packed fields. */
+        static bool ResolveTargetBitFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            static BitFieldExpectation fields[] = {
+                { { { "UTextureRenderTarget2D::bSupportsUAV", "UTextureRenderTarget2D", "bSupportsUAV",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x164, 0x01 },
+                { { { "UTextureRenderTarget2D::bAutoGenerateMips", "UTextureRenderTarget2D",
+                    "bAutoGenerateMips", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x164, 0x02 }
+            };
+            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+        }
+
+        /** Resolves directly written directional-light bitfields and their masks. */
+        static bool ResolveDirectionalLightBitFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            static BitFieldExpectation fields[] = {
+                { { { "UDirectionalLightComponent::bAtmosphereSunLight", "UDirectionalLightComponent",
+                    "bAtmosphereSunLight", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x410, 0x02 },
+                { { { "UDirectionalLightComponent::bPerPixelAtmosphereTransmittance",
+                    "UDirectionalLightComponent", "bPerPixelAtmosphereTransmittance",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x01 },
+                { { { "UDirectionalLightComponent::bCastShadowsOnClouds", "UDirectionalLightComponent",
+                    "bCastShadowsOnClouds", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x02 },
+                { { { "UDirectionalLightComponent::bCastShadowsOnAtmosphere", "UDirectionalLightComponent",
+                    "bCastShadowsOnAtmosphere", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x04 },
+                { { { "UDirectionalLightComponent::bCastCloudShadows", "UDirectionalLightComponent",
+                    "bCastCloudShadows", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x08 }
+            };
+            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+        }
+
+        /** Requires the live SetShowFlagSettings parameter block and array argument to match the SDK ABI. */
+        static bool ResolveShowFlagParameters(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            static PluginFieldSpec blockSize{
+                "SceneCaptureComponent_SetShowFlagSettings", "SceneCaptureComponent_SetShowFlagSettings",
+                nullptr, PLUGIN_FIELD_LATE, sizeof(SDK::Params::SceneCaptureComponent_SetShowFlagSettings), -1 };
+            static PluginFieldSpec showFlags{
+                "SceneCaptureComponent_SetShowFlagSettings::InShowFlagSettings",
+                "SceneCaptureComponent_SetShowFlagSettings", "InShowFlagSettings",
+                PLUGIN_FIELD_ANY_SIZE | PLUGIN_FIELD_LATE, 0,
+                static_cast<int32_t>(offsetof(
+                    SDK::Params::SceneCaptureComponent_SetShowFlagSettings, InShowFlagSettings)) };
+            blockSize.offset = -1;
+            blockSize.resolvedSize = 0;
+            showFlags.offset = -1;
+            showFlags.resolvedSize = 0;
+            const bool blockResolved = PluginMap::ResolveField(scanner, self, blockSize);
+            const bool fieldResolved = PluginMap::ResolveField(scanner, self, showFlags);
+            if (!blockResolved || !fieldResolved || blockSize.resolvedSize != 0x10 ||
+                showFlags.offset != 0 || showFlags.resolvedSize != 0x10)
+            {
+                requiredScanner.Fail("SceneCaptureComponent_SetShowFlagSettings",
+                    "live parameter block or show-flag array does not match the 0x10-byte SDK parameter ABI");
+                return false;
+            }
+            return true;
+        }
+
+        /** Resolves all captured bitfield groups. */
+        static bool ResolveBitFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            const bool componentResolved = ResolveComponentBitFields(scanner, self, requiredScanner);
+            const bool captureResolved = ResolveCaptureBitFields(scanner, self, requiredScanner);
+            const bool targetResolved = ResolveTargetBitFields(scanner, self, requiredScanner);
+            const bool lightResolved = ResolveDirectionalLightBitFields(scanner, self, requiredScanner);
+            return componentResolved && captureResolved && targetResolved && lightResolved;
+        }
+
+    public:
+        /** Resolves all directly consumed capture properties in the active Client scanner session. */
+        static bool Resolve(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            const bool propertiesResolved = ResolveProperties(scanner, self);
+            const bool bitFieldsResolved = ResolveBitFields(scanner, self, requiredScanner);
+            const bool parametersResolved = ResolveShowFlagParameters(scanner, self, requiredScanner);
+            return propertiesResolved && bitFieldsResolved && parametersResolved;
         }
     };
 
@@ -1053,6 +1350,21 @@ namespace
                     alignof(SDK::FCrAbandonBaseDataCollectedStatus));
         }
 
+        /** Requires resident layouts for capture settings passed through the typed SDK path. */
+        static bool CheckCaptureTypes(const IPluginSelf* self)
+        {
+            return CheckType(self, "ScriptStruct CoreUObject.LinearColor", "FLinearColor",
+                    sizeof(SDK::FLinearColor), alignof(SDK::FLinearColor)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Color", "FColor",
+                    sizeof(SDK::FColor), alignof(SDK::FColor)) &&
+                CheckType(self, "ScriptStruct Engine.EngineShowFlagsSetting", "FEngineShowFlagsSetting",
+                    sizeof(SDK::FEngineShowFlagsSetting), alignof(SDK::FEngineShowFlagsSetting)) &&
+                CheckType(self, "ScriptStruct Engine.TickFunction", "FTickFunction",
+                    sizeof(SDK::FTickFunction), alignof(SDK::FTickFunction)) &&
+                CheckType(self, "ScriptStruct Engine.ActorComponentTickFunction", "FActorComponentTickFunction",
+                    sizeof(SDK::FActorComponentTickFunction), alignof(SDK::FActorComponentTickFunction));
+        }
+
     public:
         /** Requires each consumed Mass fragment and typed subobject to match resident Client metadata. */
         static bool IsCompatible(const IPluginSelf* self)
@@ -1098,7 +1410,8 @@ namespace
                     CheckSplineTypes(self) &&
                     CheckTerrainTypes(self) &&
                     CheckPoiStoryTypes(self) &&
-                    CheckSplinePayloadType(self);
+                    CheckSplinePayloadType(self) &&
+                    CheckCaptureTypes(self);
             }
             catch (...)
             {
@@ -1265,6 +1578,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_terrainFieldsResolved = false;
     g_poiStoryFieldsResolved = false;
     g_playerTextureFieldsResolved = false;
+    g_captureFieldsResolved = false;
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -1381,6 +1695,13 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_playerTextureFieldsResolved = true;
+
+        if (!ClientCaptureFieldContract::Resolve(scanner, self, requiredScanner))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_captureFieldsResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -1461,6 +1782,14 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: required player-tracking and texture fields were not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_captureFieldsResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: required sprite-capture fields were not validated");
         MiniMapNative::Shutdown();
         return false;
     }

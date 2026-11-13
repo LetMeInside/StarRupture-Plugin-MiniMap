@@ -11,9 +11,11 @@
 #include "Native/ResidentMetadata.h"
 
 #include <Engine_classes.hpp>
+#include <Engine_parameters.hpp>
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstddef>
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
 #endif
@@ -26,6 +28,128 @@
 
 namespace Services::Map::Buildings::Capture
 {
+	static_assert(sizeof(void*) == 0x08);
+	static_assert(offsetof(SDK::UActorComponent, PrimaryComponentTick) == 0x38);
+	static_assert(sizeof(decltype(SDK::UActorComponent::PrimaryComponentTick)) == 0x30);
+	static_assert(sizeof(decltype(SDK::UActorComponent::bReplicates)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UActorComponent::bAutoActivate)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UActorComponent::bCanEverAffectNavigation)) == 0x01);
+	static_assert(offsetof(SDK::USceneComponent, Mobility) == 0x1A3);
+	static_assert(sizeof(decltype(SDK::USceneComponent::Mobility)) == 0x01);
+	static_assert(std::is_same_v<std::underlying_type_t<SDK::EComponentMobility>, uint8_t>);
+	static_assert(offsetof(SDK::ULightComponentBase, Intensity) == 0x274);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::Intensity)) == sizeof(float));
+	static_assert(offsetof(SDK::ULightComponentBase, LightColor) == 0x278);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::LightColor)) == 0x04);
+	static_assert(std::is_same_v<decltype(SDK::ULightComponentBase::LightColor), SDK::FColor>);
+	static_assert(sizeof(SDK::FColor) == 0x04);
+	static_assert(alignof(SDK::FColor) == 0x04);
+	static_assert(offsetof(SDK::FColor, B) == 0x00);
+	static_assert(offsetof(SDK::FColor, G) == 0x01);
+	static_assert(offsetof(SDK::FColor, R) == 0x02);
+	static_assert(offsetof(SDK::FColor, A) == 0x03);
+	static_assert(sizeof(decltype(SDK::FColor::B)) == sizeof(uint8_t));
+	static_assert(sizeof(decltype(SDK::FColor::G)) == sizeof(uint8_t));
+	static_assert(sizeof(decltype(SDK::FColor::R)) == sizeof(uint8_t));
+	static_assert(sizeof(decltype(SDK::FColor::A)) == sizeof(uint8_t));
+	static_assert(sizeof(decltype(SDK::ULightComponent::bUseTemperature)) == 0x01);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::bAffectsWorld)) == 0x01);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::CastShadows)) == 0x01);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::CastStaticShadows)) == 0x01);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::CastDynamicShadows)) == 0x01);
+	static_assert(sizeof(decltype(SDK::ULightComponentBase::bAffectTranslucentLighting)) == 0x01);
+	static_assert(offsetof(SDK::UDirectionalLightComponent, ForwardShadingPriority) == 0x3FC);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::ForwardShadingPriority)) == sizeof(int32_t));
+	static_assert(offsetof(SDK::UDirectionalLightComponent, LightSourceAngle) == 0x400);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::LightSourceAngle)) == sizeof(float));
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bAtmosphereSunLight)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bPerPixelAtmosphereTransmittance)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bCastShadowsOnClouds)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bCastShadowsOnAtmosphere)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bCastCloudShadows)) == 0x01);
+	static_assert(sizeof(SDK::FTickFunction) == 0x28);
+	static_assert(alignof(SDK::FTickFunction) == 0x08);
+	static_assert(sizeof(SDK::FActorComponentTickFunction) == 0x30);
+	static_assert(alignof(SDK::FActorComponentTickFunction) == 0x08);
+	static_assert(sizeof(decltype(SDK::FTickFunction::bCanEverTick)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent, PrimitiveRenderMode) == 0x250);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::PrimitiveRenderMode)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent, CaptureSource) == 0x251);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::CaptureSource)) == 0x01);
+	static_assert(std::is_same_v<
+		std::underlying_type_t<SDK::ESceneCapturePrimitiveRenderMode>, uint8_t>);
+	static_assert(std::is_same_v<std::underlying_type_t<SDK::ESceneCaptureSource>, uint8_t>);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bCaptureEveryFrame)) == 0x01);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bCaptureOnMovement)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent, bAlwaysPersistRenderingState) == 0x253);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bAlwaysPersistRenderingState)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent, bUseRayTracingIfEnabled) == 0x2A4);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bUseRayTracingIfEnabled)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, ProjectionType) == 0x338);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::ProjectionType)) == 0x01);
+	static_assert(std::is_same_v<std::underlying_type_t<SDK::ECameraProjectionMode>, uint8_t>);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, OrthoWidth) == 0x348);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::OrthoWidth)) == sizeof(float));
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bAutoCalculateOrthoPlanes) == 0x34C);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bAutoCalculateOrthoPlanes)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUpdateOrthoPlanes) == 0x354);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUpdateOrthoPlanes)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUseCameraHeightAsViewTarget) == 0x355);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUseCameraHeightAsViewTarget)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, TextureTarget) == 0x360);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::TextureTarget)) == sizeof(void*));
+	static_assert(std::is_same_v<
+		decltype(SDK::USceneCaptureComponent2D::TextureTarget), SDK::UTextureRenderTarget2D*>);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, CompositeMode) == 0x368);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::CompositeMode)) == 0x01);
+	static_assert(std::is_same_v<std::underlying_type_t<SDK::ESceneCaptureCompositeMode>, uint8_t>);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, PostProcessBlendWeight) == 0xAD0);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::PostProcessBlendWeight)) == sizeof(float));
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUseCustomProjectionMatrix) == 0xADC);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUseCustomProjectionMatrix)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bEnableOrthographicTiling) == 0xB61);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bEnableOrthographicTiling)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bEnableClipPlane) == 0xB6C);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bEnableClipPlane)) == 0x01);
+	static_assert(offsetof(SDK::USceneCaptureComponent2D, bRenderInMainRenderer) == 0xBA0);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bRenderInMainRenderer)) == 0x01);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewFamily)) == 0x01);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewResolution)) == 0x01);
+	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewCamera)) == 0x01);
+	static_assert(sizeof(decltype(
+		SDK::USceneCaptureComponent2D::bInheritMainViewCameraPostProcessSettings)) == 0x01);
+	static_assert(offsetof(SDK::UTextureRenderTarget, TargetGamma) == 0x140);
+	static_assert(sizeof(decltype(SDK::UTextureRenderTarget::TargetGamma)) == sizeof(float));
+	static_assert(offsetof(SDK::UTextureRenderTarget2D, ClearColor) == 0x150);
+	static_assert(sizeof(decltype(SDK::UTextureRenderTarget2D::ClearColor)) == 0x10);
+	static_assert(std::is_same_v<
+		decltype(SDK::UTextureRenderTarget2D::ClearColor), SDK::FLinearColor>);
+	static_assert(sizeof(decltype(SDK::UTextureRenderTarget2D::bSupportsUAV)) == 0x01);
+	static_assert(sizeof(decltype(SDK::UTextureRenderTarget2D::bAutoGenerateMips)) == 0x01);
+	static_assert(sizeof(SDK::FLinearColor) == 0x10);
+	static_assert(alignof(SDK::FLinearColor) == 0x04);
+	static_assert(offsetof(SDK::FLinearColor, R) == 0x00);
+	static_assert(offsetof(SDK::FLinearColor, G) == 0x04);
+	static_assert(offsetof(SDK::FLinearColor, B) == 0x08);
+	static_assert(offsetof(SDK::FLinearColor, A) == 0x0C);
+	static_assert(sizeof(decltype(SDK::FLinearColor::R)) == sizeof(float));
+	static_assert(sizeof(decltype(SDK::FLinearColor::G)) == sizeof(float));
+	static_assert(sizeof(decltype(SDK::FLinearColor::B)) == sizeof(float));
+	static_assert(sizeof(decltype(SDK::FLinearColor::A)) == sizeof(float));
+	static_assert(sizeof(SDK::FEngineShowFlagsSetting) == 0x18);
+	static_assert(alignof(SDK::FEngineShowFlagsSetting) == 0x08);
+	static_assert(offsetof(SDK::FEngineShowFlagsSetting, ShowFlagName) == 0x00);
+	static_assert(sizeof(decltype(SDK::FEngineShowFlagsSetting::ShowFlagName)) == 0x10);
+	static_assert(offsetof(SDK::FEngineShowFlagsSetting, Enabled) == 0x10);
+	static_assert(sizeof(decltype(SDK::FEngineShowFlagsSetting::Enabled)) == 0x01);
+	static_assert(sizeof(SDK::TArray<SDK::FEngineShowFlagsSetting>) == 0x10);
+	static_assert(alignof(SDK::TArray<SDK::FEngineShowFlagsSetting>) == 0x08);
+	static_assert(sizeof(SDK::Params::SceneCaptureComponent_SetShowFlagSettings) == 0x10);
+	static_assert(offsetof(SDK::Params::SceneCaptureComponent_SetShowFlagSettings,
+		InShowFlagSettings) == 0x00);
+	static_assert(sizeof(decltype(
+		SDK::Params::SceneCaptureComponent_SetShowFlagSettings::InShowFlagSettings)) == 0x10);
+
 	/** Stores sprite capture density without preparing native resources. */
 	BuildingSpriteRenderer::BuildingSpriteRenderer(double spriteCaptureDensityPixelsPerMapUnit)
 		: spriteCaptureDensityPixelsPerMapUnit_(spriteCaptureDensityPixelsPerMapUnit)
