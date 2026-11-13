@@ -20,8 +20,10 @@
 #include "plugin_interface.h"
 
 #include "SDK/Chimera_classes.hpp"
+#include "SDK/Chimera_structs.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "SDK/Engine_classes.hpp"
+#include "SDK/SlateCore_structs.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -29,9 +31,48 @@
 #include <cstdio>
 #include <mutex>
 #include <span>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+static_assert(std::is_same_v<
+    decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState), SDK::EPointOfInterestState>);
+static_assert(std::is_same_v<
+    std::underlying_type_t<SDK::EPointOfInterestState>, uint8_t>);
+static_assert(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestState) == 0x2E8);
+static_assert(sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)) == 0x1);
+static_assert(std::is_same_v<
+    decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType), SDK::ECrPointOfInterestType>);
+static_assert(std::is_same_v<
+    std::underlying_type_t<SDK::ECrPointOfInterestType>, uint8_t>);
+static_assert(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestType) == 0x2E9);
+static_assert(sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)) == 0x1);
+static_assert(offsetof(SDK::ACrPointOfInterestMarkerActor, Guid) == 0x354);
+static_assert(sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::Guid)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::ACrPointOfInterestMarkerActor::Guid), SDK::FGuid>);
+static_assert(offsetof(SDK::ACrPointOfInterestMarkerActor, AbandonBaseStoryItemsAssigned) == 0x330);
+static_assert(sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned)) == 0x10);
+static_assert(alignof(decltype(SDK::ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned)) == 0x8);
+static_assert(std::is_same_v<
+    decltype(SDK::ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned),
+    SDK::TArray<SDK::FGuid>>);
+static_assert(offsetof(SDK::AActor, RootComponent) == 0x1B8);
+static_assert(sizeof(decltype(SDK::AActor::RootComponent)) == sizeof(void*));
+static_assert(std::is_same_v<decltype(SDK::AActor::RootComponent), SDK::USceneComponent*>);
+static_assert(offsetof(SDK::UCrMapMenuCategoryData, Icon) == 0x50);
+static_assert(std::is_same_v<decltype(SDK::UCrMapMenuCategoryData::Icon), SDK::FSlateBrush>);
+static_assert(offsetof(SDK::UCrMapMenuCategoryData, CanBeHiddenByFogOfWar) == 0x101);
+static_assert(sizeof(decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)) == 0x1);
+static_assert(offsetof(SDK::UCrMapMenuCategoryData, LegendFilter) == 0x108);
+static_assert(sizeof(decltype(SDK::UCrMapMenuCategoryData::LegendFilter)) == 0x1);
+static_assert(std::is_same_v<
+    std::underlying_type_t<SDK::ECrMapMenuMarkerFilter>, uint8_t>);
+static_assert(offsetof(SDK::UCrMapMenuPOIData, UnknownIcon) == 0x110);
+static_assert(std::is_same_v<decltype(SDK::UCrMapMenuPOIData::UnknownIcon), SDK::FSlateBrush>);
+static_assert(offsetof(SDK::UCrMapMenuPOIData, AbandonBaseCompletedIcon) == 0x1C0);
+static_assert(std::is_same_v<
+    decltype(SDK::UCrMapMenuPOIData::AbandonBaseCompletedIcon), SDK::FSlateBrush>);
 
 namespace
 {

@@ -21,6 +21,7 @@
 #include "Native/MapMenuDevSettingsLookup.h"
 
 #include "SDK/Chimera_classes.hpp"
+#include "SDK/Chimera_structs.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/AuItems_classes.hpp"
@@ -96,6 +97,65 @@ namespace
     static_assert(std::is_same_v<decltype(SDK::FAuItemId::Handle), SDK::FGuid>);
     static_assert(sizeof(SDK::FGuid) == 0x10);
     static_assert(alignof(SDK::FGuid) == 0x04);
+    static_assert(offsetof(SDK::FGuid, A) == 0x00);
+    static_assert(offsetof(SDK::FGuid, B) == 0x04);
+    static_assert(offsetof(SDK::FGuid, C) == 0x08);
+    static_assert(offsetof(SDK::FGuid, D) == 0x0C);
+    static_assert(sizeof(decltype(SDK::FGuid::A)) == 0x04);
+    static_assert(sizeof(decltype(SDK::FGuid::B)) == 0x04);
+    static_assert(sizeof(decltype(SDK::FGuid::C)) == 0x04);
+    static_assert(sizeof(decltype(SDK::FGuid::D)) == 0x04);
+    static_assert(sizeof(SDK::TArray<SDK::FCrAbandonBaseData>) == 0x10);
+    static_assert(alignof(SDK::TArray<SDK::FCrAbandonBaseData>) == 0x08);
+    static_assert(sizeof(SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>) == 0x10);
+    static_assert(alignof(SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>) == 0x08);
+    static_assert(sizeof(SDK::TArray<SDK::FGuid>) == 0x10);
+    static_assert(alignof(SDK::TArray<SDK::FGuid>) == 0x08);
+    static_assert(sizeof(SDK::FCrAbandonBaseDataContainer) == 0x120);
+    static_assert(alignof(SDK::FCrAbandonBaseDataContainer) == 0x08);
+    static_assert(offsetof(SDK::FCrAbandonBaseDataContainer, AbandonBaseData) == 0x108);
+    static_assert(sizeof(decltype(SDK::FCrAbandonBaseDataContainer::AbandonBaseData)) == 0x10);
+    static_assert(std::is_same_v<
+        decltype(SDK::FCrAbandonBaseDataContainer::AbandonBaseData),
+        SDK::TArray<SDK::FCrAbandonBaseData>>);
+    static_assert(offsetof(SDK::ACrAbandonBaseInfoReplicator, AbandonBaseDataContainer) == 0x2F0);
+    static_assert(sizeof(decltype(SDK::ACrAbandonBaseInfoReplicator::AbandonBaseDataContainer)) == 0x120);
+    static_assert(offsetof(SDK::ACrGameStateBase, AbandonBaseInfoReplicator) == 0x3A8);
+    static_assert(sizeof(decltype(SDK::ACrGameStateBase::AbandonBaseInfoReplicator)) == sizeof(void*));
+    static_assert(sizeof(SDK::FCrAbandonBaseData) == 0x78);
+    static_assert(alignof(SDK::FCrAbandonBaseData) == 0x08);
+    static_assert(offsetof(SDK::FCrAbandonBaseData, AbandonBasePOIId) == 0x0C);
+    static_assert(sizeof(decltype(SDK::FCrAbandonBaseData::AbandonBasePOIId)) == 0x10);
+    static_assert(std::is_same_v<decltype(SDK::FCrAbandonBaseData::AbandonBasePOIId), SDK::FGuid>);
+    static_assert(offsetof(SDK::FCrAbandonBaseData, StoryItemsCollectedStatus) == 0x50);
+    static_assert(sizeof(decltype(SDK::FCrAbandonBaseData::StoryItemsCollectedStatus)) == 0x10);
+    static_assert(std::is_same_v<
+        decltype(SDK::FCrAbandonBaseData::StoryItemsCollectedStatus),
+        SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>>);
+    static_assert(sizeof(SDK::FCrAbandonBaseDataCollectedStatus) == 0x14);
+    static_assert(alignof(SDK::FCrAbandonBaseDataCollectedStatus) == 0x04);
+    static_assert(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Item) == 0x00);
+    static_assert(sizeof(decltype(SDK::FCrAbandonBaseDataCollectedStatus::Item)) == 0x10);
+    static_assert(std::is_same_v<
+        decltype(SDK::FCrAbandonBaseDataCollectedStatus::Item), SDK::FGuid>);
+    static_assert(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Status) == 0x10);
+    static_assert(sizeof(bool) == 0x01);
+    static_assert(std::is_same_v<
+        decltype(SDK::FCrAbandonBaseDataCollectedStatus::Status), bool>);
+    static_assert(offsetof(SDK::ACrDatapadBase, Guid) == 0x2B8);
+    static_assert(offsetof(SDK::ACrAudiologBase, Guid) == 0x2B8);
+    static_assert(std::is_same_v<decltype(SDK::ACrDatapadBase::Guid), SDK::FGuid>);
+    static_assert(std::is_same_v<decltype(SDK::ACrAudiologBase::Guid), SDK::FGuid>);
+    static_assert(offsetof(SDK::ULevel, OwningWorld) == 0xC0);
+    static_assert(sizeof(decltype(SDK::ULevel::OwningWorld)) == sizeof(void*));
+    static_assert(std::is_same_v<decltype(SDK::ULevel::OwningWorld), SDK::UWorld*>);
+    static_assert(offsetof(SDK::UObject, Flags) == 0x08);
+    static_assert(sizeof(decltype(SDK::UObject::Flags)) == 0x04);
+    static_assert(offsetof(SDK::UObject, Outer) == 0x20);
+    static_assert(sizeof(decltype(SDK::UObject::Outer)) == sizeof(void*));
+    static_assert(offsetof(SDK::UCrMapMenuCategoryData, CategoryBlocked) == 0x30);
+    static_assert(sizeof(decltype(SDK::UCrMapMenuCategoryData::CategoryBlocked)) == 0x01);
+    static_assert(std::is_same_v<decltype(SDK::UCrMapMenuCategoryData::CategoryBlocked), bool>);
     static_assert(offsetof(SDK::UAuItemDataBase, UIItemType) == 0x329);
     static_assert(sizeof(decltype(SDK::UAuItemDataBase::UIItemType)) == 0x01);
     static_assert(std::is_same_v<decltype(SDK::UAuItemDataBase::UIItemType), SDK::EUIItemType>);

@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -21,7 +22,10 @@
 #include "SDK/AuActorPlacement_structs.hpp"
 #include "SDK/AuItems_classes.hpp"
 #include "SDK/AuItems_structs.hpp"
+#include "SDK/Chimera_classes.hpp"
 #include "SDK/Chimera_structs.hpp"
+#include "SDK/ChimeraUI_classes.hpp"
+#include "SDK/ChimeraUI_structs.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
 #include "SDK/Engine_structs.hpp"
@@ -62,6 +66,7 @@ namespace
     bool g_fowDataFieldResolved = false;
     bool g_playerMapDataComponentFieldResolved = false;
     bool g_terrainFieldsResolved = false;
+    bool g_poiStoryFieldsResolved = false;
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -162,6 +167,205 @@ namespace
             return allResolved;
         }
     };
+
+    PluginBitField g_actorBeingDestroyedField{
+        { "AActor::bActorIsBeingDestroyed", "AActor", "bActorIsBeingDestroyed",
+            PLUGIN_FIELD_BITFIELD | PLUGIN_FIELD_CHECK, 1, 0x5D }
+    };
+
+    /** Requires exact reflected layouts for POI, story-record, category, and actor fields. */
+    class ClientPoiStoryFieldContract
+    {
+    public:
+        /** Resolves the consumed fields through the active loader scanner session. */
+        static bool Resolve(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            bool allResolved = true;
+            allResolved = ResolveReplicatorFields(scanner, self) && allResolved;
+            allResolved = ResolveStoryRecordFields(scanner, self) && allResolved;
+            allResolved = ResolvePoiActorFields(scanner, self) && allResolved;
+            allResolved = ResolveCategoryFields(scanner, self) && allResolved;
+            allResolved = ResolveActorIdentityFields(scanner, self) && allResolved;
+            allResolved = ResolveActorBeingDestroyed(scanner, self, requiredScanner) && allResolved;
+            return allResolved;
+        }
+
+    private:
+        /** Resolves a fixed group of fields with exact compiled offset and extent requirements. */
+        static bool ResolveFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            PluginFieldSpec* fields,
+            size_t fieldCount)
+        {
+            bool allResolved = true;
+            for (size_t index = 0; index < fieldCount; ++index)
+            {
+                fields[index].offset = -1;
+                fields[index].resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
+            }
+            return allResolved;
+        }
+
+        /** Resolves the game-state path to the abandoned-base replication data. */
+        static bool ResolveReplicatorFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "ACrGameStateBase::AbandonBaseInfoReplicator", "ACrGameStateBase",
+                    "AbandonBaseInfoReplicator", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrGameStateBase::AbandonBaseInfoReplicator)),
+                    static_cast<int32_t>(offsetof(SDK::ACrGameStateBase, AbandonBaseInfoReplicator)) },
+                { "ACrAbandonBaseInfoReplicator::AbandonBaseDataContainer",
+                    "ACrAbandonBaseInfoReplicator", "AbandonBaseDataContainer", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrAbandonBaseInfoReplicator::AbandonBaseDataContainer)),
+                    static_cast<int32_t>(offsetof(SDK::ACrAbandonBaseInfoReplicator, AbandonBaseDataContainer)) },
+                { "FCrAbandonBaseDataContainer::AbandonBaseData", "FCrAbandonBaseDataContainer",
+                    "AbandonBaseData", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrAbandonBaseDataContainer::AbandonBaseData)),
+                    static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataContainer, AbandonBaseData)) }
+            };
+            return ResolveFields(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves the consumed members of replicated abandoned-base story records. */
+        static bool ResolveStoryRecordFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FCrAbandonBaseData::AbandonBasePOIId", "FCrAbandonBaseData",
+                    "AbandonBasePOIId", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrAbandonBaseData::AbandonBasePOIId)),
+                    static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseData, AbandonBasePOIId)) },
+                { "FCrAbandonBaseData::StoryItemsCollectedStatus", "FCrAbandonBaseData",
+                    "StoryItemsCollectedStatus", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrAbandonBaseData::StoryItemsCollectedStatus)),
+                    static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseData, StoryItemsCollectedStatus)) },
+                { "FCrAbandonBaseDataCollectedStatus::Item", "FCrAbandonBaseDataCollectedStatus",
+                    "Item", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrAbandonBaseDataCollectedStatus::Item)),
+                    static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Item)) },
+                { "FCrAbandonBaseDataCollectedStatus::Status", "FCrAbandonBaseDataCollectedStatus",
+                    "Status", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FCrAbandonBaseDataCollectedStatus::Status)),
+                    static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Status)) }
+            };
+            return ResolveFields(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves the directly consumed POI marker fields. */
+        static bool ResolvePoiActorFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "ACrPointOfInterestMarkerActor::PointOfInterestState", "ACrPointOfInterestMarkerActor",
+                    "PointOfInterestState", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)),
+                    static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestState)) },
+                { "ACrPointOfInterestMarkerActor::PointOfInterestType", "ACrPointOfInterestMarkerActor",
+                    "PointOfInterestType", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)),
+                    static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestType)) },
+                { "ACrPointOfInterestMarkerActor::Guid", "ACrPointOfInterestMarkerActor", "Guid",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::Guid)),
+                    static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, Guid)) },
+                { "ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned",
+                    "ACrPointOfInterestMarkerActor", "AbandonBaseStoryItemsAssigned", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned)),
+                    static_cast<int32_t>(offsetof(
+                        SDK::ACrPointOfInterestMarkerActor, AbandonBaseStoryItemsAssigned)) }
+            };
+            return ResolveFields(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves the consumed category metadata, icon variants, and story actor GUIDs. */
+        static bool ResolveCategoryFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "ACrDatapadBase::Guid", "ACrDatapadBase", "Guid", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrDatapadBase::Guid)),
+                    static_cast<int32_t>(offsetof(SDK::ACrDatapadBase, Guid)) },
+                { "ACrAudiologBase::Guid", "ACrAudiologBase", "Guid", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ACrAudiologBase::Guid)),
+                    static_cast<int32_t>(offsetof(SDK::ACrAudiologBase, Guid)) },
+                { "UCrMapMenuCategoryData::Icon", "UCrMapMenuCategoryData", "Icon",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuCategoryData::Icon)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, Icon)) },
+                { "UCrMapMenuCategoryData::CategoryBlocked", "UCrMapMenuCategoryData",
+                    "CategoryBlocked", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuCategoryData::CategoryBlocked)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, CategoryBlocked)) },
+                { "UCrMapMenuCategoryData::LegendFilter", "UCrMapMenuCategoryData", "LegendFilter",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuCategoryData::LegendFilter)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, LegendFilter)) },
+                { "UCrMapMenuCategoryData::CanBeHiddenByFogOfWar", "UCrMapMenuCategoryData",
+                    "CanBeHiddenByFogOfWar", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, CanBeHiddenByFogOfWar)) },
+                { "UCrMapMenuPOIData::UnknownIcon", "UCrMapMenuPOIData", "UnknownIcon",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuPOIData::UnknownIcon)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuPOIData, UnknownIcon)) },
+                { "UCrMapMenuPOIData::AbandonBaseCompletedIcon", "UCrMapMenuPOIData",
+                    "AbandonBaseCompletedIcon", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UCrMapMenuPOIData::AbandonBaseCompletedIcon)),
+                    static_cast<int32_t>(offsetof(SDK::UCrMapMenuPOIData, AbandonBaseCompletedIcon)) }
+            };
+            return ResolveFields(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves actor and UObject identity fields used while validating native actors. */
+        static bool ResolveActorIdentityFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "AActor::RootComponent", "AActor", "RootComponent", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::AActor::RootComponent)),
+                    static_cast<int32_t>(offsetof(SDK::AActor, RootComponent)) },
+                { "ULevel::OwningWorld", "ULevel", "OwningWorld", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::ULevel::OwningWorld)),
+                    static_cast<int32_t>(offsetof(SDK::ULevel, OwningWorld)) },
+                { "UObject::ObjectFlags", "UObject", "ObjectFlags",
+                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UObject::Flags)),
+                    static_cast<int32_t>(offsetof(SDK::UObject, Flags)) },
+                { "UObject::OuterPrivate", "UObject", "OuterPrivate",
+                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UObject::Outer)),
+                    static_cast<int32_t>(offsetof(SDK::UObject, Outer)) },
+                { "UStruct::SuperStruct", "UStruct", "SuperStruct",
+                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UStruct::SuperStruct)),
+                    static_cast<int32_t>(offsetof(SDK::UStruct, SuperStruct)) }
+            };
+            return ResolveFields(scanner, self, fields, std::size(fields));
+        }
+
+        /** Resolves and validates the reflected actor-destruction bitfield. */
+        static bool ResolveActorBeingDestroyed(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+        {
+            g_actorBeingDestroyedField.offset = -1;
+            g_actorBeingDestroyedField.resolvedSize = 0;
+            g_actorBeingDestroyedField.boolMask = 0;
+            if (!PluginMap::ResolveField(scanner, self, g_actorBeingDestroyedField))
+            {
+                return false;
+            }
+            if (g_actorBeingDestroyedField.offset != 0x5D ||
+                g_actorBeingDestroyedField.resolvedSize != 1 ||
+                g_actorBeingDestroyedField.boolMask != 0x02)
+            {
+                requiredScanner.Fail(
+                    "AActor::bActorIsBeingDestroyed",
+                    "resolved destruction bit does not match CL-127004 offset 0x5D, extent 1, and mask 0x02");
+                return false;
+            }
+            return true;
+        }
+    };
+
 
     PluginFieldSpec g_buildingDefinitionFields[] = {
                 { "UAuActorPlacementData::BuildingID", "UAuActorPlacementData", "BuildingID",
@@ -748,6 +952,21 @@ namespace
                     sizeof(SDK::FSlateBrush), alignof(SDK::FSlateBrush));
         }
 
+        /** Requires resident layouts for the abandoned-base container and its typed array records. */
+        static bool CheckPoiStoryTypes(const IPluginSelf* self)
+        {
+            return CheckType(self, "ScriptStruct Chimera.CrAbandonBaseDataContainer",
+                    "FCrAbandonBaseDataContainer", sizeof(SDK::FCrAbandonBaseDataContainer),
+                    alignof(SDK::FCrAbandonBaseDataContainer)) &&
+                CheckType(self, "ScriptStruct Chimera.CrAbandonBaseData",
+                    "FCrAbandonBaseData", sizeof(SDK::FCrAbandonBaseData),
+                    alignof(SDK::FCrAbandonBaseData)) &&
+                CheckType(self, "ScriptStruct Chimera.CrAbandonBaseDataCollectedStatus",
+                    "FCrAbandonBaseDataCollectedStatus",
+                    sizeof(SDK::FCrAbandonBaseDataCollectedStatus),
+                    alignof(SDK::FCrAbandonBaseDataCollectedStatus));
+        }
+
     public:
         /** Requires each consumed Mass fragment and typed subobject to match resident Client metadata. */
         static bool IsCompatible(const IPluginSelf* self)
@@ -792,6 +1011,7 @@ namespace
                     CheckBuildingDefinitionTypes(self) &&
                     CheckSplineTypes(self) &&
                     CheckTerrainTypes(self) &&
+                    CheckPoiStoryTypes(self) &&
                     CheckSplinePayloadType(self);
             }
             catch (...)
@@ -957,6 +1177,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_fowDataFieldResolved = false;
     g_playerMapDataComponentFieldResolved = false;
     g_terrainFieldsResolved = false;
+    g_poiStoryFieldsResolved = false;
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -1059,6 +1280,13 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_terrainFieldsResolved = true;
+
+        if (!ClientPoiStoryFieldContract::Resolve(scanner, self, requiredScanner))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_poiStoryFieldsResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -1123,6 +1351,14 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: required Terrain fields were not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!g_poiStoryFieldsResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: required POI and story fields were not validated");
         MiniMapNative::Shutdown();
         return false;
     }
