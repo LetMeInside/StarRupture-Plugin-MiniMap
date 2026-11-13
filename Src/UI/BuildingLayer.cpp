@@ -26,7 +26,7 @@ namespace MiniMapUI
 		Shutdown();
 	}
 
-#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	bool BuildingLayer::TakeDiagnosticsSnapshot(DiagnosticsSnapshot& output) noexcept
 	{
 		std::lock_guard<std::mutex> lock(diagnosticsMutex_);
@@ -49,7 +49,7 @@ namespace MiniMapUI
 		double widthMapUnits,
 		double heightMapUnits)
 	{
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.OpenAttempts;
@@ -71,7 +71,7 @@ namespace MiniMapUI
 			std::lock_guard<std::mutex> lock(viewportMutex_);
 			gpuViewport_ = std::shared_ptr<Services::Map::Buildings::BuildingMapGpuViewport>(std::move(viewport));
 		}
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.OpenSuccesses;
@@ -82,7 +82,7 @@ namespace MiniMapUI
 
 	bool BuildingLayer::Update(double x1, double y1, double x2, double y2)
 	{
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.UpdateAttempts;
@@ -97,7 +97,7 @@ namespace MiniMapUI
 		{
 			return false;
 		}
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.UpdateReturnsTrue;
@@ -137,7 +137,7 @@ namespace MiniMapUI
 		const MiniMapMap::Transform& mapTransform,
 		bool showLayer)
 	{
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.RenderCallbacks;
@@ -154,7 +154,7 @@ namespace MiniMapUI
 		Services::Map::Buildings::BuildingMapGpuViewport::CanvasTransform transform{};
 		if (!TryBuildCanvasTransform(mapTransform, transform))
 		{
-		#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.InvalidTransforms;
 			#endif
@@ -169,7 +169,7 @@ namespace MiniMapUI
 
 	bool BuildingLayer::Shutdown()
 	{
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
 			++diagnostics_.ShutdownAttempts;

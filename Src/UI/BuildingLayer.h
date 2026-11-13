@@ -33,7 +33,7 @@ namespace MiniMapUI
 	class BuildingLayer final
 	{
 	public:
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Lightweight counters for the active GPU UI adapter. */
 		struct DiagnosticsSnapshot
 		{
@@ -96,13 +96,13 @@ namespace MiniMapUI
 		std::unique_ptr<MiniMap::BuildingAcquisition::BuildingCollectorV2> buildingCollector_;
 		std::shared_ptr<Services::Map::Buildings::BuildingMapGpuViewport> gpuViewport_;
 		mutable std::mutex viewportMutex_;
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		mutable std::mutex diagnosticsMutex_;
 		DiagnosticsSnapshot diagnostics_{};
 #endif
 		bool renderDroneRailsEnabled_ = true;
 		bool shutdownRequested_ = false;
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		std::uint64_t lastAcquisitionHash_ = 0;
 		bool hasLastAcquisitionHash_ = false;
 #endif

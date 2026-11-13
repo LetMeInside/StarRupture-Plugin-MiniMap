@@ -1,7 +1,7 @@
 // Emits synchronous BM-12.4D breadcrumbs on the game thread for one admitted session update.
 #pragma once
 #include "DiagnosticExports.h"
-#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Log.h"
 #include <exception>
 #include <type_traits>

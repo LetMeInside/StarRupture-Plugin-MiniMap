@@ -1,4 +1,4 @@
-// Presents MiniMap layers and handles widget/input visibility, with compile-time legacy building drawing.
+// Presents MiniMap layers and handles widget/input visibility, including the V2 building layer.
 #include "BuildingMapLoadingTrace.h"
 #include "Services/Viewport.h"
 #include "../Map/Map.h"
@@ -13,16 +13,10 @@
 #include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/AlienActors/AlienActors.h"
-#if MINIMAP_USE_LEGACY_BUILDINGS
-#include "Map/Buildings/BuildingCollector.h"
-#include "Map/Buildings/BuildingVisuals.h"
-#endif
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
-#if !MINIMAP_USE_LEGACY_BUILDINGS
 #include "BuildingLayer.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
-#endif
 
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -47,12 +41,10 @@ namespace
     bool g_bindingsActive = false; // Protected by g_bindingMutex.
     std::atomic<bool> g_inputActive{false};
     S::Registration g_toggleBinding{}, g_zoomInBinding{}, g_zoomOutBinding{};
-#if !MINIMAP_USE_LEGACY_BUILDINGS
     std::mutex g_buildingLayerMutex;
     std::shared_ptr<::MiniMapUI::BuildingLayer> g_buildingLayer;
     std::vector<std::shared_ptr<::MiniMapUI::BuildingLayer>> g_retiredBuildingLayers;
     bool g_buildingLayerViewportOpened = false;
-#endif
 
 
     constexpr float kWindowWidth = 300.0f;
@@ -178,12 +170,6 @@ namespace
             transform,
             settings))
         {
-#if MINIMAP_USE_LEGACY_BUILDINGS
-            if (auto buildingState = MiniMapBuildingVisuals::MiniMapState())
-                MiniMapBuildingVisuals::DrawBuildings(*buildingState,
-                    MiniMapBuildingCollector::GetSnapshot(), ui, transform, settings.Buildings);
-#endif
-#if !MINIMAP_USE_LEGACY_BUILDINGS
             std::shared_ptr<::MiniMapUI::BuildingLayer> buildingLayer;
             {
                 std::lock_guard<std::mutex> lock(g_buildingLayerMutex);
@@ -193,15 +179,11 @@ namespace
             {
                 buildingLayer->Render(ui, transform, settings.Buildings.ShowLayer);
             }
-#endif
             MiniMapFogOfWar::Render(
                 ui,
                 transform, settings.Fog);
 
             MiniMapAlienActors::SetViewport(transform);
-#if MINIMAP_USE_LEGACY_BUILDINGS
-            MiniMapBuildingCollector::SetViewport(transform);
-#endif
 
             if (settings.Foundables.ShowLayer)
             {
@@ -310,7 +292,6 @@ namespace
 
 namespace MiniMapUI
 {
-#if !MINIMAP_USE_LEGACY_BUILDINGS
     bool BeginBuildingLayerSession(
         ::Services::Map::Buildings::BuildingMapService& service)
     {
@@ -331,7 +312,7 @@ namespace MiniMapUI
         }
         g_buildingLayer = std::move(layer);
         g_buildingLayerViewportOpened = false;
-#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Arm();
 #endif
         return true;
@@ -363,7 +344,7 @@ namespace MiniMapUI
         {
             return;
         }
-#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
         ::MiniMap::Diagnostics::BuildingMapLoadingTrace trace;
 #endif
         bool viewportOpened = false;
@@ -407,7 +388,7 @@ namespace MiniMapUI
         return g_retiredBuildingLayers.empty();
     }
 
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool TakeBuildingLayerDiagnosticsSnapshot(BuildingLayer::DiagnosticsSnapshot& output) noexcept
     {
         std::shared_ptr<BuildingLayer> layer;
@@ -417,7 +398,6 @@ namespace MiniMapUI
         }
         return layer != nullptr && layer->TakeDiagnosticsSnapshot(output);
     }
-#endif
 #endif
 
     bool Initialize(
@@ -525,9 +505,7 @@ namespace MiniMapUI
         {
             return false;
         }
-#if !MINIMAP_USE_LEGACY_BUILDINGS
         EndBuildingLayerSession();
-#endif
         return true;
     }
 

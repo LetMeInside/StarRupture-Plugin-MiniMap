@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <MiniMapUseLegacyBuildings Condition="'$(MiniMapUseLegacyBuildings)' == ''">0</MiniMapUseLegacyBuildings>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
   </PropertyGroup>
@@ -18,7 +17,7 @@
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
-    <ClCompile><PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;MINIMAP_USE_LEGACY_BUILDINGS=$(MiniMapUseLegacyBuildings);%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile><PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>

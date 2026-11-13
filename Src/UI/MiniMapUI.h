@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "BuildingLayer.h"
 #endif
 
@@ -13,7 +13,6 @@ namespace MiniMapUI
 {
     bool Initialize(IPluginSelf* self);
 
-#if !MINIMAP_USE_LEGACY_BUILDINGS
     /** Creates this gameplay session's GPU layer using the plugin-owned service. */
     bool BeginBuildingLayerSession(
         ::Services::Map::Buildings::BuildingMapService& service);
@@ -21,9 +20,8 @@ namespace MiniMapUI
     void UpdateBuildingLayerSession();
     /** Detaches the GPU layer and closes its viewport before service session teardown. */
     bool EndBuildingLayerSession();
-#endif
 
-#if defined(MODLOADER_CLIENT_BUILD) && !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
     /** Drains GPU layer lifecycle and callback counters from the current layer. */
     bool TakeBuildingLayerDiagnosticsSnapshot(BuildingLayer::DiagnosticsSnapshot& output) noexcept;
 #endif
