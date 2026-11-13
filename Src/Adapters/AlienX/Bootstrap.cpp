@@ -12,6 +12,7 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -46,6 +47,124 @@ namespace
     std::optional<MiniMap::Services::Detail::RuntimeBinding> g_binding;
 
 #if defined(MODLOADER_CLIENT_BUILD)
+    // Bridges the scanner-session field checks to PluginInit without retaining scanner metadata.
+    bool g_buildingMassFieldsResolved = false;
+
+    /** Resolves every reflected field whose compiled offset and extent V2 consumes. */
+    class ClientBuildingMassFieldContract
+    {
+    public:
+        /** Requires exact compiled offsets and sizes through the active loader scanner session. */
+        static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FMassEntityHandle::Index", "FMassEntityHandle", "Index", PLUGIN_FIELD_CHECK,
+                    sizeof(int32_t), static_cast<int32_t>(offsetof(SDK::FMassEntityHandle, Index)) },
+                { "FMassEntityHandle::SerialNumber", "FMassEntityHandle", "SerialNumber", PLUGIN_FIELD_CHECK,
+                    sizeof(int32_t), static_cast<int32_t>(offsetof(SDK::FMassEntityHandle, SerialNumber)) },
+                { "FTransformFragment::Transform", "FTransformFragment", "Transform", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FTransform), static_cast<int32_t>(offsetof(SDK::FTransformFragment, Transform)) },
+                { "FTransform::Rotation", "FTransform", "Rotation", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FTransform::Rotation)),
+                    static_cast<int32_t>(offsetof(SDK::FTransform, Rotation)) },
+                { "FTransform::Translation", "FTransform", "Translation", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FTransform::Translation)),
+                    static_cast<int32_t>(offsetof(SDK::FTransform, Translation)) },
+                { "FTransform::Scale3D", "FTransform", "Scale3D", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FTransform::Scale3D)),
+                    static_cast<int32_t>(offsetof(SDK::FTransform, Scale3D)) },
+                { "FAuAPMassFragment::Payload", "FAuAPMassFragment", "Payload", PLUGIN_FIELD_CHECK,
+                    sizeof(SDK::FAuAPPayloadDataHandle),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPMassFragment, Payload)) },
+                { "FAuSplineConnectionFragment::Data", "FAuSplineConnectionFragment", "Data",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuSplineConnectionFragment::Data)),
+                    static_cast<int32_t>(offsetof(SDK::FAuSplineConnectionFragment, Data)) },
+                { "FAuSplineConnectionFragment::SplineCurves", "FAuSplineConnectionFragment", "SplineCurves",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuSplineConnectionFragment::SplineCurves)),
+                    static_cast<int32_t>(offsetof(SDK::FAuSplineConnectionFragment, SplineCurves)) },
+                { "FAuSplineConnectionFragment::bSplineCurvesInitialized", "FAuSplineConnectionFragment",
+                    "bSplineCurvesInitialized", PLUGIN_FIELD_CHECK, sizeof(bool),
+                    static_cast<int32_t>(offsetof(SDK::FAuSplineConnectionFragment, bSplineCurvesInitialized)) },
+                { "FCrBuildingParameters::PlacementData", "FCrBuildingParameters", "PlacementData",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FCrBuildingParameters::PlacementData)),
+                    static_cast<int32_t>(offsetof(SDK::FCrBuildingParameters, PlacementData)) }
+            };
+
+            bool allResolved = true;
+            for (PluginFieldSpec& field : fields)
+            {
+                field.offset = -1;
+                field.resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
+            }
+            return allResolved;
+        }
+    };
+
+    /** Compares resident Client script-struct size and alignment with the fixed SDK layouts. */
+    class ClientBuildingMassTypeContract
+    {
+        /** Requires a reflected script struct to match the SDK size and alignment used by V2. */
+        static bool CheckType(
+            const IPluginSelf* self,
+            const char* objectPath,
+            const char* displayName,
+            std::size_t expectedSize,
+            std::size_t expectedAlignment)
+        {
+            const SDK::UScriptStruct* type = SDK::UObject::FindObject<SDK::UScriptStruct>(
+                objectPath, SDK::EClassCastFlags::ScriptStruct);
+            if (type == nullptr || type->Size != static_cast<std::int32_t>(expectedSize) ||
+                type->MinAlignment != static_cast<std::int32_t>(expectedAlignment))
+            {
+                if (self && self->logger && self->logger->Error)
+                {
+                    self->logger->Error(self,
+                        "MiniMap: Client admission refused: %s SDK size=0x%X align=0x%X, "
+                        "running size=0x%X align=0x%X",
+                        displayName, static_cast<unsigned>(expectedSize),
+                        static_cast<unsigned>(expectedAlignment),
+                        type ? static_cast<unsigned>(type->Size) : 0,
+                        type ? static_cast<unsigned>(type->MinAlignment) : 0);
+                }
+                return false;
+            }
+            return true;
+        }
+
+    public:
+        /** Requires each V2 fragment and typed subobject to match resident Client metadata. */
+        static bool IsCompatible(const IPluginSelf* self)
+        {
+            try
+            {
+                return CheckType(self, "ScriptStruct MassEntity.MassEntityHandle", "FMassEntityHandle",
+                        sizeof(SDK::FMassEntityHandle), alignof(SDK::FMassEntityHandle)) &&
+                    CheckType(self, "ScriptStruct MassCommon.TransformFragment", "FTransformFragment",
+                        sizeof(SDK::FTransformFragment), alignof(SDK::FTransformFragment)) &&
+                    CheckType(self, "ScriptStruct CoreUObject.Transform", "FTransform",
+                        sizeof(SDK::FTransform), alignof(SDK::FTransform)) &&
+                    CheckType(self, "ScriptStruct AuActorPlacement.AuAPMassFragment", "FAuAPMassFragment",
+                        sizeof(SDK::FAuAPMassFragment), alignof(SDK::FAuAPMassFragment)) &&
+                    CheckType(self, "ScriptStruct AuActorPlacement.AuAPPayloadDataHandle",
+                        "FAuAPPayloadDataHandle", sizeof(SDK::FAuAPPayloadDataHandle),
+                        alignof(SDK::FAuAPPayloadDataHandle)) &&
+                    CheckType(self, "ScriptStruct AuActorPlacement.AuSplineConnectionFragment",
+                        "FAuSplineConnectionFragment", sizeof(SDK::FAuSplineConnectionFragment),
+                        alignof(SDK::FAuSplineConnectionFragment)) &&
+                    CheckType(self, "ScriptStruct Chimera.CrBuildingParameters", "FCrBuildingParameters",
+                        sizeof(SDK::FCrBuildingParameters), alignof(SDK::FCrBuildingParameters));
+            }
+            catch (...)
+            {
+                if (self && self->logger && self->logger->Error)
+                    self->logger->Error(self,
+                        "MiniMap: Client admission refused: Mass fragment metadata lookup failed");
+                return false;
+            }
+        }
+    };
+
     /** Checks the reflected query layout before a Client subsystem can construct fixed native query storage. */
     class ClientMassQueryStorageContract
     {
@@ -128,6 +247,7 @@ namespace
             LOG_ERROR("MiniMap: texture drain incomplete; runtime retained");
             return;
         }
+        g_buildingMassFieldsResolved = false;
 #endif
         g_baseline = {};
         g_binding.reset();
@@ -193,6 +313,9 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     // The loader calls this before PluginInit. Borrow self only for this scope;
     // the scanner adapter and its borrowed session exist only inside this call.
     if (g_binding) return;
+#if defined(MODLOADER_CLIENT_BUILD)
+    g_buildingMassFieldsResolved = false;
+#endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
     try
@@ -242,7 +365,15 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
                 "MiniMap::MassEntityManagerField",
                 "validated EntityManager field could not be published by NativeApi");
             MiniMapNative::Shutdown();
+            return;
         }
+
+        if (!ClientBuildingMassFieldContract::Resolve(scanner, self))
+        {
+            MiniMapNative::Shutdown();
+            return;
+        }
+        g_buildingMassFieldsResolved = true;
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif
@@ -278,11 +409,24 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         MiniMapNative::Shutdown();
         return false;
     }
+    if (!g_buildingMassFieldsResolved)
+    {
+        if (self && self->logger && self->logger->Error)
+            self->logger->Error(self,
+                "MiniMap: Client admission refused: required Building Map Mass fields were not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
     if (MiniMapNative::Get() == nullptr)
     {
         if (self && self->logger && self->logger->Error)
             self->logger->Error(self,
                 "MiniMap: Client admission refused: native Mass EntityManager field was not validated");
+        MiniMapNative::Shutdown();
+        return false;
+    }
+    if (!ClientBuildingMassTypeContract::IsCompatible(self))
+    {
         MiniMapNative::Shutdown();
         return false;
     }

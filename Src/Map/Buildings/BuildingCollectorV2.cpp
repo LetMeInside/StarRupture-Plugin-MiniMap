@@ -33,6 +33,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -54,11 +55,57 @@ namespace MiniMap::BuildingAcquisition
     static_assert(sizeof(FMassExecuteFunction) == 0x30);
     static_assert(sizeof(::FMassEntityHandle) == sizeof(SDK::FMassEntityHandle));
     static_assert(alignof(::FMassEntityHandle) == alignof(SDK::FMassEntityHandle));
+    static_assert(sizeof(SDK::FMassEntityHandle) == 0x08);
+    static_assert(alignof(SDK::FMassEntityHandle) == 0x08);
+    static_assert(offsetof(SDK::FMassEntityHandle, Index) == 0x00);
+    static_assert(offsetof(SDK::FMassEntityHandle, SerialNumber) == 0x04);
+    static_assert(sizeof(decltype(SDK::FMassEntityHandle::Index)) == 0x04);
+    static_assert(sizeof(decltype(SDK::FMassEntityHandle::SerialNumber)) == 0x04);
+    static_assert(std::is_signed_v<decltype(SDK::FMassEntityHandle::Index)>);
+    static_assert(std::is_signed_v<decltype(SDK::FMassEntityHandle::SerialNumber)>);
+    static_assert(sizeof(EntityId) == 0x08);
+    static_assert(offsetof(EntityId, Index) == 0x00);
+    static_assert(offsetof(EntityId, SerialNumber) == 0x04);
+    static_assert(sizeof(decltype(EntityId::Index)) == 0x04);
+    static_assert(sizeof(decltype(EntityId::SerialNumber)) == 0x04);
+    static_assert(std::is_signed_v<decltype(EntityId::Index)>);
+    static_assert(std::is_signed_v<decltype(EntityId::SerialNumber)>);
+    static_assert(offsetof(::FMassEntityHandle, Index) == 0x00);
+    static_assert(offsetof(::FMassEntityHandle, SerialNumber) == 0x04);
+    static_assert(std::is_signed_v<decltype(::FMassEntityHandle::Index)>);
+    static_assert(std::is_signed_v<decltype(::FMassEntityHandle::SerialNumber)>);
     static_assert(sizeof(SDK::FTransformFragment) == 0x60);
+    static_assert(alignof(SDK::FTransformFragment) == 0x10);
+    static_assert(offsetof(SDK::FTransformFragment, Transform) == 0x00);
+    static_assert(sizeof(decltype(SDK::FTransformFragment::Transform)) == 0x60);
+    static_assert(sizeof(SDK::FTransform) == 0x60);
+    static_assert(alignof(SDK::FTransform) == 0x10);
+    static_assert(offsetof(SDK::FTransform, Rotation) == 0x00);
+    static_assert(sizeof(decltype(SDK::FTransform::Rotation)) == 0x20);
+    static_assert(offsetof(SDK::FTransform, Translation) == 0x20);
+    static_assert(sizeof(decltype(SDK::FTransform::Translation)) == 0x18);
+    static_assert(offsetof(SDK::FTransform, Scale3D) == 0x40);
+    static_assert(sizeof(decltype(SDK::FTransform::Scale3D)) == 0x18);
     static_assert(sizeof(SDK::FAuSplineConnectionFragment) == 0xE0);
+    static_assert(alignof(SDK::FAuSplineConnectionFragment) == 0x08);
+    static_assert(offsetof(SDK::FAuSplineConnectionFragment, Data) == 0x00);
+    static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::Data)) == 0x50);
+    static_assert(offsetof(SDK::FAuSplineConnectionFragment, SplineCurves) == 0x70);
+    static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::SplineCurves)) == 0x68);
+    static_assert(offsetof(SDK::FAuSplineConnectionFragment, bSplineCurvesInitialized) == 0xD8);
+    static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::bSplineCurvesInitialized)) == 0x01);
     static_assert(sizeof(SDK::FAuAPMassFragment) == 0x50);
+    static_assert(alignof(SDK::FAuAPMassFragment) == 0x08);
+    static_assert(offsetof(SDK::FAuAPMassFragment, Payload) == 0x00);
+    static_assert(sizeof(decltype(SDK::FAuAPMassFragment::Payload)) == 0x20);
     static_assert(sizeof(SDK::FCrBuildingParameters) == 0x18);
+    static_assert(alignof(SDK::FCrBuildingParameters) == 0x08);
+    static_assert(offsetof(SDK::FCrBuildingParameters, PlacementData) == 0x00);
+    static_assert(sizeof(decltype(SDK::FCrBuildingParameters::PlacementData)) == 0x08);
     static_assert(sizeof(SDK::FAuAPPayloadDataHandle) == 0x20);
+    static_assert(alignof(SDK::FAuAPPayloadDataHandle) == 0x08);
+    static_assert(offsetof(SDK::FAuAPPayloadDataHandle, Type) == 0x10);
+    static_assert(offsetof(SDK::FAuAPPayloadDataHandle, Revision) == 0x18);
 
     /** Sole mutable acquisition owner; publications are frozen CPU projections only. */
     struct BuildingCollectorV2::State
