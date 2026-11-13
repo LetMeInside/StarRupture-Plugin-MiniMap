@@ -769,7 +769,7 @@ namespace MiniMap::BuildingAcquisition
         Clock::time_point RetryNotBefore{};
         std::uint64_t ObservedMutationRevision = 0;
         std::uint64_t AcknowledgedMutationRevision = 0;
-        std::uint64_t LatestMutationTimestampNanoseconds = 0;
+        Clock::time_point LatestMutationObservedAt{};
         bool HasMutationBaseline = false;
         bool MembershipComplete = false;
         bool HasRegion = false;
@@ -818,45 +818,32 @@ namespace MiniMap::BuildingAcquisition
         /** Establishes a new collector's revision baseline without importing prior-session dirtiness. */
         void EstablishMutationBaseline() noexcept
         {
-            MiniMapMassLifecycle::MutationSnapshot snapshot;
-            MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(snapshot);
-            ObservedMutationRevision = snapshot.Revision;
-            AcknowledgedMutationRevision = snapshot.Revision;
-            LatestMutationTimestampNanoseconds = snapshot.TimestampNanoseconds;
+            std::uint64_t revision = 0;
+            MiniMapMassLifecycle::MassLifecycle::TryGetAcceptedMutationRevision(revision);
+            ObservedMutationRevision = revision;
+            AcknowledgedMutationRevision = revision;
+            LatestMutationObservedAt = {};
             HasMutationBaseline = true;
         }
 
-        /** Floors a newly observed revision to observation time so an older paired timestamp cannot trigger early acquisition. */
-        void ObserveMutationSnapshot(const MiniMapMassLifecycle::MutationSnapshot& snapshot) noexcept
+        /** Starts a fresh quiet period only when a new accepted revision is observed. */
+        void ObserveMutationRevision(std::uint64_t revision) noexcept
         {
             if (!HasMutationBaseline)
             {
                 EstablishMutationBaseline();
             }
-            if (snapshot.Revision > ObservedMutationRevision)
+            if (revision > ObservedMutationRevision)
             {
-                ObservedMutationRevision = snapshot.Revision;
-                LatestMutationTimestampNanoseconds = (std::max)(
-                    snapshot.TimestampNanoseconds, CurrentSteadyNanoseconds());
+                ObservedMutationRevision = revision;
+                LatestMutationObservedAt = Clock::now();
             }
-            else
-                LatestMutationTimestampNanoseconds = (std::max)(
-                    LatestMutationTimestampNanoseconds, snapshot.TimestampNanoseconds);
         }
 
-        /** Reads the collector thread's steady-clock time in the signal's nanosecond epoch. */
-        static std::uint64_t CurrentSteadyNanoseconds() noexcept
-        {
-            return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                Clock::now().time_since_epoch()).count());
-        }
-
-        /** Converts the monotonic callback nanoseconds to the same steady-clock epoch used for deadlines. */
+        /** Returns the local 100 ms trailing-edge deadline for the latest observed revision. */
         Clock::time_point MutationQuietDeadline() const noexcept
         {
-            const auto timestamp = std::chrono::duration_cast<Clock::duration>(
-                std::chrono::nanoseconds(LatestMutationTimestampNanoseconds));
-            return Clock::time_point(timestamp) + MutationQuietPeriod;
+            return LatestMutationObservedAt + MutationQuietPeriod;
         }
 
         /** Withdraws retained membership when the world or native query source is unavailable. */
@@ -1060,7 +1047,7 @@ namespace MiniMap::BuildingAcquisition
             RetryNotBefore = {};
             ObservedMutationRevision = 0;
             AcknowledgedMutationRevision = 0;
-            LatestMutationTimestampNanoseconds = 0;
+            LatestMutationObservedAt = {};
             HasMutationBaseline = false;
             MembershipComplete = false;
             if (clearRequest)
@@ -1515,12 +1502,12 @@ namespace MiniMap::BuildingAcquisition
         /** Chooses immediate coverage, expired mutation, or ordinary fallback work in priority order. */
         bool TrySelectAcquisitionReason(
             Clock::time_point now,
-            MiniMapMassLifecycle::MutationSnapshot& startSnapshot,
+            std::uint64_t& startRevision,
             AcquisitionReason& reason)
         {
-            if (!MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(startSnapshot))
+            if (!MiniMapMassLifecycle::MassLifecycle::TryGetAcceptedMutationRevision(startRevision))
                 return false;
-            ObserveMutationSnapshot(startSnapshot);
+            ObserveMutationRevision(startRevision);
             const bool mutationPending = ObservedMutationRevision > AcknowledgedMutationRevision;
             if (ImmediateScanRequired)
             {
@@ -1549,7 +1536,7 @@ namespace MiniMap::BuildingAcquisition
         void ExecuteAcquisition(
             const Native& native,
             const Context& context,
-            const MiniMapMassLifecycle::MutationSnapshot& startSnapshot,
+            std::uint64_t startRevision,
             AcquisitionReason reason)
         {
             bool complete = false;
@@ -1582,7 +1569,7 @@ namespace MiniMap::BuildingAcquisition
             {
                 MembershipComplete = true;
                 AcknowledgedMutationRevision = (std::max)(
-                    AcknowledgedMutationRevision, startSnapshot.Revision);
+                    AcknowledgedMutationRevision, startRevision);
                 NextFallback = completedAt + PeriodicFallbackInterval;
                 RetryNotBefore = {};
                 ImmediateScanRequired = false;
@@ -1599,11 +1586,11 @@ namespace MiniMap::BuildingAcquisition
             const auto now = Clock::now();
             if (!context.HasRegion || (RetryNotBefore != Clock::time_point{} && now < RetryNotBefore))
                 return;
-            MiniMapMassLifecycle::MutationSnapshot startSnapshot;
+            std::uint64_t startRevision = 0;
             AcquisitionReason reason;
-            if (!TrySelectAcquisitionReason(now, startSnapshot, reason))
+            if (!TrySelectAcquisitionReason(now, startRevision, reason))
                 return;
-            ExecuteAcquisition(native, context, startSnapshot, reason);
+            ExecuteAcquisition(native, context, startRevision, reason);
         }
 
         /** Validates a copied fixed-size numerical value, never native memory. */
@@ -2663,10 +2650,9 @@ namespace MiniMap::BuildingAcquisition
     /** Advances native acquisition using MiniMap's established gameplay world. */
     void BuildingCollectorV2::Update()
     {
-        MiniMapMassLifecycle::MutationSnapshot mutationSnapshot;
-        if (!MiniMapMassLifecycle::MassLifecycle::TryGetMutationSnapshot(mutationSnapshot))
+        std::uint64_t mutationRevision = 0;
+        if (!MiniMapMassLifecycle::MassLifecycle::TryGetAcceptedMutationRevision(mutationRevision))
             return;
-        (void)mutationSnapshot;
         const auto* native = MiniMapNative::Get();
         if (!native)
         {

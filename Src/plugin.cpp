@@ -578,7 +578,9 @@ static void OnTextureServiceTick(
     Services::Map::Buildings::Capture::BuildingSpriteRenderer* renderer,
     float deltaTime)
 {
-    MiniMapMassLifecycle::MassLifecycle::ObserveUpdateThread();
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    MiniMapMassLifecycle::MassLifecycle::ReportHookStatusIfDue();
+#endif
 #if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && !MINIMAP_USE_LEGACY_BUILDINGS
     const bool traceCallback = ::MiniMap::Diagnostics::BuildingMapLoadingTrace::ClaimCallback();
     ::MiniMap::Diagnostics::BuildingMapLoadingTrace::Run("renderer lifecycle", [&]()
@@ -596,7 +598,6 @@ static void OnTextureServiceTick(
     {
         MiniMapTexturePublication::Service();
         ObserveWorldIdentity("after-texture-publication");
-        MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
         return;
     }
     MiniMapBuildingVisuals::TickSpriteCapture(deltaTime,MiniMapMap::GameplayReady());
@@ -611,7 +612,6 @@ static void OnTextureServiceTick(
     MiniMapTexturePublication::Service();
     ObserveWorldIdentity("after-texture-publication");
     ObserveWorldIdentity("after-mass-buildingcomplex");
-    MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
 #else
 	if (g_buildingMapService != nullptr)
 	{
@@ -1019,7 +1019,6 @@ static void OnTextureServiceTick(
     }
 #endif
 #endif
-    MiniMapMassLifecycle::MassLifecycle::ReportDiagnosticsIfDue();
 }
 
 #if !MINIMAP_USE_LEGACY_BUILDINGS

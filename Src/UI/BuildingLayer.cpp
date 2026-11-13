@@ -93,9 +93,6 @@ namespace MiniMapUI
 		{
 			return false;
 		}
-	#if !MINIMAP_USE_LEGACY_BUILDINGS && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		MiniMapMassLifecycle::MassLifecycle::BeginCollectorUpdate();
-	#endif
 		if (!viewport->Update(x1, y1, x2, y2))
 		{
 			return false;
