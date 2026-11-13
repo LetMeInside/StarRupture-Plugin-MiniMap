@@ -3,7 +3,28 @@
   <PropertyGroup>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
     <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <GameSDKRoot Condition="'$(GameSDKRoot)' == ''">$(StarRupturePluginSDKRoot)StarRupture SDK</GameSDKRoot>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
+    <StarRuptureBuildCLFile>$(GameSDKRoot)\Server\build_cl.txt</StarRuptureBuildCLFile>
+    <MiniMapGameSDKIdentityHeader>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK.hpp</MiniMapGameSDKIdentityHeader>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
+    <MiniMapGameSDKIdentityHeader>$(StarRupturePluginSDKRoot)StarRupture SDK\Client\SDK.hpp</MiniMapGameSDKIdentityHeader>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
+    <MiniMapGameSDKIdentityHeader>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK.hpp</MiniMapGameSDKIdentityHeader>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(PluginGameBuiltCL)' == '' And Exists('$(MiniMapGameSDKIdentityHeader)')">
+    <PluginGameBuiltCL>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MiniMapGameSDKIdentityHeader)')), '(?m)^// [0-9]+\.[0-9]+\.[0-9]+-([0-9]+)\+\+\+').Groups[1].Value)</PluginGameBuiltCL>
+  </PropertyGroup>
+  <Import Project="$(StarRupturePluginSDKRoot)PluginGameBuild.props" />
+  <PropertyGroup>
+    <MiniMapGameBuildCLIsValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(StarRuptureGameBuiltCL)', '^[1-9][0-9]*$'))</MiniMapGameBuildCLIsValid>
+  </PropertyGroup>
+  <Target Name="ValidateMiniMapGameBuildIdentity" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(MiniMapGameBuildCLIsValid)' != 'True'" Text="MiniMap requires a positive decimal StarRupture game-build CL. Provide PluginGameBuiltCL or valid SDK.hpp/build_cl.txt metadata for the selected Game-SDK." />
+  </Target>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
