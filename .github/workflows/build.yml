@@ -309,7 +309,7 @@ jobs:
 
           $minMatch = [regex]::Match(
             $content,
-            '#define\s+PLUGIN_INTERFACE_VERSION_MIN\s+(\d+)'
+            '#define\s+PLUGIN_INTERFACE_VERSION\s+(\d+)'
           )
 
           $maxMatch = [regex]::Match(
