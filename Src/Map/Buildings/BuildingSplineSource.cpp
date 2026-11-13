@@ -3,9 +3,125 @@
 #include "BuildingSplineSource.h"
 #include "Native/NativeApi.h"
 #include <SDK/AuActorPlacement_structs.hpp>
+#include <SDK/CoreUObject_structs.hpp>
+#include <SDK/Engine_structs.hpp>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <type_traits>
 #include <utility>
+
+static_assert(sizeof(SDK::FAuAPSplineData) == 0x50);
+static_assert(alignof(SDK::FAuAPSplineData) == 8);
+static_assert(offsetof(SDK::FAuAPSplineData, SplineData) == 0x08);
+static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineData)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FAuAPSplineData::SplineData),
+    SDK::TArray<SDK::FAuAPSplinePointData>>);
+static_assert(offsetof(SDK::FAuAPSplineData, SplineLocationWS) == 0x18);
+static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineLocationWS)) == 0x18);
+static_assert(offsetof(SDK::FAuAPSplineData, SplineRotationWS) == 0x30);
+static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineRotationWS)) == 0x18);
+static_assert(offsetof(SDK::FAuAPSplineData, SplineRealLength) == 0x48);
+static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineRealLength)) == sizeof(float));
+static_assert(sizeof(SDK::FAuAPSplinePointData) == 0x40);
+static_assert(alignof(SDK::FAuAPSplinePointData) == 8);
+static_assert(offsetof(SDK::FAuAPSplinePointData, Index) == 0x08);
+static_assert(sizeof(decltype(SDK::FAuAPSplinePointData::Index)) == sizeof(std::uint8_t));
+static_assert(offsetof(SDK::FAuAPSplinePointData, Position) == 0x10);
+static_assert(sizeof(decltype(SDK::FAuAPSplinePointData::Position)) == 0x18);
+static_assert(std::is_same_v<decltype(SDK::FAuAPSplinePointData::Position), SDK::FVector_NetQuantize>);
+static_assert(offsetof(SDK::FAuAPSplinePointData, Tangent) == 0x28);
+static_assert(sizeof(decltype(SDK::FAuAPSplinePointData::Tangent)) == 0x18);
+static_assert(std::is_same_v<decltype(SDK::FAuAPSplinePointData::Tangent), SDK::FVector_NetQuantize10>);
+static_assert(sizeof(SDK::FSplineCurves) == 0x68);
+static_assert(alignof(SDK::FSplineCurves) == 8);
+static_assert(offsetof(SDK::FSplineCurves, Position) == 0x00);
+static_assert(offsetof(SDK::FSplineCurves, Rotation) == 0x18);
+static_assert(offsetof(SDK::FSplineCurves, Scale) == 0x30);
+static_assert(offsetof(SDK::FSplineCurves, ReparamTable) == 0x48);
+static_assert(offsetof(SDK::FSplineCurves, Version) == 0x60);
+static_assert(sizeof(decltype(SDK::FSplineCurves::Version)) == sizeof(std::uint32_t));
+static_assert(sizeof(SDK::FInterpCurveVector) == 0x18);
+static_assert(alignof(SDK::FInterpCurveVector) == 8);
+static_assert(offsetof(SDK::FInterpCurveVector, Points) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurveVector::Points)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FInterpCurveVector::Points),
+    SDK::TArray<SDK::FInterpCurvePointVector>>);
+static_assert(offsetof(SDK::FInterpCurveVector, bIsLooped) == 0x10);
+static_assert(sizeof(decltype(SDK::FInterpCurveVector::bIsLooped)) == sizeof(bool));
+static_assert(offsetof(SDK::FInterpCurveVector, LoopKeyOffset) == 0x14);
+static_assert(sizeof(decltype(SDK::FInterpCurveVector::LoopKeyOffset)) == sizeof(float));
+static_assert(sizeof(SDK::FInterpCurveQuat) == 0x18);
+static_assert(alignof(SDK::FInterpCurveQuat) == 8);
+static_assert(offsetof(SDK::FInterpCurveQuat, Points) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurveQuat::Points)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FInterpCurveQuat::Points),
+    SDK::TArray<SDK::FInterpCurvePointQuat>>);
+static_assert(offsetof(SDK::FInterpCurveQuat, bIsLooped) == 0x10);
+static_assert(sizeof(decltype(SDK::FInterpCurveQuat::bIsLooped)) == sizeof(bool));
+static_assert(offsetof(SDK::FInterpCurveQuat, LoopKeyOffset) == 0x14);
+static_assert(sizeof(decltype(SDK::FInterpCurveQuat::LoopKeyOffset)) == sizeof(float));
+static_assert(sizeof(SDK::FInterpCurveFloat) == 0x18);
+static_assert(alignof(SDK::FInterpCurveFloat) == 8);
+static_assert(offsetof(SDK::FInterpCurveFloat, Points) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurveFloat::Points)) == 0x10);
+static_assert(std::is_same_v<decltype(SDK::FInterpCurveFloat::Points),
+    SDK::TArray<SDK::FInterpCurvePointFloat>>);
+static_assert(offsetof(SDK::FInterpCurveFloat, bIsLooped) == 0x10);
+static_assert(sizeof(decltype(SDK::FInterpCurveFloat::bIsLooped)) == sizeof(bool));
+static_assert(offsetof(SDK::FInterpCurveFloat, LoopKeyOffset) == 0x14);
+static_assert(sizeof(decltype(SDK::FInterpCurveFloat::LoopKeyOffset)) == sizeof(float));
+static_assert(sizeof(SDK::FInterpCurvePointVector) == 0x58);
+static_assert(alignof(SDK::FInterpCurvePointVector) == 8);
+static_assert(offsetof(SDK::FInterpCurvePointVector, InVal) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointVector::InVal)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointVector, OutVal) == 0x08);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointVector::OutVal)) == sizeof(SDK::FVector));
+static_assert(offsetof(SDK::FInterpCurvePointVector, ArriveTangent) == 0x20);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointVector::ArriveTangent)) == sizeof(SDK::FVector));
+static_assert(offsetof(SDK::FInterpCurvePointVector, LeaveTangent) == 0x38);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointVector::LeaveTangent)) == sizeof(SDK::FVector));
+static_assert(offsetof(SDK::FInterpCurvePointVector, InterpMode) == 0x50);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointVector::InterpMode)) == sizeof(std::uint8_t));
+static_assert(std::is_same_v<std::underlying_type_t<SDK::EInterpCurveMode>, std::uint8_t>);
+static_assert(sizeof(SDK::FInterpCurvePointQuat) == 0x80);
+static_assert(alignof(SDK::FInterpCurvePointQuat) == 0x10);
+static_assert(offsetof(SDK::FInterpCurvePointQuat, InVal) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointQuat::InVal)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointQuat, OutVal) == 0x10);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointQuat::OutVal)) == sizeof(SDK::FQuat));
+static_assert(offsetof(SDK::FInterpCurvePointQuat, ArriveTangent) == 0x30);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointQuat::ArriveTangent)) == sizeof(SDK::FQuat));
+static_assert(offsetof(SDK::FInterpCurvePointQuat, LeaveTangent) == 0x50);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointQuat::LeaveTangent)) == sizeof(SDK::FQuat));
+static_assert(offsetof(SDK::FInterpCurvePointQuat, InterpMode) == 0x70);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointQuat::InterpMode)) == sizeof(std::uint8_t));
+static_assert(sizeof(SDK::FInterpCurvePointFloat) == 0x14);
+static_assert(alignof(SDK::FInterpCurvePointFloat) == 4);
+static_assert(offsetof(SDK::FInterpCurvePointFloat, InVal) == 0x00);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointFloat::InVal)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointFloat, OutVal) == 0x04);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointFloat::OutVal)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointFloat, ArriveTangent) == 0x08);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointFloat::ArriveTangent)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointFloat, LeaveTangent) == 0x0C);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointFloat::LeaveTangent)) == sizeof(float));
+static_assert(offsetof(SDK::FInterpCurvePointFloat, InterpMode) == 0x10);
+static_assert(sizeof(decltype(SDK::FInterpCurvePointFloat::InterpMode)) == sizeof(std::uint8_t));
+static_assert(sizeof(SDK::FQuat) == 0x20);
+static_assert(alignof(SDK::FQuat) == 0x10);
+static_assert(offsetof(SDK::FQuat, X) == 0x00);
+static_assert(offsetof(SDK::FQuat, Y) == 0x08);
+static_assert(offsetof(SDK::FQuat, Z) == 0x10);
+static_assert(offsetof(SDK::FQuat, W) == 0x18);
+static_assert(std::is_same_v<decltype(SDK::FQuat::X), double>);
+static_assert(std::is_same_v<decltype(SDK::FQuat::Y), double>);
+static_assert(std::is_same_v<decltype(SDK::FQuat::Z), double>);
+static_assert(std::is_same_v<decltype(SDK::FQuat::W), double>);
+static_assert(sizeof(SDK::FVector_NetQuantize) == sizeof(SDK::FVector));
+static_assert(alignof(SDK::FVector_NetQuantize) == alignof(SDK::FVector));
+static_assert(sizeof(SDK::FVector_NetQuantize10) == sizeof(SDK::FVector));
+static_assert(alignof(SDK::FVector_NetQuantize10) == alignof(SDK::FVector));
 
 namespace MiniMap::BuildingAcquisition
 {
@@ -158,6 +274,7 @@ namespace MiniMap::BuildingAcquisition
         static_assert(sizeof(SDK::FAuAPSplineActorPayloadData) == 0xE8);
         static_assert(alignof(SDK::FAuAPSplineActorPayloadData) == 8);
         static_assert(offsetof(SDK::FAuAPSplineActorPayloadData, Data) == 0x68);
+        static_assert(sizeof(decltype(SDK::FAuAPSplineActorPayloadData::Data)) == 0x50);
         static_assert(offsetof(SDK::FAuAPSplinePointData, Position) == 0x10);
         static_assert(offsetof(SDK::FAuAPSplinePointData, Tangent) == 0x28);
         const auto* native = MiniMapNative::Get();

@@ -218,6 +218,201 @@ namespace
     /** Resolves required Client Mass field layouts during the active scanner session. */
     class ClientBuildingMassFieldContract
     {
+        /** Resolves an exact field group while the loader scanner session is active. */
+        static bool ResolveFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            PluginFieldSpec* fields,
+            std::size_t fieldCount)
+        {
+            bool allResolved = true;
+            for (std::size_t index = 0; index < fieldCount; ++index)
+            {
+                fields[index].offset = -1;
+                fields[index].resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
+            }
+            return allResolved;
+        }
+
+        /** Requires exact spline point/data and fallback payload member layouts. */
+        static bool ResolveSplineDataFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FAuAPSplineData::SplineData", "FAuAPSplineData", "SplineData", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FAuAPSplineData::SplineData)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplineData, SplineData)) },
+                { "FAuAPSplineData::SplineLocationWS", "FAuAPSplineData", "SplineLocationWS",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineData::SplineLocationWS)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplineData, SplineLocationWS)) },
+                { "FAuAPSplineData::SplineRotationWS", "FAuAPSplineData", "SplineRotationWS",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineData::SplineRotationWS)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplineData, SplineRotationWS)) },
+                { "FAuAPSplineData::SplineRealLength", "FAuAPSplineData", "SplineRealLength",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineData::SplineRealLength)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplineData, SplineRealLength)) },
+                { "FAuAPSplinePointData::Index", "FAuAPSplinePointData", "Index", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FAuAPSplinePointData::Index)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Index)) },
+                { "FAuAPSplinePointData::Position", "FAuAPSplinePointData", "Position", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FAuAPSplinePointData::Position)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Position)) },
+                { "FAuAPSplinePointData::Tangent", "FAuAPSplinePointData", "Tangent", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FAuAPSplinePointData::Tangent)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Tangent)) },
+                { "FAuAPSplineActorPayloadData::Data", "FAuAPSplineActorPayloadData", "Data",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineActorPayloadData::Data)),
+                    static_cast<int32_t>(offsetof(SDK::FAuAPSplineActorPayloadData, Data)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires exact outer spline channel and version layouts. */
+        static bool ResolveSplineCurveContainerFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FSplineCurves::Position", "FSplineCurves", "Position", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineCurves::Position)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineCurves, Position)) },
+                { "FSplineCurves::Rotation", "FSplineCurves", "Rotation", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineCurves::Rotation)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineCurves, Rotation)) },
+                { "FSplineCurves::Scale", "FSplineCurves", "Scale", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineCurves::Scale)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineCurves, Scale)) },
+                { "FSplineCurves::ReparamTable", "FSplineCurves", "ReparamTable", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineCurves::ReparamTable)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineCurves, ReparamTable)) },
+                { "FSplineCurves::Version", "FSplineCurves", "Version", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FSplineCurves::Version)),
+                    static_cast<int32_t>(offsetof(SDK::FSplineCurves, Version)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires the three curve container headers used by the four copied channels. */
+        static bool ResolveSplineChannelFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FInterpCurveVector::Points", "FInterpCurveVector", "Points", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveVector::Points)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveVector, Points)) },
+                { "FInterpCurveVector::bIsLooped", "FInterpCurveVector", "bIsLooped", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveVector::bIsLooped)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveVector, bIsLooped)) },
+                { "FInterpCurveVector::LoopKeyOffset", "FInterpCurveVector", "LoopKeyOffset",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurveVector::LoopKeyOffset)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveVector, LoopKeyOffset)) },
+                { "FInterpCurveQuat::Points", "FInterpCurveQuat", "Points", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveQuat::Points)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveQuat, Points)) },
+                { "FInterpCurveQuat::bIsLooped", "FInterpCurveQuat", "bIsLooped", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveQuat::bIsLooped)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveQuat, bIsLooped)) },
+                { "FInterpCurveQuat::LoopKeyOffset", "FInterpCurveQuat", "LoopKeyOffset",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurveQuat::LoopKeyOffset)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveQuat, LoopKeyOffset)) },
+                { "FInterpCurveFloat::Points", "FInterpCurveFloat", "Points", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveFloat::Points)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveFloat, Points)) },
+                { "FInterpCurveFloat::bIsLooped", "FInterpCurveFloat", "bIsLooped", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurveFloat::bIsLooped)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveFloat, bIsLooped)) },
+                { "FInterpCurveFloat::LoopKeyOffset", "FInterpCurveFloat", "LoopKeyOffset",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurveFloat::LoopKeyOffset)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurveFloat, LoopKeyOffset)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires exact vector-curve point member layouts. */
+        static bool ResolveVectorCurvePointFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FInterpCurvePointVector::InVal", "FInterpCurvePointVector", "InVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointVector::InVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointVector, InVal)) },
+                { "FInterpCurvePointVector::OutVal", "FInterpCurvePointVector", "OutVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointVector::OutVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointVector, OutVal)) },
+                { "FInterpCurvePointVector::ArriveTangent", "FInterpCurvePointVector", "ArriveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointVector::ArriveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointVector, ArriveTangent)) },
+                { "FInterpCurvePointVector::LeaveTangent", "FInterpCurvePointVector", "LeaveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointVector::LeaveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointVector, LeaveTangent)) },
+                { "FInterpCurvePointVector::InterpMode", "FInterpCurvePointVector", "InterpMode",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointVector::InterpMode)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointVector, InterpMode)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires exact quaternion-curve point and component layouts. */
+        static bool ResolveQuatCurvePointFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FInterpCurvePointQuat::InVal", "FInterpCurvePointQuat", "InVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointQuat::InVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointQuat, InVal)) },
+                { "FInterpCurvePointQuat::OutVal", "FInterpCurvePointQuat", "OutVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointQuat::OutVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointQuat, OutVal)) },
+                { "FInterpCurvePointQuat::ArriveTangent", "FInterpCurvePointQuat", "ArriveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointQuat::ArriveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointQuat, ArriveTangent)) },
+                { "FInterpCurvePointQuat::LeaveTangent", "FInterpCurvePointQuat", "LeaveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointQuat::LeaveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointQuat, LeaveTangent)) },
+                { "FInterpCurvePointQuat::InterpMode", "FInterpCurvePointQuat", "InterpMode",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointQuat::InterpMode)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointQuat, InterpMode)) },
+                { "FQuat::X", "FQuat", "X", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FQuat::X)), static_cast<int32_t>(offsetof(SDK::FQuat, X)) },
+                { "FQuat::Y", "FQuat", "Y", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FQuat::Y)), static_cast<int32_t>(offsetof(SDK::FQuat, Y)) },
+                { "FQuat::Z", "FQuat", "Z", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FQuat::Z)), static_cast<int32_t>(offsetof(SDK::FQuat, Z)) },
+                { "FQuat::W", "FQuat", "W", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FQuat::W)), static_cast<int32_t>(offsetof(SDK::FQuat, W)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires exact scalar-curve point member layouts. */
+        static bool ResolveFloatCurvePointFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            static PluginFieldSpec fields[] = {
+                { "FInterpCurvePointFloat::InVal", "FInterpCurvePointFloat", "InVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointFloat::InVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointFloat, InVal)) },
+                { "FInterpCurvePointFloat::OutVal", "FInterpCurvePointFloat", "OutVal", PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::FInterpCurvePointFloat::OutVal)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointFloat, OutVal)) },
+                { "FInterpCurvePointFloat::ArriveTangent", "FInterpCurvePointFloat", "ArriveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointFloat::ArriveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointFloat, ArriveTangent)) },
+                { "FInterpCurvePointFloat::LeaveTangent", "FInterpCurvePointFloat", "LeaveTangent",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointFloat::LeaveTangent)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointFloat, LeaveTangent)) },
+                { "FInterpCurvePointFloat::InterpMode", "FInterpCurvePointFloat", "InterpMode",
+                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FInterpCurvePointFloat::InterpMode)),
+                    static_cast<int32_t>(offsetof(SDK::FInterpCurvePointFloat, InterpMode)) }
+            };
+            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+        }
+
+        /** Requires all exact spline data, channel, and curve point field groups. */
+        static bool ResolveSplineFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        {
+            return ResolveSplineDataFields(scanner, self) &&
+                ResolveSplineCurveContainerFields(scanner, self) &&
+                ResolveSplineChannelFields(scanner, self) &&
+                ResolveVectorCurvePointFields(scanner, self) &&
+                ResolveQuatCurvePointFields(scanner, self) &&
+                ResolveFloatCurvePointFields(scanner, self);
+        }
+
         /** Requires exact reflected layouts for fields read by V2 definition acquisition. */
         static bool ResolveBuildingDefinitionFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
@@ -328,7 +523,8 @@ namespace
             }
             const bool foundablesResolved = ResolveFoundablesFields(scanner, self);
             const bool definitionsResolved = ResolveBuildingDefinitionFields(scanner, self);
-            return allResolved && foundablesResolved && definitionsResolved;
+            const bool splineFieldsResolved = ResolveSplineFields(scanner, self);
+            return allResolved && foundablesResolved && definitionsResolved && splineFieldsResolved;
         }
     };
 
@@ -387,6 +583,55 @@ namespace
                     sizeof(SDK::FTopLevelAssetPath), alignof(SDK::FTopLevelAssetPath));
         }
 
+        /** Requires exact resident layouts for the nested spline and curve records copied by V2. */
+        static bool CheckSplineTypes(const IPluginSelf* self)
+        {
+            return CheckType(self, "ScriptStruct AuActorPlacement.AuAPSplineData", "FAuAPSplineData",
+                    sizeof(SDK::FAuAPSplineData), alignof(SDK::FAuAPSplineData)) &&
+                CheckType(self, "ScriptStruct AuActorPlacement.AuAPSplinePointData", "FAuAPSplinePointData",
+                    sizeof(SDK::FAuAPSplinePointData), alignof(SDK::FAuAPSplinePointData)) &&
+                CheckType(self, "ScriptStruct Engine.SplineCurves", "FSplineCurves",
+                    sizeof(SDK::FSplineCurves), alignof(SDK::FSplineCurves)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurveVector", "FInterpCurveVector",
+                    sizeof(SDK::FInterpCurveVector), alignof(SDK::FInterpCurveVector)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurveQuat", "FInterpCurveQuat",
+                    sizeof(SDK::FInterpCurveQuat), alignof(SDK::FInterpCurveQuat)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurveFloat", "FInterpCurveFloat",
+                    sizeof(SDK::FInterpCurveFloat), alignof(SDK::FInterpCurveFloat)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurvePointVector", "FInterpCurvePointVector",
+                    sizeof(SDK::FInterpCurvePointVector), alignof(SDK::FInterpCurvePointVector)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurvePointQuat", "FInterpCurvePointQuat",
+                    sizeof(SDK::FInterpCurvePointQuat), alignof(SDK::FInterpCurvePointQuat)) &&
+                CheckType(self, "ScriptStruct CoreUObject.InterpCurvePointFloat", "FInterpCurvePointFloat",
+                    sizeof(SDK::FInterpCurvePointFloat), alignof(SDK::FInterpCurvePointFloat)) &&
+                CheckType(self, "ScriptStruct CoreUObject.Quat", "FQuat",
+                    sizeof(SDK::FQuat), alignof(SDK::FQuat)) &&
+                CheckType(self, "ScriptStruct Engine.Vector_NetQuantize", "FVector_NetQuantize",
+                    sizeof(SDK::FVector_NetQuantize), alignof(SDK::FVector_NetQuantize)) &&
+                CheckType(self, "ScriptStruct Engine.Vector_NetQuantize10", "FVector_NetQuantize10",
+                    sizeof(SDK::FVector_NetQuantize10), alignof(SDK::FVector_NetQuantize10));
+        }
+
+        /** Checks the exact resident type used by the native hidden-return payload getter. */
+        static bool CheckSplinePayloadType(const IPluginSelf* self)
+        {
+            const MiniMapNative::NativeApi* native = MiniMapNative::Get();
+            const SDK::UScriptStruct* type = native ? native->splinePayload.payloadType : nullptr;
+            if (type != nullptr && type->Size == static_cast<std::int32_t>(sizeof(SDK::FAuAPSplineActorPayloadData)) &&
+                type->MinAlignment == static_cast<std::int32_t>(alignof(SDK::FAuAPSplineActorPayloadData)))
+                return true;
+
+            if (self && self->logger && self->logger->Error)
+                self->logger->Error(self,
+                    "MiniMap: Client admission refused: native spline payload SDK size=0x%X align=0x%X, "
+                    "running size=0x%X align=0x%X",
+                    static_cast<unsigned>(sizeof(SDK::FAuAPSplineActorPayloadData)),
+                    static_cast<unsigned>(alignof(SDK::FAuAPSplineActorPayloadData)),
+                    type ? static_cast<unsigned>(type->Size) : 0,
+                    type ? static_cast<unsigned>(type->MinAlignment) : 0);
+            return false;
+        }
+
     public:
         /** Requires each consumed Mass fragment and typed subobject to match resident Client metadata. */
         static bool IsCompatible(const IPluginSelf* self)
@@ -428,7 +673,9 @@ namespace
                     CheckType(self, "ScriptStruct Chimera.CrMassFoundableParameters",
                         "FCrMassFoundableParameters", sizeof(SDK::FCrMassFoundableParameters),
                         alignof(SDK::FCrMassFoundableParameters)) &&
-                    CheckBuildingDefinitionTypes(self);
+                    CheckBuildingDefinitionTypes(self) &&
+                    CheckSplineTypes(self) &&
+                    CheckSplinePayloadType(self);
             }
             catch (...)
             {
