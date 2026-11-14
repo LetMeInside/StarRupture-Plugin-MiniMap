@@ -58,7 +58,7 @@ namespace Services::Map::Buildings::Cache
 		 * @return Persisted only after the complete temporary file was closed and published.
 		 */
 		WriteStatus TryWrite(const OwnedSpriteKey& key, const ProcessedSpritePayload& payload) noexcept;
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(_DEBUG)
 		/** Encodes published atlas pixels and atomically writes the caller-sequenced diagnostics filename. */
 		bool WriteAtlasDiagnosticPng(
 			const std::wstring& fileName,

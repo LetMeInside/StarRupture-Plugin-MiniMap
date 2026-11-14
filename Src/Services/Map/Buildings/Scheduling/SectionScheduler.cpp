@@ -298,7 +298,7 @@ namespace Services::Map::Buildings::Scheduling
 
 	/** Initializes per-ordinal evidence once for the exact selected publication owner. */
 	bool SectionScheduler::InitializeSectionPreparationProgress(
-		const ::Services::Map::Buildings::BuildingMapSection& section,
+		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner)
 	{
@@ -334,7 +334,7 @@ namespace Services::Map::Buildings::Scheduling
 
 	/** Validates aligned outcomes and builds the single stable sprite-first traversal index. */
 	bool SectionScheduler::InitializeSectionOccurrenceOrder(
-		const ::Services::Map::Buildings::BuildingMapSection& section,
+		::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
 		const BuildingCandidatePublication& publication)
 	{
@@ -367,8 +367,71 @@ namespace Services::Map::Buildings::Scheduling
 			}
 		}
 		std::reverse(preparation.OccurrenceOrder.begin() + remainingBegin, preparation.OccurrenceOrder.end());
+		preparation.ValidSpriteCount = SortSpriteOccurrenceOrder(
+			sourceData,
+			preparation.OccurrenceOrder,
+			preparation.InitialSpriteCount);
+		if (!section.HasCompletedSceneForContentHash(publication.ContentHash()))
+		{
+			auto* preparedGeometry = section.BeginPreparingScene(
+				publication.ContentHash(), candidateData.occurrences.size());
+			preparedGeometry->spritePainterOrder_ = preparation.OccurrenceOrder;
+			preparedGeometry->validSpritePainterCount_ = preparation.ValidSpriteCount;
+			preparedGeometry->spritePainterCount_ = preparation.InitialSpriteCount;
+		}
 		preparation.Initialized = true;
 		return true;
+	}
+
+	/** Sorts valid sprite placements once while keeping unresolved ordinals in source order. */
+	std::size_t SectionScheduler::SortSpriteOccurrenceOrder(
+		const BuildingCandidateSourceData& sourceData,
+		std::vector<std::size_t>& occurrenceOrder,
+		std::size_t spriteCount)
+	{
+		const auto spriteOrderEnd = occurrenceOrder.begin() + spriteCount;
+		const auto hasValidPainterPlacement = [&sourceData](std::size_t ordinal)
+		{
+			const BuildingCandidateSourceRecord& source = sourceData.records[ordinal];
+			return source.hasPlacement &&
+				std::isfinite(source.placement.Position[0]) &&
+				std::isfinite(source.placement.Position[1]) &&
+				std::isfinite(source.placement.Position[2]);
+		};
+		std::sort(
+			occurrenceOrder.begin(),
+			spriteOrderEnd,
+			[&sourceData, &hasValidPainterPlacement](std::size_t leftOrdinal, std::size_t rightOrdinal)
+			{
+				const bool leftHasPlacement = hasValidPainterPlacement(leftOrdinal);
+				const bool rightHasPlacement = hasValidPainterPlacement(rightOrdinal);
+				if (leftHasPlacement != rightHasPlacement)
+				{
+					return leftHasPlacement;
+				}
+				if (!leftHasPlacement)
+				{
+					return leftOrdinal < rightOrdinal;
+				}
+				const auto& left = sourceData.records[leftOrdinal].placement.Position;
+				const auto& right = sourceData.records[rightOrdinal].placement.Position;
+				if (left[2] != right[2])
+				{
+					return left[2] < right[2];
+				}
+				if (left[1] != right[1])
+				{
+					return left[1] < right[1];
+				}
+				if (left[0] != right[0])
+				{
+					return left[0] < right[0];
+				}
+				return leftOrdinal < rightOrdinal;
+			});
+		const auto validSpriteEnd = std::partition_point(
+			occurrenceOrder.begin(), spriteOrderEnd, hasValidPainterPlacement);
+		return static_cast<std::size_t>(validSpriteEnd - occurrenceOrder.begin());
 	}
 
 	/** Advances untouched ordinals once and visits only sprite resources still unavailable. */
@@ -496,11 +559,17 @@ namespace Services::Map::Buildings::Scheduling
 				Visuals::PreparedBuildingGeometry::ContributionStatus::Failed);
 			return false;
 		}
-		auto& destination = preparedSprite.SpritePass == BuildingCandidateSpritePass::SecondPass
-			? preparingScene->overlayLastSprites_
-			: preparingScene->ordinarySprites_;
+		const bool overlayLast = preparedSprite.SpritePass == BuildingCandidateSpritePass::SecondPass;
+		auto& destination = overlayLast ? preparingScene->overlayLastSprites_ : preparingScene->ordinarySprites_;
 		const bool hasSectionDrawableGeometry = occurrence.SectionTriangleCount != 0;
-		InsertPreparedSpriteOccurrence(destination, std::move(occurrence));
+		destination.push_back(std::move(occurrence));
+		if (!preparingScene->TrySetSpriteOccurrenceLocation(ordinal, overlayLast, destination.size() - 1))
+		{
+			destination.pop_back();
+			preparingScene->TrySetContributionStatus(ordinal,
+				Visuals::PreparedBuildingGeometry::ContributionStatus::Failed);
+			return false;
+		}
 		const bool contributionUpdated = preparingScene->TrySetContributionStatus(ordinal, hasSectionDrawableGeometry
 			? Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared
 			: Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission);
@@ -527,38 +596,11 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return false;
 		}
+		Visuals::PreparedBuildingGeometry::PrepareSpriteDrawLayout(output);
 		output.OccluderTopHeight = preparedSprite.Support.OccluderTopHeight;
 		output.IsOccluder = preparedSprite.Support.IsOccluder &&
 			preparedSprite.SpritePass == BuildingCandidateSpritePass::FirstPass;
 		return true;
-	}
-
-	/** Inserts by painter position with publication ordinal as the stable tie break. */
-	void SectionScheduler::InsertPreparedSpriteOccurrence(
-		std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& destination,
-		Visuals::PreparedBuildingGeometry::SpriteOccurrence&& occurrence)
-	{
-		const auto position = std::lower_bound(
-			destination.begin(),
-			destination.end(),
-			occurrence,
-			[](const auto& left, const auto& right)
-			{
-				if (left.PlacementPosition[2] != right.PlacementPosition[2])
-				{
-					return left.PlacementPosition[2] < right.PlacementPosition[2];
-				}
-				if (left.PlacementPosition[1] != right.PlacementPosition[1])
-				{
-					return left.PlacementPosition[1] < right.PlacementPosition[1];
-				}
-				if (left.PlacementPosition[0] != right.PlacementPosition[0])
-				{
-					return left.PlacementPosition[0] < right.PlacementPosition[0];
-				}
-				return left.SectionLocalOrdinal < right.SectionLocalOrdinal;
-			});
-		destination.insert(position, std::move(occurrence));
 	}
 
 	/** Classifies and prepares one occurrence without revisiting its completed actions. */
@@ -815,7 +857,6 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		preparation.OccurrenceOutcomes = std::move(spritePreparation.OccurrenceOutcomes);
 		preparation.SplinePreparations = std::move(progress.SplinePreparations);
-		SortPreparedSpriteOrder(spritePreparation, preparedOrder);
 		auto retained = std::make_unique<RetainedSectionScene>();
 		if (!MoveOrderedSpriteInputs(section, job, preparedOrder, *retained, preparation))
 		{
@@ -836,7 +877,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Collects every ready sprite exactly once while checking its direct ordinal slot. */
+	/** Collects ready sprites in the established painter order through direct ordinal slots. */
 	bool SectionScheduler::CollectReadySpriteOrder(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		const SectionJob& job,
@@ -846,10 +887,20 @@ namespace Services::Map::Buildings::Scheduling
 		const auto& outcomes = progress.SpritePreparation.OccurrenceOutcomes;
 		const auto& preparedSprites = progress.SpritePreparation.PreparedSprites;
 		const auto& preparedIndices = progress.SpritePreparation.PreparedSpriteIndicesByOrdinal;
+		const auto& occurrenceOrder = progress.OccurrenceOrder;
 		output.clear();
 		output.reserve(preparedSprites.size());
-		for (std::size_t ordinal = 0; ordinal < outcomes.size(); ++ordinal)
+		for (std::size_t orderIndex = 0; orderIndex < progress.InitialSpriteCount; ++orderIndex)
 		{
+			const std::size_t ordinal = occurrenceOrder[orderIndex];
+			if (ordinal >= outcomes.size())
+			{
+				REPORT_SECTION_FAILURE(section, job.publicationOwner->ContentHash(),
+					SectionScenePreparationResult::Readiness::InvalidPreparationInputs, "retained sprite assembly",
+					"painter-order sprite ordinal outside occurrence outcomes",
+					static_cast<long long>(ordinal), -1, outcomes.size());
+				return false;
+			}
 			if (outcomes[ordinal].PreparationStatus !=
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite)
 			{
@@ -880,28 +931,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Sorts prepared occurrences with the established stable Z/Y/X painter comparator. */
-	void SectionScheduler::SortPreparedSpriteOrder(
-		const KnownSpritePreparationResult& preparation,
-		std::vector<std::size_t>& order) const
-	{
-		std::stable_sort(order.begin(), order.end(), [&preparation](std::size_t leftIndex, std::size_t rightIndex)
-		{
-			const auto& left = preparation.PreparedSprites[leftIndex].RenderInput.Placement.Position;
-			const auto& right = preparation.PreparedSprites[rightIndex].RenderInput.Placement.Position;
-			if (left[2] != right[2])
-			{
-				return left[2] < right[2];
-			}
-			if (left[1] != right[1])
-			{
-				return left[1] < right[1];
-			}
-			return left[0] < right[0];
-		});
-	}
-
-	/** Moves sorted sprite views and their validated keys/payload owners into matching retained passes. */
+	/** Moves painter-ordered sprite views and their validated keys/payload owners into matching passes. */
 	bool SectionScheduler::MoveOrderedSpriteInputs(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		SectionJob& job,
@@ -991,10 +1021,10 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			if (!AssignSpriteSceneIndexes(
 					section, publicationOwner->ContentHash(), false,
-					section.preparingScene_->ordinarySprites_, validatedScene.OrdinarySprites) ||
+					*section.preparingScene_, validatedScene.OrdinarySprites) ||
 				!AssignSpriteSceneIndexes(
 					section, publicationOwner->ContentHash(), true,
-					section.preparingScene_->overlayLastSprites_, validatedScene.OverlayLastSprites))
+					*section.preparingScene_, validatedScene.OverlayLastSprites))
 			{
 				return false;
 			}
@@ -1004,10 +1034,10 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			if (!ValidateSpriteSceneIndexes(
 					section, publicationOwner->ContentHash(), false,
-					section.completedScene_->ordinarySprites_, validatedScene.OrdinarySprites) ||
+					*section.completedScene_, validatedScene.OrdinarySprites) ||
 				!ValidateSpriteSceneIndexes(
 					section, publicationOwner->ContentHash(), true,
-					section.completedScene_->overlayLastSprites_, validatedScene.OverlayLastSprites))
+					*section.completedScene_, validatedScene.OverlayLastSprites))
 			{
 				return false;
 			}
@@ -1029,14 +1059,15 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Resolves one sorted sprite pass and validates every progressive occurrence before raster use. */
+	/** Resolves descriptor positions through direct ordinal locations and assigns SceneIndex. */
 	bool SectionScheduler::AssignSpriteSceneIndexes(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		std::uint64_t sourceContentHash,
 		bool overlay,
-		std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+		Visuals::PreparedBuildingGeometry& geometry,
 		std::span<const Visuals::BuildingSpriteRenderInput> descriptors)
 	{
+		auto& occurrences = overlay ? geometry.overlayLastSprites_ : geometry.ordinarySprites_;
 		if (occurrences.size() != descriptors.size())
 		{
 			REPORT_SECTION_FAILURE(section, sourceContentHash,
@@ -1045,36 +1076,58 @@ namespace Services::Map::Buildings::Scheduling
 				-1, -1, descriptors.size(), occurrences.size());
 			return false;
 		}
-		for (std::size_t sceneIndex = 0; sceneIndex < occurrences.size(); ++sceneIndex)
+		for (std::size_t sceneIndex = 0; sceneIndex < descriptors.size(); ++sceneIndex)
 		{
-			const auto& occurrence = occurrences[sceneIndex];
 			const auto& descriptor = descriptors[sceneIndex];
-			if (occurrence.SectionLocalOrdinal != descriptor.SectionLocalOrdinal ||
-				occurrence.SourceKey.Bytes() != descriptor.CanonicalSpriteKey ||
-				(occurrence.SceneIndex.has_value() && occurrence.SceneIndex.value() != sceneIndex))
+			bool occurrenceIsOverlay = false;
+			auto* occurrence = geometry.SpriteOccurrenceAtOrdinal(
+				descriptor.SectionLocalOrdinal, occurrenceIsOverlay);
+			if (occurrence == nullptr || occurrenceIsOverlay != overlay ||
+				occurrence->SourceKey.Bytes() != descriptor.CanonicalSpriteKey ||
+				(occurrence->SceneIndex.has_value() && occurrence->SceneIndex.value() != sceneIndex))
 			{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-				ReportSpriteSceneIndexMismatch(section, sourceContentHash, overlay, false,
-					occurrence, descriptor, sceneIndex, descriptors.size());
+				if (occurrence != nullptr && occurrenceIsOverlay == overlay)
+				{
+					ReportSpriteSceneIndexMismatch(section, sourceContentHash, overlay, false,
+						*occurrence, descriptor, sceneIndex, descriptors.size());
+				}
 #endif
+				if (occurrence == nullptr || occurrenceIsOverlay != overlay)
+				{
+				REPORT_SECTION_FAILURE(section, sourceContentHash,
+					SectionScenePreparationResult::Readiness::InvalidPreparationInputs,
+					overlay ? "overlay SceneIndex assignment" : "ordinary SceneIndex assignment",
+					"descriptor ordinal has no matching prepared sprite occurrence",
+					static_cast<long long>(descriptor.SectionLocalOrdinal),
+					static_cast<long long>(sceneIndex), descriptors.size());
+				}
 				return false;
 			}
 		}
-		for (std::size_t sceneIndex = 0; sceneIndex < occurrences.size(); ++sceneIndex)
+		for (std::size_t sceneIndex = 0; sceneIndex < descriptors.size(); ++sceneIndex)
 		{
-			occurrences[sceneIndex].SceneIndex = sceneIndex;
+			bool occurrenceIsOverlay = false;
+			auto* occurrence = geometry.SpriteOccurrenceAtOrdinal(
+				descriptors[sceneIndex].SectionLocalOrdinal, occurrenceIsOverlay);
+			if (occurrence == nullptr || occurrenceIsOverlay != overlay)
+			{
+				return false;
+			}
+			occurrence->SceneIndex = sceneIndex;
 		}
 		return true;
 	}
 
-	/** Verifies that a completed scene's pass indexes still match newly retained equivalent resources. */
+	/** Verifies a completed pass against its direct ordinal locations and descriptor indexes. */
 	bool SectionScheduler::ValidateSpriteSceneIndexes(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
 		std::uint64_t sourceContentHash,
 		bool overlay,
-		const std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+		const Visuals::PreparedBuildingGeometry& geometry,
 		std::span<const Visuals::BuildingSpriteRenderInput> descriptors)
 	{
+		const auto& occurrences = overlay ? geometry.overlayLastSprites_ : geometry.ordinarySprites_;
 		if (occurrences.size() != descriptors.size())
 		{
 			REPORT_SECTION_FAILURE(section, sourceContentHash,
@@ -1083,17 +1136,28 @@ namespace Services::Map::Buildings::Scheduling
 				-1, -1, descriptors.size(), occurrences.size());
 			return false;
 		}
-		for (std::size_t sceneIndex = 0; sceneIndex < occurrences.size(); ++sceneIndex)
+		for (std::size_t sceneIndex = 0; sceneIndex < descriptors.size(); ++sceneIndex)
 		{
-			const auto& occurrence = occurrences[sceneIndex];
 			const auto& descriptor = descriptors[sceneIndex];
-			if (!occurrence.SceneIndex.has_value() || occurrence.SceneIndex.value() != sceneIndex ||
-				occurrence.SectionLocalOrdinal != descriptor.SectionLocalOrdinal ||
-				occurrence.SourceKey.Bytes() != descriptor.CanonicalSpriteKey)
+			bool occurrenceIsOverlay = false;
+			const auto* occurrence = geometry.SpriteOccurrenceAtOrdinal(
+				descriptor.SectionLocalOrdinal, occurrenceIsOverlay);
+			if (occurrence == nullptr || occurrenceIsOverlay != overlay)
+			{
+				REPORT_SECTION_FAILURE(section, sourceContentHash,
+					SectionScenePreparationResult::Readiness::InvalidPreparationInputs,
+					overlay ? "overlay SceneIndex validation" : "ordinary SceneIndex validation",
+					"descriptor ordinal has no matching prepared sprite occurrence",
+					static_cast<long long>(descriptor.SectionLocalOrdinal),
+					static_cast<long long>(sceneIndex), descriptors.size());
+				return false;
+			}
+			if (!occurrence->SceneIndex.has_value() || occurrence->SceneIndex.value() != sceneIndex ||
+				occurrence->SourceKey.Bytes() != descriptor.CanonicalSpriteKey)
 			{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				ReportSpriteSceneIndexMismatch(section, sourceContentHash, overlay, true,
-					occurrence, descriptor, sceneIndex, descriptors.size());
+					*occurrence, descriptor, sceneIndex, descriptors.size());
 #endif
 				return false;
 			}
@@ -1377,6 +1441,21 @@ namespace Services::Map::Buildings::Scheduling
 		return retainedOwner;
 	}
 
+	/** Keeps only valid unfinished progress; failed or empty job shells are retired. */
+	bool SectionScheduler::CanRetainIncompleteJobOnDemandWithdrawal(
+		const ::Services::Map::Buildings::BuildingMapSection* section) const noexcept
+	{
+		if (section == nullptr || !section->renderingState_)
+		{
+			return false;
+		}
+		const auto& job = *static_cast<const SectionJob*>(section->renderingState_.get());
+		return job.publicationOwner != nullptr && !job.GeometryFailed &&
+			!job.Preparation.TerminalReadiness.has_value() &&
+			(job.Preparation.Initialized || job.retainedScene != nullptr ||
+				job.NumericalOperation != nullptr || job.CompletedImageReady || job.CompletedImageTransparent);
+	}
+
 	/** Checks sprite eligibility in constant time without replacing the selected generation. */
 	bool SectionScheduler::NeedsInitialSpriteVisit(
 		const ::Services::Map::Buildings::BuildingMapSection* section,
@@ -1579,9 +1658,7 @@ namespace Services::Map::Buildings::Scheduling
 		const std::size_t contributionCount = candidateData.occurrences.size();
 		auto* output = section.BeginPreparingScene(
 			job.publicationOwner->ContentHash(), contributionCount);
-		const std::size_t ordinaryCount = output->ordinarySprites_.size();
-		const std::size_t splineCount = output->splineSurfaces_.size();
-		const std::size_t overlayCount = output->overlayLastSprites_.size();
+		const std::size_t drawableTriangleCount = output->drawableGpuTriangleCount_;
 		const auto step = Visuals::BuildingGeometryPreparation::Advance(
 			job.retainedScene->RenderSceneInput,
 			job.publicationOwner->SectionRegion(),
@@ -1590,9 +1667,7 @@ namespace Services::Map::Buildings::Scheduling
 			job.GeometryCursor,
 			deadline);
 		result.WorkUnitsConsumed += step.WorkUnitsConsumed;
-		if (output->ordinarySprites_.size() != ordinaryCount ||
-			output->splineSurfaces_.size() != splineCount ||
-			output->overlayLastSprites_.size() != overlayCount)
+		if (output->drawableGpuTriangleCount_ != drawableTriangleCount)
 		{
 			section.MarkGpuPresentationChanged();
 		}
@@ -1621,6 +1696,17 @@ namespace Services::Map::Buildings::Scheduling
 			return false;
 		}
 		job.GeometryComplete = true;
+		const auto& omittedOrdinals = output->TerminalSplineOmissionOrdinals();
+		if (!omittedOrdinals.empty())
+		{
+			result.TerminalSplineOmissions.SplineContributorCount = omittedOrdinals.size();
+			result.TerminalSplineOmissions.FirstSectionLocalOrdinal = omittedOrdinals.front();
+			result.TerminalSplineOmissions.FailureStage =
+				Visuals::BuildingVisualsFailureStage::SurfacePreparation;
+			result.TerminalSplineOmissions.AlternativeStatus =
+				Visuals::BuildingSplineAlternativeStatus::NoDrawableAlternative;
+			result.TerminalSplineOmissions.Reason = output->TerminalSplineOmissionReason();
+		}
 		return true;
 	}
 
@@ -2030,140 +2116,6 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Preserves invalid publication and mismatched sprite-result outcomes before preparation. */
-	bool SectionScheduler::ValidateSectionPreparationInputs(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		const KnownSpritePreparationResult& spritePreparation,
-		SectionScenePreparationResult::Readiness& readiness) const
-	{
-		using Readiness = SectionScenePreparationResult::Readiness;
-		if (publicationOwner == nullptr ||
-			spritePreparation.PreparationStatus == KnownSpritePreparationResult::Status::InvalidPublication)
-		{
-			readiness = Readiness::InvalidPublication;
-			return false;
-		}
-		if (spritePreparation.PublicationIdentity != publicationOwner.get() ||
-			(spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::KnownRequirementsProcessed &&
-				spritePreparation.PreparationStatus != KnownSpritePreparationResult::Status::InvalidSourceRequirement) ||
-			!IsCompatibleSpritePreparation(*publicationOwner, spritePreparation))
-		{
-			readiness = Readiness::InvalidPreparationInputs;
-			return false;
-		}
-		return true;
-	}
-
-	/** Requires exact source-ordered sprite outcomes from the same publication owner. */
-	bool SectionScheduler::IsCompatibleSpritePreparation(
-		const BuildingCandidatePublication& publication,
-		const KnownSpritePreparationResult& spritePreparation)
-	{
-		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
-		const BuildingCandidateSourceData sourceData = publication.BorrowSourceData();
-		if (candidateData.occurrences.size() != spritePreparation.OccurrenceOutcomes.size() ||
-			sourceData.records.size() != candidateData.occurrences.size() ||
-			spritePreparation.PreparedSpriteIndicesByOrdinal.size() != candidateData.occurrences.size())
-		{
-			return false;
-		}
-		for (std::size_t index = 0; index < candidateData.occurrences.size(); ++index)
-		{
-			if (candidateData.occurrences[index].publicationOrdinal != index ||
-				spritePreparation.OccurrenceOutcomes[index].PublicationOrdinal !=
-				candidateData.occurrences[index].publicationOrdinal)
-			{
-				return false;
-			}
-		}
-		for (const auto& prepared : spritePreparation.PreparedSprites)
-		{
-			if (prepared.PublicationOrdinal >= sourceData.records.size())
-			{
-				return false;
-			}
-			const std::size_t index = static_cast<std::size_t>(prepared.PublicationOrdinal);
-			if (sourceData.records[index].kind != BuildingCandidateSourceKind::Sprite ||
-				sourceData.records[index].spritePass != prepared.SpritePass ||
-				(spritePreparation.OccurrenceOutcomes[index].PreparationStatus !=
-					KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite &&
-					spritePreparation.OccurrenceOutcomes[index].PreparationStatus !=
-					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSpritePass))
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/** Accounts for one candidate occurrence and appends only already prepared eligible inputs. */
-	void SectionScheduler::ProcessSectionOccurrence(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		std::uint64_t ordinal,
-		const KnownSpritePreparationResult& spritePreparation,
-		std::span<const SplinePolicy> splinePolicies,
-		SectionScenePreparationResult& output) const
-	{
-		const BuildingCandidateData candidateData = publicationOwner->BorrowCandidateData();
-		const BuildingCandidateSourceData sourceData = publicationOwner->BorrowSourceData();
-		if (ordinal >= candidateData.occurrences.size() || ordinal >= sourceData.records.size())
-		{
-			KnownSpritePreparationResult::OccurrenceOutcome invalid;
-			invalid.PublicationOrdinal = ordinal;
-			output.OccurrenceOutcomes.push_back(invalid);
-			return;
-		}
-		const auto& candidate = candidateData.occurrences[static_cast<std::size_t>(ordinal)];
-		const auto& source = sourceData.records[static_cast<std::size_t>(ordinal)];
-		KnownSpritePreparationResult::OccurrenceOutcome outcome;
-		InitializeSectionOccurrenceOutcome(ordinal, candidate, source, spritePreparation, outcome);
-		const bool sourceBlocked = ProcessTerminalOrPendingSource(source, candidate, outcome);
-		if (source.kind == BuildingCandidateSourceKind::Spline)
-		{
-			ProcessPreparedSpline(publicationOwner, ordinal, source, splinePolicies, outcome, output);
-		}
-		else if (sourceBlocked)
-		{
-			output.OccurrenceOutcomes.push_back(outcome);
-			return;
-		}
-		else if (source.kind == BuildingCandidateSourceKind::Sprite)
-		{
-			ProcessPreparedSprite(ordinal, spritePreparation, outcome, output);
-		}
-		else
-		{
-			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::UnknownSource;
-		}
-		output.OccurrenceOutcomes.push_back(outcome);
-	}
-
-	/** Copies independent evidence; sprite status requires an in-range, ordinal-matching outcome. */
-	void SectionScheduler::InitializeSectionOccurrenceOutcome(
-		std::uint64_t ordinal,
-		const BuildingCandidateOccurrence& candidate,
-		const BuildingCandidateSourceRecord& source,
-		const KnownSpritePreparationResult& spritePreparation,
-		KnownSpritePreparationResult::OccurrenceOutcome& outcome)
-	{
-		outcome.PublicationOrdinal = ordinal;
-		outcome.SourceKind = source.kind;
-		outcome.SourceStatus = source.status;
-		outcome.SpritePass = source.spritePass;
-		outcome.NativeFactsComplete = candidate.nativeFactsComplete;
-		outcome.IsPendingOrUnresolved = candidate.isPendingOrUnresolved;
-		if (source.kind != BuildingCandidateSourceKind::Sprite)
-		{
-			return;
-		}
-		if (ordinal < spritePreparation.OccurrenceOutcomes.size() &&
-			spritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)].PublicationOrdinal == ordinal)
-		{
-			outcome.SpritePreparationStatus =
-				spritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)].PreparationStatus;
-		}
-	}
-
 	/** Preserves source acquisition distinctions before resource preparation is considered. */
 	bool SectionScheduler::ProcessTerminalOrPendingSource(
 		const BuildingCandidateSourceRecord& source,
@@ -2199,70 +2151,6 @@ namespace Services::Map::Buildings::Scheduling
 			return true;
 		}
 		return false;
-	}
-
-	/** Reuses sprite results through checked ordinal and sparse-index correspondence.
-	 * Missing outcomes remain invalid; missing/mismatched prepared sprites remain unresolved geometry.
-	 */
-	void SectionScheduler::ProcessPreparedSprite(
-		std::uint64_t ordinal,
-		const KnownSpritePreparationResult& spritePreparation,
-		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
-		SectionScenePreparationResult& output)
-	{
-		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
-		if (ordinal >= spritePreparation.OccurrenceOutcomes.size() ||
-			spritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)].PublicationOrdinal != ordinal)
-		{
-			outcome.PreparationStatus = Status::InvalidSpriteRequirement;
-			return;
-		}
-		const auto& result = spritePreparation.OccurrenceOutcomes[static_cast<std::size_t>(ordinal)];
-		outcome.PreparationStatus = result.PreparationStatus;
-		outcome.SpritePreparationStatus = result.PreparationStatus;
-		if (outcome.PreparationStatus != Status::ReadySprite)
-		{
-			return;
-		}
-		if (ordinal >= spritePreparation.PreparedSpriteIndicesByOrdinal.size())
-		{
-			outcome.PreparationStatus = Status::UnresolvedSpriteGeometry;
-			return;
-		}
-		const auto preparedIndex = spritePreparation.PreparedSpriteIndicesByOrdinal[static_cast<std::size_t>(ordinal)];
-		if (!preparedIndex.has_value() || *preparedIndex >= spritePreparation.PreparedSprites.size() ||
-			spritePreparation.PreparedSprites[*preparedIndex].PublicationOrdinal != ordinal)
-		{
-			outcome.PreparationStatus = Status::UnresolvedSpriteGeometry;
-			return;
-		}
-		const auto* prepared = &spritePreparation.PreparedSprites[*preparedIndex];
-		if (prepared->SpritePass == BuildingCandidateSpritePass::FirstPass)
-		{
-			output.OrdinarySprites.push_back(prepared->RenderInput);
-		}
-		else if (prepared->SpritePass == BuildingCandidateSpritePass::SecondPass)
-		{
-			output.OverlayLastSprites.push_back(prepared->RenderInput);
-		}
-		else
-		{
-			outcome.PreparationStatus = Status::UnknownSpritePass;
-		}
-	}
-
-	/** Reuses R2R composition with the direct immutable service policy index. */
-	void SectionScheduler::ProcessPreparedSpline(
-		const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-		std::uint64_t ordinal,
-		const BuildingCandidateSourceRecord& source,
-		std::span<const SplinePolicy> splinePolicies,
-		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
-		SectionScenePreparationResult& output) const
-	{
-		SplineRenderInputPreparationResult preparation;
-		PrepareSplineOccurrence(publicationOwner, ordinal, source, splinePolicies, outcome, preparation);
-		output.SplinePreparations.push_back(std::move(preparation));
 	}
 
 	/** Composes one immutable spline occurrence and preserves its established readiness class. */
@@ -2309,41 +2197,6 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			outcome.PreparationStatus = KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedInputs;
 		}
-	}
-
-	/** Completes only when every Section occurrence is ready or terminally omittable. */
-	SectionScheduler::SectionScenePreparationResult::Readiness
-	SectionScheduler::DetermineSceneReadiness(const SectionScenePreparationResult& output)
-	{
-		using Readiness = SectionScenePreparationResult::Readiness;
-		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
-		for (const auto& outcome : output.OccurrenceOutcomes)
-		{
-			switch (outcome.PreparationStatus)
-			{
-			case Status::PendingNativeSourceAcquisition:
-				return Readiness::PendingNativeSourceAcquisition;
-			case Status::PendingSpriteAcquisition:
-				return Readiness::PendingSpriteAcquisition;
-			case Status::TemporarilyUnavailableSource:
-			case Status::TemporarilyUnavailableSprite:
-				return Readiness::TemporarilyUnavailableResources;
-			case Status::InvalidSpriteRequirement:
-			case Status::NotProcessed:
-			case Status::UnknownSource:
-			case Status::MissingSpritePlacement:
-			case Status::UnresolvedSpriteGeometry:
-			case Status::UnknownSpritePass:
-			case Status::UnresolvedInputs:
-				return Readiness::UnresolvedInputs;
-			case Status::TerminalSourceFailure:
-			case Status::TerminalSpriteCaptureFailure:
-			case Status::ReadySprite:
-			case Status::ReadySpline:
-				break;
-			}
-		}
-		return Readiness::CompleteSceneInputs;
 	}
 
 	/** Copies acquired profile values without selecting alternatives or assigning appearance policy. */

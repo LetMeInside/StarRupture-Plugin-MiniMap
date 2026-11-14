@@ -5,6 +5,7 @@
 #include "DiagnosticExports.h"
 #include "plugin_helpers.h"
 #include "BuildingCollectorV2.h"
+#include "BuildingSpatialAdmission.h"
 #include "Native/MassLifecycle.h"
 #include "SplinePolicyId.h"
 #include "../Map.h"
@@ -801,6 +802,8 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Request;
             bool HasRegion;
             Facts::Region Region;
+            Internal::Bounds2D RegionFastAccept;
+            Internal::Bounds2D RegionOverlappingAccept;
         };
 
         std::unordered_map<std::uint64_t, Entry> Entities;
@@ -849,7 +852,21 @@ namespace MiniMap::BuildingAcquisition
         /** Captures logical source lifetime before native operations. */
         Context CaptureContext() const noexcept
         {
-            return {World, Manager, Generation, RequestGeneration, HasRegion, RequestedRegion};
+            Context context{World, Manager, Generation, RequestGeneration, HasRegion, RequestedRegion};
+            if (context.HasRegion)
+            {
+                context.RegionFastAccept = {
+                    context.Region.X,
+                    context.Region.Y,
+                    context.Region.X + context.Region.Width,
+                    context.Region.Y + context.Region.Height};
+                context.RegionOverlappingAccept = {
+                    context.RegionFastAccept.MinX - 5000.0,
+                    context.RegionFastAccept.MinY - 5000.0,
+                    context.RegionFastAccept.MaxX + 5000.0,
+                    context.RegionFastAccept.MaxY + 5000.0};
+            }
+            return context;
         }
 
         /** Checks exact inclusive-edge containment between already validated positive rectangles. */
@@ -1153,18 +1170,13 @@ namespace MiniMap::BuildingAcquisition
 
         /** Applies the approved shortest XY distance from one finite origin to the exact request. */
         static bool IsRegionallyAdmitted(
-            const Facts::Region& region,
+            const Context& context,
             double px,
             double py,
             double resolvedReach) noexcept
         {
-            const double right = region.X + region.Width;
-            const double bottom = region.Y + region.Height;
-            if (px >= region.X && px < right && py >= region.Y && py < bottom)
-                return true;
-            const double dx = (std::max)((std::max)(region.X - px, 0.0), px - right);
-            const double dy = (std::max)((std::max)(region.Y - py, 0.0), py - bottom);
-            return std::hypot(dx, dy) <= resolvedReach;
+            return Internal::BuildingSpatialAdmission::IsBuildingAccepted(
+                px, py, context.RegionFastAccept, context.RegionOverlappingAccept, resolvedReach);
         }
 
         /** Copies transform values and preserves invalid rotation/scale status independently of XY admission. */
@@ -1214,7 +1226,7 @@ namespace MiniMap::BuildingAcquisition
             }
             const SDK::FCrBuildingParameters* parameters = views.BuildingParameters;
             const double resolvedReach = ResolveBuildingReach(parameters);
-            if (!context.HasRegion || !IsRegionallyAdmitted(context.Region, x, y, resolvedReach))
+            if (!context.HasRegion || !IsRegionallyAdmitted(context, x, y, resolvedReach))
                 return std::nullopt;
             OwnedScanOccurrence occurrence;
             occurrence.Data.Index = id.Index;
@@ -2092,6 +2104,13 @@ namespace MiniMap::BuildingAcquisition
             CandidateSourceRecord Source;
         };
 
+        /** Holds the two rectangles prepared once for one requested Section. */
+        struct SectionAdmissionBounds
+        {
+            Internal::Bounds2D FastAccept;
+            Internal::Bounds2D OverlappingAccept;
+        };
+
         /** Validates a finite, positive rectangle with finite, distinct edges. */
         static bool IsValidSectionRegion(const CollectionRegion& region) noexcept
         {
@@ -2247,25 +2266,39 @@ namespace MiniMap::BuildingAcquisition
             return firstGrid <= lastGrid;
         }
 
-        /** Applies exact half-open rectangle membership and the approved circular reach test. */
+        /** Applies the shared exact circular reach test using precomputed Section bounds. */
         static bool IsContributorForSection(
-            const CollectionRegion& sectionRegion,
+            const SectionAdmissionBounds& bounds,
             double positionX,
             double positionY,
             double resolvedReach) noexcept
         {
-            const double right = sectionRegion.xMapUnits + sectionRegion.widthMapUnits;
-            const double bottom = sectionRegion.yMapUnits + sectionRegion.heightMapUnits;
-            if (positionX >= sectionRegion.xMapUnits && positionX < right &&
-                positionY >= sectionRegion.yMapUnits && positionY < bottom)
+            return Internal::BuildingSpatialAdmission::IsBuildingAccepted(
+                positionX, positionY, bounds.FastAccept, bounds.OverlappingAccept, resolvedReach);
+        }
+
+        /** Precomputes each requested Section rectangle and its shared 5,000-unit reach bound. */
+        static std::vector<SectionAdmissionBounds> BuildSectionAdmissionBounds(
+            std::span<const CollectionRegion> sectionRegions)
+        {
+            std::vector<SectionAdmissionBounds> sectionBounds;
+            sectionBounds.reserve(sectionRegions.size());
+            for (const CollectionRegion& region : sectionRegions)
             {
-                return true;
+                SectionAdmissionBounds bounds;
+                bounds.FastAccept = {
+                    region.xMapUnits,
+                    region.yMapUnits,
+                    region.xMapUnits + region.widthMapUnits,
+                    region.yMapUnits + region.heightMapUnits};
+                bounds.OverlappingAccept = {
+                    bounds.FastAccept.MinX - 5000.0,
+                    bounds.FastAccept.MinY - 5000.0,
+                    bounds.FastAccept.MaxX + 5000.0,
+                    bounds.FastAccept.MaxY + 5000.0};
+                sectionBounds.push_back(bounds);
             }
-            const double distanceX = (std::max)((std::max)(sectionRegion.xMapUnits - positionX, 0.0),
-                positionX - right);
-            const double distanceY = (std::max)((std::max)(sectionRegion.yMapUnits - positionY, 0.0),
-                positionY - bottom);
-            return std::hypot(distanceX, distanceY) <= resolvedReach;
+            return sectionBounds;
         }
 
         /** Retains only contributors not excluded by established positive collector policy. */
@@ -2332,7 +2365,7 @@ namespace MiniMap::BuildingAcquisition
             const Facts::Building& building,
             const CandidateOccurrence& occurrence,
             const SectionGridRange& range,
-            std::span<const CollectionRegion> sectionRegions,
+            std::span<const SectionAdmissionBounds> sectionBounds,
             const RequestedSectionLookup& lookup,
             std::vector<std::size_t>& matchingSections)
         {
@@ -2345,7 +2378,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     for (std::size_t sectionIndex : section->second)
                     {
-                        if (IsContributorForSection(sectionRegions[sectionIndex],
+                        if (IsContributorForSection(sectionBounds[sectionIndex],
                             occurrence.xMapUnits, occurrence.yMapUnits, building.ResolvedReach))
                         {
                             matchingSections.push_back(sectionIndex);
@@ -2426,6 +2459,8 @@ namespace MiniMap::BuildingAcquisition
             }
             RequestedSectionLookup lookup;
             BuildRequestedSectionLookup(sectionRegions, lookup);
+            const std::vector<SectionAdmissionBounds> sectionBounds =
+                BuildSectionAdmissionBounds(sectionRegions);
             std::vector<std::vector<SectionContributor>> contributorsBySection(sectionRegions.size());
             std::vector<AcquisitionHashAggregate> hashesBySection(sectionRegions.size());
             std::vector<std::size_t> matchingSections;
@@ -2443,7 +2478,8 @@ namespace MiniMap::BuildingAcquisition
                 {
                     continue;
                 }
-                FindMatchingSections(building, occurrence, reachedRange, sectionRegions, lookup, matchingSections);
+                FindMatchingSections(
+                    building, occurrence, reachedRange, sectionBounds, lookup, matchingSections);
                 if (matchingSections.empty())
                 {
                     continue;

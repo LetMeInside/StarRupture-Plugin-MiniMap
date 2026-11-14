@@ -482,6 +482,7 @@ namespace Services::Map::Buildings::Scheduling
 			std::size_t WorkUnitsConsumed = 0;
 			bool AwaitingImageDemand = false;
 			bool HasSpriteRetries = false;
+			Visuals::BuildingVisualsTerminalOmissionSummary TerminalSplineOmissions;
 			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
 			std::optional<SectionImageCommitResult> FinishedAttempt;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -508,6 +509,12 @@ namespace Services::Map::Buildings::Scheduling
 		std::shared_ptr<const BuildingCandidatePublication> EnsureSectionJob(
 			::Services::Map::Buildings::BuildingMapSection& section,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
+		/** Checks that an unfinished publication job is safe to retain while its Section is parked.
+		 * @param section Section whose opaque scheduler state is inspected.
+		 * @return True only for a valid, nonterminal job that owns resumable work.
+		 */
+		bool CanRetainIncompleteJobOnDemandWithdrawal(
+			const ::Services::Map::Buildings::BuildingMapSection* section) const noexcept;
 		/** Selects initial preparation, retained-scene reuse or a scene-free continuation.
 		 * @param section Section carrying the rendering state to inspect.
 		 * @param publicationOwner Currently selected shared publication owner.
@@ -586,14 +593,23 @@ namespace Services::Map::Buildings::Scheduling
 		 * @return True when all ordinal/source correspondence is valid for this generation.
 		 */
 		bool InitializeSectionPreparationProgress(
-			const ::Services::Map::Buildings::BuildingMapSection& section,
+			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
 		/** Builds exact ordinal outcomes and a stable initial traversal for the selected publication. */
 		bool InitializeSectionOccurrenceOrder(
-			const ::Services::Map::Buildings::BuildingMapSection& section,
+			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			const BuildingCandidatePublication& publication);
+		/** Sorts the sprite prefix by valid source placement and leaves unresolved ordinals in source order.
+		 * @param sourceData Immutable source records aligned to publication ordinals.
+		 * @param occurrenceOrder Existing Section-local traversal array whose suffix remains unchanged.
+		 * @param spriteCount Number of leading sprite ordinals to sort.
+		 */
+		static std::size_t SortSpriteOccurrenceOrder(
+			const BuildingCandidateSourceData& sourceData,
+			std::vector<std::size_t>& occurrenceOrder,
+			std::size_t spriteCount);
 		/** Advances untouched ordinals and retries only pending sprite-resource operations.
 		 * @param job Section-owned progress with direct ordinal-indexed state.
 		 * @param publicationOwner Exact publication supplying immutable source values.
@@ -640,13 +656,6 @@ namespace Services::Map::Buildings::Scheduling
 			const Cache::OwnedSpriteKey& sourceKey,
 			const BuildingCollectionRegion& sectionRegion,
 			Visuals::PreparedBuildingGeometry::SpriteOccurrence& output);
-		/** Inserts one sprite occurrence at its stable Z/Y/X drawing position.
-		 * @param destination Ordinary or overlay pass owned by the preparing Section scene.
-		 * @param occurrence Complete owned sprite geometry and source identity.
-		 */
-		static void InsertPreparedSpriteOccurrence(
-			std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& destination,
-			Visuals::PreparedBuildingGeometry::SpriteOccurrence&& occurrence);
 		/** Prepares one previously untouched occurrence and records its next outstanding action.
 		 * @param job Section-owned occurrence state and sprite outcomes.
 		 * @param publication Exact immutable publication used for source-record correspondence.
@@ -693,7 +702,7 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			SectionJob& job,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
-		/** Collects ready sprite indexes from their direct ordinal outcome slots once.
+		/** Collects ready sprite indexes in the established painter order through direct ordinal slots.
 		 * @param job Complete Section-owned occurrence progress.
 		 * @param output Receives indexes into the retained prepared-sprite values.
 		 * @return True when every ready sprite has exact sparse-index correspondence.
@@ -702,14 +711,7 @@ namespace Services::Map::Buildings::Scheduling
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			const SectionJob& job,
 			std::vector<std::size_t>& output) const;
-		/** Applies the established stable Z/Y/X painter ordering to selected prepared values.
-		 * @param preparation Complete prepared-sprite values whose indexes are retained.
-		 * @param order Index array to sort in place.
-		 */
-		void SortPreparedSpriteOrder(
-			const KnownSpritePreparationResult& preparation,
-			std::vector<std::size_t>& order) const;
-		/** Moves sorted render inputs, validated keys and payload owners into matching passes.
+		/** Moves painter-ordered render inputs, validated keys and payload owners into matching passes.
 		 * @param job Section-owned progress containing per-occurrence keys and payloads.
 		 * @param preparedOrder Stable painter-ordered indexes into prepared sprite values.
 		 * @param retained Receives parallel shared payload owners for retained scene inputs.
@@ -857,19 +859,19 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection& section,
 			RetainedSectionScene& retained,
 			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner);
-		/** Assigns exact painter-pass indexes after validating progressive sprite correspondence.
-		 * @param occurrences Section-owned progressive sprite geometry in painter order.
+		/** Assigns descriptor indexes after validating progressive ordinal-to-geometry correspondence.
+		 * @param geometry Section-owned progressive sprite geometry with direct ordinal locations.
 		 * @param descriptors Final retained resource descriptors for the same pass.
-		 * @return True when each occurrence uniquely matches the descriptor at its exact array index.
+		 * @return True when each descriptor resolves to its exact pass occurrence and canonical key.
 		 */
 		static bool AssignSpriteSceneIndexes(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			std::uint64_t sourceContentHash,
 			bool overlay,
-			std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+			Visuals::PreparedBuildingGeometry& geometry,
 			std::span<const Visuals::BuildingSpriteRenderInput> descriptors);
 		/** Confirms an already completed scene retains indexes for these exact resource descriptors.
-		 * @param occurrences Immutable completed sprite geometry in painter order.
+		 * @param geometry Immutable completed sprite geometry with direct ordinal locations.
 		 * @param descriptors Retained resource descriptors for the corresponding pass.
 		 * @return True only when every stored index, ordinal and canonical key matches its descriptor.
 		 */
@@ -877,7 +879,7 @@ namespace Services::Map::Buildings::Scheduling
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			std::uint64_t sourceContentHash,
 			bool overlay,
-			const std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+			const Visuals::PreparedBuildingGeometry& geometry,
 			std::span<const Visuals::BuildingSpriteRenderInput> descriptors);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -945,43 +947,6 @@ namespace Services::Map::Buildings::Scheduling
 			const ::Services::Map::Buildings::BuildingMapSection& section,
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels);
-		/** Validates publication identity and sprite-preparation correspondence.
-		 * @param publicationOwner Explicitly retained source publication.
-		 * @param spritePreparation Publication-level sprite outcomes to reuse.
-		 * @param readiness Receives the invalid category on rejection.
-		 * @return True when publication identity and occurrence correspondence are valid.
-		 */
-		bool ValidateSectionPreparationInputs(
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			const KnownSpritePreparationResult& spritePreparation,
-			SectionScenePreparationResult::Readiness& readiness) const;
-		/** Rejects missing, reordered, or mismatched publication-level sprite outcomes.
-		 * @param publication Retained publication used to verify ordinal and pass correspondence.
-		 * @param spritePreparation Caller-owned result from the same retained publication.
-		 * @return True when each occurrence outcome corresponds to this publication.
-		 */
-		static bool IsCompatibleSpritePreparation(
-			const BuildingCandidatePublication& publication,
-			const KnownSpritePreparationResult& spritePreparation);
-		/** Accounts for one exact occurrence and appends only ready pass-eligible numerical inputs.
-		 * @param publicationOwner Retained source owner used by existing spline composition.
-		 * @param ordinal Publication-local occurrence ordinal.
-		 * @param spritePreparation Reusable outcomes from the same publication.
-		 * @param splinePolicies Borrowed immutable service policy table.
-		 * @param output Receives this occurrence's evidence and any owned numerical input.
-		 */
-		void ProcessSectionOccurrence(
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			std::uint64_t ordinal,
-			const KnownSpritePreparationResult& spritePreparation,
-			std::span<const SplinePolicy> splinePolicies,
-			SectionScenePreparationResult& output) const;
-		static void InitializeSectionOccurrenceOutcome(
-			std::uint64_t ordinal,
-			const BuildingCandidateOccurrence& candidate,
-			const BuildingCandidateSourceRecord& source,
-			const KnownSpritePreparationResult& spritePreparation,
-			KnownSpritePreparationResult::OccurrenceOutcome& outcome);
 		/** Preserves per-occurrence acquisition evidence before resource or numerical preparation.
 		 * @param source Borrowed source record for one ordinal.
 		 * @param candidate Matching candidate occurrence with native acquisition evidence.
@@ -992,32 +957,6 @@ namespace Services::Map::Buildings::Scheduling
 			const BuildingCandidateSourceRecord& source,
 			const BuildingCandidateOccurrence& candidate,
 			KnownSpritePreparationResult::OccurrenceOutcome& outcome);
-		/** Appends an already prepared ready sprite to its neutral ordered pass.
-		 * @param ordinal Publication-local occurrence ordinal to resolve.
-		 * @param spritePreparation Existing publication-level sprite result; no acquisition is repeated.
-		 * @param outcome Receives the resolved per-occurrence state.
-		 * @param output Receives an ordinary or overlay input only when its pass is known.
-		 */
-		static void ProcessPreparedSprite(
-			std::uint64_t ordinal,
-			const KnownSpritePreparationResult& spritePreparation,
-			KnownSpritePreparationResult::OccurrenceOutcome& outcome,
-			SectionScenePreparationResult& output);
-		/** Reuses R2R composition for one spline occurrence and its direct service policy value.
-		 * @param publicationOwner Retained source owner required by the composition operation.
-		 * @param ordinal Publication-local spline occurrence ordinal.
-		 * @param source Borrowed source record carrying its policy index.
-		 * @param splinePolicies Borrowed immutable service-owned policy table.
-		 * @param outcome Receives readiness classification while retaining acquisition evidence.
-		 * @param output Owns the spline preparation result and occurrence report.
-		 */
-		void ProcessPreparedSpline(
-			const std::shared_ptr<const BuildingCandidatePublication>& publicationOwner,
-			std::uint64_t ordinal,
-			const BuildingCandidateSourceRecord& source,
-			std::span<const SplinePolicy> splinePolicies,
-			KnownSpritePreparationResult::OccurrenceOutcome& outcome,
-			SectionScenePreparationResult& output) const;
 		/** Composes one spline occurrence once and classifies its preserved source outcome.
 		 * @param publicationOwner Retained immutable publication for the occurrence.
 		 * @param ordinal Exact Section-local spline occurrence.
@@ -1033,13 +972,6 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			KnownSpritePreparationResult::OccurrenceOutcome& outcome,
 			SplineRenderInputPreparationResult& preparation) const;
-		/** Reduces Section-local outcomes without upgrading unknown or pending source facts.
-		 * @param output Completed caller-owned result to classify.
-		 * @return Complete-only input readiness or its first blocking category.
-		 */
-		static SectionScenePreparationResult::Readiness DetermineSceneReadiness(
-			const SectionScenePreparationResult& output);
-
 		/** Copies compatible authored profiles into caller-owned generic numerical inputs.
 		 * The caller retains the publication owner for the borrowed record; output owns every value.
 		 * Source alternatives remain in exact order and are never selected here.
@@ -1285,6 +1217,8 @@ namespace Services::Map::Buildings::Scheduling
 			std::vector<SectionOccurrenceProgress> Occurrences;
 			std::vector<SplineRenderInputPreparationResult> SplinePreparations;
 			std::vector<std::size_t> OccurrenceOrder;
+			/** Valid-placement prefix length returned by the existing one-time sprite sort. */
+			std::size_t ValidSpriteCount = 0;
 			std::size_t InitialSpriteCount = 0;
 			std::size_t NextOccurrenceIndex = 0;
 			std::size_t FirstUnresolvedOrdinal = 0;

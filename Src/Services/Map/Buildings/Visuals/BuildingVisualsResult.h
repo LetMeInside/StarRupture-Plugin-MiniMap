@@ -37,6 +37,13 @@ namespace Services::Map::Buildings::Visuals
 		NoDrawableAlternative
 	};
 
+	/** Identifies why an otherwise terminal spline contributor was omitted. */
+	enum class BuildingSplineOmissionReason
+	{
+		NoDrawableAlternative,
+		NumericalRejection
+	};
+
 	/** Records actual numerical and destination outcomes for one positional scene contributor. */
 	struct BuildingVisualsContributorOutcome
 	{
@@ -72,9 +79,10 @@ namespace Services::Map::Buildings::Visuals
 		std::size_t SplineContributorCount = 0;
 		/** First omitted candidate's Section-local publication ordinal. */
 		std::uint64_t FirstSectionLocalOrdinal = 0;
-		/** Failure and alternative values shared by the currently permitted omission category. */
+		/** Representative failure and alternative classification for the first omitted spline. */
 		BuildingVisualsFailureStage FailureStage = BuildingVisualsFailureStage::None;
 		BuildingSplineAlternativeStatus AlternativeStatus = BuildingSplineAlternativeStatus::NotApplicable;
+		BuildingSplineOmissionReason Reason = BuildingSplineOmissionReason::NoDrawableAlternative;
 	};
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

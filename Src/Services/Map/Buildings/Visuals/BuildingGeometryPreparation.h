@@ -76,6 +76,7 @@ namespace Services::Map::Buildings::Visuals
 			bool Initialized = false;
 			bool SplineSamplingPrepared = false;
 			bool SplineHasDrawableSurface = false;
+			bool SplineHasNumericalCandidateRejection = false;
 			bool HasSectionRegion = false;
 			BuildingCollectionRegion SectionRegion{};
 			bool HasAcceptedOmissions = false;

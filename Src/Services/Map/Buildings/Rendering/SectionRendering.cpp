@@ -262,6 +262,7 @@ namespace Services::Map::Buildings::Rendering
 				state_->OmissionSummary.FailureStage = Visuals::BuildingVisualsFailureStage::SurfacePreparation;
 				state_->OmissionSummary.AlternativeStatus =
 					Visuals::BuildingSplineAlternativeStatus::NoDrawableAlternative;
+				state_->OmissionSummary.Reason = geometry.TerminalSplineOmissionReason();
 			}
 			state_->CurrentPhase = State::Phase::Finalize;
 			return;

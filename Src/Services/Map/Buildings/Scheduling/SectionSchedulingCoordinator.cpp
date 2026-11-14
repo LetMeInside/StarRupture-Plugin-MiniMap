@@ -154,6 +154,7 @@ namespace Services::Map::Buildings::Scheduling
 		demandCounts_.clear();
 		waitingSections_.clear();
 		roundRobinPosition_ = 0;
+		lastGpuGeometryPublicationOpportunity_.reset();
 		ResetSchedulingBudgetState();
 		for (auto& sectionEntry : buildingMapService.sections_)
 		{
@@ -191,7 +192,7 @@ namespace Services::Map::Buildings::Scheduling
 			::Services::Map::Buildings::BuildingMapSection::ScenePresentationView presentation;
 			if (section->TryBorrowPresentationScene(presentation) && !presentation.IsComplete)
 			{
-				buildingMapService.MarkGpuSectionPresentationChanged(coordinate.GridX, coordinate.GridY);
+				buildingMapService.MarkGpuPresentationSnapshotChanged(coordinate.GridX, coordinate.GridY);
 			}
 		}
 		if (!hasWaiter)
@@ -248,7 +249,7 @@ namespace Services::Map::Buildings::Scheduling
 		CancelSectionJob(buildingMapService, coordinate);
 	}
 
-	/** Advances acquisition first, then rotates runnable Sections under the same deadline. */
+	/** Advances acquisition first, then alternates Section and GPU work precedence under one deadline. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSections(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionPublicationBatch& publications)
@@ -260,7 +261,26 @@ namespace Services::Map::Buildings::Scheduling
 		const bool budgetWasAlreadyExhausted = consumedSchedulingMs_ >= nominalTickBudgetMs_;
 #endif
 		AdvanceSpriteAcquisitionOnce();
+		const auto now = std::chrono::steady_clock::now();
+		const bool admitDirtyGeometry = !lastGpuGeometryPublicationOpportunity_.has_value() ||
+			now - *lastGpuGeometryPublicationOpportunity_ >= std::chrono::seconds(1);
+		const bool gpuGeometryFirst = budgetTickSequence_ % 2 == 0;
+		bool admissionConsumed = false;
+		if (gpuGeometryFirst)
+		{
+			admissionConsumed = buildingMapService.AdvanceGpuGeometryPublications(
+				tickDeadline_, admitDirtyGeometry);
+		}
 		AdvanceWaitingSectionSlices(buildingMapService, publications);
+		if (!gpuGeometryFirst)
+		{
+			admissionConsumed = buildingMapService.AdvanceGpuGeometryPublications(
+				tickDeadline_, admitDirtyGeometry);
+		}
+		if (admissionConsumed)
+		{
+			lastGpuGeometryPublicationOpportunity_ = std::chrono::steady_clock::now();
+		}
 		FinalizeTickBudget(advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, budgetWasAlreadyExhausted
@@ -517,6 +537,10 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		::Services::Map::Buildings::BuildingMapSection& section)
 	{
+		if (section.ConsumeGpuGeometrySnapshotChanged())
+		{
+			buildingMapService.MarkGpuPresentationSnapshotChanged(section.GetGridX(), section.GetGridY());
+		}
 		if (section.ConsumeGpuPresentationChanged())
 		{
 			buildingMapService.MarkGpuSectionPresentationChanged(section.GetGridX(), section.GetGridY());
@@ -545,6 +569,7 @@ namespace Services::Map::Buildings::Scheduling
 		result.WorkUnitsConsumed = jobResult.WorkUnitsConsumed;
 		result.AwaitingImageDemand = jobResult.AwaitingImageDemand;
 		result.HasSpriteRetries = jobResult.HasSpriteRetries;
+		ReportTerminalSplineOmissions(coordinate, jobResult.TerminalSplineOmissions);
 		if (jobResult.CurrentState == SectionScheduler::SectionJobAdvanceResult::State::WaitingForResources)
 		{
 			result.CurrentState = IncrementalSectionAdvanceResult::State::WaitingForResources;
@@ -605,8 +630,7 @@ namespace Services::Map::Buildings::Scheduling
 			coordinate,
 			publicationOwner,
 			completionOutcome,
-			commitResult.CompletedImageRemoved,
-			commitResult.TerminalSplineOmissions);
+			commitResult.CompletedImageRemoved);
 		return result;
 	}
 
@@ -616,8 +640,7 @@ namespace Services::Map::Buildings::Scheduling
 		const SectionCoordinate& coordinate,
 		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 		SectionCommitOutcome outcome,
-		bool completedImageRemoved,
-		const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions)
+		bool completedImageRemoved)
 	{
 		if (outcome == SectionCommitOutcome::Failed)
 		{
@@ -628,7 +651,6 @@ namespace Services::Map::Buildings::Scheduling
 			coordinate.GridY,
 			publicationOwner->ContentHash());
 		RecordSectionCompleted(buildingMapService, coordinate);
-		ReportTerminalSplineOmissions(coordinate, omissions);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (outcome == SectionCommitOutcome::EmptyCommitted && completedImageRemoved)
 		{
@@ -651,7 +673,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 	}
 
-	/** Emits one bounded warning after a Section with terminal spline omissions commits. */
+	/** Emits one bounded warning when a Section first promotes terminal spline omissions. */
 	void SectionSchedulingCoordinator::ReportTerminalSplineOmissions(
 		const SectionCoordinate& coordinate,
 		const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions) const noexcept
@@ -666,13 +688,16 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
-		const char* failureReason = omissions.AlternativeStatus == Alternative::NoDrawableAlternative
-			? "NoDrawableAlternative"
-			: "Unknown";
+		const char* failureReason = omissions.Reason ==
+			::Services::Map::Buildings::Visuals::BuildingSplineOmissionReason::NumericalRejection
+			? "NumericalRejection"
+			: omissions.AlternativeStatus == Alternative::NoDrawableAlternative
+				? "NoDrawableAlternative"
+				: "Unknown";
 		MiniMap::Services::Logf(
 			*log,
 			MiniMap::Services::Level::Warn,
-			"MiniMap: BuildingMap Section grid=(%lld,%lld) committed with terminal omissions category=splines count=%llu firstSectionLocalContributor=%llu reason=%s",
+			"MiniMap: BuildingMap Section grid=(%lld,%lld) completed with terminal omissions category=splines count=%llu firstSectionLocalContributor=%llu reason=%s",
 			static_cast<long long>(coordinate.GridX),
 			static_cast<long long>(coordinate.GridY),
 			static_cast<unsigned long long>(omissions.SplineContributorCount),
@@ -999,7 +1024,14 @@ namespace Services::Map::Buildings::Scheduling
 		demandCounts_.erase(demandCount);
 		if (sectionScheduler_ != nullptr)
 		{
-			CancelSectionJob(buildingMapService, coordinate);
+			const auto section = buildingMapService.FindSectionAt(coordinate.GridX, coordinate.GridY);
+			const bool retainIncompleteJob =
+				buildingMapService.IsSectionWithinAnyViewportResidencyRange(coordinate.GridX, coordinate.GridY) &&
+				sectionScheduler_->CanRetainIncompleteJobOnDemandWithdrawal(section);
+			if (!retainIncompleteJob)
+			{
+				CancelSectionJob(buildingMapService, coordinate);
+			}
 		}
 	}
 

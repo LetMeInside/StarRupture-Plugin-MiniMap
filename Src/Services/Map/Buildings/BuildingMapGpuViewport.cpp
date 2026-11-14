@@ -62,20 +62,10 @@ namespace Services::Map::Buildings
 		}
 		std::size_t sectionIndex = 0;
 		EnumerateDrawableSections([&](std::int64_t gridX, std::int64_t gridY,
-			const Visuals::PreparedBuildingGeometry& geometry, bool)
+			const Visuals::PreparedBuildingGeometry&, bool)
 		{
-			BuildingMapSection* section = service_ != nullptr
-				? service_->FindSectionAt(gridX, gridY)
-				: nullptr;
-			if (section == nullptr)
-			{
-				return;
-			}
-			const auto presentation = GetOrBuildSectionPresentation(
-				*section, geometry, atlas);
-			AppendSnapshotSection(next, previous, presentation, sectionIndex,
-				atlasTexture, atlasSize, atlasDrawingRevision, atlasLease);
-			++sectionIndex;
+			AppendCurrentSection(next, previous, gridX, gridY, sectionIndex,
+				atlas, atlasTexture, atlasSize, atlasDrawingRevision, atlasLease);
 		});
 		if (!next && previous && sectionIndex != previous->Sections.size())
 		{
@@ -94,33 +84,55 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Reuses Section geometry unless source content, readiness or its atlas binding changed. */
+	/** Resolves one enumerated Section and appends its already published presentation. */
+	void BuildingMapGpuViewport::AppendCurrentSection(
+		std::shared_ptr<PresentationSnapshot>& next,
+		const std::shared_ptr<const PresentationSnapshot>& previous,
+		std::int64_t gridX,
+		std::int64_t gridY,
+		std::size_t& sectionIndex,
+		Cache::SpriteSourceManager& atlas,
+		MiniMap::Services::Texture atlasTexture,
+		MiniMap::Services::TextureSize atlasSize,
+		std::uint64_t atlasDrawingRevision,
+		const std::shared_ptr<const void>& atlasLease)
+	{
+		BuildingMapSection* section = service_ != nullptr
+			? service_->FindSectionAt(gridX, gridY)
+			: nullptr;
+		if (section == nullptr)
+		{
+			return;
+		}
+		const auto presentation = GetOrBuildSectionPresentation(*section, atlas);
+		if (presentation == nullptr)
+		{
+			return;
+		}
+		AppendSnapshotSection(next, previous, presentation, sectionIndex,
+			atlasTexture, atlasSize, atlasDrawingRevision, atlasLease);
+		++sectionIndex;
+	}
+
+	/** Reuses immutable Section geometry and rebuilds only bindings for a new atlas revision. */
 	std::shared_ptr<const BuildingMapSectionPresentation>
 	BuildingMapGpuViewport::GetOrBuildSectionPresentation(
 		BuildingMapSection& section,
-		const Visuals::PreparedBuildingGeometry& geometry,
 		Cache::SpriteSourceManager& atlas)
 	{
 		const std::uint64_t atlasDrawingRevision = atlas.PublishedDrawingRevision();
 		auto existing = section.gpuPresentation_;
 		if (existing == nullptr)
 		{
-			auto replacement = std::make_shared<BuildingMapSectionPresentation>();
-			replacement->PreparedGeometry = BuildSectionGeometry(geometry);
-			BuildSpriteBindings(geometry.OrdinarySprites(), atlas, replacement->OrdinaryBindings);
-			BuildSpriteBindings(geometry.OverlayLastSprites(), atlas, replacement->OverlayBindings);
-			section.gpuPresentationAtlasRevision_ = atlasDrawingRevision;
-			section.gpuPresentationAtlasRevisionValid_ = true;
-			section.gpuPresentation_ = replacement;
-			return replacement;
+			return nullptr;
 		}
 		if (!section.gpuPresentationAtlasRevisionValid_ ||
 			atlasDrawingRevision != section.gpuPresentationAtlasRevision_)
 		{
 			auto replacement = std::make_shared<BuildingMapSectionPresentation>();
 			replacement->PreparedGeometry = existing->PreparedGeometry;
-			BuildSpriteBindings(geometry.OrdinarySprites(), atlas, replacement->OrdinaryBindings);
-			BuildSpriteBindings(geometry.OverlayLastSprites(), atlas, replacement->OverlayBindings);
+			RebindSpriteBindings(existing->OrdinaryBindings, atlas, replacement->OrdinaryBindings);
+			RebindSpriteBindings(existing->OverlayBindings, atlas, replacement->OverlayBindings);
 			section.gpuPresentationAtlasRevision_ = atlasDrawingRevision;
 			section.gpuPresentationAtlasRevisionValid_ = true;
 			section.gpuPresentation_ = replacement;
@@ -157,55 +169,21 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Copies already prepared drawable values and leaves unsupported textured materials omitted. */
-	std::shared_ptr<const BuildingMapSectionPresentation::Geometry>
-	BuildingMapGpuViewport::BuildSectionGeometry(
-		const Visuals::PreparedBuildingGeometry& geometry) const
-	{
-		auto result = std::make_shared<BuildingMapSectionPresentation::Geometry>();
-		for (const auto& occurrence : geometry.OrdinarySprites())
-		{
-			AppendSpriteOccurrence(occurrence, result->OrdinaryTriangles);
-		}
-		for (const auto& surface : geometry.SplineSurfaces())
-		{
-			if (!surface.IsTextured)
-			{
-				for (const SolidTriangle& triangle : surface.SolidTriangles)
-				{
-					BuildingMapSectionPresentation::SolidTriangle prepared;
-					prepared.World = triangle.Vertices;
-					prepared.Rgb = surface.SolidRgb;
-					prepared.Opacity = surface.Opacity;
-					result->SolidSurfaces.push_back(prepared);
-				}
-			}
-		}
-		for (const auto& occurrence : geometry.OverlayLastSprites())
-		{
-			AppendSpriteOccurrence(occurrence, result->OverlayTriangles);
-		}
-		return result;
-	}
-
-	/** Captures only current content rectangles; an unavailable source keeps an empty binding. */
-	void BuildingMapGpuViewport::BuildSpriteBindings(
-		const std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+	/** Rebinds keys retained with the published geometry and keeps each triangle range unchanged. */
+	void BuildingMapGpuViewport::RebindSpriteBindings(
+		const std::vector<BuildingMapSectionPresentation::SpriteBinding>& source,
 		Cache::SpriteSourceManager& atlas,
 		std::vector<BuildingMapSectionPresentation::SpriteBinding>& output) const
 	{
 		output.clear();
-		output.reserve(occurrences.size());
-		std::size_t firstTriangle = 0;
-		for (const auto& occurrence : occurrences)
+		output.reserve(source.size());
+		for (const auto& sourceBinding : source)
 		{
-			BuildingMapSectionPresentation::SpriteBinding binding;
-			binding.FirstTriangle = firstTriangle;
-			binding.TriangleCount = occurrence.SectionTriangleCount;
-			firstTriangle += occurrence.SectionTriangleCount;
+			BuildingMapSectionPresentation::SpriteBinding binding = sourceBinding;
+			binding.ContentRectangle = {};
 			Cache::SpriteSourceManager::AtlasSpriteEntry entry;
-			if (occurrence.SectionTriangleCount != 0 &&
-				atlas.TryGetPublishedSprite(occurrence.SourceKey, entry) && entry.DrawingEligible)
+			if (binding.TriangleCount != 0 &&
+				atlas.TryGetPublishedSprite(binding.SourceKey, entry) && entry.DrawingEligible)
 			{
 				binding.ContentRectangle = {entry.Content.X, entry.Content.Y,
 					entry.Content.Width, entry.Content.Height};
@@ -214,23 +192,224 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Resolves source-image UVs into the published content rectangle without using gutter pixels. */
-	void BuildingMapGpuViewport::AppendSpriteOccurrence(
-		const Visuals::PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-		std::vector<BuildingMapSectionPresentation::SpriteTriangle>& output) const
+	/** Resumes one Section's ordered draw layout and transfers it only when every pass is sealed. */
+	bool BuildingMapGpuViewport::AdvanceSectionGeometryPublication(
+		BuildingMapSection& section,
+		const Visuals::PreparedBuildingGeometry& geometry,
+		Cache::SpriteSourceManager& atlas,
+		std::chrono::steady_clock::time_point deadline)
 	{
-		for (std::size_t triangleIndex = 0; triangleIndex < occurrence.SectionTriangleCount; ++triangleIndex)
+		auto& assembly = section.gpuGeometryAssembly_;
+		if (assembly == nullptr || assembly->SourceScene != &geometry ||
+			assembly->SourceContentHash != geometry.SourceContentHash())
 		{
-			const auto& source = occurrence.SectionTriangles[triangleIndex];
-			BuildingMapSectionPresentation::SpriteTriangle triangle;
-			for (std::size_t vertexIndex = 0; vertexIndex < 3; ++vertexIndex)
+			BeginSectionGeometryAssembly(section, geometry);
+		}
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (assembly->CurrentPhase == BuildingMapSection::GpuGeometryAssembly::Phase::OrdinarySprites)
 			{
-				triangle.World[vertexIndex] = source.Vertices[vertexIndex].Position;
-				const double u = source.Vertices[vertexIndex].TextureCoordinates[0];
-				const double v = source.Vertices[vertexIndex].TextureCoordinates[1];
-				triangle.ProcessedUv[vertexIndex] = {static_cast<float>(u), static_cast<float>(v)};
+				if (!AdvanceSpritePassAssembly(section, geometry, false, deadline))
+				{
+					return false;
+				}
+				assembly->CurrentPhase = BuildingMapSection::GpuGeometryAssembly::Phase::SolidSurfaces;
 			}
-			output.push_back(triangle);
+			else if (assembly->CurrentPhase == BuildingMapSection::GpuGeometryAssembly::Phase::SolidSurfaces)
+			{
+				if (!AdvanceSolidSurfaceAssembly(section, geometry, deadline))
+				{
+					return false;
+				}
+				assembly->CurrentPhase = BuildingMapSection::GpuGeometryAssembly::Phase::OverlaySprites;
+				assembly->PainterOrderIndex = 0;
+			}
+			else if (assembly->CurrentPhase == BuildingMapSection::GpuGeometryAssembly::Phase::OverlaySprites)
+			{
+				if (!AdvanceSpritePassAssembly(section, geometry, true, deadline))
+				{
+					return false;
+				}
+				assembly->CurrentPhase = BuildingMapSection::GpuGeometryAssembly::Phase::OrdinaryBindings;
+				assembly->BindingIndex = 0;
+			}
+			else if (AdvanceBindingAssembly(section, atlas, deadline))
+			{
+				PublishSectionGeometryAssembly(section);
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+		return false;
+	}
+
+	/** Captures an append-only input boundary and allocates this generation's private staging owners. */
+	void BuildingMapGpuViewport::BeginSectionGeometryAssembly(
+		BuildingMapSection& section,
+		const Visuals::PreparedBuildingGeometry& geometry)
+	{
+		auto& assembly = section.gpuGeometryAssembly_;
+		assembly = std::make_unique<BuildingMapSection::GpuGeometryAssembly>();
+		assembly->Presentation = std::make_unique<BuildingMapSectionPresentation>();
+		assembly->Geometry = std::make_shared<BuildingMapSectionPresentation::Geometry>();
+		assembly->SourceScene = &geometry;
+		assembly->SourceContentHash = geometry.SourceContentHash();
+		assembly->OrdinaryOccurrenceCount = geometry.OrdinarySprites().size();
+		assembly->OverlayOccurrenceCount = geometry.OverlayLastSprites().size();
+		assembly->SurfaceCount = geometry.SplineSurfaces().size();
+		section.gpuGeometryChangedDuringAssembly_ = false;
+	}
+
+	/** Publishes sealed vectors by ownership transfer and preserves old snapshot owners. */
+	void BuildingMapGpuViewport::PublishSectionGeometryAssembly(BuildingMapSection& section)
+	{
+		auto& assembly = section.gpuGeometryAssembly_;
+		assembly->Presentation->PreparedGeometry = std::move(assembly->Geometry);
+		if (assembly->Presentation->PreparedGeometry->OrdinaryTriangles.empty() &&
+			assembly->Presentation->PreparedGeometry->SolidSurfaces.empty() &&
+			assembly->Presentation->PreparedGeometry->OverlayTriangles.empty())
+		{
+			section.gpuPresentation_.reset();
+			section.gpuPresentationAtlasRevisionValid_ = false;
+		}
+		else
+		{
+			section.gpuPresentation_ = std::shared_ptr<const BuildingMapSectionPresentation>(
+				std::move(assembly->Presentation));
+			section.gpuPresentationAtlasRevision_ = assembly->BindingAtlasRevision;
+			section.gpuPresentationAtlasRevisionValid_ = true;
+		}
+		section.gpuGeometryAssembly_.reset();
+	}
+
+	/** Appends one painter-ordered sprite pass without converting retained triangles again. */
+	bool BuildingMapGpuViewport::AdvanceSpritePassAssembly(
+		BuildingMapSection& section,
+		const Visuals::PreparedBuildingGeometry& geometry,
+		bool overlayLast,
+		std::chrono::steady_clock::time_point deadline)
+	{
+		auto& assembly = *section.gpuGeometryAssembly_;
+		const auto& painterOrder = geometry.SpritePainterOrder();
+		auto& triangles = overlayLast ? assembly.Geometry->OverlayTriangles : assembly.Geometry->OrdinaryTriangles;
+		auto& bindings = overlayLast
+			? assembly.Presentation->OverlayBindings : assembly.Presentation->OrdinaryBindings;
+		while (assembly.PainterOrderIndex < geometry.SpritePainterCount() &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			bool occurrenceIsOverlay = false;
+			std::size_t vectorIndex = 0;
+			const auto* occurrence = geometry.SpriteOccurrenceAtOrdinal(
+				painterOrder[assembly.PainterOrderIndex], occurrenceIsOverlay, &vectorIndex);
+			const std::size_t occurrenceLimit = overlayLast
+				? assembly.OverlayOccurrenceCount : assembly.OrdinaryOccurrenceCount;
+			if (occurrence == nullptr || occurrenceIsOverlay != overlayLast || vectorIndex >= occurrenceLimit)
+			{
+				++assembly.PainterOrderIndex;
+				assembly.TriangleIndex = 0;
+				continue;
+			}
+			while (assembly.TriangleIndex < occurrence->SectionTriangleCount &&
+				std::chrono::steady_clock::now() < deadline)
+			{
+				triangles.push_back(occurrence->DrawTriangles[assembly.TriangleIndex]);
+				++assembly.TriangleIndex;
+			}
+			if (assembly.TriangleIndex != occurrence->SectionTriangleCount)
+			{
+				return false;
+			}
+			BuildingMapSectionPresentation::SpriteBinding binding;
+			binding.FirstTriangle = triangles.size() - occurrence->SectionTriangleCount;
+			binding.TriangleCount = occurrence->SectionTriangleCount;
+			binding.SourceKey = occurrence->SourceKey;
+			bindings.push_back(std::move(binding));
+			++assembly.PainterOrderIndex;
+			assembly.TriangleIndex = 0;
+		}
+		return assembly.PainterOrderIndex == geometry.SpritePainterCount();
+	}
+
+	/** Appends converted solid spline values in their established surface and triangle order. */
+	bool BuildingMapGpuViewport::AdvanceSolidSurfaceAssembly(
+		BuildingMapSection& section,
+		const Visuals::PreparedBuildingGeometry& geometry,
+		std::chrono::steady_clock::time_point deadline)
+	{
+		auto& assembly = *section.gpuGeometryAssembly_;
+		const auto& surfaces = geometry.SplineSurfaces();
+		while (assembly.SurfaceIndex < assembly.SurfaceCount && std::chrono::steady_clock::now() < deadline)
+		{
+			const auto& surface = surfaces[assembly.SurfaceIndex];
+			const auto& triangles = surface.DrawSolidTriangles;
+			while (assembly.SurfaceTriangleIndex < triangles.size() &&
+				std::chrono::steady_clock::now() < deadline)
+			{
+				assembly.Geometry->SolidSurfaces.push_back(triangles[assembly.SurfaceTriangleIndex]);
+				++assembly.SurfaceTriangleIndex;
+			}
+			if (assembly.SurfaceTriangleIndex != triangles.size())
+			{
+				return false;
+			}
+			++assembly.SurfaceIndex;
+			assembly.SurfaceTriangleIndex = 0;
+		}
+		return assembly.SurfaceIndex == assembly.SurfaceCount;
+	}
+
+	/** Resumes binding lookup by source key and restarts only this stage on atlas revision changes. */
+	bool BuildingMapGpuViewport::AdvanceBindingAssembly(
+		BuildingMapSection& section,
+		Cache::SpriteSourceManager& atlas,
+		std::chrono::steady_clock::time_point deadline)
+	{
+		auto& assembly = *section.gpuGeometryAssembly_;
+		const std::uint64_t drawingRevision = atlas.PublishedDrawingRevision();
+		if (!assembly.BindingAtlasRevisionValid || assembly.BindingAtlasRevision != drawingRevision)
+		{
+			assembly.BindingAtlasRevision = drawingRevision;
+			assembly.BindingAtlasRevisionValid = true;
+			assembly.CurrentPhase = BuildingMapSection::GpuGeometryAssembly::Phase::OrdinaryBindings;
+			assembly.BindingIndex = 0;
+		}
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const bool overlayLast = assembly.CurrentPhase ==
+				BuildingMapSection::GpuGeometryAssembly::Phase::OverlayBindings;
+			auto& bindings = overlayLast
+				? assembly.Presentation->OverlayBindings : assembly.Presentation->OrdinaryBindings;
+			if (assembly.BindingIndex == bindings.size())
+			{
+				if (overlayLast)
+				{
+					return atlas.PublishedDrawingRevision() == assembly.BindingAtlasRevision;
+				}
+				assembly.CurrentPhase = BuildingMapSection::GpuGeometryAssembly::Phase::OverlayBindings;
+				assembly.BindingIndex = 0;
+				continue;
+			}
+			UpdateSpriteBindingRectangle(bindings[assembly.BindingIndex], atlas);
+			++assembly.BindingIndex;
+		}
+		return false;
+	}
+
+	/** Refreshes one staged binding's rectangle while retaining its source key and triangle range. */
+	void BuildingMapGpuViewport::UpdateSpriteBindingRectangle(
+		BuildingMapSectionPresentation::SpriteBinding& binding,
+		Cache::SpriteSourceManager& atlas)
+	{
+		binding.ContentRectangle = {};
+		Cache::SpriteSourceManager::AtlasSpriteEntry entry;
+		if (binding.TriangleCount != 0 &&
+			atlas.TryGetPublishedSprite(binding.SourceKey, entry) && entry.DrawingEligible)
+		{
+			binding.ContentRectangle = {entry.Content.X, entry.Content.Y,
+				entry.Content.Width, entry.Content.Height};
 		}
 	}
 

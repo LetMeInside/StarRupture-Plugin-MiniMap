@@ -397,7 +397,7 @@ namespace Services::Map::Buildings::Visuals
 			deadline);
 	}
 
-	/** Submits the next exact-index sprite record, or advances to the spline pass. */
+	/** Submits the next painter-ordered sprite occurrence, or advances to the next render pass. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvancePreparedSpritePass(
 		const PreparedBuildingGeometry& geometry,
 		const BuildingRenderSceneInput& resourceScene,
@@ -408,41 +408,48 @@ namespace Services::Map::Buildings::Visuals
 		std::chrono::steady_clock::time_point deadline,
 		bool overlay)
 	{
-		auto& records = overlay ? geometry.OverlayLastSprites() : geometry.OrdinarySprites();
 		auto& sources = overlay ? resourceScene.OverlayLastSprites : resourceScene.OrdinarySprites;
 		auto& index = overlay ? cursor.OverlaySpriteIndex : cursor.OrdinarySpriteIndex;
-		if (index == records.size())
+		const auto& painterOrder = geometry.SpritePainterOrder();
+		while (index < geometry.SpritePainterCount())
 		{
-			cursor.CurrentPhase = overlay ? SceneCursor::Phase::Complete : SceneCursor::Phase::Splines;
-			return SceneAdvanceResult::Progressed;
+			const std::uint64_t ordinal = painterOrder[index];
+			bool occurrenceIsOverlay = false;
+			const auto* occurrence = geometry.SpriteOccurrenceAtOrdinal(ordinal, occurrenceIsOverlay);
+			if (occurrence == nullptr || occurrenceIsOverlay != overlay)
+			{
+				++index;
+				continue;
+			}
+			if (!occurrence->SceneIndex.has_value() || occurrence->SceneIndex.value() >= sources.size())
+			{
+				RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
+					occurrence->SceneIndex.has_value() ? "SceneIndex outside descriptor array" : "SceneIndex missing",
+					static_cast<long long>(occurrence->SectionLocalOrdinal),
+					occurrence->SceneIndex.has_value() ? static_cast<long long>(*occurrence->SceneIndex) : -1, sources.size());
+				return FailPreparedSpriteInput(
+					overlay, static_cast<std::size_t>(occurrence->SectionLocalOrdinal), context, cursor, result);
+			}
+			const std::size_t sceneIndex = occurrence->SceneIndex.value();
+			const auto& source = sources[sceneIndex];
+			if (occurrence->SectionLocalOrdinal != source.SectionLocalOrdinal ||
+				occurrence->SourceKey.Bytes() != source.CanonicalSpriteKey)
+			{
+				RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
+					occurrence->SectionLocalOrdinal != source.SectionLocalOrdinal ? "publication ordinal mismatch" : "canonical sprite key mismatch",
+					static_cast<long long>(occurrence->SectionLocalOrdinal), static_cast<long long>(sceneIndex),
+					source.SectionLocalOrdinal, occurrence->SectionLocalOrdinal);
+				return FailPreparedSpriteInput(overlay, sceneIndex, context, cursor, result);
+			}
+			if (occurrence->SectionTriangleCount == 0)
+			{
+				return FinishSectionExcludedSprite(sceneIndex, overlay, context, cursor, result);
+			}
+			return SubmitPreparedSpriteImage(
+				*occurrence, source, overlay, destination, context, cursor, result, deadline);
 		}
-		const auto& occurrence = records[index];
-		if (!occurrence.SceneIndex.has_value() || occurrence.SceneIndex.value() >= sources.size())
-		{
-			RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
-				occurrence.SceneIndex.has_value() ? "SceneIndex outside descriptor array" : "SceneIndex missing",
-				static_cast<long long>(occurrence.SectionLocalOrdinal),
-				occurrence.SceneIndex.has_value() ? static_cast<long long>(*occurrence.SceneIndex) : -1, sources.size());
-			return FailPreparedSpriteInput(
-				overlay, static_cast<std::size_t>(occurrence.SectionLocalOrdinal), context, cursor, result);
-		}
-		const std::size_t sceneIndex = occurrence.SceneIndex.value();
-		const auto& source = sources[sceneIndex];
-		if (occurrence.SectionLocalOrdinal != source.SectionLocalOrdinal ||
-			occurrence.SourceKey.Bytes() != source.CanonicalSpriteKey)
-		{
-			RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
-				occurrence.SectionLocalOrdinal != source.SectionLocalOrdinal ? "publication ordinal mismatch" : "canonical sprite key mismatch",
-				static_cast<long long>(occurrence.SectionLocalOrdinal), static_cast<long long>(sceneIndex),
-				source.SectionLocalOrdinal, occurrence.SectionLocalOrdinal);
-			return FailPreparedSpriteInput(overlay, sceneIndex, context, cursor, result);
-		}
-		if (occurrence.SectionTriangleCount == 0)
-		{
-			return FinishSectionExcludedSprite(sceneIndex, overlay, context, cursor, result);
-		}
-		return SubmitPreparedSpriteImage(
-			occurrence, source, overlay, destination, context, cursor, result, deadline);
+		cursor.CurrentPhase = overlay ? SceneCursor::Phase::Complete : SceneCursor::Phase::Splines;
+		return SceneAdvanceResult::Progressed;
 	}
 
 	/** Completes a source-valid sprite whose clipped Section polygon has no positive area. */

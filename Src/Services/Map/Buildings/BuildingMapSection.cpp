@@ -146,13 +146,19 @@ namespace Services::Map::Buildings
 		if (preparingScene_ == nullptr || preparingSceneSourceContentHash_ != sourceContentHash ||
 			preparingScene_->contributionStates_.size() != contributionCount)
 		{
+			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
+			{
+				gpuGeometryAssembly_.reset();
+			}
 			preparingScene_ = std::make_unique<Visuals::PreparedBuildingGeometry>();
 			preparingScene_->sourceContentHash_ = sourceContentHash;
 			preparingScene_->InitializeContributionStates(contributionCount);
 			preparingSceneSourceContentHash_ = sourceContentHash;
 			if (completedScene_ == nullptr)
 			{
-				MarkGpuPresentationChanged();
+				gpuPresentation_.reset();
+				gpuPresentationAtlasRevisionValid_ = false;
+				gpuGeometrySnapshotChanged_ = true;
 			}
 		}
 		return preparingScene_.get();
@@ -186,11 +192,26 @@ namespace Services::Map::Buildings
 #endif
 			return false;
 		}
+		const bool hadCompletedScene = completedScene_ != nullptr;
+		const bool hadPreparingAssembly = gpuGeometryAssembly_ != nullptr &&
+			gpuGeometryAssembly_->SourceScene == preparingScene_.get();
+		if (gpuGeometryAssembly_ != nullptr && !hadPreparingAssembly)
+		{
+			gpuGeometryAssembly_.reset();
+		}
 		completedScene_ = std::move(preparingScene_);
 		preparingSceneSourceContentHash_ = 0;
-		gpuPresentation_.reset();
-		gpuPresentationAtlasRevisionValid_ = false;
-		gpuPresentationChanged_ = true;
+		if (completedScene_->drawableGpuTriangleCount_ == 0)
+		{
+			gpuPresentation_.reset();
+			gpuPresentationAtlasRevisionValid_ = false;
+			gpuGeometryAssembly_.reset();
+			gpuGeometrySnapshotChanged_ = true;
+		}
+		else if (hadCompletedScene && !hadPreparingAssembly)
+		{
+			gpuPresentationChanged_ = true;
+		}
 		return true;
 	}
 
@@ -222,9 +243,18 @@ namespace Services::Map::Buildings
 	{
 		if (preparingScene_ != nullptr && preparingSceneSourceContentHash_ != currentSourceContentHash)
 		{
+			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
+			{
+				gpuGeometryAssembly_.reset();
+			}
 			preparingScene_.reset();
 			preparingSceneSourceContentHash_ = 0;
-			MarkGpuPresentationChanged();
+			if (completedScene_ == nullptr)
+			{
+				gpuPresentation_.reset();
+				gpuPresentationAtlasRevisionValid_ = false;
+				gpuGeometrySnapshotChanged_ = true;
+			}
 		}
 	}
 
@@ -232,11 +262,17 @@ namespace Services::Map::Buildings
 	void BuildingMapSection::DiscardPreparingScene() noexcept
 	{
 		const bool wasVisible = preparingScene_ != nullptr && completedScene_ == nullptr;
+		if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
+		{
+			gpuGeometryAssembly_.reset();
+		}
 		preparingScene_.reset();
 		preparingSceneSourceContentHash_ = 0;
 		if (wasVisible)
 		{
-			MarkGpuPresentationChanged();
+			gpuPresentation_.reset();
+			gpuPresentationAtlasRevisionValid_ = false;
+			gpuGeometrySnapshotChanged_ = true;
 		}
 	}
 
@@ -247,8 +283,10 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
-		gpuPresentation_.reset();
-		gpuPresentationAtlasRevisionValid_ = false;
+		if (gpuGeometryAssembly_ != nullptr)
+		{
+			gpuGeometryChangedDuringAssembly_ = true;
+		}
 		gpuPresentationChanged_ = true;
 	}
 
@@ -257,6 +295,14 @@ namespace Services::Map::Buildings
 	{
 		const bool changed = gpuPresentationChanged_;
 		gpuPresentationChanged_ = false;
+		return changed;
+	}
+
+	/** Hands off eligibility changes without changing Section-owned prepared geometry. */
+	bool BuildingMapSection::ConsumeGpuGeometrySnapshotChanged() noexcept
+	{
+		const bool changed = gpuGeometrySnapshotChanged_;
+		gpuGeometrySnapshotChanged_ = false;
 		return changed;
 	}
 

@@ -88,6 +88,12 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
+	#if defined(_DEBUG)
+		if (spriteSourceManager_ != nullptr)
+		{
+			spriteSourceManager_->BeginAtlasExportSession();
+		}
+	#endif
 	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (spriteSourceManager_ != nullptr)
 		{
@@ -127,6 +133,8 @@ namespace Services::Map::Buildings
 		}
 		viewportsByHandle_.clear();
 		gpuPresentationChangedSections_.clear();
+		gpuPresentationSnapshotChangedSections_.clear();
+		gpuGeometryPublicationCursor_.reset();
 		gpuViewportRangesChanged_.clear();
 		observedAcquisitionHashes_.clear();
 		appliedSectionHashes_.clear();
@@ -241,6 +249,8 @@ namespace Services::Map::Buildings
 		}
 		viewportsByHandle_.clear();
 		gpuPresentationChangedSections_.clear();
+		gpuPresentationSnapshotChangedSections_.clear();
+		gpuGeometryPublicationCursor_.reset();
 		gpuViewportRangesChanged_.clear();
 	}
 
@@ -733,7 +743,7 @@ namespace Services::Map::Buildings
 		return false;
 	}
 
-	/** Invalidates only completed image bytes for Sections outside the current viewport union. */
+	/** Retires out-of-envelope preparation and invalidates completed images outside existing residency. */
 	void BuildingMapService::ReconcileSectionImageResidency()
 	{
 		for (auto appliedHash = appliedSectionHashes_.begin(); appliedHash != appliedSectionHashes_.end();)
@@ -750,13 +760,17 @@ namespace Services::Map::Buildings
 		for (const auto& sectionEntry : sections_)
 		{
 			BuildingMapSection* section = sectionEntry.second.get();
-			if (section == nullptr || !section->HasCompletedImage())
+			if (section == nullptr)
 			{
 				continue;
 			}
 			if (!IsSectionWithinAnyViewportResidencyRange(sectionEntry.first.first, sectionEntry.first.second))
 			{
-				section->InvalidateCompletedImage();
+				section->ResetRenderingState();
+				if (section->HasCompletedImage())
+				{
+					section->InvalidateCompletedImage();
+				}
 			}
 		}
 	}
@@ -984,6 +998,131 @@ namespace Services::Map::Buildings
 		gpuPresentationChangedSections_.emplace(gridX, gridY);
 	}
 
+	/** Queues one immediate presentation-list change that requires no geometry assembly. */
+	void BuildingMapService::MarkGpuPresentationSnapshotChanged(
+		std::int64_t gridX,
+		std::int64_t gridY)
+	{
+		gpuPresentationSnapshotChangedSections_.emplace(gridX, gridY);
+	}
+
+	/** Admits dirty Sections once per routine interval and resumes admitted assembly under one deadline. */
+	bool BuildingMapService::AdvanceGpuGeometryPublications(
+		std::chrono::steady_clock::time_point deadline,
+		bool admitDirtySections)
+	{
+		if (spriteSourceManager_ == nullptr)
+		{
+			return false;
+		}
+		bool startedNewAssembly = false;
+		std::size_t sectionsRemaining = gpuPresentationChangedSections_.size();
+		while (sectionsRemaining != 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			auto current = gpuGeometryPublicationCursor_.has_value()
+				? gpuPresentationChangedSections_.upper_bound(*gpuGeometryPublicationCursor_)
+				: gpuPresentationChangedSections_.begin();
+			if (current == gpuPresentationChangedSections_.end())
+			{
+				current = gpuPresentationChangedSections_.begin();
+			}
+			const SectionCoordinate coordinate = *current;
+			gpuGeometryPublicationCursor_ = coordinate;
+			--sectionsRemaining;
+			const BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+			if (section == nullptr)
+			{
+				gpuPresentationChangedSections_.erase(coordinate);
+				continue;
+			}
+			if (!admitDirtySections && section->gpuGeometryAssembly_ == nullptr)
+			{
+				continue;
+			}
+			bool sectionStartedAssembly = false;
+			if (!AdvanceGpuGeometryPublication(
+				coordinate, deadline, admitDirtySections, sectionStartedAssembly))
+			{
+				startedNewAssembly = startedNewAssembly || sectionStartedAssembly;
+				break;
+			}
+			startedNewAssembly = startedNewAssembly || sectionStartedAssembly;
+		}
+		return startedNewAssembly;
+	}
+
+	/** Validates one selected generation and advances its staged buffers under the shared deadline. */
+	bool BuildingMapService::AdvanceGpuGeometryPublication(
+		const SectionCoordinate& coordinate,
+		std::chrono::steady_clock::time_point deadline,
+		bool admitDirtySections,
+		bool& startedNewAssembly)
+	{
+		startedNewAssembly = false;
+		BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+		if (!HasGpuViewportDemand(coordinate))
+		{
+			return true;
+		}
+		BuildingMapSection::ScenePresentationView presentation;
+		if (!section->TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
+		{
+			gpuPresentationChangedSections_.erase(coordinate);
+			section->gpuGeometryAssembly_.reset();
+			return true;
+		}
+		const auto selected = pendingSectionPublications_.find(coordinate);
+		if (!presentation.IsComplete &&
+			(selected == pendingSectionPublications_.end() || selected->second == nullptr ||
+				selected->second->ContentHash() != presentation.Scene->SourceContentHash()))
+		{
+			gpuPresentationChangedSections_.erase(coordinate);
+			section->gpuGeometryAssembly_.reset();
+			return true;
+		}
+		if (std::chrono::steady_clock::now() >= deadline)
+		{
+			return false;
+		}
+		const auto* activeAssembly = section->gpuGeometryAssembly_.get();
+		const bool requiresNewAssembly = activeAssembly == nullptr || activeAssembly->SourceScene != presentation.Scene ||
+			activeAssembly->SourceContentHash != presentation.Scene->SourceContentHash();
+		if (requiresNewAssembly && !admitDirtySections)
+		{
+			return true;
+		}
+		startedNewAssembly = requiresNewAssembly;
+		if (!BuildingMapGpuViewport::AdvanceSectionGeometryPublication(
+			*section, *presentation.Scene, *spriteSourceManager_, deadline))
+		{
+			return false;
+		}
+		gpuPresentationChangedSections_.erase(coordinate);
+		gpuPresentationSnapshotChangedSections_.insert(coordinate);
+		if (section->gpuGeometryChangedDuringAssembly_)
+		{
+			gpuPresentationChangedSections_.insert(coordinate);
+			section->gpuGeometryChangedDuringAssembly_ = false;
+		}
+		return true;
+	}
+
+	/** Checks the existing GPU viewport ranges without creating or changing Section demand. */
+	bool BuildingMapService::HasGpuViewportDemand(const SectionCoordinate& coordinate) const noexcept
+	{
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			const auto* viewport = dynamic_cast<const BuildingMapGpuViewport*>(viewportEntry.second);
+			if (viewport != nullptr && coordinate.first >= viewport->gridRange_.firstX &&
+				coordinate.first < viewport->gridRange_.endX && coordinate.second >= viewport->gridRange_.firstY &&
+				coordinate.second < viewport->gridRange_.endY)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Queues the GPU viewport whose range was just registered or moved. */
 	void BuildingMapService::MarkGpuViewportRangeChanged(std::uint64_t viewportHandle)
 	{
@@ -994,7 +1133,7 @@ namespace Services::Map::Buildings
 	void BuildingMapService::RefreshGpuPresentationSnapshots(bool atlasBindingsChanged)
 	{
 		if (spriteSourceManager_ == nullptr || (!atlasBindingsChanged &&
-			gpuPresentationChangedSections_.empty() && gpuViewportRangesChanged_.empty()))
+			gpuPresentationSnapshotChangedSections_.empty() && gpuViewportRangesChanged_.empty()))
 		{
 			return;
 		}
@@ -1006,7 +1145,7 @@ namespace Services::Map::Buildings
 				continue;
 			}
 			bool affected = atlasBindingsChanged || gpuViewportRangesChanged_.contains(entry.first);
-			for (const SectionCoordinate& changed : gpuPresentationChangedSections_)
+			for (const SectionCoordinate& changed : gpuPresentationSnapshotChangedSections_)
 			{
 				const auto& range = gpuViewport->gridRange_;
 				affected = affected || (changed.first >= range.firstX && changed.first < range.endX &&
@@ -1017,7 +1156,7 @@ namespace Services::Map::Buildings
 				gpuViewport->RefreshPresentationSnapshot(*spriteSourceManager_);
 			}
 		}
-		gpuPresentationChangedSections_.clear();
+		gpuPresentationSnapshotChangedSections_.clear();
 		gpuViewportRangesChanged_.clear();
 	}
 
@@ -1121,10 +1260,15 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
-		const auto& previousRange = viewportEntry->second->gridRange_;
+		const BuildingMapViewport::GridRange previousRange = viewportEntry->second->gridRange_;
 		if (previousRange.firstX != firstGridX || previousRange.firstY != firstGridY ||
 			previousRange.endX != endGridX || previousRange.endY != endGridY)
 		{
+			viewportEntry->second->gridRange_ = {
+				firstGridX,
+				firstGridY,
+				endGridX,
+				endGridY};
 			if (sectionSchedulingCoordinator_ == nullptr ||
 				!sectionSchedulingCoordinator_->ChangeViewportDemand(
 					*this,
@@ -1138,6 +1282,7 @@ namespace Services::Map::Buildings
 					endGridY,
 					viewportEntry->second->RenderSectionImages()))
 			{
+				viewportEntry->second->gridRange_ = previousRange;
 				return false;
 			}
 			InvalidateDepartedViewportPublications(

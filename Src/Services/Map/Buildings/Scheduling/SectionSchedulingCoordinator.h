@@ -418,22 +418,20 @@ namespace Services::Map::Buildings::Scheduling
 		void PublishGpuPresentationChange(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			::Services::Map::Buildings::BuildingMapSection& section);
-		/** Applies existing service, waiting, omission and viewport events for one terminal commit result.
+		/** Applies existing service, waiting and viewport events for one terminal commit result.
 		 * @param buildingMapService Service owning the selected publication and viewport notifications.
 		 * @param coordinate Coordinate of the terminal Section attempt.
 		 * @param publicationOwner Selected immutable publication whose hash becomes applied on success.
 		 * @param outcome Existing terminal status classified as failed, image committed, or empty committed.
 		 * @param completedImageRemoved Whether a confirmed-empty commit removed a prior image.
-		 * @param omissions Fixed-size terminal omission evidence from this attempt.
 		 */
 		void HandleSectionCommitResult(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			const SectionCoordinate& coordinate,
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			SectionCommitOutcome outcome,
-			bool completedImageRemoved,
-			const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions);
-		/** Logs one bounded warning after successful commitment of terminal spline omissions. */
+			bool completedImageRemoved);
+		/** Logs one bounded warning when terminal spline omissions are first promoted for a Section. */
 		void ReportTerminalSplineOmissions(
 			const SectionCoordinate& coordinate,
 			const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions) const noexcept;
@@ -526,6 +524,7 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t budgetTickSequence_ = 0;
 		double nominalTickBudgetMs_ = 0.0;
 		std::chrono::steady_clock::time_point tickDeadline_{};
+		std::optional<std::chrono::steady_clock::time_point> lastGpuGeometryPublicationOpportunity_;
 		double consumedSchedulingMs_ = 0.0;
 		bool budgetTickAvailable_ = false;
 		static constexpr std::size_t ContinuationFairnessIntervalTicks = 32;

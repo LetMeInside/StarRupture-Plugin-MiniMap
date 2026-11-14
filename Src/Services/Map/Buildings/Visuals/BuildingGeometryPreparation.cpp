@@ -37,6 +37,7 @@ namespace Services::Map::Buildings::Visuals
 		Initialized = false;
 		SplineSamplingPrepared = false;
 		SplineHasDrawableSurface = false;
+		SplineHasNumericalCandidateRejection = false;
 		HasSectionRegion = false;
 		SectionRegion = {};
 		HasAcceptedOmissions = false;
@@ -855,19 +856,22 @@ namespace Services::Map::Buildings::Visuals
 		const PreparedBuildingGeometry& output,
 		BuildingVisualsContext& scratch)
 	{
-		for (const auto& occurrence : output.ordinarySprites_)
+		for (std::size_t orderIndex = 0; orderIndex < output.spritePainterCount_; ++orderIndex)
 		{
-			if (!occurrence.IsOccluder)
+			bool isOverlayLast = false;
+			const auto* occurrence = output.SpriteOccurrenceAtOrdinal(
+				output.spritePainterOrder_[orderIndex], isOverlayLast);
+			if (occurrence == nullptr || isOverlayLast || !occurrence->IsOccluder)
 			{
 				continue;
 			}
 			SplineOcclusionSpriteQuad occluder;
-			occluder.TopHeight = occurrence.OccluderTopHeight;
-			occluder.Key = occurrence.SectionLocalOrdinal;
-			for (std::size_t corner = 0; corner < occurrence.SourceWorldQuad.Corners.size(); ++corner)
+			occluder.TopHeight = occurrence->OccluderTopHeight;
+			occluder.Key = occurrence->SectionLocalOrdinal;
+			for (std::size_t corner = 0; corner < occurrence->SourceWorldQuad.Corners.size(); ++corner)
 			{
 				occluder.Corners[corner] = {
-					occurrence.SourceWorldQuad.Corners[corner][0], occurrence.SourceWorldQuad.Corners[corner][1]};
+					occurrence->SourceWorldQuad.Corners[corner][0], occurrence->SourceWorldQuad.Corners[corner][1]};
 			}
 			scratch.occluders_.push_back(occluder);
 		}
@@ -951,6 +955,7 @@ namespace Services::Map::Buildings::Visuals
 				"could not copy canonical sprite key", static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
 			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::InvalidInputs);
 		}
+		PreparedBuildingGeometry::PrepareSpriteDrawLayout(occurrence);
 		if (!overlay)
 		{
 			outcome.OccluderGeometryPrepared = BuildingVisuals::AddOccluder(
@@ -963,7 +968,18 @@ namespace Services::Map::Buildings::Visuals
 		}
 		outcome.GeometryPrepared = true;
 		const bool hasDrawableGeometry = occurrence.SectionTriangleCount != 0;
-		(overlay ? output.overlayLastSprites_ : output.ordinarySprites_).push_back(std::move(occurrence));
+		auto& destination = overlay ? output.overlayLastSprites_ : output.ordinarySprites_;
+		destination.push_back(std::move(occurrence));
+		if (!output.TrySetSpriteOccurrenceLocation(
+			sprite.SectionLocalOrdinal, overlay, destination.size() - 1))
+		{
+			destination.pop_back();
+			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
+			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
+				"could not set ordinal-to-occurrence correspondence",
+				static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
+			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::InvalidInputs);
+		}
 		SetContributionStatus(output, sprite.SectionLocalOrdinal,
 			outcome.FailureStage == BuildingVisualsFailureStage::None
 			? (hasDrawableGeometry
@@ -1089,6 +1105,14 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsContributorOutcome outcome;
 		const bool drawable = PrepareSplineCandidateGeometry(
 			spline, preparedSpline, surface, splineIndex, surfaceIndex, scratch, outcome);
+		if (alternative && outcome.GeometryPrepared && outcome.SurfaceIssue == SplineSurfaceIssue::None &&
+			outcome.RejectedCells != 0)
+		{
+			cursor.Results.SplineSurfaces.push_back(outcome);
+			cursor.SplineHasNumericalCandidateRejection = true;
+			++cursor.SplineSurfaceIndex;
+			return Status::Pending;
+		}
 		if (alternative && !drawable)
 		{
 			cursor.Results.SplineSurfaces.push_back(outcome);
@@ -1207,6 +1231,11 @@ namespace Services::Map::Buildings::Visuals
 			cursor.Results.SplineSurfaces.back().FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
 			cursor.Results.Complete = false;
 			cursor.HasAcceptedOmissions = true;
+			if (output.terminalSplineOmissionOrdinals_.empty() &&
+				cursor.SplineHasNumericalCandidateRejection)
+			{
+				output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalRejection;
+			}
 			output.terminalSplineOmissionOrdinals_.push_back(spline.SectionLocalOrdinal);
 			FinishSpline(spline.SectionLocalOrdinal, output, cursor, true);
 			return Status::Pending;
@@ -1386,6 +1415,8 @@ namespace Services::Map::Buildings::Visuals
 		{
 			prepared.TexturedTriangles = std::move(scratch.sectionClippedTexturedTriangles_);
 		}
+		PreparedBuildingGeometry::PrepareSolidSurfaceDrawLayout(prepared);
+		output.drawableGpuTriangleCount_ += prepared.DrawSolidTriangles.size();
 		output.splineSurfaces_.push_back(std::move(prepared));
 	}
 
@@ -1407,6 +1438,10 @@ namespace Services::Map::Buildings::Visuals
 		cursor.Results.SplineSurfaces.push_back(outcome);
 		cursor.Results.Complete = false;
 		cursor.HasAcceptedOmissions = true;
+		if (output.terminalSplineOmissionOrdinals_.empty() && cursor.SplineHasNumericalCandidateRejection)
+		{
+			output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalRejection;
+		}
 		output.terminalSplineOmissionOrdinals_.push_back(spline.SectionLocalOrdinal);
 		FinishSpline(spline.SectionLocalOrdinal, output, cursor, true);
 		return Status::Pending;
@@ -1426,6 +1461,7 @@ namespace Services::Map::Buildings::Visuals
 		cursor.SplineSurfaceIndex = 0;
 		cursor.SplineSamplingPrepared = false;
 		cursor.SplineHasDrawableSurface = false;
+		cursor.SplineHasNumericalCandidateRejection = false;
 	}
 
 	/** Reserves one ordinal slot and rejects ordinals already owned by another contributor. */

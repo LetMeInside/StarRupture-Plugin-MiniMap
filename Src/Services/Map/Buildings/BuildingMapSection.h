@@ -2,6 +2,9 @@
 // contexts and immutable Section presentation shared with render snapshots.
 #pragma once
 
+#include "Cache/OwnedSpriteKey.h"
+#include "Visuals/PreparedBuildingGeometry.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -19,7 +22,6 @@ namespace Services::Map::Buildings::Scheduling
 namespace Services::Map::Buildings::Visuals
 {
 	class BuildingVisualsContext;
-	class PreparedBuildingGeometry;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	struct SectionFailureDetails;
 #endif
@@ -32,25 +34,17 @@ namespace Services::Map::Buildings
 	struct BuildingMapSectionPresentation final
 	{
 		/** One prepared source-image sprite triangle, independent of atlas publication. */
-		struct SpriteTriangle
-		{
-			std::array<std::array<double, 3>, 3> World{};
-			std::array<std::array<float, 2>, 3> ProcessedUv{};
-		};
+		using SpriteTriangle = Visuals::SectionDrawSpriteTriangle;
 		/** Maps one occurrence's contiguous triangle range into its current atlas content. */
 		struct SpriteBinding
 		{
 			std::size_t FirstTriangle = 0;
 			std::size_t TriangleCount = 0;
+			Cache::OwnedSpriteKey SourceKey;
 			std::array<std::uint32_t, 4> ContentRectangle{};
 		};
 		/** One solid spline triangle with the only material fields used by Draw. */
-		struct SolidTriangle
-		{
-			std::array<std::array<double, 3>, 3> World{};
-			std::uint32_t Rgb = 0xFFFFFF;
-			std::uint8_t Opacity = 255;
-		};
+		using SolidTriangle = Visuals::SectionDrawSolidTriangle;
 
 		/** Shares unchanged world geometry when only atlas content bindings change. */
 		struct Geometry final
@@ -211,6 +205,8 @@ namespace Services::Map::Buildings
 		void MarkGpuPresentationChanged() noexcept;
 		/** Consumes the Section-local change signal after its scheduler reports the coordinate. */
 		bool ConsumeGpuPresentationChanged() noexcept;
+		/** Consumes an immediate geometry-eligibility transition for snapshot membership. */
+		bool ConsumeGpuGeometrySnapshotChanged() noexcept;
 
 		/**
 		 * Returns this Section's private rendering context, allocating it on the
@@ -244,5 +240,36 @@ namespace Services::Map::Buildings
 		std::uint64_t gpuPresentationAtlasRevision_ = 0;
 		bool gpuPresentationAtlasRevisionValid_ = false;
 		bool gpuPresentationChanged_ = false;
+		/** Owns one private resumable draw-buffer batch until atomic publication or source invalidation. */
+		struct GpuGeometryAssembly
+		{
+			/** Defines the required ordinary, spline and overlay pass sequence plus atlas binding stages. */
+			enum class Phase : std::uint8_t
+			{
+				OrdinarySprites,
+				SolidSurfaces,
+				OverlaySprites,
+				OrdinaryBindings,
+				OverlayBindings
+			};
+			std::unique_ptr<BuildingMapSectionPresentation> Presentation;
+			std::shared_ptr<BuildingMapSectionPresentation::Geometry> Geometry;
+			const Visuals::PreparedBuildingGeometry* SourceScene = nullptr;
+			std::uint64_t SourceContentHash = 0;
+			std::size_t PainterOrderIndex = 0;
+			std::size_t TriangleIndex = 0;
+			std::size_t OrdinaryOccurrenceCount = 0;
+			std::size_t OverlayOccurrenceCount = 0;
+			std::size_t SurfaceIndex = 0;
+			std::size_t SurfaceCount = 0;
+			std::size_t SurfaceTriangleIndex = 0;
+			std::size_t BindingIndex = 0;
+			std::uint64_t BindingAtlasRevision = 0;
+			Phase CurrentPhase = Phase::OrdinarySprites;
+			bool BindingAtlasRevisionValid = false;
+		};
+		std::unique_ptr<GpuGeometryAssembly> gpuGeometryAssembly_;
+		bool gpuGeometryChangedDuringAssembly_ = false;
+		bool gpuGeometrySnapshotChanged_ = false;
 	};
 }

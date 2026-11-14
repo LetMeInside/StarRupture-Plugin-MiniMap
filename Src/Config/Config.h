@@ -16,6 +16,9 @@ namespace MiniMapConfig
         bool CoordsInUEUnits = false;
         bool ShowCompass = true;
         bool ClearCache = false;
+#if defined(_DEBUG)
+        bool AtlasExport = false;
+#endif
         bool ZoomWithMouseWheel = true;
         Keybind MouseWheelKey = {'L', 'e', 'f', 't', 'C', 'o', 'n', 't', 'r', 'o', 'l', '\0'};
         uint32_t WheelModifier = 1; // Services::WheelModifier::LeftControl; unchanged default bit.
@@ -89,6 +92,10 @@ namespace MiniMapConfig
     Settings Get(); // Infrequent input registration only; returns owned bindings.
     bool VisibleAtStartup();
     bool ClearCache();
+#if defined(_DEBUG)
+    /** Returns whether Debug atlas PNG exports are enabled for later publications. */
+    bool AtlasExportEnabled();
+#endif
     double InitialZoom();
     double ZoomStepFactor();
     TrackingSettings GetTrackingSettings();

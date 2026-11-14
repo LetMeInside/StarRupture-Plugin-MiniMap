@@ -7,10 +7,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <span>
 #include <utility>
@@ -203,6 +205,20 @@ namespace Services::Map::Buildings
 				bool)>& handler) const;
 		/** Queues one Section presentation whose selected prepared scene changed. */
 		void MarkGpuSectionPresentationChanged(std::int64_t gridX, std::int64_t gridY);
+		/** Queues an immediate eligibility-only snapshot change without geometry publication. */
+		void MarkGpuPresentationSnapshotChanged(std::int64_t gridX, std::int64_t gridY);
+		/** Advances dirty assemblies under the shared deadline and reports whether a new batch began. */
+		bool AdvanceGpuGeometryPublications(
+			std::chrono::steady_clock::time_point deadline,
+			bool admitDirtySections);
+		/** Advances one Section and reports continuation plus whether this call began its assembly. */
+		bool AdvanceGpuGeometryPublication(
+			const SectionCoordinate& coordinate,
+			std::chrono::steady_clock::time_point deadline,
+			bool admitDirtySections,
+			bool& startedNewAssembly);
+		/** Checks whether a GPU viewport currently demands one Section coordinate. */
+		bool HasGpuViewportDemand(const SectionCoordinate& coordinate) const noexcept;
 		/** Queues one GPU viewport after its registered Section range changes. */
 		void MarkGpuViewportRangeChanged(std::uint64_t viewportHandle);
 		/** Refreshes only GPU viewports affected by Section, range or atlas changes. */
@@ -369,7 +385,11 @@ namespace Services::Map::Buildings
 		std::map<std::uint64_t, BuildingMapViewport*> viewportsByHandle_;
 		std::map<std::uint64_t, std::uint64_t> observedAcquisitionHashes_;
 		std::map<SectionCoordinate, std::uint64_t> appliedSectionHashes_;
+		/** Dirty Section geometry awaiting the next routine publication admission. */
 		std::set<SectionCoordinate> gpuPresentationChangedSections_;
+		/** Completed or eligibility-only Section changes awaiting snapshot membership publication. */
+		std::set<SectionCoordinate> gpuPresentationSnapshotChangedSections_;
+		std::optional<SectionCoordinate> gpuGeometryPublicationCursor_;
 		std::set<std::uint64_t> gpuViewportRangesChanged_;
 		SectionPublicationMap pendingSectionPublications_;
 		std::set<std::uint64_t> sectionHashRechecksRequested_;

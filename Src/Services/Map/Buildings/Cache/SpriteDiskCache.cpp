@@ -35,7 +35,7 @@ SpriteDiskCache::SpriteDiskCache(std::filesystem::path buildingsRoot)
 	{
 	}
 
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(_DEBUG)
 	/** Encodes one published atlas and atomically writes it under the configured diagnostics directory. */
 	bool SpriteDiskCache::WriteAtlasDiagnosticPng(
 		const std::wstring& fileName,

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <functional>
 #include <array>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -50,8 +51,8 @@ namespace Services::Map::Buildings
 		/** Returns read-only access to the service's published shared sprite atlas. */
 		const Cache::SpriteSourceManager* GetPublishedSpriteAtlas() const noexcept;
 		/** Visits existing demanded Sections without copying their geometry.
-		 * Read OrdinarySprites(), then SplineSurfaces(), then OverlayLastSprites() from each
-		 * borrowed scene; each category retains its established deterministic preparation order.
+		 * Sprite vectors are stored in append order; use SpritePainterOrder() and direct ordinal
+		 * lookup to traverse ordinary sprites, then spline surfaces, then overlay-last sprites.
 		 */
 		void EnumerateDrawableSections(const DrawableSectionHandler& handler) const;
 		/**
@@ -91,10 +92,21 @@ namespace Services::Map::Buildings
 			double heightMapUnits);
 		/** Rebuilds only on a queued Section, range or atlas publication transition. */
 		void RefreshPresentationSnapshot(Cache::SpriteSourceManager& atlas);
-		/** Reuses the Section-owned presentation or rebuilds it for scene or atlas changes. */
+		/** Appends the currently selected Section's immutable presentation if one has been published. */
+		void AppendCurrentSection(
+			std::shared_ptr<PresentationSnapshot>& next,
+			const std::shared_ptr<const PresentationSnapshot>& previous,
+			std::int64_t gridX,
+			std::int64_t gridY,
+			std::size_t& sectionIndex,
+			Cache::SpriteSourceManager& atlas,
+			MiniMap::Services::Texture atlasTexture,
+			MiniMap::Services::TextureSize atlasSize,
+			std::uint64_t atlasDrawingRevision,
+			const std::shared_ptr<const void>& atlasLease);
+		/** Borrows the last immutable Section geometry and rebinds only its owned keys. */
 		std::shared_ptr<const BuildingMapSectionPresentation> GetOrBuildSectionPresentation(
 			BuildingMapSection& section,
-			const Visuals::PreparedBuildingGeometry& geometry,
 			Cache::SpriteSourceManager& atlas);
 		/** Appends one Section while lazily creating a replacement only after observable change. */
 		void AppendSnapshotSection(
@@ -106,18 +118,43 @@ namespace Services::Map::Buildings
 			MiniMap::Services::TextureSize atlasSize,
 			std::uint64_t atlasDrawingRevision,
 			const std::shared_ptr<const void>& atlasLease) const;
-		/** Copies drawable world triangles once while retaining their processed-image UVs. */
-		std::shared_ptr<const BuildingMapSectionPresentation::Geometry> BuildSectionGeometry(
-			const Visuals::PreparedBuildingGeometry& geometry) const;
-		/** Resolves occurrence bindings without rebuilding their prepared world triangles. */
-		void BuildSpriteBindings(
-			const std::vector<Visuals::PreparedBuildingGeometry::SpriteOccurrence>& occurrences,
+		/** Resolves new atlas rectangles from keys owned by the exact published geometry. */
+		void RebindSpriteBindings(
+			const std::vector<BuildingMapSectionPresentation::SpriteBinding>& source,
 			Cache::SpriteSourceManager& atlas,
 			std::vector<BuildingMapSectionPresentation::SpriteBinding>& output) const;
-		/** Copies one occurrence's already clipped world positions and processed-image UVs. */
-		void AppendSpriteOccurrence(
-			const Visuals::PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-			std::vector<BuildingMapSectionPresentation::SpriteTriangle>& output) const;
+		/** Advances one admitted Section draw-layout assembly until its shared deadline. */
+		static bool AdvanceSectionGeometryPublication(
+			BuildingMapSection& section,
+			const Visuals::PreparedBuildingGeometry& geometry,
+			Cache::SpriteSourceManager& atlas,
+			std::chrono::steady_clock::time_point deadline);
+		/** Starts a fresh private assembly for the selected Section source generation. */
+		static void BeginSectionGeometryAssembly(
+			BuildingMapSection& section,
+			const Visuals::PreparedBuildingGeometry& geometry);
+		/** Appends one painter-ordered sprite pass using retained per-contribution draw values. */
+		static bool AdvanceSpritePassAssembly(
+			BuildingMapSection& section,
+			const Visuals::PreparedBuildingGeometry& geometry,
+			bool overlayLast,
+			std::chrono::steady_clock::time_point deadline);
+		/** Appends retained solid spline values in existing surface order. */
+		static bool AdvanceSolidSurfaceAssembly(
+			BuildingMapSection& section,
+			const Visuals::PreparedBuildingGeometry& geometry,
+			std::chrono::steady_clock::time_point deadline);
+		/** Applies atlas rectangles to staged occurrence bindings without rebuilding geometry. */
+		static bool AdvanceBindingAssembly(
+			BuildingMapSection& section,
+			Cache::SpriteSourceManager& atlas,
+			std::chrono::steady_clock::time_point deadline);
+		/** Transfers a complete staged value into the Section's immutable presentation owner. */
+		static void PublishSectionGeometryAssembly(BuildingMapSection& section);
+		/** Applies the current published atlas rectangle to one staged binding. */
+		static void UpdateSpriteBindingRectangle(
+			BuildingMapSectionPresentation::SpriteBinding& binding,
+			Cache::SpriteSourceManager& atlas);
 		/** Converts one world-space point using the caller's existing map projection. */
 		static MiniMap::Services::Vec2 TransformWorldPoint(
 			const std::array<double, 3>& world,

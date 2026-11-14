@@ -3,6 +3,9 @@
 // Implements cache-aware shared sprite ownership, deterministic incremental atlas packing,
 // and one whole-texture GPU publication at the service's synchronous flush boundary.
 #include "SpriteSourceManager.h"
+#if defined(_DEBUG)
+#include "Config/Config.h"
+#endif
 
 #include <chrono>
 #include <algorithm>
@@ -60,6 +63,13 @@ namespace Services::Map::Buildings::Cache
 	void SpriteSourceManager::BeginDiagnosticsSession() noexcept
 	{
 		diagnostics_ = {};
+	}
+#endif
+
+#if defined(_DEBUG)
+	/** Resets atlas publication numbering independently of optional performance counters. */
+	void SpriteSourceManager::BeginAtlasExportSession() noexcept
+	{
 		sessionPublicationSequence_ = 0;
 	}
 #endif
@@ -406,7 +416,7 @@ namespace Services::Map::Buildings::Cache
 		admittedSourcesSincePublication_ = 0;
 		firstUnpublishedChange_ = {};
 		DrainRetiredTextures();
-	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	#if defined(_DEBUG)
 		RecordPublishedAtlasDiagnostics();
 	#endif
 		return MiniMap::Services::UploadState::Complete;
@@ -477,12 +487,18 @@ namespace Services::Map::Buildings::Cache
 			: upload;
 	}
 
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(_DEBUG)
 	/** Numbers and exports the committed atlas in Debug without affecting its GPU publication. */
 	void SpriteSourceManager::RecordPublishedAtlasDiagnostics()
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		++diagnostics_.SuccessfulPublications;
+#endif
 		if (sessionPublicationSequence_ != (std::numeric_limits<std::uint64_t>::max)()) ++sessionPublicationSequence_;
+		if (!MiniMapConfig::AtlasExportEnabled())
+		{
+			return;
+		}
 		const auto exportStarted = std::chrono::steady_clock::now();
 		bool exported = false;
 		try
@@ -498,6 +514,7 @@ namespace Services::Map::Buildings::Cache
 		{
 			exported = false;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		AddDiagnosticDuration(diagnostics_.DiagnosticExport,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - exportStarted).count());
 		if (exported)
@@ -508,6 +525,9 @@ namespace Services::Map::Buildings::Cache
 		{
 			++diagnostics_.DiagnosticPngFailures;
 		}
+#else
+		(void)exported;
+#endif
 	}
 #endif
 

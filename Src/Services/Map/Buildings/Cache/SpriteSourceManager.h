@@ -177,10 +177,14 @@ namespace Services::Map::Buildings::Cache
 		bool HasPendingTextureRetirement() const noexcept;
 		/** Consumes an event set when published drawable atlas bindings have changed. */
 		bool ConsumePublishedDrawingChange() noexcept;
+#if defined(_DEBUG)
+		/** Resets Debug atlas-export sequence attribution for a new gameplay session. */
+		void BeginAtlasExportSession() noexcept;
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Transfers and resets counters accumulated since the caller's periodic report. */
 		bool TakeDiagnosticsSnapshot(SpriteAtlasDiagnosticsSnapshot& output) noexcept;
-		/** Resets interval counters and publication numbering when a gameplay session starts. */
+		/** Resets atlas performance counters when a gameplay session starts. */
 		void BeginDiagnosticsSession() noexcept;
 #endif
 
@@ -241,7 +245,7 @@ namespace Services::Map::Buildings::Cache
 		MiniMap::Services::UploadState HandleFailedAtlasUpload(
 			MiniMap::Services::UploadState upload,
 			MiniMap::Services::OwnedTexture& candidate);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#if defined(_DEBUG)
 		/** Numbers and exports the just-committed CPU pixels in Debug. */
 		void RecordPublishedAtlasDiagnostics();
 #endif
@@ -301,6 +305,8 @@ namespace Services::Map::Buildings::Cache
 		bool ownershipUncertain_ = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SpriteAtlasDiagnosticsSnapshot diagnostics_{};
+#endif
+#if defined(_DEBUG)
 		std::uint64_t sessionPublicationSequence_ = 0;
 #endif
 	};
