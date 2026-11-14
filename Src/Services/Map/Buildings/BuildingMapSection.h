@@ -196,11 +196,27 @@ namespace Services::Map::Buildings
 			std::optional<std::uint64_t> sourceContentHash,
 			int status,
 			const Visuals::SectionFailureDetails& failure) const noexcept;
+		/** Reports a withdrawal only when this Section owns previously published nonempty GPU geometry.
+		 * @param transition Source or lifecycle transition responsible for the withdrawal.
+		 * @param previousSourceHash Source hash before the transition, when known.
+		 * @param nextSourceHash Source hash after the transition, absent on source withdrawal.
+		 * @param demanded Current aggregate Section demand, when known by the caller.
+		 */
+		void ReportGpuPresentationWithdrawal(
+			const char* transition,
+			std::optional<std::uint64_t> previousSourceHash,
+			std::optional<std::uint64_t> nextSourceHash,
+			std::optional<bool> demanded = std::nullopt) const noexcept;
 #endif
 		/** Removes only an obsolete replacement, leaving CompletedScene and its image intact. */
 		void InvalidatePreparingScene(std::uint64_t currentSourceContentHash) noexcept;
-		/** Discards an abandoned incomplete replacement while preserving CompletedScene and the image. */
-		void DiscardPreparingScene() noexcept;
+		/** Discards incomplete preparation while preserving CompletedScene and its image.
+		 * @param transition Identifies the source or lifecycle transition that caused the discard.
+		 * @param demanded Records current viewport demand when the caller can establish it.
+		 */
+		void DiscardPreparingScene(
+			const char* transition = "preparing-scene-discard",
+			std::optional<bool> demanded = std::nullopt) noexcept;
 		/** Invalidates cached transfer data when selected drawable geometry changes. */
 		void MarkGpuPresentationChanged() noexcept;
 		/** Consumes the Section-local change signal after its scheduler reports the coordinate. */
@@ -218,8 +234,13 @@ namespace Services::Map::Buildings
 		Visuals::BuildingVisualsContext& GetOrCreateVisualsContext();
 		/** Returns scratch exclusively reserved for the independent Section geometry operation. */
 		Visuals::BuildingVisualsContext& GetOrCreateGeometryContext();
-		/** Releases unfinished scheduler state and replacement scene while preserving the completed scene, context and image. */
-		void ResetRenderingState() noexcept;
+		/** Releases unfinished scheduler state while preserving completed scene, context and image.
+		 * @param transition Identifies the reset cause for transition diagnostics.
+		 * @param demanded Records current viewport demand when the caller can establish it.
+		 */
+		void ResetRenderingState(
+			const char* transition = "section-reset",
+			std::optional<bool> demanded = std::nullopt) noexcept;
 
 		std::int64_t gridX_;
 		std::int64_t gridY_;
@@ -271,5 +292,6 @@ namespace Services::Map::Buildings
 		std::unique_ptr<GpuGeometryAssembly> gpuGeometryAssembly_;
 		bool gpuGeometryChangedDuringAssembly_ = false;
 		bool gpuGeometrySnapshotChanged_ = false;
+		std::uint64_t gpuGeometryChangeSequence_ = 0;
 	};
 }

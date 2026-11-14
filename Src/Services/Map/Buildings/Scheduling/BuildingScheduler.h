@@ -109,14 +109,17 @@ namespace Services::Map::Buildings::Scheduling
 		/** Releases the plugin-lifetime renderer object without implicit native cleanup. */
 		~BuildingScheduler();
 
-		/** Resolves one requirement through status, CPU source, disk cache, or request FIFO.
+		/** Resolves one requirement and returns the exact resident payload owner when ready.
 		 * A current-session pending or terminal failure suppresses repeat cache work. Temporary
 		 * unavailability may be retried on a later call. A missing/invalid disk entry enqueues at
 		 * most one owned request for this key in the current session.
 		 * @param key Validated owned canonical Blueprint key.
+		 * @param payload Receives the immutable CPU payload owner only when readiness is Ready.
 		 * @return Ready, Pending, Failed for a session-local terminal failure, or Unavailable.
 		 */
-		RequirementStatus EnsureSpriteReady(const Cache::OwnedSpriteKey& key);
+		RequirementStatus EnsureSpriteReady(
+			const Cache::OwnedSpriteKey& key,
+			std::shared_ptr<const Cache::ProcessedSpritePayload>& payload);
 
 		/** Requests Start and begins scheduling against the existing plugin-lifetime renderer.
 		 * @return True when this scheduler transitions into an active gameplay session.
@@ -152,8 +155,6 @@ namespace Services::Map::Buildings::Scheduling
 
 		/** Counts one actual EnsureSpriteReady result category. */
 		void RecordRequirementStatus(RequirementStatus status) noexcept;
-		/** Runs the existing acquisition path while recording path-specific evidence. */
-		RequirementStatus EnsureSpriteReadyWithDiagnostics(const Cache::OwnedSpriteKey& key);
 		/** Consumes one demand-side GetSprite route and its existing timing evidence. */
 		void RecordDemandSpriteLookup(const Cache::SpriteSourceManager::SpriteResult& result) noexcept;
 		/** Resets only scheduler diagnostic observations and restarts their interval. */

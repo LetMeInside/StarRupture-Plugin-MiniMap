@@ -43,6 +43,8 @@ namespace
 #if defined(_DEBUG)
         {"Debug", "AtlasExport", S::SettingKind::Boolean, "false",
          "Atlas Export: write a PNG after atlas publication; changes apply to later publications immediately."},
+        {"Debug", "ShowBuildingSectionGrid", S::SettingKind::Boolean, "true",
+         "Show Building Section Grid: draw Building Map Section boundaries and grid coordinates."},
 #endif
         {"Zoom", "ZoomWithMouseWheel", S::SettingKind::Boolean, "true",
          "Zoom with Mouse Wheel: vertical wheel zoom while the activation modifier is held and the widget is visible."},
@@ -96,6 +98,7 @@ namespace
         ClearCache,
 #if defined(_DEBUG)
         AtlasExport,
+        ShowBuildingSectionGrid,
 #endif
         WheelEnabled,
         WheelKey,
@@ -117,7 +120,7 @@ namespace
     };
     static_assert(FieldCount == std::size(kEntries));
 #if defined(_DEBUG)
-    static_assert(FieldCount == 25);
+    static_assert(FieldCount == 26);
 #else
     static_assert(FieldCount == 24);
 #endif
@@ -352,6 +355,9 @@ constexpr const char* kKeys[] = {
         case AtlasExport:
             s.AtlasExport = v.Boolean;
             break;
+        case ShowBuildingSectionGrid:
+            s.ShowBuildingSectionGrid = v.Boolean;
+            break;
 #endif
         case WheelEnabled:
             s.ZoomWithMouseWheel = v.Boolean;
@@ -513,7 +519,11 @@ namespace MiniMapConfig
                 g_settings.ShowAlienActorLayer,
                 {g_settings.ShowFoundablesLayer, g_settings.ShowLootInBases,
                  static_cast<float>(g_settings.FoundableMarkerScale)},
-                {g_settings.ShowPOILayer, static_cast<float>(g_settings.POIMarkerScale)}};
+                {g_settings.ShowPOILayer, static_cast<float>(g_settings.POIMarkerScale)}
+#if defined(_DEBUG)
+                , g_settings.ShowBuildingSectionGrid
+#endif
+                };
     }
     FogOfWarSettings GetFogOfWarSettings()
     {

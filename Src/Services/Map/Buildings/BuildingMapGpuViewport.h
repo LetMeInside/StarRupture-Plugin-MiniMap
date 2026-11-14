@@ -118,11 +118,25 @@ namespace Services::Map::Buildings
 			MiniMap::Services::TextureSize atlasSize,
 			std::uint64_t atlasDrawingRevision,
 			const std::shared_ptr<const void>& atlasLease) const;
-		/** Resolves new atlas rectangles from keys owned by the exact published geometry. */
+		/** Rebinds retained keys and counts formerly valid bindings lost in the current revision.
+		 * @param invalidatedBindingCount Accumulates prior valid bindings that are no longer drawable.
+		 */
 		void RebindSpriteBindings(
 			const std::vector<BuildingMapSectionPresentation::SpriteBinding>& source,
 			Cache::SpriteSourceManager& atlas,
-			std::vector<BuildingMapSectionPresentation::SpriteBinding>& output) const;
+			std::vector<BuildingMapSectionPresentation::SpriteBinding>& output,
+			std::size_t& invalidatedBindingCount) const;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records first appearance, reappearance, or a sealed replacement that loses triangles.
+		 * @param section Section whose immutable GPU geometry is being sealed.
+		 * @param geometry New nonempty immutable geometry prepared for publication.
+		 * @param sourceContentHash Content hash captured by the GPU assembly.
+		 */
+		static void ReportSectionGeometrySeal(
+			const BuildingMapSection& section,
+			const BuildingMapSectionPresentation::Geometry& geometry,
+			std::uint64_t sourceContentHash) noexcept;
+#endif
 		/** Advances one admitted Section draw-layout assembly until its shared deadline. */
 		static bool AdvanceSectionGeometryPublication(
 			BuildingMapSection& section,

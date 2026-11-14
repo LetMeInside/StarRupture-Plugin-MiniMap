@@ -23,6 +23,9 @@
 #include <MassExecutionContext.h>
 #include <MassArchetypeTypes.h>
 #include <algorithm>
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <array>
+#endif
 #include <cassert>
 #include <bit>
 #include <chrono>
@@ -123,6 +126,120 @@ namespace MiniMap::BuildingAcquisition
             Fallback
         };
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Identifies source-fact groups that changed on a retained occurrence. */
+        enum class AcquiredFactChange : std::uint32_t
+        {
+            Identity = 1U << 0,
+            Spatial = 1U << 1,
+            EntityStatus = 1U << 2,
+            DefinitionAvailability = 1U << 3,
+            DefinitionValues = 1U << 4,
+            Interior = 1U << 5,
+            SplineClassification = 1U << 6,
+            SplineFragment = 1U << 7,
+            SplineCurveVersion = 1U << 8,
+            SplinePosition = 1U << 9,
+            SplineRotation = 1U << 10,
+            SplineScale = 1U << 11,
+            SplineReparameterization = 1U << 12,
+            SplineInitialization = 1U << 13,
+            SplineProfiles = 1U << 14,
+            SplinePayload = 1U << 15,
+            Other = 1U << 16
+        };
+
+        /** Aggregates only changed retained occurrences for one completed acquisition. */
+        struct AcquiredFactChangeSummary
+        {
+            struct Representative
+            {
+                std::int32_t Index = -1;
+                std::int32_t Serial = 0;
+                std::uint32_t Mask = 0;
+            };
+
+            std::uint64_t RetainedExamined = 0;
+            std::uint64_t Changed = 0;
+            std::uint64_t Identity = 0;
+            std::uint64_t Spatial = 0;
+            std::uint64_t EntityStatus = 0;
+            std::uint64_t DefinitionAvailability = 0;
+            std::uint64_t DefinitionValues = 0;
+            std::uint64_t Interior = 0;
+            std::uint64_t SplineClassification = 0;
+            std::uint64_t SplineFragment = 0;
+            std::uint64_t SplineCurveVersion = 0;
+            std::uint64_t SplinePosition = 0;
+            std::uint64_t SplineRotation = 0;
+            std::uint64_t SplineScale = 0;
+            std::uint64_t SplineReparameterization = 0;
+            std::uint64_t SplineInitialization = 0;
+            std::uint64_t SplineProfiles = 0;
+            std::uint64_t SplinePayload = 0;
+            std::uint64_t Other = 0;
+            std::uint64_t CompleteTransitions = 0;
+            std::uint64_t TransformChanges = 0;
+            std::uint64_t BothUninitializedChannels = 0;
+            std::uint64_t OldUninitializedChannels = 0;
+            std::uint64_t BothInitializedChannels = 0;
+            std::uint64_t OldInitializedChannels = 0;
+            std::array<Representative, 4> Samples{};
+            AcquisitionReason Reason = AcquisitionReason::Immediate;
+
+            /** Counts one changed occurrence and keeps at most four identity/mask examples. */
+            void Add(const Facts::Building& previous, const Facts::Building& current, std::uint32_t mask,
+                bool splineChannelsChanged, bool transformChanged)
+            {
+                ++Changed;
+                Identity += Has(mask, AcquiredFactChange::Identity);
+                Spatial += Has(mask, AcquiredFactChange::Spatial);
+                EntityStatus += Has(mask, AcquiredFactChange::EntityStatus);
+                DefinitionAvailability += Has(mask, AcquiredFactChange::DefinitionAvailability);
+                DefinitionValues += Has(mask, AcquiredFactChange::DefinitionValues);
+                Interior += Has(mask, AcquiredFactChange::Interior);
+                SplineClassification += Has(mask, AcquiredFactChange::SplineClassification);
+                SplineFragment += Has(mask, AcquiredFactChange::SplineFragment);
+                SplineCurveVersion += Has(mask, AcquiredFactChange::SplineCurveVersion);
+                SplinePosition += Has(mask, AcquiredFactChange::SplinePosition);
+                SplineRotation += Has(mask, AcquiredFactChange::SplineRotation);
+                SplineScale += Has(mask, AcquiredFactChange::SplineScale);
+                SplineReparameterization += Has(mask, AcquiredFactChange::SplineReparameterization);
+                SplineInitialization += Has(mask, AcquiredFactChange::SplineInitialization);
+                SplineProfiles += Has(mask, AcquiredFactChange::SplineProfiles);
+                SplinePayload += Has(mask, AcquiredFactChange::SplinePayload);
+                Other += Has(mask, AcquiredFactChange::Other);
+                CompleteTransitions += !previous.Complete && current.Complete;
+                TransformChanges += transformChanged;
+                if (splineChannelsChanged)
+                    CountSplineInitializationState(previous, current);
+                if (Changed <= Samples.size())
+                    Samples[Changed - 1] = {current.Index, current.Serial, mask};
+            }
+
+            /** Counts changed channels by the old and new native initialization flags. */
+            void CountSplineInitializationState(const Facts::Building& previous, const Facts::Building& current)
+            {
+                const bool oldInitialized = previous.SplineFacts && previous.SplineFacts->CurvesInitialized;
+                const bool newInitialized = current.SplineFacts && current.SplineFacts->CurvesInitialized;
+                if (!oldInitialized && !newInitialized)
+                    ++BothUninitializedChannels;
+                else if (!oldInitialized && newInitialized)
+                    ++OldUninitializedChannels;
+                else if (oldInitialized && newInitialized)
+                    ++BothInitializedChannels;
+                else
+                    ++OldInitializedChannels;
+            }
+
+            /** Reports whether a bit is present in one occurrence's change mask. */
+            static bool Has(std::uint32_t mask, AcquiredFactChange change) noexcept
+            {
+                return (mask & static_cast<std::uint32_t>(change)) != 0;
+            }
+        };
+#endif
+
         /** Owns one native-constructed Shipping context for one synchronous traversal. */
         struct MassExecutionContextOwner
         {
@@ -220,6 +337,7 @@ namespace MiniMap::BuildingAcquisition
             std::shared_ptr<DefinitionOwner> Placement;
             std::unique_ptr<PayloadHandleOwner> Payload;
             std::uint64_t PreliminaryHashContribution = 0;
+            bool ReusedRetainedFacts = false;
         };
 
         /** Holds the order-independent multiset aggregate for one in-progress regional scan. */
@@ -259,17 +377,10 @@ namespace MiniMap::BuildingAcquisition
             BuildingCollectorV2::AppendHashInteger(hash, value);
         }
 
-        /** Canonicalizes signed zero and NaN payloads before hashing one floating value. */
+        /** Hashes one source number using the shared six-decimal equivalence. */
         static void AppendAcquisitionDouble(std::uint64_t& hash, double value) noexcept
         {
-            if (value == 0.0)
-                value = 0.0;
-            if (std::isnan(value))
-            {
-                AppendAcquisitionInteger(hash, 0x7ff8000000000000ULL);
-                return;
-            }
-            AppendAcquisitionInteger(hash, std::bit_cast<std::uint64_t>(value));
+            AppendAcquisitionInteger(hash, ::Services::Map::Buildings::SourceContentPrecision::CanonicalBits(value));
         }
 
         /** Appends owned text with a length prefix and its original byte sequence. */
@@ -306,6 +417,18 @@ namespace MiniMap::BuildingAcquisition
         static void AppendSplineValue(std::uint64_t& hash, const std::array<double, Size>& value) noexcept
         {
             AppendAcquisitionArray(hash, value);
+        }
+
+        /** Appends a normalized Mass quaternion with the established sign equivalence. */
+        static void AppendAcquisitionQuaternion(
+            std::uint64_t& hash, const Facts::Quaternion& rotation, bool signEquivalent) noexcept
+        {
+            const bool negate = signEquivalent &&
+                ::Services::Map::Buildings::SourceContentPrecision::QuaternionNeedsNegation(rotation);
+            for (double value : rotation)
+            {
+                AppendAcquisitionDouble(hash, negate ? -value : value);
+            }
         }
 
         /** Appends one pointer-free authored spline channel, preserving point order and loop metadata. */
@@ -427,7 +550,7 @@ namespace MiniMap::BuildingAcquisition
             AppendAcquisitionEnum(hash, spline->SourceStatus);
         }
 
-        /** Hashes callback-owned identity, transform, reach and raw spline values. */
+        /** Hashes callback-owned identity, transform, reach and spline values at source precision. */
         static std::uint64_t ComputePreliminaryAcquisitionContribution(const Facts::Building& building) noexcept
         {
             std::uint64_t hash = 14695981039346656037ULL;
@@ -440,7 +563,8 @@ namespace MiniMap::BuildingAcquisition
             AppendAcquisitionByte(hash, building.HasSpline ? 1 : 0);
             AppendAcquisitionDouble(hash, building.ResolvedReach);
             AppendAcquisitionArray(hash, building.Position);
-            AppendAcquisitionArray(hash, building.Rotation);
+            AppendAcquisitionQuaternion(hash, building.Rotation,
+                building.TransformStatus == Facts::Status::Ready);
             AppendAcquisitionArray(hash, building.SignedScale);
             AppendCallbackSplineFacts(hash, building.SplineFacts);
             return SplitMix64(hash);
@@ -508,6 +632,8 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Chunks = 0;
             std::uint64_t Entities = 0;
             std::uint64_t Admitted = 0;
+            std::uint64_t FastPathEligible = 0;
+            std::uint64_t FullAcquisitionRequired = 0;
             std::uint64_t Pending = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
@@ -528,6 +654,8 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Chunks = 0;
             std::uint64_t Examined = 0;
             std::uint64_t Admitted = 0;
+            std::uint64_t FastPathEligible = 0;
+            std::uint64_t FullAcquisitionRequired = 0;
             std::uint64_t MissingOrigin = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
@@ -565,6 +693,8 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Chunks = 0;
             std::uint64_t Examined = 0;
             std::uint64_t Admitted = 0;
+            std::uint64_t FastPathEligible = 0;
+            std::uint64_t FullAcquisitionRequired = 0;
             std::uint64_t MissingOrigin = 0;
             std::uint64_t Added = 0;
             std::uint64_t Removed = 0;
@@ -591,6 +721,8 @@ namespace MiniMap::BuildingAcquisition
                 measurements.Chunks += Chunks;
                 measurements.Examined += Examined;
                 measurements.Admitted += Admitted;
+                measurements.FastPathEligible += FastPathEligible;
+                measurements.FullAcquisitionRequired += FullAcquisitionRequired;
                 measurements.MissingOrigin += MissingOrigin;
                 measurements.Added += Added;
                 measurements.Removed += Removed;
@@ -619,7 +751,8 @@ namespace MiniMap::BuildingAcquisition
                 if (totalMs >= measurements.WorstScan.TotalMs)
                 {
                     measurements.WorstScan = {totalMs, ChunkExecutionMs, OwnedFactCopyingMs, DeferredAcquisitionMs,
-                        ReconciliationMs, Chunks, Examined, Admitted, Owner.Pending.size(), Added, Removed};
+                        ReconciliationMs, Chunks, Examined, Admitted, FastPathEligible,
+                        FullAcquisitionRequired, Owner.Pending.size(), Added, Removed};
                 }
             }
 
@@ -1228,6 +1361,16 @@ namespace MiniMap::BuildingAcquisition
             const double resolvedReach = ResolveBuildingReach(parameters);
             if (!context.HasRegion || !IsRegionallyAdmitted(context, x, y, resolvedReach))
                 return std::nullopt;
+            if (!views.HasSplineConnections)
+            {
+                const auto retained = Entities.find(Key(id));
+                OwnedScanOccurrence reusable;
+                if (retained != Entities.end() && TryReuseCompleteNonSplineOccurrence(
+                    views, index, id, resolvedReach, retained->second, reusable))
+                {
+                    return std::move(reusable);
+                }
+            }
             OwnedScanOccurrence occurrence;
             occurrence.Data.Index = id.Index;
             occurrence.Data.Serial = id.SerialNumber;
@@ -1257,6 +1400,49 @@ namespace MiniMap::BuildingAcquisition
                     views.BuildingParameters->PlacementData);
             }
             return std::move(occurrence);
+        }
+
+        /** Reuses complete immutable facts only when the current nonspline source still matches. */
+        bool TryReuseCompleteNonSplineOccurrence(
+            const MassChunkViews& views,
+            int32 index,
+            EntityId id,
+            double resolvedReach,
+            const Entry& retained,
+            OwnedScanOccurrence& output)
+        {
+            auto* placement = views.BuildingParameters != nullptr
+                ? views.BuildingParameters->PlacementData
+                : nullptr;
+            if (!retained.Data.Complete || retained.Data.HasSpline || placement == nullptr ||
+                retained.Data.DefinitionFacts == nullptr)
+            {
+                return false;
+            }
+            const auto definition = Definitions.find(placement);
+            if (definition == Definitions.end() || definition->second->Facts == nullptr ||
+                !BuildingDefinitionAcquisition::IsComplete(*definition->second->Facts) ||
+                !(*definition->second->Facts == *retained.Data.DefinitionFacts))
+            {
+                return false;
+            }
+            Facts::Building current = retained.Data;
+            CopyTransform(views.Transforms[index].Transform, current);
+            current.Index = id.Index;
+            current.Serial = id.SerialNumber;
+            current.EntityStatus = Status::Ready;
+            current.ResolvedReach = resolvedReach;
+            current.SplineClassificationStatus = Status::Ready;
+            current.SplineStatus = Status::Ready;
+            current.HasSpline = false;
+            if (!SameAcquiredFacts(retained.Data, current))
+            {
+                return false;
+            }
+            output.Data = retained.Data;
+            output.Placement = definition->second;
+            output.ReusedRetainedFacts = true;
+            return true;
         }
 
         /** Copies admitted chunk occurrences into owned storage and rejects duplicate identities. */
@@ -1302,6 +1488,10 @@ namespace MiniMap::BuildingAcquisition
                 acquisitionHash.Add(occurrences.back().PreliminaryHashContribution);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++timing->Admitted;
+                if (occurrences.back().ReusedRetainedFacts)
+                    ++timing->FastPathEligible;
+                else
+                    ++timing->FullAcquisitionRequired;
 #endif
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1352,7 +1542,7 @@ namespace MiniMap::BuildingAcquisition
             return IsContextCurrent(native, context);
         }
 
-        /** Compares acquired values deeply enough to preserve unchanged immutable spline owners. */
+        /** Compares acquired values at source precision to preserve equivalent immutable owners. */
         static bool SameAcquiredFacts(const Facts::Building& first, const Facts::Building& second)
         {
             const bool definitionsMatch = first.DefinitionFacts == second.DefinitionFacts ||
@@ -1365,11 +1555,229 @@ namespace MiniMap::BuildingAcquisition
                 first.TransformStatus == second.TransformStatus &&
                 first.SplineClassificationStatus == second.SplineClassificationStatus &&
                 first.SplineStatus == second.SplineStatus && first.HasSpline == second.HasSpline &&
-                first.Complete == second.Complete && first.Position == second.Position &&
-                first.ResolvedReach == second.ResolvedReach &&
-                first.Rotation == second.Rotation && first.SignedScale == second.SignedScale &&
+                first.Complete == second.Complete &&
+                ::Services::Map::Buildings::SourceContentPrecision::Equal(first.Position, second.Position) &&
+                ::Services::Map::Buildings::SourceContentPrecision::Equal(first.ResolvedReach, second.ResolvedReach) &&
+                (first.TransformStatus == Facts::Status::Ready
+                    ? ::Services::Map::Buildings::SourceContentPrecision::EqualQuaternion(first.Rotation, second.Rotation)
+                    : ::Services::Map::Buildings::SourceContentPrecision::Equal(first.Rotation, second.Rotation)) &&
+                ::Services::Map::Buildings::SourceContentPrecision::Equal(first.SignedScale, second.SignedScale) &&
                 definitionsMatch && splinesMatch;
         }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Compares copied profile values without treating shared-owner identity as content. */
+        static bool SameProfiles(
+            const std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet>& first,
+            const std::shared_ptr<const ::Services::Map::Buildings::SplineProfileSet>& second)
+        {
+            return first == second || (first && second && *first == *second);
+        }
+
+        /** Compares optional copied spline payload data by values. */
+        static bool SameOptionalSplineData(const std::optional<Facts::SplineData>& first,
+            const std::optional<Facts::SplineData>& second)
+        {
+            return first == second;
+        }
+
+        /** Classifies changed transform, status, and definition source fields. */
+        static std::uint32_t CompareDefinitionAndPlacementFacts(
+            const Facts::Building& previous, const Facts::Building& current, bool& transformChanged)
+        {
+            using Change = AcquiredFactChange;
+            std::uint32_t changes = 0;
+            if (previous.Index != current.Index || previous.Serial != current.Serial)
+                changes |= static_cast<std::uint32_t>(Change::Identity);
+            transformChanged = !::Services::Map::Buildings::SourceContentPrecision::Equal(
+                    previous.Position, current.Position) ||
+                (previous.TransformStatus == Facts::Status::Ready && current.TransformStatus == Facts::Status::Ready
+                    ? !::Services::Map::Buildings::SourceContentPrecision::EqualQuaternion(
+                        previous.Rotation, current.Rotation)
+                    : !::Services::Map::Buildings::SourceContentPrecision::Equal(
+                        previous.Rotation, current.Rotation)) ||
+                !::Services::Map::Buildings::SourceContentPrecision::Equal(
+                    previous.SignedScale, current.SignedScale);
+            if (previous.TransformStatus != current.TransformStatus ||
+                !::Services::Map::Buildings::SourceContentPrecision::Equal(previous.ResolvedReach, current.ResolvedReach) ||
+                transformChanged)
+                changes |= static_cast<std::uint32_t>(Change::Spatial);
+            if (previous.EntityStatus != current.EntityStatus)
+                changes |= static_cast<std::uint32_t>(Change::EntityStatus);
+            if (previous.DefinitionStatus != current.DefinitionStatus || previous.Complete != current.Complete ||
+                static_cast<bool>(previous.DefinitionFacts) != static_cast<bool>(current.DefinitionFacts))
+                changes |= static_cast<std::uint32_t>(Change::DefinitionAvailability);
+            AddDefinitionValueChanges(previous.DefinitionFacts, current.DefinitionFacts, changes);
+            return changes;
+        }
+
+        /** Classifies copied definition names, identifiers, statuses, and interior facts. */
+        static void AddDefinitionValueChanges(const std::shared_ptr<const Facts::Definition>& previous,
+            const std::shared_ptr<const Facts::Definition>& current, std::uint32_t& changes)
+        {
+            using Change = AcquiredFactChange;
+            if (!previous || !current)
+                return;
+            if (previous->ObjectIndex != current->ObjectIndex || previous->BuildingId != current->BuildingId ||
+                previous->CanonicalClassPath != current->CanonicalClassPath ||
+                previous->EntityConfigPath != current->EntityConfigPath || previous->ClassStatus != current->ClassStatus ||
+                previous->ConfigReferenceStatus != current->ConfigReferenceStatus)
+                changes |= static_cast<std::uint32_t>(Change::DefinitionValues);
+            if (previous->InteriorStatus != current->InteriorStatus || previous->InteriorOnly != current->InteriorOnly)
+                changes |= static_cast<std::uint32_t>(Change::Interior);
+            if (previous->SplineProfileStatus != current->SplineProfileStatus ||
+                !SameProfiles(previous->SplineProfiles, current->SplineProfiles))
+                changes |= static_cast<std::uint32_t>(Change::SplineProfiles);
+        }
+
+        /** Classifies copied spline fragment, authored channels, and deferred payload facts. */
+        static std::uint32_t CompareSplineFacts(const Facts::Building& previous, const Facts::Building& current,
+            bool& channelsChanged)
+        {
+            using Change = AcquiredFactChange;
+            std::uint32_t changes = 0;
+            if (previous.SplineClassificationStatus != current.SplineClassificationStatus ||
+                previous.HasSpline != current.HasSpline ||
+                static_cast<bool>(previous.SplineFacts) != static_cast<bool>(current.SplineFacts))
+                changes |= static_cast<std::uint32_t>(Change::SplineClassification);
+            if (previous.SplineStatus != current.SplineStatus)
+                changes |= static_cast<std::uint32_t>(Change::SplineFragment);
+            if (!previous.SplineFacts || !current.SplineFacts)
+                return changes;
+            AddSplineChannelChanges(*previous.SplineFacts, *current.SplineFacts, changes, channelsChanged);
+            if (previous.SplineFacts->FragmentData != current.SplineFacts->FragmentData)
+                changes |= static_cast<std::uint32_t>(Change::SplineFragment);
+            if (!SameOptionalSplineData(previous.SplineFacts->PayloadData, current.SplineFacts->PayloadData) ||
+                previous.SplineFacts->Provenance != current.SplineFacts->Provenance ||
+                previous.SplineFacts->SourceStatus != current.SplineFacts->SourceStatus)
+                changes |= static_cast<std::uint32_t>(Change::SplinePayload);
+            return changes;
+        }
+
+        /** Classifies each authored curve channel without inspecting object layout or padding. */
+        static void AddSplineChannelChanges(const Facts::Spline& previous, const Facts::Spline& current,
+            std::uint32_t& changes, bool& channelsChanged)
+        {
+            using Change = AcquiredFactChange;
+            if (previous.CurveVersion != current.CurveVersion)
+                changes |= static_cast<std::uint32_t>(Change::SplineCurveVersion);
+            if (!(previous.Position == current.Position))
+            {
+                changes |= static_cast<std::uint32_t>(Change::SplinePosition);
+                channelsChanged = true;
+            }
+            if (!(previous.Rotation == current.Rotation))
+            {
+                changes |= static_cast<std::uint32_t>(Change::SplineRotation);
+                channelsChanged = true;
+            }
+            if (!(previous.Scale == current.Scale))
+            {
+                changes |= static_cast<std::uint32_t>(Change::SplineScale);
+                channelsChanged = true;
+            }
+            if (!(previous.Reparameterization == current.Reparameterization))
+            {
+                changes |= static_cast<std::uint32_t>(Change::SplineReparameterization);
+                channelsChanged = true;
+            }
+            if (previous.CurvesInitialized != current.CurvesInitialized)
+                changes |= static_cast<std::uint32_t>(Change::SplineInitialization);
+        }
+
+        /** Builds a compact field mask after the existing deep equality check finds a change. */
+        static std::uint32_t ClassifyAcquiredFactChanges(
+            const Facts::Building& previous, const Facts::Building& current,
+            bool& channelsChanged, bool& transformChanged)
+        {
+            const std::uint32_t changes = CompareDefinitionAndPlacementFacts(previous, current, transformChanged) |
+                CompareSplineFacts(previous, current, channelsChanged);
+            return changes != 0 ? changes : static_cast<std::uint32_t>(AcquiredFactChange::Other);
+        }
+
+        /** Names the scan reason included in a changed-facts summary. */
+        static const char* AcquisitionReasonName(AcquisitionReason reason) noexcept
+        {
+            switch (reason)
+            {
+            case AcquisitionReason::Immediate: return "immediate";
+            case AcquisitionReason::Mutation: return "mutation";
+            case AcquisitionReason::Fallback: return "fallback";
+            }
+            return "unknown";
+        }
+
+        /** Emits one bounded summary only when a retained occurrence changed. */
+        void ReportAcquiredFactChanges(AcquisitionReason reason, const AcquiredFactChangeSummary& summary) const
+        {
+            if (summary.Changed == 0)
+                return;
+            if (auto* log = MiniMap::Services::TryLog())
+            {
+                MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                    "MiniMap: BuildingMapAcquiredFactsTrace reason=%s retained=%llu changed=%llu identity=%llu "
+                    "spatial=%llu entityStatus=%llu definitionAvailability=%llu definitionValues=%llu interior=%llu "
+                    "splineClassification=%llu splineFragment=%llu curveVersion=%llu splinePosition=%llu "
+                    "splineRotation=%llu splineScale=%llu splineReparameterization=%llu splineInitialization=%llu "
+                    "splineProfiles=%llu splinePayload=%llu other=%llu completeTransitions=%llu transformChanges=%llu "
+                    "channelsUninitialized=%llu channelsBothUninitialized=%llu channelsOldUninitialized=%llu "
+                    "channelsBothInitialized=%llu "
+                    "channelsOldInitialized=%llu samples={%d:%d/0x%x,%d:%d/0x%x,%d:%d/0x%x,%d:%d/0x%x}",
+                    AcquisitionReasonName(reason), static_cast<unsigned long long>(summary.RetainedExamined),
+                    static_cast<unsigned long long>(summary.Changed), static_cast<unsigned long long>(summary.Identity),
+                    static_cast<unsigned long long>(summary.Spatial), static_cast<unsigned long long>(summary.EntityStatus),
+                    static_cast<unsigned long long>(summary.DefinitionAvailability),
+                    static_cast<unsigned long long>(summary.DefinitionValues), static_cast<unsigned long long>(summary.Interior),
+                    static_cast<unsigned long long>(summary.SplineClassification),
+                    static_cast<unsigned long long>(summary.SplineFragment),
+                    static_cast<unsigned long long>(summary.SplineCurveVersion),
+                    static_cast<unsigned long long>(summary.SplinePosition), static_cast<unsigned long long>(summary.SplineRotation),
+                    static_cast<unsigned long long>(summary.SplineScale),
+                    static_cast<unsigned long long>(summary.SplineReparameterization),
+                    static_cast<unsigned long long>(summary.SplineInitialization),
+                    static_cast<unsigned long long>(summary.SplineProfiles), static_cast<unsigned long long>(summary.SplinePayload),
+                    static_cast<unsigned long long>(summary.Other),
+                    static_cast<unsigned long long>(summary.CompleteTransitions),
+                    static_cast<unsigned long long>(summary.TransformChanges),
+                    static_cast<unsigned long long>(summary.BothUninitializedChannels +
+                        summary.OldUninitializedChannels + summary.OldInitializedChannels),
+                    static_cast<unsigned long long>(summary.BothUninitializedChannels),
+                    static_cast<unsigned long long>(summary.OldUninitializedChannels),
+                    static_cast<unsigned long long>(summary.BothInitializedChannels),
+                    static_cast<unsigned long long>(summary.OldInitializedChannels),
+                    summary.Samples[0].Index, summary.Samples[0].Serial, summary.Samples[0].Mask,
+                    summary.Samples[1].Index, summary.Samples[1].Serial, summary.Samples[1].Mask,
+                    summary.Samples[2].Index, summary.Samples[2].Serial, summary.Samples[2].Mask,
+                    summary.Samples[3].Index, summary.Samples[3].Serial, summary.Samples[3].Mask);
+            }
+        }
+
+#if defined(_DEBUG)
+        /** Reports exact double-precision values for a retained occurrence whose transform changed. */
+        static void ReportTransformChange(AcquisitionReason reason,
+            const Facts::Building& previous, const Facts::Building& current)
+        {
+            if (auto* log = MiniMap::Services::TryLog())
+            {
+                MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                    "MiniMap: BuildingMapTransformTrace index=%d serial=%d reason=%s "
+                    "previous={transformStatus:%u resolvedReach:%.17g position:{%.17g,%.17g,%.17g} "
+                    "normalizedQuaternion:{%.17g,%.17g,%.17g,%.17g} signedScale:{%.17g,%.17g,%.17g}} "
+                    "current={transformStatus:%u resolvedReach:%.17g position:{%.17g,%.17g,%.17g} "
+                    "normalizedQuaternion:{%.17g,%.17g,%.17g,%.17g} signedScale:{%.17g,%.17g,%.17g}}",
+                    current.Index, current.Serial, AcquisitionReasonName(reason),
+                    static_cast<unsigned>(previous.TransformStatus), previous.ResolvedReach,
+                    previous.Position[0], previous.Position[1], previous.Position[2],
+                    previous.Rotation[0], previous.Rotation[1], previous.Rotation[2], previous.Rotation[3],
+                    previous.SignedScale[0], previous.SignedScale[1], previous.SignedScale[2],
+                    static_cast<unsigned>(current.TransformStatus), current.ResolvedReach,
+                    current.Position[0], current.Position[1], current.Position[2],
+                    current.Rotation[0], current.Rotation[1], current.Rotation[2], current.Rotation[3],
+                    current.SignedScale[0], current.SignedScale[1], current.SignedScale[2]);
+            }
+        }
+#endif
+#endif
 
         /** Captures one serial traversal into callback-owned snapshots. */
         bool CaptureMassSnapshot(
@@ -1413,11 +1821,45 @@ namespace MiniMap::BuildingAcquisition
             Facts::Building& data,
             const OwnedScanOccurrence& occurrence,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
-            std::unordered_set<std::uint64_t>& pending)
+            std::unordered_set<std::uint64_t>& pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , AcquiredFactChangeSummary* changes
+#endif
+        )
         {
             const auto key = Key({data.Index, data.Serial});
             auto previous = Entities.find(key);
             Entry entry;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            if (previous != Entities.end())
+            {
+                ++changes->RetainedExamined;
+                if (SameAcquiredFacts(previous->second.Data, data))
+                {
+                    entry.Data = previous->second.Data;
+                    entry.Definition = previous->second.Definition;
+                }
+                else
+                {
+                    bool splineChannelsChanged = false;
+                    bool transformChanged = false;
+                    const std::uint32_t mask = ClassifyAcquiredFactChanges(
+                        previous->second.Data, data, splineChannelsChanged, transformChanged);
+                    changes->Add(previous->second.Data, data, mask, splineChannelsChanged, transformChanged);
+#if defined(_DEBUG)
+                    if (transformChanged)
+                    {
+                        ReportTransformChange(changes->Reason, previous->second.Data, data);
+                    }
+#endif
+                    entry.Data = std::move(data);
+                }
+            }
+            else
+            {
+                entry.Data = std::move(data);
+            }
+#else
             if (previous != Entities.end() && SameAcquiredFacts(previous->second.Data, data))
             {
                 entry.Data = previous->second.Data;
@@ -1427,6 +1869,7 @@ namespace MiniMap::BuildingAcquisition
             {
                 entry.Data = std::move(data);
             }
+#endif
             if (!entry.Data.Complete)
             {
                 const auto definition = Definitions.find(
@@ -1448,6 +1891,7 @@ namespace MiniMap::BuildingAcquisition
             AcquisitionHashAggregate& acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
+            , AcquiredFactChangeSummary* changes
 #endif
         )
         {
@@ -1461,12 +1905,22 @@ namespace MiniMap::BuildingAcquisition
             for (auto& occurrence : occurrences)
             {
                 Facts::Building data;
-                if (!AcquireOwnedOccurrence(native, context, occurrence,
+                if (occurrence.ReusedRetainedFacts)
+                {
+                    data = std::move(occurrence.Data);
+                }
+                else if (!AcquireOwnedOccurrence(native, context, occurrence,
                     attemptedCoreDefinitions, attemptedSplineProfiles, data))
+                {
                     return false;
+                }
                 acquisitionHash.Replace(occurrence.PreliminaryHashContribution,
                     CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data));
-                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending);
+                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , changes
+#endif
+                );
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing->DeferredAcquisitionMs = std::chrono::duration<double, std::milli>(Clock::now() - acquisitionStarted).count();
@@ -1534,6 +1988,7 @@ namespace MiniMap::BuildingAcquisition
             const Context& context
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
+            , AcquiredFactChangeSummary* changes
 #endif
         )
         {
@@ -1552,6 +2007,7 @@ namespace MiniMap::BuildingAcquisition
             if (!BuildRegionalState(native, context, occurrences, reconciled, pending, acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
+                , changes
 #endif
             ))
                 return false;
@@ -1607,12 +2063,14 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MembershipTiming timing{*this};
             timing.Reason = reason;
+            AcquiredFactChangeSummary changes;
+            changes.Reason = reason;
 #endif
             try
             {
                 complete = Reconcile(native, context
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    , &timing
+                    , &timing, &changes
 #endif
                 );
             }
@@ -1637,6 +2095,9 @@ namespace MiniMap::BuildingAcquisition
                 NextFallback = completedAt + PeriodicFallbackInterval;
                 RetryNotBefore = {};
                 ImmediateScanRequired = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ReportAcquiredFactChanges(reason, changes);
+#endif
             }
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             timing.Complete = complete;
@@ -2427,12 +2888,12 @@ namespace MiniMap::BuildingAcquisition
                 std::vector<CandidateSourceRecord> sourceRecords;
                 occurrences.reserve(contributors.size());
                 sourceRecords.reserve(contributors.size());
-                for (const SectionContributor& contributor : contributors)
+                for (SectionContributor& contributor : contributors)
                 {
                     CandidateOccurrence occurrence = contributor.Occurrence;
                     occurrence.publicationOrdinal = static_cast<std::uint64_t>(occurrences.size());
                     occurrences.push_back(std::move(occurrence));
-                    sourceRecords.push_back(contributor.Source);
+                    sourceRecords.push_back(std::move(contributor.Source));
                 }
                 publications.push_back(std::make_shared<const CandidatePublication>(
                     sectionRegions[sectionIndex], std::move(occurrences), std::move(sourceRecords),
@@ -2515,12 +2976,15 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={immediate:%llu mutation:%llu fallback:%llu} failedByReason={immediate:%llu mutation:%llu fallback:%llu}",
+            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu fastPath:%llu fullAcquisition:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={immediate:%llu mutation:%llu fallback:%llu} failedByReason={immediate:%llu mutation:%llu fallback:%llu}",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
                 static_cast<unsigned long long>(d.Chunks), static_cast<unsigned long long>(d.Examined),
-                static_cast<unsigned long long>(d.Admitted), static_cast<unsigned long long>(d.MissingOrigin),
+                static_cast<unsigned long long>(d.Admitted),
+                static_cast<unsigned long long>(d.FastPathEligible),
+                static_cast<unsigned long long>(d.FullAcquisitionRequired),
+                static_cast<unsigned long long>(d.MissingOrigin),
                 static_cast<unsigned long long>(d.Added), static_cast<unsigned long long>(d.Removed),
                 static_cast<unsigned long long>(d.FailedScans), static_cast<unsigned long long>(Entities.size()),
                 static_cast<unsigned long long>(Pending.size()),
@@ -2559,11 +3023,13 @@ namespace MiniMap::BuildingAcquisition
             if (d.WorstScan.TotalMs > 0.0)
             {
                 const auto& worst = d.WorstScan;
-                LOG_INFO("MiniMap: BuildingMap regional_scan_worst intervalMs=%.1f totalMs:%.3f chunkMs:%.3f ownedCopyMs:%.3f deferredMs:%.3f reconcileMs:%.3f chunks:%llu entities:%llu admitted:%llu pending:%llu added:%llu evicted:%llu",
+                LOG_INFO("MiniMap: BuildingMap regional_scan_worst intervalMs=%.1f totalMs:%.3f chunkMs:%.3f ownedCopyMs:%.3f deferredMs:%.3f reconcileMs:%.3f chunks:%llu entities:%llu admitted:%llu fastPath:%llu fullAcquisition:%llu pending:%llu added:%llu evicted:%llu",
                     intervalMs, worst.TotalMs, worst.ChunkExecutionMs, worst.OwnedFactCopyingMs,
                     worst.DeferredAcquisitionMs, worst.ReconciliationMs,
                     static_cast<unsigned long long>(worst.Chunks), static_cast<unsigned long long>(worst.Entities),
                     static_cast<unsigned long long>(worst.Admitted),
+                    static_cast<unsigned long long>(worst.FastPathEligible),
+                    static_cast<unsigned long long>(worst.FullAcquisitionRequired),
                     static_cast<unsigned long long>(worst.Pending), static_cast<unsigned long long>(worst.Added),
                     static_cast<unsigned long long>(worst.Removed));
             }
@@ -2624,17 +3090,7 @@ namespace MiniMap::BuildingAcquisition
         std::uint64_t& hash,
         const BuildingAcquiredFacts::Quaternion& rotation) noexcept
     {
-        bool negate = false;
-        const std::size_t signCheckOrder[] = {3, 0, 1, 2};
-        for (std::size_t componentIndex : signCheckOrder)
-        {
-            const double value = rotation[componentIndex];
-            if (value != 0.0)
-            {
-                negate = std::signbit(value);
-                break;
-            }
-        }
+        const bool negate = ::Services::Map::Buildings::SourceContentPrecision::QuaternionNeedsNegation(rotation);
         for (double value : rotation)
             AppendHashDouble(hash, negate ? -value : value);
     }
@@ -2655,12 +3111,10 @@ namespace MiniMap::BuildingAcquisition
         }
     }
 
-    /** Hashes one floating value after canonicalizing either sign of zero. */
+    /** Hashes one floating value with the shared six-decimal source policy. */
     void BuildingCollectorV2::AppendHashDouble(std::uint64_t& hash, double value) noexcept
     {
-        if (value == 0.0)
-            value = 0.0;
-        AppendHashInteger(hash, std::bit_cast<std::uint64_t>(value));
+        AppendHashInteger(hash, ::Services::Map::Buildings::SourceContentPrecision::CanonicalBits(value));
     }
 
     /** Exposes a finite XY origin independently of rotation, scale or Z validity. */

@@ -3,6 +3,10 @@
 
 #include "../Services/Map/Buildings/BuildingMapGpuViewport.h"
 
+#if defined(_DEBUG)
+#include <array>
+#include <cstddef>
+#endif
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -79,7 +83,11 @@ namespace MiniMapUI
 		void SetRenderDroneRails(bool enabled);
 
 		/** Draws current immutable GPU presentation through the MiniMap transform. */
-		void Render(MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& transform, bool showLayer);
+		void Render(MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& transform, bool showLayer
+#if defined(_DEBUG)
+			, bool showSectionGrid
+#endif
+		);
 
 		/** Closes the GPU viewport before collector shutdown and is safe to repeat. */
 		bool Shutdown();
@@ -91,6 +99,41 @@ namespace MiniMapUI
 		static bool TryBuildCanvasTransform(
 			const MiniMapMap::Transform& mapTransform,
 			Services::Map::Buildings::BuildingMapGpuViewport::CanvasTransform& output) noexcept;
+#if defined(_DEBUG)
+		/** Draws demanded and undemanded Section cells from the actual map grid and viewport bounds. */
+		static void DrawSectionGrid(
+			MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& mapTransform, double sectionSize);
+		/** Resolves the signed grid range intersecting the rotated MiniMap bounds. */
+		static bool TryGetVisibleSectionGridRange(
+			const MiniMapMap::Transform& mapTransform, double sectionSize,
+			std::int64_t& firstGridX, std::int64_t& firstGridY,
+			std::int64_t& endGridX, std::int64_t& endGridY) noexcept;
+		/** Inverts the four visible screen corners through the existing map transform. */
+		static bool TryGetVisibleWorldBounds(
+			const MiniMapMap::Transform& mapTransform,
+			double& minimumX, double& minimumY, double& maximumX, double& maximumY) noexcept;
+		/** Draws the top/left cell edges and upright coordinate label. */
+		static void DrawSectionGridCell(
+			MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& mapTransform,
+			std::int64_t gridX, std::int64_t gridY, double sectionSize);
+		/** Finds an upright label anchor inside the visible portion of a Section cell. */
+		static bool TryGetClippedSectionLabelPosition(
+			const MiniMapMap::Transform& mapTransform, std::int64_t gridX,
+			std::int64_t gridY, double sectionSize, MiniMap::Services::Vec2& output);
+		/** Projects a Section's four map corners for viewport clipping. */
+		static bool TryProjectSectionCell(
+			const MiniMapMap::Transform& mapTransform, std::int64_t gridX,
+			std::int64_t gridY, double sectionSize, std::array<MiniMap::Services::Vec2, 8>& output);
+		/** Clips one convex Section label polygon against one MiniMap viewport edge. */
+		static std::size_t ClipSectionLabelPolygon(
+			const std::array<MiniMap::Services::Vec2, 8>& input, std::size_t inputCount,
+			std::array<MiniMap::Services::Vec2, 8>& output, int edge,
+			MiniMap::Services::Vec2 clipMinimum, MiniMap::Services::Vec2 clipMaximum);
+		/** Draws one clipped screen-space section boundary as a one-pixel quad. */
+		static void DrawSectionGridLine(
+			MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& mapTransform,
+			double x1, double y1, double x2, double y2);
+#endif
 
 		Services::Map::Buildings::BuildingMapService* service_ = nullptr;
 		std::unique_ptr<MiniMap::BuildingAcquisition::BuildingCollectorV2> buildingCollector_;

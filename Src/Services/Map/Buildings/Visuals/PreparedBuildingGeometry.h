@@ -20,6 +20,7 @@ namespace Services::Map::Buildings::Scheduling
 namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
+	class BuildingMapService;
 }
 
 namespace Services::Map::Buildings::Visuals
@@ -50,6 +51,7 @@ namespace Services::Map::Buildings::Visuals
 		friend class BuildingGeometryPreparation;
 		friend class ::Services::Map::Buildings::Scheduling::SectionScheduler;
 		friend class ::Services::Map::Buildings::BuildingMapSection;
+		friend class ::Services::Map::Buildings::BuildingMapService;
 
 	public:
 		/** Owns one Section-clipped sprite occurrence and its original image/occlusion source quad. */

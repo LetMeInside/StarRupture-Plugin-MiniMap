@@ -129,7 +129,9 @@ namespace Services::Map::Buildings::Visuals
 		{
 			if (cursor.OrdinarySpriteIndex == scene.OrdinarySprites.size())
 			{
-				cursor.CurrentPhase = PreparationCursor::Phase::OcclusionIndex;
+				cursor.CurrentPhase = scene.Splines.empty()
+					? PreparationCursor::Phase::OverlayLastSprites
+					: PreparationCursor::Phase::OcclusionIndex;
 				return Status::Pending;
 			}
 			const auto status = PrepareSprite(scene.OrdinarySprites[cursor.OrdinarySpriteIndex],
@@ -213,7 +215,7 @@ namespace Services::Map::Buildings::Visuals
 		scratch.preparedSplines_.resize(scene.Splines.size());
 		scratch.occluders_.clear();
 		scratch.occlusionIndex_ = SplineOcclusionIndex{};
-		if (!SeedPreparedOccluders(output, scratch))
+		if (!scene.Splines.empty() && !SeedPreparedOccluders(output, scratch))
 		{
 			RECORD_GEOMETRY_FAILURE("geometry initialization", "SeedPreparedOccluders failed");
 			return false;

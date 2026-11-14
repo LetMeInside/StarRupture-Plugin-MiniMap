@@ -324,6 +324,17 @@ namespace Services::Map::Buildings
 			const std::vector<BuildingCollectionRegion>& requestedRegions,
 			const std::vector<std::shared_ptr<const BuildingCandidatePublication>>& publications,
 			std::set<SectionCoordinate>& selectedCoordinates);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Reports a changed source selection and its current Section presentation evidence.
+		 * @param coordinate Section grid coordinate whose selected publication changed.
+		 * @param previousContentHash Previously selected content hash, absent when no owner was selected.
+		 * @param nextContentHash Newly selected content hash, absent when the selection was withdrawn.
+		 */
+		void ReportSectionSelectionTransition(
+			const SectionCoordinate& coordinate,
+			std::optional<std::uint64_t> previousContentHash,
+			std::optional<std::uint64_t> nextContentHash) const noexcept;
+#endif
 		/** Clears one source selection and notifies the coordinator of the dependency change. */
 		void InvalidateSelectedSectionPublication(const SectionCoordinate& coordinate);
 		/** Validates ordered results and lets the first registered valid source win. */
@@ -387,6 +398,10 @@ namespace Services::Map::Buildings
 		std::map<SectionCoordinate, std::uint64_t> appliedSectionHashes_;
 		/** Dirty Section geometry awaiting the next routine publication admission. */
 		std::set<SectionCoordinate> gpuPresentationChangedSections_;
+		/** Change sequence and cutoff keep one admitted batch open across deadline yields. */
+		std::uint64_t gpuGeometryChangeSequence_ = 0;
+		std::optional<std::uint64_t> gpuGeometryPublicationBatchBoundary_;
+		bool gpuGeometryPublicationBatchConsumed_ = false;
 		/** Completed or eligibility-only Section changes awaiting snapshot membership publication. */
 		std::set<SectionCoordinate> gpuPresentationSnapshotChangedSections_;
 		std::optional<SectionCoordinate> gpuGeometryPublicationCursor_;

@@ -2655,7 +2655,7 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Preserves acquisition outcomes and borrows actual payload metadata only for placed ready sprites. */
+	/** Preserves acquisition outcomes and prepares one sprite from the readiness payload. */
 	void SectionScheduler::PrepareSpriteRequirement(
 		std::uint64_t publicationOrdinal,
 		const BuildingCandidateSourceRecord& requirement,
@@ -2665,7 +2665,7 @@ namespace Services::Map::Buildings::Scheduling
 		bool updatePreparationCounts,
 		bool prepareGeometrySupport)
 	{
-		if (buildingScheduler_ == nullptr || spriteSourceManager_ == nullptr)
+		if (buildingScheduler_ == nullptr)
 		{
 			if (updatePreparationCounts)
 			{
@@ -2675,8 +2675,9 @@ namespace Services::Map::Buildings::Scheduling
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
+		std::shared_ptr<const Cache::ProcessedSpritePayload> payload;
 		const BuildingScheduler::RequirementStatus readiness =
-			buildingScheduler_->EnsureSpriteReady(ownedKey);
+			buildingScheduler_->EnsureSpriteReady(ownedKey, payload);
 		if (readiness == BuildingScheduler::RequirementStatus::Pending)
 		{
 			if (updatePreparationCounts)
@@ -2707,41 +2708,8 @@ namespace Services::Map::Buildings::Scheduling
 				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
 			return;
 		}
-		PrepareReadySpriteRequirement(
-			publicationOrdinal,
-			requirement,
-			ownedKey,
-			output,
-			occurrenceOutcome,
-			updatePreparationCounts,
-			prepareGeometrySupport);
-	}
-
-	/** Obtains the shared resident payload and appends only after support has been established. */
-	void SectionScheduler::PrepareReadySpriteRequirement(
-		std::uint64_t publicationOrdinal,
-		const BuildingCandidateSourceRecord& requirement,
-		const Cache::OwnedSpriteKey& ownedKey,
-		KnownSpritePreparationResult& output,
-		KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome,
-		bool updatePreparationCounts,
-		bool prepareGeometrySupport)
-	{
-		if (spriteSourceManager_ == nullptr)
-		{
-			if (updatePreparationCounts)
-			{
-				++output.UnavailableCount;
-			}
-			occurrenceOutcome.PreparationStatus =
-				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSprite;
-			return;
-		}
-		const Cache::SpriteSourceManager::SpriteResult spriteResult =
-			spriteSourceManager_->GetSprite(ownedKey);
-		if (spriteResult.Result != Cache::SpriteSourceManager::Status::Ready ||
-			spriteResult.Payload == nullptr ||
-			spriteResult.Payload->Format() != Cache::ProcessedSpritePayload::PixelFormat::StraightRgba8SrgbDisplay)
+		if (payload == nullptr ||
+			payload->Format() != Cache::ProcessedSpritePayload::PixelFormat::StraightRgba8SrgbDisplay)
 		{
 			if (updatePreparationCounts)
 			{
@@ -2764,7 +2732,7 @@ namespace Services::Map::Buildings::Scheduling
 		AppendReadySpriteInput(
 			publicationOrdinal,
 			requirement,
-			spriteResult.Payload,
+			std::move(payload),
 			output,
 			occurrenceOutcome,
 			updatePreparationCounts,

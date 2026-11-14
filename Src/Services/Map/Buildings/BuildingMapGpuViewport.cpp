@@ -4,6 +4,9 @@
 #include "BuildingMapGpuViewport.h"
 #include "BuildingMapService.h"
 #include "Cache/SpriteSourceManager.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../../Log.h"
+#endif
 
 #include <atomic>
 #include <algorithm>
@@ -48,6 +51,26 @@ namespace Services::Map::Buildings
 		const MiniMap::Services::TextureSize atlasSize = atlas.PublishedAtlasSize();
 		const std::uint64_t atlasDrawingRevision = atlas.PublishedDrawingRevision();
 		const std::shared_ptr<const void> atlasLease = atlas.PublishedTextureLease();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (previous != nullptr && previous->AtlasTexture.id != 0 &&
+			(atlasTexture.id == 0 || atlasSize.width == 0 || atlasSize.height == 0) &&
+			!previous->Sections.empty())
+		{
+			if (auto* log = MiniMap::Services::TryLog())
+			{
+				MiniMap::Services::Logf(*log, MiniMap::Services::Level::Warn,
+					"MiniMap: BuildingMapPresentationTrace event=atlas-texture-withdrawal viewport=%llu "
+					"previousTexture=%llu nextTexture=%llu nextSize=%ux%u "
+					"previousRevision=%llu nextRevision=%llu sections=%llu",
+					static_cast<unsigned long long>(viewportHandle_),
+					static_cast<unsigned long long>(previous->AtlasTexture.id),
+					static_cast<unsigned long long>(atlasTexture.id), atlasSize.width, atlasSize.height,
+					static_cast<unsigned long long>(previous->AtlasDrawingRevision),
+					static_cast<unsigned long long>(atlasDrawingRevision),
+					static_cast<unsigned long long>(previous->Sections.size()));
+			}
+		}
+#endif
 		std::shared_ptr<PresentationSnapshot> next;
 		if (!previous || previous->AtlasTexture.id != atlasTexture.id ||
 			previous->AtlasSize.width != atlasSize.width || previous->AtlasSize.height != atlasSize.height ||
@@ -131,8 +154,28 @@ namespace Services::Map::Buildings
 		{
 			auto replacement = std::make_shared<BuildingMapSectionPresentation>();
 			replacement->PreparedGeometry = existing->PreparedGeometry;
-			RebindSpriteBindings(existing->OrdinaryBindings, atlas, replacement->OrdinaryBindings);
-			RebindSpriteBindings(existing->OverlayBindings, atlas, replacement->OverlayBindings);
+			std::size_t invalidatedBindings = 0;
+			RebindSpriteBindings(existing->OrdinaryBindings, atlas, replacement->OrdinaryBindings, invalidatedBindings);
+			RebindSpriteBindings(existing->OverlayBindings, atlas, replacement->OverlayBindings, invalidatedBindings);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (invalidatedBindings != 0)
+			{
+				const std::uint64_t sourceHash = section.completedScene_ != nullptr
+					? section.completedScene_->SourceContentHash()
+					: section.preparingScene_ != nullptr ? section.preparingScene_->SourceContentHash() : 0;
+				if (auto* log = MiniMap::Services::TryLog())
+				{
+					MiniMap::Services::Logf(*log, MiniMap::Services::Level::Warn,
+						"MiniMap: BuildingMapPresentationTrace event=atlas-binding-suppression grid=(%lld,%lld) "
+						"sourceHash=0x%016llx previousRevision=%llu nextRevision=%llu invalidatedBindings=%llu demanded=1",
+						static_cast<long long>(section.gridX_), static_cast<long long>(section.gridY_),
+						static_cast<unsigned long long>(sourceHash),
+						static_cast<unsigned long long>(section.gpuPresentationAtlasRevision_),
+						static_cast<unsigned long long>(atlasDrawingRevision),
+						static_cast<unsigned long long>(invalidatedBindings));
+				}
+			}
+#endif
 			section.gpuPresentationAtlasRevision_ = atlasDrawingRevision;
 			section.gpuPresentationAtlasRevisionValid_ = true;
 			section.gpuPresentation_ = replacement;
@@ -173,7 +216,8 @@ namespace Services::Map::Buildings
 	void BuildingMapGpuViewport::RebindSpriteBindings(
 		const std::vector<BuildingMapSectionPresentation::SpriteBinding>& source,
 		Cache::SpriteSourceManager& atlas,
-		std::vector<BuildingMapSectionPresentation::SpriteBinding>& output) const
+		std::vector<BuildingMapSectionPresentation::SpriteBinding>& output,
+		[[maybe_unused]] std::size_t& invalidatedBindingCount) const
 	{
 		output.clear();
 		output.reserve(source.size());
@@ -188,6 +232,13 @@ namespace Services::Map::Buildings
 				binding.ContentRectangle = {entry.Content.X, entry.Content.Y,
 					entry.Content.Width, entry.Content.Height};
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (sourceBinding.ContentRectangle[2] != 0 && sourceBinding.ContentRectangle[3] != 0 &&
+				(binding.ContentRectangle[2] == 0 || binding.ContentRectangle[3] == 0))
+			{
+				++invalidatedBindingCount;
+			}
+#endif
 			output.push_back(binding);
 		}
 	}
@@ -268,15 +319,23 @@ namespace Services::Map::Buildings
 	{
 		auto& assembly = section.gpuGeometryAssembly_;
 		assembly->Presentation->PreparedGeometry = std::move(assembly->Geometry);
-		if (assembly->Presentation->PreparedGeometry->OrdinaryTriangles.empty() &&
-			assembly->Presentation->PreparedGeometry->SolidSurfaces.empty() &&
-			assembly->Presentation->PreparedGeometry->OverlayTriangles.empty())
+		const auto& geometry = *assembly->Presentation->PreparedGeometry;
+		const bool geometryIsEmpty = geometry.OrdinaryTriangles.empty() &&
+			geometry.SolidSurfaces.empty() && geometry.OverlayTriangles.empty();
+		if (geometryIsEmpty)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			section.ReportGpuPresentationWithdrawal(
+				"gpu-assembly-empty-seal", std::nullopt, assembly->SourceContentHash, true);
+#endif
 			section.gpuPresentation_.reset();
 			section.gpuPresentationAtlasRevisionValid_ = false;
 		}
 		else
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ReportSectionGeometrySeal(section, geometry, assembly->SourceContentHash);
+#endif
 			section.gpuPresentation_ = std::shared_ptr<const BuildingMapSectionPresentation>(
 				std::move(assembly->Presentation));
 			section.gpuPresentationAtlasRevision_ = assembly->BindingAtlasRevision;
@@ -284,6 +343,58 @@ namespace Services::Map::Buildings
 		}
 		section.gpuGeometryAssembly_.reset();
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Reports drawable appearance or a sealed replacement that reduces published triangle counts. */
+	void BuildingMapGpuViewport::ReportSectionGeometrySeal(
+		const BuildingMapSection& section,
+		const BuildingMapSectionPresentation::Geometry& geometry,
+		std::uint64_t sourceContentHash) noexcept
+	{
+		const auto previousGeometry = section.gpuPresentation_ != nullptr
+			? section.gpuPresentation_->PreparedGeometry : nullptr;
+		const bool firstOrReappearance = previousGeometry == nullptr;
+		const bool lostTriangles = previousGeometry != nullptr &&
+			(geometry.OrdinaryTriangles.size() < previousGeometry->OrdinaryTriangles.size() ||
+				geometry.SolidSurfaces.size() < previousGeometry->SolidSurfaces.size() ||
+				geometry.OverlayTriangles.size() < previousGeometry->OverlayTriangles.size());
+		if (!firstOrReappearance && !lostTriangles)
+		{
+			return;
+		}
+		if (auto* log = MiniMap::Services::TryLog())
+		{
+			if (firstOrReappearance)
+			{
+				MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+					"MiniMap: BuildingMapPresentationTrace event=geometry-appearance grid=(%lld,%lld) "
+					"sourceHash=0x%016llx appearance=first-or-reappearance demanded=1 "
+					"triangles={ordinary:%llu solid:%llu overlay:%llu}",
+					static_cast<long long>(section.gridX_), static_cast<long long>(section.gridY_),
+					static_cast<unsigned long long>(sourceContentHash),
+					static_cast<unsigned long long>(geometry.OrdinaryTriangles.size()),
+					static_cast<unsigned long long>(geometry.SolidSurfaces.size()),
+					static_cast<unsigned long long>(geometry.OverlayTriangles.size()));
+			}
+			else
+			{
+				MiniMap::Services::Logf(*log, MiniMap::Services::Level::Warn,
+					"MiniMap: BuildingMapPresentationTrace event=geometry-replacement grid=(%lld,%lld) "
+					"previousHash=unknown nextHash=0x%016llx "
+					"previousTriangles={ordinary:%llu solid:%llu overlay:%llu} "
+					"nextTriangles={ordinary:%llu solid:%llu overlay:%llu} demanded=1",
+					static_cast<long long>(section.gridX_), static_cast<long long>(section.gridY_),
+					static_cast<unsigned long long>(sourceContentHash),
+					static_cast<unsigned long long>(previousGeometry->OrdinaryTriangles.size()),
+					static_cast<unsigned long long>(previousGeometry->SolidSurfaces.size()),
+					static_cast<unsigned long long>(previousGeometry->OverlayTriangles.size()),
+					static_cast<unsigned long long>(geometry.OrdinaryTriangles.size()),
+					static_cast<unsigned long long>(geometry.SolidSurfaces.size()),
+					static_cast<unsigned long long>(geometry.OverlayTriangles.size()));
+			}
+		}
+	}
+#endif
 
 	/** Appends one painter-ordered sprite pass without converting retained triangles again. */
 	bool BuildingMapGpuViewport::AdvanceSpritePassAssembly(

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "Services/Map/Buildings/SourceContentPrecision.h"
 #include "Services/Map/Buildings/SplineProfile.h"
 
 namespace MiniMap::BuildingAcquisition
@@ -67,7 +68,12 @@ namespace MiniMap::BuildingAcquisition
             Point Position{};
             Point Tangent{};
             /** Compares all copied source values. */
-            bool operator==(const SplinePoint&) const = default;
+            bool operator==(const SplinePoint& other) const noexcept
+            {
+                return Index == other.Index &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(Position, other.Position) &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(Tangent, other.Tangent);
+            }
         };
 
         /** Native curve point, preserving its key, tangents and uninterpreted mode. */
@@ -79,7 +85,28 @@ namespace MiniMap::BuildingAcquisition
             Value LeaveTangent{};
             std::uint8_t Mode = 0;
             /** Compares original channel data without numerical preparation. */
-            bool operator==(const CurvePoint&) const = default;
+            bool operator==(const CurvePoint& other) const noexcept
+            {
+                return ::Services::Map::Buildings::SourceContentPrecision::Equal(Key, other.Key) &&
+                    EqualValue(ValueAtKey, other.ValueAtKey) &&
+                    EqualValue(ArriveTangent, other.ArriveTangent) &&
+                    EqualValue(LeaveTangent, other.LeaveTangent) && Mode == other.Mode;
+            }
+
+        private:
+            /** Compares one scalar channel value at source-content precision. */
+            static bool EqualValue(double first, double second) noexcept
+            {
+                return ::Services::Map::Buildings::SourceContentPrecision::Equal(first, second);
+            }
+
+            /** Compares an ordered authored channel array at source-content precision. */
+            template<std::size_t Size>
+            static bool EqualValue(const std::array<double, Size>& first,
+                const std::array<double, Size>& second) noexcept
+            {
+                return ::Services::Map::Buildings::SourceContentPrecision::Equal(first, second);
+            }
         };
 
         /** Native channel and loop parameters, including empty optional channels. */
@@ -89,7 +116,22 @@ namespace MiniMap::BuildingAcquisition
             bool IsLooped = false;
             double LoopKeyOffset = 0;
             /** Compares all owned channel values. */
-            bool operator==(const Curve&) const = default;
+            bool operator==(const Curve& other) const noexcept
+            {
+                if (IsLooped != other.IsLooped || Points.size() != other.Points.size() ||
+                    !::Services::Map::Buildings::SourceContentPrecision::Equal(LoopKeyOffset, other.LoopKeyOffset))
+                {
+                    return false;
+                }
+                for (std::size_t index = 0; index < Points.size(); ++index)
+                {
+                    if (!(Points[index] == other.Points[index]))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
         };
 
         /** Common FAuAPSplineData values copied from fragment or temporary payload. */
@@ -102,7 +144,15 @@ namespace MiniMap::BuildingAcquisition
             Point RotationDegreesWS{}; // Pitch, Yaw, Roll, copied without conversion.
             double RecordedLength = 0;
             /** Compares source points and authored placement parameters. */
-            bool operator==(const SplineData&) const = default;
+            bool operator==(const SplineData& other) const noexcept
+            {
+                return Points == other.Points && NativePointCount == other.NativePointCount &&
+                    ValueStatus == other.ValueStatus &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(LocationWS, other.LocationWS) &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(
+                        RotationDegreesWS, other.RotationDegreesWS) &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(RecordedLength, other.RecordedLength);
+            }
         };
 
         /** Identifies which supplied source can reconstruct the native spline. */
@@ -124,8 +174,15 @@ namespace MiniMap::BuildingAcquisition
             bool CurvesInitialized = false;
             SplineProvenance Provenance = SplineProvenance::FragmentPoints;
             Status SourceStatus = Status::Unknown;
-            /** Compares raw facts without treating a content hash as source identity. */
-            bool operator==(const Spline&) const = default;
+			/** Compares copied source facts at six-decimal precision without treating hashes as identity. */
+            bool operator==(const Spline& other) const noexcept
+            {
+                return FragmentData == other.FragmentData && PayloadData == other.PayloadData &&
+                    Position == other.Position && Rotation == other.Rotation && Scale == other.Scale &&
+                    Reparameterization == other.Reparameterization && CurveVersion == other.CurveVersion &&
+                    CurvesInitialized == other.CurvesInitialized && Provenance == other.Provenance &&
+                    SourceStatus == other.SourceStatus;
+            }
         };
 
         /** One authoritative occurrence, including partial/missing native facts. */
@@ -148,7 +205,24 @@ namespace MiniMap::BuildingAcquisition
             std::shared_ptr<const Definition> DefinitionFacts;
             std::shared_ptr<const Spline> SplineFacts;
             /** Compares values/immutable owners, not content hashes as identity. */
-            bool operator==(const Building&) const = default;
+            bool operator==(const Building& other) const noexcept
+            {
+                const bool definitionsMatch = DefinitionFacts == other.DefinitionFacts ||
+                    (DefinitionFacts && other.DefinitionFacts && *DefinitionFacts == *other.DefinitionFacts);
+                const bool splinesMatch = SplineFacts == other.SplineFacts ||
+                    (SplineFacts && other.SplineFacts && *SplineFacts == *other.SplineFacts);
+                return Index == other.Index && Serial == other.Serial && EntityStatus == other.EntityStatus &&
+                    DefinitionStatus == other.DefinitionStatus && TransformStatus == other.TransformStatus &&
+                    SplineClassificationStatus == other.SplineClassificationStatus && SplineStatus == other.SplineStatus &&
+                    HasSpline == other.HasSpline && Complete == other.Complete &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(ResolvedReach, other.ResolvedReach) &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(Position, other.Position) &&
+                    (TransformStatus == Status::Ready
+                        ? ::Services::Map::Buildings::SourceContentPrecision::EqualQuaternion(Rotation, other.Rotation)
+                        : ::Services::Map::Buildings::SourceContentPrecision::Equal(Rotation, other.Rotation)) &&
+                    ::Services::Map::Buildings::SourceContentPrecision::Equal(SignedScale, other.SignedScale) &&
+                    definitionsMatch && splinesMatch;
+            }
         };
 
         bool HasRequestedRegion = false;

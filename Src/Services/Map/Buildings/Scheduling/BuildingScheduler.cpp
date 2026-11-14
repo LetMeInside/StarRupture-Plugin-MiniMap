@@ -30,108 +30,63 @@ namespace Services::Map::Buildings::Scheduling
 	/** Destroys the plugin-lifetime renderer object without implicit native cleanup. */
 	BuildingScheduler::~BuildingScheduler() = default;
 
-	/** Returns current readiness or queues one owned request after a confirmed disk miss. */
+	/** Returns current readiness and its payload, or queues after a confirmed disk miss. */
 	BuildingScheduler::RequirementStatus BuildingScheduler::EnsureSpriteReady(
-		const Cache::OwnedSpriteKey& key)
+		const Cache::OwnedSpriteKey& key,
+		std::shared_ptr<const Cache::ProcessedSpritePayload>& payload)
 	{
+		payload.reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		DiagnosticsDurationScope ensureTimer(diagnostics_.EnsureSpriteReady);
-		const RequirementStatus result = EnsureSpriteReadyWithDiagnostics(key);
-		RecordRequirementStatus(result);
-		return result;
-#else
+#endif
+		RequirementStatus result = RequirementStatus::Unavailable;
 		const auto statusEntry = spriteStatusesByKey_.find(key.Bytes());
 		if (statusEntry != spriteStatusesByKey_.end())
 		{
 			if (statusEntry->second.GetState() == SpriteStatus::State::CapturePending)
 			{
-				return RequirementStatus::Pending;
-			}
-			if (statusEntry->second.GetState() == SpriteStatus::State::TerminalFailure)
-			{
-				return RequirementStatus::Failed;
-			}
-		}
-
-		if (spriteSourceManager_ == nullptr)
-		{
-			return RequirementStatus::Unavailable;
-		}
-
-		const Cache::SpriteSourceManager::SpriteResult spriteResult =
-			spriteSourceManager_->GetSprite(key);
-		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Ready &&
-			spriteResult.Payload != nullptr)
-		{
-			if (captureRenderer_)
-			{
-				spriteStatusesByKey_.insert_or_assign(key.Bytes(), SpriteStatus(SpriteStatus::State::Ready));
-			}
-			return RequirementStatus::Ready;
-		}
-		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Unavailable)
-		{
-			if (captureRenderer_)
-			{
-				spriteStatusesByKey_.insert_or_assign(
-					key.Bytes(),
-					SpriteStatus(SpriteStatus::State::TemporarilyUnavailable));
-			}
-			return RequirementStatus::Unavailable;
-		}
-
-		return EnqueueCaptureRequest(key);
-#endif
-	}
-
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-	/** Preserves acquisition decisions while recording short-circuit and lookup evidence. */
-	BuildingScheduler::RequirementStatus BuildingScheduler::EnsureSpriteReadyWithDiagnostics(
-		const Cache::OwnedSpriteKey& key)
-	{
-		const auto statusEntry = spriteStatusesByKey_.find(key.Bytes());
-		if (statusEntry != spriteStatusesByKey_.end())
-		{
-			if (statusEntry->second.GetState() == SpriteStatus::State::CapturePending)
-			{
 				++diagnostics_.CapturePendingShortCircuits;
-				return RequirementStatus::Pending;
-			}
-			if (statusEntry->second.GetState() == SpriteStatus::State::TerminalFailure)
-			{
-				return RequirementStatus::Failed;
-			}
-		}
-		if (spriteSourceManager_ == nullptr)
-		{
-			++diagnostics_.MissingCpuSourceManager;
-			return RequirementStatus::Unavailable;
-		}
-		const Cache::SpriteSourceManager::SpriteResult spriteResult =
-			spriteSourceManager_->GetSprite(key);
-		RecordDemandSpriteLookup(spriteResult);
-		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Ready &&
-			spriteResult.Payload != nullptr)
-		{
-			if (captureRenderer_)
-			{
-				spriteStatusesByKey_.insert_or_assign(key.Bytes(), SpriteStatus(SpriteStatus::State::Ready));
-			}
-			return RequirementStatus::Ready;
-		}
-		if (spriteResult.Result == Cache::SpriteSourceManager::Status::Unavailable)
-		{
-			if (captureRenderer_)
-			{
-				spriteStatusesByKey_.insert_or_assign(
-					key.Bytes(),
-					SpriteStatus(SpriteStatus::State::TemporarilyUnavailable));
-			}
-			return RequirementStatus::Unavailable;
-		}
-		return EnqueueCaptureRequest(key);
-	}
 #endif
+				result = RequirementStatus::Pending;
+			}
+			else if (statusEntry->second.GetState() == SpriteStatus::State::TerminalFailure)
+			{
+				result = RequirementStatus::Failed;
+			}
+		}
+		if (result != RequirementStatus::Pending && result != RequirementStatus::Failed)
+		{
+			if (spriteSourceManager_ == nullptr)
+			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++diagnostics_.MissingCpuSourceManager;
+#endif
+			}
+			else
+			{
+				Cache::SpriteSourceManager::SpriteResult spriteResult =
+					spriteSourceManager_->GetSprite(key);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				RecordDemandSpriteLookup(spriteResult);
+#endif
+				if (spriteResult.Result == Cache::SpriteSourceManager::Status::Ready &&
+					spriteResult.Payload != nullptr)
+				{
+					payload = std::move(spriteResult.Payload);
+					result = RequirementStatus::Ready;
+				}
+				else if (spriteResult.Result != Cache::SpriteSourceManager::Status::Unavailable)
+				{
+					result = EnqueueCaptureRequest(key);
+				}
+			}
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		RecordRequirementStatus(result);
+#endif
+		return result;
+	}
 
 	/** Starts gameplay scheduling without replacing the persistent renderer. */
 	bool BuildingScheduler::BeginSession()
@@ -253,13 +208,13 @@ namespace Services::Map::Buildings::Scheduling
 			if (feedback.Error == Capture::CaptureResult::Completion::Failure::StaleRequest ||
 				feedback.Error == Capture::CaptureResult::Completion::Failure::None)
 			{
-				status->MarkTemporarilyUnavailable();
+				spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 				return;
 			}
 			status->MarkTerminalFailure(feedback.RequestIdentity);
 			return;
 		case Capture::CaptureFeedback::Outcome::Cancelled:
-			status->MarkTemporarilyUnavailable();
+			spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 			return;
 		}
 	}
@@ -271,7 +226,7 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		if (spriteSourceManager_ == nullptr || !feedback.Payload || feedback.Payload->Pixels().empty())
 		{
-			status.MarkTemporarilyUnavailable();
+			spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 			return;
 		}
 
@@ -281,7 +236,7 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			adoptionTimer.Finish();
 			++diagnostics_.CaptureAdoptionOutcomeCounts[1];
-			status.MarkTemporarilyUnavailable();
+			spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 			return;
 		}
 		adoptionTimer.Finish();
@@ -289,7 +244,7 @@ namespace Services::Map::Buildings::Scheduling
 #else
 		if (!spriteSourceManager_->Adopt(feedback.SpriteRequirement, std::move(feedback.Payload)))
 		{
-			status.MarkTemporarilyUnavailable();
+			spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 			return;
 		}
 #endif
@@ -302,7 +257,7 @@ namespace Services::Map::Buildings::Scheduling
 		if (publishedSource.Result != Cache::SpriteSourceManager::Status::Ready ||
 			publishedSource.Payload == nullptr)
 		{
-			status.MarkTemporarilyUnavailable();
+			spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 			return;
 		}
 
@@ -311,10 +266,10 @@ namespace Services::Map::Buildings::Scheduling
 			return;
 		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		status.MarkReady();
+		spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 		++diagnostics_.ReadinessPublications;
 #else
-		status.MarkReady();
+		spriteStatusesByKey_.erase(feedback.SpriteRequirement.Bytes());
 #endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		PersistReadySprite(feedback.SpriteRequirement, *publishedSource.Payload);
@@ -368,12 +323,6 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		if (!sessionActive_ || captureRenderer_ == nullptr || nextRequestSequence_ == 0)
 		{
-			if (captureRenderer_)
-			{
-				spriteStatusesByKey_.insert_or_assign(
-					key.Bytes(),
-					SpriteStatus(SpriteStatus::State::TemporarilyUnavailable));
-			}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			++diagnostics_.UnavailableEnqueueReturns;
 #endif

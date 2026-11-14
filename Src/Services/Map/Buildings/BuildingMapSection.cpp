@@ -146,6 +146,13 @@ namespace Services::Map::Buildings
 		if (preparingScene_ == nullptr || preparingSceneSourceContentHash_ != sourceContentHash ||
 			preparingScene_->contributionStates_.size() != contributionCount)
 		{
+			if (completedScene_ == nullptr && preparingScene_ != nullptr)
+			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				ReportGpuPresentationWithdrawal(
+					"scene-generation-replacement", preparingSceneSourceContentHash_, sourceContentHash, true);
+#endif
+			}
 			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
 			{
 				gpuGeometryAssembly_.reset();
@@ -203,6 +210,9 @@ namespace Services::Map::Buildings
 		preparingSceneSourceContentHash_ = 0;
 		if (completedScene_->drawableGpuTriangleCount_ == 0)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ReportGpuPresentationWithdrawal("completed-empty-replacement", std::nullopt, sourceContentHash, true);
+#endif
 			gpuPresentation_.reset();
 			gpuPresentationAtlasRevisionValid_ = false;
 			gpuGeometryAssembly_.reset();
@@ -236,6 +246,42 @@ namespace Services::Map::Buildings
 				failure.Expected, failure.Actual, failure.OperationStatus, failure.PublicationCount);
 		}
 	}
+
+	/** Reports the old drawable owner and scene generations before a Section presentation is withdrawn. */
+	void BuildingMapSection::ReportGpuPresentationWithdrawal(
+		const char* transition,
+		std::optional<std::uint64_t> previousSourceHash,
+		std::optional<std::uint64_t> nextSourceHash,
+		std::optional<bool> demanded) const noexcept
+	{
+		const auto geometry = gpuPresentation_ != nullptr ? gpuPresentation_->PreparedGeometry : nullptr;
+		if (geometry == nullptr || (geometry->OrdinaryTriangles.empty() &&
+			geometry->SolidSurfaces.empty() && geometry->OverlayTriangles.empty()))
+		{
+			return;
+		}
+		if (auto* log = MiniMap::Services::TryLog())
+		{
+			MiniMap::Services::Logf(*log, MiniMap::Services::Level::Warn,
+				"MiniMap: BuildingMapPresentationTrace event=withdrawal grid=(%lld,%lld) "
+				"transition=%s previousHash=%s0x%016llx nextHash=%s0x%016llx "
+				"completed=%d completedHash=0x%016llx preparing=%d preparingHash=0x%016llx "
+				"gpuPresentation=1 triangles={ordinary:%llu solid:%llu overlay:%llu} demanded=%s",
+				static_cast<long long>(gridX_), static_cast<long long>(gridY_), transition,
+				previousSourceHash.has_value() ? "" : "unknown/",
+				static_cast<unsigned long long>(previousSourceHash.value_or(0)),
+				nextSourceHash.has_value() ? "" : "absent/",
+				static_cast<unsigned long long>(nextSourceHash.value_or(0)),
+				completedScene_ != nullptr ? 1 : 0,
+				static_cast<unsigned long long>(completedScene_ != nullptr ? completedScene_->SourceContentHash() : 0),
+				preparingScene_ != nullptr ? 1 : 0,
+				static_cast<unsigned long long>(preparingScene_ != nullptr ? preparingScene_->SourceContentHash() : 0),
+				static_cast<unsigned long long>(geometry->OrdinaryTriangles.size()),
+				static_cast<unsigned long long>(geometry->SolidSurfaces.size()),
+				static_cast<unsigned long long>(geometry->OverlayTriangles.size()),
+				demanded.has_value() ? (*demanded ? "1" : "0") : "unknown");
+		}
+	}
 #endif
 
 	/** Discards only preparation belonging to an older selected source publication. */
@@ -243,6 +289,13 @@ namespace Services::Map::Buildings
 	{
 		if (preparingScene_ != nullptr && preparingSceneSourceContentHash_ != currentSourceContentHash)
 		{
+			if (completedScene_ == nullptr)
+			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				ReportGpuPresentationWithdrawal(
+					"preparing-scene-invalidation", preparingSceneSourceContentHash_, currentSourceContentHash, true);
+#endif
+			}
 			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
 			{
 				gpuGeometryAssembly_.reset();
@@ -259,9 +312,19 @@ namespace Services::Map::Buildings
 	}
 
 	/** Drops incomplete scene values when their scheduler cursor is abandoned. */
-	void BuildingMapSection::DiscardPreparingScene() noexcept
+	void BuildingMapSection::DiscardPreparingScene(
+		[[maybe_unused]] const char* transition,
+		[[maybe_unused]] std::optional<bool> demanded) noexcept
 	{
 		const bool wasVisible = preparingScene_ != nullptr && completedScene_ == nullptr;
+		if (wasVisible)
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			ReportGpuPresentationWithdrawal(
+				transition, preparingSceneSourceContentHash_, std::nullopt,
+				demanded.has_value() ? demanded : std::optional<bool>{true});
+#endif
+		}
 		if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
 		{
 			gpuGeometryAssembly_.reset();
@@ -327,10 +390,12 @@ namespace Services::Map::Buildings
 	}
 
 	/** Releases unfinished render state without changing the context or published image. */
-	void BuildingMapSection::ResetRenderingState() noexcept
+	void BuildingMapSection::ResetRenderingState(
+		[[maybe_unused]] const char* transition,
+		std::optional<bool> demanded) noexcept
 	{
 		renderingState_.reset();
-		DiscardPreparingScene();
+		DiscardPreparingScene(transition, demanded);
 	}
 }
 

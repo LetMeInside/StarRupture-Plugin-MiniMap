@@ -158,7 +158,7 @@ namespace Services::Map::Buildings::Scheduling
 		ResetSchedulingBudgetState();
 		for (auto& sectionEntry : buildingMapService.sections_)
 		{
-			sectionEntry.second->ResetRenderingState();
+			sectionEntry.second->ResetRenderingState("viewport-demand-clear", false);
 		}
 	}
 
@@ -725,7 +725,8 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		for (auto& sectionEntry : buildingMapService.sections_)
 		{
-			sectionEntry.second->ResetRenderingState();
+			sectionEntry.second->ResetRenderingState(
+				"session-stop", IsDemanded({sectionEntry.first.first, sectionEntry.first.second}));
 		}
 		if (sectionScheduler_ != nullptr)
 		{
@@ -1044,7 +1045,7 @@ namespace Services::Map::Buildings::Scheduling
 			std::make_pair(coordinate.GridX, coordinate.GridY));
 		if (section != buildingMapService.sections_.end())
 		{
-			section->second->ResetRenderingState();
+			section->second->ResetRenderingState("scheduler-cancel", IsDemanded(coordinate));
 		}
 	}
 

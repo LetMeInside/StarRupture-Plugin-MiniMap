@@ -18,6 +18,7 @@ namespace MiniMapConfig
         bool ClearCache = false;
 #if defined(_DEBUG)
         bool AtlasExport = false;
+        bool ShowBuildingSectionGrid = true;
 #endif
         bool ZoomWithMouseWheel = true;
         Keybind MouseWheelKey = {'L', 'e', 'f', 't', 'C', 'o', 'n', 't', 'r', 'o', 'l', '\0'};
@@ -79,6 +80,9 @@ namespace MiniMapConfig
         bool ShowAlienActors;
         FoundableRenderSettings Foundables;
         POIRenderSettings POI;
+#if defined(_DEBUG)
+        bool ShowBuildingSectionGrid;
+#endif
     };
     struct MouseWheelSettings
     {

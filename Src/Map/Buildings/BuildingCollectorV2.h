@@ -66,7 +66,7 @@ namespace MiniMap::BuildingAcquisition
         void ShutdownResources();
 
     private:
-        /** Creates the unchanged placement-content signature from one exact acquired occurrence. */
+        /** Creates the placement-content signature using shared six-decimal source precision. */
         static std::uint64_t ComputeOccurrenceSignature(const BuildingAcquiredFacts::Building& building) noexcept;
 
         /** Appends the canonical quaternion bytes using the established sign and component order. */

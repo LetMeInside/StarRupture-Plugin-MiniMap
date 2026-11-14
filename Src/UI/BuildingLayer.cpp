@@ -9,9 +9,17 @@
 #include "../Native/MassLifecycle.h"
 #include "Services/Viewport.h"
 
+#if defined(_DEBUG)
+#include <algorithm>
+#endif
 #include <cmath>
 #include <memory>
 #include <utility>
+#if defined(_DEBUG)
+#include <array>
+#include <cstdio>
+#include <limits>
+#endif
 
 namespace MiniMapUI
 {
@@ -135,7 +143,11 @@ namespace MiniMapUI
 	void BuildingLayer::Render(
 		MiniMap::Services::ICanvas& canvas,
 		const MiniMapMap::Transform& mapTransform,
-		bool showLayer)
+		bool showLayer
+#if defined(_DEBUG)
+		, bool showSectionGrid
+#endif
+	)
 	{
 	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
@@ -149,6 +161,12 @@ namespace MiniMapUI
 	#endif
 		if (!showLayer)
 		{
+#if defined(_DEBUG)
+			if (showSectionGrid && service_ != nullptr)
+			{
+				DrawSectionGrid(canvas, mapTransform, service_->GetSectionSizeMapUnits());
+			}
+#endif
 			return;
 		}
 		Services::Map::Buildings::BuildingMapGpuViewport::CanvasTransform transform{};
@@ -165,7 +183,298 @@ namespace MiniMapUI
 		{
 			viewport->Draw(canvas, MiniMap::Services::DrawLayer::Window, transform);
 		}
+#if defined(_DEBUG)
+		if (showSectionGrid && service_ != nullptr)
+		{
+			DrawSectionGrid(canvas, mapTransform, service_->GetSectionSizeMapUnits());
+		}
+#endif
 	}
+
+#if defined(_DEBUG)
+	void BuildingLayer::DrawSectionGrid(
+		MiniMap::Services::ICanvas& canvas,
+		const MiniMapMap::Transform& mapTransform,
+		double sectionSize)
+	{
+		std::int64_t firstGridX = 0;
+		std::int64_t firstGridY = 0;
+		std::int64_t endGridX = 0;
+		std::int64_t endGridY = 0;
+		if (!TryGetVisibleSectionGridRange(mapTransform, sectionSize,
+			firstGridX, firstGridY, endGridX, endGridY))
+		{
+			return;
+		}
+		const MiniMap::Services::Vec2 clipMinimum{
+			mapTransform.CenterX - mapTransform.Width * 0.5f,
+			mapTransform.CenterY - mapTransform.Height * 0.5f};
+		const MiniMap::Services::Vec2 clipMaximum{
+			mapTransform.CenterX + mapTransform.Width * 0.5f,
+			mapTransform.CenterY + mapTransform.Height * 0.5f};
+		canvas.PushClip(MiniMap::Services::DrawLayer::Window, clipMinimum, clipMaximum, true);
+		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
+		{
+			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
+			{
+				DrawSectionGridCell(canvas, mapTransform, gridX, gridY, sectionSize);
+			}
+		}
+		canvas.PopClip(MiniMap::Services::DrawLayer::Window);
+	}
+
+	bool BuildingLayer::TryGetVisibleSectionGridRange(
+		const MiniMapMap::Transform& mapTransform,
+		double sectionSize,
+		std::int64_t& firstGridX,
+		std::int64_t& firstGridY,
+		std::int64_t& endGridX,
+		std::int64_t& endGridY) noexcept
+	{
+		double minimumX = 0.0;
+		double minimumY = 0.0;
+		double maximumX = 0.0;
+		double maximumY = 0.0;
+		if (!std::isfinite(sectionSize) || sectionSize <= 0.0 ||
+			!TryGetVisibleWorldBounds(mapTransform, minimumX, minimumY, maximumX, maximumY))
+		{
+			return false;
+		}
+		const long double firstX = std::floor(static_cast<long double>(minimumX) / sectionSize);
+		const long double firstY = std::floor(static_cast<long double>(minimumY) / sectionSize);
+		const long double endX = std::ceil(static_cast<long double>(maximumX) / sectionSize);
+		const long double endY = std::ceil(static_cast<long double>(maximumY) / sectionSize);
+		const long double minimumGrid = (std::numeric_limits<std::int64_t>::min)();
+		const long double maximumGrid = (std::numeric_limits<std::int64_t>::max)();
+		if (firstX < minimumGrid || firstY < minimumGrid || endX > maximumGrid || endY > maximumGrid)
+		{
+			return false;
+		}
+		firstGridX = static_cast<std::int64_t>(firstX);
+		firstGridY = static_cast<std::int64_t>(firstY);
+		endGridX = static_cast<std::int64_t>(endX);
+		endGridY = static_cast<std::int64_t>(endY);
+		return firstGridX < endGridX && firstGridY < endGridY;
+	}
+
+	bool BuildingLayer::TryGetVisibleWorldBounds(
+		const MiniMapMap::Transform& mapTransform,
+		double& minimumX,
+		double& minimumY,
+		double& maximumX,
+		double& maximumY) noexcept
+	{
+		const double scaleY = mapTransform.PixelsPerWorldUnitY > 0.0
+			? mapTransform.PixelsPerWorldUnitY : mapTransform.PixelsPerWorldUnit;
+		if (!mapTransform.Valid || !std::isfinite(mapTransform.PixelsPerWorldUnit) ||
+			mapTransform.PixelsPerWorldUnit <= 0.0 || !std::isfinite(scaleY) || scaleY <= 0.0)
+		{
+			return false;
+		}
+		minimumX = (std::numeric_limits<double>::max)();
+		minimumY = minimumX;
+		maximumX = -(std::numeric_limits<double>::max)();
+		maximumY = maximumX;
+		for (int corner = 0; corner < 4; ++corner)
+		{
+			const double screenX = mapTransform.CenterX + ((corner & 1) ? 0.5 : -0.5) * mapTransform.Width;
+			const double screenY = mapTransform.CenterY + ((corner & 2) ? 0.5 : -0.5) * mapTransform.Height;
+			const double rotatedX = (screenX - mapTransform.CenterX) / mapTransform.PixelsPerWorldUnit;
+			const double rotatedY = (screenY - mapTransform.CenterY) / scaleY;
+			const double worldX = mapTransform.TrackingWorldX +
+				mapTransform.CosMapRotation * rotatedX + mapTransform.SinMapRotation * rotatedY;
+			const double worldY = mapTransform.TrackingWorldY -
+				mapTransform.SinMapRotation * rotatedX + mapTransform.CosMapRotation * rotatedY;
+			if (!std::isfinite(worldX) || !std::isfinite(worldY))
+			{
+				return false;
+			}
+			minimumX = (std::min)(minimumX, worldX);
+			minimumY = (std::min)(minimumY, worldY);
+			maximumX = (std::max)(maximumX, worldX);
+			maximumY = (std::max)(maximumY, worldY);
+		}
+		return true;
+	}
+
+	void BuildingLayer::DrawSectionGridCell(
+		MiniMap::Services::ICanvas& canvas,
+		const MiniMapMap::Transform& mapTransform,
+		std::int64_t gridX,
+		std::int64_t gridY,
+		double sectionSize)
+	{
+		constexpr MiniMap::Services::Color gridColor = 0x80BEBEBEu;
+		const double left = static_cast<double>(gridX) * sectionSize;
+		const double top = static_cast<double>(gridY) * sectionSize;
+		DrawSectionGridLine(canvas, mapTransform, left, top, left + sectionSize, top);
+		DrawSectionGridLine(canvas, mapTransform, left, top, left, top + sectionSize);
+		MiniMap::Services::Vec2 labelPosition{};
+		if (!TryGetClippedSectionLabelPosition(mapTransform, gridX, gridY, sectionSize, labelPosition))
+		{
+			return;
+		}
+		char label[64]{};
+		std::snprintf(label, sizeof(label), "(%lld, %lld)",
+			static_cast<long long>(gridX), static_cast<long long>(gridY));
+		const MiniMap::Services::Vec2 clipMaximum{
+			mapTransform.CenterX + mapTransform.Width * 0.5f,
+			mapTransform.CenterY + mapTransform.Height * 0.5f};
+		const MiniMap::Services::Vec2 textSize = canvas.MeasureText(label, false, -1.0f);
+		labelPosition.x = (std::min)(labelPosition.x, clipMaximum.x - textSize.x - 2.0f);
+		labelPosition.y = (std::min)(labelPosition.y, clipMaximum.y - textSize.y - 2.0f);
+		canvas.Text(MiniMap::Services::DrawLayer::Window, labelPosition, gridColor, label);
+	}
+
+	bool BuildingLayer::TryGetClippedSectionLabelPosition(
+		const MiniMapMap::Transform& mapTransform,
+		std::int64_t gridX,
+		std::int64_t gridY,
+		double sectionSize,
+		MiniMap::Services::Vec2& output)
+	{
+		std::array<MiniMap::Services::Vec2, 8> polygon{};
+		if (!TryProjectSectionCell(mapTransform, gridX, gridY, sectionSize, polygon))
+			return false;
+		const MiniMap::Services::Vec2 originalTopLeft = polygon[0];
+		const MiniMap::Services::Vec2 minimum{
+			mapTransform.CenterX - mapTransform.Width * 0.5f,
+			mapTransform.CenterY - mapTransform.Height * 0.5f};
+		const MiniMap::Services::Vec2 maximum{
+			mapTransform.CenterX + mapTransform.Width * 0.5f,
+			mapTransform.CenterY + mapTransform.Height * 0.5f};
+		std::array<MiniMap::Services::Vec2, 8> clipped{};
+		std::size_t count = 4;
+		for (int edge = 0; edge < 4; ++edge)
+		{
+			count = ClipSectionLabelPolygon(polygon, count, clipped, edge, minimum, maximum);
+			polygon.swap(clipped);
+		}
+		if (count == 0)
+		{
+			return false;
+		}
+		std::size_t nearest = 0;
+		float nearestDistance = std::numeric_limits<float>::max();
+		for (std::size_t index = 0; index < count; ++index)
+		{
+			const float dx = polygon[index].x - originalTopLeft.x;
+			const float dy = polygon[index].y - originalTopLeft.y;
+			const float distance = std::hypot(dx, dy);
+			if (distance < nearestDistance)
+			{
+				nearest = index;
+				nearestDistance = distance;
+			}
+		}
+		output = {polygon[nearest].x + 3.0f, polygon[nearest].y + 3.0f};
+		return true;
+	}
+
+	bool BuildingLayer::TryProjectSectionCell(
+		const MiniMapMap::Transform& mapTransform,
+		std::int64_t gridX,
+		std::int64_t gridY,
+		double sectionSize,
+		std::array<MiniMap::Services::Vec2, 8>& output)
+	{
+		const double left = static_cast<double>(gridX) * sectionSize;
+		const double top = static_cast<double>(gridY) * sectionSize;
+		const std::array<std::array<double, 2>, 4> worldCorners{{
+			{left, top}, {left + sectionSize, top},
+			{left + sectionSize, top + sectionSize}, {left, top + sectionSize}}};
+		for (std::size_t index = 0; index < worldCorners.size(); ++index)
+		{
+			MiniMapMap::ScreenPoint point{};
+			if (!mapTransform.WorldToScreen(worldCorners[index][0], worldCorners[index][1], point))
+				return false;
+			output[index] = {point.X, point.Y};
+		}
+		return true;
+	}
+
+	std::size_t BuildingLayer::ClipSectionLabelPolygon(
+		const std::array<MiniMap::Services::Vec2, 8>& input,
+		std::size_t inputCount,
+		std::array<MiniMap::Services::Vec2, 8>& output,
+		int edge,
+		MiniMap::Services::Vec2 clipMinimum,
+		MiniMap::Services::Vec2 clipMaximum)
+	{
+		if (inputCount == 0)
+		{
+			return 0;
+		}
+		const bool vertical = edge < 2;
+		const float boundary = edge == 0 ? clipMinimum.x : edge == 1 ? clipMaximum.x :
+			edge == 2 ? clipMinimum.y : clipMaximum.y;
+		const auto inside = [vertical, edge, boundary](MiniMap::Services::Vec2 point)
+		{
+			const float coordinate = vertical ? point.x : point.y;
+			return edge == 0 || edge == 2 ? coordinate >= boundary : coordinate <= boundary;
+		};
+		const auto intersection = [vertical, boundary](MiniMap::Services::Vec2 first, MiniMap::Services::Vec2 second)
+		{
+			const float firstCoordinate = vertical ? first.x : first.y;
+			const float secondCoordinate = vertical ? second.x : second.y;
+			const float amount = (boundary - firstCoordinate) / (secondCoordinate - firstCoordinate);
+			return vertical ? MiniMap::Services::Vec2{boundary, first.y + amount * (second.y - first.y)}
+				: MiniMap::Services::Vec2{first.x + amount * (second.x - first.x), boundary};
+		};
+		std::size_t outputCount = 0;
+		MiniMap::Services::Vec2 previous = input[inputCount - 1];
+		bool previousInside = inside(previous);
+		for (std::size_t index = 0; index < inputCount; ++index)
+		{
+			const MiniMap::Services::Vec2 current = input[index];
+			const bool currentInside = inside(current);
+			if (currentInside != previousInside)
+			{
+				output[outputCount++] = intersection(previous, current);
+			}
+			if (currentInside)
+			{
+				output[outputCount++] = current;
+			}
+			previous = current;
+			previousInside = currentInside;
+		}
+		return outputCount;
+	}
+
+	void BuildingLayer::DrawSectionGridLine(
+		MiniMap::Services::ICanvas& canvas,
+		const MiniMapMap::Transform& mapTransform,
+		double x1,
+		double y1,
+		double x2,
+		double y2)
+	{
+		MiniMapMap::ScreenPoint first{};
+		MiniMapMap::ScreenPoint second{};
+		if (!mapTransform.WorldToScreen(x1, y1, first) || !mapTransform.WorldToScreen(x2, y2, second))
+		{
+			return;
+		}
+		const float dx = second.X - first.X;
+		const float dy = second.Y - first.Y;
+		const float length = std::hypot(dx, dy);
+		if (!std::isfinite(length) || length <= 0.0f)
+		{
+			return;
+		}
+		constexpr float halfWidth = 0.5f;
+		constexpr MiniMap::Services::Color gridColor = 0x80BEBEBEu;
+		const float offsetX = -dy / length * halfWidth;
+		const float offsetY = dx / length * halfWidth;
+		const MiniMap::Services::Vec2 a{first.X + offsetX, first.Y + offsetY};
+		const MiniMap::Services::Vec2 b{second.X + offsetX, second.Y + offsetY};
+		const MiniMap::Services::Vec2 c{second.X - offsetX, second.Y - offsetY};
+		const MiniMap::Services::Vec2 d{first.X - offsetX, first.Y - offsetY};
+		canvas.FilledTriangle(MiniMap::Services::DrawLayer::Window, {a, b, c}, gridColor);
+		canvas.FilledTriangle(MiniMap::Services::DrawLayer::Window, {a, c, d}, gridColor);
+	}
+#endif
 
 	bool BuildingLayer::Shutdown()
 	{

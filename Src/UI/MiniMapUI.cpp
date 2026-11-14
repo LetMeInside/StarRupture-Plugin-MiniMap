@@ -177,7 +177,11 @@ namespace
             }
             if (buildingLayer != nullptr)
             {
-                buildingLayer->Render(ui, transform, settings.Buildings.ShowLayer);
+                buildingLayer->Render(ui, transform, settings.Buildings.ShowLayer
+#if defined(_DEBUG)
+                    , settings.ShowBuildingSectionGrid
+#endif
+                );
             }
             MiniMapFogOfWar::Render(
                 ui,

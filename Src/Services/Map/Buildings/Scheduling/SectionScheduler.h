@@ -1141,22 +1141,6 @@ namespace Services::Map::Buildings::Scheduling
 			bool updatePreparationCounts = true,
 			bool prepareGeometrySupport = true);
 
-		/** Acquires a ready payload, validates placement geometry and appends one paired occurrence.
-		 * @param publicationOrdinal Corresponding ordinal in the retained candidate publication.
-		 * @param requirement Borrowed known descriptor with its optional validated placement.
-		 * @param ownedKey Validated key whose payload is ready through BuildingScheduler.
-		 * @param output Accumulates payload ownership and geometry outcomes.
-		 * @param occurrenceOutcome Receives this ordinal's independently preserved preparation state.
-		 * @param updatePreparationCounts Whether to maintain synchronous aggregate counters.
-		 */
-		void PrepareReadySpriteRequirement(
-			std::uint64_t publicationOrdinal,
-			const BuildingCandidateSourceRecord& requirement,
-			const Cache::OwnedSpriteKey& ownedKey,
-			KnownSpritePreparationResult& output,
-			KnownSpritePreparationResult::OccurrenceOutcome& occurrenceOutcome,
-			bool updatePreparationCounts = true,
-			bool prepareGeometrySupport = true);
 		/** Builds one ready sprite input from an already acquired CPU payload.
 		 * @param publicationOrdinal Exact source occurrence ordinal.
 		 * @param requirement Borrowed source values and placement for that occurrence.

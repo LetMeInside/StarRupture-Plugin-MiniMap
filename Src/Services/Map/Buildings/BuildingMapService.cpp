@@ -3,6 +3,7 @@
 // Implements service-owned Sections and image residency, viewport source selection, image-change routing, and scheduler lifecycle delegation.
 #include "BuildingMapService.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -133,6 +134,9 @@ namespace Services::Map::Buildings
 		}
 		viewportsByHandle_.clear();
 		gpuPresentationChangedSections_.clear();
+		gpuGeometryChangeSequence_ = 0;
+		gpuGeometryPublicationBatchBoundary_.reset();
+		gpuGeometryPublicationBatchConsumed_ = false;
 		gpuPresentationSnapshotChangedSections_.clear();
 		gpuGeometryPublicationCursor_.reset();
 		gpuViewportRangesChanged_.clear();
@@ -249,6 +253,9 @@ namespace Services::Map::Buildings
 		}
 		viewportsByHandle_.clear();
 		gpuPresentationChangedSections_.clear();
+		gpuGeometryChangeSequence_ = 0;
+		gpuGeometryPublicationBatchBoundary_.reset();
+		gpuGeometryPublicationBatchConsumed_ = false;
 		gpuPresentationSnapshotChangedSections_.clear();
 		gpuGeometryPublicationCursor_.reset();
 		gpuViewportRangesChanged_.clear();
@@ -418,6 +425,14 @@ namespace Services::Map::Buildings
 		{
 			if (selectedCoordinates.find(coordinate) == selectedCoordinates.end())
 			{
+				const auto selected = pendingSectionPublications_.find(coordinate);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				ReportSectionSelectionTransition(
+					coordinate,
+					selected != pendingSectionPublications_.end()
+						? std::optional{selected->second->ContentHash()} : std::nullopt,
+					std::nullopt);
+#endif
 				const bool selectionChanged = pendingSectionPublications_.erase(coordinate) != 0;
 				sectionSchedulingCoordinator_->RecordSelectedPublication(
 					*this, {coordinate.first, coordinate.second}, nullptr, selectionChanged);
@@ -540,15 +555,80 @@ namespace Services::Map::Buildings
 				continue;
 			}
 			auto [existing, inserted] = pendingSectionPublications_.try_emplace(coordinate, publication);
-			const bool selectionChanged = inserted || existing->second->ContentHash() != publication->ContentHash();
-			if (selectionChanged && !inserted)
+			const std::optional<std::uint64_t> previousContentHash = inserted
+				? std::nullopt
+				: std::optional{existing->second->ContentHash()};
+			const bool selectionChanged = inserted || *previousContentHash != publication->ContentHash();
+			if (selectionChanged)
 			{
-				existing->second = publication;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				ReportSectionSelectionTransition(
+					coordinate, previousContentHash, publication->ContentHash());
+#endif
+				if (!inserted)
+				{
+					existing->second = publication;
+				}
 			}
 			sectionSchedulingCoordinator_->RecordSelectedPublication(
 				*this, {coordinate.first, coordinate.second}, existing->second.get(), selectionChanged);
 		}
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Reports changed or withdrawn source selection alongside its current presentation state. */
+	void BuildingMapService::ReportSectionSelectionTransition(
+		const SectionCoordinate& coordinate,
+		std::optional<std::uint64_t> previousContentHash,
+		std::optional<std::uint64_t> nextContentHash) const noexcept
+	{
+		const BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+		const bool hasPreparingScene = section != nullptr && section->preparingScene_ != nullptr;
+		const bool hasCompletedScene = section != nullptr && section->completedScene_ != nullptr;
+		const auto geometry = section != nullptr && section->gpuPresentation_ != nullptr
+			? section->gpuPresentation_->PreparedGeometry : nullptr;
+		const bool hasDrawablePresentation = geometry != nullptr &&
+			(!geometry->OrdinaryTriangles.empty() || !geometry->SolidSurfaces.empty() || !geometry->OverlayTriangles.empty());
+		if (!previousContentHash.has_value() && !nextContentHash.has_value())
+		{
+			return;
+		}
+		if (!previousContentHash.has_value() && !hasDrawablePresentation)
+		{
+			return;
+		}
+		const bool gpuDemanded = HasGpuViewportDemand(coordinate);
+		const bool sectionDemanded = sectionSchedulingCoordinator_ != nullptr &&
+			sectionSchedulingCoordinator_->IsDemanded({coordinate.first, coordinate.second});
+		const char* eligibilityReason = "not-incomplete";
+		if (hasPreparingScene)
+		{
+			eligibilityReason = !nextContentHash.has_value() ? "selected-publication-missing" :
+				section->preparingScene_->SourceContentHash() != *nextContentHash
+					? "source-hash-mismatch" : "still-eligible";
+		}
+		const bool presentationExcluded = hasDrawablePresentation && hasPreparingScene &&
+			(!nextContentHash.has_value() || section->preparingScene_->SourceContentHash() != *nextContentHash);
+		const char* event = presentationExcluded ? "snapshot-exclusion" : "source-selection";
+		if (auto* log = MiniMap::Services::TryLog())
+		{
+			MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+				"MiniMap: BuildingMapPresentationTrace event=%s grid=(%lld,%lld) previousHash=%s0x%016llx "
+				"nextHash=%s0x%016llx previousAbsent=%d nextAbsent=%d preparing=%d completed=%d "
+				"gpuPresentation=%d triangles={ordinary:%llu solid:%llu overlay:%llu} "
+				"demanded=%d gpuDemanded=%d snapshotEligibility=%s",
+				event, static_cast<long long>(coordinate.first), static_cast<long long>(coordinate.second),
+				previousContentHash.has_value() ? "" : "unknown/", static_cast<unsigned long long>(previousContentHash.value_or(0)),
+				nextContentHash.has_value() ? "" : "absent/", static_cast<unsigned long long>(nextContentHash.value_or(0)),
+				previousContentHash.has_value() ? 0 : 1, nextContentHash.has_value() ? 0 : 1,
+				hasPreparingScene ? 1 : 0, hasCompletedScene ? 1 : 0, hasDrawablePresentation ? 1 : 0,
+				static_cast<unsigned long long>(geometry != nullptr ? geometry->OrdinaryTriangles.size() : 0),
+				static_cast<unsigned long long>(geometry != nullptr ? geometry->SolidSurfaces.size() : 0),
+				static_cast<unsigned long long>(geometry != nullptr ? geometry->OverlayTriangles.size() : 0),
+				sectionDemanded ? 1 : 0, gpuDemanded ? 1 : 0, eligibilityReason);
+		}
+	}
+#endif
 
 	/** Clears a publication only after both its image commitment and complete scene are current. */
 	void BuildingMapService::ReleasePendingPublicationsAlreadyApplied()
@@ -624,6 +704,14 @@ namespace Services::Map::Buildings
 	/** Withdraws selection and leaves any demanded job dormant until a source is selected again. */
 	void BuildingMapService::InvalidateSelectedSectionPublication(const SectionCoordinate& coordinate)
 	{
+		const auto selected = pendingSectionPublications_.find(coordinate);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ReportSectionSelectionTransition(
+			coordinate,
+			selected != pendingSectionPublications_.end()
+				? std::optional{selected->second->ContentHash()} : std::nullopt,
+			std::nullopt);
+#endif
 		const bool selectionChanged = pendingSectionPublications_.erase(coordinate) != 0;
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
@@ -766,7 +854,7 @@ namespace Services::Map::Buildings
 			}
 			if (!IsSectionWithinAnyViewportResidencyRange(sectionEntry.first.first, sectionEntry.first.second))
 			{
-				section->ResetRenderingState();
+				section->ResetRenderingState("residency-removal", false);
 				if (section->HasCompletedImage())
 				{
 					section->InvalidateCompletedImage();
@@ -995,7 +1083,12 @@ namespace Services::Map::Buildings
 	/** Queues the coordinate for the existing post-scheduling presentation refresh. */
 	void BuildingMapService::MarkGpuSectionPresentationChanged(std::int64_t gridX, std::int64_t gridY)
 	{
-		gpuPresentationChangedSections_.emplace(gridX, gridY);
+		const bool newlyDirty = gpuPresentationChangedSections_.emplace(gridX, gridY).second;
+		BuildingMapSection* section = FindSectionAt(gridX, gridY);
+		if (newlyDirty && section != nullptr)
+		{
+			section->gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
+		}
 	}
 
 	/** Queues one immediate presentation-list change that requires no geometry assembly. */
@@ -1015,6 +1108,11 @@ namespace Services::Map::Buildings
 		{
 			return false;
 		}
+		if (admitDirtySections && !gpuGeometryPublicationBatchBoundary_.has_value())
+		{
+			gpuGeometryPublicationBatchBoundary_ = gpuGeometryChangeSequence_;
+			gpuGeometryPublicationBatchConsumed_ = false;
+		}
 		bool startedNewAssembly = false;
 		std::size_t sectionsRemaining = gpuPresentationChangedSections_.size();
 		while (sectionsRemaining != 0 && std::chrono::steady_clock::now() < deadline)
@@ -1029,26 +1127,75 @@ namespace Services::Map::Buildings
 			const SectionCoordinate coordinate = *current;
 			gpuGeometryPublicationCursor_ = coordinate;
 			--sectionsRemaining;
-			const BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+			BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
 			if (section == nullptr)
 			{
 				gpuPresentationChangedSections_.erase(coordinate);
 				continue;
 			}
-			if (!admitDirtySections && section->gpuGeometryAssembly_ == nullptr)
+			const bool sectionBelongsToBatch = gpuGeometryPublicationBatchBoundary_.has_value() &&
+				section->gpuGeometryChangeSequence_ <= *gpuGeometryPublicationBatchBoundary_;
+			const bool canStartAssembly = sectionBelongsToBatch && section->gpuGeometryAssembly_ == nullptr;
+			if (section->gpuGeometryAssembly_ == nullptr && !canStartAssembly)
 			{
 				continue;
 			}
+			if (canStartAssembly)
+			{
+				BuildingMapSection::ScenePresentationView presentation;
+				if (!section->TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
+				{
+					gpuPresentationChangedSections_.erase(coordinate);
+					continue;
+				}
+				if (presentation.Scene->drawableGpuTriangleCount_ == 0)
+				{
+					gpuPresentationChangedSections_.erase(coordinate);
+					continue;
+				}
+			}
 			bool sectionStartedAssembly = false;
 			if (!AdvanceGpuGeometryPublication(
-				coordinate, deadline, admitDirtySections, sectionStartedAssembly))
+				coordinate, deadline, canStartAssembly, sectionStartedAssembly))
 			{
 				startedNewAssembly = startedNewAssembly || sectionStartedAssembly;
+				if (sectionStartedAssembly)
+				{
+					section->gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
+				}
 				break;
 			}
 			startedNewAssembly = startedNewAssembly || sectionStartedAssembly;
+			if (sectionStartedAssembly)
+			{
+				section->gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
+			}
 		}
-		return startedNewAssembly;
+		const bool consumedRoutineOpportunity = startedNewAssembly && !gpuGeometryPublicationBatchConsumed_;
+		if (consumedRoutineOpportunity)
+		{
+			gpuGeometryPublicationBatchConsumed_ = true;
+		}
+		if (gpuGeometryPublicationBatchBoundary_.has_value())
+		{
+			const std::uint64_t batchBoundary = *gpuGeometryPublicationBatchBoundary_;
+			const bool hasUnfinishedBatchWork = std::any_of(
+				gpuPresentationChangedSections_.begin(),
+				gpuPresentationChangedSections_.end(),
+				[this, batchBoundary](const SectionCoordinate& coordinate)
+				{
+					const BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+					return section != nullptr && HasGpuViewportDemand(coordinate) &&
+						(section->gpuGeometryAssembly_ != nullptr ||
+							section->gpuGeometryChangeSequence_ <= batchBoundary);
+				});
+			if (!hasUnfinishedBatchWork)
+			{
+				gpuGeometryPublicationBatchBoundary_.reset();
+				gpuGeometryPublicationBatchConsumed_ = false;
+			}
+		}
+		return consumedRoutineOpportunity;
 	}
 
 	/** Validates one selected generation and advances its staged buffers under the shared deadline. */
@@ -1089,6 +1236,8 @@ namespace Services::Map::Buildings
 			activeAssembly->SourceContentHash != presentation.Scene->SourceContentHash();
 		if (requiresNewAssembly && !admitDirtySections)
 		{
+			section->gpuGeometryAssembly_.reset();
+			section->gpuGeometryChangedDuringAssembly_ = false;
 			return true;
 		}
 		startedNewAssembly = requiresNewAssembly;
@@ -1101,7 +1250,10 @@ namespace Services::Map::Buildings
 		gpuPresentationSnapshotChangedSections_.insert(coordinate);
 		if (section->gpuGeometryChangedDuringAssembly_)
 		{
-			gpuPresentationChangedSections_.insert(coordinate);
+			if (gpuPresentationChangedSections_.insert(coordinate).second)
+			{
+				section->gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
+			}
 			section->gpuGeometryChangedDuringAssembly_ = false;
 		}
 		return true;
