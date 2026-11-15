@@ -963,11 +963,84 @@ namespace Services::Map::Buildings
 			viewport.InvalidateService();
 			return false;
 		}
+		UpdateViewportSchedulingPriority(
+			viewportHandle,
+			viewport.gridRange_.firstX,
+			viewport.gridRange_.firstY,
+			viewport.gridRange_.endX,
+			viewport.gridRange_.endY);
 		if (dynamic_cast<BuildingMapGpuViewport*>(&viewport) != nullptr)
 		{
 			MarkGpuViewportRangeChanged(viewportHandle);
 		}
 		return true;
+	}
+
+	/** Reorders only the old and current ranges after a viewport geometry update. */
+	void BuildingMapService::UpdateViewportSchedulingPriority(
+		std::uint64_t viewportHandle,
+		std::int64_t previousFirstGridX,
+		std::int64_t previousFirstGridY,
+		std::int64_t previousEndGridX,
+		std::int64_t previousEndGridY)
+	{
+		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
+		if (viewportEntry == viewportsByHandle_.end() || sectionSchedulingCoordinator_ == nullptr)
+		{
+			return;
+		}
+		const auto& viewport = *viewportEntry->second;
+		sectionSchedulingCoordinator_->UpdateViewportSchedulingPriority(
+			*this,
+			previousFirstGridX,
+			previousFirstGridY,
+			previousEndGridX,
+			previousEndGridY,
+			viewport.gridRange_.firstX,
+			viewport.gridRange_.firstY,
+			viewport.gridRange_.endX,
+			viewport.gridRange_.endY);
+	}
+
+	/** Finds the nearest demanded Section rectangle by edge distance.
+	 * Rectangle distance gives a center-containing Section zero distance and prevents a nearby adjacent
+	 * Section center from outranking it when the viewport center lies near a grid boundary. Half-open
+	 * containment resolves exact boundaries toward the existing zero-origin floor-converted Section.
+	 */
+	std::pair<double, bool> BuildingMapService::GetSectionSchedulingPriority(
+		std::int64_t gridX,
+		std::int64_t gridY) const noexcept
+	{
+		double minimumDistanceSquared = std::numeric_limits<double>::infinity();
+		bool containsViewportCenter = false;
+		const double left = static_cast<double>(gridX) * sectionSizeMapUnits_;
+		const double top = static_cast<double>(gridY) * sectionSizeMapUnits_;
+		const double right = left + sectionSizeMapUnits_;
+		const double bottom = top + sectionSizeMapUnits_;
+		for (const auto& entry : viewportsByHandle_)
+		{
+			const BuildingMapViewport* viewport = entry.second;
+			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+				viewport->viewportHandle_ != entry.first ||
+				gridX < viewport->gridRange_.firstX || gridX >= viewport->gridRange_.endX ||
+				gridY < viewport->gridRange_.firstY || gridY >= viewport->gridRange_.endY)
+			{
+				continue;
+			}
+			const double centerX = viewport->xMapUnits_ + viewport->widthMapUnits_ * 0.5;
+			const double centerY = viewport->yMapUnits_ + viewport->heightMapUnits_ * 0.5;
+			const double deltaX = centerX < left ? left - centerX : centerX > right ? centerX - right : 0.0;
+			const double deltaY = centerY < top ? top - centerY : centerY > bottom ? centerY - bottom : 0.0;
+			const double distanceSquared = deltaX * deltaX + deltaY * deltaY;
+			const bool centerSection = centerX >= left && centerX < right && centerY >= top && centerY < bottom;
+			if (distanceSquared < minimumDistanceSquared ||
+				(distanceSquared == minimumDistanceSquared && centerSection))
+			{
+				minimumDistanceSquared = distanceSquared;
+				containsViewportCenter = centerSection;
+			}
+		}
+		return {minimumDistanceSquared, containsViewportCenter};
 	}
 
 	/** Validates the requested rectangle and registers a caller-owned viewport object. */
@@ -1379,6 +1452,19 @@ namespace Services::Map::Buildings
 		sectionHashRechecksRequested_.erase(viewportHandle);
 		gpuViewportRangesChanged_.erase(viewportHandle);
 		viewportsByHandle_.erase(viewport);
+		if (sectionSchedulingCoordinator_ != nullptr)
+		{
+			sectionSchedulingCoordinator_->UpdateViewportSchedulingPriority(
+				*this,
+				gridRange.firstX,
+				gridRange.firstY,
+				gridRange.endX,
+				gridRange.endY,
+				0,
+				0,
+				0,
+				0);
+		}
 		ReconcileSectionImageResidency();
 		sectionImageResidencyReconciliationPending_ = false;
 	}

@@ -86,6 +86,9 @@ namespace Services::Map::Buildings
 			widthMapUnits,
 			heightMapUnits,
 			service_->GetSectionSizeMapUnits());
+		const GridRange previousRange = gridRange_;
+		const bool schedulingGeometryChanged = x1 != xMapUnits_ || y1 != yMapUnits_ ||
+			widthMapUnits != widthMapUnits_ || heightMapUnits != heightMapUnits_;
 		if (nextRange.firstX != gridRange_.firstX || nextRange.firstY != gridRange_.firstY ||
 			nextRange.endX != gridRange_.endX || nextRange.endY != gridRange_.endY)
 		{
@@ -104,6 +107,15 @@ namespace Services::Map::Buildings
 		widthMapUnits_ = widthMapUnits;
 		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;
+		if (schedulingGeometryChanged)
+		{
+			service_->UpdateViewportSchedulingPriority(
+				viewportHandle_,
+				previousRange.firstX,
+				previousRange.firstY,
+				previousRange.endX,
+				previousRange.endY);
+		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			BuildingMapPerformanceDiagnostics::Timer collector(&BuildingMapPerformanceDiagnostics::Game().CollectorUpdate);

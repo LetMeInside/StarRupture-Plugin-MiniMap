@@ -544,6 +544,11 @@ namespace Services::Map::Buildings::Scheduling
 			PopSectionSpriteRetry(job, ordinal);
 			RetrySectionSpriteResource(section, job, sourceData.records[ordinal], ordinal);
 			RetainTerminalSpriteOmission(section, job, ordinal);
+			const auto retryStatus = preparation.SpritePreparation.OccurrenceOutcomes[ordinal].SpritePreparationStatus;
+			if (IsSpriteResourceRetryStatus(retryStatus))
+			{
+				return;
+			}
 		}
 	}
 

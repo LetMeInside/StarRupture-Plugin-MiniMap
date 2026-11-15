@@ -11,6 +11,7 @@
 #include "Services/Log.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -24,18 +25,33 @@ namespace Services::Map::Buildings::Scheduling
 		return GridX < other.GridX || (GridX == other.GridX && GridY < other.GridY);
 	}
 
-	/** Orders waiting entries for direct stage lookup and deterministic rotation. */
+	/** Orders ready entries by phase, nearest viewport and coordinate identity. */
 	bool SectionSchedulingCoordinator::WaitingSection::operator<(const WaitingSection& other) const noexcept
 	{
 		if (Kind != other.Kind)
 		{
 			return Kind < other.Kind;
 		}
-		if (EligibleTick != other.EligibleTick)
+		if (DistanceSquared != other.DistanceSquared)
 		{
-			return EligibleTick < other.EligibleTick;
+			return DistanceSquared < other.DistanceSquared;
 		}
-		return RotationPosition < other.RotationPosition;
+		if (ContainsViewportCenter != other.ContainsViewportCenter)
+		{
+			return ContainsViewportCenter;
+		}
+		return Coordinate < other.Coordinate;
+	}
+
+	/** Orders future-ready retries by tick, then by the ready queue's deterministic priority. */
+	bool SectionSchedulingCoordinator::DeferredWaitingSection::operator<(
+		const DeferredWaitingSection& other) const noexcept
+	{
+		if (Section.EligibleTick != other.Section.EligibleTick)
+		{
+			return Section.EligibleTick < other.Section.EligibleTick;
+		}
+		return Section < other.Section;
 	}
 
 	/** Creates one scheduler that borrows the service-owned source manager. */
@@ -153,12 +169,32 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		demandCounts_.clear();
 		waitingSections_.clear();
-		roundRobinPosition_ = 0;
+		deferredWaitingSections_.clear();
 		lastGpuGeometryPublicationOpportunity_.reset();
-		ResetSchedulingBudgetState();
 		for (auto& sectionEntry : buildingMapService.sections_)
 		{
 			sectionEntry.second->ResetRenderingState("viewport-demand-clear", false);
+		}
+	}
+
+	/** Reorders changed ranges by reading current viewport geometry from the service. */
+	void SectionSchedulingCoordinator::UpdateViewportSchedulingPriority(
+		const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::int64_t endGridX,
+		std::int64_t endGridY,
+		std::int64_t currentFirstGridX,
+		std::int64_t currentFirstGridY,
+		std::int64_t currentEndGridX,
+		std::int64_t currentEndGridY)
+	{
+		RefreshSchedulingPriorities(buildingMapService, firstGridX, firstGridY, endGridX, endGridY);
+		if (firstGridX != currentFirstGridX || firstGridY != currentFirstGridY ||
+			endGridX != currentEndGridX || endGridY != currentEndGridY)
+		{
+			RefreshSchedulingPriorities(
+				buildingMapService, currentFirstGridX, currentFirstGridY, currentEndGridX, currentEndGridY);
 		}
 	}
 
@@ -166,7 +202,8 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionSchedulingCoordinator::RequestSectionWork(const SectionCoordinate& coordinate)
 	{
 		const auto demand = demandCounts_.find(coordinate);
-		if (demand != demandCounts_.end() && !demand->second.Waiting.has_value())
+		if (demand != demandCounts_.end() && !demand->second.Waiting.has_value() &&
+			!demand->second.Deferred.has_value())
 		{
 			SetWaitingSection(coordinate, WaitingKind::AwaitingPublication);
 		}
@@ -180,8 +217,16 @@ namespace Services::Map::Buildings::Scheduling
 		bool selectionChanged)
 	{
 		const auto demand = demandCounts_.find(coordinate);
-		const bool hasWaiter = demand != demandCounts_.end() && demand->second.Waiting.has_value();
-		const auto kind = hasWaiter ? (*demand->second.Waiting)->Kind : WaitingKind::AwaitingPublication;
+		const bool hasWaiter = demand != demandCounts_.end() &&
+			(demand->second.Waiting.has_value() || demand->second.Deferred.has_value());
+		WaitingSection current{WaitingKind::AwaitingPublication};
+		if (hasWaiter)
+		{
+			current = demand->second.Waiting.has_value()
+				? **demand->second.Waiting
+				: (*demand->second.Deferred)->Section;
+		}
+		const auto kind = current.Kind;
 		if (!selectionChanged && (!hasWaiter || kind != WaitingKind::AwaitingPublication))
 		{
 			return;
@@ -210,33 +255,97 @@ namespace Services::Map::Buildings::Scheduling
 		}
 	}
 
-	/** Rotates a demanded coordinate within one ordered set, preserving its existing node. */
+	/** Inserts or rekeys a demanded coordinate using its current deterministic spatial priority. */
 	void SectionSchedulingCoordinator::SetWaitingSection(
 		const SectionCoordinate& coordinate,
 		WaitingKind kind,
 		std::uint64_t eligibleTick)
 	{
-		auto& waiting = demandCounts_.at(coordinate).Waiting;
-		const WaitingSection updated{
-			kind, (std::max)(eligibleTick, budgetTickSequence_), ++roundRobinPosition_, coordinate};
-		if (!waiting.has_value())
+		auto& demand = demandCounts_.at(coordinate);
+		const WaitingSection updated{kind, (std::max)(eligibleTick, budgetTickSequence_),
+			demand.SchedulingDistanceSquared, demand.ContainsViewportCenter, coordinate};
+		if (demand.Waiting.has_value())
 		{
-			waiting = waitingSections_.insert(updated).first;
+			waitingSections_.erase(*demand.Waiting);
+			demand.Waiting.reset();
+		}
+		if (demand.Deferred.has_value())
+		{
+			deferredWaitingSections_.erase(*demand.Deferred);
+			demand.Deferred.reset();
+		}
+		if (kind <= WaitingKind::Continuation && updated.EligibleTick > budgetTickSequence_)
+		{
+			demand.Deferred = deferredWaitingSections_.insert(DeferredWaitingSection{updated}).first;
 			return;
 		}
-		auto node = waitingSections_.extract(*waiting);
-		node.value() = updated;
-		waiting = waitingSections_.insert(std::move(node)).position;
+		demand.Waiting = waitingSections_.insert(updated).first;
+	}
+
+	/** Recomputes and caches geometry-derived keys only inside changed viewport rectangles. */
+	void SectionSchedulingCoordinator::RefreshSchedulingPriorities(
+		const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::int64_t endGridX,
+		std::int64_t endGridY)
+	{
+		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
+		{
+			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
+			{
+				const SectionCoordinate coordinate{gridX, gridY};
+				const auto demand = demandCounts_.find(coordinate);
+				if (demand != demandCounts_.end())
+				{
+					const auto priority = buildingMapService.GetSectionSchedulingPriority(gridX, gridY);
+					demand->second.SchedulingDistanceSquared = priority.first;
+					demand->second.ContainsViewportCenter = priority.second;
+					if (demand->second.Waiting.has_value() || demand->second.Deferred.has_value())
+					{
+						const WaitingSection current = demand->second.Waiting.has_value()
+							? **demand->second.Waiting : (*demand->second.Deferred)->Section;
+						SetWaitingSection(coordinate, current.Kind, current.EligibleTick);
+					}
+				}
+			}
+		}
 	}
 
 	/** Removes a waiting entry through the existing coordinate index. */
 	void SectionSchedulingCoordinator::RemoveWaitingSection(const SectionCoordinate& coordinate) noexcept
 	{
 		const auto demand = demandCounts_.find(coordinate);
-		if (demand != demandCounts_.end() && demand->second.Waiting.has_value())
+		if (demand != demandCounts_.end())
 		{
-			waitingSections_.erase(*demand->second.Waiting);
-			demand->second.Waiting.reset();
+			if (demand->second.Waiting.has_value())
+			{
+				waitingSections_.erase(*demand->second.Waiting);
+				demand->second.Waiting.reset();
+			}
+			if (demand->second.Deferred.has_value())
+			{
+				deferredWaitingSections_.erase(*demand->second.Deferred);
+				demand->second.Deferred.reset();
+			}
+		}
+	}
+
+	/** Promotes only retry entries whose eligibility has arrived into the spatial ready set. */
+	void SectionSchedulingCoordinator::PromoteEligibleSections()
+	{
+		while (!deferredWaitingSections_.empty() &&
+			deferredWaitingSections_.begin()->Section.EligibleTick <= budgetTickSequence_)
+		{
+			const DeferredWaitingSection deferred = *deferredWaitingSections_.begin();
+			deferredWaitingSections_.erase(deferredWaitingSections_.begin());
+			const auto demand = demandCounts_.find(deferred.Section.Coordinate);
+			if (demand == demandCounts_.end())
+			{
+				continue;
+			}
+			demand->second.Deferred.reset();
+			demand->second.Waiting = waitingSections_.insert(deferred.Section).first;
 		}
 	}
 
@@ -305,6 +414,7 @@ namespace Services::Map::Buildings::Scheduling
 		tickDeadline_ = allowanceStarted +
 			std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 				std::chrono::duration<double, std::milli>(nominalTickBudgetMs_));
+		PromoteEligibleSections();
 	}
 
 	/** Advances acquisition once per coordinator call while the shared tick deadline remains. */
@@ -324,7 +434,7 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 	}
 
-	/** Advances one waiting set under the shared allowance, rotating after each visit. */
+	/** Advances the nearest ready waiting Section repeatedly under the existing shared allowance. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSectionSlices(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
 		const SectionPublicationBatch& publications)
@@ -407,8 +517,10 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (result.CurrentState == State::WaitingForResources)
 		{
-			SetWaitingSection(coordinate, result.HasSpriteRetries
-				? WaitingKind::Continuation : WaitingKind::AwaitingSourceChange, budgetTickSequence_ + 1);
+			const WaitingKind kind = result.HasUnattemptedSprites
+				? WaitingKind::InitialSprites
+				: result.HasSpriteRetries ? WaitingKind::Continuation : WaitingKind::AwaitingSourceChange;
+			SetWaitingSection(coordinate, kind, budgetTickSequence_ + 1);
 			return;
 		}
 		const auto kind = result.HasUnattemptedSprites ? WaitingKind::InitialSprites : WaitingKind::Continuation;
@@ -458,7 +570,7 @@ namespace Services::Map::Buildings::Scheduling
 		diagnostics_.CoordinatorAdvancement.Add(completedAdvancementMs);
 #endif
 	}
-	/** Gives one continuation first access on every 32nd competing controller tick. */
+	/** Gives all currently eligible initial sprite work preference, then nearest continuation work. */
 	SectionSchedulingCoordinator::WaitingSections::const_iterator
 	SectionSchedulingCoordinator::SelectNextWaitingSection()
 	{
@@ -468,42 +580,25 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return end;
 		}
-		const bool spritesReady = first->Kind == WaitingKind::InitialSprites &&
-			first->EligibleTick <= budgetTickSequence_;
-		if (spritesReady && lastSpritePriorityTick_ == budgetTickSequence_)
+		if (first->Kind == WaitingKind::InitialSprites && first->EligibleTick <= budgetTickSequence_)
 		{
 			return first;
 		}
-		const auto continuation = first->Kind == WaitingKind::Continuation
-			? first : waitingSections_.lower_bound(WaitingSection{WaitingKind::Continuation});
-		const bool continuationReady = continuation != end && continuation->Kind == WaitingKind::Continuation &&
-			continuation->EligibleTick <= budgetTickSequence_;
-		if (spritesReady)
+		const auto continuation = waitingSections_.lower_bound(WaitingSection{
+			WaitingKind::Continuation,
+			0,
+			0.0,
+			true,
+			{(std::numeric_limits<std::int64_t>::min)(), (std::numeric_limits<std::int64_t>::min)()}});
+		if (continuation != end && continuation->Kind == WaitingKind::Continuation &&
+			continuation->EligibleTick <= budgetTickSequence_)
 		{
-			lastSpritePriorityTick_ = budgetTickSequence_;
-			if (continuationReady && ++spritePriorityTickCount_ >= ContinuationFairnessIntervalTicks)
-			{
-				spritePriorityTickCount_ = 0;
-				return continuation;
-			}
-			return first;
-		}
-		if (continuationReady)
-		{
-			spritePriorityTickCount_ = 0;
 			return continuation;
 		}
 		return end;
 	}
 
-	/** Clears fairness history without replenishing the current tick's allowance. */
-	void SectionSchedulingCoordinator::ResetSchedulingBudgetState() noexcept
-	{
-		lastSpritePriorityTick_.reset();
-		spritePriorityTickCount_ = 0;
-	}
-
-	/** Advances one selected publication through the active round-robin visit adapter. */
+	/** Advances one selected publication through the active initial-sprite or continuation phase. */
 	SectionSchedulingCoordinator::IncrementalSectionAdvanceResult
 	SectionSchedulingCoordinator::AdvanceSelectedSectionJob(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
@@ -709,7 +804,6 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return false;
 		}
-		ResetSchedulingBudgetState();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnostics();
 #endif
@@ -729,7 +823,6 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			sectionScheduler_->StopCaptureGameWorldSession();
 		}
-		ResetSchedulingBudgetState();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		ResetDiagnostics();
 #endif

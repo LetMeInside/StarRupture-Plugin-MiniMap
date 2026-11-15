@@ -202,6 +202,27 @@ namespace Services::Map::Buildings::Scheduling
 			std::int64_t nextEndGridX,
 			std::int64_t nextEndGridY,
 			bool renderSectionImages);
+		/** Reorders affected demand ranges using live viewport geometry.
+		 * @param buildingMapService Service whose registered viewport rectangles define demand centers.
+		 * @param firstGridX Inclusive X of the prior viewport range.
+		 * @param firstGridY Inclusive Y of the prior viewport range.
+		 * @param endGridX Exclusive X of the prior viewport range.
+		 * @param endGridY Exclusive Y of the prior viewport range.
+		 * @param currentFirstGridX Inclusive X of the current viewport range.
+		 * @param currentFirstGridY Inclusive Y of the current viewport range.
+		 * @param currentEndGridX Exclusive X of the current viewport range.
+		 * @param currentEndGridY Exclusive Y of the current viewport range.
+		 */
+		void UpdateViewportSchedulingPriority(
+			const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::int64_t endGridX,
+			std::int64_t endGridY,
+			std::int64_t currentFirstGridX,
+			std::int64_t currentFirstGridY,
+			std::int64_t currentEndGridX,
+			std::int64_t currentEndGridY);
 
 		/** Withdraws one viewport's existing half-open range and preserves overlapping demand.
 		 * @param buildingMapService Service whose existing Sections may have unfinished state to reset.
@@ -319,16 +340,25 @@ namespace Services::Map::Buildings::Scheduling
 			AwaitingPublication,
 			AwaitingSourceChange
 		};
-		/** One indexed waiting entry, ordered by stage, eligibility tick and rotation position. */
+		/** One ready indexed entry ordered by phase, spatial priority and coordinate. */
 		struct WaitingSection
 		{
 			WaitingKind Kind;
 			std::uint64_t EligibleTick = 0;
-			std::uint64_t RotationPosition = 0;
+			double DistanceSquared = 0.0;
+			bool ContainsViewportCenter = false;
 			SectionCoordinate Coordinate{};
-			/** Compares stage, eligibility and rotation for ordered selection. */
+			/** Compares phase and deterministic viewport-center-outward priority. */
 			bool operator<(const WaitingSection& other) const noexcept;
 		};
+		/** One retry waiter kept outside the ready set until its controller tick arrives. */
+		struct DeferredWaitingSection
+		{
+			WaitingSection Section;
+			/** Orders promotion by eligibility tick, then by the ready queue's deterministic priority. */
+			bool operator<(const DeferredWaitingSection& other) const noexcept;
+		};
+		using DeferredWaitingSections = std::set<DeferredWaitingSection>;
 		using WaitingSections = std::set<WaitingSection>;
 
 		/** Updates a demanded coordinate at the selected-publication boundary. Null parks it until reselection. */
@@ -337,11 +367,26 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			const ::Services::Map::Buildings::BuildingCandidatePublication* publication,
 			bool selectionChanged);
-		/** Inserts or rotates the coordinate's one waiting entry, reusing its node where possible. */
+		/** Inserts or rekeys the coordinate's one waiting entry, reusing its node where possible. */
 		void SetWaitingSection(const SectionCoordinate& coordinate, WaitingKind kind, std::uint64_t eligibleTick = 0);
+		/** Recomputes priority keys for demanded coordinates in a changed half-open rectangle.
+		 * @param buildingMapService Service supplying current viewport geometry.
+		 * @param firstGridX Inclusive first Section column.
+		 * @param firstGridY Inclusive first Section row.
+		 * @param endGridX Exclusive end Section column.
+		 * @param endGridY Exclusive end Section row.
+		 */
+		void RefreshSchedulingPriorities(
+			const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::int64_t endGridX,
+			std::int64_t endGridY);
+		/** Promotes deferred retry waiters whose eligibility tick has arrived. */
+		void PromoteEligibleSections();
 		/** Removes the coordinate's waiting entry without changing viewport references. */
 		void RemoveWaitingSection(const SectionCoordinate& coordinate) noexcept;
-		/** Selects the next eligible stage and rotates continuation first on periodic fairness ticks. */
+		/** Selects the nearest eligible initial-sprite or continuation Section. */
 		WaitingSections::const_iterator SelectNextWaitingSection();
 		/** Advances runnable entries using the existing shared deadline and Section-owned jobs. */
 		void AdvanceWaitingSectionSlices(
@@ -365,8 +410,6 @@ namespace Services::Map::Buildings::Scheduling
 			, bool budgetWasAlreadyExhausted
 #endif
 			);
-		/** Clears the history of competing scheduling turns at demand or session reset. */
-		void ResetSchedulingBudgetState() noexcept;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Records one actual incremental state and terminal commit evidence in Debug aggregates. */
 		void RecordIncrementalDiagnostics(
@@ -384,7 +427,7 @@ namespace Services::Map::Buildings::Scheduling
 			const Visuals::BuildingVisualsPhaseTimings::Phase& phase,
 			SectionSchedulingDiagnosticsSnapshot::Duration& aggregate) noexcept;
 #endif
-		/** Advances one selected publication job once from the active round-robin waiting loop.
+		/** Advances one selected publication job once from the active center-outward waiting loop.
 		 * @param buildingMapService Service-owned Section and immutable spline-policy provider.
 		 * @param coordinate Exact signed Section coordinate selected by the coordinator.
 		 * @param publicationOwner Selected shared publication retained through this advancement.
@@ -511,20 +554,20 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			std::size_t ViewportCount = 0;
 			std::size_t ImageViewportCount = 0;
+			double SchedulingDistanceSquared = 0.0;
+			bool ContainsViewportCenter = false;
 			std::optional<WaitingSections::iterator> Waiting;
+			std::optional<DeferredWaitingSections::iterator> Deferred;
 		};
 		std::map<SectionCoordinate, AggregateSectionDemand> demandCounts_;
 		WaitingSections waitingSections_;
-		std::uint64_t roundRobinPosition_ = 0;
-		std::optional<std::uint64_t> lastSpritePriorityTick_;
-		std::size_t spritePriorityTickCount_ = 0;
+		DeferredWaitingSections deferredWaitingSections_;
 		std::uint64_t budgetTickSequence_ = 0;
 		double nominalTickBudgetMs_ = 0.0;
 		std::chrono::steady_clock::time_point tickDeadline_{};
 		std::optional<std::chrono::steady_clock::time_point> lastGpuGeometryPublicationOpportunity_;
 		double consumedSchedulingMs_ = 0.0;
 		bool budgetTickAvailable_ = false;
-		static constexpr std::size_t ContinuationFairnessIntervalTicks = 32;
 		std::unique_ptr<SectionScheduler> sectionScheduler_;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		SectionSchedulingDiagnosticsSnapshot diagnostics_{};

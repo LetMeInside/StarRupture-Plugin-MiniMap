@@ -276,6 +276,27 @@ namespace Services::Map::Buildings
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
 			std::int64_t endGridY);
+		/** Refreshes priorities in a viewport's prior and current ranges after geometry changes.
+		 * @param viewportHandle Registered viewport whose accepted geometry changed.
+		 * @param previousFirstGridX Inclusive first prior Section column.
+		 * @param previousFirstGridY Inclusive first prior Section row.
+		 * @param previousEndGridX Exclusive prior Section column end.
+		 * @param previousEndGridY Exclusive prior Section row end.
+		 */
+		void UpdateViewportSchedulingPriority(
+			std::uint64_t viewportHandle,
+			std::int64_t previousFirstGridX,
+			std::int64_t previousFirstGridY,
+			std::int64_t previousEndGridX,
+			std::int64_t previousEndGridY);
+		/** Measures one Section's closest demanding viewport rectangle distance.
+		 * @param gridX Signed zero-origin Section column.
+		 * @param gridY Signed zero-origin Section row.
+		 * @return Squared map-unit distance and whether an applicable viewport center lies in the Section.
+		 */
+		std::pair<double, bool> GetSectionSchedulingPriority(
+			std::int64_t gridX,
+			std::int64_t gridY) const noexcept;
 
 		/** Observes one live viewport's acquisition hash and advances shared Section scheduling once. */
 		bool AdvanceViewportScheduling(std::uint64_t viewportHandle);
