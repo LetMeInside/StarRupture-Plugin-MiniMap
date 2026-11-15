@@ -21,12 +21,14 @@ namespace MiniMap::BuildingAcquisition
     class BuildingCollectorV2 final : public ::Services::Map::Buildings::IBuildingCollector
     {
     public:
-        /** Creates empty CPU state and fixes the retry delay after an unsuccessful native acquisition.
+        /** Creates empty CPU state and fixes the Section grid and retry delay.
          * Successful ordinary acquisitions use the fixed ten-second fallback; accepted mutations use a 100 ms trailing-edge quiet period.
+         * @param sectionSizeMapUnits Exact square Section size used by the existing map service grid.
          * @param retryInterval Positive retry delay after a failed or stale acquisition attempt.
-         * @throws std::invalid_argument when the retry delay is zero or negative.
+         * @throws std::invalid_argument when the Section size or retry delay is invalid.
          */
         explicit BuildingCollectorV2(
+            double sectionSizeMapUnits,
             std::chrono::milliseconds retryInterval = std::chrono::milliseconds{1000});
         /** Requires prior ShutdownResources; performs no implicit native shutdown. */
         ~BuildingCollectorV2() override;
@@ -47,7 +49,7 @@ namespace MiniMap::BuildingAcquisition
             const ::Services::Map::Buildings::BuildingCollectionRegion& region) noexcept override;
         /** Reads the hash of the committed regional dataset without advancing acquisition. */
         std::uint64_t AcquisitionHash() const noexcept override;
-        /** Builds ordered Section publications from the last successful committed regional scan.
+        /** Returns ordered retained Section publications from the last successful committed scan.
          * Throws when a non-empty request cannot be validated or the committed dataset is unavailable.
          */
         std::vector<std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>>

@@ -25,7 +25,8 @@ namespace MiniMapUI
 {
 	BuildingLayer::BuildingLayer(Services::Map::Buildings::BuildingMapService& service)
 		: service_(&service)
-		, buildingCollector_(std::make_unique<MiniMap::BuildingAcquisition::BuildingCollectorV2>())
+		, buildingCollector_(std::make_unique<MiniMap::BuildingAcquisition::BuildingCollectorV2>(
+			service.GetSectionSizeMapUnits()))
 	{
 	}
 

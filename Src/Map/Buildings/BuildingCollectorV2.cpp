@@ -1,4 +1,4 @@
-// Acquires StarRupture building facts and distributes retained neutral values to requested Sections.
+// Acquires StarRupture building facts, distributes neutral Section values, and retains immutable publications.
 // All ABI-specific access stays here; Section publications contain no native ownership.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingMapLoadingTrace.h"
@@ -664,6 +664,13 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t FailedImmediateScans = 0;
             std::uint64_t FailedMutationScans = 0;
             std::uint64_t FailedFallbackScans = 0;
+            std::uint64_t SectionOwnerReuses = 0;
+            std::uint64_t SectionOwnersPreservedOnMovement = 0;
+            std::uint64_t SectionPublicationsRebuilt = 0;
+            std::uint64_t FullFootprintRebuilds = 0;
+            std::uint64_t PublicationBuilderCalls = 0;
+            std::uint64_t RepeatedQueriesWithoutRebuild = 0;
+            double PublicationBuildMs = 0.0;
             WorstMembershipScan WorstScan;
 
             void Reset() noexcept
@@ -775,12 +782,14 @@ namespace MiniMap::BuildingAcquisition
         const std::chrono::milliseconds RetryInterval;
 
         /** Stores the immutable scan interval and rejects nonpositive values once. */
-        explicit State(std::chrono::milliseconds retryInterval)
+        explicit State(double sectionSizeMapUnits, std::chrono::milliseconds retryInterval)
             : RetryInterval(retryInterval)
+            , SectionSizeMapUnits(sectionSizeMapUnits)
         {
-            if (RetryInterval <= std::chrono::milliseconds::zero())
+            if (!std::isfinite(SectionSizeMapUnits) || SectionSizeMapUnits <= 0.0 ||
+                RetryInterval <= std::chrono::milliseconds::zero())
             {
-                throw std::invalid_argument("BuildingCollectorV2 retry interval must be positive.");
+                throw std::invalid_argument("BuildingCollectorV2 requires positive finite Section size and retry interval.");
             }
         }
 
@@ -933,6 +942,8 @@ namespace MiniMap::BuildingAcquisition
 
         std::unordered_map<std::uint64_t, Entry> Entities;
         std::unordered_set<std::uint64_t> Pending;
+        std::map<std::pair<std::int64_t, std::int64_t>,
+            std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>> RetainedSectionPublications;
         std::unordered_map<SDK::UAuActorPlacementData*, std::shared_ptr<DefinitionOwner>> Definitions;
         std::shared_ptr<Metadata> Types;
         BuildingDefinitionAcquisition DefinitionAcquisition;
@@ -966,6 +977,8 @@ namespace MiniMap::BuildingAcquisition
         bool PendingSnapshotEligible = false;
         bool PendingReuseEligible = false;
         bool ImmediateScanRequired = true;
+        bool FullFootprintRebuildPending = false;
+        const double SectionSizeMapUnits;
 
         /** Packs the full session-private Index/Serial pair; never a content fingerprint. */
         static std::uint64_t Key(EntityId id) noexcept
@@ -1095,6 +1108,7 @@ namespace MiniMap::BuildingAcquisition
             {
                 MembershipComplete = true;
                 ImmediateScanRequired = false;
+                RetainSuccessfulContainedRegionOwners();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++Diagnostics.SuccessfulCoverageReuse;
 #endif
@@ -1128,6 +1142,93 @@ namespace MiniMap::BuildingAcquisition
             RegionChangePendingValidation = false;
             PendingSnapshotEligible = false;
             PendingReuseEligible = false;
+        }
+
+        /** Prunes leaving owners only after the existing contained-coverage check succeeds. */
+        void RetainSuccessfulContainedRegionOwners() noexcept
+        {
+            if (CommittedCoverage == RequestedRegion)
+            {
+                return;
+            }
+            const std::size_t preservedCount = RetainOverlappingSectionPublications(
+                CommittedCoverage, RequestedRegion);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            Diagnostics.SectionOwnersPreservedOnMovement += preservedCount;
+#endif
+        }
+
+        /** Tests the exact shared reach predicate against one acquired rectangle. */
+        static bool IsBuildingAdmittedToRegion(
+            const Facts::Building& building,
+            const Facts::Region& region) noexcept
+        {
+            if (!BuildingCollectorV2::HasValidMapPosition(building) ||
+                !std::isfinite(building.ResolvedReach) || building.ResolvedReach < 0.0)
+            {
+                return true;
+            }
+            const Internal::Bounds2D fastAccept{
+                region.X,
+                region.Y,
+                region.X + region.Width,
+                region.Y + region.Height};
+            const Internal::Bounds2D overlappingAccept{
+                fastAccept.MinX - 5000.0,
+                fastAccept.MinY - 5000.0,
+                fastAccept.MaxX + 5000.0,
+                fastAccept.MaxY + 5000.0};
+            if (!std::isfinite(fastAccept.MaxX) || !std::isfinite(fastAccept.MaxY) ||
+                !std::isfinite(overlappingAccept.MinX) || !std::isfinite(overlappingAccept.MinY) ||
+                !std::isfinite(overlappingAccept.MaxX) || !std::isfinite(overlappingAccept.MaxY))
+            {
+                return true;
+            }
+            return Internal::BuildingSpatialAdmission::IsBuildingAccepted(
+                building.Position[0], building.Position[1], fastAccept, overlappingAccept,
+                building.ResolvedReach);
+        }
+
+        /** Retains only publication owners whose Sections remain inside both committed rectangles. */
+        std::size_t RetainOverlappingSectionPublications(
+            const Facts::Region& previousRegion,
+            const Facts::Region& newRegion) noexcept
+        {
+            const double previousRight = previousRegion.X + previousRegion.Width;
+            const double previousBottom = previousRegion.Y + previousRegion.Height;
+            const double newRight = newRegion.X + newRegion.Width;
+            const double newBottom = newRegion.Y + newRegion.Height;
+            std::size_t preservedCount = 0;
+            for (auto iterator = RetainedSectionPublications.begin();
+                iterator != RetainedSectionPublications.end();)
+            {
+                const auto& region = iterator->second->SectionRegion();
+                const double sectionRight = region.xMapUnits + region.widthMapUnits;
+                const double sectionBottom = region.yMapUnits + region.heightMapUnits;
+                const bool insidePrevious = region.xMapUnits >= previousRegion.X &&
+                    region.yMapUnits >= previousRegion.Y && sectionRight <= previousRight &&
+                    sectionBottom <= previousBottom;
+                const bool insideNew = region.xMapUnits >= newRegion.X && region.yMapUnits >= newRegion.Y &&
+                    sectionRight <= newRight && sectionBottom <= newBottom;
+                if (!insidePrevious || !insideNew)
+                {
+                    iterator = RetainedSectionPublications.erase(iterator);
+                }
+                else
+                {
+                    ++preservedCount;
+                    ++iterator;
+                }
+            }
+            return preservedCount;
+        }
+
+        /** Reports whether the last successful source snapshot still matches this collector. */
+        bool HasComparableCommittedCoverage() const noexcept
+        {
+            return CommittedCoverageValid && CoverageWorld == World && CoverageManager == Manager &&
+                CoverageSession == Generation && CoverageRequest != 0 &&
+                CoverageContentHash == AcquisitionContentHash;
         }
 
         /** Accepts exact geometry and schedules validation or an immediate uncovered scan. */
@@ -1224,6 +1325,8 @@ namespace MiniMap::BuildingAcquisition
             Manager = nullptr;
             Pending.clear();
             Entities.clear();
+            RetainedSectionPublications.clear();
+            FullFootprintRebuildPending = false;
             AcquisitionContentHash = 0;
             CommittedCoverage = {};
             CoverageWorld = nullptr;
@@ -1810,7 +1913,10 @@ namespace MiniMap::BuildingAcquisition
             Facts::Building& data,
             const OwnedScanOccurrence& occurrence,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
-            std::unordered_set<std::uint64_t>& pending
+            std::unordered_set<std::uint64_t>& pending,
+            const Facts::Region& previousCoverage,
+            bool canCompareCoverageMovement,
+            bool& publicationFactsUnchanged
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , AcquiredFactChangeSummary* changes
 #endif
@@ -1823,6 +1929,10 @@ namespace MiniMap::BuildingAcquisition
             if (previous != Entities.end())
             {
                 ++changes->RetainedExamined;
+            }
+#endif
+            if (previous != Entities.end())
+            {
                 if (SameAcquiredFacts(previous->second.Data, data))
                 {
                     entry.Data = previous->second.Data;
@@ -1830,6 +1940,8 @@ namespace MiniMap::BuildingAcquisition
                 }
                 else
                 {
+                    publicationFactsUnchanged = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     bool splineChannelsChanged = false;
                     bool transformChanged = false;
                     const std::uint32_t mask = ClassifyAcquiredFactChanges(
@@ -1841,24 +1953,19 @@ namespace MiniMap::BuildingAcquisition
                         ReportTransformChange(changes->Reason, previous->second.Data, data);
                     }
 #endif
+#endif
                     entry.Data = std::move(data);
                 }
             }
             else
             {
+                if (!canCompareCoverageMovement ||
+                    IsBuildingAdmittedToRegion(data, previousCoverage))
+                {
+                    publicationFactsUnchanged = false;
+                }
                 entry.Data = std::move(data);
             }
-#else
-            if (previous != Entities.end() && SameAcquiredFacts(previous->second.Data, data))
-            {
-                entry.Data = previous->second.Data;
-                entry.Definition = previous->second.Definition;
-            }
-            else
-            {
-                entry.Data = std::move(data);
-            }
-#endif
             if (!entry.Data.Complete)
             {
                 const auto definition = Definitions.find(
@@ -1877,6 +1984,9 @@ namespace MiniMap::BuildingAcquisition
             std::vector<OwnedScanOccurrence>& occurrences,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
             std::unordered_set<std::uint64_t>& pending,
+            const Facts::Region& previousCoverage,
+            bool canCompareCoverageMovement,
+            bool& publicationFactsUnchanged,
             AcquisitionHashAggregate& acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
@@ -1905,7 +2015,8 @@ namespace MiniMap::BuildingAcquisition
                 }
                 acquisitionHash.Add(
                     CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data));
-                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending
+                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending,
+                    previousCoverage, canCompareCoverageMovement, publicationFactsUnchanged
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     , changes
 #endif
@@ -1917,12 +2028,58 @@ namespace MiniMap::BuildingAcquisition
             return IsContextCurrent(native, context);
         }
 
+        /** Separates boundary removals from missing identities that could affect an overlapping Section.
+         * A Section contained in the new rectangle is a subset of that rectangle, so its shortest
+         * XY distance from a building origin cannot be less than the distance to the whole rectangle.
+         * The shared admission predicate therefore proves that a rejected old origin cannot contribute
+         * to any retained overlap Section. The same proof is used for newly acquired origins against
+         * the previous rectangle in ReconcileAcquiredOccurrence().
+         */
+        bool AreRemovedOccurrencesOutsideNewCoverage(
+            const std::unordered_map<std::uint64_t, Entry>& reconciled,
+            const Facts::Region& newCoverage,
+            bool canCompareCoverageMovement
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , MembershipTiming* timing
+#endif
+        ) const
+        {
+            bool coverageOnly = true;
+            for (const auto& previous : Entities)
+            {
+                if (!reconciled.contains(previous.first))
+                {
+                    if (!canCompareCoverageMovement ||
+                        IsBuildingAdmittedToRegion(previous.second.Data, newCoverage))
+                    {
+                        coverageOnly = false;
+                    }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++timing->Removed;
+#endif
+                }
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            for (const auto& item : reconciled)
+            {
+                if (!Entities.contains(item.first))
+                {
+                    ++timing->Added;
+                }
+            }
+#endif
+            return coverageOnly;
+        }
+
         /** Commits the fully acquired regional set only while its session and request remain current. */
         bool CommitRegionalState(
             const Native& native,
             const Context& context,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
             std::unordered_set<std::uint64_t>& pending,
+            bool publicationFactsUnchanged,
+            bool canCompareCoverageMovement,
+            const Facts::Region& previousCoverage,
             std::uint64_t acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
@@ -1934,22 +2091,26 @@ namespace MiniMap::BuildingAcquisition
 #endif
             if (!IsContextCurrent(native, context))
                 return false;
-            for (const auto& previous : Entities)
-            {
-                if (!reconciled.contains(previous.first))
-                {
+            const bool removedOnlyOutsideNewCoverage = AreRemovedOccurrencesOutsideNewCoverage(
+                reconciled, context.Region, canCompareCoverageMovement
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                    ++timing->Removed;
+                , timing
 #endif
-                }
-            }
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            for (const auto& item : reconciled)
+            );
+            if (!canCompareCoverageMovement || !publicationFactsUnchanged ||
+                !removedOnlyOutsideNewCoverage)
             {
-                if (!Entities.contains(item.first))
-                    ++timing->Added;
+                RetainedSectionPublications.clear();
+                FullFootprintRebuildPending = true;
             }
+            else if (!(previousCoverage == context.Region))
+            {
+                const std::size_t preservedCount = RetainOverlappingSectionPublications(
+                    previousCoverage, context.Region);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                Diagnostics.SectionOwnersPreservedOnMovement += preservedCount;
 #endif
+            }
             Entities.swap(reconciled);
             Pending.swap(pending);
             AcquisitionContentHash = acquisitionHash;
@@ -1983,8 +2144,11 @@ namespace MiniMap::BuildingAcquisition
         {
             if (!context.HasRegion || !IsContextCurrent(native, context))
                 return false;
+            const Facts::Region previousCoverage = CommittedCoverage;
+            const bool canCompareCoverageMovement = HasComparableCommittedCoverage();
             std::vector<OwnedScanOccurrence> occurrences;
             AcquisitionHashAggregate acquisitionHash{};
+            bool publicationFactsUnchanged = true;
             if (!CaptureMassSnapshot(native, context, occurrences
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
@@ -1993,7 +2157,9 @@ namespace MiniMap::BuildingAcquisition
                 return false;
             std::unordered_map<std::uint64_t, Entry> reconciled;
             std::unordered_set<std::uint64_t> pending;
-            if (!BuildRegionalState(native, context, occurrences, reconciled, pending, acquisitionHash
+            if (!BuildRegionalState(native, context, occurrences, reconciled, pending,
+                previousCoverage, canCompareCoverageMovement, publicationFactsUnchanged,
+                acquisitionHash
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
                 , changes
@@ -2001,6 +2167,7 @@ namespace MiniMap::BuildingAcquisition
             ))
                 return false;
             return CommitRegionalState(native, context, reconciled, pending,
+                publicationFactsUnchanged, canCompareCoverageMovement, previousCoverage,
                 FinalizeAcquisitionHash(acquisitionHash)
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
@@ -2522,6 +2689,7 @@ namespace MiniMap::BuildingAcquisition
         using CandidateSourceRecord = ::Services::Map::Buildings::BuildingCandidateSourceRecord;
         using CandidatePublication = ::Services::Map::Buildings::BuildingCandidatePublication;
         using CollectionRegion = ::Services::Map::Buildings::BuildingCollectionRegion;
+        using PublicationKey = std::pair<std::int64_t, std::int64_t>;
 
         /** Indexes one exact Section cell in the service's zero-origin grid. */
         struct SectionCellCoordinate
@@ -2631,8 +2799,9 @@ namespace MiniMap::BuildingAcquisition
             {
                 throw std::invalid_argument("Section request contains an invalid rectangle.");
             }
-            lookup.SectionSize = sectionRegions.front().widthMapUnits;
-            if (sectionRegions.front().heightMapUnits != lookup.SectionSize)
+            lookup.SectionSize = SectionSizeMapUnits;
+            if (sectionRegions.front().widthMapUnits != lookup.SectionSize ||
+                sectionRegions.front().heightMapUnits != lookup.SectionSize)
             {
                 throw std::invalid_argument("Section requests must be square grid cells.");
             }
@@ -2893,7 +3062,7 @@ namespace MiniMap::BuildingAcquisition
 
         /** Builds ordered immutable Section results from the currently committed regional dataset. */
         std::vector<std::shared_ptr<const CandidatePublication>> BuildSectionPublications(
-            std::span<const CollectionRegion> sectionRegions) const
+            std::span<const CollectionRegion> sectionRegions)
         {
             if (sectionRegions.empty())
             {
@@ -2909,6 +3078,138 @@ namespace MiniMap::BuildingAcquisition
             }
             RequestedSectionLookup lookup;
             BuildRequestedSectionLookup(sectionRegions, lookup);
+            std::map<PublicationKey, CollectionRegion> uniqueRegions;
+            for (const CollectionRegion& region : sectionRegions)
+            {
+                SectionCellCoordinate coordinate;
+                if (!TryGetSectionGridIndex(region.xMapUnits, SectionSizeMapUnits, coordinate.X) ||
+                    !TryGetSectionGridIndex(region.yMapUnits, SectionSizeMapUnits, coordinate.Y))
+                {
+                    throw std::invalid_argument("Section rectangle is not aligned to the configured grid.");
+                }
+                uniqueRegions.emplace(PublicationKey{coordinate.X, coordinate.Y}, region);
+            }
+            return RetainRequestedSectionPublications(sectionRegions, uniqueRegions);
+        }
+
+        /** Transactionally resolves exact request order through cached and newly built owners. */
+        std::vector<std::shared_ptr<const CandidatePublication>> RetainRequestedSectionPublications(
+            std::span<const CollectionRegion> sectionRegions,
+            const std::map<PublicationKey, CollectionRegion>& uniqueRegions)
+        {
+            std::vector<CollectionRegion> missingRegions;
+            std::vector<PublicationKey> missingKeys;
+            const std::uint64_t ownerReuses = FindMissingSectionPublications(
+                uniqueRegions, missingRegions, missingKeys);
+            if (missingRegions.empty())
+            {
+                auto ordered = BuildOrderedSectionPublications(sectionRegions, RetainedSectionPublications);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                Diagnostics.SectionOwnerReuses += ownerReuses;
+                ++Diagnostics.RepeatedQueriesWithoutRebuild;
+#endif
+                return ordered;
+            }
+            auto replacement = RetainedSectionPublications;
+            [[maybe_unused]] const bool fullFootprintRebuild = FullFootprintRebuildPending;
+            const auto rebuilt = BuildMissingSectionPublications(missingRegions);
+            for (std::size_t index = 0; index < rebuilt.size(); ++index)
+            {
+                replacement[missingKeys[index]] = rebuilt[index];
+            }
+            auto ordered = BuildOrderedSectionPublications(sectionRegions, replacement);
+            RetainedSectionPublications.swap(replacement);
+            FullFootprintRebuildPending = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            Diagnostics.SectionOwnerReuses += ownerReuses;
+            Diagnostics.SectionPublicationsRebuilt += missingRegions.size();
+            if (fullFootprintRebuild)
+            {
+                ++Diagnostics.FullFootprintRebuilds;
+            }
+#endif
+            return ordered;
+        }
+
+        /** Finds reused owners and records unique requested cells that require construction. */
+        std::uint64_t FindMissingSectionPublications(
+            const std::map<PublicationKey, CollectionRegion>& uniqueRegions,
+            std::vector<CollectionRegion>& missingRegions,
+            std::vector<PublicationKey>& missingKeys) const
+        {
+            missingRegions.reserve(uniqueRegions.size());
+            missingKeys.reserve(uniqueRegions.size());
+            std::uint64_t ownerReuses = 0;
+            for (const auto& [key, region] : uniqueRegions)
+            {
+                const auto retained = RetainedSectionPublications.find(key);
+                const bool exactOwner = retained != RetainedSectionPublications.end() &&
+                    retained->second->SectionRegion().xMapUnits == region.xMapUnits &&
+                    retained->second->SectionRegion().yMapUnits == region.yMapUnits &&
+                    retained->second->SectionRegion().widthMapUnits == region.widthMapUnits &&
+                    retained->second->SectionRegion().heightMapUnits == region.heightMapUnits;
+                if (exactOwner)
+                {
+                    ++ownerReuses;
+                    continue;
+                }
+                missingKeys.push_back(key);
+                missingRegions.push_back(region);
+            }
+            return ownerReuses;
+        }
+
+        /** Builds missing Section owners in one timed batch without mutating retained state. */
+        std::vector<std::shared_ptr<const CandidatePublication>> BuildMissingSectionPublications(
+            const std::vector<CollectionRegion>& missingRegions)
+        {
+            const auto buildStarted = Clock::now();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++Diagnostics.PublicationBuilderCalls;
+#endif
+            try
+            {
+                RequestedSectionLookup lookup;
+                BuildRequestedSectionLookup(missingRegions, lookup);
+                auto publications = BuildRequestedSectionPublications(missingRegions, lookup);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                Diagnostics.PublicationBuildMs +=
+                    std::chrono::duration<double, std::milli>(Clock::now() - buildStarted).count();
+#endif
+                return publications;
+            }
+            catch (...)
+            {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                Diagnostics.PublicationBuildMs +=
+                    std::chrono::duration<double, std::milli>(Clock::now() - buildStarted).count();
+#endif
+                throw;
+            }
+        }
+
+        /** Restores exact request order and duplicate coordinates from retained owners. */
+        std::vector<std::shared_ptr<const CandidatePublication>> BuildOrderedSectionPublications(
+            std::span<const CollectionRegion> sectionRegions,
+            const std::map<PublicationKey, std::shared_ptr<const CandidatePublication>>& owners) const
+        {
+            std::vector<std::shared_ptr<const CandidatePublication>> ordered;
+            ordered.reserve(sectionRegions.size());
+            for (const CollectionRegion& region : sectionRegions)
+            {
+                SectionCellCoordinate coordinate;
+                TryGetSectionGridIndex(region.xMapUnits, SectionSizeMapUnits, coordinate.X);
+                TryGetSectionGridIndex(region.yMapUnits, SectionSizeMapUnits, coordinate.Y);
+                ordered.push_back(owners.at(PublicationKey{coordinate.X, coordinate.Y}));
+            }
+            return ordered;
+        }
+
+        /** Runs the existing batch distribution once for the unique missing Section cells. */
+        std::vector<std::shared_ptr<const CandidatePublication>> BuildRequestedSectionPublications(
+            std::span<const CollectionRegion> sectionRegions,
+            const RequestedSectionLookup& lookup) const
+        {
             const std::vector<SectionAdmissionBounds> sectionBounds =
                 BuildSectionAdmissionBounds(sectionRegions);
             std::vector<std::vector<SectionContributor>> contributorsBySection(sectionRegions.size());
@@ -3005,6 +3306,22 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<long long>(quietRemaining), static_cast<long long>(quietElapsed));
         }
 
+        /** Emits retained Section publication reuse and build totals for one collector interval. */
+        void ReportPublicationMeasurements(double intervalMs) const
+        {
+            const auto& d = Diagnostics;
+            LOG_INFO("MiniMap: BuildingMap section_publications intervalMs=%.1f retained:%llu movementPreserved:%llu ownerReuses:%llu rebuilt:%llu fullFootprintRebuilds:%llu builderCalls:%llu repeatedQueriesWithoutBuild:%llu buildMs:%.3f",
+                intervalMs,
+                static_cast<unsigned long long>(RetainedSectionPublications.size()),
+                static_cast<unsigned long long>(d.SectionOwnersPreservedOnMovement),
+                static_cast<unsigned long long>(d.SectionOwnerReuses),
+                static_cast<unsigned long long>(d.SectionPublicationsRebuilt),
+                static_cast<unsigned long long>(d.FullFootprintRebuilds),
+                static_cast<unsigned long long>(d.PublicationBuilderCalls),
+                static_cast<unsigned long long>(d.RepeatedQueriesWithoutRebuild),
+                d.PublicationBuildMs);
+        }
+
         /** Emits the numeric-only worst scan retained for one completed interval. */
         void ReportWorstMembershipScan(double intervalMs) const
         {
@@ -3042,6 +3359,7 @@ namespace MiniMap::BuildingAcquisition
             {
                 ReportCollectorMeasurements(intervalMs);
                 ReportMembershipMeasurements(intervalMs);
+                ReportPublicationMeasurements(intervalMs);
                 ReportWorstMembershipScan(intervalMs);
             }
             catch (...)
@@ -3113,8 +3431,10 @@ namespace MiniMap::BuildingAcquisition
     }
 
     /** Creates inert CPU state and validates the immutable membership interval. */
-    BuildingCollectorV2::BuildingCollectorV2(std::chrono::milliseconds retryInterval)
-        : state_(std::make_unique<State>(retryInterval))
+    BuildingCollectorV2::BuildingCollectorV2(
+        double sectionSizeMapUnits,
+        std::chrono::milliseconds retryInterval)
+        : state_(std::make_unique<State>(sectionSizeMapUnits, retryInterval))
     {
     }
 
@@ -3161,7 +3481,13 @@ namespace MiniMap::BuildingAcquisition
     /** Sets whether newly requested Section publications include known drone rails. */
     void BuildingCollectorV2::SetRenderDroneRails(bool enabled) noexcept
     {
+        if (state_->IncludeDroneRails == enabled)
+        {
+            return;
+        }
         state_->IncludeDroneRails = enabled;
+        state_->RetainedSectionPublications.clear();
+        state_->FullFootprintRebuildPending = true;
     }
 
     /** Reads the stored hash for the currently committed regional dataset. */
@@ -3170,7 +3496,7 @@ namespace MiniMap::BuildingAcquisition
         return state_->AcquisitionContentHash;
     }
 
-    /** Builds exact Section publications from the last successful committed regional scan. */
+    /** Looks up or transactionally builds exact retained Section publications. */
     std::vector<std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>>
     BuildingCollectorV2::AcquireSectionPublications(
         std::span<const ::Services::Map::Buildings::BuildingCollectionRegion> sectionRegions) const

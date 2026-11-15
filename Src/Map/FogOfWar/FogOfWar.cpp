@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -205,14 +206,13 @@ namespace
         false;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    bool g_renderReported =
-        false;
+    std::atomic<bool> g_renderReported{false};
 #endif
 
     float g_snapshotAccumulator =
         0.0f;
 
-    Snapshot g_snapshot = {};
+    std::atomic<std::shared_ptr<const Snapshot>> g_snapshot;
 
     /*
      * One immutable 1x1 opaque-black image backs all FOW geometry. The tick
@@ -308,7 +308,7 @@ namespace
 
     void ClearSnapshot()
     {
-        g_snapshot = {};
+        g_snapshot.store(nullptr, std::memory_order_release);
         g_invalidStateReported =
             false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -453,13 +453,14 @@ namespace
 
 
     bool TryGetMaskByte(
+        const Snapshot& snapshot,
         int32_t maskX,
         int32_t maskY,
         uint8_t& outValue)
     {
         outValue = 0;
 
-        if (!g_snapshot.Valid ||
+        if (!snapshot.Valid ||
             maskX < 0 ||
             maskY < 0 ||
             maskX >= kLogicalMaskSize ||
@@ -497,7 +498,7 @@ namespace
             localX;
 
         const auto& segment =
-            g_snapshot.Segments[
+            snapshot.Segments[
                 static_cast<std::size_t>(
                     segmentIndex)];
 
@@ -518,6 +519,7 @@ namespace
 
 
     uint8_t GetMaskByteOrFog(
+        const Snapshot& snapshot,
         int32_t maskX,
         int32_t maskY)
     {
@@ -525,6 +527,7 @@ namespace
             0;
 
         if (TryGetMaskByte(
+            snapshot,
             maskX,
             maskY,
             value))
@@ -537,11 +540,13 @@ namespace
 
 
     bool IsNativeBoundaryCell(
+        const Snapshot& snapshot,
         int32_t maskX,
         int32_t maskY)
     {
         const uint8_t center =
             GetMaskByteOrFog(
+                snapshot,
                 maskX,
                 maskY);
 
@@ -573,6 +578,7 @@ namespace
 
                 const bool neighborFogged =
                     GetMaskByteOrFog(
+                        snapshot,
                         maskX + dx,
                         maskY + dy) <
                     128;
@@ -650,6 +656,7 @@ namespace
 
 
     double BilinearNativeFogAlpha(
+        const Snapshot& snapshot,
         double worldX,
         double worldY)
     {
@@ -701,24 +708,28 @@ namespace
         const double e00 =
             exploredValue(
                 GetMaskByteOrFog(
+                    snapshot,
                     x0,
                     y0));
 
         const double e10 =
             exploredValue(
                 GetMaskByteOrFog(
+                    snapshot,
                     x0 + 1,
                     y0));
 
         const double e01 =
             exploredValue(
                 GetMaskByteOrFog(
+                    snapshot,
                     x0,
                     y0 + 1));
 
         const double e11 =
             exploredValue(
                 GetMaskByteOrFog(
+                    snapshot,
                     x0 + 1,
                     y0 + 1));
 
@@ -784,12 +795,13 @@ namespace
 
 
     double RenderedFogAlpha(
+        const Snapshot& snapshot,
         double worldX,
         double worldY,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FogOfWarSettings& fog)
     {
-        const double nativeFog = BilinearNativeFogAlpha(worldX, worldY);
+        const double nativeFog = BilinearNativeFogAlpha(snapshot, worldX, worldY);
         return nativeFog <= 0.0 ? 0.0 :
             nativeFog * LocalFogFactor(worldX, worldY, transform, fog);
     }
@@ -912,6 +924,7 @@ namespace
 
 
     void DrawRefinedCell(
+        const Snapshot& snapshot,
         MiniMap::Services::ICanvas& ui,
         MiniMap::Services::DrawLayer drawList,
         const MiniMapMap::Transform& transform,
@@ -979,7 +992,7 @@ namespace
                     0.5;
 
                 const double finalAlpha =
-                    RenderedFogAlpha(centerX, centerY, transform, fog);
+                    RenderedFogAlpha(snapshot, centerX, centerY, transform, fog);
 
                 if (DrawWorldFogQuad(
                     ui,
@@ -1002,6 +1015,7 @@ namespace
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
     bool TrySamplePlayerMask(
+        const Snapshot& snapshot,
         uint8_t& outValue,
         int32_t& outMaskX,
         int32_t& outMaskY,
@@ -1012,7 +1026,7 @@ namespace
         outMaskY = -1;
         outSegmentIndex = -1;
 
-        if (!g_snapshot.Valid)
+        if (!snapshot.Valid)
         {
             return false;
         }
@@ -1077,6 +1091,7 @@ namespace
             maskY;
 
         return TryGetMaskByte(
+            snapshot,
             maskX,
             maskY,
             outValue);
@@ -1084,6 +1099,7 @@ namespace
 
 
     void LogPlayerSample(
+        const Snapshot& snapshot,
         const char* prefix)
     {
         uint8_t value = 0;
@@ -1092,6 +1108,7 @@ namespace
         int32_t segmentIndex = -1;
 
         if (TrySamplePlayerMask(
+            snapshot,
             value,
             maskX,
             maskY,
@@ -1136,10 +1153,14 @@ namespace
 
         (void)player;
 
-        if (g_snapshot.Component !=
-            component)
+        auto previousSnapshot =
+            g_snapshot.load(std::memory_order_acquire);
+
+        if (previousSnapshot &&
+            previousSnapshot->Component != component)
         {
             ClearSnapshot();
+            previousSnapshot.reset();
         }
 
         Snapshot nextSnapshot = {};
@@ -1165,24 +1186,29 @@ namespace
         g_invalidStateReported =
             false;
 
-        if (!g_snapshot.Valid)
+        if (!previousSnapshot ||
+            !previousSnapshot->Valid)
         {
-            g_snapshot =
-                std::move(
-                    nextSnapshot);
+            std::shared_ptr<const Snapshot> publishedSnapshot =
+                std::make_shared<Snapshot>(std::move(nextSnapshot));
+
+            g_snapshot.store(
+                publishedSnapshot,
+                std::memory_order_release);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             LOG_INFO(
                 "MiniMap: FOW diagnostic: "
                 "snapshot ready component=%p "
                 "segments=%d bytes-per-segment=%d total=%d",
-                g_snapshot.Component,
+                publishedSnapshot->Component,
                 kSegmentCount,
                 kSegmentByteCount,
                 kSegmentCount *
                     kSegmentByteCount);
 
             LogPlayerSample(
+                *publishedSnapshot,
                 "initial");
 #endif
 
@@ -1198,11 +1224,11 @@ namespace
 
         for (std::size_t segmentIndex = 0;
             segmentIndex <
-                g_snapshot.Segments.size();
+                previousSnapshot->Segments.size();
             ++segmentIndex)
         {
             const auto& previous =
-                g_snapshot.Segments[
+                previousSnapshot->Segments[
                     segmentIndex];
 
             const auto& current =
@@ -1237,9 +1263,12 @@ namespace
         }
 
 #endif
-        g_snapshot =
-            std::move(
-                nextSnapshot);
+        std::shared_ptr<const Snapshot> publishedSnapshot =
+            std::make_shared<Snapshot>(std::move(nextSnapshot));
+
+        g_snapshot.store(
+            publishedSnapshot,
+            std::memory_order_release);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (changedSegments >
@@ -1252,6 +1281,7 @@ namespace
                 changedBytes);
 
             LogPlayerSample(
+                *publishedSnapshot,
                 "after update");
         }
 #endif
@@ -1356,7 +1386,11 @@ namespace MiniMapFogOfWar
         double worldX,
         double worldY)
     {
-        if (!g_snapshot.Valid ||
+        const auto snapshot =
+            g_snapshot.load(std::memory_order_acquire);
+
+        if (!snapshot ||
+            !snapshot->Valid ||
             !std::isfinite(worldX) ||
             !std::isfinite(worldY))
         {
@@ -1377,6 +1411,7 @@ namespace MiniMapFogOfWar
 
         return
             TryGetMaskByte(
+                *snapshot,
                 maskX,
                 maskY,
                 maskByte) &&
@@ -1386,8 +1421,11 @@ namespace MiniMapFogOfWar
 
     bool IsNativeWorldRectangleRevealed(double minX,double minY,double maxX,double maxY)
     {
-        return g_snapshot.Valid&&MiniMapFogCoverage::Revealed(minX,minY,maxX,maxY,kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
-            [](int x,int y){uint8_t value=0;return TryGetMaskByte(x,y,value)&&value==255;});
+        const auto snapshot =
+            g_snapshot.load(std::memory_order_acquire);
+
+        return snapshot && snapshot->Valid && MiniMapFogCoverage::Revealed(minX,minY,maxX,maxY,kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
+            [snapshot](int x,int y){uint8_t value=0;return TryGetMaskByte(*snapshot,x,y,value)&&value==255;});
     }
 
     bool IsWorldRectangleFullyObscured(double minX,double minY,double maxX,double maxY,
@@ -1395,16 +1433,18 @@ namespace MiniMapFogOfWar
         const MiniMapConfig::FogOfWarSettings& fog)
     {
         if (fog.Disabled) return false;
+        const auto snapshot =
+            g_snapshot.load(std::memory_order_acquire);
         const auto blackTexture = BlackFogTextureView();
-        if(!g_snapshot.Valid||!blackTexture.id||!transform.Valid||
+        if(!snapshot||!snapshot->Valid||!blackTexture.id||!transform.Valid||
             !std::isfinite(transform.PixelsPerWorldUnit)||transform.PixelsPerWorldUnit<=0||
             !std::isfinite(transform.LocalVisibilityWorldX)||!std::isfinite(transform.LocalVisibilityWorldY))return false;
         // At most 64 cells / 576 copied-mask reads. This stronger-than-necessary
         // test certifies coarse opaque overlay coverage without sampling sprite pixels.
         return MiniMapFogCoverage::FullyObscured(minX,minY,maxX,maxY,
             kMapPivotX,kMapPivotY,kWorldToMaskScale,kLogicalMaskSize,64,
-            [&](int x,int y){return MiniMapFogCoverage::OpaqueFogCell(x,y,
-                CellIntersectsLocalFeather(x,y,transform,fog),TryGetMaskByte);});
+            [&snapshot,&transform,&fog](int x,int y){return MiniMapFogCoverage::OpaqueFogCell(x,y,
+                CellIntersectsLocalFeather(x,y,transform,fog),[&snapshot](int cellX,int cellY,uint8_t& value){return TryGetMaskByte(*snapshot,cellX,cellY,value);});});
     }
 
     float GetRenderedVisibilityAtWorldPosition(
@@ -1421,9 +1461,11 @@ namespace MiniMapFogOfWar
             return 0.0f;
         }
         if (fog.Disabled) return 1.0f;
-        if (!g_snapshot.Valid) return 0.0f;
+        const auto snapshot =
+            g_snapshot.load(std::memory_order_acquire);
+        if (!snapshot || !snapshot->Valid) return 0.0f;
         return static_cast<float>(std::clamp(
-            1.0 - RenderedFogAlpha(worldX, worldY, transform, fog), 0.0, 1.0));
+            1.0 - RenderedFogAlpha(*snapshot, worldX, worldY, transform, fog), 0.0, 1.0));
     }
 
 
@@ -1434,8 +1476,12 @@ namespace MiniMapFogOfWar
     {
         if (fog.Disabled) return;
 
+        const auto snapshot =
+            g_snapshot.load(std::memory_order_acquire);
+
         if (!transform.Valid ||
-            !g_snapshot.Valid ||
+            !snapshot ||
+            !snapshot->Valid ||
             transform.PixelsPerWorldUnit <=
                 0.0)
         {
@@ -1580,11 +1626,13 @@ namespace MiniMapFogOfWar
             {
                 const uint8_t maskByte =
                     GetMaskByteOrFog(
+                        *snapshot,
                         maskX,
                         maskY);
 
                 const bool boundary =
                     IsNativeBoundaryCell(
+                        *snapshot,
                         maskX,
                         maskY);
 
@@ -1608,6 +1656,7 @@ namespace MiniMapFogOfWar
                         localFeather)
                     {
                         DrawRefinedCell(
+                            *snapshot,
                             ui,
                             drawList,
                             transform,
@@ -1634,12 +1683,14 @@ namespace MiniMapFogOfWar
                 {
                     const uint8_t nextMaskByte =
                         GetMaskByteOrFog(
+                            *snapshot,
                             maskX,
                             maskY);
 
                     if (nextMaskByte !=
                             0 ||
                         IsNativeBoundaryCell(
+                            *snapshot,
                             maskX,
                             maskY) ||
                         CellIntersectsLocalFeather(
