@@ -367,6 +367,8 @@ namespace Services::Map::Buildings::Scheduling
 		IncrementalSectionAdvanceResult result;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const auto sliceStarted = std::chrono::steady_clock::now();
+		auto& work = BuildingMapPerformanceDiagnostics::Game();
+		const auto lookupsBefore = work.ResourceLookups;
 #endif
 		BM124D_SECTION(coordinate.GridX, coordinate.GridY, result = AdvanceSelectedSectionJob(
 			buildingMapService, coordinate, publication->second, waiting.Kind == WaitingKind::InitialSprites));
@@ -374,6 +376,9 @@ namespace Services::Map::Buildings::Scheduling
 		const double sliceElapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sliceStarted).count();
 		RecordIncrementalDiagnostics(coordinate, sliceElapsedMs, result);
+		++work.SectionSlices;
+		work.SectionWorkUnits += result.WorkUnitsConsumed;
+		work.SlicesWithoutLookup += work.ResourceLookups == lookupsBefore ? 1 : 0;
 #endif
 		UpdateWaitingSectionAfterVisit(waiting, result);
 	}
@@ -515,16 +520,11 @@ namespace Services::Map::Buildings::Scheduling
 		::Services::Map::Buildings::BuildingMapSection& section =
 			buildingMapService.GetOrCreateSectionAt(coordinate.GridX, coordinate.GridY);
 		publicationOwner = sectionScheduler_->EnsureSectionJob(section, publicationOwner);
-		const SectionJobContinuationMode continuationMode =
-			sectionScheduler_->SelectSectionJobContinuationMode(
-				section,
-				publicationOwner);
 		auto result = AdvanceRetainedSectionJob(
 			buildingMapService,
 			coordinate,
 			publicationOwner,
 			section,
-			continuationMode,
 			initialSpritesOnly,
 			HasImageDemand(coordinate));
 		result.HasUnattemptedSprites = SectionScheduler::NeedsInitialSpriteVisit(&section, *publicationOwner);
@@ -554,15 +554,12 @@ namespace Services::Map::Buildings::Scheduling
 		const SectionCoordinate& coordinate,
 		const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 		::Services::Map::Buildings::BuildingMapSection& section,
-		SectionJobContinuationMode continuationMode,
 		bool initialSpritesOnly,
 		bool renderSectionImages)
 	{
 		IncrementalSectionAdvanceResult result;
 		SectionScheduler::SectionJobAdvanceResult jobResult = sectionScheduler_->AdvanceSectionJob(
 			section,
-			publicationOwner,
-			continuationMode,
 			buildingMapService.splinePolicies_,
 			SectionScheduler::SectionPreparationVisit{tickDeadline_, budgetTickSequence_, initialSpritesOnly},
 			renderSectionImages);

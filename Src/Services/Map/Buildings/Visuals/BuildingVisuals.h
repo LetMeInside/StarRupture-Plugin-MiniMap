@@ -105,7 +105,6 @@ namespace Services::Map::Buildings::Visuals
 		/** Initializes result capacity and pass cursors for the completed immutable scene. */
 		static void InitializePreparedSceneSubmission(
 			const PreparedBuildingGeometry& geometry,
-			const BuildingRenderSceneInput& resourceScene,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor);
 		/** Advances one raster pass over prepared geometry and borrowed resource views. */
@@ -120,7 +119,6 @@ namespace Services::Map::Buildings::Visuals
 		/** Advances one sprite pass using direct occurrence correspondence. */
 		static SceneAdvanceResult AdvancePreparedSpritePass(
 			const PreparedBuildingGeometry& geometry,
-			const BuildingRenderSceneInput& resourceScene,
 			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
@@ -129,12 +127,12 @@ namespace Services::Map::Buildings::Visuals
 			bool overlay);
 		/** Records a valid zero-area Section sprite as culled without destination work. */
 		static SceneAdvanceResult FinishSectionExcludedSprite(
-			std::size_t sceneIndex,
+			std::size_t ordinal,
 			bool overlay,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
 			SceneSliceResult& result);
-		/** Records an exact source/geometry correspondence failure without drawing a substitute. */
+		/** Records an invariant failure when a retained sprite occurrence has no payload. */
 		static SceneAdvanceResult FailPreparedSpriteInput(
 			bool overlay,
 			std::size_t index,
@@ -144,7 +142,6 @@ namespace Services::Map::Buildings::Visuals
 		/** Resumes one sprite image command using its prepared world-space quad. */
 		static SceneAdvanceResult SubmitPreparedSpriteImage(
 			const PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-			const BuildingSpriteRenderInput& source,
 			bool overlay,
 			IImageDestination& destination,
 			BuildingVisualsContext& context,
@@ -181,7 +178,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Resumes submission over immutable prepared triangle arrays. */
 		static SceneAdvanceResult SubmitPreparedSplineTriangles(
 			const PreparedBuildingGeometry::SplineSurface& prepared,
-			const BuildingSplineSurfaceRenderInput& source,
+			const BuildingSplineSurfaceRenderInput* source,
 			IImageDestination& destination,
 			BuildingVisualsContext& context,
 			SceneCursor& cursor,
@@ -190,7 +187,7 @@ namespace Services::Map::Buildings::Visuals
 		/** Borrows prepared triangles and the exact appearance resource for one destination call. */
 		static IImageDestination::SubmissionSliceResult StepPreparedSplineBatch(
 			const PreparedBuildingGeometry::SplineSurface& prepared,
-			const BuildingSplineSurfaceRenderInput& source,
+			const BuildingSplineSurfaceRenderInput* source,
 			IImageDestination& destination,
 			SceneCursor& cursor,
 			std::chrono::steady_clock::time_point deadline);
@@ -204,12 +201,6 @@ namespace Services::Map::Buildings::Visuals
 			const BuildingSplineSurfaceRenderInput& surface,
 			BuildingVisualsContext& context,
 			std::uint8_t& opacity);
-		/** Adds a valid captured sprite volume to occlusion scratch for shared preparation. */
-		static bool AddOccluder(
-			const BuildingSpriteRenderInput& sprite,
-			const SpriteWorldQuad& worldQuad,
-			std::size_t ordinal,
-			BuildingVisualsContext& context);
 		/** Builds an occlusion index from already prepared sprite occluders. */
 		static SplineOcclusionStatus PrepareOcclusionIndex(BuildingVisualsContext& context);
 		/** Reports whether the reusable numerical surface contains accepted indexed triangles. */

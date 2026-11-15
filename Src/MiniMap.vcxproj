@@ -95,6 +95,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
+    <ClInclude Include="Services\Map\Buildings\Scheduling\IBuildingSpriteMetadataSource.h" />
     <ClInclude Include="Services\Map\Buildings\SplinePolicy.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapViewport.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapGpuViewport.h" />
@@ -108,7 +109,7 @@
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteStatus.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteRequestQueue.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\SpriteFeedbackQueue.h" />
-      <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />
+    <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\ReadbackFenceAccessor.h" />
     <ClInclude Include="Generated\Unreal\RHIGPUReadbackCompat.h" />
     <ClInclude Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.h" />
@@ -127,6 +128,7 @@
     <ClInclude Include="Services\Map\Buildings\Cache\SpriteDiskCache.h" />
     <ClInclude Include="Services\Map\Buildings\Rendering\Rgba8ImageDestination.h" />
     <ClInclude Include="Services\Map\Buildings\Rendering\SectionRendering.h" />
+    <ClInclude Include="Services\Map\Buildings\Visuals\PreparedBuildingGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\SpriteGeometry.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingRenderSceneInput.h" />
     <ClInclude Include="Services\Map\Buildings\Visuals\BuildingVisuals.h" />
@@ -218,9 +220,9 @@
     <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteRenderer.cpp">
       <ObjectFileName>$(IntDir)BuildingMapCaptureSpriteRenderer.obj</ObjectFileName>
     </ClCompile>
-      <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.cpp">
-        <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      </ClCompile>
+    <ClCompile Include="Services\Map\Buildings\Capture\BuildingSpriteReadback.cpp">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapViewport.cpp">
     </ClCompile>
     <ClCompile Include="Services\Map\Buildings\BuildingMapGpuViewport.cpp">

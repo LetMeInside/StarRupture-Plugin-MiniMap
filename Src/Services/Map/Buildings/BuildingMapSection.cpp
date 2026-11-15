@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements Section identity, membership observation tracking, private
-// completed-image storage, and Section-owned rendering state and context.
+// Implements Section identity, private completed-image storage, and
+// Section-owned rendering state and context.
 #include "BuildingMapSection.h"
 
 #include "Visuals/BuildingVisualsContext.h"
@@ -36,41 +36,6 @@ namespace Services::Map::Buildings
 	std::int64_t BuildingMapSection::GetGridY() const
 	{
 		return gridY_;
-	}
-
-	/** Reports whether the most recent observation certifies current membership. */
-	bool BuildingMapSection::HasCurrentMembershipObservation() const
-	{
-		return hasCurrentMembershipObservation_;
-	}
-
-	/** Returns the current fingerprint only while a complete observation is certified. */
-	bool BuildingMapSection::TryGetCurrentMembershipFingerprint(std::uint64_t& fingerprint) const
-	{
-		if (!hasCurrentMembershipObservation_)
-		{
-			return false;
-		}
-		fingerprint = membershipFingerprint_;
-		return true;
-	}
-
-	/** Tracks complete observations and reports first certification or fingerprint changes. */
-	bool BuildingMapSection::RecordMembershipObservation(
-		bool isComplete,
-		std::uint64_t membershipFingerprint)
-	{
-		if (!isComplete)
-		{
-			hasCurrentMembershipObservation_ = false;
-			return false;
-		}
-		const bool fingerprintChanged = !hasPreviousMembershipFingerprint_ ||
-			membershipFingerprint_ != membershipFingerprint;
-		membershipFingerprint_ = membershipFingerprint;
-		hasPreviousMembershipFingerprint_ = true;
-		hasCurrentMembershipObservation_ = true;
-		return fingerprintChanged;
 	}
 
 	/** Reports whether this Section currently owns a completed image. */
@@ -143,14 +108,14 @@ namespace Services::Map::Buildings
 		std::uint64_t sourceContentHash,
 		std::size_t contributionCount)
 	{
-		if (preparingScene_ == nullptr || preparingSceneSourceContentHash_ != sourceContentHash ||
+		if (preparingScene_ == nullptr || preparingScene_->sourceContentHash_ != sourceContentHash ||
 			preparingScene_->contributionStates_.size() != contributionCount)
 		{
 			if (completedScene_ == nullptr && preparingScene_ != nullptr)
 			{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				ReportGpuPresentationWithdrawal(
-					"scene-generation-replacement", preparingSceneSourceContentHash_, sourceContentHash, true);
+					"scene-generation-replacement", preparingScene_->SourceContentHash(), sourceContentHash, true);
 #endif
 			}
 			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
@@ -159,8 +124,10 @@ namespace Services::Map::Buildings
 			}
 			preparingScene_ = std::make_unique<Visuals::PreparedBuildingGeometry>();
 			preparingScene_->sourceContentHash_ = sourceContentHash;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			preparingScene_->diagnosticGeneration_ = BuildingMapPerformanceDiagnostics::NextGeneration();
+#endif
 			preparingScene_->InitializeContributionStates(contributionCount);
-			preparingSceneSourceContentHash_ = sourceContentHash;
 			if (completedScene_ == nullptr)
 			{
 				gpuPresentation_.reset();
@@ -174,23 +141,17 @@ namespace Services::Map::Buildings
 	/** Replaces the visible scene only after the matching replacement is complete. */
 	bool BuildingMapSection::CompletePreparingScene(std::uint64_t sourceContentHash) noexcept
 	{
-		if (preparingScene_ == nullptr || preparingSceneSourceContentHash_ != sourceContentHash ||
-			preparingScene_->sourceContentHash_ != sourceContentHash || !preparingScene_->IsComplete())
+		if (preparingScene_ == nullptr || preparingScene_->sourceContentHash_ != sourceContentHash ||
+			!preparingScene_->IsComplete())
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			Visuals::SectionFailureDetails failure{"scene promotion", "PreparingScene absent"};
 			if (preparingScene_ != nullptr)
 			{
 				failure.Condition = "geometry is incomplete";
-				if (preparingSceneSourceContentHash_ != sourceContentHash)
+				if (preparingScene_->sourceContentHash_ != sourceContentHash)
 				{
 					failure.Condition = "PreparingScene source hash mismatch";
-					failure.Expected = sourceContentHash;
-					failure.Actual = preparingSceneSourceContentHash_;
-				}
-				else if (preparingScene_->sourceContentHash_ != sourceContentHash)
-				{
-					failure.Condition = "geometry source identity mismatch";
 					failure.Expected = sourceContentHash;
 					failure.Actual = preparingScene_->sourceContentHash_;
 				}
@@ -207,7 +168,6 @@ namespace Services::Map::Buildings
 			gpuGeometryAssembly_.reset();
 		}
 		completedScene_ = std::move(preparingScene_);
-		preparingSceneSourceContentHash_ = 0;
 		if (completedScene_->drawableGpuTriangleCount_ == 0)
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -287,13 +247,13 @@ namespace Services::Map::Buildings
 	/** Discards only preparation belonging to an older selected source publication. */
 	void BuildingMapSection::InvalidatePreparingScene(std::uint64_t currentSourceContentHash) noexcept
 	{
-		if (preparingScene_ != nullptr && preparingSceneSourceContentHash_ != currentSourceContentHash)
+		if (preparingScene_ != nullptr && preparingScene_->sourceContentHash_ != currentSourceContentHash)
 		{
 			if (completedScene_ == nullptr)
 			{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				ReportGpuPresentationWithdrawal(
-					"preparing-scene-invalidation", preparingSceneSourceContentHash_, currentSourceContentHash, true);
+					"preparing-scene-invalidation", preparingScene_->SourceContentHash(), currentSourceContentHash, true);
 #endif
 			}
 			if (gpuGeometryAssembly_ != nullptr && gpuGeometryAssembly_->SourceScene == preparingScene_.get())
@@ -301,7 +261,6 @@ namespace Services::Map::Buildings
 				gpuGeometryAssembly_.reset();
 			}
 			preparingScene_.reset();
-			preparingSceneSourceContentHash_ = 0;
 			if (completedScene_ == nullptr)
 			{
 				gpuPresentation_.reset();
@@ -321,7 +280,7 @@ namespace Services::Map::Buildings
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			ReportGpuPresentationWithdrawal(
-				transition, preparingSceneSourceContentHash_, std::nullopt,
+				transition, std::optional{preparingScene_->SourceContentHash()}, std::nullopt,
 				demanded.has_value() ? demanded : std::optional<bool>{true});
 #endif
 		}
@@ -330,7 +289,6 @@ namespace Services::Map::Buildings
 			gpuGeometryAssembly_.reset();
 		}
 		preparingScene_.reset();
-		preparingSceneSourceContentHash_ = 0;
 		if (wasVisible)
 		{
 			gpuPresentation_.reset();

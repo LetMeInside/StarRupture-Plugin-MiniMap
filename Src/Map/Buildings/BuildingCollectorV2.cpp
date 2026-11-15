@@ -24,6 +24,7 @@
 #include <MassArchetypeTypes.h>
 #include <algorithm>
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
 #include <array>
 #endif
 #include <cassert>
@@ -354,15 +355,6 @@ namespace MiniMap::BuildingAcquisition
                 Xor ^= contribution;
                 ++Count;
             }
-
-            /** Replaces preliminary content without changing the occurrence count. */
-            void Replace(std::uint64_t previous, std::uint64_t completed) noexcept
-            {
-                Sum -= previous;
-                Sum += completed;
-                Xor ^= previous;
-                Xor ^= completed;
-            }
         };
 
         /** Appends a fixed-width byte through the established deterministic byte step. */
@@ -584,7 +576,7 @@ namespace MiniMap::BuildingAcquisition
             return SplitMix64(preliminary ^ SplitMix64(deferredHash));
         }
 
-        /** Finalizes a multiset aggregate after every preliminary contribution is replaced. */
+        /** Finalizes a multiset aggregate after every completed contribution is added. */
         static std::uint64_t FinalizeAcquisitionHash(const AcquisitionHashAggregate& aggregate) noexcept
         {
             const std::uint64_t combined = aggregate.Sum ^ std::rotl(aggregate.Xor, 23) ^ aggregate.Count;
@@ -714,6 +706,7 @@ namespace MiniMap::BuildingAcquisition
                 auto& measurements = Owner.Diagnostics;
                 ++measurements.MembershipScans;
                 measurements.Membership.Add(totalMs);
+                ::Services::Map::Buildings::BuildingMapPerformanceDiagnostics::Game().Scan.Add(totalMs);
                 measurements.ChunkExecution.Add(ChunkExecutionMs);
                 measurements.OwnedFactCopying.Add(OwnedFactCopyingMs);
                 measurements.Acquisition.Add(DeferredAcquisitionMs);
@@ -918,12 +911,11 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
-        /** Native correspondence and scan mark for one authoritative building occurrence. */
+        /** Retains acquired facts and their definition owner for one building identity. */
         struct Entry
         {
             Facts::Building Data;
             std::shared_ptr<DefinitionOwner> Definition;
-            std::uint64_t SeenScan = 0;
         };
 
         /** Captured context used after every potentially reentrant acquisition operation. */
@@ -1451,8 +1443,7 @@ namespace MiniMap::BuildingAcquisition
             const Context& context,
             const MassChunkViews& views,
             std::vector<OwnedScanOccurrence>& occurrences,
-            std::unordered_set<std::uint64_t>& seen,
-            AcquisitionHashAggregate& acquisitionHash
+            std::unordered_set<std::uint64_t>& seen
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -1485,7 +1476,6 @@ namespace MiniMap::BuildingAcquisition
                 occurrences.push_back(std::move(*occurrence));
                 occurrences.back().PreliminaryHashContribution =
                     ComputePreliminaryAcquisitionContribution(occurrences.back().Data);
-                acquisitionHash.Add(occurrences.back().PreliminaryHashContribution);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++timing->Admitted;
                 if (occurrences.back().ReusedRetainedFacts)
@@ -1783,8 +1773,7 @@ namespace MiniMap::BuildingAcquisition
         bool CaptureMassSnapshot(
             const Native& native,
             const Context& context,
-            std::vector<OwnedScanOccurrence>& occurrences,
-            AcquisitionHashAggregate& acquisitionHash
+            std::vector<OwnedScanOccurrence>& occurrences
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , MembershipTiming* timing
 #endif
@@ -1795,7 +1784,7 @@ namespace MiniMap::BuildingAcquisition
             const auto chunkStarted = Clock::now();
 #endif
             const bool traversed = ForEachMassChunk(native, TFunction<void(const MassChunkViews&)>(
-                [this, &native, &context, &occurrences, &seen, &acquisitionHash
+                [this, &native, &context, &occurrences, &seen
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     , timing
 #endif
@@ -1804,7 +1793,7 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     ++timing->Chunks;
 #endif
-                    CaptureMassChunk(native, context, views, occurrences, seen, acquisitionHash
+                    CaptureMassChunk(native, context, views, occurrences, seen
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                         , timing
 #endif
@@ -1914,7 +1903,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     return false;
                 }
-                acquisitionHash.Replace(occurrence.PreliminaryHashContribution,
+                acquisitionHash.Add(
                     CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data));
                 ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -1996,7 +1985,7 @@ namespace MiniMap::BuildingAcquisition
                 return false;
             std::vector<OwnedScanOccurrence> occurrences;
             AcquisitionHashAggregate acquisitionHash{};
-            if (!CaptureMassSnapshot(native, context, occurrences, acquisitionHash
+            if (!CaptureMassSnapshot(native, context, occurrences
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 , timing
 #endif

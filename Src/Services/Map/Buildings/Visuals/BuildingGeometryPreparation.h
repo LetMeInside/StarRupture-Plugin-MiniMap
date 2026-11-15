@@ -57,21 +57,17 @@ namespace Services::Map::Buildings::Visuals
 #endif
 
 		private:
-			/** Orders geometry passes and identifies the non-destination terminal boundary. */
+			/** Orders pre-retained sprite occlusion and spline work through its terminal boundary. */
 			enum class Phase
 			{
-				OrdinarySprites,
 				OcclusionIndex,
 				Splines,
-				OverlayLastSprites,
 				Complete
 			};
 
-			Phase CurrentPhase = Phase::OrdinarySprites;
-			std::size_t OrdinarySpriteIndex = 0;
+			Phase CurrentPhase = Phase::Complete;
 			std::size_t SplineIndex = 0;
 			std::size_t SplineSurfaceIndex = 0;
-			std::size_t OverlaySpriteIndex = 0;
 			std::uint8_t PendingOpacity = 0;
 			bool Initialized = false;
 			bool SplineSamplingPrepared = false;
@@ -87,12 +83,12 @@ namespace Services::Map::Buildings::Visuals
 #endif
 		};
 
-		/** Advances ordinary sprites, the occluder index, splines and overlay sprites in painter order.
+		/** Advances the prepared ordinary-sprite occlusion index and spline geometry.
 		 * Scene views are borrowed only for this call; continuations must supply equivalent ordered inputs,
 		 * and the caller retains all source owners between calls.
 		 * Output must be an incomplete Section scene whose status slots already match the exact
-		 * publication occurrence count. Previously prepared sprite contributions are validated
-		 * and reused; unresolved slots keep the scene pending rather than being claimed complete.
+		 * publication occurrence count. Sprite occurrences already own prepared GPU geometry and
+		 * exact source pixels; this operation does not replay or rebuild them.
 		 */
 		static StepResult Advance(
 			const BuildingRenderSceneInput& scene,
@@ -101,7 +97,7 @@ namespace Services::Map::Buildings::Visuals
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
 			std::chrono::steady_clock::time_point deadline);
-		/** Clips one projected sprite quad into fixed Section-owned triangle storage.
+		/** Clips one projected sprite quad into caller-owned bounded scratch.
 		 * @param worldQuad Original finite XYZ quad in source-corner order.
 		 * @param sectionRegion Exact half-open Section rectangle in the same world/map units.
 		 * @param triangles Receives up to six triangles with canonical sprite UVs in [0, 1].
@@ -204,45 +200,16 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor);
-		/** Validates exact ordinal ownership across the supplied scene and existing sprite records. */
+		/** Validates Section-owned sprite occurrences and unique spline inputs. */
 		static bool ValidateContributionOwnership(
 			const BuildingRenderSceneInput& scene,
 			const PreparedBuildingGeometry& output,
 			PreparationCursor& cursor);
-		/** Indexes supplied scene contributors by ordinal and rejects duplicate or out-of-range inputs. */
-		static bool IndexSceneInputs(
-			const BuildingRenderSceneInput& scene,
-			std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-			std::vector<const BuildingSplineRenderInput*>& splineInputs,
-			std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-			PreparationCursor& cursor);
-		/** Indexes overlay inputs without allowing an ordinal to be owned by two passes. */
-		static bool IndexOverlayInputs(
-			const BuildingRenderSceneInput& scene,
-			std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-			const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-			const std::vector<const BuildingSplineRenderInput*>& splineInputs,
-			PreparationCursor& cursor);
-		/** Verifies existing sprite geometry matches the exact input occurrence and painter pass. */
-		static bool ValidatePreparedSpriteRecords(
+		/** Validates one source ordinal's prepared owner, status, and retained sprite values. */
+		static bool ValidateContributionOccurrence(
+			std::size_t ordinal,
+			const BuildingSplineRenderInput* spline,
 			const PreparedBuildingGeometry& output,
-			const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-			const std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-			PreparationCursor& cursor);
-		/** Matches one already owned sprite against the scene's direct ordinal input slot. */
-		static bool MatchesPreparedSprite(
-			std::uint64_t ordinal,
-			const PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-			const std::vector<const BuildingSpriteRenderInput*>& inputs,
-			std::vector<bool>& owned,
-			const PreparedBuildingGeometry& output,
-			PreparationCursor& cursor);
-		/** Rejects failed states or terminal omissions that still claim a drawable scene input. */
-		static bool ValidateSceneOccurrenceStates(
-			const PreparedBuildingGeometry& output,
-			const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-			const std::vector<const BuildingSplineRenderInput*>& splineInputs,
-			const std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
 			PreparationCursor& cursor);
 		/** Seeds the operation's occlusion workspace from already prepared Section sprite values. */
 		static bool SeedPreparedOccluders(
@@ -255,41 +222,13 @@ namespace Services::Map::Buildings::Visuals
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
 			std::size_t& workUnitsConsumed);
-		/** Advances spline, overlay and terminal phases after ordinary occluders are indexed. */
+		/** Advances spline and terminal phases after ordinary occluders are indexed. */
 		static Status AdvanceRemainingPhase(
 			const BuildingRenderSceneInput& scene,
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor,
 			std::size_t& workUnitsConsumed);
-		/** Prepares one ordinary or overlay sprite without issuing an image command. */
-		static Status PrepareSprite(
-			const BuildingSpriteRenderInput& sprite,
-			std::size_t sceneIndex,
-			bool overlay,
-			const BuildingCollectionRegion& sectionRegion,
-			BuildingVisualsContext& scratch,
-			PreparedBuildingGeometry& output,
-			PreparationCursor& cursor);
-		/** Records one sprite failure without publishing its incomplete geometry. */
-		static Status RecordSpriteFailure(
-			const BuildingSpriteRenderInput& sprite,
-			bool overlay,
-			BuildingVisualsContributorOutcome outcome,
-			PreparedBuildingGeometry& output,
-			PreparationCursor& cursor,
-			Status status);
-		/** Adds a valid sprite occurrence and its ordinary-pass occluder metadata. */
-		static Status RetainSprite(
-			const BuildingSpriteRenderInput& sprite,
-			std::size_t sceneIndex,
-			bool overlay,
-			const SpriteWorldQuad& worldQuad,
-			const BuildingCollectionRegion& sectionRegion,
-			BuildingVisualsContext& scratch,
-			PreparedBuildingGeometry& output,
-			PreparationCursor& cursor,
-			BuildingVisualsContributorOutcome& outcome);
 		/** Samples and prepares one spline surface or ordered alternative. */
 		static Status AdvanceSpline(
 			const BuildingSplineRenderInput& spline,

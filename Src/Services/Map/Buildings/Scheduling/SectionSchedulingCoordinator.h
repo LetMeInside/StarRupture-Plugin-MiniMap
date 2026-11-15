@@ -44,7 +44,6 @@ namespace Services::Map::Buildings::Visuals
 namespace Services::Map::Buildings::Scheduling
 {
 	class SectionScheduler;
-	enum class SectionJobContinuationMode : std::uint8_t;
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	/** Numeric interval report for coordinator-owned V2 Section scheduling work. */
@@ -397,12 +396,11 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication> publicationOwner,
 			bool initialSpritesOnly);
-		/** Selectively prepares a scene or reuses retained inputs, advances once, and applies terminal events.
+		/** Advances the job already ensured for this Section and applies its terminal events.
 		 * @param buildingMapService Service providing the immutable spline policies.
 		 * @param coordinate Exact coordinate of the retained Section job.
-		 * @param publicationOwner Selected publication retained through this advancement.
+		 * @param publicationOwner Exact owner returned by EnsureSectionJob for applied-hash recording.
 		 * @param section Service-owned Section whose numerical context remains stable across calls.
-		 * @param continuationMode Scheduler-owned initial-preparation, retained-scene or scene-free mode.
 		 * @param initialSpritesOnly Whether to yield before spline or completion work.
 		 * @return The actual incremental state and work count reported by SectionScheduler.
 		 */
@@ -411,7 +409,6 @@ namespace Services::Map::Buildings::Scheduling
 			const SectionCoordinate& coordinate,
 			const std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>& publicationOwner,
 			::Services::Map::Buildings::BuildingMapSection& section,
-			SectionJobContinuationMode continuationMode,
 			bool initialSpritesOnly,
 			bool renderSectionImages);
 		/** Transfers a Section-local drawable change into the service's targeted refresh queue. */

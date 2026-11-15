@@ -14,6 +14,9 @@
 
 namespace Services::Map::Buildings
 {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	using Performance = BuildingMapPerformanceDiagnostics;
+#endif
 	/** Clears the renderer-owned transfer snapshot before base destruction closes registration. */
 	BuildingMapGpuViewport::~BuildingMapGpuViewport()
 	{
@@ -46,6 +49,9 @@ namespace Services::Map::Buildings
 	void BuildingMapGpuViewport::RefreshPresentationSnapshot(
 		Cache::SpriteSourceManager& atlas)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Performance::Timer refresh(&Performance::Game().Snapshot);
+#endif
 		const auto previous = presentationSnapshot_.load(std::memory_order_acquire);
 		const MiniMap::Services::Texture atlasTexture = atlas.PublishedTexture();
 		const MiniMap::Services::TextureSize atlasSize = atlas.PublishedAtlasSize();
@@ -102,10 +108,31 @@ namespace Services::Map::Buildings
 		}
 		if (next)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordSnapshotAdoption(*next);
+#endif
 			presentationSnapshot_.store(
 				std::shared_ptr<const PresentationSnapshot>(std::move(next)), std::memory_order_release);
 		}
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Stamps the imminent release store for newly adopted sampled draw buffers. */
+	void BuildingMapGpuViewport::RecordSnapshotAdoption(const PresentationSnapshot& snapshot) noexcept
+	{
+		auto& work = Performance::Game();
+		++work.SnapshotReplacements;
+		work.SnapshotHandles += snapshot.Sections.size();
+		for (const auto& section : snapshot.Sections)
+		{
+			const auto& timing = section->PreparedGeometry->Timing;
+			if (timing != nullptr && timing->Adopted == Performance::Clock::time_point{})
+			{
+				timing->Adopted = Performance::Clock::now();
+			}
+		}
+	}
+#endif
 
 	/** Resolves one enumerated Section and appends its already published presentation. */
 	void BuildingMapGpuViewport::AppendCurrentSection(
@@ -127,7 +154,7 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
-		const auto presentation = GetOrBuildSectionPresentation(*section, atlas);
+		const auto presentation = GetOrBuildSectionPresentation(*section, atlas, atlasDrawingRevision);
 		if (presentation == nullptr)
 		{
 			return;
@@ -141,9 +168,9 @@ namespace Services::Map::Buildings
 	std::shared_ptr<const BuildingMapSectionPresentation>
 	BuildingMapGpuViewport::GetOrBuildSectionPresentation(
 		BuildingMapSection& section,
-		Cache::SpriteSourceManager& atlas)
+		Cache::SpriteSourceManager& atlas,
+		std::uint64_t atlasDrawingRevision)
 	{
-		const std::uint64_t atlasDrawingRevision = atlas.PublishedDrawingRevision();
 		auto existing = section.gpuPresentation_;
 		if (existing == nullptr)
 		{
@@ -219,19 +246,16 @@ namespace Services::Map::Buildings
 		std::vector<BuildingMapSectionPresentation::SpriteBinding>& output,
 		[[maybe_unused]] std::size_t& invalidatedBindingCount) const
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto& work = Performance::Game();
+		Performance::Timer rebind(&work.Rebind);
+#endif
 		output.clear();
 		output.reserve(source.size());
 		for (const auto& sourceBinding : source)
 		{
 			BuildingMapSectionPresentation::SpriteBinding binding = sourceBinding;
-			binding.ContentRectangle = {};
-			Cache::SpriteSourceManager::AtlasSpriteEntry entry;
-			if (binding.TriangleCount != 0 &&
-				atlas.TryGetPublishedSprite(binding.SourceKey, entry) && entry.DrawingEligible)
-			{
-				binding.ContentRectangle = {entry.Content.X, entry.Content.Y,
-					entry.Content.Width, entry.Content.Height};
-			}
+			UpdateSpriteBindingRectangle(binding, atlas);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			if (sourceBinding.ContentRectangle[2] != 0 && sourceBinding.ContentRectangle[3] != 0 &&
 				(binding.ContentRectangle[2] == 0 || binding.ContentRectangle[3] == 0))
@@ -240,6 +264,9 @@ namespace Services::Map::Buildings
 			}
 #endif
 			output.push_back(binding);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++work.BindingsRebound;
+#endif
 		}
 	}
 
@@ -250,12 +277,20 @@ namespace Services::Map::Buildings
 		Cache::SpriteSourceManager& atlas,
 		std::chrono::steady_clock::time_point deadline)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::shared_ptr<Performance::PresentationTiming> timing;
+		Performance::Timer assemblyTime(&Performance::Game().Assembly);
+#endif
 		auto& assembly = section.gpuGeometryAssembly_;
 		if (assembly == nullptr || assembly->SourceScene != &geometry ||
 			assembly->SourceContentHash != geometry.SourceContentHash())
 		{
 			BeginSectionGeometryAssembly(section, geometry);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		timing = assembly->Geometry->Timing;
+		assemblyTime.TrackNested(timing != nullptr ? &timing->Assembly : nullptr);
+#endif
 		while (std::chrono::steady_clock::now() < deadline)
 		{
 			if (assembly->CurrentPhase == BuildingMapSection::GpuGeometryAssembly::Phase::OrdinarySprites)
@@ -312,11 +347,45 @@ namespace Services::Map::Buildings
 		assembly->OverlayOccurrenceCount = geometry.OverlayLastSprites().size();
 		assembly->SurfaceCount = geometry.SplineSurfaces().size();
 		section.gpuGeometryChangedDuringAssembly_ = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++Performance::Game().AssembliesStarted;
+		auto& drawGeometry = *assembly->Geometry;
+		drawGeometry.SourceGeneration = geometry.DiagnosticGeneration();
+		drawGeometry.OrdinaryOccurrenceCount = assembly->OrdinaryOccurrenceCount;
+		drawGeometry.OverlayOccurrenceCount = assembly->OverlayOccurrenceCount;
+		drawGeometry.SurfaceCount = assembly->SurfaceCount;
+		drawGeometry.Timing = Performance::Admit(section.gridX_, section.gridY_,
+			assembly->SourceContentHash, drawGeometry.SourceGeneration);
+		if (drawGeometry.Timing != nullptr)
+		{
+			geometry.BeginDiagnosticSpriteWindow();
+		}
+#endif
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Resolves previous frozen bounds for exact copies of previously sealed append-only ranges. */
+	const BuildingMapSectionPresentation::Geometry* BuildingMapGpuViewport::PreviousAssemblyGeometry(
+		const BuildingMapSection& section) noexcept
+	{
+		const auto& previous = section.gpuPresentation_;
+		if (previous == nullptr ||
+			previous->PreparedGeometry->SourceGeneration != section.gpuGeometryAssembly_->Geometry->SourceGeneration)
+		{
+			return nullptr;
+		}
+		return previous->PreparedGeometry.get();
+	}
+#endif
 
 	/** Publishes sealed vectors by ownership transfer and preserves old snapshot owners. */
 	void BuildingMapGpuViewport::PublishSectionGeometryAssembly(BuildingMapSection& section)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto& work = Performance::Game();
+		Performance::Timer seal(&work.Seal);
+		const bool rebuilding = PreviousAssemblyGeometry(section) != nullptr;
+#endif
 		auto& assembly = section.gpuGeometryAssembly_;
 		assembly->Presentation->PreparedGeometry = std::move(assembly->Geometry);
 		const auto& geometry = *assembly->Presentation->PreparedGeometry;
@@ -340,8 +409,20 @@ namespace Services::Map::Buildings
 				std::move(assembly->Presentation));
 			section.gpuPresentationAtlasRevision_ = assembly->BindingAtlasRevision;
 			section.gpuPresentationAtlasRevisionValid_ = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (geometry.Timing != nullptr)
+			{
+				geometry.Timing->Triangles =
+					geometry.OrdinaryTriangles.size() + geometry.SolidSurfaces.size() + geometry.OverlayTriangles.size();
+				geometry.Timing->Sealed = Performance::Clock::now();
+			}
+#endif
 		}
 		section.gpuGeometryAssembly_.reset();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++work.AssembliesSealed;
+		work.SameGenerationSeals += rebuilding ? 1 : 0;
+#endif
 	}
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -408,6 +489,13 @@ namespace Services::Map::Buildings
 		auto& triangles = overlayLast ? assembly.Geometry->OverlayTriangles : assembly.Geometry->OrdinaryTriangles;
 		auto& bindings = overlayLast
 			? assembly.Presentation->OverlayBindings : assembly.Presentation->OrdinaryBindings;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto& work = Performance::Game();
+		Performance::Timer copying(&work.SpriteCopy);
+		const auto* previous = PreviousAssemblyGeometry(section);
+		const std::size_t previousLimit = previous == nullptr ? 0 :
+			overlayLast ? previous->OverlayOccurrenceCount : previous->OrdinaryOccurrenceCount;
+#endif
 		while (assembly.PainterOrderIndex < geometry.SpritePainterCount() &&
 			std::chrono::steady_clock::now() < deadline)
 		{
@@ -423,21 +511,35 @@ namespace Services::Map::Buildings
 				assembly.TriangleIndex = 0;
 				continue;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const auto firstCopied = assembly.TriangleIndex;
+#endif
 			while (assembly.TriangleIndex < occurrence->SectionTriangleCount &&
 				std::chrono::steady_clock::now() < deadline)
 			{
 				triangles.push_back(occurrence->DrawTriangles[assembly.TriangleIndex]);
 				++assembly.TriangleIndex;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const auto copied = assembly.TriangleIndex - firstCopied;
+			work.SpriteTrianglesCopied += copied;
+			work.PriorTrianglesRecopied += vectorIndex < previousLimit ? copied : 0;
+#endif
 			if (assembly.TriangleIndex != occurrence->SectionTriangleCount)
 			{
 				return false;
 			}
-			BuildingMapSectionPresentation::SpriteBinding binding;
-			binding.FirstTriangle = triangles.size() - occurrence->SectionTriangleCount;
-			binding.TriangleCount = occurrence->SectionTriangleCount;
-			binding.SourceKey = occurrence->SourceKey;
-			bindings.push_back(std::move(binding));
+			if (occurrence->SectionTriangleCount != 0)
+			{
+				BuildingMapSectionPresentation::SpriteBinding binding;
+				binding.FirstTriangle = triangles.size() - occurrence->SectionTriangleCount;
+				binding.TriangleCount = occurrence->SectionTriangleCount;
+				binding.SourceKey = occurrence->SourceKey;
+				bindings.push_back(std::move(binding));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				++work.AssemblyBindingsBuilt;
+#endif
+			}
 			++assembly.PainterOrderIndex;
 			assembly.TriangleIndex = 0;
 		}
@@ -452,16 +554,30 @@ namespace Services::Map::Buildings
 	{
 		auto& assembly = *section.gpuGeometryAssembly_;
 		const auto& surfaces = geometry.SplineSurfaces();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto& work = Performance::Game();
+		Performance::Timer copying(&work.SolidCopy);
+		const auto* previous = PreviousAssemblyGeometry(section);
+		const std::size_t previousLimit = previous == nullptr ? 0 : previous->SurfaceCount;
+#endif
 		while (assembly.SurfaceIndex < assembly.SurfaceCount && std::chrono::steady_clock::now() < deadline)
 		{
 			const auto& surface = surfaces[assembly.SurfaceIndex];
 			const auto& triangles = surface.DrawSolidTriangles;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const auto firstCopied = assembly.SurfaceTriangleIndex;
+#endif
 			while (assembly.SurfaceTriangleIndex < triangles.size() &&
 				std::chrono::steady_clock::now() < deadline)
 			{
 				assembly.Geometry->SolidSurfaces.push_back(triangles[assembly.SurfaceTriangleIndex]);
 				++assembly.SurfaceTriangleIndex;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const auto copied = assembly.SurfaceTriangleIndex - firstCopied;
+			work.SolidTrianglesCopied += copied;
+			work.PriorTrianglesRecopied += assembly.SurfaceIndex < previousLimit ? copied : 0;
+#endif
 			if (assembly.SurfaceTriangleIndex != triangles.size())
 			{
 				return false;
@@ -478,6 +594,9 @@ namespace Services::Map::Buildings
 		Cache::SpriteSourceManager& atlas,
 		std::chrono::steady_clock::time_point deadline)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Performance::Timer binding(&Performance::Game().Binding);
+#endif
 		auto& assembly = *section.gpuGeometryAssembly_;
 		const std::uint64_t drawingRevision = atlas.PublishedDrawingRevision();
 		if (!assembly.BindingAtlasRevisionValid || assembly.BindingAtlasRevision != drawingRevision)
@@ -514,10 +633,12 @@ namespace Services::Map::Buildings
 		BuildingMapSectionPresentation::SpriteBinding& binding,
 		Cache::SpriteSourceManager& atlas)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		++Performance::Game().BindingLookups;
+#endif
 		binding.ContentRectangle = {};
 		Cache::SpriteSourceManager::AtlasSpriteEntry entry;
-		if (binding.TriangleCount != 0 &&
-			atlas.TryGetPublishedSprite(binding.SourceKey, entry) && entry.DrawingEligible)
+		if (atlas.TryGetPublishedSprite(binding.SourceKey, entry) && entry.DrawingEligible)
 		{
 			binding.ContentRectangle = {entry.Content.X, entry.Content.Y,
 				entry.Content.Width, entry.Content.Height};
@@ -528,11 +649,25 @@ namespace Services::Map::Buildings
 	void BuildingMapGpuViewport::Draw(
 		MiniMap::Services::ICanvas& canvas,
 		MiniMap::Services::DrawLayer layer,
-		const CanvasTransform& transform) const
+		const CanvasTransform& transform
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, Performance::RenderWork* measurements
+#endif
+		) const
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Performance::RenderScope scope(measurements);
+		Performance::Timer draw(measurements != nullptr ? &measurements->Draw : nullptr);
+#endif
 		const auto snapshot = presentationSnapshot_.load(std::memory_order_acquire);
 		if (!snapshot)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (measurements != nullptr)
+			{
+				++measurements->MissingSnapshot;
+			}
+#endif
 			return;
 		}
 		canvas.PushClip(layer, transform.ClipMinimum, transform.ClipMaximum, true);
@@ -567,7 +702,12 @@ namespace Services::Map::Buildings
 		const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections,
 		bool overlayLast) const
 	{
-		if (texture.id == 0)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto* frame = Performance::ActiveRender;
+		auto* pass = frame != nullptr ? &(overlayLast ? frame->Overlay : frame->Ordinary) : nullptr;
+		Performance::Timer draw(pass != nullptr ? &pass->Time : nullptr);
+#endif
+		if (texture.id == 0 || atlasSize.width == 0 || atlasSize.height == 0)
 		{
 			return;
 		}
@@ -576,18 +716,51 @@ namespace Services::Map::Buildings
 			const auto& geometry = *section->PreparedGeometry;
 			const auto& bindings = overlayLast ? section->OverlayBindings : section->OrdinaryBindings;
 			const auto& triangles = overlayLast ? geometry.OverlayTriangles : geometry.OrdinaryTriangles;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			auto* timing = geometry.Timing.get();
+			if (pass != nullptr)
+			{
+				++pass->Sections;
+			}
+#endif
 			for (const auto& binding : bindings)
 			{
 				if (binding.ContentRectangle[2] == 0 || binding.ContentRectangle[3] == 0)
 				{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					if (pass != nullptr)
+					{
+						++pass->UnboundRanges;
+					}
+#endif
 					continue;
 				}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				auto* sampled = pass != nullptr && Performance::SampleDrawRange() ? pass : nullptr;
+#endif
 				for (std::size_t triangleIndex = 0; triangleIndex < binding.TriangleCount; ++triangleIndex)
 				{
 					const auto& triangle = triangles[binding.FirstTriangle + triangleIndex];
 					DrawSpriteTriangle(canvas, layer, transform, texture, atlasSize,
-						binding, triangle);
+						binding, triangle
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+						, sampled
+#endif
+						);
 				}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				if (pass != nullptr)
+				{
+					++pass->BoundRanges;
+					pass->Visited += binding.TriangleCount;
+					pass->Submitted += binding.TriangleCount;
+				}
+				if (timing != nullptr && binding.TriangleCount != 0)
+				{
+					timing->RecordFirstSubmission();
+					timing = nullptr;
+				}
+#endif
 			}
 		}
 	}
@@ -600,12 +773,15 @@ namespace Services::Map::Buildings
 		MiniMap::Services::Texture texture,
 		MiniMap::Services::TextureSize atlasSize,
 		const BuildingMapSectionPresentation::SpriteBinding& binding,
-		const BuildingMapSectionPresentation::SpriteTriangle& triangle) const
+		const BuildingMapSectionPresentation::SpriteTriangle& triangle
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, Performance::DrawPass* sampledPass
+#endif
+		) const
 	{
-		if (atlasSize.width == 0 || atlasSize.height == 0)
-		{
-			return;
-		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto projectionStarted = sampledPass != nullptr ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
 		std::array<MiniMap::Services::Vec2, 3> positions{};
 		std::array<MiniMap::Services::Vec2, 3> uvs{};
 		for (std::size_t index = 0; index < positions.size(); ++index)
@@ -617,7 +793,18 @@ namespace Services::Map::Buildings
 				static_cast<float>((binding.ContentRectangle[1] +
 					triangle.ProcessedUv[index][1] * binding.ContentRectangle[3]) / atlasSize.height)};
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto canvasStarted = sampledPass != nullptr ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
 		canvas.TexturedTriangle(layer, texture, positions, uvs, 0xFFFFFFFFu);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (sampledPass != nullptr)
+		{
+			const auto canvasFinished = Performance::Clock::now();
+			sampledPass->ProjectionSample.Add(Performance::Milliseconds(canvasStarted - projectionStarted));
+			sampledPass->CanvasSample.Add(Performance::Milliseconds(canvasFinished - canvasStarted));
+		}
+#endif
 	}
 
 	/** Draws solid prepared spline triangles with authored RGB and opacity. */
@@ -627,6 +814,11 @@ namespace Services::Map::Buildings
 		const CanvasTransform& transform,
 		const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections) const
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		auto* frame = Performance::ActiveRender;
+		auto* pass = frame != nullptr ? &frame->Solid : nullptr;
+		Performance::Timer draw(pass != nullptr ? &pass->Time : nullptr);
+#endif
 		if (!std::isfinite(transform.ClipMinimum.x) || !std::isfinite(transform.ClipMinimum.y) ||
 			!std::isfinite(transform.ClipMaximum.x) || !std::isfinite(transform.ClipMaximum.y) ||
 			transform.ClipMinimum.x >= transform.ClipMaximum.x ||
@@ -636,6 +828,13 @@ namespace Services::Map::Buildings
 		}
 		for (const auto& section : sections)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (pass != nullptr)
+			{
+				++pass->Sections;
+				pass->Visited += section->PreparedGeometry->SolidSurfaces.size();
+			}
+#endif
 			for (const BuildingMapSectionPresentation::SolidTriangle& triangle : section->PreparedGeometry->SolidSurfaces)
 			{
 				std::array<MiniMap::Services::Vec2, 3> positions{};
@@ -675,6 +874,12 @@ namespace Services::Map::Buildings
 					((triangle.Rgb & 0xFFu) << 16) | (triangle.Rgb & 0x00FF00u) |
 					((triangle.Rgb >> 16) & 0xFFu));
 				canvas.FilledTriangle(layer, positions, color);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				if (pass != nullptr)
+				{
+					++pass->Submitted;
+				}
+#endif
 			}
 		}
 	}

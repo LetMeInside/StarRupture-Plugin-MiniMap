@@ -54,10 +54,11 @@ namespace Services::Map::Buildings::Rendering
 			IncrementalOperation& operator=(IncrementalOperation&&) = delete;
 			/** Destroys any unfinished destination, cursors and partial output together. */
 			~IncrementalOperation();
-			/** Reports whether ConstructDestination, DrawScene or EvaluateDrawing may inspect the next scene input.
-			 * @return True only before or during scene-dependent phases; false during finalization and terminal state.
+			/** Reports whether the active or immediately following draw phase needs textured resources.
+			 * @param geometry Completed Section geometry whose surfaces identify borrowed texture requirements.
+			 * @return True while destination creation or drawing may consume a textured source view.
 			 */
-			bool RequiresSceneInput() const noexcept;
+			bool RequiresSceneInput(const Visuals::PreparedBuildingGeometry& geometry) const noexcept;
 
 			/** Advances drawing and finalization using fresh borrowed views of the same logical scene.
 			 * @param scene Fresh borrowed views of the same immutable ordered scene for this call only.

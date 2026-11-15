@@ -129,6 +129,8 @@ namespace Services::Map::Buildings
 			Scheduling::BuildingScheduler::DiagnosticsSnapshot& output) noexcept;
 		/** Forwards atlas publication and retirement aggregates to periodic diagnostics. */
 		bool TakeSpriteAtlasDiagnosticsSnapshot(Cache::SpriteAtlasDiagnosticsSnapshot& output) noexcept;
+		/** Counts demanded dirty Sections still waiting to be admitted to an assembly batch. */
+		std::size_t CountGpuSectionsAwaitingAdmission() const noexcept;
 #endif
 
 		/** Returns the configured square grid-cell width and height in map units. */
@@ -211,9 +213,17 @@ namespace Services::Map::Buildings
 		bool AdvanceGpuGeometryPublications(
 			std::chrono::steady_clock::time_point deadline,
 			bool admitDirtySections);
-		/** Advances one Section and reports continuation plus whether this call began its assembly. */
+		/** Advances one already-resolved Section and reports whether its assembly began.
+		 * @param coordinate Exact Section coordinate for demand and dirty-state transitions.
+		 * @param section Section already resolved by the dirty traversal.
+		 * @param deadline Shared end of this geometry-publication allowance.
+		 * @param admitDirtySections Whether a new assembly may begin in this batch.
+		 * @param startedNewAssembly Receives whether this call began a fresh assembly.
+		 * @return True when no work remains for this call or the Section assembly completed.
+		 */
 		bool AdvanceGpuGeometryPublication(
 			const SectionCoordinate& coordinate,
+			BuildingMapSection& section,
 			std::chrono::steady_clock::time_point deadline,
 			bool admitDirtySections,
 			bool& startedNewAssembly);

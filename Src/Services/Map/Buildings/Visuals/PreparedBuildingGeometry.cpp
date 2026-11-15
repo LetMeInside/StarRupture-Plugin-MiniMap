@@ -27,11 +27,15 @@ namespace Services::Map::Buildings::Visuals
 	}
 
 	/** Converts clipped sprite UVs once and leaves numerical triangles untouched. */
-	void PreparedBuildingGeometry::PrepareSpriteDrawLayout(SpriteOccurrence& occurrence) noexcept
+	void PreparedBuildingGeometry::PrepareSpriteDrawLayout(
+		SpriteOccurrence& occurrence,
+		const std::array<TexturedTriangle, 6>& clippedTriangles,
+		std::size_t triangleCount) noexcept
 	{
-		for (std::size_t triangleIndex = 0; triangleIndex < occurrence.SectionTriangleCount; ++triangleIndex)
+		occurrence.SectionTriangleCount = triangleCount;
+		for (std::size_t triangleIndex = 0; triangleIndex < triangleCount; ++triangleIndex)
 		{
-			const auto& source = occurrence.SectionTriangles[triangleIndex];
+			const auto& source = clippedTriangles[triangleIndex];
 			auto& destination = occurrence.DrawTriangles[triangleIndex];
 			for (std::size_t vertexIndex = 0; vertexIndex < 3; ++vertexIndex)
 			{

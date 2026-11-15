@@ -3,6 +3,9 @@
 // Implements cache-aware shared sprite ownership, deterministic incremental atlas packing,
 // and one whole-texture GPU publication at the service's synchronous flush boundary.
 #include "SpriteSourceManager.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../BuildingMapPerformanceDiagnostics.h"
+#endif
 #if defined(_DEBUG)
 #include "Config/Config.h"
 #endif
@@ -434,8 +437,10 @@ namespace Services::Map::Buildings::Cache
 		const MiniMap::Services::UploadState upload = textures_->UploadRGBA(
 			atlasPixels_, size, MiniMap::Services::TextureRequest{"", size}, candidate);
 	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		AddDiagnosticDuration(diagnostics_.Upload,
-			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStarted).count());
+		const double elapsed = BuildingMapPerformanceDiagnostics::Milliseconds(
+			std::chrono::steady_clock::now() - uploadStarted);
+		AddDiagnosticDuration(diagnostics_.Upload, elapsed);
+		BuildingMapPerformanceDiagnostics::Game().AtlasUpload.Add(elapsed);
 	#endif
 		return upload;
 	}

@@ -2,7 +2,6 @@
 // Pixel and geometry spans are borrowed; callers retain stable backing storage for every consuming call.
 #pragma once
 
-#include "SpriteGeometry.h"
 #include "SplineGeometry.h"
 #include "SplineSurfaceGeometry.h"
 #include "../IImageDestination.h"
@@ -10,7 +9,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <string_view>
 
 namespace Services::Map::Buildings::Visuals
 {
@@ -39,28 +37,6 @@ namespace Services::Map::Buildings::Visuals
 		std::uint32_t ModulationRgb = 0xFFFFFF;
 		/** Straight opacity shared by solid and textured paths. */
 		double Opacity = 1.0;
-	};
-
-	/** Holds one immutable RGBA8 sprite source and the neutral values needed to project it into world space. */
-	struct BuildingSpriteRenderInput
-	{
-		/** Section-local source occurrence identity; equal keys remain separate occurrences. */
-		std::uint64_t SectionLocalOrdinal = 0;
-		/** Borrowed canonical source key copied into owned geometry during preparation. */
-		std::string_view CanonicalSpriteKey;
-		/** Borrowed immutable RGBA8 pixels; the producer keeps the payload alive and unchanged through
-		 * each consuming call, while consumers must not retain this view after that call returns.
-		 */
-		std::span<const std::uint8_t> Pixels;
-		/** Dimensions of the borrowed processed-pixel view. */
-		std::uint32_t PixelWidth = 0;
-		std::uint32_t PixelHeight = 0;
-		/** Half-open region in Pixels addressed by this sprite. */
-		std::array<double, 4> PixelRegion{};
-		SpritePlacement Placement{};
-		SpriteSourceSize ProjectionSourceSize{};
-		SpriteCaptureBounds CaptureBounds{};
-		SpriteProjectionRectangle Projection{};
 	};
 
 	/** Holds one drawn surface's numerical dimensions, presentation values and optional component transform. */
@@ -97,11 +73,9 @@ namespace Services::Map::Buildings::Visuals
 			BuildingSplineSurfaceSelectionMode::DrawAllSurfaces;
 	};
 
-	/** Borrows caller-owned source spans in deterministic pass order for one synchronous rendering call. */
+	/** Borrows ordered spline inputs; sprite data is owned by the Section geometry occurrences. */
 	struct BuildingRenderSceneInput
 	{
-		std::span<const BuildingSpriteRenderInput> OrdinarySprites;
 		std::span<const BuildingSplineRenderInput> Splines;
-		std::span<const BuildingSpriteRenderInput> OverlayLastSprites;
 	};
 }

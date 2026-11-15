@@ -3,6 +3,8 @@
 
 #include "BuildingVisuals.h"
 
+#include "../Cache/ProcessedSpritePayload.h"
+
 #include <cmath>
 #include <cstdint>
 #include <chrono>
@@ -69,7 +71,7 @@ namespace Services::Map::Buildings::Visuals
 		}
 		if (!cursor.Initialized)
 		{
-			InitializePreparedSceneSubmission(geometry, resourceScene, context, cursor);
+			InitializePreparedSceneSubmission(geometry, context, cursor);
 		}
 		while (!cursor.Terminal && std::chrono::steady_clock::now() < deadline)
 		{
@@ -87,7 +89,6 @@ namespace Services::Map::Buildings::Visuals
 	/** Initializes only raster outcomes and pass cursors; geometry remains borrowed and immutable. */
 	void BuildingVisuals::InitializePreparedSceneSubmission(
 		const PreparedBuildingGeometry& geometry,
-		const BuildingRenderSceneInput& resourceScene,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor)
 	{
@@ -98,18 +99,6 @@ namespace Services::Map::Buildings::Visuals
 		context.result_.OverlayLastSprites.reserve(geometry.OverlayLastSprites().size());
 		cursor.CurrentPhase = SceneCursor::Phase::OrdinarySprites;
 		cursor.Initialized = true;
-		if (resourceScene.OrdinarySprites.size() != geometry.OrdinarySprites().size() ||
-			resourceScene.OverlayLastSprites.size() != geometry.OverlayLastSprites().size())
-		{
-			RECORD_RASTER_FAILURE("prepared sprite descriptor correspondence",
-				resourceScene.OrdinarySprites.size() != geometry.OrdinarySprites().size()
-					? "ordinary occurrence and descriptor counts differ" : "overlay occurrence and descriptor counts differ",
-				-1, -1, resourceScene.OrdinarySprites.size() != geometry.OrdinarySprites().size()
-					? resourceScene.OrdinarySprites.size() : resourceScene.OverlayLastSprites.size(),
-				resourceScene.OrdinarySprites.size() != geometry.OrdinarySprites().size()
-					? geometry.OrdinarySprites().size() : geometry.OverlayLastSprites().size());
-			context.result_.Complete = false;
-		}
 	}
 
 	/** Advances ordered image passes without sampling, projecting, clipping or converting geometry. */
@@ -124,7 +113,7 @@ namespace Services::Map::Buildings::Visuals
 	{
 		if (cursor.CurrentPhase == SceneCursor::Phase::OrdinarySprites)
 		{
-			return AdvancePreparedSpritePass(geometry, resourceScene, destination, context, cursor, result, deadline, false);
+			return AdvancePreparedSpritePass(geometry, destination, context, cursor, result, deadline, false);
 		}
 		if (cursor.CurrentPhase == SceneCursor::Phase::Splines)
 		{
@@ -132,13 +121,13 @@ namespace Services::Map::Buildings::Visuals
 		}
 		if (cursor.CurrentPhase == SceneCursor::Phase::OverlayLastSprites)
 		{
-			return AdvancePreparedSpritePass(geometry, resourceScene, destination, context, cursor, result, deadline, true);
+			return AdvancePreparedSpritePass(geometry, destination, context, cursor, result, deadline, true);
 		}
 		cursor.Terminal = true;
 		return SceneAdvanceResult::Progressed;
 	}
 
-	/** Records a mismatched ordinal or canonical key as a terminal source-side failure. */
+	/** Records a missing payload on a retained ordinal as a terminal image-side failure. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::FailPreparedSpriteInput(
 		bool overlay,
 		std::size_t index,
@@ -159,7 +148,6 @@ namespace Services::Map::Buildings::Visuals
 	/** Submits one borrowed sprite image over its exact prepared world quad, resuming its destination cursor. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSpriteImage(
 		const PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-		const BuildingSpriteRenderInput& source,
 		bool overlay,
 		IImageDestination& destination,
 		BuildingVisualsContext& context,
@@ -168,7 +156,13 @@ namespace Services::Map::Buildings::Visuals
 		std::chrono::steady_clock::time_point deadline)
 	{
 		ImageSubmissionCommand command;
-		command.Source = {source.Pixels, source.PixelWidth, source.PixelHeight, source.PixelRegion};
+		const auto& payload = *occurrence.Payload;
+		const auto& pixels = payload.Pixels();
+		command.Source = {
+			std::span<const std::uint8_t>(pixels),
+			payload.Width(),
+			payload.Height(),
+			{{0.0, 0.0, static_cast<double>(payload.Width()), static_cast<double>(payload.Height())}}};
 		for (std::size_t corner = 0; corner < occurrence.SourceWorldQuad.Corners.size(); ++corner)
 		{
 			command.Geometry.Corners[corner] = {
@@ -177,7 +171,8 @@ namespace Services::Map::Buildings::Visuals
 		if (!cursor.DestinationSubmissionActive)
 		{
 			cursor.PendingOutcome = {};
-			cursor.PendingOutcome.ContributorIndex = occurrence.SceneIndex.value();
+			cursor.PendingOutcome.ContributorIndex =
+				static_cast<std::size_t>(occurrence.SectionLocalOrdinal);
 			cursor.PendingOutcome.GeometryPrepared = true;
 			cursor.PendingOutcome.SubmissionAttempted = true;
 			cursor.DestinationSubmissionActive = true;
@@ -203,7 +198,8 @@ namespace Services::Map::Buildings::Visuals
 			RECORD_RASTER_FAILURE(overlay ? "prepared overlay raster submission" : "prepared ordinary raster submission",
 				cursor.PendingOutcome.FailureStage == BuildingVisualsFailureStage::OccluderGeometry
 					? "submitted ordinary sprite has no prepared occluder" : "destination did not submit or cull sprite",
-				static_cast<long long>(occurrence.SectionLocalOrdinal), static_cast<long long>(*occurrence.SceneIndex),
+				static_cast<long long>(occurrence.SectionLocalOrdinal),
+				static_cast<long long>(occurrence.SectionLocalOrdinal),
 				0, 0, -1, static_cast<int>(cursor.PendingOutcome.Submission));
 		}
 #endif
@@ -290,13 +286,17 @@ namespace Services::Map::Buildings::Visuals
 			return SceneAdvanceResult::Progressed;
 		}
 		const auto& prepared = surfaces[cursor.SplineSurfaceIndex];
-		const auto* source = FindPreparedSurfaceSource(prepared, resourceScene, cursor);
-		if (source == nullptr)
+		const BuildingSplineSurfaceRenderInput* source = nullptr;
+		if (prepared.IsTextured)
 		{
-			return FailPreparedSplineSource(prepared, context, cursor, result);
+			source = FindPreparedSurfaceSource(prepared, resourceScene, cursor);
+			if (source == nullptr)
+			{
+				return FailPreparedSplineSource(prepared, context, cursor, result);
+			}
 		}
 		return SubmitPreparedSplineTriangles(
-			prepared, *source, destination, context, cursor, result, deadline);
+			prepared, source, destination, context, cursor, result, deadline);
 	}
 
 	/** Marks missing or incompatible textured source data as a hard image-consumer failure. */
@@ -322,7 +322,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Borrows owned triangle storage and its source appearance for one resumable destination batch. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::SubmitPreparedSplineTriangles(
 		const PreparedBuildingGeometry::SplineSurface& prepared,
-		const BuildingSplineSurfaceRenderInput& source,
+		const BuildingSplineSurfaceRenderInput* source,
 		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
@@ -375,7 +375,7 @@ namespace Services::Map::Buildings::Visuals
 	/** Submits the prepared solid or textured triangle span with the current borrowed source values. */
 	IImageDestination::SubmissionSliceResult BuildingVisuals::StepPreparedSplineBatch(
 		const PreparedBuildingGeometry::SplineSurface& prepared,
-		const BuildingSplineSurfaceRenderInput& source,
+		const BuildingSplineSurfaceRenderInput* source,
 		IImageDestination& destination,
 		SceneCursor& cursor,
 		std::chrono::steady_clock::time_point deadline)
@@ -386,10 +386,10 @@ namespace Services::Map::Buildings::Visuals
 				{prepared.SolidTriangles, prepared.SolidRgb, prepared.Opacity}, cursor.Submission, deadline);
 		}
 		const Rgba8ImageSource texture{
-			source.Appearance.Texture.Pixels,
-			source.Appearance.Texture.Width,
-			source.Appearance.Texture.Height,
-			source.Appearance.Texture.PixelRegion};
+			source->Appearance.Texture.Pixels,
+			source->Appearance.Texture.Width,
+			source->Appearance.Texture.Height,
+			source->Appearance.Texture.PixelRegion};
 		return destination.StepSubmitTexturedTriangles(
 			{prepared.TexturedTriangles, texture, prepared.UvScale, prepared.UvOffset,
 				prepared.AddressU, prepared.AddressV, prepared.ModulationRgb, prepared.Opacity},
@@ -400,7 +400,6 @@ namespace Services::Map::Buildings::Visuals
 	/** Submits the next painter-ordered sprite occurrence, or advances to the next render pass. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::AdvancePreparedSpritePass(
 		const PreparedBuildingGeometry& geometry,
-		const BuildingRenderSceneInput& resourceScene,
 		IImageDestination& destination,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
@@ -408,7 +407,6 @@ namespace Services::Map::Buildings::Visuals
 		std::chrono::steady_clock::time_point deadline,
 		bool overlay)
 	{
-		auto& sources = overlay ? resourceScene.OverlayLastSprites : resourceScene.OrdinarySprites;
 		auto& index = overlay ? cursor.OverlaySpriteIndex : cursor.OrdinarySpriteIndex;
 		const auto& painterOrder = geometry.SpritePainterOrder();
 		while (index < geometry.SpritePainterCount())
@@ -421,47 +419,36 @@ namespace Services::Map::Buildings::Visuals
 				++index;
 				continue;
 			}
-			if (!occurrence->SceneIndex.has_value() || occurrence->SceneIndex.value() >= sources.size())
+			if (occurrence->Payload == nullptr)
 			{
-				RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
-					occurrence->SceneIndex.has_value() ? "SceneIndex outside descriptor array" : "SceneIndex missing",
-					static_cast<long long>(occurrence->SectionLocalOrdinal),
-					occurrence->SceneIndex.has_value() ? static_cast<long long>(*occurrence->SceneIndex) : -1, sources.size());
+				RECORD_RASTER_FAILURE(overlay ? "prepared overlay sprite payload" : "prepared ordinary sprite payload",
+					"Section occurrence payload absent",
+					static_cast<long long>(occurrence->SectionLocalOrdinal));
 				return FailPreparedSpriteInput(
 					overlay, static_cast<std::size_t>(occurrence->SectionLocalOrdinal), context, cursor, result);
 			}
-			const std::size_t sceneIndex = occurrence->SceneIndex.value();
-			const auto& source = sources[sceneIndex];
-			if (occurrence->SectionLocalOrdinal != source.SectionLocalOrdinal ||
-				occurrence->SourceKey.Bytes() != source.CanonicalSpriteKey)
-			{
-				RECORD_RASTER_FAILURE(overlay ? "prepared overlay descriptor correspondence" : "prepared ordinary descriptor correspondence",
-					occurrence->SectionLocalOrdinal != source.SectionLocalOrdinal ? "publication ordinal mismatch" : "canonical sprite key mismatch",
-					static_cast<long long>(occurrence->SectionLocalOrdinal), static_cast<long long>(sceneIndex),
-					source.SectionLocalOrdinal, occurrence->SectionLocalOrdinal);
-				return FailPreparedSpriteInput(overlay, sceneIndex, context, cursor, result);
-			}
 			if (occurrence->SectionTriangleCount == 0)
 			{
-				return FinishSectionExcludedSprite(sceneIndex, overlay, context, cursor, result);
+				return FinishSectionExcludedSprite(
+					static_cast<std::size_t>(occurrence->SectionLocalOrdinal), overlay, context, cursor, result);
 			}
 			return SubmitPreparedSpriteImage(
-				*occurrence, source, overlay, destination, context, cursor, result, deadline);
+				*occurrence, overlay, destination, context, cursor, result, deadline);
 		}
 		cursor.CurrentPhase = overlay ? SceneCursor::Phase::Complete : SceneCursor::Phase::Splines;
 		return SceneAdvanceResult::Progressed;
 	}
 
-	/** Completes a source-valid sprite whose clipped Section polygon has no positive area. */
+	/** Completes a source-valid occurrence whose clipped Section polygon has no positive area. */
 	BuildingVisuals::SceneAdvanceResult BuildingVisuals::FinishSectionExcludedSprite(
-		std::size_t sceneIndex,
+		std::size_t ordinal,
 		bool overlay,
 		BuildingVisualsContext& context,
 		SceneCursor& cursor,
 		SceneSliceResult& result)
 	{
 		cursor.PendingOutcome = {};
-		cursor.PendingOutcome.ContributorIndex = sceneIndex;
+		cursor.PendingOutcome.ContributorIndex = ordinal;
 		cursor.PendingOutcome.GeometryPrepared = true;
 		cursor.PendingOutcome.SubmissionAttempted = true;
 		cursor.PendingOutcome.Submission = ImageSubmission::Culled;
@@ -549,28 +536,6 @@ namespace Services::Map::Buildings::Visuals
 		context.result_.OverlayLastSprites.clear();
 		context.occluders_.clear();
 		context.result_.OcclusionPreparationStatus = SplineOcclusionStatus::NotPrepared;
-	}
-
-	/** Adds one valid captured sprite volume to the reusable occlusion scratch. */
-	bool BuildingVisuals::AddOccluder(
-		const BuildingSpriteRenderInput& sprite,
-		const SpriteWorldQuad& worldQuad,
-		std::size_t ordinal,
-		BuildingVisualsContext& context)
-	{
-		SplineOcclusionSpriteQuad occluder;
-		if (!SpriteGeometry::TryGetCaptureBoundsTopHeight(sprite.Placement, sprite.CaptureBounds,
-			occluder.TopHeight))
-		{
-			return false;
-		}
-		for (std::size_t corner = 0; corner < worldQuad.Corners.size(); ++corner)
-		{
-			occluder.Corners[corner] = {worldQuad.Corners[corner][0], worldQuad.Corners[corner][1]};
-		}
-		occluder.Key = static_cast<std::uint64_t>(ordinal);
-		context.occluders_.push_back(occluder);
-		return true;
 	}
 
 	SplineOcclusionStatus BuildingVisuals::PrepareOcclusionIndex(BuildingVisualsContext& context)

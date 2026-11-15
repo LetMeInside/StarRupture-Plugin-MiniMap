@@ -96,6 +96,7 @@ namespace Services::Map::Buildings
 		}
 	#endif
 	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::ResetSession();
 		if (spriteSourceManager_ != nullptr)
 		{
 			spriteSourceManager_->BeginDiagnosticsSession();
@@ -299,6 +300,9 @@ namespace Services::Map::Buildings
 		}
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::Timer selection(&BuildingMapPerformanceDiagnostics::Game().PublicationSelection);
+#endif
 			const bool compareDemandedSectionHashes = ObserveViewportAcquisitionHash(
 				viewportHandle,
 				*viewport->buildingCollector_);
@@ -309,6 +313,9 @@ namespace Services::Map::Buildings
 				viewportHandle,
 				compareDemandedSectionHashes);
 			ReleasePendingPublicationsAlreadyApplied();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			selection.Finish();
+#endif
 			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this, pendingSectionPublications_);
 		}
 		if (spriteSourceManager_ != nullptr)
@@ -405,6 +412,10 @@ namespace Services::Map::Buildings
 		std::uint64_t recheckedViewportHandle,
 		bool clearRecheckWhenCovered)
 	{
+		if (coordinates.empty() && !clearRecheckWhenCovered)
+		{
+			return;
+		}
 		std::set<SectionCoordinate> selectedCoordinates;
 		for (const auto& viewportEntry : viewportsByHandle_)
 		{
@@ -569,6 +580,10 @@ namespace Services::Map::Buildings
 				{
 					existing->second = publication;
 				}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				BuildingMapPerformanceDiagnostics::Select(coordinate.first, coordinate.second,
+					existing->second->ContentHash(), existing->second->BorrowCandidateData().occurrences.size());
+#endif
 			}
 			sectionSchedulingCoordinator_->RecordSelectedPublication(
 				*this, {coordinate.first, coordinate.second}, existing->second.get(), selectionChanged);
@@ -1104,6 +1119,10 @@ namespace Services::Map::Buildings
 		std::chrono::steady_clock::time_point deadline,
 		bool admitDirtySections)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::Timer admission(
+			gpuPresentationChangedSections_.empty() ? nullptr : &BuildingMapPerformanceDiagnostics::Game().Admission);
+#endif
 		if (spriteSourceManager_ == nullptr)
 		{
 			return false;
@@ -1140,23 +1159,9 @@ namespace Services::Map::Buildings
 			{
 				continue;
 			}
-			if (canStartAssembly)
-			{
-				BuildingMapSection::ScenePresentationView presentation;
-				if (!section->TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
-				{
-					gpuPresentationChangedSections_.erase(coordinate);
-					continue;
-				}
-				if (presentation.Scene->drawableGpuTriangleCount_ == 0)
-				{
-					gpuPresentationChangedSections_.erase(coordinate);
-					continue;
-				}
-			}
 			bool sectionStartedAssembly = false;
 			if (!AdvanceGpuGeometryPublication(
-				coordinate, deadline, canStartAssembly, sectionStartedAssembly))
+				coordinate, *section, deadline, canStartAssembly, sectionStartedAssembly))
 			{
 				startedNewAssembly = startedNewAssembly || sectionStartedAssembly;
 				if (sectionStartedAssembly)
@@ -1201,21 +1206,21 @@ namespace Services::Map::Buildings
 	/** Validates one selected generation and advances its staged buffers under the shared deadline. */
 	bool BuildingMapService::AdvanceGpuGeometryPublication(
 		const SectionCoordinate& coordinate,
+		BuildingMapSection& section,
 		std::chrono::steady_clock::time_point deadline,
 		bool admitDirtySections,
 		bool& startedNewAssembly)
 	{
 		startedNewAssembly = false;
-		BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
 		if (!HasGpuViewportDemand(coordinate))
 		{
 			return true;
 		}
 		BuildingMapSection::ScenePresentationView presentation;
-		if (!section->TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
+		if (!section.TryBorrowPresentationScene(presentation) || presentation.Scene == nullptr)
 		{
 			gpuPresentationChangedSections_.erase(coordinate);
-			section->gpuGeometryAssembly_.reset();
+			section.gpuGeometryAssembly_.reset();
 			return true;
 		}
 		const auto selected = pendingSectionPublications_.find(coordinate);
@@ -1224,37 +1229,53 @@ namespace Services::Map::Buildings
 				selected->second->ContentHash() != presentation.Scene->SourceContentHash()))
 		{
 			gpuPresentationChangedSections_.erase(coordinate);
-			section->gpuGeometryAssembly_.reset();
+			section.gpuGeometryAssembly_.reset();
 			return true;
 		}
 		if (std::chrono::steady_clock::now() >= deadline)
 		{
 			return false;
 		}
-		const auto* activeAssembly = section->gpuGeometryAssembly_.get();
+		const auto* activeAssembly = section.gpuGeometryAssembly_.get();
 		const bool requiresNewAssembly = activeAssembly == nullptr || activeAssembly->SourceScene != presentation.Scene ||
 			activeAssembly->SourceContentHash != presentation.Scene->SourceContentHash();
 		if (requiresNewAssembly && !admitDirtySections)
 		{
-			section->gpuGeometryAssembly_.reset();
-			section->gpuGeometryChangedDuringAssembly_ = false;
+			section.gpuGeometryAssembly_.reset();
+			section.gpuGeometryChangedDuringAssembly_ = false;
+			return true;
+		}
+		if (requiresNewAssembly && presentation.Scene->drawableGpuTriangleCount_ == 0)
+		{
+			gpuPresentationChangedSections_.erase(coordinate);
+			section.gpuGeometryAssembly_.reset();
 			return true;
 		}
 		startedNewAssembly = requiresNewAssembly;
-		if (!BuildingMapGpuViewport::AdvanceSectionGeometryPublication(
-			*section, *presentation.Scene, *spriteSourceManager_, deadline))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto tick = frameBudgetController_.TickSequence();
+		if (!requiresNewAssembly && activeAssembly->DiagnosticLastAdvanceTick != tick)
 		{
+			++BuildingMapPerformanceDiagnostics::Game().ResumedOnLaterTick;
+		}
+#endif
+		if (!BuildingMapGpuViewport::AdvanceSectionGeometryPublication(
+			section, *presentation.Scene, *spriteSourceManager_, deadline))
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			section.gpuGeometryAssembly_->DiagnosticLastAdvanceTick = tick;
+#endif
 			return false;
 		}
 		gpuPresentationChangedSections_.erase(coordinate);
 		gpuPresentationSnapshotChangedSections_.insert(coordinate);
-		if (section->gpuGeometryChangedDuringAssembly_)
+		if (section.gpuGeometryChangedDuringAssembly_)
 		{
 			if (gpuPresentationChangedSections_.insert(coordinate).second)
 			{
-				section->gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
+				section.gpuGeometryChangeSequence_ = ++gpuGeometryChangeSequence_;
 			}
-			section->gpuGeometryChangedDuringAssembly_ = false;
+			section.gpuGeometryChangedDuringAssembly_ = false;
 		}
 		return true;
 	}
@@ -1274,6 +1295,23 @@ namespace Services::Map::Buildings
 		}
 		return false;
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Samples backlog once per report using the production demand predicate. */
+	std::size_t BuildingMapService::CountGpuSectionsAwaitingAdmission() const noexcept
+	{
+		std::size_t waiting = 0;
+		for (const auto& coordinate : gpuPresentationChangedSections_)
+		{
+			const auto* section = FindSectionAt(coordinate.first, coordinate.second);
+			if (section != nullptr && section->gpuGeometryAssembly_ == nullptr && HasGpuViewportDemand(coordinate))
+			{
+				++waiting;
+			}
+		}
+		return waiting;
+	}
+#endif
 
 	/** Queues the GPU viewport whose range was just registered or moved. */
 	void BuildingMapService::MarkGpuViewportRangeChanged(std::uint64_t viewportHandle)

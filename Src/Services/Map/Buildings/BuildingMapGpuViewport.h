@@ -65,7 +65,11 @@ namespace Services::Map::Buildings
 		 */
 		void Draw(MiniMap::Services::ICanvas& canvas,
 			MiniMap::Services::DrawLayer layer,
-			const CanvasTransform& transform) const;
+			const CanvasTransform& transform
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::RenderWork* measurements = nullptr
+#endif
+			) const;
 		/** Drops this viewport's snapshot and then closes the shared registration. */
 		void Close() override;
 
@@ -92,6 +96,13 @@ namespace Services::Map::Buildings
 			double heightMapUnits);
 		/** Rebuilds only on a queued Section, range or atlas publication transition. */
 		void RefreshPresentationSnapshot(Cache::SpriteSourceManager& atlas);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records snapshot adoption once for each sampled presentation owned by the new snapshot. */
+		static void RecordSnapshotAdoption(const PresentationSnapshot& snapshot) noexcept;
+		/** Borrows the last sealed draw buffer only if it belongs to this exact assembly generation. */
+		static const BuildingMapSectionPresentation::Geometry* PreviousAssemblyGeometry(
+			const BuildingMapSection& section) noexcept;
+#endif
 		/** Appends the currently selected Section's immutable presentation if one has been published. */
 		void AppendCurrentSection(
 			std::shared_ptr<PresentationSnapshot>& next,
@@ -104,10 +115,16 @@ namespace Services::Map::Buildings
 			MiniMap::Services::TextureSize atlasSize,
 			std::uint64_t atlasDrawingRevision,
 			const std::shared_ptr<const void>& atlasLease);
-		/** Borrows the last immutable Section geometry and rebinds only its owned keys. */
+		/** Reuses the last immutable geometry and binds keys against this snapshot's atlas revision.
+		 * @param section Section whose published presentation may need atlas-only replacement.
+		 * @param atlas Manager providing the published sprite registry.
+		 * @param atlasDrawingRevision Revision already captured for this immutable viewport snapshot.
+		 * @return The current immutable Section presentation, or null when none is published.
+		 */
 		std::shared_ptr<const BuildingMapSectionPresentation> GetOrBuildSectionPresentation(
 			BuildingMapSection& section,
-			Cache::SpriteSourceManager& atlas);
+			Cache::SpriteSourceManager& atlas,
+			std::uint64_t atlasDrawingRevision);
 		/** Appends one Section while lazily creating a replacement only after observable change. */
 		void AppendSnapshotSection(
 			std::shared_ptr<PresentationSnapshot>& next,
@@ -190,7 +207,11 @@ namespace Services::Map::Buildings
 			MiniMap::Services::Texture texture,
 			MiniMap::Services::TextureSize atlasSize,
 			const BuildingMapSectionPresentation::SpriteBinding& binding,
-			const BuildingMapSectionPresentation::SpriteTriangle& triangle) const;
+			const BuildingMapSectionPresentation::SpriteTriangle& triangle
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
+#endif
+			) const;
 		/** Draws prepared solid spline surfaces in Section and surface order. */
 		void DrawSolidSurfaces(
 			MiniMap::Services::ICanvas& canvas,

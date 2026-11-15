@@ -2,6 +2,9 @@
 
 // Implements status-aware resident/cache retrieval, FIFO capture and terminal payload publication.
 #include "BuildingScheduler.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../BuildingMapPerformanceDiagnostics.h"
+#endif
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
@@ -394,6 +397,9 @@ namespace Services::Map::Buildings::Scheduling
 			++diagnostics_.SpriteLookupRouteCounts[routeIndex];
 		}
 		diagnostics_.DemandSpriteLookup.Add(result.Diagnostics.TotalMs);
+		auto& performance = BuildingMapPerformanceDiagnostics::Game();
+		performance.DemandLookup.Add(result.Diagnostics.TotalMs);
+		performance.ResidentLookups += route == LookupRoute::ResidentPayloadFound ? 1 : 0;
 		switch (route)
 		{
 		case LookupRoute::DiskLoadedAndPayloadAdopted:

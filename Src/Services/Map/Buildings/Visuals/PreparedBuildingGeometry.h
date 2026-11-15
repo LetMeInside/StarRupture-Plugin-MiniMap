@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -21,6 +22,11 @@ namespace Services::Map::Buildings
 {
 	class BuildingMapSection;
 	class BuildingMapService;
+}
+
+namespace Services::Map::Buildings::Cache
+{
+	class ProcessedSpritePayload;
 }
 
 namespace Services::Map::Buildings::Visuals
@@ -58,14 +64,12 @@ namespace Services::Map::Buildings::Visuals
 		struct SpriteOccurrence
 		{
 			std::uint64_t SectionLocalOrdinal = 0;
-			/** Index in its final painter-ordered descriptor pass, unset until descriptor assembly. */
-			std::optional<std::size_t> SceneIndex;
-			std::array<double, 3> PlacementPosition{};
 			Cache::OwnedSpriteKey SourceKey;
+			/** Exact immutable source pixels retained for any later RGBA8 image demand. */
+			std::shared_ptr<const Cache::ProcessedSpritePayload> Payload;
 			/** Original projected quad retained for RGBA8 raster input and full occluder evidence. */
 			SpriteWorldQuad SourceWorldQuad;
-			/** Fixed maximum: clipping a convex quad by a rectangle yields at most eight vertices/six triangles. */
-			std::array<TexturedTriangle, 6> SectionTriangles{};
+			/** Fixed maximum: clipping a convex quad by a rectangle yields at most six triangles. */
 			std::size_t SectionTriangleCount = 0;
 			std::array<SectionDrawSpriteTriangle, 6> DrawTriangles{};
 			double OccluderTopHeight = 0.0;
@@ -106,6 +110,12 @@ namespace Services::Map::Buildings::Visuals
 		bool IsComplete() const noexcept;
 		/** Returns the existing publication content hash associated by BuildingMapSection. */
 		std::uint64_t SourceContentHash() const noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Identifies this preparing or completed scene for development copy accounting. */
+		std::uint64_t DiagnosticGeneration() const noexcept { return diagnosticGeneration_; }
+		/** Arms the next append timestamp after a sampled assembly captures the current prefix. */
+		void BeginDiagnosticSpriteWindow() const noexcept { diagnosticRecordedPendingSprite_ = false; }
+#endif
 		/** Borrows this generation's original sprite-first ordinal order; valid only while this object lives. */
 		const std::vector<std::size_t>& SpritePainterOrder() const noexcept;
 		/** Returns the valid-placement sprite prefix length within SpritePainterOrder(). */
@@ -157,12 +167,19 @@ namespace Services::Map::Buildings::Visuals
 		std::size_t terminalOmissionCount_ = 0;
 		std::size_t drawableGpuTriangleCount_ = 0;
 		std::uint64_t sourceContentHash_ = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::uint64_t diagnosticGeneration_ = 0;
+		mutable bool diagnosticRecordedPendingSprite_ = false;
+#endif
 		bool complete_ = false;
 
 		/** Initializes exact publication-local occurrence cardinality for a fresh replacement scene. */
 		void InitializeContributionStates(std::size_t contributionCount);
-		/** Converts one newly clipped sprite's UV values once while preserving the RGBA8 source values. */
-		static void PrepareSpriteDrawLayout(SpriteOccurrence& occurrence) noexcept;
+		/** Converts local clipped UV values once while preserving the original quad and source pixels. */
+		static void PrepareSpriteDrawLayout(
+			SpriteOccurrence& occurrence,
+			const std::array<TexturedTriangle, 6>& clippedTriangles,
+			std::size_t triangleCount) noexcept;
 		/** Adds final material values to one newly prepared solid spline surface. */
 		static void PrepareSolidSurfaceDrawLayout(SplineSurface& surface);
 		/** Resolves one ordinal directly; borrowed pointers expire on vector mutation or object destruction. */

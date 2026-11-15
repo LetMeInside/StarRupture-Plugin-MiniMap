@@ -74,11 +74,23 @@ namespace Services::Map::Buildings::Rendering
 	SectionRendering::IncrementalOperation::~IncrementalOperation() = default;
 
 	/** Identifies the numerical phases that may inspect this call's borrowed scene view. */
-	bool SectionRendering::IncrementalOperation::RequiresSceneInput() const noexcept
+	bool SectionRendering::IncrementalOperation::RequiresSceneInput(
+		const Visuals::PreparedBuildingGeometry& geometry) const noexcept
 	{
-		return state_->CurrentPhase == State::Phase::ConstructDestination ||
-			state_->CurrentPhase == State::Phase::DrawScene ||
-			state_->CurrentPhase == State::Phase::EvaluateDrawing;
+		const bool drawingMayFollow = state_->CurrentPhase == State::Phase::ConstructDestination ||
+			state_->CurrentPhase == State::Phase::DrawScene;
+		if (!drawingMayFollow)
+		{
+			return false;
+		}
+		for (const auto& surface : geometry.SplineSurfaces())
+		{
+			if (surface.IsTextured)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Advances destination creation, scene execution and finalization until the shared deadline. */

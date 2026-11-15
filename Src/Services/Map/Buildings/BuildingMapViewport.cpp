@@ -4,6 +4,9 @@
 // service-owned sparse Building Map sections.
 #include "BuildingMapLoadingTrace.h"
 #include "BuildingMapViewport.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "BuildingMapPerformanceDiagnostics.h"
+#endif
 
 #include "BuildingMapService.h"
 #include "BuildingMapSection.h"
@@ -101,7 +104,14 @@ namespace Services::Map::Buildings
 		widthMapUnits_ = widthMapUnits;
 		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		{
+			BuildingMapPerformanceDiagnostics::Timer collector(&BuildingMapPerformanceDiagnostics::Game().CollectorUpdate);
+			BM124D_RUN("collector Update", buildingCollector_->Update());
+		}
+#else
 		BM124D_RUN("collector Update", buildingCollector_->Update());
+#endif
 		if (!BM124D_RUN("AdvanceViewportScheduling", service_->AdvanceViewportScheduling(viewportHandle_)))
 		{
 			return false;

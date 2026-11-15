@@ -20,6 +20,7 @@
 #include "SDK/ChimeraUI_classes.hpp"
 #include "Services/Map/Buildings/BuildingMapService.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
 #include "Services/Map/Buildings/Scheduling/SectionSchedulingCoordinator.h"
 #include "Services/Map/Buildings/Cache/SpriteSourceManager.h"
 #endif
@@ -412,15 +413,11 @@ static void OnTextureServiceTick(
 #endif
     MiniMapTexturePublication::Service();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    bool gpuLayerDiagnosticsIntervalDue = false;
-    double gpuLayerDiagnosticsIntervalMs = 0.0;
     if (g_buildingMapService != nullptr)
     {
         ::Services::Map::Buildings::Scheduling::SectionSchedulingDiagnosticsSnapshot diagnostics;
         if (g_buildingMapService->TakeSectionSchedulingDiagnosticsSnapshot(diagnostics))
         {
-            gpuLayerDiagnosticsIntervalDue = true;
-            gpuLayerDiagnosticsIntervalMs = diagnostics.IntervalMs;
             const auto meanMs = [](const auto& duration)
             {
                 return duration.Samples == 0
@@ -615,8 +612,19 @@ static void OnTextureServiceTick(
     }
 
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-    if (gpuLayerDiagnosticsIntervalDue)
+    using BuildingPerformance = ::Services::Map::Buildings::BuildingMapPerformanceDiagnostics;
+    double gpuLayerDiagnosticsIntervalMs = 0.0;
+    const bool miniMapVisible = MiniMapUI::IsVisible();
+    if (g_buildingMapService != nullptr && g_buildingMapService->GetMapWidthMapUnits() > 0.0)
     {
+        auto& work = BuildingPerformance::Game();
+        ++(miniMapVisible ? work.MiniMapVisibleTicks : work.MiniMapHiddenTicks);
+        gpuLayerDiagnosticsIntervalMs = BuildingPerformance::TakeInterval();
+    }
+    if (gpuLayerDiagnosticsIntervalMs > 0.0)
+    {
+        BuildingPerformance::ReportGame(gpuLayerDiagnosticsIntervalMs,
+            g_buildingMapService->CountGpuSectionsAwaitingAdmission(), miniMapVisible);
         MiniMapUI::BuildingLayer::DiagnosticsSnapshot presentationDiagnostics;
         if (MiniMapUI::TakeBuildingLayerDiagnosticsSnapshot(presentationDiagnostics))
         {
@@ -633,6 +641,7 @@ static void OnTextureServiceTick(
                 static_cast<unsigned long long>(presentationDiagnostics.AcquisitionHash),
                 static_cast<unsigned long long>(presentationDiagnostics.AcquisitionHashChanges));
         }
+        BuildingPerformance::ReportDraw(gpuLayerDiagnosticsIntervalMs, presentationDiagnostics.Draw);
 
         ::Services::Map::Buildings::Cache::SpriteAtlasDiagnosticsSnapshot atlasDiagnostics;
         if (g_buildingMapService != nullptr &&

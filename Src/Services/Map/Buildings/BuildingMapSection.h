@@ -4,6 +4,9 @@
 
 #include "Cache/OwnedSpriteKey.h"
 #include "Visuals/PreparedBuildingGeometry.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "BuildingMapPerformanceDiagnostics.h"
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -52,6 +55,13 @@ namespace Services::Map::Buildings
 			std::vector<SpriteTriangle> OrdinaryTriangles;
 			std::vector<SolidTriangle> SolidSurfaces;
 			std::vector<SpriteTriangle> OverlayTriangles;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			std::uint64_t SourceGeneration = 0;
+			std::size_t OrdinaryOccurrenceCount = 0;
+			std::size_t OverlayOccurrenceCount = 0;
+			std::size_t SurfaceCount = 0;
+			std::shared_ptr<BuildingMapPerformanceDiagnostics::PresentationTiming> Timing;
+#endif
 		};
 
 		std::shared_ptr<const Geometry> PreparedGeometry;
@@ -75,18 +85,6 @@ namespace Services::Map::Buildings
 
 		/** Returns the integer world-grid coordinate on the Y axis. */
 		std::int64_t GetGridY() const;
-
-		/** Returns true when the section has a currently certified membership observation. */
-		bool HasCurrentMembershipObservation() const;
-
-		/**
-		 * Copies the current certified fingerprint to the output when available.
-		 * Returns false without changing the output when membership is uncertified.
-		 *
-		 * @param fingerprint Receives the valid fingerprint, including a possible zero value.
-		 * @return True only while a complete observation is currently certified.
-		 */
-		bool TryGetCurrentMembershipFingerprint(std::uint64_t& fingerprint) const;
 
 		/**
 		 * Describes the actual dimensions and borrowed immutable bytes of a stored
@@ -156,15 +154,6 @@ namespace Services::Map::Buildings
 			std::uint32_t PixelHeight = 0;
 			std::vector<std::uint8_t> Rgba8Bytes;
 		};
-
-		/**
-		 * Records a complete fingerprint or revokes current certification when incomplete.
-		 *
-		 * @param isComplete Whether the collector certified complete source coverage.
-		 * @param membershipFingerprint Fingerprint to retain when isComplete is true.
-		 * @return True for the first complete fingerprint or a change from the previous one.
-		 */
-		bool RecordMembershipObservation(bool isComplete, std::uint64_t membershipFingerprint);
 
 		/** Reports whether this Section currently owns a completed image. */
 		bool HasCompletedImage() const;
@@ -244,9 +233,6 @@ namespace Services::Map::Buildings
 
 		std::int64_t gridX_;
 		std::int64_t gridY_;
-		bool hasCurrentMembershipObservation_ = false;
-		bool hasPreviousMembershipFingerprint_ = false;
-		std::uint64_t membershipFingerprint_ = 0;
 		std::unique_ptr<Visuals::BuildingVisualsContext> visualsContext_;
 		std::unique_ptr<Visuals::BuildingVisualsContext> geometryContext_;
 		/** Opaque scheduler state owned only for this Section's unfinished render generation. */
@@ -256,7 +242,6 @@ namespace Services::Map::Buildings
 		std::unique_ptr<const Visuals::PreparedBuildingGeometry> completedScene_;
 		/** Mutable Section-owned contributions for the currently selected replacement. */
 		std::unique_ptr<Visuals::PreparedBuildingGeometry> preparingScene_;
-		std::uint64_t preparingSceneSourceContentHash_ = 0;
 		std::shared_ptr<const BuildingMapSectionPresentation> gpuPresentation_;
 		std::uint64_t gpuPresentationAtlasRevision_ = 0;
 		bool gpuPresentationAtlasRevisionValid_ = false;
@@ -286,6 +271,9 @@ namespace Services::Map::Buildings
 			std::size_t SurfaceTriangleIndex = 0;
 			std::size_t BindingIndex = 0;
 			std::uint64_t BindingAtlasRevision = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			std::uint64_t DiagnosticLastAdvanceTick = 0;
+#endif
 			Phase CurrentPhase = Phase::OrdinarySprites;
 			bool BindingAtlasRevisionValid = false;
 		};

@@ -52,6 +52,7 @@ namespace MiniMapUI
 			std::uint64_t AcquisitionHash = 0;
 			std::uint64_t AcquisitionHashChanges = 0;
 			bool HasAcquisitionHash = false;
+			Services::Map::Buildings::BuildingMapPerformanceDiagnostics::RenderWork Draw;
 		};
 
 		/** Copies and clears counters observed since the previous call. */
@@ -93,6 +94,11 @@ namespace MiniMapUI
 		bool Shutdown();
 
 	private:
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records one callback's visibility outcome and optional draw data under the existing diagnostics lock. */
+		void RecordRenderDiagnostics(bool hidden, bool invalidTransform,
+			const Services::Map::Buildings::BuildingMapPerformanceDiagnostics::RenderWork* draw) noexcept;
+#endif
 		/** Copies the viewport owner under the short ownership mutex. */
 		std::shared_ptr<Services::Map::Buildings::BuildingMapGpuViewport> AcquireViewport() const;
 		/** Converts the existing MiniMap world projection and inset viewport bounds. */

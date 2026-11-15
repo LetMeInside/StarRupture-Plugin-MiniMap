@@ -2,6 +2,9 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "BuildingGeometryPreparation.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../BuildingMapPerformanceDiagnostics.h"
+#endif
 
 #include "BuildingVisuals.h"
 #include "SpriteGeometry.h"
@@ -28,11 +31,9 @@ namespace Services::Map::Buildings::Visuals
 		{
 			return;
 		}
-		CurrentPhase = Phase::OrdinarySprites;
-		OrdinarySpriteIndex = 0;
+		CurrentPhase = Phase::Complete;
 		SplineIndex = 0;
 		SplineSurfaceIndex = 0;
-		OverlaySpriteIndex = 0;
 		PendingOpacity = 0;
 		Initialized = false;
 		SplineSamplingPrepared = false;
@@ -116,7 +117,7 @@ namespace Services::Map::Buildings::Visuals
 		}
 	}
 
-	/** Advances one phase boundary or one sprite, index, spline or terminal unit. */
+	/** Advances one occlusion-index, spline or terminal unit. */
 	BuildingGeometryPreparation::Status BuildingGeometryPreparation::AdvanceOne(
 		const BuildingRenderSceneInput& scene,
 		BuildingVisualsContext& scratch,
@@ -124,22 +125,10 @@ namespace Services::Map::Buildings::Visuals
 		PreparationCursor& cursor,
 		std::size_t& workUnitsConsumed)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::Timer step(&BuildingMapPerformanceDiagnostics::Game().Indivisible);
+#endif
 		workUnitsConsumed = 0;
-		if (cursor.CurrentPhase == PreparationCursor::Phase::OrdinarySprites)
-		{
-			if (cursor.OrdinarySpriteIndex == scene.OrdinarySprites.size())
-			{
-				cursor.CurrentPhase = scene.Splines.empty()
-					? PreparationCursor::Phase::OverlayLastSprites
-					: PreparationCursor::Phase::OcclusionIndex;
-				return Status::Pending;
-			}
-			const auto status = PrepareSprite(scene.OrdinarySprites[cursor.OrdinarySpriteIndex],
-				cursor.OrdinarySpriteIndex, false, cursor.SectionRegion, scratch, output, cursor);
-			++cursor.OrdinarySpriteIndex;
-			workUnitsConsumed = 1;
-			return status;
-		}
 		if (cursor.CurrentPhase == PreparationCursor::Phase::OcclusionIndex)
 		{
 			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareOcclusionIndex(scratch);
@@ -156,7 +145,7 @@ namespace Services::Map::Buildings::Visuals
 		return AdvanceRemainingPhase(scene, scratch, output, cursor, workUnitsConsumed);
 	}
 
-	/** Advances spline, overlay and terminal phases after ordinary occluders are indexed. */
+	/** Advances spline and terminal phases after ordinary occluders are indexed. */
 	BuildingGeometryPreparation::Status BuildingGeometryPreparation::AdvanceRemainingPhase(
 		const BuildingRenderSceneInput& scene,
 		BuildingVisualsContext& scratch,
@@ -168,25 +157,12 @@ namespace Services::Map::Buildings::Visuals
 		{
 			if (cursor.SplineIndex == scene.Splines.size())
 			{
-				cursor.CurrentPhase = PreparationCursor::Phase::OverlayLastSprites;
+				cursor.CurrentPhase = PreparationCursor::Phase::Complete;
 				return Status::Pending;
 			}
 			workUnitsConsumed = 1;
 			return AdvanceSpline(scene.Splines[cursor.SplineIndex], cursor.SplineIndex,
 				scratch, output, cursor);
-		}
-		if (cursor.CurrentPhase == PreparationCursor::Phase::OverlayLastSprites)
-		{
-			if (cursor.OverlaySpriteIndex == scene.OverlayLastSprites.size())
-			{
-				cursor.CurrentPhase = PreparationCursor::Phase::Complete;
-				return Status::Pending;
-			}
-			const auto status = PrepareSprite(scene.OverlayLastSprites[cursor.OverlaySpriteIndex],
-				cursor.OverlaySpriteIndex, true, cursor.SectionRegion, scratch, output, cursor);
-			++cursor.OverlaySpriteIndex;
-			workUnitsConsumed = 1;
-			return status;
 		}
 		return Status::Complete;
 	}
@@ -198,6 +174,9 @@ namespace Services::Map::Buildings::Visuals
 		PreparedBuildingGeometry& output,
 		PreparationCursor& cursor)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::Timer initialization(&BuildingMapPerformanceDiagnostics::Game().Indivisible);
+#endif
 		if (output.complete_ || !output.splineSurfaces_.empty() ||
 			!ValidateContributionOwnership(scene, output, cursor))
 		{
@@ -220,9 +199,10 @@ namespace Services::Map::Buildings::Visuals
 			RECORD_GEOMETRY_FAILURE("geometry initialization", "SeedPreparedOccluders failed");
 			return false;
 		}
-		cursor.Results.OrdinarySprites.reserve(scene.OrdinarySprites.size());
+		cursor.CurrentPhase = scene.Splines.empty()
+			? PreparationCursor::Phase::Complete
+			: PreparationCursor::Phase::OcclusionIndex;
 		cursor.Results.SplineSurfaces.reserve(scene.Splines.size());
-		cursor.Results.OverlayLastSprites.reserve(scene.OverlayLastSprites.size());
 		cursor.Initialized = true;
 		return true;
 	}
@@ -633,226 +613,84 @@ namespace Services::Map::Buildings::Visuals
 		return std::isfinite(area) && area != 0.0;
 	}
 
-	/** Validates all source ordinals against the caller-established publication cardinality. */
+	/** Validates direct sprite ownership and unique spline ownership for the complete scene. */
 	bool BuildingGeometryPreparation::ValidateContributionOwnership(
 		const BuildingRenderSceneInput& scene,
 		const PreparedBuildingGeometry& output,
 		PreparationCursor& cursor)
 	{
 		const std::size_t count = output.contributionStates_.size();
-		std::vector<const BuildingSpriteRenderInput*> ordinaryInputs(count, nullptr);
-		std::vector<const BuildingSplineRenderInput*> splineInputs(count, nullptr);
-		std::vector<const BuildingSpriteRenderInput*> overlayInputs(count, nullptr);
-		return IndexSceneInputs(scene, ordinaryInputs, splineInputs, overlayInputs, cursor) &&
-			ValidatePreparedSpriteRecords(output, ordinaryInputs, overlayInputs, cursor) &&
-			ValidateSceneOccurrenceStates(output, ordinaryInputs, splineInputs, overlayInputs, cursor);
-	}
-
-	/** Indexes the call-local views and rejects duplicate contributors across all three passes. */
-	bool BuildingGeometryPreparation::IndexSceneInputs(
-		const BuildingRenderSceneInput& scene,
-		std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-		std::vector<const BuildingSplineRenderInput*>& splineInputs,
-		std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-		PreparationCursor& cursor)
-	{
-		for (const auto& sprite : scene.OrdinarySprites)
+		if (output.spriteOccurrenceLocationsByOrdinal_.size() != count ||
+			output.spritePainterOrder_.size() != count ||
+			output.spritePainterCount_ > count || output.validSpritePainterCount_ > output.spritePainterCount_)
 		{
-			if (sprite.SectionLocalOrdinal >= ordinaryInputs.size() ||
-				ordinaryInputs[static_cast<std::size_t>(sprite.SectionLocalOrdinal)] != nullptr)
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / ordinary ownership",
-					sprite.SectionLocalOrdinal >= ordinaryInputs.size()
-						? "ordinal outside contribution slots" : "duplicate ordinal",
-					static_cast<long long>(sprite.SectionLocalOrdinal),
-					static_cast<long long>(&sprite - scene.OrdinarySprites.data()),
-					ordinaryInputs.size(), sprite.SectionLocalOrdinal);
-				return false;
-			}
-			ordinaryInputs[static_cast<std::size_t>(sprite.SectionLocalOrdinal)] = &sprite;
+			return false;
 		}
-		for (const auto& spline : scene.Splines)
+		std::vector<const BuildingSplineRenderInput*> splineInputs(count, nullptr);
+		for (const BuildingSplineRenderInput& spline : scene.Splines)
 		{
-			if (spline.SectionLocalOrdinal >= splineInputs.size() ||
-				splineInputs[static_cast<std::size_t>(spline.SectionLocalOrdinal)] != nullptr ||
-				ordinaryInputs[static_cast<std::size_t>(spline.SectionLocalOrdinal)] != nullptr)
+			if (spline.SectionLocalOrdinal >= count)
 			{
 				RECORD_GEOMETRY_FAILURE("geometry initialization / spline ownership",
-					spline.SectionLocalOrdinal >= splineInputs.size()
-						? "ordinal outside contribution slots" : "ordinal already owned",
-					static_cast<long long>(spline.SectionLocalOrdinal),
-					static_cast<long long>(&spline - scene.Splines.data()),
-					splineInputs.size(), spline.SectionLocalOrdinal);
+					"ordinal outside contribution slots", static_cast<long long>(spline.SectionLocalOrdinal));
 				return false;
 			}
-			splineInputs[static_cast<std::size_t>(spline.SectionLocalOrdinal)] = &spline;
+			const std::size_t ordinal = static_cast<std::size_t>(spline.SectionLocalOrdinal);
+			bool isOverlayLast = false;
+			if (splineInputs[ordinal] != nullptr ||
+				output.SpriteOccurrenceAtOrdinal(ordinal, isOverlayLast) != nullptr)
+			{
+				RECORD_GEOMETRY_FAILURE("geometry initialization / spline ownership",
+					"ordinal already has an owner", static_cast<long long>(ordinal));
+				return false;
+			}
+			splineInputs[ordinal] = &spline;
 		}
-		return IndexOverlayInputs(scene, overlayInputs, ordinaryInputs, splineInputs, cursor);
-	}
-
-	/** Indexes overlay sprite views and rejects ordinals already owned by another pass. */
-	bool BuildingGeometryPreparation::IndexOverlayInputs(
-		const BuildingRenderSceneInput& scene,
-		std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-		const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-		const std::vector<const BuildingSplineRenderInput*>& splineInputs,
-		PreparationCursor& cursor)
-	{
-		for (const auto& sprite : scene.OverlayLastSprites)
+		for (std::size_t ordinal = 0; ordinal < count; ++ordinal)
 		{
-			if (sprite.SectionLocalOrdinal >= overlayInputs.size())
+			if (!ValidateContributionOccurrence(ordinal, splineInputs[ordinal], output, cursor))
 			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / overlay ownership", "ordinal outside contribution slots",
-					static_cast<long long>(sprite.SectionLocalOrdinal),
-					static_cast<long long>(&sprite - scene.OverlayLastSprites.data()),
-					overlayInputs.size(), sprite.SectionLocalOrdinal);
-				return false;
-			}
-			const auto ordinal = static_cast<std::size_t>(sprite.SectionLocalOrdinal);
-			if (overlayInputs[ordinal] != nullptr ||
-				ordinaryInputs[ordinal] != nullptr || splineInputs[ordinal] != nullptr)
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / overlay ownership", "ordinal already owned",
-					static_cast<long long>(ordinal), static_cast<long long>(&sprite - scene.OverlayLastSprites.data()));
-				return false;
-			}
-			overlayInputs[ordinal] = &sprite;
-		}
-		return true;
-	}
-
-	/** Confirms progressive sprite geometry has one matching input key and pass occurrence. */
-	bool BuildingGeometryPreparation::ValidatePreparedSpriteRecords(
-		const PreparedBuildingGeometry& output,
-		const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-		const std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-		PreparationCursor& cursor)
-	{
-		std::vector<bool> owned(output.contributionStates_.size(), false);
-		for (const auto& occurrence : output.ordinarySprites_)
-		{
-			const auto ordinal = occurrence.SectionLocalOrdinal;
-			if (!MatchesPreparedSprite(ordinal, occurrence, ordinaryInputs, owned, output, cursor))
-			{
-				return false;
-			}
-		}
-		for (const auto& occurrence : output.overlayLastSprites_)
-		{
-			const auto ordinal = occurrence.SectionLocalOrdinal;
-			if (ordinal >= overlayInputs.size())
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / progressive overlay validation",
-					"ordinal outside contribution slots", static_cast<long long>(ordinal), -1, overlayInputs.size());
-				return false;
-			}
-			const auto index = static_cast<std::size_t>(ordinal);
-			if (overlayInputs[index] == nullptr || owned[index] ||
-				(output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::Prepared &&
-					output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::GeometricOmission) ||
-				(output.contributionStates_[index] == PreparedBuildingGeometry::ContributionStatus::Prepared &&
-					occurrence.SectionTriangleCount == 0) ||
-				(output.contributionStates_[index] == PreparedBuildingGeometry::ContributionStatus::GeometricOmission &&
-					occurrence.SectionTriangleCount != 0) ||
-				occurrence.SectionTriangleCount > occurrence.SectionTriangles.size() ||
-				occurrence.SourceKey.Bytes() != overlayInputs[index]->CanonicalSpriteKey)
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / progressive overlay validation", overlayInputs[index] == nullptr
-					? "overlay descriptor absent" : owned[index] ? "duplicate prepared record" :
-				output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::Prepared &&
-					output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::GeometricOmission
-					? "contribution state is not terminal sprite state" : "canonical sprite key mismatch",
-				static_cast<long long>(ordinal),
-					-1, static_cast<unsigned>(PreparedBuildingGeometry::ContributionStatus::Prepared),
-					static_cast<unsigned>(output.contributionStates_[index]));
-				return false;
-			}
-			owned[index] = true;
-		}
-		for (std::size_t ordinal = 0; ordinal < owned.size(); ++ordinal)
-		{
-			if ((ordinaryInputs[ordinal] != nullptr || overlayInputs[ordinal] != nullptr) &&
-				(output.contributionStates_[ordinal] == PreparedBuildingGeometry::ContributionStatus::Prepared ||
-					output.contributionStates_[ordinal] == PreparedBuildingGeometry::ContributionStatus::GeometricOmission) &&
-				!owned[ordinal])
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / progressive sprite validation",
-					"Prepared state has no matching geometry record", static_cast<long long>(ordinal));
 				return false;
 			}
 		}
 		return true;
 	}
 
-	/** Checks one owned sprite record against its exact indexed input without retaining the view. */
-	bool BuildingGeometryPreparation::MatchesPreparedSprite(
-		std::uint64_t ordinal,
-		const PreparedBuildingGeometry::SpriteOccurrence& occurrence,
-		const std::vector<const BuildingSpriteRenderInput*>& inputs,
-		std::vector<bool>& owned,
+	/** Checks that one publication ordinal has exactly one valid prepared owner or omission. */
+	bool BuildingGeometryPreparation::ValidateContributionOccurrence(
+		std::size_t ordinal,
+		const BuildingSplineRenderInput* spline,
 		const PreparedBuildingGeometry& output,
 		PreparationCursor& cursor)
 	{
-		if (ordinal >= inputs.size())
+		const auto state = output.contributionStates_[ordinal];
+		bool isOverlayLast = false;
+		const auto* sprite = output.SpriteOccurrenceAtOrdinal(ordinal, isOverlayLast);
+		const bool spriteState = state == PreparedBuildingGeometry::ContributionStatus::Prepared ||
+			state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission;
+		if (state == PreparedBuildingGeometry::ContributionStatus::Failed ||
+			state == PreparedBuildingGeometry::ContributionStatus::Unresolved ||
+			(sprite != nullptr && spline != nullptr) ||
+			(spriteState && sprite == nullptr) ||
+			(state == PreparedBuildingGeometry::ContributionStatus::NotProcessed && spline == nullptr) ||
+			(state == PreparedBuildingGeometry::ContributionStatus::TerminalOmission &&
+				(sprite != nullptr || spline != nullptr)))
 		{
-			RECORD_GEOMETRY_FAILURE("geometry initialization / progressive ordinary validation",
-					"ordinal outside contribution slots", static_cast<long long>(ordinal), -1, inputs.size());
+			RECORD_GEOMETRY_FAILURE("geometry initialization / occurrence validation",
+				"sprite, spline, or terminal state is inconsistent", static_cast<long long>(ordinal),
+				-1, 0, static_cast<unsigned>(state));
 			return false;
 		}
-		const auto index = static_cast<std::size_t>(ordinal);
-		if (owned[index] || inputs[index] == nullptr ||
-			(output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::Prepared &&
-				output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::GeometricOmission) ||
-			(output.contributionStates_[index] == PreparedBuildingGeometry::ContributionStatus::Prepared &&
-				occurrence.SectionTriangleCount == 0) ||
-			(output.contributionStates_[index] == PreparedBuildingGeometry::ContributionStatus::GeometricOmission &&
-				occurrence.SectionTriangleCount != 0) ||
-			occurrence.SectionTriangleCount > occurrence.SectionTriangles.size() ||
-			occurrence.SourceKey.Bytes() != inputs[index]->CanonicalSpriteKey)
+		if (sprite != nullptr && (sprite->Payload == nullptr || sprite->SourceKey.Bytes().empty() ||
+			(state == PreparedBuildingGeometry::ContributionStatus::Prepared && sprite->SectionTriangleCount == 0) ||
+			(state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission && sprite->SectionTriangleCount != 0)))
 		{
-			RECORD_GEOMETRY_FAILURE("geometry initialization / progressive ordinary validation", owned[index]
-					? "duplicate prepared record" : inputs[index] == nullptr ? "ordinary descriptor absent" :
-					output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::Prepared &&
-						output.contributionStates_[index] != PreparedBuildingGeometry::ContributionStatus::GeometricOmission
-						? "contribution state is not terminal sprite state" : "canonical sprite key mismatch",
-					static_cast<long long>(ordinal),
-					-1, static_cast<unsigned>(PreparedBuildingGeometry::ContributionStatus::Prepared),
-					static_cast<unsigned>(output.contributionStates_[index]));
+			RECORD_GEOMETRY_FAILURE("geometry initialization / sprite occurrence validation",
+				"payload, key, or clipped geometry is inconsistent", static_cast<long long>(ordinal));
 			return false;
 		}
-		owned[index] = true;
 		return true;
 	}
-
-	/** Rejects failed states and mismatched terminal omission ownership before any work begins. */
-	bool BuildingGeometryPreparation::ValidateSceneOccurrenceStates(
-		const PreparedBuildingGeometry& output,
-		const std::vector<const BuildingSpriteRenderInput*>& ordinaryInputs,
-		const std::vector<const BuildingSplineRenderInput*>& splineInputs,
-		const std::vector<const BuildingSpriteRenderInput*>& overlayInputs,
-		PreparationCursor& cursor)
-	{
-		for (std::size_t ordinal = 0; ordinal < output.contributionStates_.size(); ++ordinal)
-		{
-			const auto state = output.contributionStates_[ordinal];
-			const std::size_t owners = static_cast<std::size_t>(ordinaryInputs[ordinal] != nullptr) +
-				static_cast<std::size_t>(splineInputs[ordinal] != nullptr) +
-				static_cast<std::size_t>(overlayInputs[ordinal] != nullptr);
-			if (owners > 1 || state == PreparedBuildingGeometry::ContributionStatus::Failed ||
-				(state == PreparedBuildingGeometry::ContributionStatus::TerminalOmission && owners != 0) ||
-				(state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission &&
-					(owners != 1 || splineInputs[ordinal] != nullptr)))
-			{
-				RECORD_GEOMETRY_FAILURE("geometry initialization / occurrence validation", owners > 1
-					? "multiple descriptor owners" : state == PreparedBuildingGeometry::ContributionStatus::Failed
-					? "contribution already Failed" : "terminal omission still has a descriptor",
-					static_cast<long long>(ordinal), -1, 0, owners, -1, static_cast<int>(state));
-				return false;
-			}
-		}
-		return true;
-	}
-
 	/** Seeds world-space occluder inputs from already retained ordinary sprite values. */
 	bool BuildingGeometryPreparation::SeedPreparedOccluders(
 		const PreparedBuildingGeometry& output,
@@ -878,142 +716,6 @@ namespace Services::Map::Buildings::Visuals
 			scratch.occluders_.push_back(occluder);
 		}
 		return true;
-	}
-
-	/** Builds one owned sprite quad and, for ordinary sprites, its independent occluder value. */
-	BuildingGeometryPreparation::Status BuildingGeometryPreparation::PrepareSprite(
-		const BuildingSpriteRenderInput& sprite,
-		std::size_t sceneIndex,
-		bool overlay,
-		const BuildingCollectionRegion& sectionRegion,
-		BuildingVisualsContext& scratch,
-		PreparedBuildingGeometry& output,
-		PreparationCursor& cursor)
-	{
-		BuildingVisualsContributorOutcome outcome;
-		outcome.ContributorIndex = sceneIndex;
-		const auto currentStatus = output.contributionStates_[
-			static_cast<std::size_t>(sprite.SectionLocalOrdinal)];
-		if (currentStatus == PreparedBuildingGeometry::ContributionStatus::Prepared ||
-			currentStatus == PreparedBuildingGeometry::ContributionStatus::GeometricOmission)
-		{
-			return Status::Pending;
-		}
-		if (currentStatus != PreparedBuildingGeometry::ContributionStatus::NotProcessed)
-		{
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"contribution state is not NotProcessed", static_cast<long long>(sprite.SectionLocalOrdinal),
-				static_cast<long long>(sceneIndex), static_cast<unsigned>(PreparedBuildingGeometry::ContributionStatus::NotProcessed),
-				static_cast<unsigned>(currentStatus));
-			return Status::InvalidInputs;
-		}
-		if (!SetContributionStatus(output, sprite.SectionLocalOrdinal,
-			PreparedBuildingGeometry::ContributionStatus::Unresolved))
-		{
-			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"could not set contribution Unresolved", static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
-			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::InvalidInputs);
-		}
-		SpriteWorldQuad worldQuad;
-		if (!SpriteGeometry::BuildWorldQuad(sprite.Placement, sprite.ProjectionSourceSize,
-			sprite.CaptureBounds, sprite.Projection, worldQuad))
-		{
-			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"BuildWorldQuad failed", static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
-			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::NumericalFailure);
-		}
-		return RetainSprite(sprite, sceneIndex, overlay, worldQuad, sectionRegion, scratch, output, cursor, outcome);
-	}
-
-	/** Owns a valid sprite occurrence and computes ordinary-sprite occlusion independently of raster output. */
-	BuildingGeometryPreparation::Status BuildingGeometryPreparation::RetainSprite(
-		const BuildingSpriteRenderInput& sprite,
-		std::size_t sceneIndex,
-		bool overlay,
-		const SpriteWorldQuad& worldQuad,
-		const BuildingCollectionRegion& sectionRegion,
-		BuildingVisualsContext& scratch,
-		PreparedBuildingGeometry& output,
-		PreparationCursor& cursor,
-		BuildingVisualsContributorOutcome& outcome)
-	{
-		PreparedBuildingGeometry::SpriteOccurrence occurrence;
-		occurrence.SectionLocalOrdinal = sprite.SectionLocalOrdinal;
-		occurrence.SceneIndex = sceneIndex;
-		occurrence.PlacementPosition = sprite.Placement.Position;
-		occurrence.SourceWorldQuad = worldQuad;
-		if (!TryClipSpriteToSection(
-			worldQuad, sectionRegion, occurrence.SectionTriangles, occurrence.SectionTriangleCount))
-		{
-			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
-			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::NumericalFailure);
-		}
-		if (!Cache::OwnedSpriteKey::TryCopy(sprite.CanonicalSpriteKey, occurrence.SourceKey))
-		{
-			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"could not copy canonical sprite key", static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
-			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::InvalidInputs);
-		}
-		PreparedBuildingGeometry::PrepareSpriteDrawLayout(occurrence);
-		if (!overlay)
-		{
-			outcome.OccluderGeometryPrepared = BuildingVisuals::AddOccluder(
-				sprite, worldQuad, sceneIndex, scratch);
-			if (outcome.OccluderGeometryPrepared)
-			{
-				occurrence.IsOccluder = true;
-				occurrence.OccluderTopHeight = scratch.occluders_.back().TopHeight;
-			}
-		}
-		outcome.GeometryPrepared = true;
-		const bool hasDrawableGeometry = occurrence.SectionTriangleCount != 0;
-		auto& destination = overlay ? output.overlayLastSprites_ : output.ordinarySprites_;
-		destination.push_back(std::move(occurrence));
-		if (!output.TrySetSpriteOccurrenceLocation(
-			sprite.SectionLocalOrdinal, overlay, destination.size() - 1))
-		{
-			destination.pop_back();
-			outcome.FailureStage = BuildingVisualsFailureStage::SpriteGeometry;
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"could not set ordinal-to-occurrence correspondence",
-				static_cast<long long>(sprite.SectionLocalOrdinal), static_cast<long long>(sceneIndex));
-			return RecordSpriteFailure(sprite, overlay, outcome, output, cursor, Status::InvalidInputs);
-		}
-		SetContributionStatus(output, sprite.SectionLocalOrdinal,
-			outcome.FailureStage == BuildingVisualsFailureStage::None
-			? (hasDrawableGeometry
-				? PreparedBuildingGeometry::ContributionStatus::Prepared
-				: PreparedBuildingGeometry::ContributionStatus::GeometricOmission)
-				: PreparedBuildingGeometry::ContributionStatus::Failed);
-		(overlay ? cursor.Results.OverlayLastSprites : cursor.Results.OrdinarySprites).push_back(outcome);
-		if (outcome.FailureStage != BuildingVisualsFailureStage::None)
-		{
-			cursor.Results.Complete = false;
-			RECORD_GEOMETRY_FAILURE(overlay ? "overlay sprite preparation" : "ordinary sprite preparation",
-				"contributor has a failure stage", static_cast<long long>(sprite.SectionLocalOrdinal),
-				static_cast<long long>(sceneIndex), 0, 0, -1, static_cast<int>(outcome.FailureStage));
-			return Status::NumericalFailure;
-		}
-		return Status::Pending;
-	}
-
-	/** Records failure evidence and prevents an invalid sprite from becoming drawable output. */
-	BuildingGeometryPreparation::Status BuildingGeometryPreparation::RecordSpriteFailure(
-		const BuildingSpriteRenderInput& sprite,
-		bool overlay,
-		BuildingVisualsContributorOutcome outcome,
-		PreparedBuildingGeometry& output,
-		PreparationCursor& cursor,
-		Status status)
-	{
-		SetContributionStatus(output, sprite.SectionLocalOrdinal,
-			PreparedBuildingGeometry::ContributionStatus::Failed);
-		cursor.Results.Complete = false;
-		(overlay ? cursor.Results.OverlayLastSprites : cursor.Results.OrdinarySprites).push_back(outcome);
-		return status;
 	}
 
 	/** Samples one spline once, then advances one ordered surface or selection result. */

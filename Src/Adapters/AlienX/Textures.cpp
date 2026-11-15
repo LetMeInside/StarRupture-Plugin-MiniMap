@@ -3,6 +3,9 @@
 #include "Textures.h"
 #include "Bootstrap.h"
 #include "Native/NativeApi.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
+#endif
 #include <objbase.h>
 #include <cstring>
 #include <limits>
@@ -379,14 +382,59 @@ namespace MiniMap::Adapters::AlienX
     void Textures::ImageQuad(IModLoaderImGui& ui, PluginDrawList list, S::Texture token,
         const S::Quad& p, const S::Quad& u, S::Color color)
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        using Performance = ::Services::Map::Buildings::BuildingMapPerformanceDiagnostics;
+        auto* frame = Performance::ActiveRender;
+        auto* work = frame != nullptr ? &frame->Texture : nullptr;
+        const bool sampled = work != nullptr && Performance::SampleTextureCall();
+        if (work != nullptr)
+        {
+            ++work->Calls;
+            ++work->GateAcquisitions;
+        }
+        const auto admissionStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
         Operation operation(*this, Kind::Draw);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (sampled)
+        {
+            work->AdmissionSample.Add(Performance::Milliseconds(Performance::Clock::now() - admissionStarted));
+        }
+#endif
         if (!operation.Admitted) throw std::invalid_argument("MiniMap: texture service drawing closed");
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (work != nullptr)
+        {
+            ++work->Admissions;
+            ++work->GateAcquisitions; // The admitted Operation destructor acquires Gate once.
+        }
+        const auto ledgerStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
         std::lock_guard lock(LedgerMutex);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const auto ledgerAcquired = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+        if (work != nullptr)
+        {
+            ++work->LedgerAcquisitions;
+        }
+#endif
         const auto* record = Find(token.id);
         if (!record || record->Ownership != State::Validated || !record->Receipt->view.load(std::memory_order_acquire))
             throw std::invalid_argument("MiniMap: texture identity is not draw-admitted");
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const auto backendStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
         ui.DL_AddImageQuad(list, record->Handle, p[0].x,p[0].y,p[1].x,p[1].y,p[2].x,p[2].y,p[3].x,p[3].y,
             u[0].x,u[0].y,u[1].x,u[1].y,u[2].x,u[2].y,u[3].x,u[3].y,color);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (sampled)
+        {
+            const auto backendFinished = Performance::Clock::now();
+            work->LedgerWaitSample.Add(Performance::Milliseconds(ledgerAcquired - ledgerStarted));
+            work->LedgerHoldSample.Add(Performance::Milliseconds(backendFinished - ledgerAcquired));
+            work->BackendSample.Add(Performance::Milliseconds(backendFinished - backendStarted));
+        }
+#endif
     }
 }
 #endif

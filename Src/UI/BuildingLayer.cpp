@@ -49,6 +49,20 @@ namespace MiniMapUI
 		diagnostics_.HasAcquisitionHash = hasLastAcquisitionHash_;
 		return true;
 	}
+
+	/** Merges completed callback-local measurements into the layer's existing report interval. */
+	void BuildingLayer::RecordRenderDiagnostics(bool hidden, bool invalidTransform,
+		const Services::Map::Buildings::BuildingMapPerformanceDiagnostics::RenderWork* draw) noexcept
+	{
+		std::lock_guard<std::mutex> lock(diagnosticsMutex_);
+		++diagnostics_.RenderCallbacks;
+		diagnostics_.HiddenDraws += hidden ? 1 : 0;
+		diagnostics_.InvalidTransforms += invalidTransform ? 1 : 0;
+		if (draw != nullptr)
+		{
+			diagnostics_.Draw.Merge(*draw);
+		}
+	}
 #endif
 
 	bool BuildingLayer::OpenViewport(
@@ -149,18 +163,11 @@ namespace MiniMapUI
 #endif
 	)
 	{
-	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		{
-			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
-			++diagnostics_.RenderCallbacks;
-			if (!showLayer)
-			{
-				++diagnostics_.HiddenDraws;
-			}
-		}
-	#endif
 		if (!showLayer)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			RecordRenderDiagnostics(true, false, nullptr);
+#endif
 #if defined(_DEBUG)
 			if (showSectionGrid && service_ != nullptr)
 			{
@@ -173,16 +180,25 @@ namespace MiniMapUI
 		if (!TryBuildCanvasTransform(mapTransform, transform))
 		{
 		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			std::lock_guard<std::mutex> lock(diagnosticsMutex_);
-			++diagnostics_.InvalidTransforms;
+			RecordRenderDiagnostics(false, true, nullptr);
 			#endif
 			return;
 		}
 		const auto viewport = AcquireViewport();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Services::Map::Buildings::BuildingMapPerformanceDiagnostics::RenderWork draw;
+#endif
 		if (viewport != nullptr)
 		{
-			viewport->Draw(canvas, MiniMap::Services::DrawLayer::Window, transform);
+			viewport->Draw(canvas, MiniMap::Services::DrawLayer::Window, transform
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, &draw
+#endif
+				);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		RecordRenderDiagnostics(false, false, &draw);
+#endif
 #if defined(_DEBUG)
 		if (showSectionGrid && service_ != nullptr)
 		{
