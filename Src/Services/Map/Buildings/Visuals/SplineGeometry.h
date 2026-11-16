@@ -75,8 +75,8 @@ namespace Services::Map::Buildings::Visuals
 	struct SplineSamplingPolicy
 	{
 		double PixelsPerUnit = 1.0;
-		double XYErrorPixels = 0.75;
-		double HeightErrorUnits = 1.0;
+		double XYErrorPixels = 1.0;
+		double HeightErrorUnits = 10.0;
 		unsigned Depth = 8;
 		std::size_t SampleLimit = (std::numeric_limits<std::size_t>::max)();
 	};
