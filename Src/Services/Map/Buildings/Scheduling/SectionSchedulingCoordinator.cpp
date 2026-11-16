@@ -765,13 +765,14 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 	}
 
-	/** Emits one bounded warning when a Section first promotes terminal spline omissions. */
+	/** Emits one bounded warning for completed Section omissions and isolated geometry failures. */
 	void SectionSchedulingCoordinator::ReportTerminalSplineOmissions(
 		const SectionCoordinate& coordinate,
 		const ::Services::Map::Buildings::Visuals::BuildingVisualsTerminalOmissionSummary& omissions) const noexcept
 	{
 		using Alternative = ::Services::Map::Buildings::Visuals::BuildingSplineAlternativeStatus;
-		if (omissions.SplineContributorCount == 0)
+		if (omissions.SplineContributorCount == 0 && !omissions.HasNumericalClippingFailure &&
+			omissions.OrdinarySpriteGeometryFailureCount == 0)
 		{
 			return;
 		}
@@ -780,21 +781,38 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return;
 		}
-		const char* failureReason = omissions.Reason ==
-			::Services::Map::Buildings::Visuals::BuildingSplineOmissionReason::NumericalRejection
+		const char* failureReason = omissions.OrdinarySpriteGeometryFailureCount != 0 &&
+			omissions.SplineContributorCount == 0 && !omissions.HasNumericalClippingFailure
+			? "OrdinarySpriteGeometryFailure"
+			: omissions.Reason ==
+			::Services::Map::Buildings::Visuals::BuildingSplineOmissionReason::NumericalClippingFailure
+			? "NumericalClippingFailure"
+			: omissions.Reason ==
+				::Services::Map::Buildings::Visuals::BuildingSplineOmissionReason::NumericalRejection
 			? "NumericalRejection"
 			: omissions.AlternativeStatus == Alternative::NoDrawableAlternative
 				? "NoDrawableAlternative"
 				: "Unknown";
+		const char* completion = omissions.SplineContributorCount != 0
+			? "completed with terminal omissions"
+			: "completed after isolated geometry failures";
 		MiniMap::Services::Logf(
 			*log,
 			MiniMap::Services::Level::Warn,
-			"MiniMap: BuildingMap Section grid=(%lld,%lld) completed with terminal omissions category=splines count=%llu firstSectionLocalContributor=%llu reason=%s",
+			"MiniMap: BuildingMap Section grid=(%lld,%lld) %s splineOmissions=%llu firstSplineOmission=%llu reason=%s numericalClipCandidateFailures=%llu firstClipFailure=(ordinal=%llu,descriptor=%llu,surface=%llu,status=%d) ordinarySpriteGeometryOmissions=%llu firstOrdinarySpriteOmission=%llu",
 			static_cast<long long>(coordinate.GridX),
 			static_cast<long long>(coordinate.GridY),
+			completion,
 			static_cast<unsigned long long>(omissions.SplineContributorCount),
 			static_cast<unsigned long long>(omissions.FirstSectionLocalOrdinal),
-			failureReason);
+			failureReason,
+			static_cast<unsigned long long>(omissions.NumericalClippingFailureCount),
+			static_cast<unsigned long long>(omissions.FirstFailedSectionLocalOrdinal),
+			static_cast<unsigned long long>(omissions.FirstFailedDescriptorIndex),
+			static_cast<unsigned long long>(omissions.FirstFailedSurfaceIndex),
+			static_cast<int>(omissions.FirstOcclusionStatus),
+			static_cast<unsigned long long>(omissions.OrdinarySpriteGeometryFailureCount),
+			static_cast<unsigned long long>(omissions.FirstOrdinarySpriteFailureOrdinal));
 	}
 
 	/** Starts gameplay scheduling through the existing SectionScheduler. */

@@ -629,6 +629,137 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Removed = 0;
         };
 
+        /** Aggregates sampled wall time for one operation type without per-operation clocks. */
+        struct SampledPublicationPhase
+        {
+            static constexpr std::uint64_t SampleInterval = 256;
+
+            std::uint64_t Operations = 0;
+            std::uint64_t Samples = 0;
+            double SampledMilliseconds = 0.0;
+
+            /** Counts one operation and samples its first and every 256th occurrence. */
+            bool BeginOperation() noexcept
+            {
+                ++Operations;
+                return Operations == 1 || Operations % SampleInterval == 0;
+            }
+
+            /** Adds one sampled duration; callers scale the mean by the exact operation count. */
+            void AddSample(double milliseconds) noexcept
+            {
+                ++Samples;
+                SampledMilliseconds += milliseconds;
+            }
+
+            /** Estimates total phase time from the sampled mean and exact operation count. */
+            double EstimatedMilliseconds() const noexcept
+            {
+                return Samples == 0 ? 0.0 : SampledMilliseconds *
+                    static_cast<double>(Operations) / static_cast<double>(Samples);
+            }
+
+            /** Merges bounded sample totals while retaining exact operation and sample counts. */
+            void Accumulate(const SampledPublicationPhase& other) noexcept
+            {
+                Operations += other.Operations;
+                Samples += other.Samples;
+                SampledMilliseconds += other.SampledMilliseconds;
+            }
+        };
+
+        /** Measures only sampled operations while keeping every operation count exact. */
+        struct SampledPublicationPhaseTimer
+        {
+            SampledPublicationPhase& Phase;
+            bool IsSampled = false;
+            Clock::time_point Started{};
+
+            explicit SampledPublicationPhaseTimer(SampledPublicationPhase& phase) noexcept
+                : Phase(phase), IsSampled(phase.BeginOperation())
+            {
+                if (IsSampled)
+                {
+                    Started = Clock::now();
+                }
+            }
+
+            ~SampledPublicationPhaseTimer() noexcept
+            {
+                if (IsSampled)
+                {
+                    Phase.AddSample(
+                        std::chrono::duration<double, std::milli>(Clock::now() - Started).count());
+                }
+            }
+        };
+
+        /** Stores exact outer phase times, sampled nested estimates, and exact builder counts. */
+        struct SectionPublicationBuildMetrics
+        {
+            double TotalMilliseconds = 0.0;
+            double LookupMilliseconds = 0.0;
+            double BoundsMilliseconds = 0.0;
+            double EntityLoopMilliseconds = 0.0;
+            double FreezeMilliseconds = 0.0;
+            double IndexSortMilliseconds = 0.0;
+            double MaterializationMilliseconds = 0.0;
+            SampledPublicationPhase CandidatePolicy;
+            SampledPublicationPhase CandidateOccurrence;
+            SampledPublicationPhase ReachedRange;
+            SampledPublicationPhase MatchingSections;
+            SampledPublicationPhase SourceConversion;
+            SampledPublicationPhase ContributorDistribution;
+            std::uint64_t EntitiesVisited = 0;
+            std::uint64_t PolicyExcluded = 0;
+            std::uint64_t SpatialBoundsExcluded = 0;
+            std::uint64_t NoMatchingSection = 0;
+            std::uint64_t EntitiesConverted = 0;
+            std::uint64_t DistinctContributors = 0;
+            std::uint64_t ContributorCopies = 0;
+            std::uint64_t SourceCopies = 0;
+            std::uint64_t SourceMoves = 0;
+            std::uint64_t RequestedSections = 0;
+            std::uint64_t FinalOccurrences = 0;
+
+            /** Adds one invocation to the interval's exact and sampled aggregate fields. */
+            void Accumulate(const SectionPublicationBuildMetrics& other) noexcept
+            {
+                TotalMilliseconds += other.TotalMilliseconds;
+                LookupMilliseconds += other.LookupMilliseconds;
+                BoundsMilliseconds += other.BoundsMilliseconds;
+                EntityLoopMilliseconds += other.EntityLoopMilliseconds;
+                FreezeMilliseconds += other.FreezeMilliseconds;
+                IndexSortMilliseconds += other.IndexSortMilliseconds;
+                MaterializationMilliseconds += other.MaterializationMilliseconds;
+                CandidatePolicy.Accumulate(other.CandidatePolicy);
+                CandidateOccurrence.Accumulate(other.CandidateOccurrence);
+                ReachedRange.Accumulate(other.ReachedRange);
+                MatchingSections.Accumulate(other.MatchingSections);
+                SourceConversion.Accumulate(other.SourceConversion);
+                ContributorDistribution.Accumulate(other.ContributorDistribution);
+                EntitiesVisited += other.EntitiesVisited;
+                PolicyExcluded += other.PolicyExcluded;
+                SpatialBoundsExcluded += other.SpatialBoundsExcluded;
+                NoMatchingSection += other.NoMatchingSection;
+                EntitiesConverted += other.EntitiesConverted;
+                DistinctContributors += other.DistinctContributors;
+                ContributorCopies += other.ContributorCopies;
+                SourceCopies += other.SourceCopies;
+                SourceMoves += other.SourceMoves;
+                RequestedSections += other.RequestedSections;
+                FinalOccurrences += other.FinalOccurrences;
+            }
+
+            /** Returns inclusive time outside the four exact, sequentially timed outer phases. */
+            double ResidualMilliseconds() const noexcept
+            {
+                const double measured = LookupMilliseconds + BoundsMilliseconds +
+                    EntityLoopMilliseconds + FreezeMilliseconds;
+                return (std::max)(0.0, TotalMilliseconds - measured);
+            }
+        };
+
         /** Owns bounded interval counters and phase aggregates for this collector session. */
         struct Measurements
         {
@@ -667,6 +798,8 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t PublicationBuilderCalls = 0;
             std::uint64_t RepeatedQueriesWithoutRebuild = 0;
             double PublicationBuildMs = 0.0;
+            SectionPublicationBuildMetrics PublicationBuildTotals;
+            SectionPublicationBuildMetrics SlowestPublicationBuild;
             WorstMembershipScan WorstScan;
 
             void Reset() noexcept
@@ -910,11 +1043,12 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
-        /** Retains acquired facts and their definition owner for one building identity. */
+        /** Retains acquired facts, their definition owner, and completed contribution for one building identity. */
         struct Entry
         {
             Facts::Building Data;
             std::shared_ptr<DefinitionOwner> Definition;
+            std::uint64_t CompletedContribution = 0;
         };
 
         /** Captured context used after every potentially reentrant acquisition operation. */
@@ -1094,7 +1228,6 @@ namespace MiniMap::BuildingAcquisition
             {
                 MembershipComplete = true;
                 ImmediateScanRequired = false;
-                RetainSuccessfulContainedRegionOwners();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 ++Diagnostics.SuccessfulCoverageReuse;
 #endif
@@ -1117,20 +1250,6 @@ namespace MiniMap::BuildingAcquisition
             RegionChangePendingValidation = false;
             PendingSnapshotEligible = false;
             PendingReuseEligible = false;
-        }
-
-        /** Prunes leaving owners only after the existing contained-coverage check succeeds. */
-        void RetainSuccessfulContainedRegionOwners() noexcept
-        {
-            if (CommittedCoverage == RequestedRegion)
-            {
-                return;
-            }
-            const std::size_t preservedCount = RetainOverlappingSectionPublications(
-                CommittedCoverage, RequestedRegion);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            Diagnostics.SectionOwnersPreservedOnMovement += preservedCount;
-#endif
         }
 
         /** Tests the exact shared reach predicate against one acquired rectangle. */
@@ -1885,6 +2004,7 @@ namespace MiniMap::BuildingAcquisition
         void ReconcileAcquiredOccurrence(
             Facts::Building& data,
             const OwnedScanOccurrence& occurrence,
+            std::uint64_t completedContribution,
             std::unordered_map<std::uint64_t, Entry>& reconciled,
             std::unordered_set<std::uint64_t>& pending,
             const Facts::Region& previousCoverage,
@@ -1910,6 +2030,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     entry.Data = previous->second.Data;
                     entry.Definition = previous->second.Definition;
+                    entry.CompletedContribution = previous->second.CompletedContribution;
                 }
                 else
                 {
@@ -1928,6 +2049,7 @@ namespace MiniMap::BuildingAcquisition
 #endif
 #endif
                     entry.Data = std::move(data);
+                    entry.CompletedContribution = completedContribution;
                 }
             }
             else
@@ -1938,6 +2060,7 @@ namespace MiniMap::BuildingAcquisition
                     publicationFactsUnchanged = false;
                 }
                 entry.Data = std::move(data);
+                entry.CompletedContribution = completedContribution;
             }
             if (!entry.Data.Complete)
             {
@@ -1986,9 +2109,10 @@ namespace MiniMap::BuildingAcquisition
                 {
                     return false;
                 }
-                acquisitionHash.Add(
-                    CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data));
-                ReconcileAcquiredOccurrence(data, occurrence, reconciled, pending,
+                const std::uint64_t completedContribution =
+                    CompleteAcquisitionContribution(occurrence.PreliminaryHashContribution, data);
+                acquisitionHash.Add(completedContribution);
+                ReconcileAcquiredOccurrence(data, occurrence, completedContribution, reconciled, pending,
                     previousCoverage, canCompareCoverageMovement, publicationFactsUnchanged
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                     , changes
@@ -2684,6 +2808,24 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t Identity = 0;
             CandidateOccurrence Occurrence;
             CandidateSourceRecord Source;
+
+            /** Copies one source value when a contributor is distributed to an earlier Section. */
+            SectionContributor(
+                std::uint64_t identity,
+                const CandidateOccurrence& occurrence,
+                const CandidateSourceRecord& source)
+                : Identity(identity), Occurrence(occurrence), Source(source)
+            {
+            }
+
+            /** Moves the owned source value into the final matching Section. */
+            SectionContributor(
+                std::uint64_t identity,
+                const CandidateOccurrence& occurrence,
+                CandidateSourceRecord&& source)
+                : Identity(identity), Occurrence(occurrence), Source(std::move(source))
+            {
+            }
         };
 
         /** Holds the two rectangles prepared once for one requested Section. */
@@ -2973,20 +3115,38 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
-        /** Appends one pre-converted occurrence and hash contribution to its exact Sections. */
+        /** Distributes one occurrence by copying its source to earlier matches and moving it to the last. */
         static void AppendContributorToSections(
             const Facts::Building& building,
             const CandidateOccurrence& occurrence,
-            const CandidateSourceRecord& source,
+            CandidateSourceRecord& source,
             std::uint64_t contentHash,
             const std::vector<std::size_t>& matchingSections,
             std::vector<std::vector<SectionContributor>>& contributorsBySection,
-            std::vector<AcquisitionHashAggregate>& hashesBySection)
+            std::vector<AcquisitionHashAggregate>& hashesBySection
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        )
         {
             const std::uint64_t identity = Key({building.Index, building.Serial});
-            for (std::size_t sectionIndex : matchingSections)
+            for (std::size_t matchingIndex = 0; matchingIndex < matchingSections.size(); ++matchingIndex)
             {
-                contributorsBySection[sectionIndex].push_back({identity, occurrence, source});
+                const std::size_t sectionIndex = matchingSections[matchingIndex];
+                if (matchingIndex + 1 == matchingSections.size())
+                {
+                    contributorsBySection[sectionIndex].emplace_back(identity, occurrence, std::move(source));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++metrics.SourceMoves;
+#endif
+                }
+                else
+                {
+                    contributorsBySection[sectionIndex].emplace_back(identity, occurrence, source);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++metrics.SourceCopies;
+#endif
+                }
                 hashesBySection[sectionIndex].Add(contentHash);
             }
         }
@@ -2995,23 +3155,44 @@ namespace MiniMap::BuildingAcquisition
         static std::vector<std::shared_ptr<const CandidatePublication>> FreezeSectionPublications(
             std::span<const CollectionRegion> sectionRegions,
             std::vector<std::vector<SectionContributor>>& contributorsBySection,
-            const std::vector<AcquisitionHashAggregate>& hashesBySection)
+            const std::vector<AcquisitionHashAggregate>& hashesBySection
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        )
         {
             std::vector<std::shared_ptr<const CandidatePublication>> publications;
             publications.reserve(sectionRegions.size());
             for (std::size_t sectionIndex = 0; sectionIndex < sectionRegions.size(); ++sectionIndex)
             {
                 auto& contributors = contributorsBySection[sectionIndex];
-                std::sort(contributors.begin(), contributors.end(), [](const auto& left, const auto& right)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                metrics.FinalOccurrences += contributors.size();
+                const auto indexSortStarted = Clock::now();
+#endif
+                std::vector<std::size_t> contributorOrder;
+                contributorOrder.reserve(contributors.size());
+                for (std::size_t contributorIndex = 0; contributorIndex < contributors.size(); ++contributorIndex)
                 {
-                    return left.Identity < right.Identity;
+                    contributorOrder.push_back(contributorIndex);
+                }
+                std::sort(contributorOrder.begin(), contributorOrder.end(), [&contributors](
+                    std::size_t leftIndex, std::size_t rightIndex)
+                {
+                    return contributors[leftIndex].Identity < contributors[rightIndex].Identity;
                 });
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                metrics.IndexSortMilliseconds +=
+                    std::chrono::duration<double, std::milli>(Clock::now() - indexSortStarted).count();
+                const auto materializationStarted = Clock::now();
+#endif
                 std::vector<CandidateOccurrence> occurrences;
                 std::vector<CandidateSourceRecord> sourceRecords;
                 occurrences.reserve(contributors.size());
                 sourceRecords.reserve(contributors.size());
-                for (SectionContributor& contributor : contributors)
+                for (std::size_t contributorIndex : contributorOrder)
                 {
+                    SectionContributor& contributor = contributors[contributorIndex];
                     CandidateOccurrence occurrence = contributor.Occurrence;
                     occurrence.publicationOrdinal = static_cast<std::uint64_t>(occurrences.size());
                     occurrences.push_back(std::move(occurrence));
@@ -3020,6 +3201,10 @@ namespace MiniMap::BuildingAcquisition
                 publications.push_back(std::make_shared<const CandidatePublication>(
                     sectionRegions[sectionIndex], std::move(occurrences), std::move(sourceRecords),
                     FinalizeAcquisitionHash(hashesBySection[sectionIndex])));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                metrics.MaterializationMilliseconds +=
+                    std::chrono::duration<double, std::milli>(Clock::now() - materializationStarted).count();
+#endif
             }
             return publications;
         }
@@ -3127,30 +3312,58 @@ namespace MiniMap::BuildingAcquisition
         std::vector<std::shared_ptr<const CandidatePublication>> BuildMissingSectionPublications(
             const std::vector<CollectionRegion>& missingRegions)
         {
-            const auto buildStarted = Clock::now();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto buildStarted = Clock::now();
+            SectionPublicationBuildMetrics metrics;
+            metrics.RequestedSections = missingRegions.size();
             ++Diagnostics.PublicationBuilderCalls;
 #endif
             try
             {
                 RequestedSectionLookup lookup;
-                BuildRequestedSectionLookup(missingRegions, lookup);
-                auto publications = BuildRequestedSectionPublications(missingRegions, lookup);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                Diagnostics.PublicationBuildMs +=
+                const auto lookupStarted = Clock::now();
+#endif
+                BuildRequestedSectionLookup(missingRegions, lookup);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                metrics.LookupMilliseconds =
+                    std::chrono::duration<double, std::milli>(Clock::now() - lookupStarted).count();
+#endif
+                auto publications = BuildRequestedSectionPublications(missingRegions, lookup
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , metrics
+#endif
+                );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                metrics.TotalMilliseconds =
                     std::chrono::duration<double, std::milli>(Clock::now() - buildStarted).count();
+                RecordSectionPublicationBuild(metrics);
 #endif
                 return publications;
             }
             catch (...)
             {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                Diagnostics.PublicationBuildMs +=
+                metrics.TotalMilliseconds =
                     std::chrono::duration<double, std::milli>(Clock::now() - buildStarted).count();
+                RecordSectionPublicationBuild(metrics);
 #endif
                 throw;
             }
         }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Commits one bounded cache-miss build to interval totals and the slowest invocation. */
+        void RecordSectionPublicationBuild(const SectionPublicationBuildMetrics& metrics) noexcept
+        {
+            Diagnostics.PublicationBuildMs += metrics.TotalMilliseconds;
+            Diagnostics.PublicationBuildTotals.Accumulate(metrics);
+            if (metrics.TotalMilliseconds >= Diagnostics.SlowestPublicationBuild.TotalMilliseconds)
+            {
+                Diagnostics.SlowestPublicationBuild = metrics;
+            }
+        }
+#endif
 
         /** Restores exact request order and duplicate coordinates from retained owners. */
         std::vector<std::shared_ptr<const CandidatePublication>> BuildOrderedSectionPublications(
@@ -3172,40 +3385,188 @@ namespace MiniMap::BuildingAcquisition
         /** Runs the existing batch distribution once for the unique missing Section cells. */
         std::vector<std::shared_ptr<const CandidatePublication>> BuildRequestedSectionPublications(
             std::span<const CollectionRegion> sectionRegions,
-            const RequestedSectionLookup& lookup) const
+            const RequestedSectionLookup& lookup
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        ) const
         {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto boundsStarted = Clock::now();
+#endif
             const std::vector<SectionAdmissionBounds> sectionBounds =
                 BuildSectionAdmissionBounds(sectionRegions);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            metrics.BoundsMilliseconds =
+                std::chrono::duration<double, std::milli>(Clock::now() - boundsStarted).count();
+#endif
             std::vector<std::vector<SectionContributor>> contributorsBySection(sectionRegions.size());
             std::vector<AcquisitionHashAggregate> hashesBySection(sectionRegions.size());
             std::vector<std::size_t> matchingSections;
             matchingSections.reserve(8);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const auto entityLoopStarted = Clock::now();
+#endif
+            CollectRequestedSectionContributors(lookup, sectionBounds,
+                contributorsBySection, hashesBySection, matchingSections
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , metrics
+#endif
+            );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            metrics.EntityLoopMilliseconds =
+                std::chrono::duration<double, std::milli>(Clock::now() - entityLoopStarted).count();
+            const auto freezeStarted = Clock::now();
+#endif
+            auto publications = FreezeSectionPublications(sectionRegions, contributorsBySection, hashesBySection
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                , metrics
+#endif
+            );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            metrics.FreezeMilliseconds =
+                std::chrono::duration<double, std::milli>(Clock::now() - freezeStarted).count();
+#endif
+            return publications;
+        }
+
+        /** Traverses committed entities once and distributes only policy and spatial matches. */
+        void CollectRequestedSectionContributors(
+            const RequestedSectionLookup& lookup,
+            std::span<const SectionAdmissionBounds> sectionBounds,
+            std::vector<std::vector<SectionContributor>>& contributorsBySection,
+            std::vector<AcquisitionHashAggregate>& hashesBySection,
+            std::vector<std::size_t>& matchingSections
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        ) const
+        {
             for (const auto& entity : Entities)
             {
-                const Facts::Building& building = entity.second.Data;
-                if (!ShouldIncludeCandidate(building))
+                const Entry& entry = entity.second;
+                const Facts::Building& building = entry.Data;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++metrics.EntitiesVisited;
+                bool includeCandidate = false;
+                {
+                    SampledPublicationPhaseTimer timer(metrics.CandidatePolicy);
+                    includeCandidate = ShouldIncludeCandidate(building);
+                }
+#else
+                const bool includeCandidate = ShouldIncludeCandidate(building);
+#endif
+                if (!includeCandidate)
+                {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    ++metrics.PolicyExcluded;
+#endif
+                    continue;
+                }
+                CandidateOccurrence occurrence;
+                if (!FindRequestedSectionsForCandidate(building, lookup, sectionBounds,
+                    matchingSections, occurrence
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , metrics
+#endif
+                ))
                 {
                     continue;
                 }
-                CandidateOccurrence occurrence = MakeCandidateOccurrence(building);
-                SectionGridRange reachedRange;
-                if (!TryGetReachedSectionGridRange(building, occurrence, lookup, reachedRange))
-                {
-                    continue;
-                }
-                FindMatchingSections(
-                    building, occurrence, reachedRange, sectionBounds, lookup, matchingSections);
-                if (matchingSections.empty())
-                {
-                    continue;
-                }
-                CandidateSourceRecord source = BuildCandidateSourceRecord(building);
-                const std::uint64_t preliminary = ComputePreliminaryAcquisitionContribution(building);
-                const std::uint64_t contentHash = CompleteAcquisitionContribution(preliminary, building);
-                AppendContributorToSections(building, occurrence, source, contentHash, matchingSections,
-                    contributorsBySection, hashesBySection);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ++metrics.DistinctContributors;
+                ++metrics.EntitiesConverted;
+#endif
+                AppendRequestedContributor(entry, occurrence, matchingSections,
+                    contributorsBySection, hashesBySection
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                    , metrics
+#endif
+                );
             }
-            return FreezeSectionPublications(sectionRegions, contributorsBySection, hashesBySection);
+        }
+
+        /** Computes exact requested Section matches for one policy-admitted occurrence. */
+        static bool FindRequestedSectionsForCandidate(
+            const Facts::Building& building,
+            const RequestedSectionLookup& lookup,
+            std::span<const SectionAdmissionBounds> sectionBounds,
+            std::vector<std::size_t>& matchingSections,
+            CandidateOccurrence& occurrence
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        )
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            {
+                SampledPublicationPhaseTimer timer(metrics.CandidateOccurrence);
+                occurrence = MakeCandidateOccurrence(building);
+            }
+            SectionGridRange reachedRange;
+            bool hasReachedRange = false;
+            {
+                SampledPublicationPhaseTimer timer(metrics.ReachedRange);
+                hasReachedRange = TryGetReachedSectionGridRange(building, occurrence, lookup, reachedRange);
+            }
+            if (!hasReachedRange)
+            {
+                ++metrics.SpatialBoundsExcluded;
+                return false;
+            }
+            {
+                SampledPublicationPhaseTimer timer(metrics.MatchingSections);
+                FindMatchingSections(building, occurrence, reachedRange, sectionBounds, lookup, matchingSections);
+            }
+#else
+            occurrence = MakeCandidateOccurrence(building);
+            SectionGridRange reachedRange;
+            if (!TryGetReachedSectionGridRange(building, occurrence, lookup, reachedRange))
+            {
+                return false;
+            }
+            FindMatchingSections(building, occurrence, reachedRange, sectionBounds, lookup, matchingSections);
+#endif
+            if (!matchingSections.empty())
+            {
+                return true;
+            }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++metrics.NoMatchingSection;
+#endif
+            return false;
+        }
+
+        /** Converts one admitted occurrence and reuses its committed contribution before distribution. */
+        static void AppendRequestedContributor(
+            const Entry& entry,
+            const CandidateOccurrence& occurrence,
+            const std::vector<std::size_t>& matchingSections,
+            std::vector<std::vector<SectionContributor>>& contributorsBySection,
+            std::vector<AcquisitionHashAggregate>& hashesBySection
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            , SectionPublicationBuildMetrics& metrics
+#endif
+        )
+        {
+            const Facts::Building& building = entry.Data;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            CandidateSourceRecord source = [&building, &metrics]()
+            {
+                SampledPublicationPhaseTimer timer(metrics.SourceConversion);
+                return BuildCandidateSourceRecord(building);
+            }();
+            metrics.ContributorCopies += matchingSections.size();
+            {
+                SampledPublicationPhaseTimer timer(metrics.ContributorDistribution);
+                AppendContributorToSections(building, occurrence, source, entry.CompletedContribution, matchingSections,
+                    contributorsBySection, hashesBySection, metrics);
+            }
+#else
+            CandidateSourceRecord source = BuildCandidateSourceRecord(building);
+            AppendContributorToSections(building, occurrence, source, entry.CompletedContribution, matchingSections,
+                contributorsBySection, hashesBySection);
+#endif
         }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -3282,6 +3643,138 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<unsigned long long>(d.PublicationBuilderCalls),
                 static_cast<unsigned long long>(d.RepeatedQueriesWithoutRebuild),
                 d.PublicationBuildMs);
+            ReportSectionPublicationBuildMeasurements(intervalMs);
+        }
+
+        /** Reports exact outer phases, sampled nested estimates, and the slowest cache-miss build. */
+        void ReportSectionPublicationBuildMeasurements(double intervalMs) const
+        {
+            ReportSectionPublicationBuildTotals(intervalMs);
+            ReportSectionPublicationBuildEstimates(intervalMs, Diagnostics.PublicationBuildTotals);
+            if (Diagnostics.PublicationBuilderCalls == 0)
+            {
+                return;
+            }
+            ReportSlowestSectionPublicationBuild(intervalMs, Diagnostics.SlowestPublicationBuild);
+        }
+
+        /** Reports interval totals for inclusive time, nonoverlapping phases, and exact counts. */
+        void ReportSectionPublicationBuildTotals(double intervalMs) const
+        {
+            const auto& metrics = Diagnostics.PublicationBuildTotals;
+            LOG_INFO("MiniMap: BuildingMap section_publication_build intervalMs=%.1f calls:%llu inclusiveMs:%.3f exactMs={lookup:%.3f bounds:%.3f entityLoop:%.3f freezeSort:%.3f residual:%.3f} freezeSortChildrenMs={indexSort:%.3f materialization:%.3f} counts={visited:%llu policyExcluded:%llu spatialExcluded:%llu noMatchingSection:%llu converted:%llu contributors:%llu copies:%llu sourceCopies:%llu sourceMoves:%llu requestedSections:%llu finalOccurrences:%llu}",
+                intervalMs,
+                static_cast<unsigned long long>(Diagnostics.PublicationBuilderCalls),
+                metrics.TotalMilliseconds,
+                metrics.LookupMilliseconds,
+                metrics.BoundsMilliseconds,
+                metrics.EntityLoopMilliseconds,
+                metrics.FreezeMilliseconds,
+                metrics.ResidualMilliseconds(),
+                metrics.IndexSortMilliseconds,
+                metrics.MaterializationMilliseconds,
+                static_cast<unsigned long long>(metrics.EntitiesVisited),
+                static_cast<unsigned long long>(metrics.PolicyExcluded),
+                static_cast<unsigned long long>(metrics.SpatialBoundsExcluded),
+                static_cast<unsigned long long>(metrics.NoMatchingSection),
+                static_cast<unsigned long long>(metrics.EntitiesConverted),
+                static_cast<unsigned long long>(metrics.DistinctContributors),
+                static_cast<unsigned long long>(metrics.ContributorCopies),
+                static_cast<unsigned long long>(metrics.SourceCopies),
+                static_cast<unsigned long long>(metrics.SourceMoves),
+                static_cast<unsigned long long>(metrics.RequestedSections),
+                static_cast<unsigned long long>(metrics.FinalOccurrences));
+        }
+
+        /** Reports the aggregate nested phase estimates and their sample/operation counts. */
+        void ReportSectionPublicationBuildEstimates(
+            double intervalMs,
+            const SectionPublicationBuildMetrics& metrics) const
+        {
+            LOG_INFO("MiniMap: BuildingMap section_publication_build_estimate intervalMs=%.1f sampling:first+each256 nestedEstimateMs={policy:%.3f occurrence:%.3f reachedRange:%.3f matching:%.3f source:%.3f distribution:%.3f} samples={policy:%llu/%llu occurrence:%llu/%llu reachedRange:%llu/%llu matching:%llu/%llu source:%llu/%llu distribution:%llu/%llu}",
+                intervalMs,
+                metrics.CandidatePolicy.EstimatedMilliseconds(),
+                metrics.CandidateOccurrence.EstimatedMilliseconds(),
+                metrics.ReachedRange.EstimatedMilliseconds(),
+                metrics.MatchingSections.EstimatedMilliseconds(),
+                metrics.SourceConversion.EstimatedMilliseconds(),
+                metrics.ContributorDistribution.EstimatedMilliseconds(),
+                static_cast<unsigned long long>(metrics.CandidatePolicy.Samples),
+                static_cast<unsigned long long>(metrics.CandidatePolicy.Operations),
+                static_cast<unsigned long long>(metrics.CandidateOccurrence.Samples),
+                static_cast<unsigned long long>(metrics.CandidateOccurrence.Operations),
+                static_cast<unsigned long long>(metrics.ReachedRange.Samples),
+                static_cast<unsigned long long>(metrics.ReachedRange.Operations),
+                static_cast<unsigned long long>(metrics.MatchingSections.Samples),
+                static_cast<unsigned long long>(metrics.MatchingSections.Operations),
+                static_cast<unsigned long long>(metrics.SourceConversion.Samples),
+                static_cast<unsigned long long>(metrics.SourceConversion.Operations),
+                static_cast<unsigned long long>(metrics.ContributorDistribution.Samples),
+                static_cast<unsigned long long>(metrics.ContributorDistribution.Operations));
+        }
+
+        /** Reports the slowest individual cache-miss builder call in this interval. */
+        void ReportSlowestSectionPublicationBuild(
+            double intervalMs,
+            const SectionPublicationBuildMetrics& metrics) const
+        {
+            ReportSlowestSectionPublicationBuildTotals(intervalMs, metrics);
+            ReportSectionPublicationBuildEstimatesForSlowest(intervalMs, metrics);
+        }
+
+        /** Reports exact outer phase timings and operation counts for the slowest call. */
+        void ReportSlowestSectionPublicationBuildTotals(
+            double intervalMs,
+            const SectionPublicationBuildMetrics& metrics) const
+        {
+            LOG_INFO("MiniMap: BuildingMap section_publication_build_worst intervalMs=%.1f inclusiveMs:%.3f exactMs={lookup:%.3f bounds:%.3f entityLoop:%.3f freezeSort:%.3f residual:%.3f} freezeSortChildrenMs={indexSort:%.3f materialization:%.3f} counts={visited:%llu policyExcluded:%llu spatialExcluded:%llu noMatchingSection:%llu converted:%llu contributors:%llu copies:%llu sourceCopies:%llu sourceMoves:%llu requestedSections:%llu finalOccurrences:%llu}",
+                intervalMs,
+                metrics.TotalMilliseconds,
+                metrics.LookupMilliseconds,
+                metrics.BoundsMilliseconds,
+                metrics.EntityLoopMilliseconds,
+                metrics.FreezeMilliseconds,
+                metrics.ResidualMilliseconds(),
+                metrics.IndexSortMilliseconds,
+                metrics.MaterializationMilliseconds,
+                static_cast<unsigned long long>(metrics.EntitiesVisited),
+                static_cast<unsigned long long>(metrics.PolicyExcluded),
+                static_cast<unsigned long long>(metrics.SpatialBoundsExcluded),
+                static_cast<unsigned long long>(metrics.NoMatchingSection),
+                static_cast<unsigned long long>(metrics.EntitiesConverted),
+                static_cast<unsigned long long>(metrics.DistinctContributors),
+                static_cast<unsigned long long>(metrics.ContributorCopies),
+                static_cast<unsigned long long>(metrics.SourceCopies),
+                static_cast<unsigned long long>(metrics.SourceMoves),
+                static_cast<unsigned long long>(metrics.RequestedSections),
+                static_cast<unsigned long long>(metrics.FinalOccurrences));
+        }
+
+        /** Reports sampled nested phase estimates for the slowest call. */
+        void ReportSectionPublicationBuildEstimatesForSlowest(
+            double intervalMs,
+            const SectionPublicationBuildMetrics& metrics) const
+        {
+            LOG_INFO("MiniMap: BuildingMap section_publication_build_worst_estimate intervalMs=%.1f sampling:first+each256 nestedEstimateMs={policy:%.3f occurrence:%.3f reachedRange:%.3f matching:%.3f source:%.3f distribution:%.3f} samples={policy:%llu/%llu occurrence:%llu/%llu reachedRange:%llu/%llu matching:%llu/%llu source:%llu/%llu distribution:%llu/%llu}",
+                intervalMs,
+                metrics.CandidatePolicy.EstimatedMilliseconds(),
+                metrics.CandidateOccurrence.EstimatedMilliseconds(),
+                metrics.ReachedRange.EstimatedMilliseconds(),
+                metrics.MatchingSections.EstimatedMilliseconds(),
+                metrics.SourceConversion.EstimatedMilliseconds(),
+                metrics.ContributorDistribution.EstimatedMilliseconds(),
+                static_cast<unsigned long long>(metrics.CandidatePolicy.Samples),
+                static_cast<unsigned long long>(metrics.CandidatePolicy.Operations),
+                static_cast<unsigned long long>(metrics.CandidateOccurrence.Samples),
+                static_cast<unsigned long long>(metrics.CandidateOccurrence.Operations),
+                static_cast<unsigned long long>(metrics.ReachedRange.Samples),
+                static_cast<unsigned long long>(metrics.ReachedRange.Operations),
+                static_cast<unsigned long long>(metrics.MatchingSections.Samples),
+                static_cast<unsigned long long>(metrics.MatchingSections.Operations),
+                static_cast<unsigned long long>(metrics.SourceConversion.Samples),
+                static_cast<unsigned long long>(metrics.SourceConversion.Operations),
+                static_cast<unsigned long long>(metrics.ContributorDistribution.Samples),
+                static_cast<unsigned long long>(metrics.ContributorDistribution.Operations));
         }
 
         /** Emits the numeric-only worst scan retained for one completed interval. */

@@ -109,6 +109,7 @@ namespace Services::Map::Buildings::Scheduling
 					TerminalSourceFailure,
 					PendingSpriteAcquisition,
 					TerminalSpriteCaptureFailure,
+					TerminalSpriteGeometryFailure,
 					TemporarilyUnavailableSprite,
 					InvalidSpriteRequirement,
 					MissingSpritePlacement,

@@ -73,6 +73,9 @@ namespace Services::Map::Buildings::Visuals
 			bool SplineSamplingPrepared = false;
 			bool SplineHasDrawableSurface = false;
 			bool SplineHasNumericalCandidateRejection = false;
+			bool SplineHasNumericalClippingFailure = false;
+			/** Owns draw-all surfaces across deadline yields until their spline commits atomically. */
+			std::vector<PreparedBuildingGeometry::SplineSurface> PendingSplineSurfaces;
 			bool HasSectionRegion = false;
 			BuildingCollectionRegion SectionRegion{};
 			bool HasAcceptedOmissions = false;
@@ -260,6 +263,15 @@ namespace Services::Map::Buildings::Visuals
 			std::size_t surfaceIndex,
 			BuildingVisualsContext& scratch,
 			BuildingVisualsContributorOutcome& outcome);
+		/** Rejects an isolated numerical clip result without failing shared Section state. */
+		static Status HandleNumericalClipFailure(
+			const BuildingSplineRenderInput& spline,
+			std::size_t splineIndex,
+			std::size_t surfaceIndex,
+			bool alternative,
+			PreparedBuildingGeometry& output,
+			PreparationCursor& cursor,
+			BuildingVisualsContributorOutcome& outcome);
 		/** Records a prepared candidate and advances the corresponding spline cursor. */
 		static Status FinishSplineCandidate(
 			const BuildingSplineRenderInput& spline,
@@ -304,6 +316,10 @@ namespace Services::Map::Buildings::Visuals
 			const BuildingSplineSurfaceRenderInput& surface,
 			std::size_t surfaceIndex,
 			BuildingVisualsContext& scratch,
+			PreparedBuildingGeometry& output,
+			PreparationCursor& cursor);
+		/** Commits a complete staged draw-all spline contribution to the Section scene. */
+		static void CommitPendingSplineSurfaces(
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor);
 		/** Records a no-surface contributor or an exhausted drawable alternative set. */

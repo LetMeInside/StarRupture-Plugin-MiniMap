@@ -41,7 +41,8 @@ namespace Services::Map::Buildings::Visuals
 	enum class BuildingSplineOmissionReason
 	{
 		NoDrawableAlternative,
-		NumericalRejection
+		NumericalRejection,
+		NumericalClippingFailure
 	};
 
 	/** Records actual numerical and destination outcomes for one positional scene contributor. */
@@ -72,7 +73,7 @@ namespace Services::Map::Buildings::Visuals
 		bool OcclusionAttempted = false;
 	};
 
-	/** Summarizes terminal spline omissions without retaining per-contributor diagnostic storage. */
+	/** Summarizes completed Section omissions and isolated geometry failures without retaining all outcomes. */
 	struct BuildingVisualsTerminalOmissionSummary
 	{
 		/** Number of spline contributors that had no accepted drawable alternative. */
@@ -83,6 +84,16 @@ namespace Services::Map::Buildings::Visuals
 		BuildingVisualsFailureStage FailureStage = BuildingVisualsFailureStage::None;
 		BuildingSplineAlternativeStatus AlternativeStatus = BuildingSplineAlternativeStatus::NotApplicable;
 		BuildingSplineOmissionReason Reason = BuildingSplineOmissionReason::NoDrawableAlternative;
+		/** First isolated numerical clipping failure retained for bounded Section diagnostics. */
+		std::uint64_t FirstFailedSectionLocalOrdinal = 0;
+		std::size_t FirstFailedDescriptorIndex = 0;
+		std::size_t FirstFailedSurfaceIndex = 0;
+		SplineOcclusionStatus FirstOcclusionStatus = SplineOcclusionStatus::Complete;
+		std::size_t NumericalClippingFailureCount = 0;
+		bool HasNumericalClippingFailure = false;
+		/** Ordinary sprite rectangle-clipping failures whose world occluders were retained. */
+		std::size_t OrdinarySpriteGeometryFailureCount = 0;
+		std::uint64_t FirstOrdinarySpriteFailureOrdinal = 0;
 	};
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

@@ -519,7 +519,8 @@ namespace Services::Map::Buildings::Scheduling
 		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
 		const auto status = job.Preparation.SpritePreparation.OccurrenceOutcomes[ordinal].PreparationStatus;
 		if (!job.GeometryComplete &&
-			(status == Status::TerminalSourceFailure || status == Status::TerminalSpriteCaptureFailure))
+			(status == Status::TerminalSourceFailure || status == Status::TerminalSpriteCaptureFailure ||
+				status == Status::TerminalSpriteGeometryFailure))
 		{
 			auto* preparingScene = section.BeginPreparingScene(
 				job.publicationOwner->ContentHash(), job.Preparation.Occurrences.size());
@@ -791,6 +792,7 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
 		return status != Status::TerminalSourceFailure && status != Status::TerminalSpriteCaptureFailure &&
+			status != Status::TerminalSpriteGeometryFailure &&
 			status != Status::ReadySprite && status != Status::ReadySpline;
 	}
 
@@ -1284,6 +1286,41 @@ namespace Services::Map::Buildings::Scheduling
 			return false;
 		}
 		job.GeometryComplete = true;
+		const auto& spriteOutcomes = job.Preparation.SpritePreparation.OccurrenceOutcomes;
+		for (std::size_t ordinal = 0; ordinal < spriteOutcomes.size(); ++ordinal)
+		{
+			if (spriteOutcomes[ordinal].PreparationStatus !=
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteGeometryFailure)
+			{
+				continue;
+			}
+			if (result.TerminalSplineOmissions.OrdinarySpriteGeometryFailureCount == 0)
+			{
+				result.TerminalSplineOmissions.FirstOrdinarySpriteFailureOrdinal = ordinal;
+			}
+			++result.TerminalSplineOmissions.OrdinarySpriteGeometryFailureCount;
+		}
+		const auto& outcomes = job.GeometryCursor.ContributorResults().SplineSurfaces;
+		for (const auto& outcome : outcomes)
+		{
+			if (outcome.FailureStage != Visuals::BuildingVisualsFailureStage::Occlusion ||
+				outcome.OcclusionStatus != Visuals::SplineOcclusionStatus::NumericalFailure)
+			{
+				continue;
+			}
+			++result.TerminalSplineOmissions.NumericalClippingFailureCount;
+			if (result.TerminalSplineOmissions.HasNumericalClippingFailure || job.retainedScene == nullptr ||
+				outcome.ContributorIndex >= job.retainedScene->RenderSceneInput.Splines.size())
+			{
+				continue;
+			}
+			const auto& spline = job.retainedScene->RenderSceneInput.Splines[outcome.ContributorIndex];
+			result.TerminalSplineOmissions.HasNumericalClippingFailure = true;
+			result.TerminalSplineOmissions.FirstFailedSectionLocalOrdinal = spline.SectionLocalOrdinal;
+			result.TerminalSplineOmissions.FirstFailedDescriptorIndex = outcome.ContributorIndex;
+			result.TerminalSplineOmissions.FirstFailedSurfaceIndex = outcome.SurfaceIndex;
+			result.TerminalSplineOmissions.FirstOcclusionStatus = outcome.OcclusionStatus;
+		}
 		if (std::none_of(
 			output->SplineSurfaces().begin(), output->SplineSurfaces().end(),
 			[](const auto& surface) { return surface.IsTextured; }))
@@ -1291,15 +1328,25 @@ namespace Services::Map::Buildings::Scheduling
 			job.retainedScene.reset();
 		}
 		const auto& omittedOrdinals = output->TerminalSplineOmissionOrdinals();
-		if (!omittedOrdinals.empty())
+		if (!omittedOrdinals.empty() || result.TerminalSplineOmissions.HasNumericalClippingFailure ||
+			result.TerminalSplineOmissions.OrdinarySpriteGeometryFailureCount != 0)
 		{
 			result.TerminalSplineOmissions.SplineContributorCount = omittedOrdinals.size();
-			result.TerminalSplineOmissions.FirstSectionLocalOrdinal = omittedOrdinals.front();
-			result.TerminalSplineOmissions.FailureStage =
-				Visuals::BuildingVisualsFailureStage::SurfacePreparation;
-			result.TerminalSplineOmissions.AlternativeStatus =
-				Visuals::BuildingSplineAlternativeStatus::NoDrawableAlternative;
+			if (!omittedOrdinals.empty())
+			{
+				result.TerminalSplineOmissions.FirstSectionLocalOrdinal = omittedOrdinals.front();
+				result.TerminalSplineOmissions.FailureStage = result.TerminalSplineOmissions.HasNumericalClippingFailure
+					? Visuals::BuildingVisualsFailureStage::Occlusion
+					: Visuals::BuildingVisualsFailureStage::SurfacePreparation;
+				result.TerminalSplineOmissions.AlternativeStatus =
+					Visuals::BuildingSplineAlternativeStatus::NoDrawableAlternative;
+			}
 			result.TerminalSplineOmissions.Reason = output->TerminalSplineOmissionReason();
+			if (omittedOrdinals.empty() && result.TerminalSplineOmissions.HasNumericalClippingFailure)
+			{
+				result.TerminalSplineOmissions.Reason =
+					Visuals::BuildingSplineOmissionReason::NumericalClippingFailure;
+			}
 		}
 		return true;
 	}
@@ -2251,12 +2298,20 @@ namespace Services::Map::Buildings::Scheduling
 			if (!Visuals::SpriteGeometry::BuildWorldQuad(
 				requirement.placement, payload.CaptureSize(), payload.Bounds(), payload.Projection(), worldQuad))
 			{
-				if (updatePreparationCounts)
+				if (requirement.spritePass == BuildingCandidateSpritePass::SecondPass)
+				{
+					occurrenceOutcome.PreparationStatus =
+						KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteGeometryFailure;
+				}
+				else if (updatePreparationCounts)
 				{
 					++output.UnresolvedSpriteGeometryCount;
 				}
-				occurrenceOutcome.PreparationStatus =
-					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
+				if (requirement.spritePass != BuildingCandidateSpritePass::SecondPass)
+				{
+					occurrenceOutcome.PreparationStatus =
+						KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
+				}
 				return;
 			}
 			auto* geometry = section.BeginPreparingScene(
@@ -2277,15 +2332,11 @@ namespace Services::Map::Buildings::Scheduling
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			++Performance::Game().ClipAttempts;
 #endif
-			if (!Visuals::BuildingGeometryPreparation::TryClipSpriteToSection(
-				worldQuad, job.publicationOwner->SectionRegion(), clippedTriangles, clippedTriangleCount))
+			const bool sectionClipSucceeded = Visuals::BuildingGeometryPreparation::TryClipSpriteToSection(
+				worldQuad, job.publicationOwner->SectionRegion(), clippedTriangles, clippedTriangleCount);
+			if (!sectionClipSucceeded)
 			{
-				geometry->TrySetContributionStatus(ordinal,
-					Visuals::PreparedBuildingGeometry::ContributionStatus::Failed);
-				occurrenceOutcome.PreparationStatus =
-					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
-				job.GeometryFailed = true;
-				return;
+				clippedTriangleCount = 0;
 			}
 			Visuals::PreparedBuildingGeometry::PrepareSpriteDrawLayout(
 				occurrence, clippedTriangles, clippedTriangleCount);
@@ -2307,15 +2358,19 @@ namespace Services::Map::Buildings::Scheduling
 					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
 				return;
 			}
-			if (!geometry->TrySetContributionStatus(ordinal, hasDrawableGeometry
-				? Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared
-				: Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission))
+			const bool clippedToSection = clippedTriangleCount != 0;
+			const auto contributionStatus = !sectionClipSucceeded
+				? Visuals::PreparedBuildingGeometry::ContributionStatus::TerminalOmission
+				: (hasDrawableGeometry
+					? Visuals::PreparedBuildingGeometry::ContributionStatus::Prepared
+					: Visuals::PreparedBuildingGeometry::ContributionStatus::GeometricOmission);
+			if (!geometry->TrySetContributionStatus(ordinal, contributionStatus))
 			{
 				occurrenceOutcome.PreparationStatus =
 					KnownSpritePreparationResult::OccurrenceOutcome::Status::UnresolvedSpriteGeometry;
 				return;
 			}
-			if (hasDrawableGeometry)
+			if (clippedToSection)
 			{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				++Performance::Game().DrawableSprites;
@@ -2328,9 +2383,10 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 				section.MarkGpuPresentationChanged();
 			}
+			occurrenceOutcome.PreparationStatus = !sectionClipSucceeded
+				? KnownSpritePreparationResult::OccurrenceOutcome::Status::TerminalSpriteGeometryFailure
+				: KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite;
 		}
-		occurrenceOutcome.PreparationStatus =
-			KnownSpritePreparationResult::OccurrenceOutcome::Status::ReadySprite;
 	}
 
 }

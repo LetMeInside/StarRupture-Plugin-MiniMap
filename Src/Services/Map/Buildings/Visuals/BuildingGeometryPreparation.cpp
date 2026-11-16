@@ -39,6 +39,8 @@ namespace Services::Map::Buildings::Visuals
 		SplineSamplingPrepared = false;
 		SplineHasDrawableSurface = false;
 		SplineHasNumericalCandidateRejection = false;
+		SplineHasNumericalClippingFailure = false;
+		PendingSplineSurfaces.clear();
 		HasSectionRegion = false;
 		SectionRegion = {};
 		HasAcceptedOmissions = false;
@@ -667,14 +669,15 @@ namespace Services::Map::Buildings::Visuals
 		bool isOverlayLast = false;
 		const auto* sprite = output.SpriteOccurrenceAtOrdinal(ordinal, isOverlayLast);
 		const bool spriteState = state == PreparedBuildingGeometry::ContributionStatus::Prepared ||
-			state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission;
+			state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission ||
+			(state == PreparedBuildingGeometry::ContributionStatus::TerminalOmission && sprite != nullptr);
 		if (state == PreparedBuildingGeometry::ContributionStatus::Failed ||
 			state == PreparedBuildingGeometry::ContributionStatus::Unresolved ||
 			(sprite != nullptr && spline != nullptr) ||
 			(spriteState && sprite == nullptr) ||
 			(state == PreparedBuildingGeometry::ContributionStatus::NotProcessed && spline == nullptr) ||
 			(state == PreparedBuildingGeometry::ContributionStatus::TerminalOmission &&
-				(sprite != nullptr || spline != nullptr)))
+				(spline != nullptr || (sprite != nullptr && sprite->SectionTriangleCount != 0))))
 		{
 			RECORD_GEOMETRY_FAILURE("geometry initialization / occurrence validation",
 				"sprite, spline, or terminal state is inconsistent", static_cast<long long>(ordinal),
@@ -683,7 +686,9 @@ namespace Services::Map::Buildings::Visuals
 		}
 		if (sprite != nullptr && (sprite->Payload == nullptr || sprite->SourceKey.Bytes().empty() ||
 			(state == PreparedBuildingGeometry::ContributionStatus::Prepared && sprite->SectionTriangleCount == 0) ||
-			(state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission && sprite->SectionTriangleCount != 0)))
+			((state == PreparedBuildingGeometry::ContributionStatus::GeometricOmission ||
+				state == PreparedBuildingGeometry::ContributionStatus::TerminalOmission) &&
+				sprite->SectionTriangleCount != 0)))
 		{
 			RECORD_GEOMETRY_FAILURE("geometry initialization / sprite occurrence validation",
 				"payload, key, or clipped geometry is inconsistent", static_cast<long long>(ordinal));
@@ -857,6 +862,43 @@ namespace Services::Map::Buildings::Visuals
 			scratch, output, cursor, outcome);
 	}
 
+	/** Records one isolated clipping rejection and advances the existing spline cursor. */
+	BuildingGeometryPreparation::Status BuildingGeometryPreparation::HandleNumericalClipFailure(
+		const BuildingSplineRenderInput& spline,
+		std::size_t splineIndex,
+		std::size_t surfaceIndex,
+		bool alternative,
+		PreparedBuildingGeometry& output,
+		PreparationCursor& cursor,
+		BuildingVisualsContributorOutcome& outcome)
+	{
+		cursor.Results.SplineSurfaces.push_back(outcome);
+		cursor.SplineHasNumericalClippingFailure = true;
+		cursor.SplineHasNumericalCandidateRejection = true;
+		cursor.PendingSplineSurfaces.clear();
+		if (alternative)
+		{
+			cursor.Results.SplineSurfaces.back().AlternativeStatus =
+				BuildingSplineAlternativeStatus::CandidateRejected;
+			++cursor.SplineSurfaceIndex;
+			return Status::Pending;
+		}
+		cursor.Results.Complete = false;
+		cursor.HasAcceptedOmissions = true;
+		output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalClippingFailure;
+		output.terminalSplineOmissionOrdinals_.push_back(spline.SectionLocalOrdinal);
+		if (!SetContributionStatus(output, spline.SectionLocalOrdinal,
+			PreparedBuildingGeometry::ContributionStatus::TerminalOmission))
+		{
+			RECORD_GEOMETRY_FAILURE("spline omission", "could not set contribution TerminalOmission",
+				static_cast<long long>(spline.SectionLocalOrdinal), static_cast<long long>(splineIndex),
+				0, 0, static_cast<long long>(surfaceIndex));
+			return Status::InvalidInputs;
+		}
+		FinishSpline(spline.SectionLocalOrdinal, output, cursor, true);
+		return Status::Pending;
+	}
+
 	/** Retains one selected/all-surface result and advances its source-ordered contributor cursor. */
 	BuildingGeometryPreparation::Status BuildingGeometryPreparation::FinishSplineCandidate(
 		const BuildingSplineRenderInput& spline,
@@ -875,6 +917,13 @@ namespace Services::Map::Buildings::Visuals
 		}
 		const Status status = RetainPreparedSurface(spline, surface, splineIndex, surfaceIndex,
 			scratch, output, cursor, outcome);
+		if (status == Status::NumericalFailure &&
+			outcome.FailureStage == BuildingVisualsFailureStage::Occlusion &&
+			outcome.OcclusionStatus == SplineOcclusionStatus::NumericalFailure)
+		{
+			return HandleNumericalClipFailure(
+				spline, splineIndex, surfaceIndex, alternative, output, cursor, outcome);
+		}
 		if (status != Status::Pending)
 		{
 			cursor.Results.SplineSurfaces.push_back(outcome);
@@ -889,8 +938,8 @@ namespace Services::Map::Buildings::Visuals
 			return FinishSplineSectionExclusion(
 				spline, splineIndex, alternative, output, cursor, outcome);
 		}
-		output.splineSurfaces_.back().SourceDescriptorIndex = splineIndex;
-		output.splineSurfaces_.back().SelectedAlternative = alternative;
+		cursor.PendingSplineSurfaces.back().SourceDescriptorIndex = splineIndex;
+		cursor.PendingSplineSurfaces.back().SelectedAlternative = alternative;
 		cursor.SplineHasDrawableSurface = true;
 		cursor.Results.SplineSurfaces.push_back(outcome);
 		if (outcome.FailureStage != BuildingVisualsFailureStage::None)
@@ -905,6 +954,7 @@ namespace Services::Map::Buildings::Visuals
 		}
 		if (alternative)
 		{
+			CommitPendingSplineSurfaces(output, cursor);
 			FinishSpline(spline.SectionLocalOrdinal, output, cursor, false);
 		}
 		else
@@ -912,6 +962,7 @@ namespace Services::Map::Buildings::Visuals
 			++cursor.SplineSurfaceIndex;
 			if (cursor.SplineSurfaceIndex == spline.Surfaces.size())
 			{
+				CommitPendingSplineSurfaces(output, cursor);
 				FinishSpline(spline.SectionLocalOrdinal, output, cursor, false);
 			}
 		}
@@ -935,7 +986,11 @@ namespace Services::Map::Buildings::Visuals
 			cursor.Results.SplineSurfaces.back().FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
 			cursor.Results.Complete = false;
 			cursor.HasAcceptedOmissions = true;
-			if (output.terminalSplineOmissionOrdinals_.empty() &&
+			if (cursor.SplineHasNumericalClippingFailure)
+			{
+				output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalClippingFailure;
+			}
+			else if (output.terminalSplineOmissionOrdinals_.empty() &&
 				cursor.SplineHasNumericalCandidateRejection)
 			{
 				output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalRejection;
@@ -953,6 +1008,10 @@ namespace Services::Map::Buildings::Visuals
 				cursor.Results.Complete = false;
 				cursor.HasAcceptedOmissions = true;
 				output.terminalSplineOmissionOrdinals_.push_back(spline.SectionLocalOrdinal);
+			}
+			else
+			{
+				CommitPendingSplineSurfaces(output, cursor);
 			}
 			FinishSpline(spline.SectionLocalOrdinal, output, cursor, omitted);
 		}
@@ -1120,8 +1179,22 @@ namespace Services::Map::Buildings::Visuals
 			prepared.TexturedTriangles = std::move(scratch.sectionClippedTexturedTriangles_);
 		}
 		PreparedBuildingGeometry::PrepareSolidSurfaceDrawLayout(prepared);
-		output.drawableGpuTriangleCount_ += prepared.DrawSolidTriangles.size();
-		output.splineSurfaces_.push_back(std::move(prepared));
+		cursor.PendingSplineSurfaces.push_back(std::move(prepared));
+	}
+
+	/** Commits all staged surfaces only after a draw-all spline finishes successfully. */
+	void BuildingGeometryPreparation::CommitPendingSplineSurfaces(
+		PreparedBuildingGeometry& output,
+		PreparationCursor& cursor)
+	{
+		const std::size_t requiredSize = output.splineSurfaces_.size() + cursor.PendingSplineSurfaces.size();
+		output.splineSurfaces_.reserve(requiredSize);
+		for (auto& surface : cursor.PendingSplineSurfaces)
+		{
+			output.drawableGpuTriangleCount_ += surface.DrawSolidTriangles.size();
+			output.splineSurfaces_.push_back(std::move(surface));
+		}
+		cursor.PendingSplineSurfaces.clear();
 	}
 
 	/** Records a valid no-surface contributor or an exhausted ordered alternative set. */
@@ -1136,13 +1209,19 @@ namespace Services::Map::Buildings::Visuals
 		outcome.ContributorIndex = splineIndex;
 		outcome.HasSurfaceIndex = false;
 		outcome.AlternativeStatus = BuildingSplineAlternativeStatus::NoDrawableAlternative;
-		outcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
+		outcome.FailureStage = cursor.SplineHasNumericalClippingFailure
+			? BuildingVisualsFailureStage::Occlusion
+			: BuildingVisualsFailureStage::SurfacePreparation;
 		outcome.SamplingIssue = scratch.preparedSplines_[splineIndex].Issue;
 		outcome.SamplingComplete = scratch.preparedSplines_[splineIndex].IsComplete();
 		cursor.Results.SplineSurfaces.push_back(outcome);
 		cursor.Results.Complete = false;
 		cursor.HasAcceptedOmissions = true;
-		if (output.terminalSplineOmissionOrdinals_.empty() && cursor.SplineHasNumericalCandidateRejection)
+		if (cursor.SplineHasNumericalClippingFailure)
+		{
+			output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalClippingFailure;
+		}
+		else if (output.terminalSplineOmissionOrdinals_.empty() && cursor.SplineHasNumericalCandidateRejection)
 		{
 			output.terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NumericalRejection;
 		}
@@ -1166,6 +1245,8 @@ namespace Services::Map::Buildings::Visuals
 		cursor.SplineSamplingPrepared = false;
 		cursor.SplineHasDrawableSurface = false;
 		cursor.SplineHasNumericalCandidateRejection = false;
+		cursor.SplineHasNumericalClippingFailure = false;
+		cursor.PendingSplineSurfaces.clear();
 	}
 
 	/** Reserves one ordinal slot and rejects ordinals already owned by another contributor. */
