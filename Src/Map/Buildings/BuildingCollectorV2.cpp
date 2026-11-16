@@ -2758,7 +2758,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     source.splineGeometryMode =
                         ::Services::Map::Buildings::BuildingCandidateSplineGeometryMode::SyntheticThinRibbon;
-                    source.syntheticThinRibbonHalfWidthMapUnits = 5.0;
+                    source.syntheticThinRibbonHalfWidthMapUnits = 7.5;
                 }
                 if (building.DefinitionFacts)
                 {

@@ -2,6 +2,9 @@
 #pragma once
 
 #include "SplineSurfaceGeometry.h"
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include "../BuildingMapPerformanceDiagnostics.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -134,6 +137,11 @@ namespace Services::Map::Buildings::Visuals
 		std::vector<SupportedVertex> InsidePolygon;
 		std::vector<SupportedVertex> OutsidePolygon;
 		std::vector<SplineOcclusionTriangle> Visible;
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		// Per-surface counts are published only when the entire clip succeeds.
+		std::size_t RemovedTriangles = 0;
+		std::size_t FragmentTriangles = 0;
+#endif
 
 	public:
 		/** Constructs empty per-operation scratch owned by its caller. */
@@ -244,6 +252,10 @@ namespace Services::Map::Buildings::Visuals
 				return index.Status();
 			}
 
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			workspace.RemovedTriangles = 0;
+			workspace.FragmentTriangles = 0;
+#endif
 			try
 			{
 				std::size_t nextVertex = 0;
@@ -277,6 +289,13 @@ namespace Services::Map::Buildings::Visuals
 				workspace.Visible.clear();
 				return SplineOcclusionStatus::AllocationFailure;
 			}
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			auto& work = BuildingMapPerformanceDiagnostics::Game();
+			work.SplineGeneratedTriangles += indices.size() / 3;
+			work.SplinePostOcclusionTriangles += workspace.Visible.size();
+			work.SplineOcclusionRemovedTriangles += workspace.RemovedTriangles;
+			work.SplineOcclusionFragmentTriangles += workspace.FragmentTriangles;
+#endif
 			return SplineOcclusionStatus::Complete;
 		}
 
@@ -567,6 +586,9 @@ namespace Services::Map::Buildings::Visuals
 		{
 			for (std::size_t triangleOffset = 0; triangleOffset < cell.IndexCount; triangleOffset += 3)
 			{
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				const std::size_t priorVisibleCount = workspace.Visible.size();
+#endif
 				const auto triangle = ReadTriangle(vertices, indices, cell.FirstIndex + triangleOffset);
 				const auto metrics = MeasureTriangle(triangle);
 				FilterTriangleCandidates(metrics, index, workspace);
@@ -578,6 +600,17 @@ namespace Services::Map::Buildings::Visuals
 				{
 					return false;
 				}
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				const std::size_t addedVisibleCount = workspace.Visible.size() - priorVisibleCount;
+				if (addedVisibleCount == 0)
+				{
+					++workspace.RemovedTriangles;
+				}
+				else if (addedVisibleCount > 1)
+				{
+					workspace.FragmentTriangles += addedVisibleCount - 1;
+				}
+#endif
 			}
 			return true;
 		}

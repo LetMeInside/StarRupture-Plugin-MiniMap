@@ -75,13 +75,15 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapService;
-		/** Atomically published render-thread value paired with the atlas owner lease. */
+		/** Atomically published render-thread value paired with atlas and shared-white texture leases. */
 		struct PresentationSnapshot
 		{
 			MiniMap::Services::Texture AtlasTexture{};
 			MiniMap::Services::TextureSize AtlasSize{};
 			std::uint64_t AtlasDrawingRevision = 0;
 			std::shared_ptr<const void> AtlasLease;
+			MiniMap::Services::Texture SplineWhiteTexture{};
+			std::shared_ptr<const void> SplineWhiteTextureLease;
 			std::vector<std::shared_ptr<const BuildingMapSectionPresentation>> Sections;
 		};
 
@@ -114,7 +116,9 @@ namespace Services::Map::Buildings
 			MiniMap::Services::Texture atlasTexture,
 			MiniMap::Services::TextureSize atlasSize,
 			std::uint64_t atlasDrawingRevision,
-			const std::shared_ptr<const void>& atlasLease);
+			const std::shared_ptr<const void>& atlasLease,
+			MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease);
 		/** Reuses the last immutable geometry and binds keys against this snapshot's atlas revision.
 		 * @param section Section whose published presentation may need atlas-only replacement.
 		 * @param atlas Manager providing the published sprite registry.
@@ -134,7 +138,9 @@ namespace Services::Map::Buildings
 			MiniMap::Services::Texture atlasTexture,
 			MiniMap::Services::TextureSize atlasSize,
 			std::uint64_t atlasDrawingRevision,
-			const std::shared_ptr<const void>& atlasLease) const;
+			const std::shared_ptr<const void>& atlasLease,
+			MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease) const;
 		/** Rebinds retained keys and counts formerly valid bindings lost in the current revision.
 		 * @param invalidatedBindingCount Accumulates prior valid bindings that are no longer drawable.
 		 */
@@ -170,8 +176,8 @@ namespace Services::Map::Buildings
 			const Visuals::PreparedBuildingGeometry& geometry,
 			bool overlayLast,
 			std::chrono::steady_clock::time_point deadline);
-		/** Appends retained solid spline values in existing surface order. */
-		static bool AdvanceSolidSurfaceAssembly(
+		/** Appends retained spline triangles and contiguous binding ranges in surface order. */
+		static bool AdvanceSplineTriangleAssembly(
 			BuildingMapSection& section,
 			const Visuals::PreparedBuildingGeometry& geometry,
 			std::chrono::steady_clock::time_point deadline);
@@ -226,12 +232,112 @@ namespace Services::Map::Buildings
 #endif
 			) const;
 #endif
-		/** Draws prepared solid spline surfaces in Section and surface order. */
-		void DrawSolidSurfaces(
+		/** Rejects invalid clip bounds before preparing spline draw work. */
+		static bool IsValidSplineClip(const CanvasTransform& transform) noexcept;
+		/** Draws prepared spline ranges in Section and triangle order. */
+		void DrawSplineTriangles(
 			MiniMap::Services::ICanvas& canvas,
 			MiniMap::Services::DrawLayer layer,
 			const CanvasTransform& transform,
+#if defined(MINIMAP_EXPERIMENTAL)
+			MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease,
+#endif
 			const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections) const;
+		/** Draws one Section while sharing spline batching state with adjacent Sections. */
+		void DrawSplineSection(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			const CanvasTransform& transform,
+			const BuildingMapSectionPresentation& section
+#if defined(MINIMAP_EXPERIMENTAL)
+			, MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease,
+			MiniMap::Services::Texture& activeTexture,
+			bool& hasActiveTexture,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+		/** Projects and validates finite, nondegenerate, visible spline positions. */
+		bool TryProjectSplinePositions(
+			const BuildingMapSectionPresentation::SplineTriangle& triangle,
+			const CanvasTransform& transform,
+			std::array<MiniMap::Services::Vec2, 3>& positions,
+			bool& reverseWinding) const;
+#if defined(MINIMAP_EXPERIMENTAL)
+		/** Clears and retains the existing bounded render-thread spline batch scratch. */
+		static void PrepareSplineBatchScratch(
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices);
+		/** Traverses one binding interval while retaining the active cross-range batch. */
+		void DrawSplineBindingRange(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			const CanvasTransform& transform,
+			const BuildingMapSectionPresentation::Geometry& geometry,
+			const BuildingMapSectionPresentation::SplineBindingRange& range,
+			MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease,
+			MiniMap::Services::Texture& activeTexture,
+			bool& hasActiveTexture,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+		/** Converts one validated triangle into the active batch with paired UV permutation. */
+		bool TryAppendSplineTriangle(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			MiniMap::Services::Texture texture,
+			const BuildingMapSectionPresentation::SplineTriangle& triangle,
+			const CanvasTransform& transform,
+			MiniMap::Services::Texture& activeTexture,
+			bool& hasActiveTexture,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+		/** Projects, validates, clips and winding-normalizes one paired UV triangle. */
+		bool TryProjectSplineTriangle(
+			const BuildingMapSectionPresentation::SplineTriangle& triangle,
+			const CanvasTransform& transform,
+			std::array<MiniMap::Services::TexturedTriangleVertex, 3>& vertices) const;
+		/** Resolves only explicitly supported immutable spline binding slots. */
+		static MiniMap::Services::Texture ResolveSplineTextureBinding(
+			Visuals::SplineTextureBindingSlot bindingSlot,
+			MiniMap::Services::Texture splineWhiteTexture,
+			const std::shared_ptr<const void>& splineWhiteTextureLease) noexcept;
+		/** Submits one nonempty spline batch through the existing bulk canvas operation. */
+		void SubmitSplineTriangleBatch(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			MiniMap::Services::Texture texture,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+#else
+		/** Preserves the non-experimental FilledTriangle submission and its diagnostics. */
+		void DrawFilledSplineTriangle(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			const CanvasTransform& transform,
+			const BuildingMapSectionPresentation::SplineTriangle& triangle
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+#endif
 		/** Clears renderer snapshots before service invalidation or viewport closure. */
 		void ClearPresentationSnapshot() noexcept;
 

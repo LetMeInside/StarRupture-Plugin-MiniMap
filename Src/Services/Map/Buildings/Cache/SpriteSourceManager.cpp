@@ -1,7 +1,7 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
-// Implements cache-aware shared sprite ownership, deterministic incremental atlas packing,
-// and one whole-texture GPU publication at the service's synchronous flush boundary.
+// Implements cache-aware sprite ownership, deterministic incremental atlas packing,
+// and service-owned GPU texture publication and retirement.
 #include "SpriteSourceManager.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "../BuildingMapPerformanceDiagnostics.h"
@@ -340,6 +340,53 @@ namespace Services::Map::Buildings::Cache
 		}
 	}
 
+	/** Creates or reuses the shared opaque texture used by batched solid spline triangles. */
+	MiniMap::Services::UploadState SpriteSourceManager::EnsureSolidWhiteTexture()
+	{
+		if (solidWhiteTexture_.IsValidated())
+		{
+			if (!solidWhiteTextureLease_)
+			{
+				solidWhiteTextureLease_ = std::make_shared<const std::uint8_t>(0);
+				publishedDrawingChanged_ = true;
+			}
+			return MiniMap::Services::UploadState::Complete;
+		}
+		if (textures_ == nullptr || !textures_->Available())
+		{
+			return MiniMap::Services::UploadState::Unavailable;
+		}
+		constexpr std::array<std::uint8_t, 4> whitePixel{255, 255, 255, 255};
+		const MiniMap::Services::TextureSize size{1, 1};
+		MiniMap::Services::OwnedTexture candidate;
+		const auto upload = textures_->UploadRGBA(
+			whitePixel, size, MiniMap::Services::TextureRequest{"", size}, candidate);
+		const auto uploadedSize = candidate.Size();
+		if (upload != MiniMap::Services::UploadState::Complete || !candidate.IsValidated() ||
+			!uploadedSize || uploadedSize->width != size.width || uploadedSize->height != size.height)
+		{
+			bool releaseUncertain = false;
+			if (candidate.HasRecord() && upload != MiniMap::Services::UploadState::OwnershipUncertain)
+			{
+				const auto release = textures_->Release(candidate);
+				releaseUncertain = release != MiniMap::Services::ReleaseState::Empty &&
+					release != MiniMap::Services::ReleaseState::Returned;
+			}
+			if (upload == MiniMap::Services::UploadState::OwnershipUncertain || releaseUncertain)
+			{
+				unresolvedTexture_.Swap(candidate);
+				ownershipUncertain_ = true;
+			}
+			return upload == MiniMap::Services::UploadState::Complete
+				? MiniMap::Services::UploadState::Rejected
+				: upload;
+		}
+		solidWhiteTexture_.Swap(candidate);
+		solidWhiteTextureLease_ = std::make_shared<const std::uint8_t>(0);
+		publishedDrawingChanged_ = true;
+		return MiniMap::Services::UploadState::Complete;
+	}
+
 	/** Packs a whole pending batch, uploads one complete image and atomically publishes its registry. */
 	MiniMap::Services::UploadState SpriteSourceManager::FlushAtlasToGPU()
 	{
@@ -367,6 +414,13 @@ namespace Services::Map::Buildings::Cache
 		{
 			return MiniMap::Services::UploadState::Unavailable;
 		}
+#if defined(MINIMAP_EXPERIMENTAL)
+		EnsureSolidWhiteTexture();
+		if (ownershipUncertain_)
+		{
+			return MiniMap::Services::UploadState::Unavailable;
+		}
+#endif
 		if (!atlasDirty_)
 		{
 			return MiniMap::Services::UploadState::Complete;
@@ -541,11 +595,15 @@ namespace Services::Map::Buildings::Cache
 	{
 		if (textures_ == nullptr) return MiniMap::Services::ReleaseState::Empty;
 		const bool hadTexture = publishedTexture_.HasRecord();
+		const bool hadWhiteTexture = solidWhiteTexture_.HasRecord();
 		const bool hadPublishedDrawing = hadTexture || !publishedEntriesByKey_.empty() ||
 			publishedSize_.width != 0 || publishedSize_.height != 0;
 		const std::weak_ptr<const void> oldLease = publishedTextureLease_;
+		const std::weak_ptr<const void> oldWhiteLease = solidWhiteTextureLease_;
 		RetireTexture(publishedTexture_, oldLease);
+		RetireTexture(solidWhiteTexture_, oldWhiteLease);
 		publishedTextureLease_.reset();
+		solidWhiteTextureLease_.reset();
 		publishedEntriesByKey_.clear();
 		publishedSize_ = {0, 0};
 		atlasDirty_ = true;
@@ -556,7 +614,7 @@ namespace Services::Map::Buildings::Cache
 			++publishedDrawingRevision_;
 		}
 		DrainRetiredTextures();
-		return hadTexture && !retiredTextures_.empty()
+		return (hadTexture || hadWhiteTexture) && !retiredTextures_.empty()
 			? MiniMap::Services::ReleaseState::UnavailableRetained
 			: MiniMap::Services::ReleaseState::Returned;
 	}
@@ -565,6 +623,18 @@ namespace Services::Map::Buildings::Cache
 	MiniMap::Services::Texture SpriteSourceManager::PublishedTexture() const noexcept
 	{
 		return publishedTexture_.View();
+	}
+
+	/** Returns the opaque texture identity used by solid-triangle batches. */
+	MiniMap::Services::Texture SpriteSourceManager::SolidWhiteTexture() const noexcept
+	{
+		return solidWhiteTexture_.View();
+	}
+
+	/** Returns the immutable lease that keeps the solid-white texture draw-admitted. */
+	std::shared_ptr<const void> SpriteSourceManager::SolidWhiteTextureLease() const noexcept
+	{
+		return solidWhiteTextureLease_;
 	}
 
 	/** Copies one matching published registry entry into caller-owned storage. */
@@ -654,7 +724,8 @@ namespace Services::Map::Buildings::Cache
 	/** Keeps the manager alive while current, uncertain or retired texture receipts remain. */
 	bool SpriteSourceManager::HasPendingTextureRetirement() const noexcept
 	{
-		return publishedTexture_.HasRecord() || unresolvedTexture_.HasRecord() || !retiredTextures_.empty();
+		return publishedTexture_.HasRecord() || solidWhiteTexture_.HasRecord() ||
+			unresolvedTexture_.HasRecord() || !retiredTextures_.empty();
 	}
 
 	/** Retains a texture owner until its last published presentation snapshot is gone. */

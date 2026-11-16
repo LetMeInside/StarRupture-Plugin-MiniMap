@@ -33,16 +33,23 @@ namespace Services::Map::Buildings::Visuals
 {
 	class BuildingVisuals;
 	class BuildingGeometryPreparation;
+	/** Identifies a texture slot carried by an ordered spline draw range. */
+	enum class SplineTextureBindingSlot : std::uint32_t
+	{
+		SharedOpaqueWhite = 0,
+		Invalid = 0xFFFFFFFFu
+	};
 	/** Holds the final atlas-independent values consumed by the GPU sprite draw path. */
 	struct SectionDrawSpriteTriangle
 	{
 		std::array<std::array<double, 3>, 3> World{};
 		std::array<std::array<float, 2>, 3> ProcessedUv{};
 	};
-	/** Holds the final position and material values consumed by the GPU solid draw path. */
-	struct SectionDrawSolidTriangle
+	/** Holds final world positions, paired UVs and material values for one GPU spline triangle. */
+	struct SectionDrawSplineTriangle
 	{
 		std::array<std::array<double, 3>, 3> World{};
+		std::array<std::array<float, 2>, 3> Uv{};
 		std::uint32_t Rgb = 0xFFFFFF;
 		std::uint8_t Opacity = 255;
 	};
@@ -101,9 +108,10 @@ namespace Services::Map::Buildings::Visuals
 			TextureAddressMode AddressU = TextureAddressMode::Repeat;
 			TextureAddressMode AddressV = TextureAddressMode::Clamp;
 			std::uint8_t Opacity = 255;
+			SplineTextureBindingSlot BindingSlot = SplineTextureBindingSlot::Invalid;
 			std::vector<SolidTriangle> SolidTriangles;
 			std::vector<TexturedTriangle> TexturedTriangles;
-			std::vector<SectionDrawSolidTriangle> DrawSolidTriangles;
+			std::vector<SectionDrawSplineTriangle> DrawSplineTriangles;
 		};
 
 		/** Reports whether a full scene preparation reached its complete-result boundary. */
@@ -180,8 +188,8 @@ namespace Services::Map::Buildings::Visuals
 			SpriteOccurrence& occurrence,
 			const std::array<TexturedTriangle, 6>& clippedTriangles,
 			std::size_t triangleCount) noexcept;
-		/** Adds final material values to one newly prepared solid spline surface. */
-		static void PrepareSolidSurfaceDrawLayout(SplineSurface& surface);
+		/** Converts newly prepared solid geometry into paired center-UV GPU spline triangles. */
+		static void PrepareSplineSurfaceDrawLayout(SplineSurface& surface);
 		/** Resolves one ordinal directly; borrowed pointers expire on vector mutation or object destruction. */
 		SpriteOccurrence* SpriteOccurrenceAtOrdinal(std::uint64_t ordinal, bool& isOverlayLast) noexcept;
 		/** Applies one legal occurrence-state transition without extending publication cardinality. */

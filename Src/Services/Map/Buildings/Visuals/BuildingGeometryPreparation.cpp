@@ -453,17 +453,45 @@ namespace Services::Map::Buildings::Visuals
 		scratch.sectionClippedTexturedTriangles_.reserve(scratch.texturedTriangles_.size());
 		for (const SolidTriangle& triangle : scratch.solidTriangles_)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const std::size_t priorCount = scratch.sectionClippedSolidTriangles_.size();
+#endif
 			if (!ClipSolidTriangleToSection(triangle, sectionRegion, scratch.sectionClippedSolidTriangles_))
 			{
 				return false;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const std::size_t addedCount = scratch.sectionClippedSolidTriangles_.size() - priorCount;
+			if (addedCount == 0)
+			{
+				++BuildingMapPerformanceDiagnostics::Game().SplineSectionClipRemovedTriangles;
+			}
+			else if (addedCount > 1)
+			{
+				BuildingMapPerformanceDiagnostics::Game().SplineSectionClipFragmentTriangles += addedCount - 1;
+			}
+#endif
 		}
 		for (const TexturedTriangle& triangle : scratch.texturedTriangles_)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const std::size_t priorCount = scratch.sectionClippedTexturedTriangles_.size();
+#endif
 			if (!ClipTexturedTriangleToSection(triangle, sectionRegion, scratch.sectionClippedTexturedTriangles_))
 			{
 				return false;
 			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const std::size_t addedCount = scratch.sectionClippedTexturedTriangles_.size() - priorCount;
+			if (addedCount == 0)
+			{
+				++BuildingMapPerformanceDiagnostics::Game().SplineSectionClipRemovedTriangles;
+			}
+			else if (addedCount > 1)
+			{
+				BuildingMapPerformanceDiagnostics::Game().SplineSectionClipFragmentTriangles += addedCount - 1;
+			}
+#endif
 		}
 		return true;
 	}
@@ -768,6 +796,10 @@ namespace Services::Map::Buildings::Visuals
 			}
 			SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy,
 				scratch.preparedSplines_[splineIndex]);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::Game().SplineSamplingIntervals +=
+				scratch.preparedSplines_[splineIndex].AcceptedIntervals;
+#endif
 			cursor.SplineSamplingPrepared = true;
 			return Status::Pending;
 		}
@@ -812,11 +844,23 @@ namespace Services::Map::Buildings::Visuals
 		const auto& preparedSpline = scratch.preparedSplines_[splineIndex];
 		const auto& surface = spline.Surfaces[surfaceIndex];
 		BuildingVisualsContributorOutcome outcome;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (alternative)
+		{
+			++BuildingMapPerformanceDiagnostics::Game().SplineCandidateAttempts;
+		}
+#endif
 		const bool drawable = PrepareSplineCandidateGeometry(
 			spline, preparedSpline, surface, splineIndex, surfaceIndex, scratch, outcome);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::Game().SplineRejectedCells += outcome.RejectedCells;
+#endif
 		if (alternative && outcome.GeometryPrepared && outcome.SurfaceIssue == SplineSurfaceIssue::None &&
 			outcome.RejectedCells != 0)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++BuildingMapPerformanceDiagnostics::Game().SplineCandidateRejections;
+#endif
 			cursor.Results.SplineSurfaces.push_back(outcome);
 			cursor.SplineHasNumericalCandidateRejection = true;
 			++cursor.SplineSurfaceIndex;
@@ -824,6 +868,9 @@ namespace Services::Map::Buildings::Visuals
 		}
 		if (alternative && !drawable)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++BuildingMapPerformanceDiagnostics::Game().SplineCandidateRejections;
+#endif
 			cursor.Results.SplineSurfaces.push_back(outcome);
 			++cursor.SplineSurfaceIndex;
 			return Status::Pending;
@@ -880,6 +927,9 @@ namespace Services::Map::Buildings::Visuals
 		{
 			cursor.Results.SplineSurfaces.back().AlternativeStatus =
 				BuildingSplineAlternativeStatus::CandidateRejected;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++BuildingMapPerformanceDiagnostics::Game().SplineCandidateRejections;
+#endif
 			++cursor.SplineSurfaceIndex;
 			return Status::Pending;
 		}
@@ -981,6 +1031,9 @@ namespace Services::Map::Buildings::Visuals
 		cursor.Results.SplineSurfaces.push_back(outcome);
 		if (alternative)
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++BuildingMapPerformanceDiagnostics::Game().SplineCandidateRejections;
+#endif
 			outcome.AlternativeStatus = BuildingSplineAlternativeStatus::NoDrawableAlternative;
 			cursor.Results.SplineSurfaces.back().AlternativeStatus = outcome.AlternativeStatus;
 			cursor.Results.SplineSurfaces.back().FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
@@ -1124,6 +1177,11 @@ namespace Services::Map::Buildings::Visuals
 			RECORD_GEOMETRY_FAILURE("Section boundary clipping", "visible triangle clipping failed");
 			return false;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::Game().SplinePostSectionClipTriangles +=
+			scratch.sectionClippedSolidTriangles_.size() +
+			scratch.sectionClippedTexturedTriangles_.size();
+#endif
 		return true;
 	}
 
@@ -1172,13 +1230,14 @@ namespace Services::Map::Buildings::Visuals
 		prepared.Opacity = cursor.PendingOpacity;
 		if (!textured)
 		{
+			prepared.BindingSlot = SplineTextureBindingSlot::SharedOpaqueWhite;
 			prepared.SolidTriangles = std::move(scratch.sectionClippedSolidTriangles_);
 		}
 		else
 		{
 			prepared.TexturedTriangles = std::move(scratch.sectionClippedTexturedTriangles_);
 		}
-		PreparedBuildingGeometry::PrepareSolidSurfaceDrawLayout(prepared);
+		PreparedBuildingGeometry::PrepareSplineSurfaceDrawLayout(prepared);
 		cursor.PendingSplineSurfaces.push_back(std::move(prepared));
 	}
 
@@ -1191,8 +1250,22 @@ namespace Services::Map::Buildings::Visuals
 		output.splineSurfaces_.reserve(requiredSize);
 		for (auto& surface : cursor.PendingSplineSurfaces)
 		{
-			output.drawableGpuTriangleCount_ += surface.DrawSolidTriangles.size();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const std::size_t selectedTriangleCount =
+				surface.SolidTriangles.size() + surface.TexturedTriangles.size();
+#endif
+			output.drawableGpuTriangleCount_ += surface.DrawSplineTriangles.size();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const bool selectedAlternative = surface.SelectedAlternative;
+#endif
 			output.splineSurfaces_.push_back(std::move(surface));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::Game().SplineSelectedTriangles += selectedTriangleCount;
+			if (selectedAlternative)
+			{
+				++BuildingMapPerformanceDiagnostics::Game().SplineCandidateSelections;
+			}
+#endif
 		}
 		cursor.PendingSplineSurfaces.clear();
 	}
@@ -1237,6 +1310,12 @@ namespace Services::Map::Buildings::Visuals
 		PreparationCursor& cursor,
 		bool omitted)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (omitted)
+		{
+			++BuildingMapPerformanceDiagnostics::Game().SplineTerminalOmissions;
+		}
+#endif
 		SetContributionStatus(output, ordinal, omitted
 			? PreparedBuildingGeometry::ContributionStatus::TerminalOmission
 			: PreparedBuildingGeometry::ContributionStatus::Prepared);

@@ -47,18 +47,19 @@ namespace Services::Map::Buildings::Visuals
 		}
 	}
 
-	/** Stores each new solid spline triangle with the exact Draw material values. */
-	void PreparedBuildingGeometry::PrepareSolidSurfaceDrawLayout(SplineSurface& surface)
+	/** Stores each new solid spline triangle with center UVs and its exact Draw material values. */
+	void PreparedBuildingGeometry::PrepareSplineSurfaceDrawLayout(SplineSurface& surface)
 	{
-		surface.DrawSolidTriangles.clear();
-		surface.DrawSolidTriangles.reserve(surface.SolidTriangles.size());
+		surface.DrawSplineTriangles.clear();
+		surface.DrawSplineTriangles.reserve(surface.SolidTriangles.size());
 		for (const SolidTriangle& source : surface.SolidTriangles)
 		{
-			SectionDrawSolidTriangle triangle;
+			SectionDrawSplineTriangle triangle;
 			triangle.World = source.Vertices;
+			triangle.Uv.fill({0.5f, 0.5f});
 			triangle.Rgb = surface.SolidRgb;
 			triangle.Opacity = surface.Opacity;
-			surface.DrawSolidTriangles.push_back(triangle);
+			surface.DrawSplineTriangles.push_back(triangle);
 		}
 	}
 

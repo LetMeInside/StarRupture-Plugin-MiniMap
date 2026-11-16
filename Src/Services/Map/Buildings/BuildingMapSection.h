@@ -46,14 +46,22 @@ namespace Services::Map::Buildings
 			Cache::OwnedSpriteKey SourceKey;
 			std::array<std::uint32_t, 4> ContentRectangle{};
 		};
-		/** One solid spline triangle with the only material fields used by Draw. */
-		using SolidTriangle = Visuals::SectionDrawSolidTriangle;
+		/** One spline triangle with positions, UV correspondence and packed material values. */
+		using SplineTriangle = Visuals::SectionDrawSplineTriangle;
+		/** One contiguous interval of spline triangles sharing a texture binding slot. */
+		struct SplineBindingRange
+		{
+			std::size_t FirstTriangle = 0;
+			std::size_t TriangleCount = 0;
+			Visuals::SplineTextureBindingSlot BindingSlot = Visuals::SplineTextureBindingSlot::Invalid;
+		};
 
 		/** Shares unchanged world geometry when only atlas content bindings change. */
 		struct Geometry final
 		{
 			std::vector<SpriteTriangle> OrdinaryTriangles;
-			std::vector<SolidTriangle> SolidSurfaces;
+			std::vector<SplineTriangle> SplineTriangles;
+			std::vector<SplineBindingRange> SplineBindingRanges;
 			std::vector<SpriteTriangle> OverlayTriangles;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			std::uint64_t SourceGeneration = 0;
@@ -253,7 +261,7 @@ namespace Services::Map::Buildings
 			enum class Phase : std::uint8_t
 			{
 				OrdinarySprites,
-				SolidSurfaces,
+				SplineTriangles,
 				OverlaySprites,
 				OrdinaryBindings,
 				OverlayBindings

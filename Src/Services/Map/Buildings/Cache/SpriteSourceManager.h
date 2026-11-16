@@ -1,5 +1,5 @@
 // Owns canonical immutable sprite sources, persistent incremental CPU atlas storage,
-// deterministic packing state, the published sprite registry and shared GPU texture.
+// deterministic packing state, the published sprite registry and shared GPU textures.
 #pragma once
 
 #include "OwnedSpriteKey.h"
@@ -63,7 +63,7 @@ namespace Services::Map::Buildings::Cache
 		Duration RetirementRelease;
 	};
 	#endif
-	/** Owns immutable CPU payloads, persistent atlas storage, published sprite metadata and its GPU texture.
+	/** Owns immutable CPU payloads, persistent atlas storage, published sprite metadata, its GPU texture and the solid white batch texture.
 	 * All calls are serialized on the designated game thread. Shared results remain valid
 	 * after an entry is replaced, withdrawn or cleared.
 	 */
@@ -157,9 +157,9 @@ namespace Services::Map::Buildings::Cache
 		 */
 		SpriteResult GetSprite(const OwnedSpriteKey& key);
 
-		/** Packs pending CPU sources immediately and publishes a due whole-atlas GPU batch. */
+		/** Packs pending CPU sources, ensures the solid white texture, and publishes due atlas batches. */
 		MiniMap::Services::UploadState FlushAtlasToGPU();
-		/** Retires the currently published GPU atlas and releases it after snapshot leases expire. */
+		/** Retires atlas and solid white textures after their presentation snapshot leases expire. */
 		MiniMap::Services::ReleaseState ReleaseAtlasTexture();
 		/** Returns the published atlas texture identity without transferring ownership. */
 		MiniMap::Services::Texture PublishedTexture() const noexcept;
@@ -167,6 +167,10 @@ namespace Services::Map::Buildings::Cache
 		bool TryGetPublishedSprite(const OwnedSpriteKey& key, AtlasSpriteEntry& output) const noexcept;
 		/** Returns the published texture dimensions, or empty before the first upload. */
 		MiniMap::Services::TextureSize PublishedAtlasSize() const noexcept;
+		/** Returns the service-owned opaque white texel texture used by batched solid drawing. */
+		MiniMap::Services::Texture SolidWhiteTexture() const noexcept;
+		/** Returns a lease that keeps the white texture valid for immutable render snapshots. */
+		std::shared_ptr<const void> SolidWhiteTextureLease() const noexcept;
 		/** Returns the identity of the currently published texture and drawable sprite registry. */
 		std::uint64_t PublishedDrawingRevision() const noexcept;
 		/** Returns a token that keeps the matching published texture owner alive for snapshots. */
@@ -232,6 +236,8 @@ namespace Services::Map::Buildings::Cache
 		/** Submits candidate pixels and adopts their registry only after receipt validation. */
 		MiniMap::Services::UploadState UploadAtlasCandidate(
 			std::unordered_map<std::string, AtlasSpriteEntry>&& candidateEntries);
+		/** Uploads one shared opaque white texel on the established game-thread flush path. */
+		MiniMap::Services::UploadState EnsureSolidWhiteTexture();
 		/** Uploads persistent atlas pixels and records the backend-call duration in Debug. */
 		MiniMap::Services::UploadState UploadAtlasPixels(
 			MiniMap::Services::TextureSize size,
@@ -286,6 +292,8 @@ namespace Services::Map::Buildings::Cache
 		std::vector<std::uint8_t> atlasPixels_;
 		MiniMap::Services::OwnedTexture publishedTexture_;
 		std::shared_ptr<const void> publishedTextureLease_;
+		MiniMap::Services::OwnedTexture solidWhiteTexture_;
+		std::shared_ptr<const void> solidWhiteTextureLease_;
 		struct RetiredTexture
 		{
 			MiniMap::Services::OwnedTexture Owner;

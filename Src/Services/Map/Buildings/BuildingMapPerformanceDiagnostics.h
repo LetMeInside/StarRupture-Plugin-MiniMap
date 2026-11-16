@@ -117,7 +117,7 @@ namespace Services::Map::Buildings
 			Duration Admission;
 			Duration Assembly;
 			Duration SpriteCopy;
-			Duration SolidCopy;
+			Duration SplineCopy;
 			Duration Binding;
 			Duration Rebind;
 			Duration Seal;
@@ -137,7 +137,7 @@ namespace Services::Map::Buildings
 			Count SameGenerationSeals = 0;
 			Count PriorTrianglesRecopied = 0;
 			Count SpriteTrianglesCopied = 0;
-			Count SolidTrianglesCopied = 0;
+			Count SplineTrianglesCopied = 0;
 			Count AssemblyBindingsBuilt = 0;
 			Count BindingsRebound = 0;
 			Count BindingLookups = 0;
@@ -145,6 +145,20 @@ namespace Services::Map::Buildings
 			Count SnapshotHandles = 0;
 			Count MiniMapVisibleTicks = 0;
 			Count MiniMapHiddenTicks = 0;
+			Count SplineSamplingIntervals = 0;
+			Count SplineGeneratedTriangles = 0;
+			Count SplinePostOcclusionTriangles = 0;
+			Count SplinePostSectionClipTriangles = 0;
+			Count SplineOcclusionRemovedTriangles = 0;
+			Count SplineOcclusionFragmentTriangles = 0;
+			Count SplineSectionClipRemovedTriangles = 0;
+			Count SplineSectionClipFragmentTriangles = 0;
+			Count SplineCandidateAttempts = 0;
+			Count SplineCandidateSelections = 0;
+			Count SplineCandidateRejections = 0;
+			Count SplineRejectedCells = 0;
+			Count SplineTerminalOmissions = 0;
+			Count SplineSelectedTriangles = 0;
 		};
 
         /** Exact pass counts and elapsed wall time. Submitted counts successfully drawn triangles. */
@@ -208,7 +222,7 @@ namespace Services::Map::Buildings
 		{
 			Duration Draw;
 			DrawPass Ordinary;
-			DrawPass Solid;
+			DrawPass Spline;
 			DrawPass Overlay;
 			TextureWork Texture;
 			Count MissingSnapshot = 0;
@@ -218,7 +232,7 @@ namespace Services::Map::Buildings
 			{
 				Draw.Merge(frame.Draw);
 				Ordinary.Merge(frame.Ordinary);
-				Solid.Merge(frame.Solid);
+				Spline.Merge(frame.Spline);
 				Overlay.Merge(frame.Overlay);
 				Texture.Merge(frame.Texture);
 				MissingSnapshot += frame.MissingSnapshot;
@@ -496,17 +510,28 @@ namespace Services::Map::Buildings
 			geometryEstimate, work.Continuation.Describe().data(), work.Indivisible.Describe().data(),
 			work.ResourceLookups, work.ResidentLookups, work.SlicesWithoutLookup, work.GeometryAttempts,
 			work.ClipAttempts, work.DrawableSprites);
+		Logf(*log, Level::Info, "MiniMap: BuildingMap perf_spline attemptedCandidates=%llu rejectedCandidates=%llu "
+			"successfulSelections=%llu samplingIntervals=%llu rejectedCells=%llu terminalOmissions=%llu "
+			"attemptedTriangles={generated:%llu postOcclusion:%llu postSectionClip:%llu} "
+			"selectedTriangles=%llu occlusionRemoved=%llu occlusionFragmentationAdded=%llu "
+			"sectionClipRemoved=%llu sectionClipFragmentationAdded=%llu",
+			work.SplineCandidateAttempts, work.SplineCandidateRejections, work.SplineCandidateSelections,
+			work.SplineSamplingIntervals, work.SplineRejectedCells, work.SplineTerminalOmissions,
+			work.SplineGeneratedTriangles, work.SplinePostOcclusionTriangles,
+			work.SplinePostSectionClipTriangles, work.SplineSelectedTriangles,
+			work.SplineOcclusionRemovedTriangles, work.SplineOcclusionFragmentTriangles,
+			work.SplineSectionClipRemovedTriangles, work.SplineSectionClipFragmentTriangles);
 		Logf(*log, Level::Info, "MiniMap: BuildingMap perf_gpu wallMs admissionInclusive=%s assemblyNested=%s "
-			"spriteGatherCopyNested=%s solidCopyNested=%s atlasBindNestedInAssembly=%s rebindNestedInSnapshot=%s "
+			"spriteGatherCopyNested=%s splineCopyNested=%s atlasBindNestedInAssembly=%s rebindNestedInSnapshot=%s "
 			"sealNested=%s snapshotInclusive=%s started=%llu resumedLaterTick=%llu sameGenerationSeals=%llu "
-			"priorTrianglesRecopied=%llu spriteTriangleCopies=%llu solidTriangleCopies=%llu "
+			"priorTrianglesRecopied=%llu spriteTriangleCopies=%llu splineTriangleCopies=%llu "
 			"assemblyBindingsBuilt=%llu bindingsRebound=%llu bindingLookups=%llu snapshotHandlesStored=%llu",
 			work.Admission.Describe().data(), work.Assembly.Describe().data(), work.SpriteCopy.Describe().data(),
-			work.SolidCopy.Describe().data(), work.Binding.Describe().data(), work.Rebind.Describe().data(),
+			work.SplineCopy.Describe().data(), work.Binding.Describe().data(), work.Rebind.Describe().data(),
 			work.Seal.Describe().data(),
 			work.Snapshot.Describe().data(), work.AssembliesStarted, work.ResumedOnLaterTick,
 			work.SameGenerationSeals, work.PriorTrianglesRecopied, work.SpriteTrianglesCopied,
-			work.SolidTrianglesCopied, work.AssemblyBindingsBuilt, work.BindingsRebound,
+			work.SplineTrianglesCopied, work.AssemblyBindingsBuilt, work.BindingsRebound,
 			work.BindingLookups, work.SnapshotHandles);
 		ReportHistories(*log);
 	}
@@ -587,7 +612,7 @@ namespace Services::Map::Buildings
 			texture.LedgerWaitSample.Describe().data(), texture.LedgerHoldSample.Describe().data(),
 			texture.BackendSample.Describe().data(), admissionEstimate);
 		ReportDrawPass(*log, "ordinary", work.Ordinary);
-		ReportDrawPass(*log, "solid", work.Solid);
+		ReportDrawPass(*log, "spline", work.Spline);
 		ReportDrawPass(*log, "overlay", work.Overlay);
 	}
 

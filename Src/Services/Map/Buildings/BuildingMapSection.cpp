@@ -216,7 +216,7 @@ namespace Services::Map::Buildings
 	{
 		const auto geometry = gpuPresentation_ != nullptr ? gpuPresentation_->PreparedGeometry : nullptr;
 		if (geometry == nullptr || (geometry->OrdinaryTriangles.empty() &&
-			geometry->SolidSurfaces.empty() && geometry->OverlayTriangles.empty()))
+			geometry->SplineTriangles.empty() && geometry->OverlayTriangles.empty()))
 		{
 			return;
 		}
@@ -226,7 +226,7 @@ namespace Services::Map::Buildings
 				"MiniMap: BuildingMapPresentationTrace event=withdrawal grid=(%lld,%lld) "
 				"transition=%s previousHash=%s0x%016llx nextHash=%s0x%016llx "
 				"completed=%d completedHash=0x%016llx preparing=%d preparingHash=0x%016llx "
-				"gpuPresentation=1 triangles={ordinary:%llu solid:%llu overlay:%llu} demanded=%s",
+			"gpuPresentation=1 triangles={ordinary:%llu spline:%llu overlay:%llu} demanded=%s",
 				static_cast<long long>(gridX_), static_cast<long long>(gridY_), transition,
 				previousSourceHash.has_value() ? "" : "unknown/",
 				static_cast<unsigned long long>(previousSourceHash.value_or(0)),
@@ -237,7 +237,7 @@ namespace Services::Map::Buildings
 				preparingScene_ != nullptr ? 1 : 0,
 				static_cast<unsigned long long>(preparingScene_ != nullptr ? preparingScene_->SourceContentHash() : 0),
 				static_cast<unsigned long long>(geometry->OrdinaryTriangles.size()),
-				static_cast<unsigned long long>(geometry->SolidSurfaces.size()),
+				static_cast<unsigned long long>(geometry->SplineTriangles.size()),
 				static_cast<unsigned long long>(geometry->OverlayTriangles.size()),
 				demanded.has_value() ? (*demanded ? "1" : "0") : "unknown");
 		}

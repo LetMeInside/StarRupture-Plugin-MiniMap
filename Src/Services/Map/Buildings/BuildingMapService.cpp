@@ -603,7 +603,7 @@ namespace Services::Map::Buildings
 		const auto geometry = section != nullptr && section->gpuPresentation_ != nullptr
 			? section->gpuPresentation_->PreparedGeometry : nullptr;
 		const bool hasDrawablePresentation = geometry != nullptr &&
-			(!geometry->OrdinaryTriangles.empty() || !geometry->SolidSurfaces.empty() || !geometry->OverlayTriangles.empty());
+			(!geometry->OrdinaryTriangles.empty() || !geometry->SplineTriangles.empty() || !geometry->OverlayTriangles.empty());
 		if (!previousContentHash.has_value() && !nextContentHash.has_value())
 		{
 			return;
@@ -630,7 +630,7 @@ namespace Services::Map::Buildings
 			MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
 				"MiniMap: BuildingMapPresentationTrace event=%s grid=(%lld,%lld) previousHash=%s0x%016llx "
 				"nextHash=%s0x%016llx previousAbsent=%d nextAbsent=%d preparing=%d completed=%d "
-				"gpuPresentation=%d triangles={ordinary:%llu solid:%llu overlay:%llu} "
+				"gpuPresentation=%d triangles={ordinary:%llu spline:%llu overlay:%llu} "
 				"demanded=%d gpuDemanded=%d snapshotEligibility=%s",
 				event, static_cast<long long>(coordinate.first), static_cast<long long>(coordinate.second),
 				previousContentHash.has_value() ? "" : "unknown/", static_cast<unsigned long long>(previousContentHash.value_or(0)),
@@ -638,7 +638,7 @@ namespace Services::Map::Buildings
 				previousContentHash.has_value() ? 0 : 1, nextContentHash.has_value() ? 0 : 1,
 				hasPreparingScene ? 1 : 0, hasCompletedScene ? 1 : 0, hasDrawablePresentation ? 1 : 0,
 				static_cast<unsigned long long>(geometry != nullptr ? geometry->OrdinaryTriangles.size() : 0),
-				static_cast<unsigned long long>(geometry != nullptr ? geometry->SolidSurfaces.size() : 0),
+				static_cast<unsigned long long>(geometry != nullptr ? geometry->SplineTriangles.size() : 0),
 				static_cast<unsigned long long>(geometry != nullptr ? geometry->OverlayTriangles.size() : 0),
 				sectionDemanded ? 1 : 0, gpuDemanded ? 1 : 0, eligibilityReason);
 		}

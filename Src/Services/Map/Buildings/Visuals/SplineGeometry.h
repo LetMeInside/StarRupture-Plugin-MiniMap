@@ -107,6 +107,9 @@ namespace Services::Map::Buildings::Visuals
 		std::vector<SplineCurveSection> Sections;
 		SplineNumericalIssue Issue = SplineNumericalIssue::None;
 		std::size_t LimitedLeaves = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::size_t AcceptedIntervals = 0;
+#endif
 
 		/** Reports complete sampling only when every source section exists and no leaf hit its limit. */
 		bool IsComplete() const noexcept
@@ -458,6 +461,9 @@ namespace Services::Map::Buildings::Visuals
 			output.Sections.clear();
 			output.Issue = SplineNumericalIssue::None;
 			output.LimitedLeaves = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			output.AcceptedIntervals = 0;
+#endif
 		}
 
 		/**
@@ -592,6 +598,12 @@ namespace Services::Map::Buildings::Visuals
 				Subdivide(segment.Controls, 0.0, 1.0, policy, 0, segmentBudget - 1, output);
 			}
 			section.SampleCount = output.Samples.size() - section.FirstSample;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (!section.Discontinuous && section.SampleCount > 0)
+			{
+				output.AcceptedIntervals += section.SampleCount - 1;
+			}
+#endif
 			output.Sections.push_back(section);
 		}
 
