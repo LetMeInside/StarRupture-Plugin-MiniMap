@@ -7,6 +7,7 @@ EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Client Debug|x64 = Client Debug|x64
+		Client Debug Experimental|x64 = Client Debug Experimental|x64
 		Client Release|x64 = Client Release|x64
 		Debug|x64 = Debug|x64
 		Release|x64 = Release|x64
@@ -16,6 +17,8 @@ Global
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Debug|x64.ActiveCfg = Client Debug|x64
 		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Debug|x64.Build.0 = Client Debug|x64
+		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Debug Experimental|x64.ActiveCfg = Client Debug Experimental|x64
+		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Debug Experimental|x64.Build.0 = Client Debug Experimental|x64
 		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Release|x64.ActiveCfg = Client Release|x64
 		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Client Release|x64.Build.0 = Client Release|x64
 		{BA2BEF9B-AEF7-4D7E-B9AB-D190860A42F5}.Debug|x64.ActiveCfg = Debug|x64

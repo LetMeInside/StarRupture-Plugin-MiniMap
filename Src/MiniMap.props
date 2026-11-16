@@ -2,14 +2,15 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MiniMapUnrealEngineRoot Condition="'$(MiniMapUnrealEngineRoot)' == ''">$(ProgramW6432)\Epic Games\UE_5.6\</MiniMapUnrealEngineRoot>
-    <StarRupturePluginSDKRoot>$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <StarRupturePluginSDKRoot Condition="'$(Configuration)' != 'Client Debug Experimental'">$(SolutionDir)..\..\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
+    <StarRupturePluginSDKRoot Condition="'$(Configuration)' == 'Client Debug Experimental'">C:\Modding\StarRupture\AlienX\StarRupture-Plugin-SDK\</StarRupturePluginSDKRoot>
     <GameSDKRoot Condition="'$(GameSDKRoot)' == ''">$(StarRupturePluginSDKRoot)StarRupture SDK</GameSDKRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
     <StarRuptureBuildCLFile>$(GameSDKRoot)\Server\build_cl.txt</StarRuptureBuildCLFile>
     <MiniMapGameSDKIdentityHeader>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK.hpp</MiniMapGameSDKIdentityHeader>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">
     <MiniMapGameSDKIdentityHeader>$(StarRupturePluginSDKRoot)StarRupture SDK\Client\SDK.hpp</MiniMapGameSDKIdentityHeader>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
@@ -29,7 +30,7 @@
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Client\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Client\;$(StarRupturePluginSDKRoot)StarRupture SDK\Client\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
@@ -37,7 +38,7 @@
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release'">
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release'">
