@@ -99,6 +99,10 @@ namespace MiniMap::Adapters::AlienX
             Services::Vec2, Services::Vec2, Services::Color);
         void ImageQuad(IModLoaderImGui&, PluginDrawList, Services::Texture,
             const Services::Quad&, const Services::Quad&, Services::Color);
+#if defined(MINIMAP_EXPERIMENTAL)
+        PluginDrawResult TexturedTriangles(IModLoaderImGui&, PluginDrawList, Services::Texture,
+            const PluginDrawVertex*, std::uint32_t, const PluginDrawIndex*, std::uint32_t);
+#endif
     };
     Textures& GetTextures() noexcept;
 }

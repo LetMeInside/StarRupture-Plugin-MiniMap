@@ -2,6 +2,8 @@
 #include "ServiceTypes.h"
 #include "Textures.h"
 #include <array>
+#include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace MiniMap::Services
@@ -10,6 +12,17 @@ namespace MiniMap::Services
     struct Vec2 { float x, y; };
     using Quad = std::array<Vec2, 4>;
     using Color = std::uint32_t; // 0xAABBGGRR
+#if defined(MINIMAP_EXPERIMENTAL)
+    /** Portable canvas vertex for one synchronous bulk textured-triangle submission. */
+    struct TexturedTriangleVertex
+    {
+        float positionX;
+        float positionY;
+        float u;
+        float v;
+        Color color;
+    };
+#endif
     enum class DrawLayer { Window, Foreground };
     // Borrowed only for the synchronous RenderFn invocation. Never retain it.
     class ICanvas
@@ -40,6 +53,12 @@ namespace MiniMap::Services
             const Quad quadUv{uv[0], uv[1], uv[2], uv[2]};
             ImageQuad(layer, texture, quadPositions, quadUv, tint);
         }
+#if defined(MINIMAP_EXPERIMENTAL)
+        /** Submits one batch-local indexed triangle list synchronously; true means accepted by the host. */
+        virtual bool TexturedTriangles(DrawLayer layer, Texture texture,
+            std::span<const TexturedTriangleVertex> vertices,
+            std::span<const std::uint16_t> indices) = 0;
+#endif
         virtual void FilledRect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding) = 0;
         virtual void Rect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding, float thickness) = 0;
         virtual void FilledCircle(DrawLayer, Vec2 center, float radius, Color, int segments) = 0;

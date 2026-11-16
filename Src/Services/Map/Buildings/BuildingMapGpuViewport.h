@@ -212,6 +212,20 @@ namespace Services::Map::Buildings
 			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
 #endif
 			) const;
+#if defined(MINIMAP_EXPERIMENTAL)
+		/** Appends one projected triangle as three vertices and batch-local sequential indices. */
+		void AppendSpriteTriangle(
+			const CanvasTransform& transform,
+			MiniMap::Services::TextureSize atlasSize,
+			const BuildingMapSectionPresentation::SpriteBinding& binding,
+			const BuildingMapSectionPresentation::SpriteTriangle& triangle,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
+#endif
+			) const;
+#endif
 		/** Draws prepared solid spline surfaces in Section and surface order. */
 		void DrawSolidSurfaces(
 			MiniMap::Services::ICanvas& canvas,

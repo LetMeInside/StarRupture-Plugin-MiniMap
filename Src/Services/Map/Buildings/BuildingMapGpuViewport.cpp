@@ -11,6 +11,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace Services::Map::Buildings
 {
@@ -711,6 +712,17 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
+#if defined(MINIMAP_EXPERIMENTAL)
+		std::vector<MiniMap::Services::TexturedTriangleVertex> vertices;
+		std::vector<std::uint16_t> indices;
+		static constexpr std::size_t MaximumVertices = 65535;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		bool sampleCurrentBatch = false;
+		std::vector<Performance::PresentationTiming*> pendingTimingOwners;
+		// One owner per represented Section; three vertices per triangle bound the pending set.
+		pendingTimingOwners.reserve((std::min)(sections.size(), MaximumVertices / 3));
+#endif
+#endif
 		for (const auto& section : sections)
 		{
 			const auto& geometry = *section->PreparedGeometry;
@@ -718,6 +730,11 @@ namespace Services::Map::Buildings
 			const auto& triangles = overlayLast ? geometry.OverlayTriangles : geometry.OrdinaryTriangles;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			auto* timing = geometry.Timing.get();
+#if defined(MINIMAP_EXPERIMENTAL)
+			bool timingRecorded = timing == nullptr ||
+				timing->FirstSubmissionTicks.load(std::memory_order_relaxed) != 0;
+			bool timingPending = false;
+#endif
 			if (pass != nullptr)
 			{
 				++pass->Sections;
@@ -741,28 +758,119 @@ namespace Services::Map::Buildings
 				for (std::size_t triangleIndex = 0; triangleIndex < binding.TriangleCount; ++triangleIndex)
 				{
 					const auto& triangle = triangles[binding.FirstTriangle + triangleIndex];
+#if defined(MINIMAP_EXPERIMENTAL)
+					if (vertices.size() + 3 > MaximumVertices)
+					{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+						if (pass != nullptr) ++pass->CanvasCalls;
+						const auto batchStarted = sampleCurrentBatch
+							? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+						if (!canvas.TexturedTriangles(layer, texture, vertices, indices))
+						{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+							if (pass != nullptr) ++pass->FailedSubmissions;
+#endif
+							throw std::runtime_error("MiniMap: bulk textured-triangle submission rejected");
+						}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+						if (pass != nullptr)
+						{
+							pass->Submitted += indices.size() / 3;
+						}
+						if (sampleCurrentBatch)
+						{
+							pass->CanvasSample.Add(Performance::Milliseconds(Performance::Clock::now() - batchStarted));
+						}
+						for (auto* timingOwner : pendingTimingOwners)
+						{
+							timingOwner->RecordFirstSubmission();
+						}
+						pendingTimingOwners.clear();
+						if (timingPending)
+						{
+							timingRecorded = true;
+							timingPending = false;
+						}
+						sampleCurrentBatch = false;
+#endif
+						vertices.clear();
+						indices.clear();
+					}
+					AppendSpriteTriangle(transform, atlasSize, binding, triangle, vertices, indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+						, sampled
+#endif
+						);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					if (sampled != nullptr) sampleCurrentBatch = true;
+					if (timing != nullptr && !timingRecorded && !timingPending)
+					{
+						pendingTimingOwners.push_back(timing);
+						timingPending = true;
+					}
+#endif
+#else
 					DrawSpriteTriangle(canvas, layer, transform, texture, atlasSize,
 						binding, triangle
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 						, sampled
 #endif
 						);
+					if (pass != nullptr) ++pass->CanvasCalls;
+#endif
 				}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 				if (pass != nullptr)
 				{
 					++pass->BoundRanges;
 					pass->Visited += binding.TriangleCount;
+#if !defined(MINIMAP_EXPERIMENTAL)
 					pass->Submitted += binding.TriangleCount;
+#endif
 				}
+#if !defined(MINIMAP_EXPERIMENTAL)
 				if (timing != nullptr && binding.TriangleCount != 0)
 				{
 					timing->RecordFirstSubmission();
 					timing = nullptr;
 				}
 #endif
+#endif
 			}
 		}
+#if defined(MINIMAP_EXPERIMENTAL)
+		if (!vertices.empty())
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (pass != nullptr) ++pass->CanvasCalls;
+			const auto batchStarted = sampleCurrentBatch
+				? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+			if (!canvas.TexturedTriangles(layer, texture, vertices, indices))
+			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				if (pass != nullptr) ++pass->FailedSubmissions;
+#endif
+				throw std::runtime_error("MiniMap: bulk textured-triangle submission rejected");
+			}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (pass != nullptr)
+			{
+				pass->Submitted += indices.size() / 3;
+			}
+			if (sampleCurrentBatch)
+			{
+				pass->CanvasSample.Add(Performance::Milliseconds(Performance::Clock::now() - batchStarted));
+			}
+			for (auto* timingOwner : pendingTimingOwners)
+			{
+				timingOwner->RecordFirstSubmission();
+			}
+			pendingTimingOwners.clear();
+#endif
+		}
+#endif
 	}
 
 	/** Transforms prepared positions and processed UVs into the snapshot's matching atlas. */
@@ -806,6 +914,43 @@ namespace Services::Map::Buildings
 		}
 #endif
 	}
+
+#if defined(MINIMAP_EXPERIMENTAL)
+	/** Projects one retained triangle into the portable transient batch arrays. */
+	void BuildingMapGpuViewport::AppendSpriteTriangle(
+		const CanvasTransform& transform,
+		MiniMap::Services::TextureSize atlasSize,
+		const BuildingMapSectionPresentation::SpriteBinding& binding,
+		const BuildingMapSectionPresentation::SpriteTriangle& triangle,
+		std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+		std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, Performance::DrawPass* sampledPass
+#endif
+		) const
+	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		const auto projectionStarted = sampledPass != nullptr ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+		const auto firstIndex = static_cast<std::uint16_t>(vertices.size());
+		for (std::size_t index = 0; index < 3; ++index)
+		{
+			const auto position = TransformWorldPoint(triangle.World[index], transform);
+			const float u = static_cast<float>((binding.ContentRectangle[0] +
+				triangle.ProcessedUv[index][0] * binding.ContentRectangle[2]) / atlasSize.width);
+			const float v = static_cast<float>((binding.ContentRectangle[1] +
+				triangle.ProcessedUv[index][1] * binding.ContentRectangle[3]) / atlasSize.height);
+			vertices.push_back({position.x, position.y, u, v, 0xFFFFFFFFu});
+			indices.push_back(static_cast<std::uint16_t>(firstIndex + index));
+		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (sampledPass != nullptr)
+		{
+			sampledPass->ProjectionSample.Add(Performance::Milliseconds(Performance::Clock::now() - projectionStarted));
+		}
+#endif
+	}
+#endif
 
 	/** Draws solid prepared spline triangles with authored RGB and opacity. */
 	void BuildingMapGpuViewport::DrawSolidSurfaces(
@@ -878,6 +1023,7 @@ namespace Services::Map::Buildings
 				if (pass != nullptr)
 				{
 					++pass->Submitted;
+					++pass->CanvasCalls;
 				}
 #endif
 			}

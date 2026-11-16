@@ -147,7 +147,7 @@ namespace Services::Map::Buildings
 			Count MiniMapHiddenTicks = 0;
 		};
 
-		/** Exact pass counts and elapsed wall time. Submission means a canvas call. */
+        /** Exact pass counts and elapsed wall time. Submitted counts successfully drawn triangles. */
 		struct DrawPass
 		{
 			Duration Time;
@@ -156,6 +156,8 @@ namespace Services::Map::Buildings
 			Count Sections = 0;
 			Count Visited = 0;
 			Count Submitted = 0;
+			Count CanvasCalls = 0;
+			Count FailedSubmissions = 0;
 			Count BoundRanges = 0;
 			Count UnboundRanges = 0;
 
@@ -168,12 +170,14 @@ namespace Services::Map::Buildings
 				Sections += other.Sections;
 				Visited += other.Visited;
 				Submitted += other.Submitted;
+				CanvasCalls += other.CanvasCalls;
+				FailedSubmissions += other.FailedSubmissions;
 				BoundRanges += other.BoundRanges;
 				UnboundRanges += other.UnboundRanges;
 			}
 		};
 
-		/** Adapter counts and sparse timings for Building Map ImageQuad calls only. */
+		/** Adapter counts and sparse timings for immediate Building Map texture submissions. */
 		struct TextureWork
 		{
 			Duration AdmissionSample;
@@ -575,7 +579,7 @@ namespace Services::Map::Buildings
 			admission.TotalMs * static_cast<double>(texture.Calls) / static_cast<double>(admission.Samples);
 		MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
 			"MiniMap: BuildingMap perf_draw intervalMs=%.1f inclusiveWallMs=%s missingSnapshot=%llu "
-			"imageQuadCalls=%llu admitted=%llu gateAcquires=%llu drawLedgerAcquires=%llu "
+			"textureDrawCalls=%llu admitted=%llu gateAcquires=%llu drawLedgerAcquires=%llu "
 			"sample1in256WallMs admission=%s ledgerWait=%s ledgerHoldThroughBackend=%s backendNested=%s "
 			"admissionEstimatedTotalMs=%.3f",
 			interval, work.Draw.Describe().data(), work.MissingSnapshot, texture.Calls, texture.Admissions,
@@ -592,9 +596,11 @@ namespace Services::Map::Buildings
 	{
 		MiniMap::Services::Logf(log, MiniMap::Services::Level::Info,
 			"MiniMap: BuildingMap perf_draw_pass pass=%s inclusiveWallMs=%s sectionsVisited=%llu "
-			"trianglesVisited=%llu canvasSubmissions=%llu boundRanges=%llu unboundRanges=%llu "
+			"trianglesVisited=%llu trianglesSubmitted=%llu canvasCalls=%llu failedSubmissions=%llu "
+			"boundRanges=%llu unboundRanges=%llu "
 			"sample1in256BoundRangesNestedWallMs projection=%s canvas=%s",
 			name, pass.Time.Describe().data(), pass.Sections, pass.Visited, pass.Submitted,
+			pass.CanvasCalls, pass.FailedSubmissions,
 			pass.BoundRanges, pass.UnboundRanges, pass.ProjectionSample.Describe().data(),
 			pass.CanvasSample.Describe().data());
 	}

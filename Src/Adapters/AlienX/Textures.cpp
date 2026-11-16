@@ -436,5 +436,63 @@ namespace MiniMap::Adapters::AlienX
         }
 #endif
     }
+#if defined(MINIMAP_EXPERIMENTAL)
+    PluginDrawResult Textures::TexturedTriangles(IModLoaderImGui& ui, PluginDrawList list,
+        S::Texture token, const PluginDrawVertex* vertices, std::uint32_t vertexCount,
+        const PluginDrawIndex* indices, std::uint32_t indexCount)
+    {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        using Performance = ::Services::Map::Buildings::BuildingMapPerformanceDiagnostics;
+        auto* frame = Performance::ActiveRender;
+        auto* work = frame != nullptr ? &frame->Texture : nullptr;
+        const bool sampled = work != nullptr && Performance::SampleTextureCall();
+        if (work != nullptr)
+        {
+            ++work->Calls;
+            ++work->GateAcquisitions;
+        }
+        const auto admissionStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+        Operation operation(*this, Kind::Draw);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (sampled)
+            work->AdmissionSample.Add(Performance::Milliseconds(Performance::Clock::now() - admissionStarted));
+#endif
+        if (!operation.Admitted) throw std::invalid_argument("MiniMap: texture service drawing closed");
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (work != nullptr)
+        {
+            ++work->Admissions;
+            ++work->GateAcquisitions;
+        }
+        const auto ledgerStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+
+        std::lock_guard lock(LedgerMutex);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const auto ledgerAcquired = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+        if (work != nullptr) ++work->LedgerAcquisitions;
+#endif
+        const auto* record = Find(token.id);
+        if (!record || record->Ownership != State::Validated || !record->Receipt ||
+            !record->Receipt->view.load(std::memory_order_acquire))
+            throw std::invalid_argument("MiniMap: texture identity is not draw-admitted");
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const auto backendStarted = sampled ? Performance::Clock::now() : Performance::Clock::time_point{};
+#endif
+        const auto result = ui.DL_AddTexturedTriangles(list, record->Handle, vertices, vertexCount, indices, indexCount);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (sampled)
+        {
+            const auto backendFinished = Performance::Clock::now();
+            work->LedgerWaitSample.Add(Performance::Milliseconds(ledgerAcquired - ledgerStarted));
+            work->LedgerHoldSample.Add(Performance::Milliseconds(backendFinished - ledgerAcquired));
+            work->BackendSample.Add(Performance::Milliseconds(backendFinished - backendStarted));
+        }
+#endif
+        return result;
+    }
+#endif
 }
 #endif
