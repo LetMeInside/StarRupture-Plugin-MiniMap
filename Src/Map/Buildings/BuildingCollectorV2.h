@@ -22,7 +22,7 @@ namespace MiniMap::BuildingAcquisition
     {
     public:
         /** Creates empty CPU state and fixes the Section grid and retry delay.
-         * Successful ordinary acquisitions use the fixed ten-second fallback; accepted mutations use a 100 ms trailing-edge quiet period.
+         * Accepted mutations use a 100 ms trailing-edge quiet period.
          * @param sectionSizeMapUnits Exact square Section size used by the existing map service grid.
          * @param retryInterval Positive retry delay after a failed or stale acquisition attempt.
          * @throws std::invalid_argument when the Section size or retry delay is invalid.

@@ -117,14 +117,12 @@ namespace MiniMap::BuildingAcquisition
     {
         using Clock = std::chrono::steady_clock;
         static constexpr auto MutationQuietPeriod = std::chrono::milliseconds(100);
-        static constexpr auto PeriodicFallbackInterval = std::chrono::seconds(10);
 
         /** Classifies a collector scan for bounded success/failure diagnostics. */
         enum class AcquisitionReason
         {
             Immediate,
-            Mutation,
-            Fallback
+            Mutation
         };
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -658,12 +656,10 @@ namespace MiniMap::BuildingAcquisition
             std::uint64_t ImmediateRegionRequests = 0;
             std::uint64_t SuccessfulCoverageReuse = 0;
             std::uint64_t RejectedCoverageReuse = 0;
-            std::uint64_t PeriodicScans = 0;
             std::uint64_t ImmediateScans = 0;
             std::uint64_t MutationScans = 0;
             std::uint64_t FailedImmediateScans = 0;
             std::uint64_t FailedMutationScans = 0;
-            std::uint64_t FailedFallbackScans = 0;
             std::uint64_t SectionOwnerReuses = 0;
             std::uint64_t SectionOwnersPreservedOnMovement = 0;
             std::uint64_t SectionPublicationsRebuilt = 0;
@@ -733,8 +729,6 @@ namespace MiniMap::BuildingAcquisition
                         ++measurements.ImmediateScans;
                     else if (Reason == AcquisitionReason::Mutation)
                         ++measurements.MutationScans;
-                    else
-                        ++measurements.PeriodicScans;
                 }
                 else if (Reason == AcquisitionReason::Immediate)
                 {
@@ -743,10 +737,6 @@ namespace MiniMap::BuildingAcquisition
                 else if (Reason == AcquisitionReason::Mutation)
                 {
                     ++measurements.FailedMutationScans;
-                }
-                else
-                {
-                    ++measurements.FailedFallbackScans;
                 }
                 if (totalMs >= measurements.WorstScan.TotalMs)
                 {
@@ -956,7 +946,6 @@ namespace MiniMap::BuildingAcquisition
         std::uint64_t RequestGeneration = 0;
         /** Content hash for the currently committed regional dataset; zero is a valid value. */
         std::uint64_t AcquisitionContentHash = 0;
-        Clock::time_point NextFallback{};
         Clock::time_point RetryNotBefore{};
         std::uint64_t ObservedMutationRevision = 0;
         std::uint64_t AcknowledgedMutationRevision = 0;
@@ -1060,7 +1049,6 @@ namespace MiniMap::BuildingAcquisition
                 PendingSnapshotEligible || PendingReuseEligible;
             MembershipComplete = false;
             CommittedCoverageValid = false;
-            NextFallback = {};
             RetryNotBefore = {};
             ImmediateScanRequired = true;
             if (RegionChangePendingValidation)
@@ -1097,14 +1085,12 @@ namespace MiniMap::BuildingAcquisition
                 return;
             const bool hadCoverageCandidate = CommittedCoverageValid ||
                 PendingSnapshotEligible || PendingReuseEligible;
-            const auto now = Clock::now();
             const bool snapshotCurrent = CommittedCoverageValid &&
                 CoverageWorld == World && CoverageWorld == world && CoverageManager == Manager &&
                 CoverageSession == Generation && CoverageRequest != 0 &&
                 CoverageContentHash == AcquisitionContentHash;
-            const bool beforeDeadline = NextFallback != Clock::time_point{} && now < NextFallback;
             const bool contained = snapshotCurrent && IsRegionContained(RequestedRegion, CommittedCoverage);
-            if (PendingReuseEligible && contained && beforeDeadline)
+            if (PendingReuseEligible && contained)
             {
                 MembershipComplete = true;
                 ImmediateScanRequired = false;
@@ -1113,16 +1099,9 @@ namespace MiniMap::BuildingAcquisition
                 ++Diagnostics.SuccessfulCoverageReuse;
 #endif
             }
-            else if (snapshotCurrent && contained && PendingReuseEligible)
-            {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-                ++Diagnostics.RejectedCoverageReuse;
-#endif
-            }
             else if (!snapshotCurrent)
             {
                 ImmediateScanRequired = true;
-                NextFallback = {};
                 CommittedCoverageValid = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (hadCoverageCandidate)
@@ -1134,10 +1113,6 @@ namespace MiniMap::BuildingAcquisition
             else
             {
                 ImmediateScanRequired = !PendingSnapshotEligible || !contained;
-                if (ImmediateScanRequired)
-                {
-                    NextFallback = {};
-                }
             }
             RegionChangePendingValidation = false;
             PendingSnapshotEligible = false;
@@ -1340,7 +1315,6 @@ namespace MiniMap::BuildingAcquisition
             PendingReuseEligible = false;
             ImmediateScanRequired = true;
             Definitions.clear();
-            NextFallback = {};
             RetryNotBefore = {};
             ObservedMutationRevision = 0;
             AcknowledgedMutationRevision = 0;
@@ -1795,7 +1769,6 @@ namespace MiniMap::BuildingAcquisition
             {
             case AcquisitionReason::Immediate: return "immediate";
             case AcquisitionReason::Mutation: return "mutation";
-            case AcquisitionReason::Fallback: return "fallback";
             }
             return "unknown";
         }
@@ -2175,7 +2148,7 @@ namespace MiniMap::BuildingAcquisition
             );
         }
 
-        /** Chooses immediate coverage, expired mutation, or ordinary fallback work in priority order. */
+        /** Chooses required coverage work or an observed mutation after its quiet period. */
         bool TrySelectAcquisitionReason(
             Clock::time_point now,
             std::uint64_t& startRevision,
@@ -2192,14 +2165,6 @@ namespace MiniMap::BuildingAcquisition
             else if (mutationPending && now >= MutationQuietDeadline())
             {
                 reason = AcquisitionReason::Mutation;
-            }
-            else if (mutationPending)
-            {
-                return false;
-            }
-            else if (NextFallback == Clock::time_point{} || now >= NextFallback)
-            {
-                reason = AcquisitionReason::Fallback;
             }
             else
             {
@@ -2248,7 +2213,6 @@ namespace MiniMap::BuildingAcquisition
                 MembershipComplete = true;
                 AcknowledgedMutationRevision = (std::max)(
                     AcknowledgedMutationRevision, startRevision);
-                NextFallback = completedAt + PeriodicFallbackInterval;
                 RetryNotBefore = {};
                 ImmediateScanRequired = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -3266,7 +3230,7 @@ namespace MiniMap::BuildingAcquisition
         void ReportMembershipMeasurements(double intervalMs) const
         {
             const auto& d = Diagnostics;
-            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu fastPath:%llu fullAcquisition:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={immediate:%llu mutation:%llu fallback:%llu} failedByReason={immediate:%llu mutation:%llu fallback:%llu}",
+            LOG_INFO("MiniMap: BuildingMap regional_scan intervalMs=%.1f scans:%llu complete:%llu scan={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} chunks:%llu examined:%llu admitted:%llu fastPath:%llu fullAcquisition:%llu missingOrigin:%llu added:%llu evicted:%llu failed:%llu entities:%llu pending:%llu requests={equal:%llu changed:%llu contained:%llu immediate:%llu} reuse={success:%llu rejected:%llu} scanReason={immediate:%llu mutation:%llu} failedByReason={immediate:%llu mutation:%llu}",
                 intervalMs, static_cast<unsigned long long>(d.MembershipScans),
                 static_cast<unsigned long long>(d.MembershipScans - d.FailedScans),
                 static_cast<unsigned long long>(d.Membership.Samples), d.Membership.TotalMs, d.Membership.MeanMs(), d.Membership.MaxMs,
@@ -3286,10 +3250,8 @@ namespace MiniMap::BuildingAcquisition
                 static_cast<unsigned long long>(d.RejectedCoverageReuse),
                 static_cast<unsigned long long>(d.ImmediateScans),
                 static_cast<unsigned long long>(d.MutationScans),
-                static_cast<unsigned long long>(d.PeriodicScans),
                 static_cast<unsigned long long>(d.FailedImmediateScans),
-                static_cast<unsigned long long>(d.FailedMutationScans),
-                static_cast<unsigned long long>(d.FailedFallbackScans));
+                static_cast<unsigned long long>(d.FailedMutationScans));
             const bool mutationPending = ObservedMutationRevision > AcknowledgedMutationRevision;
             const auto now = Clock::now();
             const auto quietDeadline = MutationQuietDeadline();
@@ -3341,7 +3303,7 @@ namespace MiniMap::BuildingAcquisition
             }
         }
 
-        /** Emits and resets ten-second aggregates only from a permitted Update call. */
+        /** Emits and resets bounded measurement aggregates only from a permitted Update call. */
         void ReportMeasurements() noexcept
         {
             const auto now = Clock::now();
@@ -3430,7 +3392,7 @@ namespace MiniMap::BuildingAcquisition
         return std::isfinite(building.Position[0]) && std::isfinite(building.Position[1]);
     }
 
-    /** Creates inert CPU state and validates the immutable membership interval. */
+    /** Creates inert CPU state and validates the Section size and retry interval. */
     BuildingCollectorV2::BuildingCollectorV2(
         double sectionSizeMapUnits,
         std::chrono::milliseconds retryInterval)
