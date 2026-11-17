@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -48,12 +49,43 @@ namespace Services::Map::Buildings
 		};
 		/** One spline triangle with positions, UV correspondence and packed material values. */
 		using SplineTriangle = Visuals::SectionDrawSplineTriangle;
-		/** One contiguous interval of spline triangles sharing a texture binding slot. */
+		/** Stores the world XY envelope of a range or group, including sticky invalidity. */
+		struct SplineWorldBounds
+		{
+			std::array<double, 2> MinimumWorldXY{
+				std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+			std::array<double, 2> MaximumWorldXY{
+				-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
+			bool HasFiniteWorldXY = true;
+
+			/** Expands the staging bounds for one copied triangle and disables culling on nonfinite XY. */
+			void IncludeTriangleInBounds(const SplineTriangle& triangle) noexcept;
+			/** Expands the parent envelope with the child's bounds and propagates invalidity. */
+			void IncludeGroupBounds(const SplineWorldBounds& groupBounds) noexcept;
+		};
+
+		/** Describes a contiguous interval of a binding range's triangles in the Section draw vector. */
+		struct SplineTriangleGroup
+		{
+			static constexpr std::size_t Capacity = 64;
+			std::size_t FirstTriangle = 0;
+			std::size_t TriangleCount = 0;
+			SplineWorldBounds Bounds;
+		};
+
+		/** Owns a binding interval's culling bounds and its ordered child groups. */
 		struct SplineBindingRange
 		{
 			std::size_t FirstTriangle = 0;
 			std::size_t TriangleCount = 0;
 			Visuals::SplineTextureBindingSlot BindingSlot = Visuals::SplineTextureBindingSlot::Invalid;
+#if defined(MINIMAP_EXPERIMENTAL)
+			SplineWorldBounds Bounds;
+			std::vector<SplineTriangleGroup> Groups;
+
+			/** Extends the last group or opens one for this newly copied triangle and Section offset. */
+			void IncludeCopiedTriangle(std::size_t triangleIndex, const SplineTriangle& triangle);
+#endif
 		};
 
 		/** Shares unchanged world geometry when only atlas content bindings change. */
@@ -63,6 +95,9 @@ namespace Services::Map::Buildings
 			std::vector<SplineTriangle> SplineTriangles;
 			std::vector<SplineBindingRange> SplineBindingRanges;
 			std::vector<SpriteTriangle> OverlayTriangles;
+
+			/** Opens a staging range at the next triangle offset unless the current slot can continue. */
+			void OpenSplineBindingRange(Visuals::SplineTextureBindingSlot bindingSlot);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			std::uint64_t SourceGeneration = 0;
 			std::size_t OrdinaryOccurrenceCount = 0;

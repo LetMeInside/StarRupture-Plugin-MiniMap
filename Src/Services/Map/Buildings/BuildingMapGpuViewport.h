@@ -25,12 +25,22 @@ namespace Services::Map::Buildings
 		/** Copies the caller's current map projection and screen clip for one draw callback. */
 		struct CanvasTransform
 		{
+			/** Callback-local affine projection coefficients derived from this transform's rotation and scales. */
+			struct ProjectionCoefficients
+			{
+				double A = 1.0;
+				double B = 0.0;
+				double C = 0.0;
+				double D = 1.0;
+			};
+
 			std::array<double, 2> WorldOrigin{};
 			MiniMap::Services::Vec2 ScreenOrigin{};
 			double PixelsPerWorldUnitX = 1.0;
 			double PixelsPerWorldUnitY = 1.0;
 			double Cosine = 1.0;
 			double Sine = 0.0;
+			ProjectionCoefficients Projection{};
 			MiniMap::Services::Vec2 ClipMinimum{};
 			MiniMap::Services::Vec2 ClipMaximum{};
 		};
@@ -188,6 +198,16 @@ namespace Services::Map::Buildings
 			std::chrono::steady_clock::time_point deadline);
 		/** Transfers a complete staged value into the Section's immutable presentation owner. */
 		static void PublishSectionGeometryAssembly(BuildingMapSection& section);
+		/** Holds float UV operands shared by all triangles in one atlas binding. */
+		struct SpriteUvOperands
+		{
+			float AtlasWidth = 0.0f;
+			float AtlasHeight = 0.0f;
+			float RectangleX = 0.0f;
+			float RectangleY = 0.0f;
+			float RectangleWidth = 0.0f;
+			float RectangleHeight = 0.0f;
+		};
 		/** Applies the current published atlas rectangle to one staged binding. */
 		static void UpdateSpriteBindingRectangle(
 			BuildingMapSectionPresentation::SpriteBinding& binding,
@@ -218,7 +238,45 @@ namespace Services::Map::Buildings
 			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
 #endif
 			) const;
+		/** Projects an ordinary triangle using its binding's preconverted UV operands and submits it individually. */
+		void DrawOrdinarySpriteTriangle(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			const CanvasTransform& transform,
+			MiniMap::Services::Texture texture,
+			const SpriteUvOperands& uvOperands,
+			const BuildingMapSectionPresentation::SpriteTriangle& triangle
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
+#endif
+			) const;
 #if defined(MINIMAP_EXPERIMENTAL)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Records vertex vector growth and high-water marks after one existing insertion. */
+		static void RecordVertexBatchInsertion(
+			BuildingMapPerformanceDiagnostics::DrawPass* measurements,
+			std::size_t previousCapacity,
+			const std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices) noexcept;
+		/** Records index vector growth and high-water marks after one existing insertion. */
+		static void RecordIndexBatchInsertion(
+			BuildingMapPerformanceDiagnostics::DrawPass* measurements,
+			std::size_t previousCapacity,
+			const std::vector<std::uint16_t>& indices) noexcept;
+#endif
+		/** Appends an ordinary triangle using converted UV operands and existing batch index order. */
+		void AppendOrdinarySpriteTriangle(
+			const CanvasTransform& transform,
+			const BuildingMapSectionPresentation::SpriteTriangle& triangle,
+			const SpriteUvOperands& uvOperands,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
+#if MINIMAP_ORDINARY_BATCH_CAPACITY_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* batchDiagnostics
+#endif
+#endif
+			) const;
 		/** Appends one projected triangle as three vertices and batch-local sequential indices. */
 		void AppendSpriteTriangle(
 			const CanvasTransform& transform,
@@ -229,6 +287,9 @@ namespace Services::Map::Buildings
 			std::vector<std::uint16_t>& indices
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
+#if MINIMAP_ORDINARY_BATCH_CAPACITY_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* batchDiagnostics
+#endif
 #endif
 			) const;
 #endif
@@ -267,12 +328,20 @@ namespace Services::Map::Buildings
 			const BuildingMapSectionPresentation::SplineTriangle& triangle,
 			const CanvasTransform& transform,
 			std::array<MiniMap::Services::Vec2, 3>& positions,
-			bool& reverseWinding) const;
+			bool& reverseWinding
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
 #if defined(MINIMAP_EXPERIMENTAL)
 		/** Clears and retains the existing bounded render-thread spline batch scratch. */
 		static void PrepareSplineBatchScratch(
 			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
 			std::vector<std::uint16_t>& indices);
+		/** Returns true only when the projected range or group bounds prove it misses the callback clip. */
+		static bool IsSplineBoundsOutsideClip(
+			const BuildingMapSectionPresentation::SplineWorldBounds& bounds,
+			const CanvasTransform& transform) noexcept;
 		/** Traverses one binding interval while retaining the active cross-range batch. */
 		void DrawSplineBindingRange(
 			MiniMap::Services::ICanvas& canvas,
@@ -282,6 +351,22 @@ namespace Services::Map::Buildings
 			const BuildingMapSectionPresentation::SplineBindingRange& range,
 			MiniMap::Services::Texture splineWhiteTexture,
 			const std::shared_ptr<const void>& splineWhiteTextureLease,
+			MiniMap::Services::Texture& activeTexture,
+			bool& hasActiveTexture,
+			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
+			std::vector<std::uint16_t>& indices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
+		/** Draws admitted child intervals of a validated range using the existing active batch. */
+		void DrawSplineTriangleGroups(
+			MiniMap::Services::ICanvas& canvas,
+			MiniMap::Services::DrawLayer layer,
+			const CanvasTransform& transform,
+			const BuildingMapSectionPresentation::Geometry& geometry,
+			const BuildingMapSectionPresentation::SplineBindingRange& range,
+			MiniMap::Services::Texture texture,
 			MiniMap::Services::Texture& activeTexture,
 			bool& hasActiveTexture,
 			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
@@ -309,7 +394,11 @@ namespace Services::Map::Buildings
 		bool TryProjectSplineTriangle(
 			const BuildingMapSectionPresentation::SplineTriangle& triangle,
 			const CanvasTransform& transform,
-			std::array<MiniMap::Services::TexturedTriangleVertex, 3>& vertices) const;
+			std::array<MiniMap::Services::TexturedTriangleVertex, 3>& vertices
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, BuildingMapPerformanceDiagnostics::DrawPass* pass
+#endif
+			) const;
 		/** Resolves only explicitly supported immutable spline binding slots. */
 		static MiniMap::Services::Texture ResolveSplineTextureBinding(
 			Visuals::SplineTextureBindingSlot bindingSlot,

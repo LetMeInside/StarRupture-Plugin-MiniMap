@@ -2,6 +2,11 @@
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+// Set to 0 in Client Debug Experimental to omit per-insertion ordinary batch capacity observations.
+#define MINIMAP_ORDINARY_BATCH_CAPACITY_DIAGNOSTICS 0
+// Set to 0 in Client Debug builds to omit ordinary sprite range and batch sampling.
+#define MINIMAP_ORDINARY_RANGE_SAMPLING_DIAGNOSTICS 0
+
 #include "../../Log.h"
 
 #include <algorithm>
@@ -11,6 +16,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 
 namespace Services::Map::Buildings
@@ -165,29 +171,75 @@ namespace Services::Map::Buildings
 		struct DrawPass
 		{
 			Duration Time;
+			Duration OrdinaryCanvasSubmission;
+			Duration SplineTraversal;
+			Duration SplineCanvasSubmission;
 			Duration ProjectionSample;
 			Duration CanvasSample;
 			Count Sections = 0;
 			Count Visited = 0;
 			Count Submitted = 0;
+			Count NonfiniteProjectedXY = 0;
+			Count NonfiniteSignedArea = 0;
+			Count ZeroSignedArea = 0;
+			Count OutsideScreenClip = 0;
+			Count NonfiniteUv = 0;
+			Count Accepted = 0;
+			Count VertexCapacityIncreases = 0;
+			Count IndexCapacityIncreases = 0;
+			Count MaximumVertexCount = 0;
+			Count MaximumIndexCount = 0;
+			Count MaximumVertexCapacity = 0;
+			Count MaximumIndexCapacity = 0;
+			Count VertexCapacityGrowthElements = 0;
+			Count IndexCapacityGrowthElements = 0;
 			Count CanvasCalls = 0;
 			Count FailedSubmissions = 0;
 			Count BoundRanges = 0;
 			Count UnboundRanges = 0;
+			Count SplineRangesVisited = 0;
+			Count SplineRangesCulled = 0;
+			Count SplineTrianglesInCulledRanges = 0;
+			Count SplineGroupsVisited = 0;
+			Count SplineGroupsCulled = 0;
+			Count SplineTrianglesInCulledGroups = 0;
 
 			/** Adds one callback's measurements to the corresponding pass. */
 			void Merge(const DrawPass& other) noexcept
 			{
 				Time.Merge(other.Time);
+				OrdinaryCanvasSubmission.Merge(other.OrdinaryCanvasSubmission);
+				SplineTraversal.Merge(other.SplineTraversal);
+				SplineCanvasSubmission.Merge(other.SplineCanvasSubmission);
 				ProjectionSample.Merge(other.ProjectionSample);
 				CanvasSample.Merge(other.CanvasSample);
 				Sections += other.Sections;
 				Visited += other.Visited;
 				Submitted += other.Submitted;
+				NonfiniteProjectedXY += other.NonfiniteProjectedXY;
+				NonfiniteSignedArea += other.NonfiniteSignedArea;
+				ZeroSignedArea += other.ZeroSignedArea;
+				OutsideScreenClip += other.OutsideScreenClip;
+				NonfiniteUv += other.NonfiniteUv;
+				Accepted += other.Accepted;
+				VertexCapacityIncreases += other.VertexCapacityIncreases;
+				IndexCapacityIncreases += other.IndexCapacityIncreases;
+				MaximumVertexCount = (std::max)(MaximumVertexCount, other.MaximumVertexCount);
+				MaximumIndexCount = (std::max)(MaximumIndexCount, other.MaximumIndexCount);
+				MaximumVertexCapacity = (std::max)(MaximumVertexCapacity, other.MaximumVertexCapacity);
+				MaximumIndexCapacity = (std::max)(MaximumIndexCapacity, other.MaximumIndexCapacity);
+				VertexCapacityGrowthElements += other.VertexCapacityGrowthElements;
+				IndexCapacityGrowthElements += other.IndexCapacityGrowthElements;
 				CanvasCalls += other.CanvasCalls;
 				FailedSubmissions += other.FailedSubmissions;
 				BoundRanges += other.BoundRanges;
 				UnboundRanges += other.UnboundRanges;
+				SplineRangesVisited += other.SplineRangesVisited;
+				SplineRangesCulled += other.SplineRangesCulled;
+				SplineTrianglesInCulledRanges += other.SplineTrianglesInCulledRanges;
+				SplineGroupsVisited += other.SplineGroupsVisited;
+				SplineGroupsCulled += other.SplineGroupsCulled;
+				SplineTrianglesInCulledGroups += other.SplineTrianglesInCulledGroups;
 			}
 		};
 
@@ -612,6 +664,11 @@ namespace Services::Map::Buildings
 			texture.LedgerWaitSample.Describe().data(), texture.LedgerHoldSample.Describe().data(),
 			texture.BackendSample.Describe().data(), admissionEstimate);
 		ReportDrawPass(*log, "ordinary", work.Ordinary);
+#if defined(MINIMAP_EXPERIMENTAL)
+		MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+			"MiniMap: BuildingMap perf_draw_ordinary allBulkCanvasSubmissionsWallMs=%s",
+			work.Ordinary.OrdinaryCanvasSubmission.Describe().data());
+#endif
 		ReportDrawPass(*log, "spline", work.Spline);
 		ReportDrawPass(*log, "overlay", work.Overlay);
 	}
@@ -619,15 +676,57 @@ namespace Services::Map::Buildings
 	inline void BuildingMapPerformanceDiagnostics::ReportDrawPass(
 		MiniMap::Services::ILog& log, const char* name, const DrawPass& pass) noexcept
 	{
+	#if !MINIMAP_ORDINARY_RANGE_SAMPLING_DIAGNOSTICS
+		if (std::strcmp(name, "ordinary") == 0)
+		{
+			MiniMap::Services::Logf(log, MiniMap::Services::Level::Info,
+				"MiniMap: BuildingMap perf_draw_pass pass=%s inclusiveWallMs=%s sectionsVisited=%llu "
+				"trianglesVisited=%llu trianglesSubmitted=%llu rejected={nonfiniteXY:%llu nonfiniteArea:%llu "
+				"zeroArea:%llu outsideClip:%llu nonfiniteUv:%llu} accepted=%llu "
+				"canvasCalls=%llu failedSubmissions=%llu boundRanges=%llu unboundRanges=%llu",
+				name, pass.Time.Describe().data(), pass.Sections,
+				pass.Visited, pass.Submitted, pass.NonfiniteProjectedXY, pass.NonfiniteSignedArea,
+				pass.ZeroSignedArea, pass.OutsideScreenClip, pass.NonfiniteUv, pass.Accepted,
+				pass.CanvasCalls, pass.FailedSubmissions, pass.BoundRanges, pass.UnboundRanges);
+			return;
+		}
+	#endif
 		MiniMap::Services::Logf(log, MiniMap::Services::Level::Info,
 			"MiniMap: BuildingMap perf_draw_pass pass=%s inclusiveWallMs=%s sectionsVisited=%llu "
-			"trianglesVisited=%llu trianglesSubmitted=%llu canvasCalls=%llu failedSubmissions=%llu "
+			"trianglesVisited=%llu trianglesSubmitted=%llu rejected={nonfiniteXY:%llu nonfiniteArea:%llu "
+			"zeroArea:%llu outsideClip:%llu nonfiniteUv:%llu} accepted=%llu "
+			"canvasCalls=%llu failedSubmissions=%llu "
 			"boundRanges=%llu unboundRanges=%llu "
 			"sample1in256BoundRangesNestedWallMs projection=%s canvas=%s",
-			name, pass.Time.Describe().data(), pass.Sections, pass.Visited, pass.Submitted,
+			name, pass.Time.Describe().data(), pass.Sections,
+			pass.Visited, pass.Submitted, pass.NonfiniteProjectedXY, pass.NonfiniteSignedArea,
+			pass.ZeroSignedArea, pass.OutsideScreenClip, pass.NonfiniteUv, pass.Accepted,
 			pass.CanvasCalls, pass.FailedSubmissions,
 			pass.BoundRanges, pass.UnboundRanges, pass.ProjectionSample.Describe().data(),
 			pass.CanvasSample.Describe().data());
+		if (name[0] == 's')
+		{
+			MiniMap::Services::Logf(log, MiniMap::Services::Level::Info,
+				"MiniMap: BuildingMap perf_draw_spline timingWallMs traversal=%s canvasSubmission=%s "
+				"rangesVisited=%llu rangesCulled=%llu trianglesInCulledRanges=%llu "
+				"groupsVisited=%llu groupsCulled=%llu trianglesInCulledGroups=%llu",
+				pass.SplineTraversal.Describe().data(), pass.SplineCanvasSubmission.Describe().data(),
+				pass.SplineRangesVisited, pass.SplineRangesCulled, pass.SplineTrianglesInCulledRanges,
+				pass.SplineGroupsVisited, pass.SplineGroupsCulled, pass.SplineTrianglesInCulledGroups);
+		}
+#if MINIMAP_ORDINARY_BATCH_CAPACITY_DIAGNOSTICS
+		if (name[0] == 'o')
+		{
+			MiniMap::Services::Logf(log, MiniMap::Services::Level::Info,
+				"MiniMap: BuildingMap perf_draw_batch_capacity vertexIncreases=%llu indexIncreases=%llu "
+				"vertexGrowthElements=%llu indexGrowthElements=%llu maxVertices=%llu maxIndices=%llu "
+				"maxVertexCapacity=%llu maxIndexCapacity=%llu",
+				pass.VertexCapacityIncreases, pass.IndexCapacityIncreases,
+				pass.VertexCapacityGrowthElements, pass.IndexCapacityGrowthElements,
+				pass.MaximumVertexCount, pass.MaximumIndexCount,
+				pass.MaximumVertexCapacity, pass.MaximumIndexCapacity);
+		}
+#endif
 	}
 }
 #endif
