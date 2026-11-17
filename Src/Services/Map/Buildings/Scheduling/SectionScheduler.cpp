@@ -428,49 +428,65 @@ namespace Services::Map::Buildings::Scheduling
 		std::vector<std::size_t>& occurrenceOrder,
 		std::size_t spriteCount)
 	{
-		const auto spriteOrderEnd = occurrenceOrder.begin() + spriteCount;
-		const auto hasValidPainterPlacement = [&sourceData](std::size_t ordinal)
+		/** Caches the painter comparison fields for one sprite during this sort only. */
+		struct SpritePainterSortKey
 		{
-			const BuildingCandidateSourceRecord& source = sourceData.records[ordinal];
-			return source.hasPlacement &&
-				std::isfinite(source.placement.Position[0]) &&
-				std::isfinite(source.placement.Position[1]) &&
-				std::isfinite(source.placement.Position[2]);
-		};
-		std::sort(
-			occurrenceOrder.begin(),
-			spriteOrderEnd,
-			[&sourceData, &hasValidPainterPlacement](std::size_t leftOrdinal, std::size_t rightOrdinal)
+			bool HasValidPlacement = false;
+			double Z = 0.0;
+			double Y = 0.0;
+			double X = 0.0;
+			std::size_t OriginalOrdinal = 0;
+
+			/** Orders valid keys by Z/Y/X and resolves every tie by source ordinal. */
+			bool operator<(const SpritePainterSortKey& other) const
 			{
-				const bool leftHasPlacement = hasValidPainterPlacement(leftOrdinal);
-				const bool rightHasPlacement = hasValidPainterPlacement(rightOrdinal);
-				if (leftHasPlacement != rightHasPlacement)
+				if (HasValidPlacement != other.HasValidPlacement)
 				{
-					return leftHasPlacement;
+					return HasValidPlacement;
 				}
-				if (!leftHasPlacement)
+				if (!HasValidPlacement)
 				{
-					return leftOrdinal < rightOrdinal;
+					return OriginalOrdinal < other.OriginalOrdinal;
 				}
-				const auto& left = sourceData.records[leftOrdinal].placement.Position;
-				const auto& right = sourceData.records[rightOrdinal].placement.Position;
-				if (left[2] != right[2])
+				if (Z != other.Z)
 				{
-					return left[2] < right[2];
+					return Z < other.Z;
 				}
-				if (left[1] != right[1])
+				if (Y != other.Y)
 				{
-					return left[1] < right[1];
+					return Y < other.Y;
 				}
-				if (left[0] != right[0])
+				if (X != other.X)
 				{
-					return left[0] < right[0];
+					return X < other.X;
 				}
-				return leftOrdinal < rightOrdinal;
-			});
-		const auto validSpriteEnd = std::partition_point(
-			occurrenceOrder.begin(), spriteOrderEnd, hasValidPainterPlacement);
-		return static_cast<std::size_t>(validSpriteEnd - occurrenceOrder.begin());
+				return OriginalOrdinal < other.OriginalOrdinal;
+			}
+		};
+		std::vector<SpritePainterSortKey> sortKeys;
+		sortKeys.reserve(spriteCount);
+		std::size_t validSpriteCount = 0;
+		for (std::size_t spriteIndex = 0; spriteIndex < spriteCount; ++spriteIndex)
+		{
+			const std::size_t ordinal = occurrenceOrder[spriteIndex];
+			const BuildingCandidateSourceRecord& source = sourceData.records[ordinal];
+			const auto& position = source.placement.Position;
+			const bool hasValidPlacement = source.hasPlacement &&
+				std::isfinite(position[0]) &&
+				std::isfinite(position[1]) &&
+				std::isfinite(position[2]);
+			if (hasValidPlacement)
+			{
+				++validSpriteCount;
+			}
+			sortKeys.push_back({hasValidPlacement, position[2], position[1], position[0], ordinal});
+		}
+		std::sort(sortKeys.begin(), sortKeys.end());
+		for (std::size_t spriteIndex = 0; spriteIndex < spriteCount; ++spriteIndex)
+		{
+			occurrenceOrder[spriteIndex] = sortKeys[spriteIndex].OriginalOrdinal;
+		}
+		return validSpriteCount;
 	}
 
 	/** Advances untouched ordinals once and visits only sprite resources still unavailable. */

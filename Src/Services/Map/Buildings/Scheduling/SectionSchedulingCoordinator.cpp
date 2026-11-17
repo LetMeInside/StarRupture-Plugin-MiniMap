@@ -390,11 +390,12 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			lastGpuGeometryPublicationOpportunity_ = std::chrono::steady_clock::now();
 		}
-		FinalizeTickBudget(advancementStarted
+		const double measuredSchedulingMs = FinalizeTickBudget(advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, budgetWasAlreadyExhausted
 #endif
 			);
+		buildingMapService.frameBudgetController_.RecordSchedulingExecutionTime(measuredSchedulingMs);
 	}
 
 	/** Reads a new controller allowance only when its monotonic tick sequence changes. */
@@ -536,7 +537,7 @@ namespace Services::Map::Buildings::Scheduling
 	}
 
 	/** Commits one call's actual duration into shared per-tick consumption and records bounded Debug evidence. */
-	void SectionSchedulingCoordinator::FinalizeTickBudget(
+	double SectionSchedulingCoordinator::FinalizeTickBudget(
 		std::chrono::steady_clock::time_point advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		, bool budgetWasAlreadyExhausted
@@ -569,6 +570,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		diagnostics_.CoordinatorAdvancement.Add(completedAdvancementMs);
 #endif
+		return completedAdvancementMs;
 	}
 	/** Gives all currently eligible initial sprite work preference, then nearest continuation work. */
 	SectionSchedulingCoordinator::WaitingSections::const_iterator

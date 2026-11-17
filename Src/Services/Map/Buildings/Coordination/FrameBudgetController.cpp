@@ -6,12 +6,14 @@
 
 namespace Services::Map::Buildings::Coordination
 {
-	/** Reads monotonic wall time, advances tick identity, and updates the provisional allowance.
+	/** Reads raw and corrected monotonic intervals, then updates the adaptive allowance.
 	 * @param engineDeltaSeconds Engine delta retained for Debug diagnostics only.
 	 */
 	void FrameBudgetController::OnTick(double engineDeltaSeconds) noexcept
 	{
 		const auto now = std::chrono::steady_clock::now();
+		const double schedulingTimeRemovedMs = pendingSchedulingExecutionMs_;
+		pendingSchedulingExecutionMs_ = 0.0;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		FinalizeCurrentTickDiagnostics();
 #endif
@@ -26,13 +28,28 @@ namespace Services::Map::Buildings::Coordination
 		previousTickTimestamp_ = now;
 		previousTickTimestampAvailable_ = true;
 		const bool validInterval = hasInterval && intervalMs >= 1.0 && intervalMs <= 100.0;
+		double correctedIntervalMs = 0.0;
+		bool validCorrectedInterval = false;
 		if (validInterval)
 		{
 			UpdateTimingEstimate(intervalMs);
+			correctedIntervalMs = intervalMs - schedulingTimeRemovedMs;
+			validCorrectedInterval = std::isfinite(correctedIntervalMs) &&
+				correctedIntervalMs >= 1.0 && correctedIntervalMs <= 100.0;
+			if (validCorrectedInterval)
+			{
+				UpdateCorrectedTimingEstimate(correctedIntervalMs);
+			}
 		}
 		UpdateNominalBudget();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		RecordTickDiagnostics(engineDeltaSeconds, intervalMs, hasInterval, validInterval);
+		RecordTickDiagnostics(
+			engineDeltaSeconds,
+			intervalMs,
+			hasInterval,
+			validInterval,
+			validCorrectedInterval ? correctedIntervalMs : 0.0,
+			schedulingTimeRemovedMs);
 #else
 		(void)engineDeltaSeconds;
 #endif
@@ -44,7 +61,16 @@ namespace Services::Map::Buildings::Coordination
 		++currentTickAdvancements_;
 	}
 
-	/** Returns the allowance calculated once for the most recently observed tick. */
+	/** Accumulates one outer coordinator duration for subtraction at the next tick sample. */
+	void FrameBudgetController::RecordSchedulingExecutionTime(double executionMs) noexcept
+	{
+		if (std::isfinite(executionMs) && executionMs > 0.0)
+		{
+			pendingSchedulingExecutionMs_ += executionMs;
+		}
+	}
+
+	/** Returns the adaptive allowance established at construction and updated once per tick. */
 	double FrameBudgetController::NominalBudgetMs() const noexcept
 	{
 		return nominalBudgetMs_;
@@ -56,7 +82,7 @@ namespace Services::Map::Buildings::Coordination
 		return tickSequence_;
 	}
 
-	/** Applies the provisional exponential smoothing rule to a valid wall-clock interval. */
+	/** Smooths valid raw tick intervals for observed-TPS diagnostics. */
 	void FrameBudgetController::UpdateTimingEstimate(double intervalMs) noexcept
 	{
 		if (!validTimingEstimateAvailable_)
@@ -69,11 +95,25 @@ namespace Services::Map::Buildings::Coordination
 		smoothedTickMs_ += alpha * (intervalMs - smoothedTickMs_);
 	}
 
-	/** Caps effective tick duration at the provisional reference before applying twelve percent. */
+	/** Smooths a valid corrected interval using the same exponential response. */
+	void FrameBudgetController::UpdateCorrectedTimingEstimate(double intervalMs) noexcept
+	{
+		if (!validCorrectedTimingEstimateAvailable_)
+		{
+			smoothedCorrectedTickMs_ = intervalMs;
+			validCorrectedTimingEstimateAvailable_ = true;
+			return;
+		}
+		const double alpha = 1.0 - std::exp(-intervalMs / 500.0);
+		smoothedCorrectedTickMs_ += alpha * (intervalMs - smoothedCorrectedTickMs_);
+	}
+
+	/** Applies the target fraction to corrected duration and enforces the maximum allowance. */
 	void FrameBudgetController::UpdateNominalBudget() noexcept
 	{
-		const double effectiveTickMs = (std::min)(smoothedTickMs_, ReferenceTickMs);
-		nominalBudgetMs_ = BudgetFraction * effectiveTickMs;
+		nominalBudgetMs_ = (std::min)(
+			MaximumSchedulingAllowanceMs,
+			TargetSchedulingFraction * smoothedCorrectedTickMs_);
 	}
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -90,12 +130,14 @@ namespace Services::Map::Buildings::Coordination
 		}
 	}
 
-	/** Adds the current notification, valid interval and calculated allowance to Debug aggregates. */
+	/** Adds raw interval, accepted correction, removed work and allowance to Debug aggregates. */
 	void FrameBudgetController::RecordTickDiagnostics(
 		double engineDeltaSeconds,
 		double intervalMs,
 		bool hasInterval,
-		bool validInterval) noexcept
+		bool validInterval,
+		double correctedIntervalMs,
+		double schedulingTimeRemovedMs) noexcept
 	{
 		const auto now = previousTickTimestamp_;
 		if (!diagnosticsIntervalStarted_)
@@ -105,6 +147,9 @@ namespace Services::Map::Buildings::Coordination
 		}
 		++diagnostics_.processingTicks;
 		diagnostics_.engineDeltaTotalSeconds += engineDeltaSeconds;
+		latestRawTickIntervalMs_ = hasInterval ? intervalMs : 0.0;
+		latestCorrectedTickIntervalMs_ = correctedIntervalMs;
+		latestSchedulingTimeRemovedMs_ = schedulingTimeRemovedMs;
 		diagnostics_.nominalBudgetTotalMs += nominalBudgetMs_;
 		if (nominalBudgetMs_ > diagnostics_.maximumNominalBudgetMs)
 		{
@@ -156,6 +201,10 @@ namespace Services::Map::Buildings::Coordination
 			: diagnostics_.engineDeltaTotalSeconds / static_cast<double>(diagnostics_.processingTicks);
 		output.LatestSmoothedTickIntervalMs = smoothedTickMs_;
 		output.LatestObservedTPS = 1000.0 / smoothedTickMs_;
+		output.LatestRawTickIntervalMs = latestRawTickIntervalMs_;
+		output.LatestCorrectedTickIntervalMs = latestCorrectedTickIntervalMs_;
+		output.LatestCorrectedSmoothedTickIntervalMs = smoothedCorrectedTickMs_;
+		output.LatestSchedulingTimeRemovedMs = latestSchedulingTimeRemovedMs_;
 		output.MeanNominalBudgetMs = diagnostics_.processingTicks == 0
 			? 0.0
 			: diagnostics_.nominalBudgetTotalMs / static_cast<double>(diagnostics_.processingTicks);
@@ -168,7 +217,7 @@ namespace Services::Map::Buildings::Coordination
 		return true;
 	}
 
-	/** Clears diagnostic counters while leaving tick timing and current budget untouched. */
+	/** Clears diagnostic counters while leaving operational tick timing untouched. */
 	void FrameBudgetController::ResetDiagnosticsAggregates() noexcept
 	{
 		diagnostics_ = {};

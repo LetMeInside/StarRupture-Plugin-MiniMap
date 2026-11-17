@@ -1,4 +1,4 @@
-// Owns game-thread tick timing, a provisional nominal budget, and bounded Debug aggregates.
+// Owns game-thread tick timing, a corrected adaptive budget and bounded Debug aggregates.
 #pragma once
 
 #include <chrono>
@@ -6,7 +6,7 @@
 
 namespace Services::Map::Buildings::Coordination
 {
-	/** Tracks one service instance's game-thread tick identity and provisional per-tick allowance.
+	/** Tracks one service instance's tick timing, corrected estimate and adaptive allowance.
 	 * The owning BuildingMapService controls its lifetime; this game-independent value has no
 	 * external resources, synchronization, or diagnostic history allocation.
 	 */
@@ -26,6 +26,10 @@ namespace Services::Map::Buildings::Coordination
 			double MeanEngineDeltaSeconds = 0.0;
 			double LatestSmoothedTickIntervalMs = 0.0;
 			double LatestObservedTPS = 0.0;
+			double LatestRawTickIntervalMs = 0.0;
+			double LatestCorrectedTickIntervalMs = 0.0;
+			double LatestCorrectedSmoothedTickIntervalMs = 0.0;
+			double LatestSchedulingTimeRemovedMs = 0.0;
 			double MeanNominalBudgetMs = 0.0;
 			double MaximumNominalBudgetMs = 0.0;
 			double LatestNominalBudgetMs = 0.0;
@@ -34,7 +38,7 @@ namespace Services::Map::Buildings::Coordination
 		};
 #endif
 
-		/** Creates a controller whose first tick establishes the monotonic clock baseline. */
+		/** Creates a controller with its reference-rate adaptive allowance ready immediately. */
 		FrameBudgetController() noexcept = default;
 		/** Keeps tick identity and timing estimator local to one service lifetime. */
 		FrameBudgetController(const FrameBudgetController&) = delete;
@@ -51,7 +55,11 @@ namespace Services::Map::Buildings::Coordination
 		void OnTick(double engineDeltaSeconds) noexcept;
 		/** Counts one validated service scheduling advancement in the current tick. */
 		void RecordSchedulingAdvancement() noexcept;
-		/** Returns the current provisional per-tick nominal allowance in milliseconds. */
+		/** Adds measured synchronous coordinator time to the current tick interval.
+		 * @param executionMs Actual elapsed coordinator time, measured once around its outer call.
+		 */
+		void RecordSchedulingExecutionTime(double executionMs) noexcept;
+		/** Returns the adaptive per-tick nominal allowance in milliseconds. */
 		double NominalBudgetMs() const noexcept;
 		/** Returns the number of game-thread tick notifications observed by this owner. */
 		std::uint64_t TickSequence() const noexcept;
@@ -64,26 +72,39 @@ namespace Services::Map::Buildings::Coordination
 #endif
 
 	private:
+		static constexpr double TargetSchedulingFraction = 0.20;
+		static constexpr double MaximumSchedulingAllowanceMs = 10.0;
 		static constexpr double ReferenceTPS = 60.0;
 		static constexpr double ReferenceTickMs = 1000.0 / ReferenceTPS;
-		static constexpr double BudgetFraction = 0.12;
 
-		/** Updates the smoothed estimate from one valid wall-clock observation.
-		 * @param intervalMs Valid elapsed wall-clock interval in milliseconds.
+		/** Updates the raw observed-TPS estimate from one valid interval.
+		 * @param intervalMs Raw elapsed wall-clock interval in milliseconds.
 		 */
 		void UpdateTimingEstimate(double intervalMs) noexcept;
-		/** Calculates the upper-bounded nominal allowance from the current estimate. */
+		/** Updates the corrected tick-duration estimate using the existing smoothing rule.
+		 * @param intervalMs Valid tick duration after measured coordinator time is removed.
+		 */
+		void UpdateCorrectedTimingEstimate(double intervalMs) noexcept;
+		/** Calculates the target-fraction allowance under its fixed maximum. */
 		void UpdateNominalBudget() noexcept;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Completes the prior tick's advancement counters before any interval handoff. */
 		void FinalizeCurrentTickDiagnostics() noexcept;
 		/** Adds one tick and timing observation to the bounded Debug aggregate.
 		 * @param engineDeltaSeconds Engine delta retained as diagnostic input.
-		 * @param intervalMs Elapsed wall-clock interval when one exists.
+		 * @param intervalMs Raw elapsed wall-clock interval when one exists.
 		 * @param hasInterval Whether a previous tick timestamp existed.
-		 * @param validInterval Whether the elapsed interval is within the accepted range.
+		 * @param validInterval Whether the raw interval is within the accepted range.
+		 * @param correctedIntervalMs Corrected interval when it passed validation, otherwise zero.
+		 * @param schedulingTimeRemovedMs Actual coordinator time attributed to the interval.
 		 */
-		void RecordTickDiagnostics(double engineDeltaSeconds, double intervalMs, bool hasInterval, bool validInterval) noexcept;
+		void RecordTickDiagnostics(
+			double engineDeltaSeconds,
+			double intervalMs,
+			bool hasInterval,
+			bool validInterval,
+			double correctedIntervalMs,
+			double schedulingTimeRemovedMs) noexcept;
 		/** Clears only interval aggregates and retains all operational timing state. */
 		void ResetDiagnosticsAggregates() noexcept;
 
@@ -102,14 +123,20 @@ namespace Services::Map::Buildings::Coordination
 		};
 		DiagnosticsAggregates diagnostics_{};
 		std::chrono::steady_clock::time_point diagnosticsIntervalStart_{};
+		double latestRawTickIntervalMs_ = 0.0;
+		double latestCorrectedTickIntervalMs_ = 0.0;
+		double latestSchedulingTimeRemovedMs_ = 0.0;
 		bool diagnosticsIntervalStarted_ = false;
 #endif
 		std::chrono::steady_clock::time_point previousTickTimestamp_{};
 		double smoothedTickMs_ = ReferenceTickMs;
-		double nominalBudgetMs_ = BudgetFraction * ReferenceTickMs;
+		double smoothedCorrectedTickMs_ = ReferenceTickMs;
+		double nominalBudgetMs_ = TargetSchedulingFraction * ReferenceTickMs;
+		double pendingSchedulingExecutionMs_ = 0.0;
 		std::uint64_t tickSequence_ = 0;
 		std::uint64_t currentTickAdvancements_ = 0;
 		bool previousTickTimestampAvailable_ = false;
 		bool validTimingEstimateAvailable_ = false;
+		bool validCorrectedTimingEstimateAvailable_ = false;
 	};
 }

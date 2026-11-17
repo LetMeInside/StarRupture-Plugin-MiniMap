@@ -403,8 +403,8 @@ namespace Services::Map::Buildings::Scheduling
 			const IncrementalSectionAdvanceResult& result);
 		/** Tests whether the absolute shared tick deadline leaves any scheduling time. */
 		bool IsTickAllowanceAvailable() const noexcept;
-		/** Adds this advancement's wall duration to per-tick consumption before returning. */
-		void FinalizeTickBudget(
+		/** Adds one outer coordinator duration to per-tick consumption and returns it for tick correction. */
+		double FinalizeTickBudget(
 			std::chrono::steady_clock::time_point advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, bool budgetWasAlreadyExhausted
