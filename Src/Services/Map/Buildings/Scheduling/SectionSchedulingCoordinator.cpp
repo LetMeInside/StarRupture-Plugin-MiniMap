@@ -480,13 +480,20 @@ namespace Services::Map::Buildings::Scheduling
 		const auto sliceStarted = std::chrono::steady_clock::now();
 		auto& work = BuildingMapPerformanceDiagnostics::Game();
 		const auto lookupsBefore = work.ResourceLookups;
+		BuildingMapPerformanceDiagnostics::PreparationVisitAttribution taggedOperations;
 #endif
-		BM124D_SECTION(coordinate.GridX, coordinate.GridY, result = AdvanceSelectedSectionJob(
-			buildingMapService, coordinate, publication->second, waiting.Kind == WaitingKind::InitialSprites));
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::PreparationVisitScope visitScope(
+				taggedOperations, coordinate.GridX, coordinate.GridY, publication->second->ContentHash());
+#endif
+			BM124D_SECTION(coordinate.GridX, coordinate.GridY, result = AdvanceSelectedSectionJob(
+				buildingMapService, coordinate, publication->second, waiting.Kind == WaitingKind::InitialSprites));
+		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		const double sliceElapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - sliceStarted).count();
-		RecordIncrementalDiagnostics(coordinate, sliceElapsedMs, result);
+		RecordIncrementalDiagnostics(coordinate, sliceElapsedMs, result, taggedOperations);
 		++work.SectionSlices;
 		work.SectionWorkUnits += result.WorkUnitsConsumed;
 		work.SlicesWithoutLookup += work.ResourceLookups == lookupsBefore ? 1 : 0;
@@ -899,7 +906,8 @@ namespace Services::Map::Buildings::Scheduling
 	void SectionSchedulingCoordinator::RecordIncrementalDiagnostics(
 		const SectionCoordinate& coordinate,
 		double sliceElapsedMs,
-		const IncrementalSectionAdvanceResult& result) noexcept
+		const IncrementalSectionAdvanceResult& result,
+		const BuildingMapPerformanceDiagnostics::PreparationVisitAttribution& taggedOperations) noexcept
 	{
 		++diagnostics_.SectionSlicesAttempted;
 		diagnostics_.SectionSlice.Add(sliceElapsedMs);
@@ -912,6 +920,21 @@ namespace Services::Map::Buildings::Scheduling
 			diagnostics_.WorstSlice.ElapsedMs = sliceElapsedMs;
 			diagnostics_.WorstSlice.WorkUnitsConsumed = result.WorkUnitsConsumed;
 			diagnostics_.WorstSlice.AdvancementState = static_cast<std::uint8_t>(result.CurrentState);
+			diagnostics_.WorstSlice.TaggedOperations = taggedOperations;
+		}
+		if (taggedOperations.Slowest.Present && (!diagnostics_.IntervalOperations.Slowest.Present ||
+			taggedOperations.Slowest.ElapsedMs > diagnostics_.IntervalOperations.Slowest.ElapsedMs))
+		{
+			diagnostics_.IntervalOperations.Slowest = taggedOperations.Slowest;
+		}
+		for (std::size_t index = 0; index < taggedOperations.OperationMaximums.size(); ++index)
+		{
+			const auto& visitMaximum = taggedOperations.OperationMaximums[index];
+			auto& intervalMaximum = diagnostics_.IntervalOperations.OperationMaximums[index];
+			if (visitMaximum.Present && (!intervalMaximum.Present || visitMaximum.ElapsedMs > intervalMaximum.ElapsedMs))
+			{
+				intervalMaximum = visitMaximum;
+			}
 		}
 		if (result.CurrentState == IncrementalSectionAdvanceResult::State::Pending)
 		{

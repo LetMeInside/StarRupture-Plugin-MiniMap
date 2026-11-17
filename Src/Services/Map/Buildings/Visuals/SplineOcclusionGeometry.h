@@ -4,6 +4,7 @@
 #include "SplineSurfaceGeometry.h"
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "../BuildingMapPerformanceDiagnostics.h"
+#include <chrono>
 #endif
 
 #include <algorithm>
@@ -196,6 +197,20 @@ namespace Services::Map::Buildings::Visuals
 		};
 
 	public:
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Holds independent elapsed times for the three existing index preparation stages. */
+		struct PreparationStageTimings
+		{
+			double CopyOccludersMs = 0.0;
+			bool CopyOccludersMeasured = false;
+			double CanonicalSortingMs = 0.0;
+			bool CanonicalSortingMeasured = false;
+			bool CanonicalSortingSkipped = false;
+			double BvhConstructionMs = 0.0;
+			bool BvhConstructionMeasured = false;
+		};
+#endif
+
 		/** Validates, canonicalizes, sorts, bounds, and indexes sprite quads into caller-owned immutable index storage.
 		 * Input values are copied into the index; no span or caller-owned memory is retained.
 		 * The index must not be prepared again while clipping operations hold const references to it.
@@ -205,29 +220,37 @@ namespace Services::Map::Buildings::Visuals
 		 */
 		static SplineOcclusionStatus PrepareOccluders(
 			std::span<const SplineOcclusionSpriteQuad> input,
-			SplineOcclusionIndex& index) noexcept
+			SplineOcclusionIndex& index
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, PreparationStageTimings* stageTimings = nullptr
+#endif
+			) noexcept
 		{
-			ResetPrepared(index);
-			try
-			{
-				CopyOccluders(input, index);
-				std::sort(index.Occluders.begin(), index.Occluders.end(), OccluderLess);
-				BuildBvh(index);
-				index.PreparationStatus = SplineOcclusionStatus::Complete;
-			}
-			catch (SplineOcclusionStatus status)
-			{
-				SetPreparationFailure(index, status);
-			}
-			catch (const std::bad_alloc&)
-			{
-				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
-			}
-			catch (const std::length_error&)
-			{
-				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
-			}
-			return index.PreparationStatus;
+			return PrepareOccludersInternal(input, index, false
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, stageTimings
+#endif
+			);
+		}
+
+		/** Prepares input whose unique keys are strictly increasing; this unchecked precondition preserves canonical order.
+		 * @param input World-XY convex quads ordered by unique, strictly increasing Key values.
+		 * @param index Caller-owned index that receives the complete prepared values on success.
+		 * @return Complete on success, otherwise the same validation or allocation failure category as the generic path.
+		 */
+		static SplineOcclusionStatus PrepareOccludersWithStrictlyIncreasingKeys(
+			std::span<const SplineOcclusionSpriteQuad> input,
+			SplineOcclusionIndex& index
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, PreparationStageTimings* stageTimings = nullptr
+#endif
+			) noexcept
+		{
+			return PrepareOccludersInternal(input, index, true
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				, stageTimings
+#endif
+			);
 		}
 
 		/** Clips every prepared spline cell using one shared-index query per cell and reusable caller scratch.
@@ -300,6 +323,114 @@ namespace Services::Map::Buildings::Visuals
 		}
 
 	private:
+	#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Measures one sequential stage without changing its exception behavior. */
+		class PreparationStageTimer final
+		{
+		public:
+			/** Starts one existing stage only when its diagnostic duration is requested. */
+			explicit PreparationStageTimer(double* output, bool* measured) noexcept
+				: output_(output), measured_(measured), started_(output_ != nullptr ? Clock::now() : Clock::time_point{}) {}
+			/** Stores elapsed time when the stage completes or exits by exception. */
+			~PreparationStageTimer() noexcept { Finish(); }
+			PreparationStageTimer(const PreparationStageTimer&) = delete;
+			PreparationStageTimer& operator=(const PreparationStageTimer&) = delete;
+
+			/** Stores the elapsed stage once, including a stage that exits by exception. */
+			void Finish() noexcept
+			{
+				if (output_ == nullptr)
+				{
+					return;
+				}
+				*output_ = std::chrono::duration<double, std::milli>(Clock::now() - started_).count();
+				*measured_ = true;
+				output_ = nullptr;
+			}
+
+		private:
+			using Clock = std::chrono::steady_clock;
+			double* output_;
+			bool* measured_;
+			Clock::time_point started_;
+		};
+	#endif
+
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Runs the existing copy, optional canonical sort, and BVH stages in their established order. */
+		static void PrepareOccluderStages(
+			std::span<const SplineOcclusionSpriteQuad> input,
+			SplineOcclusionIndex& index
+			, bool skipCanonicalSorting
+			, PreparationStageTimings* stageTimings
+		)
+		{
+			PreparationStageTimer copyTimer(stageTimings != nullptr ? &stageTimings->CopyOccludersMs : nullptr,
+				stageTimings != nullptr ? &stageTimings->CopyOccludersMeasured : nullptr);
+			CopyOccluders(input, index);
+			copyTimer.Finish();
+			if (!skipCanonicalSorting)
+			{
+				PreparationStageTimer sortingTimer(
+					stageTimings != nullptr ? &stageTimings->CanonicalSortingMs : nullptr,
+					stageTimings != nullptr ? &stageTimings->CanonicalSortingMeasured : nullptr);
+				std::sort(index.Occluders.begin(), index.Occluders.end(), OccluderLess);
+				sortingTimer.Finish();
+			}
+			PreparationStageTimer bvhTimer(stageTimings != nullptr ? &stageTimings->BvhConstructionMs : nullptr,
+				stageTimings != nullptr ? &stageTimings->BvhConstructionMeasured : nullptr);
+			BuildBvh(index);
+			bvhTimer.Finish();
+		}
+#endif
+
+		/** Shares preparation while allowing a verified producer to omit only canonical sorting. */
+		static SplineOcclusionStatus PrepareOccludersInternal(
+			std::span<const SplineOcclusionSpriteQuad> input,
+			SplineOcclusionIndex& index,
+			bool skipCanonicalSorting
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, PreparationStageTimings* stageTimings
+#endif
+			) noexcept
+		{
+			ResetPrepared(index);
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (stageTimings != nullptr)
+			{
+				*stageTimings = {};
+				stageTimings->CanonicalSortingSkipped = skipCanonicalSorting;
+			}
+#endif
+			try
+			{
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				PrepareOccluderStages(input, index, skipCanonicalSorting, stageTimings);
+#else
+				CopyOccluders(input, index);
+				if (!skipCanonicalSorting)
+				{
+					std::sort(index.Occluders.begin(), index.Occluders.end(), OccluderLess);
+				}
+				BuildBvh(index);
+#endif
+				index.PreparationStatus = SplineOcclusionStatus::Complete;
+			}
+			catch (SplineOcclusionStatus status)
+			{
+				SetPreparationFailure(index, status);
+			}
+			catch (const std::bad_alloc&)
+			{
+				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
+			}
+			catch (const std::length_error&)
+			{
+				SetPreparationFailure(index, SplineOcclusionStatus::AllocationFailure);
+			}
+			return index.PreparationStatus;
+		}
+
 		/** Clears index-owned values while preserving prepared vector capacities. */
 		static void ResetPrepared(SplineOcclusionIndex& index) noexcept
 		{
@@ -325,6 +456,7 @@ namespace Services::Map::Buildings::Visuals
 			std::span<const SplineOcclusionSpriteQuad> input,
 			SplineOcclusionIndex& index)
 		{
+			index.Occluders.reserve(input.size());
 			for (auto value : input)
 			{
 				Require(Canonicalize(value), SplineOcclusionStatus::InvalidInput);
@@ -351,7 +483,8 @@ namespace Services::Map::Buildings::Visuals
 			{
 				return false;
 			}
-			if (turn < 0.0)
+			const bool reversed = turn < 0.0;
+			if (reversed)
 			{
 				std::reverse(value.Corners.begin(), value.Corners.end());
 			}
@@ -360,6 +493,10 @@ namespace Services::Map::Buildings::Visuals
 				for (std::size_t point = 0; point < value.Corners.size(); ++point)
 				{
 					if (point == edge || point == (edge + 1) % value.Corners.size())
+					{
+						continue;
+					}
+					if (edge == 0 && point == 2 && !reversed)
 					{
 						continue;
 					}
@@ -393,60 +530,107 @@ namespace Services::Map::Buildings::Visuals
 		/** Builds a balanced median BVH with alternating axes and eight-item leaves. */
 		static void BuildBvh(SplineOcclusionIndex& index)
 		{
-			index.Ordinals.resize(index.Occluders.size());
-			for (std::size_t ordinal = 0; ordinal < index.Ordinals.size(); ++ordinal)
+			index.Ordinals.clear();
+			index.Ordinals.reserve(index.Occluders.size());
+			for (std::size_t ordinal = 0; ordinal < index.Occluders.size(); ++ordinal)
 			{
-				index.Ordinals[ordinal] = ordinal;
+				index.Ordinals.push_back(ordinal);
 			}
 			if (index.Occluders.empty())
 			{
 				return;
 			}
 			const auto count = index.Occluders.size();
-			if (count > (std::numeric_limits<std::size_t>::max)() / 2)
+			index.Nodes.reserve(RequiredBvhNodeCount(count));
+			std::vector<Bounds2D> compactBounds;
+			compactBounds.reserve(count);
+			for (const auto& occluder : index.Occluders)
+			{
+				compactBounds.push_back(occluder.Bounds);
+			}
+			BuildRange(index, compactBounds, 0, count, 0);
+		}
+
+		/** Counts nodes for the supplied occluder count without visiting data or building ranges.
+		 * @param count Number of occluders in the median tree.
+		 * @return Exact node count, or throws length_error if the result cannot fit size_t.
+		 */
+		static std::size_t RequiredBvhNodeCount(std::size_t count)
+		{
+			const auto maximum = (std::numeric_limits<std::size_t>::max)();
+			std::size_t partitionCount = 1;
+			while (count / partitionCount + (count % partitionCount != 0) > 9)
+			{
+				if (partitionCount > maximum / 2)
+				{
+					throw std::length_error("occlusion BVH node count overflow");
+				}
+				partitionCount *= 2;
+			}
+			const auto basePartitionSize = count / partitionCount;
+			const auto largerPartitionCount = count % partitionCount;
+			auto leafCount = partitionCount;
+			if (basePartitionSize == 8)
+			{
+				leafCount += largerPartitionCount;
+			}
+			else if (basePartitionSize == 9)
+			{
+				leafCount += partitionCount;
+			}
+			if (leafCount > maximum / 2 + 1)
 			{
 				throw std::length_error("occlusion BVH node count overflow");
 			}
-			index.Nodes.reserve(count * 2 - 1);
-			BuildRange(index, 0, count, 0);
+			return leafCount * 2 - 1;
 		}
 
-		/** Creates one node, partitions its ordinals by median, and recursively builds children. */
+		/** Creates one node, partitions by the existing median rule, and derives bounds from leaves or children. */
 		static std::size_t BuildRange(
 			SplineOcclusionIndex& index,
+			const std::vector<Bounds2D>& compactBounds,
 			std::size_t begin,
 			std::size_t end,
 			std::size_t axis)
 		{
-			const auto bounds = UnionBounds(index, begin, end);
 			const auto node = index.Nodes.size();
-			index.Nodes.push_back({bounds, begin, end, 0, 0});
+			index.Nodes.push_back({{}, begin, end, 0, 0});
 			if (end - begin <= 8)
 			{
+				index.Nodes[node].Bounds = UnionBounds(index, begin, end);
 				return node;
 			}
 			const auto middle = begin + (end - begin) / 2;
 			std::nth_element(index.Ordinals.begin() + begin, index.Ordinals.begin() + middle,
-				index.Ordinals.begin() + end, [&index, axis](std::size_t first, std::size_t second)
+				index.Ordinals.begin() + end, [&compactBounds, axis](std::size_t first, std::size_t second)
 				{
-					return OrdinalLess(index, first, second, axis);
+					return OrdinalLess(compactBounds, first, second, axis);
 				});
-			const auto left = BuildRange(index, begin, middle, 1 - axis);
-			const auto right = BuildRange(index, middle, end, 1 - axis);
+			const auto left = BuildRange(index, compactBounds, begin, middle, 1 - axis);
+			const auto right = BuildRange(index, compactBounds, middle, end, 1 - axis);
 			index.Nodes[node].Left = left;
 			index.Nodes[node].Right = right;
+			const auto& leftBounds = index.Nodes[left].Bounds;
+			const auto& rightBounds = index.Nodes[right].Bounds;
+			for (std::size_t boundsAxis = 0; boundsAxis < 2; ++boundsAxis)
+			{
+				index.Nodes[node].Bounds.Minimum[boundsAxis] =
+					(std::min)(leftBounds.Minimum[boundsAxis], rightBounds.Minimum[boundsAxis]);
+				index.Nodes[node].Bounds.Maximum[boundsAxis] =
+					(std::max)(leftBounds.Maximum[boundsAxis], rightBounds.Maximum[boundsAxis]);
+			}
 			return node;
 		}
 
 		/** Orders BVH partition values by selected-axis minimum, maximum, then canonical ordinal. */
 		static bool OrdinalLess(
-			const SplineOcclusionIndex& index,
+			const std::vector<Bounds2D>& compactBounds,
 			std::size_t first,
 			std::size_t second,
 			std::size_t axis) noexcept
 		{
-			const auto& a = index.Occluders[first].Bounds;
-			const auto& b = index.Occluders[second].Bounds;
+			const auto& a = compactBounds[first];
+			const auto& b = compactBounds[second];
 			if (a.Minimum[axis] != b.Minimum[axis])
 			{
 				return a.Minimum[axis] < b.Minimum[axis];
@@ -458,7 +642,7 @@ namespace Services::Map::Buildings::Visuals
 			return first < second;
 		}
 
-		/** Unions item bounds for one BVH node without computing potentially overflowing centers. */
+		/** Unions one bounded leaf range without computing potentially overflowing centers. */
 		static Bounds2D UnionBounds(
 			const SplineOcclusionIndex& index,
 			std::size_t begin,

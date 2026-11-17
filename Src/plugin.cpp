@@ -518,6 +518,61 @@ static void OnTextureServiceTick(
                     static_cast<unsigned long long>(diagnostics.WorstSlice.WorkUnitsConsumed),
                     stateName);
             }
+            const auto operationName = [](const auto operation)
+            {
+                using Operation = ::Services::Map::Buildings::BuildingMapPerformanceDiagnostics::PreparationOperation;
+                switch (operation)
+                {
+                case Operation::SectionPreparationInitialization: return "section_initialization";
+                case Operation::OccurrenceOrdering: return "occurrence_ordering";
+                case Operation::SplineOccurrencePreparation: return "spline_occurrence_preparation";
+                case Operation::RetainedSceneFinalization: return "retained_scene_finalization";
+                case Operation::ReadySpriteGeometry: return "ready_sprite_geometry";
+                case Operation::NumericalGeometryInitialization: return "numerical_geometry_initialization";
+                case Operation::OcclusionIndexConstruction: return "occlusion_index_construction";
+                case Operation::CopyOccluders: return "copy_occluders";
+                case Operation::CanonicalOccluderSorting: return "canonical_occluder_sorting";
+                case Operation::OcclusionBvhConstruction: return "occlusion_bvh_construction";
+                case Operation::SplineSampling: return "spline_sampling";
+                case Operation::SplineSurfaceCandidate: return "spline_surface_candidate";
+                case Operation::SurfaceConstruction: return "surface_construction";
+                case Operation::HeightAwareOcclusion: return "height_aware_occlusion_clip_surface";
+                case Operation::TriangleConversion: return "triangle_conversion";
+                case Operation::SectionClipping: return "section_clipping";
+                case Operation::DrawLayoutConversion: return "draw_layout_conversion";
+                case Operation::RetentionCommit: return "retention_commit";
+                default: return "none";
+                }
+            };
+            const auto reportTaggedOperation = [&](const char* recordName, const auto& record)
+            {
+                LOG_INFO("MiniMap: BuildingMap tagged_operation record=%s present=%u operation=%s grid=(%lld,%lld) "
+                    "hashValid=%u hash=0x%016llx splineOrdinal=%lld surfaceIndex=%lld elapsedMs=%.3f "
+                    "workload={primary:%llu secondary:%llu}",
+                    recordName, static_cast<unsigned>(record.Present), operationName(record.Operation),
+                    static_cast<long long>(record.GridX), static_cast<long long>(record.GridY),
+                    static_cast<unsigned>(record.HasPublicationHash),
+                    static_cast<unsigned long long>(record.PublicationHash),
+                    static_cast<long long>(record.SplineOrdinal), static_cast<long long>(record.SurfaceIndex),
+                    record.ElapsedMs, static_cast<unsigned long long>(record.WorkloadPrimary),
+                    static_cast<unsigned long long>(record.WorkloadSecondary));
+            };
+            reportTaggedOperation("worst_slice_visit", diagnostics.WorstSlice.TaggedOperations.Slowest);
+            reportTaggedOperation("interval_maximum", diagnostics.IntervalOperations.Slowest);
+            for (const auto& operationMaximum : diagnostics.WorstSlice.TaggedOperations.OperationMaximums)
+            {
+                if (operationMaximum.Present)
+                {
+                    reportTaggedOperation("worst_slice_operation_max", operationMaximum);
+                }
+            }
+            for (const auto& operationMaximum : diagnostics.IntervalOperations.OperationMaximums)
+            {
+                if (operationMaximum.Present)
+                {
+                    reportTaggedOperation("interval_operation_max", operationMaximum);
+                }
+            }
         }
         ::Services::Map::Buildings::Scheduling::BuildingScheduler::DiagnosticsSnapshot spriteDiagnostics;
         if (g_buildingMapService->TakeSpriteAcquisitionDiagnosticsSnapshot(spriteDiagnostics))

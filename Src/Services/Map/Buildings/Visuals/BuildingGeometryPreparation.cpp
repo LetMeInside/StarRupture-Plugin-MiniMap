@@ -133,7 +133,35 @@ namespace Services::Map::Buildings::Visuals
 		workUnitsConsumed = 0;
 		if (cursor.CurrentPhase == PreparationCursor::Phase::OcclusionIndex)
 		{
-			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareOcclusionIndex(scratch);
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedOcclusionIndex(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::OcclusionIndexConstruction,
+				-1, -1, scratch.occluders_.size());
+			const std::size_t occluderCount = scratch.occluders_.size();
+			SplineOcclusionGeometry::PreparationStageTimings stageTimings;
+			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareSectionOcclusionIndex(
+				scratch, &stageTimings);
+			if (stageTimings.CopyOccludersMeasured)
+			{
+				BuildingMapPerformanceDiagnostics::RecordPreparationOperation(
+					BuildingMapPerformanceDiagnostics::PreparationOperation::CopyOccluders,
+					stageTimings.CopyOccludersMs, -1, -1, occluderCount);
+			}
+			if (stageTimings.CanonicalSortingMeasured && !stageTimings.CanonicalSortingSkipped)
+			{
+				BuildingMapPerformanceDiagnostics::RecordPreparationOperation(
+					BuildingMapPerformanceDiagnostics::PreparationOperation::CanonicalOccluderSorting,
+					stageTimings.CanonicalSortingMs, -1, -1, occluderCount);
+			}
+			if (stageTimings.BvhConstructionMeasured)
+			{
+				BuildingMapPerformanceDiagnostics::RecordPreparationOperation(
+					BuildingMapPerformanceDiagnostics::PreparationOperation::OcclusionBvhConstruction,
+					stageTimings.BvhConstructionMs, -1, -1, occluderCount);
+			}
+		#else
+			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareSectionOcclusionIndex(scratch);
+		#endif
 			cursor.CurrentPhase = PreparationCursor::Phase::Splines;
 			workUnitsConsumed = 1;
 			if (cursor.Results.OcclusionPreparationStatus != SplineOcclusionStatus::Complete)
@@ -178,6 +206,9 @@ namespace Services::Map::Buildings::Visuals
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		BuildingMapPerformanceDiagnostics::Timer initialization(&BuildingMapPerformanceDiagnostics::Game().Indivisible);
+		BuildingMapPerformanceDiagnostics::TaggedTimer taggedInitialization(
+			BuildingMapPerformanceDiagnostics::PreparationOperation::NumericalGeometryInitialization,
+			-1, -1, scene.Splines.size());
 #endif
 		if (output.complete_ || !output.splineSurfaces_.empty() ||
 			!ValidateContributionOwnership(scene, output, cursor))
@@ -729,11 +760,11 @@ namespace Services::Map::Buildings::Visuals
 		const PreparedBuildingGeometry& output,
 		BuildingVisualsContext& scratch)
 	{
-		for (std::size_t orderIndex = 0; orderIndex < output.spritePainterCount_; ++orderIndex)
+		for (std::size_t ordinal = 0; ordinal < output.spriteOccurrenceLocationsByOrdinal_.size(); ++ordinal)
 		{
 			bool isOverlayLast = false;
 			const auto* occurrence = output.SpriteOccurrenceAtOrdinal(
-				output.spritePainterOrder_[orderIndex], isOverlayLast);
+				static_cast<std::uint64_t>(ordinal), isOverlayLast);
 			if (occurrence == nullptr || isOverlayLast || !occurrence->IsOccluder)
 			{
 				continue;
@@ -794,8 +825,18 @@ namespace Services::Map::Buildings::Visuals
 				RecordInvalidSplineInput(splineIndex, spline.SectionLocalOrdinal, output, cursor);
 				return Status::InvalidInputs;
 			}
-			SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy,
-				scratch.preparedSplines_[splineIndex]);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			{
+				BuildingMapPerformanceDiagnostics::TaggedTimer taggedSampling(
+					BuildingMapPerformanceDiagnostics::PreparationOperation::SplineSampling,
+					static_cast<std::int64_t>(spline.SectionLocalOrdinal), -1, spline.Segments.size());
+				SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy,
+					scratch.preparedSplines_[splineIndex]);
+				taggedSampling.SetWorkloadCounts(
+					scratch.preparedSplines_[splineIndex].AcceptedIntervals,
+					scratch.preparedSplines_[splineIndex].Samples.size());
+			}
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			BuildingMapPerformanceDiagnostics::Game().SplineSamplingIntervals +=
 				scratch.preparedSplines_[splineIndex].AcceptedIntervals;
@@ -844,6 +885,12 @@ namespace Services::Map::Buildings::Visuals
 		const auto& preparedSpline = scratch.preparedSplines_[splineIndex];
 		const auto& surface = spline.Surfaces[surfaceIndex];
 		BuildingVisualsContributorOutcome outcome;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::TaggedTimer taggedCandidate(
+			BuildingMapPerformanceDiagnostics::PreparationOperation::SplineSurfaceCandidate,
+			static_cast<std::int64_t>(spline.SectionLocalOrdinal), static_cast<std::int64_t>(surfaceIndex),
+			preparedSpline.AcceptedIntervals, preparedSpline.Samples.size());
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		if (alternative)
 		{
@@ -1064,6 +1111,12 @@ namespace Services::Map::Buildings::Visuals
 			}
 			else
 			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				BuildingMapPerformanceDiagnostics::TaggedTimer taggedCommit(
+					BuildingMapPerformanceDiagnostics::PreparationOperation::RetentionCommit,
+					static_cast<std::int64_t>(spline.SectionLocalOrdinal), -1,
+					cursor.PendingSplineSurfaces.size(), output.splineSurfaces_.size());
+#endif
 				CommitPendingSplineSurfaces(output, cursor);
 			}
 			FinishSpline(spline.SectionLocalOrdinal, output, cursor, omitted);
@@ -1093,7 +1146,15 @@ namespace Services::Map::Buildings::Visuals
 		{
 			outcome.FailureStage = BuildingVisualsFailureStage::SplineSampling;
 		}
-		BuildingVisuals::PrepareSplineSurfaceGeometry(spline, preparedSpline, surface, scratch, outcome);
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedSurfaceConstruction(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::SurfaceConstruction,
+				static_cast<std::int64_t>(spline.SectionLocalOrdinal), static_cast<std::int64_t>(surfaceIndex),
+				preparedSpline.AcceptedIntervals, preparedSpline.Samples.size());
+#endif
+			BuildingVisuals::PrepareSplineSurfaceGeometry(spline, preparedSpline, surface, scratch, outcome);
+		}
 		return outcome.GeometryPrepared && BuildingVisuals::HasDrawableSplineSurface(scratch.preparedSurface_);
 	}
 
@@ -1108,7 +1169,8 @@ namespace Services::Map::Buildings::Visuals
 		PreparationCursor& cursor,
 		BuildingVisualsContributorOutcome& outcome)
 	{
-		if (!PrepareVisibleTriangles(surface, cursor.SectionRegion, scratch, cursor, outcome))
+		if (!PrepareVisibleTriangles(surface, cursor.SectionRegion, spline.SectionLocalOrdinal,
+			surfaceIndex, scratch, cursor, outcome))
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			cursor.Failure.PublicationOrdinal = static_cast<long long>(spline.SectionLocalOrdinal);
@@ -1135,17 +1197,27 @@ namespace Services::Map::Buildings::Visuals
 	bool BuildingGeometryPreparation::PrepareVisibleTriangles(
 		const BuildingSplineSurfaceRenderInput& surface,
 		const BuildingCollectionRegion& sectionRegion,
+		std::uint64_t splineOrdinal,
+		std::size_t surfaceIndex,
 		BuildingVisualsContext& scratch,
 		PreparationCursor& cursor,
 		BuildingVisualsContributorOutcome& outcome)
 	{
 		outcome.OcclusionAttempted = true;
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedOcclusion(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::HeightAwareOcclusion,
+				static_cast<std::int64_t>(splineOrdinal), static_cast<std::int64_t>(surfaceIndex),
+				scratch.preparedSurface_.Indices.size() / 3, scratch.preparedSurface_.Cells.size());
+#endif
 		outcome.OcclusionStatus = SplineOcclusionGeometry::ClipSurface(
 			scratch.preparedSurface_.Vertices,
 			scratch.preparedSurface_.Indices,
 			scratch.preparedSurface_.Cells,
 			scratch.occlusionIndex_,
 			scratch.occlusionWorkspace_);
+		}
 		if (outcome.OcclusionStatus != SplineOcclusionStatus::Complete)
 		{
 			outcome.FailureStage = BuildingVisualsFailureStage::Occlusion;
@@ -1161,17 +1233,36 @@ namespace Services::Map::Buildings::Visuals
 		}
 		const bool solid = surface.Appearance.Mode == SplineSurfaceAppearanceMode::SolidColor;
 		const bool textured = surface.Appearance.Mode == SplineSurfaceAppearanceMode::Textured;
-		const bool converted = solid
+		bool converted = false;
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedConversion(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::TriangleConversion,
+				static_cast<std::int64_t>(splineOrdinal), static_cast<std::int64_t>(surfaceIndex),
+				scratch.occlusionWorkspace_.VisibleTriangles().size());
+#endif
+		converted = solid
 			? BuildingVisuals::ConvertSolidSurfaceTriangles(surface, scratch, cursor.PendingOpacity)
 			: textured && BuildingVisuals::ConvertTexturedSurfaceTriangles(
 				surface, scratch, cursor.PendingOpacity);
+		}
 		if (!converted)
 		{
 			outcome.FailureStage = BuildingVisualsFailureStage::AppearanceValidation;
 			RECORD_GEOMETRY_FAILURE("triangle conversion", "could not convert visible triangles");
 			return false;
 		}
-		if (!ClipVisibleTrianglesToSection(sectionRegion, scratch))
+		bool sectionClipped = false;
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedSectionClip(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::SectionClipping,
+				static_cast<std::int64_t>(splineOrdinal), static_cast<std::int64_t>(surfaceIndex),
+				scratch.solidTriangles_.size() + scratch.texturedTriangles_.size());
+#endif
+			sectionClipped = ClipVisibleTrianglesToSection(sectionRegion, scratch);
+		}
+		if (!sectionClipped)
 		{
 			outcome.FailureStage = BuildingVisualsFailureStage::SurfacePreparation;
 			RECORD_GEOMETRY_FAILURE("Section boundary clipping", "visible triangle clipping failed");
@@ -1237,7 +1328,21 @@ namespace Services::Map::Buildings::Visuals
 		{
 			prepared.TexturedTriangles = std::move(scratch.sectionClippedTexturedTriangles_);
 		}
-		PreparedBuildingGeometry::PrepareSplineSurfaceDrawLayout(prepared);
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedDrawLayout(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::DrawLayoutConversion,
+				static_cast<std::int64_t>(spline.SectionLocalOrdinal), static_cast<std::int64_t>(surfaceIndex),
+				prepared.SolidTriangles.size() + prepared.TexturedTriangles.size());
+#endif
+			PreparedBuildingGeometry::PrepareSplineSurfaceDrawLayout(prepared);
+		}
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::TaggedTimer taggedRetention(
+			BuildingMapPerformanceDiagnostics::PreparationOperation::RetentionCommit,
+			static_cast<std::int64_t>(spline.SectionLocalOrdinal), static_cast<std::int64_t>(surfaceIndex),
+			prepared.SolidTriangles.size() + prepared.TexturedTriangles.size());
+		#endif
 		cursor.PendingSplineSurfaces.push_back(std::move(prepared));
 	}
 

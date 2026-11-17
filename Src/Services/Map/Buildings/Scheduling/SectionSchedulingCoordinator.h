@@ -16,6 +16,7 @@
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "BuildingScheduler.h"
+#include "../BuildingMapPerformanceDiagnostics.h"
 #include "../Rendering/SectionRendering.h"
 #endif
 
@@ -77,6 +78,7 @@ namespace Services::Map::Buildings::Scheduling
 			double ElapsedMs = 0.0;
 			std::size_t WorkUnitsConsumed = 0;
 			std::uint8_t AdvancementState = 0;
+			BuildingMapPerformanceDiagnostics::PreparationVisitAttribution TaggedOperations;
 		};
 
 		double IntervalMs = 0.0;
@@ -116,6 +118,7 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t ExistingImagesRemoved = 0;
 		std::uint64_t ImageChangeNotificationsSent = 0;
 		WorstSectionSlice WorstSlice;
+		BuildingMapPerformanceDiagnostics::PreparationVisitAttribution IntervalOperations;
 	};
 #endif
 
@@ -415,7 +418,8 @@ namespace Services::Map::Buildings::Scheduling
 		void RecordIncrementalDiagnostics(
 			const SectionCoordinate& coordinate,
 			double sliceElapsedMs,
-			const IncrementalSectionAdvanceResult& result) noexcept;
+			const IncrementalSectionAdvanceResult& result,
+			const BuildingMapPerformanceDiagnostics::PreparationVisitAttribution& taggedOperations) noexcept;
 		/** Adds actual terminal commit and cumulative active-operation phase evidence once. */
 		void RecordTerminalAttemptDiagnostics(const IncrementalSectionAdvanceResult& result) noexcept;
 		/** Counts only terminal commit and numerical status values. */

@@ -362,19 +362,33 @@ namespace Services::Map::Buildings::Scheduling
 		const BuildingCandidateData candidateData = publication.BorrowCandidateData();
 		const BuildingCandidateSourceData sourceData = publication.BorrowSourceData();
 		auto& preparation = job.Preparation;
-		if (!InitializeKnownSpriteOccurrences(
-			section, publication.ContentHash(), candidateData, sourceData, preparation.SpritePreparation))
+		bool knownSpritesInitialized = false;
+		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			Performance::TaggedTimer taggedInitialization(
+				Performance::PreparationOperation::SectionPreparationInitialization, -1, -1,
+				candidateData.occurrences.size());
+#endif
+			knownSpritesInitialized = InitializeKnownSpriteOccurrences(
+				section, publication.ContentHash(), candidateData, sourceData, preparation.SpritePreparation);
+			if (knownSpritesInitialized)
+			{
+				preparation.SpritePreparation.PublicationIdentity = &publication;
+				preparation.SpritePreparation.PreparationStatus =
+					KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
+				preparation.Occurrences.resize(candidateData.occurrences.size());
+			}
+		}
+		if (!knownSpritesInitialized)
 		{
 			preparation.SpritePreparation.PreparationStatus = KnownSpritePreparationResult::Status::InvalidPublication;
 			preparation.TerminalReadiness = SectionScenePreparationResult::Readiness::InvalidPublication;
 			return false;
 		}
-		preparation.SpritePreparation.PublicationIdentity = &publication;
-		preparation.SpritePreparation.PreparationStatus =
-			KnownSpritePreparationResult::Status::KnownRequirementsProcessed;
-		preparation.Occurrences.resize(candidateData.occurrences.size());
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Performance::Timer ordering(&Performance::Game().OccurrenceOrder);
+		Performance::TaggedTimer taggedOrdering(Performance::PreparationOperation::OccurrenceOrdering,
+			-1, -1, sourceData.records.size(), preparation.InitialSpriteCount);
 #endif
 		if (section.HasCompletedSceneForContentHash(publication.ContentHash()))
 		{
@@ -820,6 +834,9 @@ namespace Services::Map::Buildings::Scheduling
 	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Performance::Timer finalization(&Performance::Game().Continuation, &Performance::Game().Indivisible);
+		Performance::TaggedTimer taggedFinalization(
+			Performance::PreparationOperation::RetainedSceneFinalization, -1, -1,
+			job.Preparation.Occurrences.size(), job.Preparation.SplinePreparations.size());
 #endif
 		auto& progress = job.Preparation;
 		auto& spritePreparation = progress.SpritePreparation;
@@ -1779,6 +1796,11 @@ namespace Services::Map::Buildings::Scheduling
 		KnownSpritePreparationResult::OccurrenceOutcome& outcome,
 		SplineRenderInputPreparationResult& preparation) const
 	{
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		Performance::TaggedTimer taggedSplineOccurrence(
+			Performance::PreparationOperation::SplineOccurrencePreparation,
+			static_cast<std::int64_t>(ordinal), -1, source.spline.points.size());
+	#endif
 		const std::uint16_t policyIndex = source.splinePolicyIndex;
 		const SplinePolicy* policy = policyIndex != 0 && policyIndex < splinePolicies.size()
 			? &splinePolicies[policyIndex]
@@ -2309,6 +2331,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			Performance::Timer preparation(Performance::ReadyGeometrySample(), &Performance::Game().Indivisible);
+			Performance::TaggedTimer taggedReadyGeometry(
+				Performance::PreparationOperation::ReadySpriteGeometry,
+				static_cast<std::int64_t>(ordinal), -1, 6);
 #endif
 			Visuals::SpriteWorldQuad worldQuad;
 			if (!Visuals::SpriteGeometry::BuildWorldQuad(
@@ -2354,8 +2379,15 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				clippedTriangleCount = 0;
 			}
-			Visuals::PreparedBuildingGeometry::PrepareSpriteDrawLayout(
-				occurrence, clippedTriangles, clippedTriangleCount);
+			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				Performance::TaggedTimer taggedDrawLayout(
+					Performance::PreparationOperation::DrawLayoutConversion,
+					static_cast<std::int64_t>(ordinal), -1, clippedTriangleCount);
+#endif
+				Visuals::PreparedBuildingGeometry::PrepareSpriteDrawLayout(
+					occurrence, clippedTriangles, clippedTriangleCount);
+			}
 			occurrence.SourceKey = std::move(*job.Preparation.Occurrences[ordinal].SpriteKey);
 			occurrence.IsOccluder = requirement.spritePass == BuildingCandidateSpritePass::FirstPass &&
 				Visuals::SpriteGeometry::TryGetCaptureBoundsTopHeight(

@@ -538,9 +538,18 @@ namespace Services::Map::Buildings::Visuals
 		context.result_.OcclusionPreparationStatus = SplineOcclusionStatus::NotPrepared;
 	}
 
-	SplineOcclusionStatus BuildingVisuals::PrepareOcclusionIndex(BuildingVisualsContext& context)
+	SplineOcclusionStatus BuildingVisuals::PrepareSectionOcclusionIndex(BuildingVisualsContext& context
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		, SplineOcclusionGeometry::PreparationStageTimings* stageTimings
+#endif
+	)
 	{
-		return SplineOcclusionGeometry::PrepareOccluders(context.occluders_, context.occlusionIndex_);
+		return SplineOcclusionGeometry::PrepareOccludersWithStrictlyIncreasingKeys(
+			context.occluders_, context.occlusionIndex_
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, stageTimings
+#endif
+		);
 	}
 
 	/** Reports whether the numerical surface contains accepted indexed triangles. */

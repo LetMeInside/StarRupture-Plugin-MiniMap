@@ -28,6 +28,133 @@ namespace Services::Map::Buildings
 		using Clock = std::chrono::steady_clock;
 		using Count = unsigned long long;
 
+		/** Identifies existing Section preparation work measured for slow-visit attribution. */
+		enum class PreparationOperation : std::uint8_t
+		{
+			None = 0,
+			SectionPreparationInitialization,
+			OccurrenceOrdering,
+			SplineOccurrencePreparation,
+			RetainedSceneFinalization,
+			ReadySpriteGeometry,
+			NumericalGeometryInitialization,
+			OcclusionIndexConstruction,
+			CopyOccluders,
+			CanonicalOccluderSorting,
+			OcclusionBvhConstruction,
+			SplineSampling,
+			SplineSurfaceCandidate,
+			SurfaceConstruction,
+			HeightAwareOcclusion,
+			TriangleConversion,
+			SectionClipping,
+			DrawLayoutConversion,
+			RetentionCommit
+		};
+
+		/** Bounded maximum record; negative ordinals and indices mean not applicable. */
+		struct TaggedOperationMaximum
+		{
+			bool Present = false;
+			PreparationOperation Operation = PreparationOperation::None;
+			std::int64_t GridX = -1;
+			std::int64_t GridY = -1;
+			bool HasPublicationHash = false;
+			std::uint64_t PublicationHash = 0;
+			std::int64_t SplineOrdinal = -1;
+			std::int64_t SurfaceIndex = -1;
+			double ElapsedMs = 0.0;
+			Count WorkloadPrimary = 0;
+			Count WorkloadSecondary = 0;
+		};
+
+		/** Fixed per-visit maxima preserve nested candidate stages alongside the slowest operation. */
+		struct PreparationVisitAttribution
+		{
+			TaggedOperationMaximum Slowest;
+			std::array<TaggedOperationMaximum, 19> OperationMaximums{};
+		};
+
+		/** Binds one stack-owned record and immutable visit identity for synchronous preparation. */
+		class PreparationVisitScope final
+		{
+		public:
+			/** Sets visit identity until this synchronous Section advancement returns. */
+			explicit PreparationVisitScope(PreparationVisitAttribution& output,
+				std::int64_t gridX, std::int64_t gridY, std::uint64_t publicationHash) noexcept
+				: previous_(ActivePreparationVisit())
+			{
+				ActivePreparationVisit() = &output;
+				ActiveGridX() = gridX;
+				ActiveGridY() = gridY;
+				ActivePublicationHash() = publicationHash;
+			}
+			/** Restores the caller's attribution target after this Section visit. */
+			~PreparationVisitScope() noexcept { ActivePreparationVisit() = previous_; }
+			PreparationVisitScope(const PreparationVisitScope&) = delete;
+			PreparationVisitScope& operator=(const PreparationVisitScope&) = delete;
+
+		private:
+			PreparationVisitAttribution* previous_;
+		};
+
+		/** Updates only the active visit's fixed-size maximum record. */
+		static void RecordPreparationOperation(PreparationOperation operation, double elapsedMs,
+			std::int64_t splineOrdinal = -1, std::int64_t surfaceIndex = -1,
+			Count workloadPrimary = 0, Count workloadSecondary = 0) noexcept
+		{
+			auto* attribution = ActivePreparationVisit();
+			if (attribution == nullptr)
+			{
+				return;
+			}
+			const auto operationIndex = static_cast<std::size_t>(operation);
+			if (operationIndex < attribution->OperationMaximums.size())
+			{
+				UpdateOperationMaximum(attribution->OperationMaximums[operationIndex], operation,
+					elapsedMs, splineOrdinal, surfaceIndex, workloadPrimary, workloadSecondary);
+			}
+			UpdateOperationMaximum(attribution->Slowest, operation, elapsedMs,
+				splineOrdinal, surfaceIndex, workloadPrimary, workloadSecondary);
+		}
+ 
+		/** Times one existing operation and records its visit maximum on destruction. */
+		class TaggedTimer final
+		{
+		public:
+			/** Starts timing only when a coordinator-owned visit record is active. */
+			explicit TaggedTimer(PreparationOperation operation, std::int64_t splineOrdinal = -1,
+				std::int64_t surfaceIndex = -1, Count workloadPrimary = 0, Count workloadSecondary = 0) noexcept
+				: operation_(operation), splineOrdinal_(splineOrdinal), surfaceIndex_(surfaceIndex),
+				workloadPrimary_(workloadPrimary), workloadSecondary_(workloadSecondary),
+				active_(ActivePreparationVisit() != nullptr), started_(active_ ? Clock::now() : Clock::time_point{}) {}
+			/** Updates counts from the measured boundary when its output becomes available. */
+			void SetWorkloadCounts(Count workloadPrimary, Count workloadSecondary = 0) noexcept
+			{
+				workloadPrimary_ = workloadPrimary;
+				workloadSecondary_ = workloadSecondary;
+			}
+			/** Records the existing operation boundary once if a visit is active. */
+			~TaggedTimer() noexcept
+			{
+				if (active_)
+				{
+					RecordPreparationOperation(operation_, Milliseconds(Clock::now() - started_), splineOrdinal_,
+						surfaceIndex_, workloadPrimary_, workloadSecondary_);
+				}
+			}
+			TaggedTimer(const TaggedTimer&) = delete;
+			TaggedTimer& operator=(const TaggedTimer&) = delete;
+		private:
+			PreparationOperation operation_;
+			std::int64_t splineOrdinal_;
+			std::int64_t surfaceIndex_;
+			Count workloadPrimary_;
+			Count workloadSecondary_;
+			bool active_;
+			Clock::time_point started_;
+		};
+
 		/** Counts measured wall durations on their invoking thread. */
 		struct Duration
 		{
@@ -470,6 +597,51 @@ namespace Services::Map::Buildings
 		static inline thread_local RenderWork* ActiveRender = nullptr;
 
 	private:
+		static void UpdateOperationMaximum(TaggedOperationMaximum& record, PreparationOperation operation,
+			double elapsedMs, std::int64_t splineOrdinal, std::int64_t surfaceIndex,
+			Count workloadPrimary, Count workloadSecondary) noexcept
+		{
+			if (record.Present && elapsedMs <= record.ElapsedMs)
+			{
+				return;
+			}
+			record.Present = true;
+			record.Operation = operation;
+			record.GridX = ActiveGridX();
+			record.GridY = ActiveGridY();
+			record.HasPublicationHash = true;
+			record.PublicationHash = ActivePublicationHash();
+			record.SplineOrdinal = splineOrdinal;
+			record.SurfaceIndex = surfaceIndex;
+			record.ElapsedMs = elapsedMs;
+			record.WorkloadPrimary = workloadPrimary;
+			record.WorkloadSecondary = workloadSecondary;
+		}
+
+		static PreparationVisitAttribution*& ActivePreparationVisit() noexcept
+		{
+			static thread_local PreparationVisitAttribution* record = nullptr;
+			return record;
+		}
+
+		static std::int64_t& ActiveGridX() noexcept
+		{
+			static thread_local std::int64_t gridX = 0;
+			return gridX;
+		}
+
+		static std::int64_t& ActiveGridY() noexcept
+		{
+			static thread_local std::int64_t gridY = 0;
+			return gridY;
+		}
+
+		static std::uint64_t& ActivePublicationHash() noexcept
+		{
+			static thread_local std::uint64_t hash = 0;
+			return hash;
+		}
+
 		/** Holds one selected generation and up to four immutable presentation owners' observations. */
 		struct SectionHistory
 		{

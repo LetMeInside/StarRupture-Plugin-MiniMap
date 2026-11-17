@@ -304,6 +304,8 @@ namespace Services::Map::Buildings::Visuals
 		static bool PrepareVisibleTriangles(
 			const BuildingSplineSurfaceRenderInput& surface,
 			const BuildingCollectionRegion& sectionRegion,
+			std::uint64_t splineOrdinal,
+			std::size_t surfaceIndex,
 			BuildingVisualsContext& scratch,
 			PreparationCursor& cursor,
 			BuildingVisualsContributorOutcome& outcome);

@@ -4,6 +4,7 @@
 #include "BuildingRenderSceneInput.h"
 #include "BuildingVisualsContext.h"
 #include "PreparedBuildingGeometry.h"
+#include "SplineOcclusionGeometry.h"
 #include "../IImageDestination.h"
 
 #include <cstddef>
@@ -201,8 +202,12 @@ namespace Services::Map::Buildings::Visuals
 			const BuildingSplineSurfaceRenderInput& surface,
 			BuildingVisualsContext& context,
 			std::uint8_t& opacity);
-		/** Builds an occlusion index from already prepared sprite occluders. */
-		static SplineOcclusionStatus PrepareOcclusionIndex(BuildingVisualsContext& context);
+		/** Builds a Section occlusion index from occluders with strictly increasing publication keys. */
+		static SplineOcclusionStatus PrepareSectionOcclusionIndex(BuildingVisualsContext& context
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			, SplineOcclusionGeometry::PreparationStageTimings* stageTimings = nullptr
+#endif
+		);
 		/** Reports whether the reusable numerical surface contains accepted indexed triangles. */
 		static bool HasDrawableSplineSurface(const PreparedSplineSurface& preparedSurface) noexcept;
 		/** Prepares a surface using its component override or spline transform fallback. */
