@@ -820,21 +820,46 @@ namespace Services::Map::Buildings
 			ordinaryAtlasHeight = static_cast<float>(atlasSize.height);
 		}
 #if defined(MINIMAP_EXPERIMENTAL)
-		std::vector<MiniMap::Services::TexturedTriangleVertex> vertices;
-		std::vector<std::uint16_t> indices;
+		/** Owns the vertex and index storage for one sprite pass at a time. */
+		struct SpriteBatchScratch
+		{
+			std::vector<MiniMap::Services::TexturedTriangleVertex> Vertices;
+			std::vector<std::uint16_t> Indices;
+			bool InUse = false;
+		};
+		/** Returns empty scratch to its owner even when submission throws. */
+		struct SpriteBatchScratchUse
+		{
+			SpriteBatchScratch& Scratch;
+
+			/** Clears logical batch contents and ends the exclusive use of this scratch. */
+			~SpriteBatchScratchUse() noexcept
+			{
+				Scratch.Vertices.clear();
+				Scratch.Indices.clear();
+				Scratch.InUse = false;
+			}
+		};
+		static thread_local SpriteBatchScratch reusableScratch;
+		SpriteBatchScratch reentrantScratch;
+		auto& scratch = reusableScratch.InUse ? reentrantScratch : reusableScratch;
+		scratch.InUse = true;
+		const SpriteBatchScratchUse scratchUse{scratch};
+		auto& vertices = scratch.Vertices;
+		auto& indices = scratch.Indices;
 		static constexpr std::size_t MaximumVertices = 65535;
-		static constexpr std::size_t InitialBatchCapacity = 711;
-		if (!overlayLast && !sections.empty())
+		if (!sections.empty() &&
+			(vertices.capacity() < MaximumVertices || indices.capacity() < MaximumVertices))
 		{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			const auto previousVertexCapacity = vertices.capacity();
 #endif
-			vertices.reserve(InitialBatchCapacity);
+			vertices.reserve(MaximumVertices);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			RecordVertexBatchInsertion(pass, previousVertexCapacity, vertices);
 			const auto previousIndexCapacity = indices.capacity();
 #endif
-			indices.reserve(InitialBatchCapacity);
+			indices.reserve(MaximumVertices);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			RecordIndexBatchInsertion(pass, previousIndexCapacity, indices);
 #endif
