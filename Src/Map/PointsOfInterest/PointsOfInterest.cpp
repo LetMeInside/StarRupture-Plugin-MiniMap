@@ -7,6 +7,7 @@
 #include "Config/Config.h"
 
 #include "Map/FogOfWar/FogOfWar.h"
+#include "Map/Foundables/Foundables.h"
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 #include "Map/MarkerIconSizing.h"
@@ -18,6 +19,7 @@
 #include "Services/RuntimeEvents.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 #include "plugin_interface.h"
+#include "plugin_map.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Chimera_structs.hpp"
@@ -30,6 +32,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <limits>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
@@ -100,6 +103,24 @@ namespace
 
     constexpr int32_t kMaximumReasonableAbandonBaseRecords =
         4096;
+
+    PluginField<SDK::AGameStateBase*> g_worldGameStateField{};
+    PluginField<SDK::ACrAbandonBaseInfoReplicator*> g_abandonBaseReplicatorField{};
+    PluginField<SDK::FCrAbandonBaseDataContainer> g_abandonBaseContainerField{};
+    PluginField<SDK::TArray<SDK::FCrAbandonBaseData>> g_abandonBaseArrayField{};
+    PluginField<decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)>
+        g_markerStateField{};
+    PluginField<decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)>
+        g_markerTypeField{};
+    PluginField<SDK::FGuid> g_markerGuidField{};
+    PluginField<SDK::FSlateBrush> g_categoryIconField{};
+    PluginField<decltype(SDK::UCrMapMenuCategoryData::LegendFilter)>
+        g_categoryLegendFilterField{};
+    PluginField<decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)>
+        g_categoryCanBeHiddenByFogField{};
+    PluginField<SDK::FSlateBrush> g_poiUnknownIconField{};
+    PluginField<SDK::FSlateBrush> g_poiAbandonBaseCompletedIconField{};
+    PluginField<SDK::USceneComponent*> g_actorRootComponentField{};
 
 
     struct NativeActorClassStorage
@@ -354,31 +375,50 @@ namespace
          * The tracked MiniMap world is the gameplay world. We do not retain
          * either pointer across polls.
          */
-        SDK::AGameStateBase* baseGameState =
-            world->GameState;
+        SDK::AGameStateBase** baseGameStateField =
+            g_worldGameStateField.In(world);
 
-        if (baseGameState == nullptr)
+        if (baseGameStateField == nullptr ||
+            *baseGameStateField == nullptr)
         {
             return nullptr;
         }
 
         auto* gameState =
             static_cast<SDK::ACrGameStateBase*>(
-                baseGameState);
+                *baseGameStateField);
 
-        SDK::ACrAbandonBaseInfoReplicator* replicator =
-            gameState->
-                AbandonBaseInfoReplicator;
+        SDK::ACrAbandonBaseInfoReplicator** replicatorField =
+            g_abandonBaseReplicatorField.In(gameState);
 
-        if (replicator == nullptr)
+        if (replicatorField == nullptr ||
+            *replicatorField == nullptr)
         {
             return nullptr;
         }
 
-        const auto& entries = replicator->AbandonBaseDataContainer.AbandonBaseData;
+        SDK::ACrAbandonBaseInfoReplicator* replicator =
+            *replicatorField;
+        const SDK::FCrAbandonBaseDataContainer* container =
+            g_abandonBaseContainerField.In(replicator);
+        if (container == nullptr)
+        {
+            return nullptr;
+        }
+
+        const SDK::TArray<SDK::FCrAbandonBaseData>* entriesField =
+            g_abandonBaseArrayField.In(container);
+        if (entriesField == nullptr)
+        {
+            return nullptr;
+        }
+
+        const auto& entries = *entriesField;
         const auto* data = entries.GetDataPtr();
         const int32_t count = entries.Num();
         const int32_t capacity = entries.Max();
+        const MiniMapFoundables::ArrayElementContracts contracts =
+            MiniMapFoundables::GetStoryArrayContracts();
 
         if (count < 0 ||
             capacity < count ||
@@ -400,19 +440,69 @@ namespace
             return nullptr;
         }
 
+        const uint32_t stride = contracts.AbandonBaseSize;
+        const int32_t idOffset = contracts.AbandonBaseGuid;
+        const uint32_t idSize = contracts.AbandonBaseGuidSize;
+        if (stride == 0 ||
+            idOffset < 0 ||
+            static_cast<uint32_t>(idOffset) > stride ||
+            idSize != sizeof(SDK::FGuid) ||
+            idSize > stride - static_cast<uint32_t>(idOffset))
+        {
+            return nullptr;
+        }
+
+        const size_t maxSize =
+            (std::numeric_limits<size_t>::max)();
+        if (static_cast<size_t>(capacity) > maxSize / stride)
+        {
+            return nullptr;
+        }
+
+        const size_t storageBytes =
+            static_cast<size_t>(capacity) * stride;
+        const uintptr_t storageStart =
+            reinterpret_cast<uintptr_t>(data);
+        const uintptr_t maxAddress =
+            (std::numeric_limits<uintptr_t>::max)();
+        if (storageBytes > maxAddress - storageStart)
+        {
+            return nullptr;
+        }
+
+        PluginFieldSpec elementSize{};
+        elementSize.resolvedSize = stride;
+        PluginField<SDK::FGuid> abandonBaseGuid{};
+        abandonBaseGuid.offset = idOffset;
+        abandonBaseGuid.resolvedSize = idSize;
+
         for (int32_t index = 0;
             index < count;
             ++index)
         {
-            const auto& record = data[index];
-            const auto& id = record.AbandonBasePOIId;
-            const POIGuid recordGuid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
-                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
+            const uint8_t* record = PluginMap::ElementAt(
+                data,
+                count,
+                index,
+                elementSize);
+            if (record == nullptr)
+            {
+                return nullptr;
+            }
+
+            const SDK::FGuid* id = abandonBaseGuid.In(record);
+            if (id == nullptr)
+            {
+                return nullptr;
+            }
+
+            const POIGuid recordGuid{static_cast<uint32_t>(id->A), static_cast<uint32_t>(id->B),
+                static_cast<uint32_t>(id->C), static_cast<uint32_t>(id->D)};
 
             if (recordGuid ==
                 guid)
             {
-                return &record;
+                return reinterpret_cast<const SDK::FCrAbandonBaseData*>(record);
             }
         }
 
@@ -492,15 +582,21 @@ namespace
             return {};
         }
 
-        const SDK::FSlateBrush* brush = &category->Icon;
+        const SDK::FSlateBrush* brush =
+            g_categoryIconField.In(category);
 
         if (variant == IconVariant::Unknown)
         {
-            brush = &category->UnknownIcon;
+            brush = g_poiUnknownIconField.In(category);
         }
         else if (variant == IconVariant::Completed)
         {
-            brush = &category->AbandonBaseCompletedIcon;
+            brush = g_poiAbandonBaseCompletedIconField.In(category);
+        }
+
+        if (brush == nullptr)
+        {
+            return {};
         }
 
         SDK::UTexture2D* texture =
@@ -636,7 +732,15 @@ namespace
         }
 
         const auto* marker = static_cast<const SDK::ACrPointOfInterestMarkerActor*>(actor);
-        const uint8_t state = static_cast<uint8_t>(marker->PointOfInterestState);
+        const auto* stateField = g_markerStateField.In(marker);
+        const auto* typeField = g_markerTypeField.In(marker);
+        const auto* guidField = g_markerGuidField.In(marker);
+        if (stateField == nullptr || typeField == nullptr || guidField == nullptr)
+        {
+            return false;
+        }
+
+        const uint8_t state = static_cast<uint8_t>(*stateField);
 
         if (state ==
                 kStateHidden ||
@@ -654,7 +758,7 @@ namespace
             return false;
         }
 
-        const uint8_t poiType = static_cast<uint8_t>(marker->PointOfInterestType);
+        const uint8_t poiType = static_cast<uint8_t>(*typeField);
 
         const SDK::UCrMapMenuPOIData* category =
             native->
@@ -673,10 +777,18 @@ namespace
             state ==
             kStateVisibleUnknown;
 
-        const uint8_t leafFilter =
-            unknown
-                ? kUnknownFilter
-                : static_cast<uint8_t>(category->LegendFilter);
+        uint8_t leafFilter = kUnknownFilter;
+        if (!unknown)
+        {
+            const auto* legendFilter =
+                g_categoryLegendFilterField.In(category);
+            if (legendFilter == nullptr)
+            {
+                return false;
+            }
+
+            leafFilter = static_cast<uint8_t>(*legendFilter);
+        }
 
         if (!native->
                 pointsOfInterest.
@@ -687,9 +799,8 @@ namespace
             return false;
         }
 
-        const auto& id = marker->Guid;
-        const POIGuid guid{static_cast<uint32_t>(id.A), static_cast<uint32_t>(id.B),
-                static_cast<uint32_t>(id.C), static_cast<uint32_t>(id.D)};
+        const POIGuid guid{static_cast<uint32_t>(guidField->A), static_cast<uint32_t>(guidField->B),
+                static_cast<uint32_t>(guidField->C), static_cast<uint32_t>(guidField->D)};
 
         IconVariant iconVariant =
             unknown
@@ -739,13 +850,16 @@ namespace
             return false;
         }
 
-        SDK::USceneComponent* root = actor->RootComponent;
+        SDK::USceneComponent** rootField =
+            g_actorRootComponentField.In(actor);
 
-        if (root ==
-            nullptr)
+        if (rootField == nullptr ||
+            *rootField == nullptr)
         {
             return false;
         }
+
+        SDK::USceneComponent* root = *rootField;
 
         SDK::FVector location = {};
 
@@ -758,7 +872,14 @@ namespace
         // Discovery/classification stays native. Fog admission is presentation
         // state and must use the current feather at draw time, not a poll-time
         // native-mask-only exclusion.
-        outRecord.CanHideByFog = category->CanBeHiddenByFogOfWar;
+        const auto* canBeHiddenByFog =
+            g_categoryCanBeHiddenByFogField.In(category);
+        if (canBeHiddenByFog == nullptr)
+        {
+            return false;
+        }
+
+        outRecord.CanHideByFog = *canBeHiddenByFog;
 
         outRecord.Guid =
             guid;
@@ -921,6 +1042,23 @@ namespace
 
 namespace MiniMapPointsOfInterest
 {
+    void SetFieldOffsets(const FieldOffsets& offsets)
+    {
+        g_worldGameStateField.offset = offsets.WorldGameState;
+        g_abandonBaseReplicatorField.offset = offsets.GameStateAbandonBaseInfoReplicator;
+        g_abandonBaseContainerField.offset = offsets.ReplicatorAbandonBaseDataContainer;
+        g_abandonBaseArrayField.offset = offsets.AbandonBaseContainerData;
+        g_markerStateField.offset = offsets.MarkerState;
+        g_markerTypeField.offset = offsets.MarkerType;
+        g_markerGuidField.offset = offsets.MarkerGuid;
+        g_categoryIconField.offset = offsets.CategoryIcon;
+        g_categoryLegendFilterField.offset = offsets.CategoryLegendFilter;
+        g_categoryCanBeHiddenByFogField.offset = offsets.CategoryCanBeHiddenByFog;
+        g_poiUnknownIconField.offset = offsets.PoiUnknownIcon;
+        g_poiAbandonBaseCompletedIconField.offset = offsets.PoiAbandonBaseCompletedIcon;
+        g_actorRootComponentField.offset = offsets.ActorRootComponent;
+    }
+
     bool Initialize(
         IPluginSelf* self)
     {

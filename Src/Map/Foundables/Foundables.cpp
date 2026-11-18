@@ -48,8 +48,39 @@
 
 namespace
 {
+    PluginField<SDK::FCrItemsStorageContainer> g_inputInventoryContainerField{};
+    PluginField<SDK::FCrItemsStorageContainer> g_mainInventoryContainerField{};
+    PluginField<SDK::TArray<SDK::FCrStorageItem>> g_storageItemsField{};
     PluginField<SDK::FAuSimpleItem> g_storageItemValueField = SR_FIELD(
         SDK::FAuSimpleItem, FCrStorageItem, Item, PLUGIN_FIELD_FLAG_NONE);
+    PluginField<SDK::FAuItemId> g_simpleItemIdField{};
+    PluginField<SDK::UAuItemDataBase*> g_simpleItemDataBaseField{};
+    PluginField<int32_t> g_simpleItemCountField{};
+    PluginField<SDK::FGuid> g_itemIdHandleField{};
+    PluginField<SDK::EUIItemType> g_itemDataBaseUIItemTypeField{};
+    PluginField<SDK::ECrFoundableType> g_foundableTypeField{};
+    PluginField<SDK::FTransform> g_transformFragmentTransformField{};
+    PluginField<SDK::FVector> g_transformTranslationField{};
+    PluginField<decltype(SDK::FVector::X)> g_vectorXField{};
+    PluginField<decltype(SDK::FVector::Y)> g_vectorYField{};
+    PluginField<decltype(SDK::FVector::Z)> g_vectorZField{};
+    PluginField<SDK::FSlateBrush> g_categoryIconField{};
+    PluginField<bool> g_categoryBlockedField{};
+    PluginField<SDK::ECrMapMenuMarkerFilter> g_categoryLegendFilterField{};
+    PluginField<SDK::AGameStateBase*> g_worldGameStateField{};
+    PluginField<SDK::ACrAbandonBaseInfoReplicator*> g_gameStateAbandonBaseReplicatorField{};
+    PluginField<SDK::FCrAbandonBaseDataContainer> g_replicatorAbandonBaseContainerField{};
+    PluginField<SDK::TArray<SDK::FCrAbandonBaseData>> g_abandonBaseContainerDataField{};
+    PluginField<decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)> g_poiMarkerTypeField{};
+    PluginField<SDK::FGuid> g_poiMarkerGuidField{};
+    PluginField<SDK::TArray<SDK::FGuid>> g_poiStoryItemsAssignedField{};
+    PluginField<SDK::FGuid> g_datapadGuidField{};
+    PluginField<SDK::FGuid> g_audiologGuidField{};
+    PluginField<SDK::USceneComponent*> g_actorRootComponentField{};
+    PluginField<decltype(SDK::UObject::Flags)> g_objectFlagsField{};
+    PluginField<SDK::UObject*> g_objectOuterField{};
+    PluginField<SDK::UWorld*> g_levelOwningWorldField{};
+    PluginBitField g_actorBeingDestroyedField{};
     PluginField<SDK::FGuid> g_abandonBaseGuidField = SR_FIELD(
         SDK::FGuid, FCrAbandonBaseData, AbandonBasePOIId, PLUGIN_FIELD_FLAG_NONE);
     PluginField<SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>> g_abandonBaseStatusesField = SR_FIELD(
@@ -377,8 +408,15 @@ namespace
             return {};
         }
 
+        const SDK::FSlateBrush* icon =
+            g_categoryIconField.In(category);
+        if (icon == nullptr)
+        {
+            return {};
+        }
+
         SDK::UTexture2D* texture =
-            native->texture.getBrushTexture(category->Icon);
+            native->texture.getBrushTexture(*icon);
 
         if (texture == nullptr)
         {
@@ -649,10 +687,23 @@ namespace
             return false;
         }
 
-        const auto& inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment)->MainInventoryContainer.Items;
+        const SDK::FCrItemsStorageContainer* mainContainer =
+            g_mainInventoryContainerField.In(inventoryFragment);
+        if (mainContainer == nullptr)
+        {
+            return false;
+        }
+
+        const SDK::TArray<SDK::FCrStorageItem>* inventory =
+            g_storageItemsField.In(mainContainer);
+        if (inventory == nullptr)
+        {
+            return false;
+        }
+
         const SDK::FCrStorageItem* data = nullptr;
         int32_t count = 0;
-        if (!ReadArray(inventory, data, count, g_storageItemSize.resolvedSize) || count <= 0)
+        if (!ReadArray(*inventory, data, count, g_storageItemSize.resolvedSize) || count <= 0)
         {
             return false;
         }
@@ -663,9 +714,13 @@ namespace
             const SDK::FAuSimpleItem* item = g_storageItemValueField.In(element);
             if (!item)
                 return false;
-            const int32_t itemCount = item->Count;
+            const int32_t* itemCount = g_simpleItemCountField.In(item);
+            if (itemCount == nullptr)
+            {
+                return false;
+            }
 
-            if (itemCount > 0)
+            if (*itemCount > 0)
             {
                 return true;
             }
@@ -680,11 +735,23 @@ namespace
         const SDK::FGuid zeroGuid = {};
 
         bool hasOrdinaryItem = false;
-        const auto inspect = [&](const SDK::FCrItemsStorageContainer& container)
+        const auto inspect = [&](const SDK::FCrItemsStorageContainer* container)
         {
+            if (container == nullptr)
+            {
+                return false;
+            }
+
+            const SDK::TArray<SDK::FCrStorageItem>* items =
+                g_storageItemsField.In(container);
+            if (items == nullptr)
+            {
+                return false;
+            }
+
             const SDK::FCrStorageItem* data = nullptr;
             int32_t count = 0;
-            if (!ReadArray(container.Items, data, count, g_storageItemSize.resolvedSize))
+            if (!ReadArray(*items, data, count, g_storageItemSize.resolvedSize))
                 return false;
             for (int32_t index = 0; index < count; ++index)
             {
@@ -692,14 +759,46 @@ namespace
                 const SDK::FAuSimpleItem* item = g_storageItemValueField.In(element);
                 if (!item)
                     return false;
-                if (item->ItemDataBase == nullptr ||
-                    std::memcmp(&item->ItemId.Handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
-                    item->Count <= 0)
+
+                SDK::UAuItemDataBase* const* itemDataBase =
+                    g_simpleItemDataBaseField.In(item);
+                const SDK::FAuItemId* itemId =
+                    g_simpleItemIdField.In(item);
+                const int32_t* itemCount =
+                    g_simpleItemCountField.In(item);
+                if (itemDataBase == nullptr ||
+                    itemId == nullptr ||
+                    itemCount == nullptr)
+                {
+                    return false;
+                }
+
+                if (*itemDataBase == nullptr)
                 {
                     continue;
                 }
 
-                if (item->ItemDataBase->UIItemType == SDK::EUIItemType::BlueprintItem)
+                const SDK::FGuid* itemHandle =
+                    g_itemIdHandleField.In(itemId);
+                if (itemHandle == nullptr)
+                {
+                    return false;
+                }
+
+                if (std::memcmp(itemHandle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
+                    *itemCount <= 0)
+                {
+                    continue;
+                }
+
+                const SDK::EUIItemType* itemType =
+                    g_itemDataBaseUIItemTypeField.In(*itemDataBase);
+                if (itemType == nullptr)
+                {
+                    return false;
+                }
+
+                if (*itemType == SDK::EUIItemType::BlueprintItem)
                 {
                     return true;
                 }
@@ -710,8 +809,17 @@ namespace
             return false;
         };
 
-        if (inspect(inventory.InputInventoryContainer) ||
-            inspect(inventory.MainInventoryContainer))
+        const SDK::FCrItemsStorageContainer* inputContainer =
+            g_inputInventoryContainerField.In(&inventory);
+        const SDK::FCrItemsStorageContainer* mainContainer =
+            g_mainInventoryContainerField.In(&inventory);
+        if (inputContainer == nullptr || mainContainer == nullptr)
+        {
+            return ContainerContents::Empty;
+        }
+
+        if (inspect(inputContainer) ||
+            inspect(mainContainer))
         {
             return ContainerContents::Blueprint;
         }
@@ -771,9 +879,29 @@ namespace
             return false;
         }
 
-        const auto& translation = static_cast<const SDK::FTransformFragment*>(transformFragment)->Transform.Translation;
-        worldX = translation.X;
-        worldY = translation.Y;
+        const SDK::FTransform* transform =
+            g_transformFragmentTransformField.In(transformFragment);
+        if (transform == nullptr)
+        {
+            return false;
+        }
+
+        const SDK::FVector* translation =
+            g_transformTranslationField.In(transform);
+        if (translation == nullptr)
+        {
+            return false;
+        }
+
+        const auto* x = g_vectorXField.In(translation);
+        const auto* y = g_vectorYField.In(translation);
+        if (x == nullptr || y == nullptr)
+        {
+            return false;
+        }
+
+        worldX = *x;
+        worldY = *y;
 
         return true;
     }
@@ -806,13 +934,21 @@ namespace
             return false;
         }
 
-        if (category->CategoryBlocked)
+        const bool* categoryBlocked =
+            g_categoryBlockedField.In(category);
+        if (categoryBlocked == nullptr || *categoryBlocked)
         {
             return false;
         }
 
-        const uint8_t filter =
-            static_cast<uint8_t>(category->LegendFilter);
+        const SDK::ECrMapMenuMarkerFilter* legendFilter =
+            g_categoryLegendFilterField.In(category);
+        if (legendFilter == nullptr)
+        {
+            return false;
+        }
+
+        const uint8_t filter = static_cast<uint8_t>(*legendFilter);
 
         if (!native->pointsOfInterest.getMarkerFilterStatus(
             mapData,
@@ -952,12 +1088,14 @@ namespace
             bool Actor(const SDK::AActor* actor, const SDK::UClass* base, size_t,
                 const SDK::UWorld* world) const
             {
-                if (!actor || actor->bActorIsBeingDestroyed ||
-                    (uint32_t(actor->Flags) & (uint32_t(SDK::EObjectFlags::ClassDefaultObject) |
-                        uint32_t(SDK::EObjectFlags::ArchetypeObject))) || !Derives(actor->Class, base)) return false;
-                auto* level = actor->Outer;
+                if (!actor || g_actorBeingDestroyedField.Get(actor)) return false;
+                const auto* flags = g_objectFlagsField.In(actor);
+                if ((uint32_t(*flags) & (uint32_t(SDK::EObjectFlags::ClassDefaultObject) |
+                    uint32_t(SDK::EObjectFlags::ArchetypeObject))) || !Derives(actor->Class, base)) return false;
+                SDK::UObject* const* levelField = g_objectOuterField.In(actor);
+                auto* level = *levelField;
                 return level && Derives(level->Class, Level) &&
-                    static_cast<const SDK::ULevel*>(level)->OwningWorld == world;
+                    *g_levelOwningWorldField.In(static_cast<const SDK::ULevel*>(level)) == world;
             }
         };
 
@@ -1004,7 +1142,8 @@ namespace
             bool Matches(const SDK::UWorld* world) const
             {
                 return world && World && GameState && Replicator && world == World &&
-                    world->GameState == GameState && GameState->AbandonBaseInfoReplicator == Replicator;
+                    *g_worldGameStateField.In(world) == GameState &&
+                    *g_gameStateAbandonBaseReplicatorField.In(GameState) == Replicator;
             }
         };
 
@@ -1012,11 +1151,11 @@ namespace
         {
             if (!world || !types.Derives(world->Class, types.World)) return false;
             scope.World = world;
-            auto* baseGameState = world->GameState;
+            auto* baseGameState = *g_worldGameStateField.In(world);
             if (!types.Actor(baseGameState, types.GameState, sizeof(SDK::ACrGameStateBase), world)) return false;
             auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
             scope.GameState = gameState;
-            auto* replicator = gameState->AbandonBaseInfoReplicator;
+            auto* replicator = *g_gameStateAbandonBaseReplicatorField.In(gameState);
             if (!types.Actor(replicator, types.Replicator, sizeof(*replicator), world)) return false;
             scope.Replicator = replicator;
 
@@ -1029,8 +1168,8 @@ namespace
                 auto* actor = actors.Values.Data[index];
                 if (!types.Actor(actor, types.POI, sizeof(SDK::ACrPointOfInterestMarkerActor), world)) continue;
                 auto* poi = static_cast<SDK::ACrPointOfInterestMarkerActor*>(actor);
-                if (poi->PointOfInterestType != SDK::ECrPointOfInterestType::AbandonedBase) continue;
-                const auto base = CopyGuid(poi->Guid);
+                if (*g_poiMarkerTypeField.In(poi) != SDK::ECrPointOfInterestType::AbandonedBase) continue;
+                const auto base = CopyGuid(*g_poiMarkerGuidField.In(poi));
                 if (!ValidGuid(base)) continue;
                 if (!assignedBases.insert(base).second)
                 {
@@ -1041,7 +1180,7 @@ namespace
                 }
                 const SDK::FGuid* assignments = nullptr;
                 int32_t count = 0;
-                if (!ReadArray(poi->AbandonBaseStoryItemsAssigned, assignments, count)) continue;
+                if (!ReadArray(*g_poiStoryItemsAssignedField.In(poi), assignments, count)) continue;
                 for (int32_t item = 0; item < count; ++item)
                 {
                     const auto guid = CopyGuid(assignments[item]);
@@ -1053,7 +1192,11 @@ namespace
 
             const SDK::FCrAbandonBaseData* bases = nullptr;
             int32_t baseCount = 0;
-            if (!ReadArray(replicator->AbandonBaseDataContainer.AbandonBaseData, bases, baseCount,
+            const SDK::FCrAbandonBaseDataContainer* container =
+                g_replicatorAbandonBaseContainerField.In(replicator);
+            const SDK::TArray<SDK::FCrAbandonBaseData>* baseArray =
+                g_abandonBaseContainerDataField.In(container);
+            if (!ReadArray(*baseArray, bases, baseCount,
                 g_abandonBaseSize.resolvedSize)) return false;
             std::unordered_set<Guid, GuidHash> replicatedBases;
             std::unordered_set<Guid, GuidHash> ambiguousReplicatedBases;
@@ -1106,13 +1249,16 @@ namespace
             SDK::UClass* family, size_t extent, SDK::FVector& location)
         {
             if (!actor) return false;
-            auto* root = actor->RootComponent;
-            if (!root || root->Outer != actor ||
+            auto* root = *g_actorRootComponentField.In(actor);
+            if (!root || *g_objectOuterField.In(root) != actor ||
                 !types.Derives(root->Class, types.Scene)) return false;
             types.Native.player.getComponentLocation(root, &location);
+            const auto* x = g_vectorXField.In(&location);
+            const auto* y = g_vectorYField.In(&location);
+            const auto* z = g_vectorZField.In(&location);
             return types.Actor(actor, family, extent, world) &&
-                actor->RootComponent == root && root->Outer == actor &&
-                std::isfinite(location.X) && std::isfinite(location.Y) && std::isfinite(location.Z);
+                *g_actorRootComponentField.In(actor) == root && *g_objectOuterField.In(root) == actor &&
+                std::isfinite(*x) && std::isfinite(*y) && std::isfinite(*z);
         }
 
         bool Poll(const MiniMapNative::NativeApi& native, SDK::UWorld* world,
@@ -1149,19 +1295,20 @@ namespace
                 {
                     auto* actor = actors.Values.Data[index];
                     if (!types.Actor(actor, type, family.Extent, world)) continue;
-                    const auto guid = CopyGuid(family.Audio
-                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
-                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    const auto guid = CopyGuid(*(family.Audio
+                        ? g_audiologGuidField.In(actor)
+                        : g_datapadGuidField.In(actor)));
                     const auto found = progress.find(guid);
                     if (!ValidGuid(guid) || found == progress.end() || found->second.Ambiguous ||
                         found->second.Records != 1 || found->second.Status != 0) continue;
                     SDK::FVector location{};
                     if (!ReadPosition(types, actor, world, type, family.Extent, location)) continue;
-                    const auto currentGuid = CopyGuid(family.Audio
-                        ? static_cast<SDK::ACrAudiologBase*>(actor)->Guid
-                        : static_cast<SDK::ACrDatapadBase*>(actor)->Guid);
+                    const auto currentGuid = CopyGuid(*(family.Audio
+                        ? g_audiologGuidField.In(actor)
+                        : g_datapadGuidField.In(actor)));
                     if (guid != currentGuid) continue;
-                    Candidate candidate{{location.X, location.Y, ContainerContents::Ordinary}};
+                    Candidate candidate{{*g_vectorXField.In(&location),
+                        *g_vectorYField.In(&location), ContainerContents::Ordinary}};
                     const auto inserted = candidates.emplace(guid, candidate);
                     // Conflicting actor ownership of one story is UNKNOWN, not a guessed position.
                     if (!inserted.second) inserted.first->second.Ambiguous = true;
@@ -1242,7 +1389,14 @@ namespace
                 parametersStruct);
             if (parameters == nullptr) continue;
 
-            const auto foundableType = static_cast<uint8_t>(parameters->FoundableType);
+            const SDK::ECrFoundableType* foundableTypeField =
+                g_foundableTypeField.In(parameters);
+            if (foundableTypeField == nullptr)
+            {
+                continue;
+            }
+
+            const auto foundableType = static_cast<uint8_t>(*foundableTypeField);
             if (foundableType == kUndefinedType && !settings.ShowLootInBases) continue;
             const void* inventoryFragment = native->mass.getFragmentDataPtr(g_massManager, id, inventoryStruct);
             const auto* inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment);
@@ -1382,6 +1536,45 @@ namespace
 
 namespace MiniMapFoundables
 {
+    void SetAcquisitionFieldOffsets(const AcquisitionFieldOffsets& offsets)
+    {
+        g_inputInventoryContainerField.offset = offsets.InventoryInputContainer;
+        g_mainInventoryContainerField.offset = offsets.InventoryMainContainer;
+        g_storageItemsField.offset = offsets.StorageContainerItems;
+        g_simpleItemIdField.offset = offsets.SimpleItemId;
+        g_simpleItemDataBaseField.offset = offsets.SimpleItemDataBase;
+        g_simpleItemCountField.offset = offsets.SimpleItemCount;
+        g_itemIdHandleField.offset = offsets.ItemIdHandle;
+        g_itemDataBaseUIItemTypeField.offset = offsets.ItemDataBaseUIItemType;
+        g_foundableTypeField.offset = offsets.FoundableType;
+        g_transformFragmentTransformField.offset = offsets.TransformFragmentTransform;
+        g_transformTranslationField.offset = offsets.TransformTranslation;
+        g_vectorXField.offset = offsets.VectorX;
+        g_vectorYField.offset = offsets.VectorY;
+        g_vectorZField.offset = offsets.VectorZ;
+        g_categoryIconField.offset = offsets.CategoryIcon;
+        g_categoryBlockedField.offset = offsets.CategoryBlocked;
+        g_categoryLegendFilterField.offset = offsets.CategoryLegendFilter;
+        g_worldGameStateField.offset = offsets.WorldGameState;
+        g_gameStateAbandonBaseReplicatorField.offset =
+            offsets.GameStateAbandonBaseInfoReplicator;
+        g_replicatorAbandonBaseContainerField.offset =
+            offsets.ReplicatorAbandonBaseDataContainer;
+        g_abandonBaseContainerDataField.offset = offsets.AbandonBaseContainerData;
+        g_poiMarkerTypeField.offset = offsets.PoiMarkerType;
+        g_poiMarkerGuidField.offset = offsets.PoiMarkerGuid;
+        g_poiStoryItemsAssignedField.offset = offsets.PoiStoryItemsAssigned;
+        g_datapadGuidField.offset = offsets.DatapadGuid;
+        g_audiologGuidField.offset = offsets.AudiologGuid;
+        g_actorRootComponentField.offset = offsets.ActorRootComponent;
+        g_objectFlagsField.offset = offsets.ObjectFlags;
+        g_objectOuterField.offset = offsets.ObjectOuter;
+        g_levelOwningWorldField.offset = offsets.LevelOwningWorld;
+        g_actorBeingDestroyedField.offset = offsets.ActorBeingDestroyed;
+        g_actorBeingDestroyedField.boolMask = offsets.ActorBeingDestroyedMask;
+        g_actorBeingDestroyedField.resolvedSize = offsets.ActorBeingDestroyed >= 0 ? 1 : 0;
+    }
+
     void SetStorageItemContract(int32_t valueOffset, uint32_t elementSize)
     {
         g_storageItemValueField.offset = valueOffset;
@@ -1391,12 +1584,29 @@ namespace MiniMapFoundables
     void SetStoryArrayContracts(const ArrayElementContracts& contracts)
     {
         g_abandonBaseGuidField.offset = contracts.AbandonBaseGuid;
+        g_abandonBaseGuidField.resolvedSize = contracts.AbandonBaseGuidSize;
         g_abandonBaseStatusesField.offset = contracts.AbandonBaseStatuses;
         g_abandonBaseSize.resolvedSize = contracts.AbandonBaseSize;
         g_collectedStatusGuidField.offset = contracts.CollectedStatusGuid;
         g_collectedStatusValueField.offset = contracts.CollectedStatusValue;
         g_collectedStatusSize.resolvedSize = contracts.CollectedStatusSize;
     }
+
+    ArrayElementContracts GetStoryArrayContracts()
+    {
+        ArrayElementContracts contracts{};
+        contracts.StorageItemValue = g_storageItemValueField.offset;
+        contracts.StorageItemSize = g_storageItemSize.resolvedSize;
+        contracts.AbandonBaseGuid = g_abandonBaseGuidField.offset;
+        contracts.AbandonBaseGuidSize = g_abandonBaseGuidField.resolvedSize;
+        contracts.AbandonBaseStatuses = g_abandonBaseStatusesField.offset;
+        contracts.AbandonBaseSize = g_abandonBaseSize.resolvedSize;
+        contracts.CollectedStatusGuid = g_collectedStatusGuidField.offset;
+        contracts.CollectedStatusValue = g_collectedStatusValueField.offset;
+        contracts.CollectedStatusSize = g_collectedStatusSize.resolvedSize;
+        return contracts;
+    }
+
     bool Initialize(IPluginSelf* self)
     {
         if (g_initialized)

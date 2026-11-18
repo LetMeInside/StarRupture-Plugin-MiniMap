@@ -10,6 +10,7 @@
 #include "Textures.h"
 #include "Map/Map.h"
 #include "Map/Foundables/Foundables.h"
+#include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Buildings/BuildingSplineSource.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
@@ -73,6 +74,8 @@ namespace
     bool g_playerTextureFieldsResolved = false;
     bool g_captureFieldsResolved = false;
     MiniMapMap::PlayerFieldOffsets g_playerFieldOffsets{};
+    MiniMapPointsOfInterest::FieldOffsets g_poiFieldOffsets{};
+    MiniMapFoundables::AcquisitionFieldOffsets g_foundablesFieldOffsets{};
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -170,6 +173,8 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
+            g_poiFieldOffsets.WorldGameState = fields[12].offset;
+            g_foundablesFieldOffsets.WorldGameState = fields[12].offset;
             return allResolved;
         }
     };
@@ -201,6 +206,12 @@ namespace
             allResolved = ResolveCategoryFields(scanner, self) && allResolved;
             allResolved = ResolveActorIdentityFields(scanner, self) && allResolved;
             allResolved = ResolveActorBeingDestroyed(scanner, self, requiredScanner) && allResolved;
+            if (allResolved)
+            {
+                MiniMapPointsOfInterest::SetFieldOffsets(g_poiFieldOffsets);
+                MiniMapFoundables::SetAcquisitionFieldOffsets(g_foundablesFieldOffsets);
+            }
+
             return allResolved;
         }
 
@@ -246,7 +257,14 @@ namespace
                     sizeof(decltype(SDK::FCrAbandonBaseDataContainer::AbandonBaseData)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataContainer, AbandonBaseData)) }
             };
-            return ResolveFields(scanner, self, fields, std::size(fields));
+            const bool resolved = ResolveFields(scanner, self, fields, std::size(fields));
+            g_poiFieldOffsets.GameStateAbandonBaseInfoReplicator = fields[0].offset;
+            g_poiFieldOffsets.ReplicatorAbandonBaseDataContainer = fields[1].offset;
+            g_poiFieldOffsets.AbandonBaseContainerData = fields[2].offset;
+            g_foundablesFieldOffsets.GameStateAbandonBaseInfoReplicator = fields[0].offset;
+            g_foundablesFieldOffsets.ReplicatorAbandonBaseDataContainer = fields[1].offset;
+            g_foundablesFieldOffsets.AbandonBaseContainerData = fields[2].offset;
+            return resolved;
         }
 
         /** Resolves the consumed members of replicated abandoned-base story records. */
@@ -282,6 +300,7 @@ namespace
                 return false;
             MiniMapFoundables::ArrayElementContracts contracts;
             contracts.AbandonBaseGuid = fields[0].offset;
+            contracts.AbandonBaseGuidSize = fields[0].resolvedSize;
             contracts.AbandonBaseStatuses = fields[1].offset;
             contracts.AbandonBaseSize = sizes[0].resolvedSize;
             contracts.CollectedStatusGuid = fields[2].offset;
@@ -312,7 +331,14 @@ namespace
                     static_cast<int32_t>(offsetof(
                         SDK::ACrPointOfInterestMarkerActor, AbandonBaseStoryItemsAssigned)) }
             };
-            return ResolveFields(scanner, self, fields, std::size(fields));
+            const bool resolved = ResolveFields(scanner, self, fields, std::size(fields));
+            g_poiFieldOffsets.MarkerState = fields[0].offset;
+            g_poiFieldOffsets.MarkerType = fields[1].offset;
+            g_poiFieldOffsets.MarkerGuid = fields[2].offset;
+            g_foundablesFieldOffsets.PoiMarkerType = fields[1].offset;
+            g_foundablesFieldOffsets.PoiMarkerGuid = fields[2].offset;
+            g_foundablesFieldOffsets.PoiStoryItemsAssigned = fields[3].offset;
+            return resolved;
         }
 
         /** Resolves the consumed category metadata, icon variants, and story actor GUIDs. */
@@ -347,7 +373,18 @@ namespace
                     sizeof(decltype(SDK::UCrMapMenuPOIData::AbandonBaseCompletedIcon)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuPOIData, AbandonBaseCompletedIcon)) }
             };
-            return ResolveFields(scanner, self, fields, std::size(fields));
+            const bool resolved = ResolveFields(scanner, self, fields, std::size(fields));
+            g_foundablesFieldOffsets.CategoryIcon = fields[2].offset;
+            g_foundablesFieldOffsets.CategoryBlocked = fields[3].offset;
+            g_foundablesFieldOffsets.CategoryLegendFilter = fields[4].offset;
+            g_foundablesFieldOffsets.DatapadGuid = fields[0].offset;
+            g_foundablesFieldOffsets.AudiologGuid = fields[1].offset;
+            g_poiFieldOffsets.CategoryIcon = fields[2].offset;
+            g_poiFieldOffsets.CategoryLegendFilter = fields[4].offset;
+            g_poiFieldOffsets.CategoryCanBeHiddenByFog = fields[5].offset;
+            g_poiFieldOffsets.PoiUnknownIcon = fields[6].offset;
+            g_poiFieldOffsets.PoiAbandonBaseCompletedIcon = fields[7].offset;
+            return resolved;
         }
 
         /** Resolves actor and UObject identity fields used while validating native actors. */
@@ -383,6 +420,11 @@ namespace
             g_playerFieldOffsets.LevelOwningWorld = fields[1].offset;
             g_playerFieldOffsets.ObjectOuter = fields[3].offset;
             g_playerFieldOffsets.ObjectIndex = fields[5].offset;
+            g_poiFieldOffsets.ActorRootComponent = fields[0].offset;
+            g_foundablesFieldOffsets.ActorRootComponent = fields[0].offset;
+            g_foundablesFieldOffsets.LevelOwningWorld = fields[1].offset;
+            g_foundablesFieldOffsets.ObjectFlags = fields[2].offset;
+            g_foundablesFieldOffsets.ObjectOuter = fields[3].offset;
             return true;
         }
 
@@ -410,6 +452,8 @@ namespace
             }
             g_playerFieldOffsets.ActorBeingDestroyed = g_actorBeingDestroyedField.offset;
             g_playerFieldOffsets.ActorBeingDestroyedMask = g_actorBeingDestroyedField.boolMask;
+            g_foundablesFieldOffsets.ActorBeingDestroyed = g_actorBeingDestroyedField.offset;
+            g_foundablesFieldOffsets.ActorBeingDestroyedMask = g_actorBeingDestroyedField.boolMask;
             return true;
         }
     };
@@ -1175,6 +1219,9 @@ namespace
         /** Requires exact reflected layouts for fields read by V2 definition acquisition. */
         static bool ResolveBuildingDefinitionFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
+            constexpr std::size_t kFVectorXFieldIndex = 32;
+            constexpr std::size_t kFVectorYFieldIndex = 33;
+            constexpr std::size_t kFVectorZFieldIndex = 34;
             bool allResolved = true;
             for (PluginFieldSpec& field : g_buildingDefinitionFields)
             {
@@ -1182,6 +1229,14 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
+
+            g_foundablesFieldOffsets.VectorX =
+                g_buildingDefinitionFields[kFVectorXFieldIndex].offset;
+            g_foundablesFieldOffsets.VectorY =
+                g_buildingDefinitionFields[kFVectorYFieldIndex].offset;
+            g_foundablesFieldOffsets.VectorZ =
+                g_buildingDefinitionFields[kFVectorZFieldIndex].offset;
+
             return allResolved;
         }
 
@@ -1243,6 +1298,16 @@ namespace
             }
             if (!allResolved || !allSizesResolved || !MemberFitsSize(fields[3], sizes[0]))
                 return false;
+
+            g_foundablesFieldOffsets.InventoryInputContainer = fields[0].offset;
+            g_foundablesFieldOffsets.InventoryMainContainer = fields[1].offset;
+            g_foundablesFieldOffsets.StorageContainerItems = fields[2].offset;
+            g_foundablesFieldOffsets.SimpleItemId = fields[4].offset;
+            g_foundablesFieldOffsets.SimpleItemDataBase = fields[5].offset;
+            g_foundablesFieldOffsets.SimpleItemCount = fields[6].offset;
+            g_foundablesFieldOffsets.ItemIdHandle = fields[7].offset;
+            g_foundablesFieldOffsets.ItemDataBaseUIItemType = fields[8].offset;
+            g_foundablesFieldOffsets.FoundableType = fields[9].offset;
             MiniMapFoundables::SetStorageItemContract(fields[3].offset, sizes[0].resolvedSize);
             return true;
         }
@@ -1294,6 +1359,8 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
+            g_foundablesFieldOffsets.TransformFragmentTransform = fields[2].offset;
+            g_foundablesFieldOffsets.TransformTranslation = fields[4].offset;
             const bool foundablesResolved = ResolveFoundablesFields(scanner, self);
             const bool definitionsResolved = ResolveBuildingDefinitionFields(scanner, self);
             const bool splineFieldsResolved = ResolveSplineFields(scanner, self);
@@ -1656,7 +1723,11 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_playerTextureFieldsResolved = false;
     g_captureFieldsResolved = false;
     g_playerFieldOffsets = {};
+    g_poiFieldOffsets = {};
+    g_foundablesFieldOffsets = {};
     MiniMapMap::PlayerFieldAccessors::SetOffsets({});
+    MiniMapPointsOfInterest::SetFieldOffsets({});
+    MiniMapFoundables::SetAcquisitionFieldOffsets({});
     MiniMap::BuildingAcquisition::BuildingSplineSource::SetPointArrayContract(-1, -1, -1, 0);
     MiniMapFoundables::SetStorageItemContract(-1, 0);
     MiniMapFoundables::SetStoryArrayContracts({});
