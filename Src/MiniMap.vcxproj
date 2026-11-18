@@ -105,6 +105,7 @@
   <ItemGroup>
     <ClInclude Include="BuildingMapLoadingTrace.h" />
     <ClInclude Include="Map\Buildings\BuildingSpatialAdmission.h" />
+    <ClInclude Include="Map\RuntimeFieldAccess.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapPerformanceDiagnostics.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapService.h" />
     <ClInclude Include="Services\Map\Buildings\Scheduling\IBuildingSpriteMetadataSource.h" />
