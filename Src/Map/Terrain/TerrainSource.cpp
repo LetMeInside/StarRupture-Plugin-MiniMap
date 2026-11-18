@@ -4,6 +4,7 @@
 #include "TerrainSource.h"
 #include "TerrainProfile.h"
 #include "Map/Map.h"
+#include "Map/RuntimeFieldAccess.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -34,13 +35,9 @@ static_assert(offsetof(SDK::TPersistentObjectPtr<
     SDK::FakeSoftObjectPtr::FSoftObjectPath>, WeakPtr) == 0x0);
 static_assert(offsetof(SDK::TPersistentObjectPtr<
     SDK::FakeSoftObjectPtr::FSoftObjectPath>, ObjectID) == 0x8);
-static_assert(offsetof(SDK::UCrMapMenuDevSettings, TerrainData) == 0x3C8);
 static_assert(sizeof(decltype(SDK::UCrMapMenuDevSettings::TerrainData)) == 0x28);
 static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint)) == 0xC);
 static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainSegmentSize)) == 0xC);
-static_assert(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainTopLeftPivotPoint) == 0x30);
-static_assert(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainSegmentSize) == 0x3C);
-static_assert(offsetof(SDK::UCrMapMenuTerrainData, TerrainSegmentsData) == 0x70);
 static_assert(sizeof(SDK::FVector3f) == 0xC);
 static_assert(alignof(SDK::FVector3f) == alignof(float));
 static_assert(offsetof(SDK::FVector3f, X) == 0x0);
@@ -50,13 +47,8 @@ static_assert(sizeof(decltype(SDK::FVector3f::X)) == 0x4);
 static_assert(std::numeric_limits<float>::is_iec559);
 static_assert(sizeof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)) == 0x10);
 static_assert(alignof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)) == alignof(void*));
-static_assert(sizeof(SDK::FCrTerrainSegmentData) == 0x170);
-static_assert(alignof(SDK::FCrTerrainSegmentData) == alignof(SDK::FSlateBrush));
-static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentGridIndex) == 0x0);
 static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentGridIndex)) == 0x8);
-static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTexture) == 0x10);
 static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTexture)) == 0xB0);
-static_assert(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTextureRadiation2) == 0xC0);
 static_assert(sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTextureRadiation2)) == 0xB0);
 static_assert(sizeof(SDK::FIntPoint) == 0x8);
 static_assert(alignof(SDK::FIntPoint) == alignof(int32_t));
@@ -67,15 +59,13 @@ static_assert(sizeof(SDK::FSlateBrush) == 0xB0);
 static_assert(alignof(SDK::FSlateBrush) == 0x10);
 static_assert(std::is_same_v<
     decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated), int32_t>);
-static_assert(offsetof(SDK::ACrMapMenuDataReplicationHelper, CurrentRadiationLevelReplicated) == 0x468);
 static_assert(sizeof(decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated)) == 0x4);
-static_assert(offsetof(SDK::UWorld, GameState) == 0x1B0);
-static_assert(offsetof(SDK::ACrGameStateBase, MapMenuDataReplicationHelper) == 0x368);
 
 namespace
 {
     bool g_pluginSelfAvailable = false;
     SDK::UCrMapMenuDevSettings* g_devSettings = nullptr;
+    MiniMapTerrainSource::FieldOffsets g_fieldOffsets{};
 
 
     SDK::UCrMapMenuTerrainData* LoadTerrainData()
@@ -117,9 +107,16 @@ namespace
             }
         }
 
-        void* terrainDataSoftPtr =
-            static_cast<void*>(
-                &g_devSettings->TerrainData);
+        auto* terrainDataSoftPtr =
+            MiniMap::MapRuntimeAccess::Field<
+                SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>>(
+                    g_devSettings,
+                    g_fieldOffsets.DevSettingsTerrainData);
+
+        if (terrainDataSoftPtr == nullptr)
+        {
+            return nullptr;
+        }
 
         SDK::UObject* loadedObject =
             native->asset.loadSynchronous(
@@ -165,8 +162,17 @@ namespace
             return false;
         }
 
-        SDK::AGameStateBase* baseGameState =
-            world->GameState;
+        auto* baseGameStateField =
+            MiniMap::MapRuntimeAccess::Field<SDK::AGameStateBase*>(
+                world,
+                g_fieldOffsets.WorldGameState);
+
+        if (baseGameStateField == nullptr)
+        {
+            return false;
+        }
+
+        SDK::AGameStateBase* baseGameState = *baseGameStateField;
 
         if (baseGameState == nullptr)
         {
@@ -186,8 +192,17 @@ namespace
             static_cast<SDK::ACrGameStateBase*>(
                 baseGameState);
 
-        SDK::ACrMapMenuDataReplicationHelper* helper =
-            gameState->MapMenuDataReplicationHelper;
+        auto* helperField =
+            MiniMap::MapRuntimeAccess::Field<SDK::ACrMapMenuDataReplicationHelper*>(
+                gameState,
+                g_fieldOffsets.GameStateReplicationHelper);
+
+        if (helperField == nullptr)
+        {
+            return false;
+        }
+
+        SDK::ACrMapMenuDataReplicationHelper* helper = *helperField;
 
         if (helper == nullptr)
         {
@@ -203,8 +218,17 @@ namespace
             return false;
         }
 
-        outRadiationLevel =
-            helper->CurrentRadiationLevelReplicated;
+        const auto* radiationLevel =
+            MiniMap::MapRuntimeAccess::Field<int32_t>(
+                helper,
+                g_fieldOffsets.RadiationLevel);
+
+        if (radiationLevel == nullptr)
+        {
+            return false;
+        }
+
+        outRadiationLevel = *radiationLevel;
 
         return true;
     }
@@ -228,6 +252,18 @@ namespace
 
 namespace MiniMapTerrainSource
 {
+    void SetFieldOffsets(const FieldOffsets& offsets)
+    {
+        g_fieldOffsets = offsets;
+    }
+
+
+    const FieldOffsets& GetFieldOffsets()
+    {
+        return g_fieldOffsets;
+    }
+
+
     bool Initialize(
         IPluginSelf* self)
     {
@@ -252,6 +288,7 @@ namespace MiniMapTerrainSource
     {
         g_devSettings = nullptr;
         g_pluginSelfAvailable = false;
+        g_fieldOffsets = {};
     }
 
 
@@ -260,10 +297,11 @@ namespace MiniMapTerrainSource
         outX = outY = 0.0;
         SDK::UCrMapMenuTerrainData* terrainData = LoadTerrainData();
         if (!terrainData) return false;
-        const auto& pivot = terrainData->MapTerrainTopLeftPivotPoint;
-        if (!std::isfinite(pivot.X) || !std::isfinite(pivot.Y)) return false;
-        outX = static_cast<double>(pivot.X);
-        outY = static_cast<double>(pivot.Y);
+        const SDK::FVector3f* pivot = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            terrainData, g_fieldOffsets.TerrainDataPivot);
+        if (pivot == nullptr || !std::isfinite(pivot->X) || !std::isfinite(pivot->Y)) return false;
+        outX = static_cast<double>(pivot->X);
+        outY = static_cast<double>(pivot->Y);
         return true;
     }
 
@@ -278,21 +316,33 @@ namespace MiniMapTerrainSource
         outHeightMapUnits = 0.0;
         SDK::UCrMapMenuTerrainData* terrainData = LoadTerrainData();
         if (terrainData == nullptr) return false;
-        const double worldTileWidth = 100.0 * static_cast<double>(terrainData->MapTerrainSegmentSize.X),
-            worldTileHeight = 100.0 * static_cast<double>(terrainData->MapTerrainSegmentSize.Y);
-        const int segmentCount = terrainData->TerrainSegmentsData.Num();
+        const SDK::FVector3f* segmentSize = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            terrainData, g_fieldOffsets.TerrainDataSegmentSize);
+        const auto* segments = MiniMap::MapRuntimeAccess::Field<
+            SDK::TArray<SDK::FCrTerrainSegmentData>>(terrainData, g_fieldOffsets.TerrainDataSegments);
+        if (segmentSize == nullptr || segments == nullptr) return false;
+        const double worldTileWidth = 100.0 * static_cast<double>(segmentSize->X),
+            worldTileHeight = 100.0 * static_cast<double>(segmentSize->Y);
+        const int segmentCount = segments->Num();
         if (!std::isfinite(worldTileWidth) || !std::isfinite(worldTileHeight) || worldTileWidth <= 0.0 ||
-            worldTileHeight <= 0.0 || segmentCount <= 0) return false;
-        const auto& firstSegment = terrainData->TerrainSegmentsData[0];
-        std::int64_t minimumIndexX = firstSegment.TerrainSegmentGridIndex.X,
+            worldTileHeight <= 0.0 || segmentCount <= 0 || segments->GetDataPtr() == nullptr) return false;
+        const std::uint8_t* firstSegment = MiniMap::MapRuntimeAccess::ElementAt(
+            segments->GetDataPtr(), segmentCount, 0, g_fieldOffsets.TerrainSegmentStride);
+        const SDK::FIntPoint* firstGridIndex = MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+            firstSegment, g_fieldOffsets.SegmentGridIndex);
+        if (firstGridIndex == nullptr) return false;
+        std::int64_t minimumIndexX = firstGridIndex->X,
             maximumIndexX = minimumIndexX,
-            minimumIndexY = firstSegment.TerrainSegmentGridIndex.Y,
+            minimumIndexY = firstGridIndex->Y,
             maximumIndexY = minimumIndexY;
         for (int segmentIndex = 1; segmentIndex < segmentCount; ++segmentIndex)
         {
-            const auto& segment = terrainData->TerrainSegmentsData[segmentIndex];
-            const std::int64_t indexX = segment.TerrainSegmentGridIndex.X,
-                indexY = segment.TerrainSegmentGridIndex.Y;
+            const std::uint8_t* segment = MiniMap::MapRuntimeAccess::ElementAt(
+                segments->GetDataPtr(), segmentCount, segmentIndex, g_fieldOffsets.TerrainSegmentStride);
+            const SDK::FIntPoint* gridIndex = MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+                segment, g_fieldOffsets.SegmentGridIndex);
+            if (gridIndex == nullptr) return false;
+            const std::int64_t indexX = gridIndex->X, indexY = gridIndex->Y;
             minimumIndexX = (std::min)(minimumIndexX, indexX);
             maximumIndexX = (std::max)(maximumIndexX, indexX);
             minimumIndexY = (std::min)(minimumIndexY, indexY);
@@ -379,14 +429,18 @@ namespace MiniMapTerrainSource
             }
         }
 
-        const auto& pivot =
-            terrainData->MapTerrainTopLeftPivotPoint;
+        const SDK::FVector3f* pivot = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            terrainData, g_fieldOffsets.TerrainDataPivot);
+        const SDK::FVector3f* segmentSize = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            terrainData, g_fieldOffsets.TerrainDataSegmentSize);
+        const auto* segments = MiniMap::MapRuntimeAccess::Field<
+            SDK::TArray<SDK::FCrTerrainSegmentData>>(terrainData, g_fieldOffsets.TerrainDataSegments);
+        if (pivot == nullptr || segmentSize == nullptr || segments == nullptr)
+        {
+            return false;
+        }
 
-        const auto& segmentSize =
-            terrainData->MapTerrainSegmentSize;
-
-        const int segmentCount =
-            terrainData->TerrainSegmentsData.Num();
+        const int segmentCount = segments->Num();
 
         if (verbose)
         {
@@ -399,12 +453,12 @@ namespace MiniMapTerrainSource
                     "TerrainData origin=(%.3f, %.3f, %.3f) "
                     "segment-size=(%.3f, %.3f, %.3f) "
                     "segments=%d",
-                    pivot.X,
-                    pivot.Y,
-                    pivot.Z,
-                    segmentSize.X,
-                    segmentSize.Y,
-                    segmentSize.Z,
+                    pivot->X,
+                    pivot->Y,
+                    pivot->Z,
+                    segmentSize->X,
+                    segmentSize->Y,
+                    segmentSize->Z,
                     segmentCount);
             }
         }
@@ -412,12 +466,12 @@ namespace MiniMapTerrainSource
         const double worldTileWidth =
             100.0 *
             static_cast<double>(
-                segmentSize.X);
+                segmentSize->X);
 
         const double worldTileHeight =
             100.0 *
             static_cast<double>(
-                segmentSize.Y);
+                segmentSize->Y);
 
         if (worldTileWidth <= 0.0 ||
             worldTileHeight <= 0.0)
@@ -440,13 +494,13 @@ namespace MiniMapTerrainSource
         const double horizontalTile =
             (worldPosition.X -
                 static_cast<double>(
-                    pivot.X)) /
+                pivot->X)) /
             worldTileWidth;
 
         const double verticalTile =
             (worldPosition.Y -
                 static_cast<double>(
-                    pivot.Y)) /
+                pivot->Y)) /
             worldTileHeight;
 
         const int gridX =
@@ -486,22 +540,23 @@ namespace MiniMapTerrainSource
             }
         }
 
-        const SDK::FCrTerrainSegmentData* sourceSegment =
+        const std::uint8_t* sourceSegment =
             nullptr;
 
         for (int i = 0; i < segmentCount; ++i)
         {
-            const auto& segment =
-                terrainData->
-                TerrainSegmentsData[i];
+            const std::uint8_t* segment = MiniMap::MapRuntimeAccess::ElementAt(
+                segments->GetDataPtr(), segmentCount, i, g_fieldOffsets.TerrainSegmentStride);
+            const SDK::FIntPoint* gridIndex = MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+                segment, g_fieldOffsets.SegmentGridIndex);
 
-            if (segment.TerrainSegmentGridIndex.X ==
+            if (gridIndex != nullptr && gridIndex->X ==
                 gridX &&
-                segment.TerrainSegmentGridIndex.Y ==
+                gridIndex->Y ==
                 gridY)
             {
                 sourceSegment =
-                    &segment;
+                    segment;
 
                 break;
             }
@@ -532,10 +587,15 @@ namespace MiniMapTerrainSource
 
         if (radiationLevel == 1)
         {
+            const SDK::FSlateBrush* radiationBrush = MiniMap::MapRuntimeAccess::Field<SDK::FSlateBrush>(
+                sourceSegment, g_fieldOffsets.SegmentTextureRadiation2);
+            if (radiationBrush == nullptr)
+            {
+                return false;
+            }
             sourceTexture =
                 native->texture.getBrushTexture(
-                    sourceSegment->
-                    TerrainSegmentTextureRadiation2);
+                    *radiationBrush);
 
             if (sourceTexture != nullptr)
             {
@@ -563,10 +623,15 @@ namespace MiniMapTerrainSource
 
         if (sourceTexture == nullptr)
         {
+            const SDK::FSlateBrush* ordinaryBrush = MiniMap::MapRuntimeAccess::Field<SDK::FSlateBrush>(
+                sourceSegment, g_fieldOffsets.SegmentTexture);
+            if (ordinaryBrush == nullptr)
+            {
+                return false;
+            }
             sourceTexture =
                 native->texture.getBrushTexture(
-                    sourceSegment->
-                    TerrainSegmentTexture);
+                    *ordinaryBrush);
 
             selectedVariant =
                 Variant::Ordinary;

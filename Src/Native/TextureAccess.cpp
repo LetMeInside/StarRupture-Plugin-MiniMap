@@ -2,6 +2,7 @@
 
 #include "TextureAccess.h"
 #include "NativeApi.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "SDK/Engine_classes.hpp"
 
 #include <cstddef>
@@ -69,19 +70,8 @@ namespace
             NativeTexture2DMipMapLayout) == 0x50);
 
 
-    constexpr size_t kUTextureSRGBFlagsOffset =
-        0x106;
-
-    constexpr uint8_t kUTextureSRGBFlag =
-        0x01;
-
-    static_assert(offsetof(SDK::UTexture, Availability) == 0x105);
-    static_assert(sizeof(decltype(SDK::UTexture::Availability)) == 0x01);
-    static_assert(kUTextureSRGBFlagsOffset ==
-        offsetof(SDK::UTexture, Availability) + sizeof(decltype(SDK::UTexture::Availability)));
     static_assert(sizeof(decltype(SDK::UTexture::SRGB)) == 0x01);
     static_assert(std::is_same_v<decltype(SDK::UTexture::SRGB), uint8_t>);
-    static_assert(kUTextureSRGBFlag == 0x01);
 }
 
 
@@ -102,7 +92,9 @@ namespace MiniMapNative::TextureAccess
             MiniMapNative::Get();
 
         if (native == nullptr ||
-            native->texture.getPlatformData == nullptr)
+            native->texture.getPlatformData == nullptr ||
+            native->texture.srgbFieldOffset < 0 ||
+            native->texture.srgbFieldMask == 0)
         {
             return false;
         }
@@ -120,12 +112,6 @@ namespace MiniMapNative::TextureAccess
             reinterpret_cast<
             const NativeTexturePlatformDataLayout*>(
                 nativePlatformData);
-
-        const uint8_t textureFlags =
-            *reinterpret_cast<const uint8_t*>(
-                reinterpret_cast<const uint8_t*>(
-                    texture) +
-                kUTextureSRGBFlagsOffset);
 
         outPlatformData.SizeX =
             platformData->SizeX;
@@ -158,7 +144,10 @@ namespace MiniMapNative::TextureAccess
             platformData->CPUCopy;
 
         outPlatformData.SRGB =
-            (textureFlags & kUTextureSRGBFlag) != 0;
+            MiniMap::MapRuntimeAccess::GetBit(
+                texture,
+                native->texture.srgbFieldOffset,
+                native->texture.srgbFieldMask);
 
         outPlatformData.NativeData =
             nativePlatformData;

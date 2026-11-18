@@ -8,6 +8,7 @@
 
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
+#include "Map/RuntimeFieldAccess.h"
 
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
@@ -101,8 +102,8 @@ namespace
     constexpr double kNativeEdgeHigh =
         0.65;
 
-    constexpr std::ptrdiff_t kFOWDataOffset =
-        0x100;
+    std::int32_t g_fowDataOffset =
+        -1;
 
     constexpr std::size_t kFogSegmentNativeSize =
         0x10;
@@ -169,10 +170,6 @@ namespace
     static_assert(
         kLogicalMaskSize ==
         768);
-
-    static_assert(
-        kFOWDataOffset + sizeof(RawTArray) <=
-        sizeof(SDK::UCrPlayerMapMenuDataComponent));
 
     struct Snapshot
     {
@@ -356,16 +353,18 @@ namespace
             return false;
         }
 
-        const auto* componentBytes =
-            reinterpret_cast<const uint8_t*>(
-                component);
+        const RawTArray* fowData = MiniMap::MapRuntimeAccess::Field<RawTArray>(
+            component, g_fowDataOffset);
+        if (fowData == nullptr)
+        {
+            return false;
+        }
 
         RawTArray outer = {};
 
         std::memcpy(
             &outer,
-            componentBytes +
-                kFOWDataOffset,
+            fowData,
             sizeof(outer));
 
         if (!ValidateRawArray(
@@ -1294,6 +1293,12 @@ namespace
 
 namespace MiniMapFogOfWar
 {
+    void SetFowDataOffset(std::int32_t offset) noexcept
+    {
+        g_fowDataOffset = offset >= 0 ? offset : -1;
+    }
+
+
     bool Initialize(
         IPluginSelf* self)
     {

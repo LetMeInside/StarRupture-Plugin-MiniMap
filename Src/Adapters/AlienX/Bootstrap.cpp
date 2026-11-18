@@ -9,15 +9,20 @@
 #include "Viewport.h"
 #include "Textures.h"
 #include "Map/Map.h"
+#include "Map/FogOfWar/FogOfWar.h"
 #include "Map/Foundables/Foundables.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
+#include "Map/Terrain/TerrainSource.h"
 #include "Map/Buildings/BuildingSplineSource.h"
+#include "Services/Map/Buildings/Capture/BuildingSpriteRenderer.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <optional>
 
@@ -81,10 +86,12 @@ namespace
         "UCrPlayerMapMenuDataComponent::FOWData",
         "UCrPlayerMapMenuDataComponent",
         "FOWData",
-        PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
-        0x10,
-        0x100
+        PLUGIN_FIELD_NATIVE,
+        sizeof(SDK::TArray<uint8_t>),
+        -1
     };
+
+    PluginFieldSpec g_fowDataClassSize = SR_SIZE(UCrPlayerMapMenuDataComponent);
 
     constexpr PluginFieldCandidate kFowDataCandidates[] = {
         { 127004, 0x100, 0x10, 0, nullptr }
@@ -101,27 +108,30 @@ namespace
             PlayerMapMenuDataComponent))
     };
 
-    /** Requires exact reflected layouts for fields read by TerrainSource. */
+    /** Resolves Terrain fields and validates runtime containing extents before publishing offsets. */
     class ClientTerrainFieldContract
     {
     public:
-        /** Resolves consumed Terrain fields through the active loader scanner session. */
-        static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
+        /** Resolves Terrain metadata once during Client admission and publishes validated access offsets. */
+        static bool Resolve(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
         {
             static PluginFieldSpec fields[] = {
                 { "UCrMapMenuDevSettings::TerrainData", "UCrMapMenuDevSettings", "TerrainData",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuDevSettings::TerrainData)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::UCrMapMenuDevSettings::TerrainData)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuDevSettings, TerrainData)) },
                 { "UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint", "UCrMapMenuTerrainData",
-                    "MapTerrainTopLeftPivotPoint", PLUGIN_FIELD_CHECK,
+                    "MapTerrainTopLeftPivotPoint", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainTopLeftPivotPoint)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainTopLeftPivotPoint)) },
                 { "UCrMapMenuTerrainData::MapTerrainSegmentSize", "UCrMapMenuTerrainData",
-                    "MapTerrainSegmentSize", PLUGIN_FIELD_CHECK,
+                    "MapTerrainSegmentSize", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuTerrainData::MapTerrainSegmentSize)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, MapTerrainSegmentSize)) },
                 { "UCrMapMenuTerrainData::TerrainSegmentsData", "UCrMapMenuTerrainData",
-                    "TerrainSegmentsData", PLUGIN_FIELD_CHECK,
+                    "TerrainSegmentsData", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuTerrainData::TerrainSegmentsData)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuTerrainData, TerrainSegmentsData)) },
                 { "FVector3f::X", "FVector3f", "X", PLUGIN_FIELD_CHECK,
@@ -140,30 +150,39 @@ namespace
                     sizeof(decltype(SDK::FIntPoint::Y)),
                     static_cast<int32_t>(offsetof(SDK::FIntPoint, Y)) },
                 { "FCrTerrainSegmentData::TerrainSegmentGridIndex", "FCrTerrainSegmentData",
-                    "TerrainSegmentGridIndex", PLUGIN_FIELD_CHECK,
+                    "TerrainSegmentGridIndex", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentGridIndex)),
                     static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentGridIndex)) },
                 { "FCrTerrainSegmentData::TerrainSegmentTexture", "FCrTerrainSegmentData",
-                    "TerrainSegmentTexture", PLUGIN_FIELD_CHECK,
+                    "TerrainSegmentTexture", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTexture)),
                     static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTexture)) },
                 { "FCrTerrainSegmentData::TerrainSegmentTextureRadiation2", "FCrTerrainSegmentData",
-                    "TerrainSegmentTextureRadiation2", PLUGIN_FIELD_CHECK,
+                    "TerrainSegmentTextureRadiation2", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrTerrainSegmentData::TerrainSegmentTextureRadiation2)),
                     static_cast<int32_t>(offsetof(SDK::FCrTerrainSegmentData, TerrainSegmentTextureRadiation2)) },
-                { "UWorld::GameState", "UWorld", "GameState", PLUGIN_FIELD_CHECK,
+                { "UWorld::GameState", "UWorld", "GameState", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UWorld::GameState)),
                     static_cast<int32_t>(offsetof(SDK::UWorld, GameState)) },
                 { "ACrGameStateBase::MapMenuDataReplicationHelper", "ACrGameStateBase",
-                    "MapMenuDataReplicationHelper", PLUGIN_FIELD_CHECK,
+                    "MapMenuDataReplicationHelper", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrGameStateBase::MapMenuDataReplicationHelper)),
                     static_cast<int32_t>(offsetof(SDK::ACrGameStateBase, MapMenuDataReplicationHelper)) },
                 { "ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated",
                     "ACrMapMenuDataReplicationHelper", "CurrentRadiationLevelReplicated",
-                    PLUGIN_FIELD_CHECK,
+                    PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrMapMenuDataReplicationHelper::CurrentRadiationLevelReplicated)),
                     static_cast<int32_t>(offsetof(
                         SDK::ACrMapMenuDataReplicationHelper, CurrentRadiationLevelReplicated)) }
+            };
+
+            static PluginFieldSpec classSizes[] = {
+                SR_SIZE(UCrMapMenuDevSettings),
+                SR_SIZE(UCrMapMenuTerrainData),
+                SR_SIZE(FCrTerrainSegmentData),
+                SR_SIZE(UWorld),
+                SR_SIZE(ACrGameStateBase),
+                SR_SIZE(ACrMapMenuDataReplicationHelper)
             };
 
             bool allResolved = true;
@@ -173,9 +192,75 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
+            for (PluginFieldSpec& classSize : classSizes)
+            {
+                classSize.offset = -1;
+                classSize.resolvedSize = 0;
+                allResolved = PluginMap::ResolveField(scanner, self, classSize) && allResolved;
+            }
+
+            if (!allResolved)
+            {
+                return false;
+            }
+
+            const auto memberFits = [](
+                const PluginFieldSpec& field,
+                uint32_t containingSize,
+                uint32_t expectedSize)
+            {
+                return field.offset >= 0 && field.resolvedSize == expectedSize &&
+                    static_cast<uint64_t>(field.offset) + field.resolvedSize <= containingSize;
+            };
+            const bool objectFieldsFit =
+                memberFits(fields[0], classSizes[0].resolvedSize, sizeof(SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>)) &&
+                memberFits(fields[1], classSizes[1].resolvedSize, sizeof(SDK::FVector3f)) &&
+                memberFits(fields[2], classSizes[1].resolvedSize, sizeof(SDK::FVector3f)) &&
+                memberFits(fields[3], classSizes[1].resolvedSize, sizeof(SDK::TArray<SDK::FCrTerrainSegmentData>)) &&
+                memberFits(fields[12], classSizes[3].resolvedSize, sizeof(SDK::AGameStateBase*)) &&
+                memberFits(fields[13], classSizes[4].resolvedSize,
+                    sizeof(SDK::ACrMapMenuDataReplicationHelper*)) &&
+                memberFits(fields[14], classSizes[5].resolvedSize, sizeof(int32_t)) &&
+                fields[0].offset % alignof(void*) == 0 &&
+                fields[1].offset % alignof(SDK::FVector3f) == 0 &&
+                fields[2].offset % alignof(SDK::FVector3f) == 0 &&
+                fields[3].offset % alignof(SDK::TArray<SDK::FCrTerrainSegmentData>) == 0 &&
+                fields[12].offset % alignof(SDK::AGameStateBase*) == 0 &&
+                fields[13].offset % alignof(SDK::ACrMapMenuDataReplicationHelper*) == 0 &&
+                fields[14].offset % alignof(int32_t) == 0;
+            const uint32_t terrainStride = classSizes[2].resolvedSize;
+            const bool segmentFieldsFit = terrainStride != 0 &&
+                terrainStride % alignof(SDK::FSlateBrush) == 0 &&
+                memberFits(fields[9], terrainStride, sizeof(SDK::FIntPoint)) &&
+                memberFits(fields[10], terrainStride, sizeof(SDK::FSlateBrush)) &&
+                memberFits(fields[11], terrainStride, sizeof(SDK::FSlateBrush)) &&
+                fields[9].offset % alignof(SDK::FIntPoint) == 0 &&
+                fields[10].offset % alignof(SDK::FSlateBrush) == 0 &&
+                fields[11].offset % alignof(SDK::FSlateBrush) == 0;
+            if (!objectFieldsFit || !segmentFieldsFit)
+            {
+                requiredScanner.Fail(
+                    "MiniMap::TerrainFields",
+                    "resolved Terrain field extent or runtime segment stride is invalid");
+                return false;
+            }
+
+            MiniMapTerrainSource::FieldOffsets terrainOffsets{};
+            terrainOffsets.DevSettingsTerrainData = fields[0].offset;
+            terrainOffsets.TerrainDataPivot = fields[1].offset;
+            terrainOffsets.TerrainDataSegmentSize = fields[2].offset;
+            terrainOffsets.TerrainDataSegments = fields[3].offset;
+            terrainOffsets.SegmentGridIndex = fields[9].offset;
+            terrainOffsets.SegmentTexture = fields[10].offset;
+            terrainOffsets.SegmentTextureRadiation2 = fields[11].offset;
+            terrainOffsets.WorldGameState = fields[12].offset;
+            terrainOffsets.GameStateReplicationHelper = fields[13].offset;
+            terrainOffsets.RadiationLevel = fields[14].offset;
+            terrainOffsets.TerrainSegmentStride = terrainStride;
+            MiniMapTerrainSource::SetFieldOffsets(terrainOffsets);
             g_poiFieldOffsets.WorldGameState = fields[12].offset;
             g_foundablesFieldOffsets.WorldGameState = fields[12].offset;
-            return allResolved;
+            return true;
         }
     };
 
@@ -186,8 +271,10 @@ namespace
 
     PluginBitField g_textureSRGBField{
         { "UTexture::SRGB", "UTexture", "SRGB",
-            PLUGIN_FIELD_BITFIELD | PLUGIN_FIELD_CHECK, 1, -1 }
+            PLUGIN_FIELD_BITFIELD, 1, -1 }
     };
+
+    PluginFieldSpec g_textureClassSize = SR_SIZE(UTexture);
 
     /** Resolves reflected POI, story-record, category, and actor fields and validates required extents. */
     class ClientPoiStoryFieldContract
@@ -528,7 +615,7 @@ namespace
             return true;
         }
 
-        /** Requires the mapped UTexture bitfield to match the compiled CL-127004 ABI. */
+        /** Resolves and validates the mapped UTexture bitfield before publishing it. */
         static bool ResolveTextureSRGB(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
@@ -537,161 +624,285 @@ namespace
             g_textureSRGBField.offset = -1;
             g_textureSRGBField.resolvedSize = 0;
             g_textureSRGBField.boolMask = 0;
+            g_textureClassSize.offset = -1;
+            g_textureClassSize.resolvedSize = 0;
             const bool srgbResolved = PluginMap::ResolveField(scanner, self, g_textureSRGBField);
-            if (srgbResolved && (g_textureSRGBField.offset != 0x106 ||
-                g_textureSRGBField.resolvedSize != 1 || g_textureSRGBField.boolMask != 0x01))
+            const bool textureSizeResolved = PluginMap::ResolveField(scanner, self, g_textureClassSize);
+            if (!srgbResolved || !textureSizeResolved)
+            {
+                return false;
+            }
+
+            const uint64_t fieldEnd = static_cast<uint64_t>(g_textureSRGBField.offset) +
+                g_textureSRGBField.resolvedSize;
+            if (g_textureSRGBField.offset < 0 ||
+                g_textureSRGBField.resolvedSize != sizeof(uint8_t) || g_textureSRGBField.boolMask == 0 ||
+                (g_textureSRGBField.boolMask &
+                    static_cast<uint8_t>(g_textureSRGBField.boolMask - 1)) != 0 ||
+                g_textureClassSize.resolvedSize == 0 || fieldEnd > g_textureClassSize.resolvedSize)
             {
                 requiredScanner.Fail(
                     "UTexture::SRGB",
-                    "resolved SRGB bit does not match CL-127004 offset 0x106, extent 1, and mask 0x01");
+                    "resolved SRGB bit is missing or outside the running UTexture layout");
                 return false;
             }
-            return srgbResolved;
+            if (!MiniMapNative::PublishTextureSRGBField(
+                g_textureSRGBField.offset,
+                g_textureSRGBField.resolvedSize,
+                g_textureSRGBField.boolMask))
+            {
+                requiredScanner.Fail(
+                    "UTexture::SRGB",
+                    "resolved SRGB bit could not be published to the native API");
+                return false;
+            }
+            return true;
         }
     };
 
-    /** Requires the reflected capture properties and packed flags used by V2 sprite capture. */
+    /** Resolves and validates the reflected fields written by sprite capture. */
     class ClientCaptureFieldContract
     {
-        /** Pairs each reflected capture bit with its exact CL-127004 byte and mask. */
-        struct BitFieldExpectation
+        using CaptureOffsets = Services::Map::Buildings::Capture::CaptureFieldOffsets;
+
+        struct OwnerSize
         {
-            PluginBitField Field;
-            int32_t ExpectedOffset;
-            uint8_t ExpectedMask;
+            const char* Name;
+            int32_t Size;
         };
+
+        /** Resolves runtime owner extents used to bound every capture field. */
+        static bool ResolveOwnerSizes(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            std::array<OwnerSize, 10>& owners)
+        {
+            static PluginFieldSpec fields[] = {
+                SR_SIZE(UActorComponent), SR_SIZE(USceneComponent), SR_SIZE(ULightComponent),
+                SR_SIZE(ULightComponentBase), SR_SIZE(USceneCaptureComponent),
+                SR_SIZE(USceneCaptureComponent2D), SR_SIZE(UTextureRenderTarget),
+                SR_SIZE(UTextureRenderTarget2D), SR_SIZE(UDirectionalLightComponent),
+                SR_SIZE(FTickFunction)
+            };
+            static const char* names[] = {
+                "UActorComponent", "USceneComponent", "ULightComponent", "ULightComponentBase",
+                "USceneCaptureComponent", "USceneCaptureComponent2D", "UTextureRenderTarget",
+                "UTextureRenderTarget2D", "UDirectionalLightComponent", "FTickFunction"
+            };
+            bool resolved = true;
+            for (size_t index = 0; index < std::size(fields); ++index)
+            {
+                fields[index].offset = -1;
+                fields[index].resolvedSize = 0;
+                if (!PluginMap::ResolveField(scanner, self, fields[index]) || fields[index].resolvedSize == 0 ||
+                    fields[index].resolvedSize > 0x7fffffffU)
+                {
+                    requiredScanner.Fail(names[index], "runtime capture owner size is missing or invalid");
+                    resolved = false;
+                    continue;
+                }
+                owners[index] = { names[index], static_cast<int32_t>(fields[index].resolvedSize) };
+            }
+            return resolved;
+        }
+
+        /** Returns the runtime reflected extent for one declaring owner. */
+        static int32_t FindOwnerSize(const std::array<OwnerSize, 10>& owners, const char* name)
+        {
+            for (const OwnerSize& owner : owners)
+            {
+                if (std::strcmp(owner.Name, name) == 0)
+                {
+                    return owner.Size;
+                }
+            }
+            return 0;
+        }
 
         /** Resolves one required set of ordinary reflected capture properties. */
         static bool ResolvePropertySet(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets,
             PluginFieldSpec* fields,
-            size_t fieldCount)
+            size_t fieldCount,
+            size_t firstProperty)
         {
             bool allResolved = true;
             for (size_t index = 0; index < fieldCount; ++index)
             {
                 fields[index].offset = -1;
                 fields[index].resolvedSize = 0;
-                allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
+                const bool resolved = PluginMap::ResolveField(scanner, self, fields[index]);
+                const int32_t ownerSize = FindOwnerSize(owners, fields[index].className);
+                uint32_t alignment = fields[index].size >= 4 ? alignof(uint32_t) : 1;
+                const size_t propertyIndex = firstProperty + index;
+                if (propertyIndex == static_cast<size_t>(CaptureOffsets::Property::PrimaryComponentTick))
+                {
+                    alignment = alignof(SDK::FActorComponentTickFunction);
+                }
+                else if (propertyIndex == static_cast<size_t>(CaptureOffsets::Property::TextureTarget))
+                {
+                    alignment = alignof(SDK::UTextureRenderTarget2D*);
+                }
+                if (!resolved || ownerSize <= 0 || fields[index].offset < 0 ||
+                    fields[index].resolvedSize != fields[index].size ||
+                    static_cast<uint64_t>(fields[index].offset) + fields[index].resolvedSize >
+                        static_cast<uint32_t>(ownerSize) ||
+                    (alignment > 1 && fields[index].offset % static_cast<int32_t>(alignment) != 0))
+                {
+                    requiredScanner.Fail(fields[index].key,
+                        "capture property is missing, mis-sized, misaligned, or outside its runtime owner");
+                    allResolved = false;
+                    continue;
+                }
+                offsets.Properties[firstProperty + index] = fields[index].offset;
             }
             return allResolved;
         }
 
         /** Resolves component and base-capture properties using their declaring owners. */
-        static bool ResolveBaseProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveBaseProperties(IPluginHookScanner* scanner, const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
             static PluginFieldSpec fields[] = {
                 { "UActorComponent::PrimaryComponentTick", "UActorComponent", "PrimaryComponentTick",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::FActorComponentTickFunction), 0x38 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::FActorComponentTickFunction), 0x38 },
                 { "USceneComponent::Mobility", "USceneComponent", "Mobility",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::EComponentMobility), 0x1A3 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::EComponentMobility), 0x1A3 },
                 { "ULightComponentBase::Intensity", "ULightComponentBase", "Intensity",
-                    PLUGIN_FIELD_CHECK, sizeof(float), 0x274 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(float), 0x274 },
                 { "ULightComponentBase::LightColor", "ULightComponentBase", "LightColor",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::FColor), 0x278 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::FColor), 0x278 },
                 { "USceneCaptureComponent::PrimitiveRenderMode", "USceneCaptureComponent", "PrimitiveRenderMode",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCapturePrimitiveRenderMode), 0x250 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::ESceneCapturePrimitiveRenderMode), 0x250 },
                 { "USceneCaptureComponent::CaptureSource", "USceneCaptureComponent", "CaptureSource",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCaptureSource), 0x251 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::ESceneCaptureSource), 0x251 },
                 { "USceneCaptureComponent::bAlwaysPersistRenderingState", "USceneCaptureComponent",
-                    "bAlwaysPersistRenderingState", PLUGIN_FIELD_CHECK, sizeof(bool), 0x253 },
+                    "bAlwaysPersistRenderingState", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0x253 },
                 { "USceneCaptureComponent::bUseRayTracingIfEnabled", "USceneCaptureComponent",
-                    "bUseRayTracingIfEnabled", PLUGIN_FIELD_CHECK, sizeof(bool), 0x2A4 }
+                    "bUseRayTracingIfEnabled", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0x2A4 }
             };
-            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+            return ResolvePropertySet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 0);
         }
 
         /** Resolves 2D capture properties using the declaring 2D component type. */
-        static bool ResolveCapture2DProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveCapture2DProperties(IPluginHookScanner* scanner, const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
             static PluginFieldSpec fields[] = {
                 { "USceneCaptureComponent2D::ProjectionType", "USceneCaptureComponent2D", "ProjectionType",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::ECameraProjectionMode), 0x338 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::ECameraProjectionMode), 0x338 },
                 { "USceneCaptureComponent2D::OrthoWidth", "USceneCaptureComponent2D", "OrthoWidth",
-                    PLUGIN_FIELD_CHECK, sizeof(float), 0x348 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(float), 0x348 },
                 { "USceneCaptureComponent2D::bAutoCalculateOrthoPlanes", "USceneCaptureComponent2D",
-                    "bAutoCalculateOrthoPlanes", PLUGIN_FIELD_CHECK, sizeof(bool), 0x34C },
+                    "bAutoCalculateOrthoPlanes", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0x34C },
                 { "USceneCaptureComponent2D::bUpdateOrthoPlanes", "USceneCaptureComponent2D",
-                    "bUpdateOrthoPlanes", PLUGIN_FIELD_CHECK, sizeof(bool), 0x354 },
+                    "bUpdateOrthoPlanes", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0x354 },
                 { "USceneCaptureComponent2D::bUseCameraHeightAsViewTarget", "USceneCaptureComponent2D",
-                    "bUseCameraHeightAsViewTarget", PLUGIN_FIELD_CHECK, sizeof(bool), 0x355 },
+                    "bUseCameraHeightAsViewTarget", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0x355 },
                 { "USceneCaptureComponent2D::TextureTarget", "USceneCaptureComponent2D", "TextureTarget",
-                    PLUGIN_FIELD_CHECK, sizeof(void*), 0x360 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(void*), 0x360 },
                 { "USceneCaptureComponent2D::CompositeMode", "USceneCaptureComponent2D", "CompositeMode",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::ESceneCaptureCompositeMode), 0x368 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::ESceneCaptureCompositeMode), 0x368 },
                 { "USceneCaptureComponent2D::PostProcessBlendWeight", "USceneCaptureComponent2D",
-                    "PostProcessBlendWeight", PLUGIN_FIELD_CHECK, sizeof(float), 0xAD0 },
+                    "PostProcessBlendWeight", PLUGIN_FIELD_FLAG_NONE, sizeof(float), 0xAD0 },
                 { "USceneCaptureComponent2D::bUseCustomProjectionMatrix", "USceneCaptureComponent2D",
-                    "bUseCustomProjectionMatrix", PLUGIN_FIELD_CHECK, sizeof(bool), 0xADC },
+                    "bUseCustomProjectionMatrix", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0xADC },
                 { "USceneCaptureComponent2D::bEnableOrthographicTiling", "USceneCaptureComponent2D",
-                    "bEnableOrthographicTiling", PLUGIN_FIELD_CHECK, sizeof(bool), 0xB61 },
+                    "bEnableOrthographicTiling", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0xB61 },
                 { "USceneCaptureComponent2D::bEnableClipPlane", "USceneCaptureComponent2D",
-                    "bEnableClipPlane", PLUGIN_FIELD_CHECK, sizeof(bool), 0xB6C },
+                    "bEnableClipPlane", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0xB6C },
                 { "USceneCaptureComponent2D::bRenderInMainRenderer", "USceneCaptureComponent2D",
-                    "bRenderInMainRenderer", PLUGIN_FIELD_CHECK, sizeof(bool), 0xBA0 }
+                    "bRenderInMainRenderer", PLUGIN_FIELD_FLAG_NONE, sizeof(bool), 0xBA0 }
             };
-            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+            return ResolvePropertySet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 8);
         }
 
         /** Resolves directly written base and 2D render-target properties. */
-        static bool ResolveRenderTargetProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveRenderTargetProperties(IPluginHookScanner* scanner, const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
             static PluginFieldSpec fields[] = {
                 { "UTextureRenderTarget::TargetGamma", "UTextureRenderTarget", "TargetGamma",
-                    PLUGIN_FIELD_CHECK, sizeof(float), 0x140 },
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(float), 0x140 },
                 { "UTextureRenderTarget2D::ClearColor", "UTextureRenderTarget2D", "ClearColor",
-                    PLUGIN_FIELD_CHECK, sizeof(SDK::FLinearColor), 0x150 }
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(SDK::FLinearColor), 0x150 }
             };
-            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+            return ResolvePropertySet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 20);
         }
 
         /** Resolves directly written directional-light properties at their compiled offsets. */
-        static bool ResolveDirectionalLightProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveDirectionalLightProperties(IPluginHookScanner* scanner, const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
             static PluginFieldSpec fields[] = {
                 { "UDirectionalLightComponent::ForwardShadingPriority", "UDirectionalLightComponent",
-                    "ForwardShadingPriority", PLUGIN_FIELD_CHECK, sizeof(int32_t), 0x3FC },
+                    "ForwardShadingPriority", PLUGIN_FIELD_FLAG_NONE, sizeof(int32_t), 0x3FC },
                 { "UDirectionalLightComponent::LightSourceAngle", "UDirectionalLightComponent",
-                    "LightSourceAngle", PLUGIN_FIELD_CHECK, sizeof(float), 0x400 }
+                    "LightSourceAngle", PLUGIN_FIELD_FLAG_NONE, sizeof(float), 0x400 }
             };
-            return ResolvePropertySet(scanner, self, fields, std::size(fields));
+            return ResolvePropertySet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 22);
         }
 
         /** Resolves every ordinary capture property set. */
-        static bool ResolveProperties(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveProperties(IPluginHookScanner* scanner, const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            const bool baseResolved = ResolveBaseProperties(scanner, self);
-            const bool capture2DResolved = ResolveCapture2DProperties(scanner, self);
-            const bool targetResolved = ResolveRenderTargetProperties(scanner, self);
-            const bool lightResolved = ResolveDirectionalLightProperties(scanner, self);
+            const bool baseResolved = ResolveBaseProperties(scanner, self, requiredScanner, owners, offsets);
+            const bool capture2DResolved = ResolveCapture2DProperties(scanner, self, requiredScanner, owners, offsets);
+            const bool targetResolved = ResolveRenderTargetProperties(scanner, self, requiredScanner, owners, offsets);
+            const bool lightResolved = ResolveDirectionalLightProperties(scanner, self, requiredScanner, owners, offsets);
             return baseResolved && capture2DResolved && targetResolved && lightResolved;
         }
 
-        /** Resolves one bitfield set and refuses any offset, extent, or mask drift. */
+        /** Resolves one bitfield set and validates its runtime extent and mask. */
         static bool ResolveBitFieldSet(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
             MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
-            BitFieldExpectation* fields,
-            size_t fieldCount)
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets,
+            PluginBitField* fields,
+            size_t fieldCount,
+            size_t firstBitField)
         {
             bool allResolved = true;
             for (size_t index = 0; index < fieldCount; ++index)
             {
-                BitFieldExpectation& expectation = fields[index];
-                PluginBitField& field = expectation.Field;
+                PluginBitField& field = fields[index];
                 field.offset = -1;
                 field.resolvedSize = 0;
                 field.boolMask = 0;
                 const bool resolved = PluginMap::ResolveField(scanner, self, field);
-                if (!resolved || field.offset != expectation.ExpectedOffset || field.resolvedSize != 1 ||
-                    field.boolMask != expectation.ExpectedMask)
+                const int32_t ownerSize = FindOwnerSize(owners, field.className);
+                if (!resolved || ownerSize <= 0 || field.offset < 0 || field.resolvedSize != 1 ||
+                    field.boolMask == 0 || (field.boolMask & (field.boolMask - 1)) != 0 ||
+                    static_cast<uint64_t>(field.offset) + 1 > static_cast<uint32_t>(ownerSize))
                 {
                     requiredScanner.Fail(field.key,
-                        "reflected capture bitfield does not match the exact CL-127004 byte, extent, and mask");
+                        "capture bitfield is missing, invalid, or outside its runtime owner");
                     allResolved = false;
+                    continue;
                 }
+                offsets.BitFields[firstBitField + index] = { field.offset, field.boolMask };
             }
             return allResolved;
         }
@@ -700,92 +911,104 @@ namespace
         static bool ResolveComponentBitFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
-            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            static BitFieldExpectation fields[] = {
-                { { { "FTickFunction::bCanEverTick", "FTickFunction", "bCanEverTick",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0A, 0x02 },
-                { { { "UActorComponent::bReplicates", "UActorComponent", "bReplicates",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x94, 0x80 },
-                { { { "UActorComponent::bAutoActivate", "UActorComponent", "bAutoActivate",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x96, 0x08 },
-                { { { "UActorComponent::bCanEverAffectNavigation", "UActorComponent",
-                    "bCanEverAffectNavigation", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x96, 0x80 },
-                { { { "ULightComponent::bUseTemperature", "ULightComponent", "bUseTemperature",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x2A4, 0x01 },
-                { { { "ULightComponentBase::bAffectsWorld", "ULightComponentBase", "bAffectsWorld",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x01 },
-                { { { "ULightComponentBase::CastShadows", "ULightComponentBase", "CastShadows",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x02 },
-                { { { "ULightComponentBase::CastStaticShadows", "ULightComponentBase", "CastStaticShadows",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x04 },
-                { { { "ULightComponentBase::CastDynamicShadows", "ULightComponentBase", "CastDynamicShadows",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x08 },
-                { { { "ULightComponentBase::bAffectTranslucentLighting", "ULightComponentBase",
-                    "bAffectTranslucentLighting", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x27C, 0x10 }
+            static PluginBitField fields[] = {
+                { { "FTickFunction::bCanEverTick", "FTickFunction", "bCanEverTick",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UActorComponent::bReplicates", "UActorComponent", "bReplicates",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UActorComponent::bAutoActivate", "UActorComponent", "bAutoActivate",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UActorComponent::bCanEverAffectNavigation", "UActorComponent",
+                    "bCanEverAffectNavigation", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponent::bUseTemperature", "ULightComponent", "bUseTemperature",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponentBase::bAffectsWorld", "ULightComponentBase", "bAffectsWorld",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponentBase::CastShadows", "ULightComponentBase", "CastShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponentBase::CastStaticShadows", "ULightComponentBase", "CastStaticShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponentBase::CastDynamicShadows", "ULightComponentBase", "CastDynamicShadows",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "ULightComponentBase::bAffectTranslucentLighting", "ULightComponentBase",
+                    "bAffectTranslucentLighting", PLUGIN_FIELD_BITFIELD, 1, -1 } }
             };
-            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+            return ResolveBitFieldSet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 0);
         }
 
         /** Resolves capture-component packed fields. */
         static bool ResolveCaptureBitFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
-            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            static BitFieldExpectation fields[] = {
-                { { { "USceneCaptureComponent::bCaptureEveryFrame", "USceneCaptureComponent",
-                    "bCaptureEveryFrame", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x252, 0x01 },
-                { { { "USceneCaptureComponent::bCaptureOnMovement", "USceneCaptureComponent",
-                    "bCaptureOnMovement", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x252, 0x02 },
-                { { { "USceneCaptureComponent2D::bMainViewFamily", "USceneCaptureComponent2D",
-                    "bMainViewFamily", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x10 },
-                { { { "USceneCaptureComponent2D::bMainViewResolution", "USceneCaptureComponent2D",
-                    "bMainViewResolution", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x20 },
-                { { { "USceneCaptureComponent2D::bMainViewCamera", "USceneCaptureComponent2D",
-                    "bMainViewCamera", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x40 },
-                { { { "USceneCaptureComponent2D::bInheritMainViewCameraPostProcessSettings",
+            static PluginBitField fields[] = {
+                { { "USceneCaptureComponent::bCaptureEveryFrame", "USceneCaptureComponent",
+                    "bCaptureEveryFrame", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "USceneCaptureComponent::bCaptureOnMovement", "USceneCaptureComponent",
+                    "bCaptureOnMovement", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "USceneCaptureComponent2D::bMainViewFamily", "USceneCaptureComponent2D",
+                    "bMainViewFamily", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "USceneCaptureComponent2D::bMainViewResolution", "USceneCaptureComponent2D",
+                    "bMainViewResolution", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "USceneCaptureComponent2D::bMainViewCamera", "USceneCaptureComponent2D",
+                    "bMainViewCamera", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "USceneCaptureComponent2D::bInheritMainViewCameraPostProcessSettings",
                     "USceneCaptureComponent2D", "bInheritMainViewCameraPostProcessSettings",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x0BA4, 0x80 }
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } }
             };
-            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+            return ResolveBitFieldSet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 10);
         }
 
         /** Resolves render-target packed fields. */
         static bool ResolveTargetBitFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
-            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            static BitFieldExpectation fields[] = {
-                { { { "UTextureRenderTarget2D::bSupportsUAV", "UTextureRenderTarget2D", "bSupportsUAV",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x164, 0x01 },
-                { { { "UTextureRenderTarget2D::bAutoGenerateMips", "UTextureRenderTarget2D",
-                    "bAutoGenerateMips", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x164, 0x02 }
+            static PluginBitField fields[] = {
+                { { "UTextureRenderTarget2D::bSupportsUAV", "UTextureRenderTarget2D", "bSupportsUAV",
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UTextureRenderTarget2D::bAutoGenerateMips", "UTextureRenderTarget2D",
+                    "bAutoGenerateMips", PLUGIN_FIELD_BITFIELD, 1, -1 } }
             };
-            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+            return ResolveBitFieldSet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 16);
         }
 
         /** Resolves directly written directional-light bitfields and their masks. */
         static bool ResolveDirectionalLightBitFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
-            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            static BitFieldExpectation fields[] = {
-                { { { "UDirectionalLightComponent::bAtmosphereSunLight", "UDirectionalLightComponent",
-                    "bAtmosphereSunLight", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x410, 0x02 },
-                { { { "UDirectionalLightComponent::bPerPixelAtmosphereTransmittance",
+            static PluginBitField fields[] = {
+                { { "UDirectionalLightComponent::bAtmosphereSunLight", "UDirectionalLightComponent",
+                    "bAtmosphereSunLight", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UDirectionalLightComponent::bPerPixelAtmosphereTransmittance",
                     "UDirectionalLightComponent", "bPerPixelAtmosphereTransmittance",
-                    PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x01 },
-                { { { "UDirectionalLightComponent::bCastShadowsOnClouds", "UDirectionalLightComponent",
-                    "bCastShadowsOnClouds", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x02 },
-                { { { "UDirectionalLightComponent::bCastShadowsOnAtmosphere", "UDirectionalLightComponent",
-                    "bCastShadowsOnAtmosphere", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x04 },
-                { { { "UDirectionalLightComponent::bCastCloudShadows", "UDirectionalLightComponent",
-                    "bCastCloudShadows", PLUGIN_FIELD_BITFIELD, 1, -1 } }, 0x428, 0x08 }
+                    PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UDirectionalLightComponent::bCastShadowsOnClouds", "UDirectionalLightComponent",
+                    "bCastShadowsOnClouds", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UDirectionalLightComponent::bCastShadowsOnAtmosphere", "UDirectionalLightComponent",
+                    "bCastShadowsOnAtmosphere", PLUGIN_FIELD_BITFIELD, 1, -1 } },
+                { { "UDirectionalLightComponent::bCastCloudShadows", "UDirectionalLightComponent",
+                    "bCastCloudShadows", PLUGIN_FIELD_BITFIELD, 1, -1 } }
             };
-            return ResolveBitFieldSet(scanner, self, requiredScanner, fields, std::size(fields));
+            return ResolveBitFieldSet(scanner, self, requiredScanner, owners, offsets,
+                fields, std::size(fields), 18);
         }
 
         /** Requires the live SetShowFlagSettings parameter block and array argument to match the SDK ABI. */
@@ -823,12 +1046,14 @@ namespace
         static bool ResolveBitFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
-            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner,
+            const std::array<OwnerSize, 10>& owners,
+            CaptureOffsets& offsets)
         {
-            const bool componentResolved = ResolveComponentBitFields(scanner, self, requiredScanner);
-            const bool captureResolved = ResolveCaptureBitFields(scanner, self, requiredScanner);
-            const bool targetResolved = ResolveTargetBitFields(scanner, self, requiredScanner);
-            const bool lightResolved = ResolveDirectionalLightBitFields(scanner, self, requiredScanner);
+            const bool componentResolved = ResolveComponentBitFields(scanner, self, requiredScanner, owners, offsets);
+            const bool captureResolved = ResolveCaptureBitFields(scanner, self, requiredScanner, owners, offsets);
+            const bool targetResolved = ResolveTargetBitFields(scanner, self, requiredScanner, owners, offsets);
+            const bool lightResolved = ResolveDirectionalLightBitFields(scanner, self, requiredScanner, owners, offsets);
             return componentResolved && captureResolved && targetResolved && lightResolved;
         }
 
@@ -839,10 +1064,36 @@ namespace
             const IPluginSelf* self,
             MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
         {
-            const bool propertiesResolved = ResolveProperties(scanner, self);
-            const bool bitFieldsResolved = ResolveBitFields(scanner, self, requiredScanner);
+            CaptureOffsets offsets{};
+            std::array<OwnerSize, 10> owners{};
+            const bool ownerSizesResolved = ResolveOwnerSizes(scanner, self, requiredScanner, owners);
+            if (!ownerSizesResolved)
+            {
+                return false;
+            }
+            const bool propertiesResolved = ResolveProperties(
+                scanner, self, requiredScanner, owners, offsets);
+            const bool bitFieldsResolved = ResolveBitFields(
+                scanner, self, requiredScanner, owners, offsets);
             const bool parametersResolved = ResolveShowFlagParameters(scanner, self, requiredScanner);
-            return propertiesResolved && bitFieldsResolved && parametersResolved;
+            if (!propertiesResolved || !bitFieldsResolved || !parametersResolved)
+            {
+                return false;
+            }
+            const auto tickBit = offsets.BitFields[static_cast<size_t>(CaptureOffsets::BitField::TickCanEverTick)];
+            const int32_t runtimeTickSize = FindOwnerSize(owners, "FTickFunction");
+            const int32_t runtimeActorTickSize = static_cast<int32_t>(sizeof(SDK::FActorComponentTickFunction));
+            if (tickBit.Offset < 0 || static_cast<uint64_t>(tickBit.Offset) + 1 >
+                    static_cast<uint32_t>(runtimeTickSize) ||
+                static_cast<uint64_t>(tickBit.Offset) + 1 > static_cast<uint32_t>(runtimeActorTickSize))
+            {
+                requiredScanner.Fail("FTickFunction::bCanEverTick",
+                    "nested tick bitfield is outside the validated runtime tick extent");
+                return false;
+            }
+            offsets.IsValid = true;
+            return Services::Map::Buildings::Capture::BuildingSpriteRenderer::
+                PublishCaptureFieldOffsets(offsets);
         }
     };
 
@@ -1313,8 +1564,11 @@ namespace
         }
 
     public:
-        /** Requires exact compiled offsets and extents through the active loader scanner session. */
-        static bool Resolve(IPluginHookScanner* scanner, const IPluginSelf* self)
+        /** Resolves required Mass fields and validates the runtime State extent. */
+        static bool Resolve(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
         {
             static PluginFieldSpec fields[] = {
                 { "FMassEntityHandle::Index", "FMassEntityHandle", "Index", PLUGIN_FIELD_CHECK,
@@ -1333,8 +1587,8 @@ namespace
                     sizeof(decltype(SDK::FTransform::Scale3D)),
                     static_cast<int32_t>(offsetof(SDK::FTransform, Scale3D)) },
                 { "FMassEnemyStateFragment::State", "FMassEnemyStateFragment", "State",
-                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
-                    sizeof(SDK::EMassEnemyInitializationState), 0x01 },
+                    PLUGIN_FIELD_NATIVE,
+                    sizeof(SDK::EMassEnemyInitializationState), -1 },
                 { "FAuAPMassFragment::Payload", "FAuAPMassFragment", "Payload", PLUGIN_FIELD_CHECK,
                     sizeof(SDK::FAuAPPayloadDataHandle),
                     static_cast<int32_t>(offsetof(SDK::FAuAPMassFragment, Payload)) },
@@ -1358,6 +1612,30 @@ namespace
                 field.offset = -1;
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
+            }
+            if (!allResolved)
+            {
+                return false;
+            }
+
+            const PluginFieldSpec& enemyStateField = fields[6];
+            if (enemyStateField.offset < 0 ||
+                enemyStateField.resolvedSize != sizeof(SDK::EMassEnemyInitializationState) ||
+                static_cast<uint64_t>(enemyStateField.offset) + enemyStateField.resolvedSize >
+                    sizeof(SDK::FMassEnemyStateFragment))
+            {
+                requiredScanner.Fail(
+                    "FMassEnemyStateFragment::State",
+                    "resolved State field does not fit the validated Client fragment layout");
+                return false;
+            }
+            if (!MiniMapNative::PublishEnemyStateField(
+                enemyStateField.offset, enemyStateField.resolvedSize))
+            {
+                requiredScanner.Fail(
+                    "FMassEnemyStateFragment::State",
+                    "resolved State field could not be published to the native API");
+                return false;
             }
             g_foundablesFieldOffsets.TransformFragmentTransform = fields[2].offset;
             g_foundablesFieldOffsets.TransformTranslation = fields[4].offset;
@@ -1472,12 +1750,10 @@ namespace
             return false;
         }
 
-        /** Requires exact resident Terrain record and member layouts used by typed traversal. */
+        /** Requires exact intrinsic vector, point, and brush layouts used by Terrain. */
         static bool CheckTerrainTypes(const IPluginSelf* self)
         {
-            return CheckType(self, "ScriptStruct ChimeraUI.CrTerrainSegmentData", "FCrTerrainSegmentData",
-                    sizeof(SDK::FCrTerrainSegmentData), alignof(SDK::FCrTerrainSegmentData)) &&
-                CheckType(self, "ScriptStruct CoreUObject.Vector3f", "FVector3f",
+            return CheckType(self, "ScriptStruct CoreUObject.Vector3f", "FVector3f",
                     sizeof(SDK::FVector3f), alignof(SDK::FVector3f)) &&
                 CheckType(self, "ScriptStruct CoreUObject.IntPoint", "FIntPoint",
                     sizeof(SDK::FIntPoint), alignof(SDK::FIntPoint)) &&
@@ -1648,6 +1924,7 @@ namespace
             LOG_ERROR("MiniMap: texture drain incomplete; runtime retained");
             return;
         }
+        Services::Map::Buildings::Capture::BuildingSpriteRenderer::ResetCaptureFieldOffsets();
         g_buildingMassFieldsResolved = false;
 #endif
         g_baseline = {};
@@ -1722,9 +1999,16 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_poiStoryFieldsResolved = false;
     g_playerTextureFieldsResolved = false;
     g_captureFieldsResolved = false;
+    Services::Map::Buildings::Capture::BuildingSpriteRenderer::ResetCaptureFieldOffsets();
+    g_fowDataClassSize.offset = -1;
+    g_fowDataClassSize.resolvedSize = 0;
+    g_textureClassSize.offset = -1;
+    g_textureClassSize.resolvedSize = 0;
+    MiniMapFogOfWar::SetFowDataOffset(-1);
     g_playerFieldOffsets = {};
     g_poiFieldOffsets = {};
     g_foundablesFieldOffsets = {};
+    MiniMapTerrainSource::SetFieldOffsets({});
     MiniMapMap::PlayerFieldAccessors::SetOffsets({});
     MiniMapPointsOfInterest::SetFieldOffsets({});
     MiniMapFoundables::SetAcquisitionFieldOffsets({});
@@ -1784,7 +2068,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
 
-        if (!ClientBuildingMassFieldContract::Resolve(scanner, self))
+        if (!ClientBuildingMassFieldContract::Resolve(scanner, self, requiredScanner))
         {
             MiniMapNative::Shutdown();
             return;
@@ -1793,6 +2077,8 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
 
         g_fowDataField.offset = -1;
         g_fowDataField.resolvedSize = 0;
+        g_fowDataClassSize.offset = -1;
+        g_fowDataClassSize.resolvedSize = 0;
         if (!PluginMap::ResolveField(
             scanner,
             self,
@@ -1804,15 +2090,24 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             MiniMapNative::Shutdown();
             return;
         }
-        if (g_fowDataField.offset != 0x100 ||
-            g_fowDataField.resolvedSize != 0x10)
+        if (!PluginMap::ResolveField(scanner, self, g_fowDataClassSize))
         {
-            requiredScanner.Fail(
-                "UCrPlayerMapMenuDataComponent::FOWData",
-                "resolved FOWData does not match CL-127004 offset 0x100 and extent 0x10");
             MiniMapNative::Shutdown();
             return;
         }
+        const uint64_t fowDataEnd = static_cast<uint64_t>(g_fowDataField.offset) +
+            g_fowDataField.resolvedSize;
+        if (g_fowDataField.offset < 0 ||
+            g_fowDataField.resolvedSize != sizeof(SDK::TArray<uint8_t>) ||
+            fowDataEnd > g_fowDataClassSize.resolvedSize)
+        {
+            requiredScanner.Fail(
+                "UCrPlayerMapMenuDataComponent::FOWData",
+                "resolved FOWData is missing or outside the running component layout");
+            MiniMapNative::Shutdown();
+            return;
+        }
+        MiniMapFogOfWar::SetFowDataOffset(g_fowDataField.offset);
         g_fowDataFieldResolved = true;
 
         g_playerMapDataComponentField.offset = -1;
@@ -1828,7 +2123,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
         g_playerFieldOffsets.PlayerMapDataComponent = g_playerMapDataComponentField.offset;
         g_playerMapDataComponentFieldResolved = true;
 
-        if (!ClientTerrainFieldContract::Resolve(scanner, self))
+        if (!ClientTerrainFieldContract::Resolve(scanner, self, requiredScanner))
         {
             MiniMapNative::Shutdown();
             return;

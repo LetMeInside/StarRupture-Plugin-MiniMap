@@ -7,6 +7,7 @@
 #include "Config/Config.h"
 #include "UI/MiniMapUI.h"
 #include "Map/FogOfWar/FogOfWar.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "Native/NativeApi.h"
 #include "plugin_helpers.h"
 #include "Services/Runtime.h"
@@ -42,7 +43,6 @@ namespace
     constexpr uint32_t kHostileColor = 0xF04040FFu; // ImGui ABGR
     constexpr std::size_t kMaximumRecords = 512;
     constexpr int32_t kMaximumReasonableHandleCount = 1000000;
-    constexpr std::ptrdiff_t kStateOffset = 0x01; // Required native-field check enforces this offset and extent.
     constexpr std::size_t kQuerySize = 0x350;
     constexpr std::size_t kQueryAlignment = 0x10;
 
@@ -54,8 +54,6 @@ namespace
         "AlienActors state access requires the CL-127004 enemy-state fragment extent");
     static_assert(alignof(SDK::FMassEnemyStateFragment) == 0x04,
         "AlienActors state access requires the CL-127004 enemy-state fragment alignment");
-    static_assert(kStateOffset == 0x01,
-        "AlienActors state access must match the validated native State field offset");
     static_assert(std::is_enum_v<SDK::EMassEnemyInitializationState>);
     static_assert(std::is_same_v<std::underlying_type_t<SDK::EMassEnemyInitializationState>, uint8_t>);
     static_assert(sizeof(std::underlying_type_t<SDK::EMassEnemyInitializationState>) == 0x01);
@@ -329,7 +327,9 @@ namespace
             const auto id = handles.Data[i];
             const auto* state = static_cast<const uint8_t*>(
                 native->mass.getFragmentDataPtr(g_manager, id, stateType));
-            if (state == nullptr || state[kStateOffset] !=
+            const uint8_t* stateValue = MiniMap::MapRuntimeAccess::Field<uint8_t>(
+                state, native->mass.enemyStateFieldOffset);
+            if (stateValue == nullptr || *stateValue !=
                 static_cast<uint8_t>(SDK::EMassEnemyInitializationState::Active))
             {
                 continue;

@@ -1,6 +1,8 @@
 #pragma once
 #include "Services/Viewport.h"
 
+#include <cstdint>
+
 #if defined(MODLOADER_CLIENT_BUILD)
 
 namespace MiniMapMap
@@ -14,6 +16,9 @@ struct IPluginSelf;
 
 namespace MiniMapFogOfWar
 {
+    /** Publishes the validated FOWData offset for snapshot reads. */
+    void SetFowDataOffset(std::int32_t offset) noexcept;
+
     bool Initialize(
         IPluginSelf* self);
 

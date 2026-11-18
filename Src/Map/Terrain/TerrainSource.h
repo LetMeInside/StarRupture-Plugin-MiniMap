@@ -1,6 +1,8 @@
 // Exposes read-only terrain metadata and source-tile resolution for MiniMap.
 #pragma once
 
+#include <cstdint>
+
 #if defined(MODLOADER_CLIENT_BUILD)
 
 struct IPluginSelf;
@@ -13,6 +15,21 @@ namespace SDK
 
 namespace MiniMapTerrainSource
 {
+    struct FieldOffsets
+    {
+        int32_t DevSettingsTerrainData = -1;
+        int32_t TerrainDataPivot = -1;
+        int32_t TerrainDataSegmentSize = -1;
+        int32_t TerrainDataSegments = -1;
+        int32_t SegmentGridIndex = -1;
+        int32_t SegmentTexture = -1;
+        int32_t SegmentTextureRadiation2 = -1;
+        int32_t WorldGameState = -1;
+        int32_t GameStateReplicationHelper = -1;
+        int32_t RadiationLevel = -1;
+        uint32_t TerrainSegmentStride = 0;
+    };
+
     enum class Variant
     {
         Ordinary = 0,
@@ -33,6 +50,10 @@ namespace MiniMapTerrainSource
 
         SDK::UTexture2D* Texture = nullptr;
     };
+
+    void SetFieldOffsets(const FieldOffsets& offsets);
+
+    const FieldOffsets& GetFieldOffsets();
 
 
     bool Initialize(

@@ -3,7 +3,9 @@
 
 #include "TerrainDiagnostics.h"
 #include "Map/Map.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "TerrainChunks.h"
+#include "TerrainSource.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Engine_classes.hpp"
@@ -211,9 +213,18 @@ namespace
             return;
         }
 
-        void* terrainDataSoftPtr =
-            static_cast<void*>(
-                &devSettings->TerrainData);
+        const MiniMapTerrainSource::FieldOffsets& fieldOffsets =
+            MiniMapTerrainSource::GetFieldOffsets();
+        auto* terrainDataSoftPtr =
+            MiniMap::MapRuntimeAccess::Field<
+                SDK::TSoftObjectPtr<SDK::UCrMapMenuTerrainData>>(
+                    devSettings,
+                    fieldOffsets.DevSettingsTerrainData);
+
+        if (terrainDataSoftPtr == nullptr)
+        {
+            return;
+        }
 
         SDK::UObject* loadedObject =
             assetApi.loadSynchronous(
@@ -235,26 +246,31 @@ namespace
         g_terrainData =
             loadedTerrainData;
 
-        const auto& pivot =
-            loadedTerrainData->MapTerrainTopLeftPivotPoint;
+        const SDK::FVector3f* pivot = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            loadedTerrainData, fieldOffsets.TerrainDataPivot);
+        const SDK::FVector3f* segmentSize = MiniMap::MapRuntimeAccess::Field<SDK::FVector3f>(
+            loadedTerrainData, fieldOffsets.TerrainDataSegmentSize);
+        const auto* segments = MiniMap::MapRuntimeAccess::Field<
+            SDK::TArray<SDK::FCrTerrainSegmentData>>(
+                loadedTerrainData, fieldOffsets.TerrainDataSegments);
+        if (pivot == nullptr || segmentSize == nullptr || segments == nullptr)
+        {
+            return;
+        }
 
-        const auto& segmentSize =
-            loadedTerrainData->MapTerrainSegmentSize;
-
-        const int segmentCount =
-            loadedTerrainData->TerrainSegmentsData.Num();
+        const int segmentCount = segments->Num();
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
             "TerrainData origin=(%.3f, %.3f, %.3f) "
             "segment-size=(%.3f, %.3f, %.3f) "
             "segments=%d",
-            pivot.X,
-            pivot.Y,
-            pivot.Z,
-            segmentSize.X,
-            segmentSize.Y,
-            segmentSize.Z,
+            pivot->X,
+            pivot->Y,
+            pivot->Z,
+            segmentSize->X,
+            segmentSize->Y,
+            segmentSize->Z,
             segmentCount);
 
         // ---------------------------------------------------------------------
@@ -270,12 +286,12 @@ namespace
         const double worldTileWidth =
             100.0 *
             static_cast<double>(
-                segmentSize.X);
+                segmentSize->X);
 
         const double worldTileHeight =
             100.0 *
             static_cast<double>(
-                segmentSize.Y);
+                segmentSize->Y);
 
         if (worldTileWidth <= 0.0 ||
             worldTileHeight <= 0.0)
@@ -292,12 +308,12 @@ namespace
 
         const double horizontalTile =
             (playerLocation.X -
-                static_cast<double>(pivot.X)) /
+                static_cast<double>(pivot->X)) /
             worldTileWidth;
 
         const double verticalTile =
             (playerLocation.Y -
-                static_cast<double>(pivot.Y)) /
+                static_cast<double>(pivot->Y)) /
             worldTileHeight;
 
         const int gridX =
@@ -358,22 +374,23 @@ namespace
         // Do not assume array order matches grid order.
         // ---------------------------------------------------------------------
 
-        const SDK::FCrTerrainSegmentData* diagnosticSegment =
+        const std::uint8_t* diagnosticSegment =
             nullptr;
 
         for (int i = 0; i < segmentCount; ++i)
         {
-            const auto& segment =
-                loadedTerrainData->
-                TerrainSegmentsData[i];
+            const std::uint8_t* segment = MiniMap::MapRuntimeAccess::ElementAt(
+                segments->GetDataPtr(), segmentCount, i, fieldOffsets.TerrainSegmentStride);
+            const SDK::FIntPoint* gridIndex = MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+                segment, fieldOffsets.SegmentGridIndex);
 
-            if (segment.TerrainSegmentGridIndex.X ==
+            if (gridIndex != nullptr && gridIndex->X ==
                 gridX &&
-                segment.TerrainSegmentGridIndex.Y ==
+                gridIndex->Y ==
                 gridY)
             {
                 diagnosticSegment =
-                    &segment;
+                    segment;
 
                 break;
             }
@@ -394,19 +411,26 @@ namespace
         LOG_INFO(
             "MiniMap: F8 diagnostic: "
             "selected terrain segment grid=(%d, %d)",
-            diagnosticSegment->
-            TerrainSegmentGridIndex.X,
-            diagnosticSegment->
-            TerrainSegmentGridIndex.Y);
+            MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+                diagnosticSegment, fieldOffsets.SegmentGridIndex)->X,
+            MiniMap::MapRuntimeAccess::Field<SDK::FIntPoint>(
+                diagnosticSegment, fieldOffsets.SegmentGridIndex)->Y);
 
         // ---------------------------------------------------------------------
         // Obtain the UTexture2D from the selected terrain brush.
         // ---------------------------------------------------------------------
 
+        const SDK::FSlateBrush* diagnosticBrush =
+            MiniMap::MapRuntimeAccess::Field<SDK::FSlateBrush>(
+                diagnosticSegment, fieldOffsets.SegmentTexture);
+        if (diagnosticBrush == nullptr)
+        {
+            return;
+        }
+
         SDK::UTexture2D* sourceTexture =
             textureApi.getBrushTexture(
-                diagnosticSegment->
-                TerrainSegmentTexture);
+                *diagnosticBrush);
 
         LOG_INFO(
             "MiniMap: F8 diagnostic: "

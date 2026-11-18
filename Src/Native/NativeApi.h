@@ -317,6 +317,8 @@ namespace MiniMapNative
         GetMassEntitySubsystemFn getMassEntitySubsystem = nullptr;
         // Published once after Client load-hook field validation; -1 means unavailable.
         int32_t entityManagerFieldOffset = -1;
+        // Published once after the mapped Mass State field passes extent checks.
+        int32_t enemyStateFieldOffset = -1;
         QueryConstructFn queryConstruct = nullptr;
         QueryDestructFn queryDestruct = nullptr;
         ForEachEntityChunkFn forEachEntityChunk = nullptr;
@@ -359,6 +361,9 @@ namespace MiniMapNative
         BulkUnlockFn bulkUnlock = nullptr;
         UpdateResourceFn updateResource = nullptr;
         GetResourceFn getResource = nullptr;
+        // Published once after the mapped SRGB bit passes size, mask, and object bounds checks.
+        int32_t srgbFieldOffset = -1;
+        uint8_t srgbFieldMask = 0;
         using SubmitRenderCommandFn = void (*)(void*, const wchar_t*, uint32_t&, TStatId,
             TUniqueFunction<void(FRHICommandListImmediate&)>&&);
         SubmitRenderCommandFn submitRenderCommand = nullptr;
@@ -567,6 +572,17 @@ namespace MiniMapNative
     bool PublishMassEntityManagerField(
         int32_t offset,
         uint32_t size) noexcept;
+
+    /** Publishes the validated Mass State field for allocation-free fragment reads. */
+    bool PublishEnemyStateField(
+        int32_t offset,
+        uint32_t size) noexcept;
+
+    /** Publishes the validated SRGB bit metadata for native texture inspection. */
+    bool PublishTextureSRGBField(
+        int32_t offset,
+        uint32_t size,
+        uint8_t mask) noexcept;
 
     bool IsMemoryRangeReadable(
         uintptr_t address,

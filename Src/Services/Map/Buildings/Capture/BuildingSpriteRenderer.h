@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include <chrono>
 #endif
@@ -42,6 +43,84 @@ namespace Services::Map::Buildings::Scheduling
 
 namespace Services::Map::Buildings::Capture
 {
+	/** Plain offsets and masks copied at Client admission and cleared after renderer shutdown. */
+	struct CaptureFieldOffsets
+	{
+		enum class Property : std::size_t
+		{
+			PrimaryComponentTick,
+			Mobility,
+			Intensity,
+			LightColor,
+			PrimitiveRenderMode,
+			CaptureSource,
+			AlwaysPersistRenderingState,
+			UseRayTracingIfEnabled,
+			ProjectionType,
+			OrthoWidth,
+			AutoCalculateOrthoPlanes,
+			UpdateOrthoPlanes,
+			UseCameraHeightAsViewTarget,
+			TextureTarget,
+			CompositeMode,
+			PostProcessBlendWeight,
+			UseCustomProjectionMatrix,
+			EnableOrthographicTiling,
+			EnableClipPlane,
+			RenderInMainRenderer,
+			TargetGamma,
+			ClearColor,
+			ForwardShadingPriority,
+			LightSourceAngle,
+			Count
+		};
+
+		enum class BitField : std::size_t
+		{
+			TickCanEverTick,
+			Replicates,
+			AutoActivate,
+			CanEverAffectNavigation,
+			UseTemperature,
+			AffectsWorld,
+			CastShadows,
+			CastStaticShadows,
+			CastDynamicShadows,
+			AffectTranslucentLighting,
+			CaptureEveryFrame,
+			CaptureOnMovement,
+			MainViewFamily,
+			MainViewResolution,
+			MainViewCamera,
+			InheritMainViewCameraPostProcessSettings,
+			SupportsUAV,
+			AutoGenerateMips,
+			AtmosphereSunLight,
+			PerPixelAtmosphereTransmittance,
+			CastShadowsOnClouds,
+			CastShadowsOnAtmosphere,
+			CastCloudShadows,
+			Count
+		};
+
+		struct ResolvedBitField
+		{
+			std::int32_t Offset = -1;
+			std::uint8_t Mask = 0;
+		};
+
+		static constexpr std::size_t PropertyCount =
+			static_cast<std::size_t>(Property::Count);
+		static constexpr std::size_t BitFieldCount =
+			static_cast<std::size_t>(BitField::Count);
+		static_assert(PropertyCount == 24);
+		static_assert(BitFieldCount == 23);
+
+		std::array<std::int32_t, PropertyCount> Properties{};
+		std::array<ResolvedBitField, BitFieldCount> BitFields{};
+		bool IsValid = false;
+	};
+
 	/** Owns one plugin-lifetime private world and shared lighting rig plus one active capture request.
 	 * Queue-driven advancement admits one moved request and reports terminal feedback through
 	 * the independent FIFOs. The renderer never observes scheduler status or disk/cache ownership.
@@ -117,6 +196,10 @@ namespace Services::Map::Buildings::Capture
 
 		/** Does not perform native cleanup; lifecycle work is processed by the engine callback. */
 		~BuildingSpriteRenderer() = default;
+		/** Publishes one admission-validated immutable field contract before renderer construction. */
+		static bool PublishCaptureFieldOffsets(const CaptureFieldOffsets& offsets) noexcept;
+		/** Clears published offsets after failed admission, before a later loader session, or shutdown. */
+		static void ResetCaptureFieldOffsets() noexcept;
 		/** Requests one-time initialization without performing native work on the caller. */
 		bool RequestInitialization() noexcept;
 		/** Requests gameplay capture admission when no Stop command remains pending. */
@@ -313,6 +396,10 @@ namespace Services::Map::Buildings::Capture
 		bool CreateCaptureResources();
 		/** Applies the demonstrated scene flags and selected HDR or LDR source. */
 		bool ConfigureCapture(bool finalColor);
+		/** Applies tick, component, projection, and source settings using resolved offsets. */
+		void ConfigureCaptureBaseSettings(bool finalColor);
+		/** Applies the capture view flags and post-processing fields after base settings. */
+		void ConfigureCaptureViewSettings();
 		/** Applies the selected capture source gamma and engine show flags. */
 		bool ConfigureShowFlagsAndTarget(bool finalColor);
 		/** Lazily creates the shared private world and prepares its lighting rig. */
@@ -341,6 +428,8 @@ namespace Services::Map::Buildings::Capture
 		bool CreateDirectionalLight(std::size_t lightIndex);
 		/** Configures the source-backed key/fill light values. */
 		bool ConfigureDirectionalLight(std::size_t lightIndex);
+		/** Applies the resolved packed component and light flags to one directional light. */
+		void ConfigureDirectionalLightFlags(SDK::UDirectionalLightComponent* light, bool key);
 		/** Unregisters and destroys one persistent directional light. */
 		bool DestroyDirectionalLight(std::size_t lightIndex);
 		/** Destroys a request-owned component after submitted request work is retired. */

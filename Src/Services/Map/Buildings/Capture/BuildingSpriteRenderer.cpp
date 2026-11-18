@@ -7,6 +7,7 @@
 #include "../Scheduling/SpriteFeedbackQueue.h"
 #include "../Scheduling/SpriteRequestQueue.h"
 #include "CaptureFeedback.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
 #include "Services/Log.h"
@@ -29,18 +30,45 @@
 
 namespace Services::Map::Buildings::Capture
 {
+	static CaptureFieldOffsets g_captureFieldOffsets{};
+
+	bool BuildingSpriteRenderer::PublishCaptureFieldOffsets(const CaptureFieldOffsets& offsets) noexcept
+	{
+		if (!offsets.IsValid)
+		{
+			return false;
+		}
+		for (const std::int32_t offset : offsets.Properties)
+		{
+			if (offset < 0)
+			{
+				return false;
+			}
+		}
+		for (const CaptureFieldOffsets::ResolvedBitField& field : offsets.BitFields)
+		{
+			if (field.Offset < 0 || field.Mask == 0 || (field.Mask & (field.Mask - 1)) != 0)
+			{
+				return false;
+			}
+		}
+		g_captureFieldOffsets = offsets;
+		return true;
+	}
+
+	void BuildingSpriteRenderer::ResetCaptureFieldOffsets() noexcept
+	{
+		g_captureFieldOffsets = {};
+	}
+
 	static_assert(sizeof(void*) == 0x08);
-	static_assert(offsetof(SDK::UActorComponent, PrimaryComponentTick) == 0x38);
 	static_assert(sizeof(decltype(SDK::UActorComponent::PrimaryComponentTick)) == 0x30);
 	static_assert(sizeof(decltype(SDK::UActorComponent::bReplicates)) == 0x01);
 	static_assert(sizeof(decltype(SDK::UActorComponent::bAutoActivate)) == 0x01);
 	static_assert(sizeof(decltype(SDK::UActorComponent::bCanEverAffectNavigation)) == 0x01);
-	static_assert(offsetof(SDK::USceneComponent, Mobility) == 0x1A3);
 	static_assert(sizeof(decltype(SDK::USceneComponent::Mobility)) == 0x01);
 	static_assert(std::is_same_v<std::underlying_type_t<SDK::EComponentMobility>, uint8_t>);
-	static_assert(offsetof(SDK::ULightComponentBase, Intensity) == 0x274);
 	static_assert(sizeof(decltype(SDK::ULightComponentBase::Intensity)) == sizeof(float));
-	static_assert(offsetof(SDK::ULightComponentBase, LightColor) == 0x278);
 	static_assert(sizeof(decltype(SDK::ULightComponentBase::LightColor)) == 0x04);
 	static_assert(std::is_same_v<decltype(SDK::ULightComponentBase::LightColor), SDK::FColor>);
 	static_assert(sizeof(SDK::FColor) == 0x04);
@@ -59,9 +87,7 @@ namespace Services::Map::Buildings::Capture
 	static_assert(sizeof(decltype(SDK::ULightComponentBase::CastStaticShadows)) == 0x01);
 	static_assert(sizeof(decltype(SDK::ULightComponentBase::CastDynamicShadows)) == 0x01);
 	static_assert(sizeof(decltype(SDK::ULightComponentBase::bAffectTranslucentLighting)) == 0x01);
-	static_assert(offsetof(SDK::UDirectionalLightComponent, ForwardShadingPriority) == 0x3FC);
 	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::ForwardShadingPriority)) == sizeof(int32_t));
-	static_assert(offsetof(SDK::UDirectionalLightComponent, LightSourceAngle) == 0x400);
 	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::LightSourceAngle)) == sizeof(float));
 	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bAtmosphereSunLight)) == 0x01);
 	static_assert(sizeof(decltype(SDK::UDirectionalLightComponent::bPerPixelAtmosphereTransmittance)) == 0x01);
@@ -73,55 +99,37 @@ namespace Services::Map::Buildings::Capture
 	static_assert(sizeof(SDK::FActorComponentTickFunction) == 0x30);
 	static_assert(alignof(SDK::FActorComponentTickFunction) == 0x08);
 	static_assert(sizeof(decltype(SDK::FTickFunction::bCanEverTick)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent, PrimitiveRenderMode) == 0x250);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::PrimitiveRenderMode)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent, CaptureSource) == 0x251);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::CaptureSource)) == 0x01);
 	static_assert(std::is_same_v<
 		std::underlying_type_t<SDK::ESceneCapturePrimitiveRenderMode>, uint8_t>);
 	static_assert(std::is_same_v<std::underlying_type_t<SDK::ESceneCaptureSource>, uint8_t>);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bCaptureEveryFrame)) == 0x01);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bCaptureOnMovement)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent, bAlwaysPersistRenderingState) == 0x253);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bAlwaysPersistRenderingState)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent, bUseRayTracingIfEnabled) == 0x2A4);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent::bUseRayTracingIfEnabled)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, ProjectionType) == 0x338);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::ProjectionType)) == 0x01);
 	static_assert(std::is_same_v<std::underlying_type_t<SDK::ECameraProjectionMode>, uint8_t>);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, OrthoWidth) == 0x348);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::OrthoWidth)) == sizeof(float));
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bAutoCalculateOrthoPlanes) == 0x34C);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bAutoCalculateOrthoPlanes)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUpdateOrthoPlanes) == 0x354);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUpdateOrthoPlanes)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUseCameraHeightAsViewTarget) == 0x355);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUseCameraHeightAsViewTarget)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, TextureTarget) == 0x360);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::TextureTarget)) == sizeof(void*));
 	static_assert(std::is_same_v<
 		decltype(SDK::USceneCaptureComponent2D::TextureTarget), SDK::UTextureRenderTarget2D*>);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, CompositeMode) == 0x368);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::CompositeMode)) == 0x01);
 	static_assert(std::is_same_v<std::underlying_type_t<SDK::ESceneCaptureCompositeMode>, uint8_t>);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, PostProcessBlendWeight) == 0xAD0);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::PostProcessBlendWeight)) == sizeof(float));
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bUseCustomProjectionMatrix) == 0xADC);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bUseCustomProjectionMatrix)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bEnableOrthographicTiling) == 0xB61);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bEnableOrthographicTiling)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bEnableClipPlane) == 0xB6C);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bEnableClipPlane)) == 0x01);
-	static_assert(offsetof(SDK::USceneCaptureComponent2D, bRenderInMainRenderer) == 0xBA0);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bRenderInMainRenderer)) == 0x01);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewFamily)) == 0x01);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewResolution)) == 0x01);
 	static_assert(sizeof(decltype(SDK::USceneCaptureComponent2D::bMainViewCamera)) == 0x01);
 	static_assert(sizeof(decltype(
 		SDK::USceneCaptureComponent2D::bInheritMainViewCameraPostProcessSettings)) == 0x01);
-	static_assert(offsetof(SDK::UTextureRenderTarget, TargetGamma) == 0x140);
 	static_assert(sizeof(decltype(SDK::UTextureRenderTarget::TargetGamma)) == sizeof(float));
-	static_assert(offsetof(SDK::UTextureRenderTarget2D, ClearColor) == 0x150);
 	static_assert(sizeof(decltype(SDK::UTextureRenderTarget2D::ClearColor)) == 0x10);
 	static_assert(std::is_same_v<
 		decltype(SDK::UTextureRenderTarget2D::ClearColor), SDK::FLinearColor>);
@@ -1191,6 +1199,10 @@ namespace Services::Map::Buildings::Capture
 	/** Creates request-owned capture component and 256-square float target. */
 	bool BuildingSpriteRenderer::CreateCaptureResources()
 	{
+		if (!g_captureFieldOffsets.IsValid)
+		{
+			return false;
+		}
 		SDK::UClass* captureClass = FindResidentClass(L"/Script/Engine.SceneCaptureComponent2D");
 		SDK::UClass* targetClass = FindResidentClass(L"/Script/Engine.TextureRenderTarget2D");
 		if (!captureClass || !targetClass)
@@ -1211,7 +1223,9 @@ namespace Services::Map::Buildings::Capture
 			return false;
 		}
 		nativeApi->texture.initRenderTarget(renderTarget_, 256, 256, 10, true);
-		captureComponent_->TextureTarget = renderTarget_;
+		*MiniMap::MapRuntimeAccess::Field<SDK::UTextureRenderTarget2D*>(captureComponent_,
+			g_captureFieldOffsets.Properties[static_cast<std::size_t>(CaptureFieldOffsets::Property::TextureTarget)]) =
+			renderTarget_;
 		captureComponent_->K2_SetWorldLocationAndRotation(
 			SDK::FVector(boundsCenter_[0], boundsCenter_[1], boundsCenter_[2] + boundsExtent_[2] + 1000.0),
 			SDK::FRotator(-90.0, -90.0, 0.0), false, nullptr, true);
@@ -1223,36 +1237,91 @@ namespace Services::Map::Buildings::Capture
 	/** Applies HDR inverse-opacity or final display-color capture settings and show flags. */
 	bool BuildingSpriteRenderer::ConfigureCapture(bool finalColor)
 	{
-		if (!captureComponent_ || !renderTarget_)
+		if (!g_captureFieldOffsets.IsValid || !captureComponent_ || !renderTarget_)
 		{
 			return false;
 		}
-		captureComponent_->PrimaryComponentTick.bCanEverTick = false;
-		captureComponent_->bReplicates = false;
-		captureComponent_->bAutoActivate = false;
-		captureComponent_->bCanEverAffectNavigation = false;
-		captureComponent_->bCaptureEveryFrame = false;
-		captureComponent_->bCaptureOnMovement = false;
-		captureComponent_->bAlwaysPersistRenderingState = false;
-		captureComponent_->bUseRayTracingIfEnabled = false;
-		captureComponent_->ProjectionType = SDK::ECameraProjectionMode::Orthographic;
-		captureComponent_->PrimitiveRenderMode = SDK::ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
-		captureComponent_->CaptureSource = finalColor ? SDK::ESceneCaptureSource::SCS_FinalColorLDR : SDK::ESceneCaptureSource::SCS_SceneColorHDR;
-		captureComponent_->CompositeMode = SDK::ESceneCaptureCompositeMode::SCCM_Overwrite;
-		captureComponent_->OrthoWidth = float(2.0 * (std::max)(boundsExtent_[0], boundsExtent_[1]) * 1.1);
-		captureComponent_->bAutoCalculateOrthoPlanes = true;
-		captureComponent_->bUpdateOrthoPlanes = true;
-		captureComponent_->bUseCameraHeightAsViewTarget = false;
-		captureComponent_->bEnableOrthographicTiling = false;
-		captureComponent_->bRenderInMainRenderer = false;
-		captureComponent_->bMainViewFamily = false;
-		captureComponent_->bMainViewResolution = false;
-		captureComponent_->bMainViewCamera = false;
-		captureComponent_->bInheritMainViewCameraPostProcessSettings = false;
-		captureComponent_->PostProcessBlendWeight = 0.0;
-		captureComponent_->bEnableClipPlane = false;
-		captureComponent_->bUseCustomProjectionMatrix = false;
+		ConfigureCaptureBaseSettings(finalColor);
+		ConfigureCaptureViewSettings();
 		return ConfigureShowFlagsAndTarget(finalColor);
+	}
+
+	/** Applies base capture values and packed flags in their established setup order. */
+	void BuildingSpriteRenderer::ConfigureCaptureBaseSettings(bool finalColor)
+	{
+		const auto propertyOffset = [](CaptureFieldOffsets::Property property)
+		{
+			return g_captureFieldOffsets.Properties[static_cast<std::size_t>(property)];
+		};
+		const auto bit = [&](SDK::USceneCaptureComponent2D* object,
+			CaptureFieldOffsets::BitField field, bool value)
+		{
+			const auto& resolved = g_captureFieldOffsets.BitFields[static_cast<std::size_t>(field)];
+			int32_t offset = resolved.Offset;
+			if (field == CaptureFieldOffsets::BitField::TickCanEverTick)
+			{
+				offset += propertyOffset(CaptureFieldOffsets::Property::PrimaryComponentTick);
+			}
+			MiniMap::MapRuntimeAccess::SetBit(object, offset, resolved.Mask, value);
+		};
+		bit(captureComponent_, CaptureFieldOffsets::BitField::TickCanEverTick, false);
+		bit(captureComponent_, CaptureFieldOffsets::BitField::Replicates, false);
+		bit(captureComponent_, CaptureFieldOffsets::BitField::AutoActivate, false);
+		bit(captureComponent_, CaptureFieldOffsets::BitField::CanEverAffectNavigation, false);
+		bit(captureComponent_, CaptureFieldOffsets::BitField::CaptureEveryFrame, false);
+		bit(captureComponent_, CaptureFieldOffsets::BitField::CaptureOnMovement, false);
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::AlwaysPersistRenderingState)) = false;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::UseRayTracingIfEnabled)) = false;
+		*MiniMap::MapRuntimeAccess::Field<SDK::ECameraProjectionMode>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::ProjectionType)) = SDK::ECameraProjectionMode::Orthographic;
+		*MiniMap::MapRuntimeAccess::Field<SDK::ESceneCapturePrimitiveRenderMode>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::PrimitiveRenderMode)) =
+			SDK::ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
+		*MiniMap::MapRuntimeAccess::Field<SDK::ESceneCaptureSource>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::CaptureSource)) = finalColor
+			? SDK::ESceneCaptureSource::SCS_FinalColorLDR
+			: SDK::ESceneCaptureSource::SCS_SceneColorHDR;
+		*MiniMap::MapRuntimeAccess::Field<SDK::ESceneCaptureCompositeMode>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::CompositeMode)) =
+			SDK::ESceneCaptureCompositeMode::SCCM_Overwrite;
+		*MiniMap::MapRuntimeAccess::Field<float>(captureComponent_, propertyOffset(CaptureFieldOffsets::Property::OrthoWidth)) =
+			float(2.0 * (std::max)(boundsExtent_[0], boundsExtent_[1]) * 1.1);
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::AutoCalculateOrthoPlanes)) = true;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::UpdateOrthoPlanes)) = true;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::UseCameraHeightAsViewTarget)) = false;
+	}
+
+	/** Applies the remaining view isolation and post-processing capture settings. */
+	void BuildingSpriteRenderer::ConfigureCaptureViewSettings()
+	{
+		const auto propertyOffset = [](CaptureFieldOffsets::Property property)
+		{
+			return g_captureFieldOffsets.Properties[static_cast<std::size_t>(property)];
+		};
+		const auto bit = [this](CaptureFieldOffsets::BitField field, bool value)
+		{
+			const auto& resolved = g_captureFieldOffsets.BitFields[static_cast<std::size_t>(field)];
+			MiniMap::MapRuntimeAccess::SetBit(captureComponent_, resolved.Offset, resolved.Mask, value);
+		};
+		bit(CaptureFieldOffsets::BitField::MainViewFamily, false);
+		bit(CaptureFieldOffsets::BitField::MainViewResolution, false);
+		bit(CaptureFieldOffsets::BitField::MainViewCamera, false);
+		bit(CaptureFieldOffsets::BitField::InheritMainViewCameraPostProcessSettings, false);
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::EnableOrthographicTiling)) = false;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::RenderInMainRenderer)) = false;
+		*MiniMap::MapRuntimeAccess::Field<float>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::PostProcessBlendWeight)) = 0.0f;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::EnableClipPlane)) = false;
+		*MiniMap::MapRuntimeAccess::Field<bool>(captureComponent_,
+			propertyOffset(CaptureFieldOffsets::Property::UseCustomProjectionMatrix)) = false;
 	}
 
 	/** Keeps the existing wrapper name while retiring only request-owned resources. */
@@ -1572,6 +1641,40 @@ namespace Services::Map::Buildings::Capture
 		return true;
 	}
 
+	/** Applies each resolved packed flag while preserving neighboring bits. */
+	void BuildingSpriteRenderer::ConfigureDirectionalLightFlags(
+		SDK::UDirectionalLightComponent* light,
+		bool key)
+	{
+		const auto setBit = [](SDK::UDirectionalLightComponent* object,
+			CaptureFieldOffsets::BitField field, bool value)
+		{
+			const auto& resolved = g_captureFieldOffsets.BitFields[static_cast<std::size_t>(field)];
+			int32_t offset = resolved.Offset;
+			if (field == CaptureFieldOffsets::BitField::TickCanEverTick)
+			{
+				offset += g_captureFieldOffsets.Properties[
+					static_cast<std::size_t>(CaptureFieldOffsets::Property::PrimaryComponentTick)];
+			}
+			MiniMap::MapRuntimeAccess::SetBit(object, offset, resolved.Mask, value);
+		};
+		setBit(light, CaptureFieldOffsets::BitField::TickCanEverTick, false);
+		setBit(light, CaptureFieldOffsets::BitField::Replicates, false);
+		setBit(light, CaptureFieldOffsets::BitField::AutoActivate, false);
+		setBit(light, CaptureFieldOffsets::BitField::CanEverAffectNavigation, false);
+		setBit(light, CaptureFieldOffsets::BitField::UseTemperature, false);
+		setBit(light, CaptureFieldOffsets::BitField::AffectsWorld, true);
+		setBit(light, CaptureFieldOffsets::BitField::CastShadows, key);
+		setBit(light, CaptureFieldOffsets::BitField::CastStaticShadows, false);
+		setBit(light, CaptureFieldOffsets::BitField::CastDynamicShadows, key);
+		setBit(light, CaptureFieldOffsets::BitField::AffectTranslucentLighting, true);
+		setBit(light, CaptureFieldOffsets::BitField::AtmosphereSunLight, false);
+		setBit(light, CaptureFieldOffsets::BitField::PerPixelAtmosphereTransmittance, false);
+		setBit(light, CaptureFieldOffsets::BitField::CastCloudShadows, false);
+		setBit(light, CaptureFieldOffsets::BitField::CastShadowsOnClouds, false);
+		setBit(light, CaptureFieldOffsets::BitField::CastShadowsOnAtmosphere, false);
+	}
+
 	/** Applies the demonstrated key/fill direction, intensity, color, and shadow settings. */
 	bool BuildingSpriteRenderer::ConfigureDirectionalLight(std::size_t lightIndex)
 	{
@@ -1581,29 +1684,29 @@ namespace Services::Map::Buildings::Capture
 		}
 		const bool key = lightIndex == 0;
 		auto* light = directionalLights_[lightIndex];
-		light->PrimaryComponentTick.bCanEverTick = false;
-		light->bReplicates = false;
-		light->bAutoActivate = false;
-		light->bCanEverAffectNavigation = false;
-		light->Mobility = SDK::EComponentMobility::Movable;
-		light->Intensity = key ? 6.0f : 2.0f;
-		light->LightColor.R = key ? 255 : 238;
-		light->LightColor.G = key ? 248 : 245;
-		light->LightColor.B = key ? 240 : 255;
-		light->LightColor.A = 255;
-		light->bUseTemperature = false;
-		light->bAffectsWorld = true;
-		light->CastShadows = key;
-		light->CastStaticShadows = false;
-		light->CastDynamicShadows = key;
-		light->bAffectTranslucentLighting = true;
-		light->bAtmosphereSunLight = false;
-		light->bPerPixelAtmosphereTransmittance = false;
-		light->bCastCloudShadows = false;
-		light->bCastShadowsOnClouds = false;
-		light->bCastShadowsOnAtmosphere = false;
-		light->LightSourceAngle = key ? 3.0f : 6.0f;
-		light->ForwardShadingPriority = key ? 1 : 0;
+		if (!g_captureFieldOffsets.IsValid)
+		{
+			return false;
+		}
+		const auto propertyOffset = [](CaptureFieldOffsets::Property property)
+		{
+			return g_captureFieldOffsets.Properties[static_cast<std::size_t>(property)];
+		};
+		ConfigureDirectionalLightFlags(light, key);
+		*MiniMap::MapRuntimeAccess::Field<SDK::EComponentMobility>(light,
+			propertyOffset(CaptureFieldOffsets::Property::Mobility)) = SDK::EComponentMobility::Movable;
+		*MiniMap::MapRuntimeAccess::Field<float>(light,
+			propertyOffset(CaptureFieldOffsets::Property::Intensity)) = key ? 6.0f : 2.0f;
+		SDK::FColor* lightColor = MiniMap::MapRuntimeAccess::Field<SDK::FColor>(light,
+			propertyOffset(CaptureFieldOffsets::Property::LightColor));
+		lightColor->R = key ? 255 : 238;
+		lightColor->G = key ? 248 : 245;
+		lightColor->B = key ? 240 : 255;
+		lightColor->A = 255;
+		*MiniMap::MapRuntimeAccess::Field<float>(light,
+			propertyOffset(CaptureFieldOffsets::Property::LightSourceAngle)) = key ? 3.0f : 6.0f;
+		*MiniMap::MapRuntimeAccess::Field<int32_t>(light,
+			propertyOffset(CaptureFieldOffsets::Property::ForwardShadingPriority)) = key ? 1 : 0;
 		light->K2_SetWorldLocationAndRotation(SDK::FVector(0, 0, 0),
 			SDK::FRotator(key ? -55.0 : -35.0, key ? -45.0 : 135.0, 0), false, nullptr, true);
 		return true;
@@ -1951,6 +2054,10 @@ namespace Services::Map::Buildings::Capture
 	/** Applies the established show flags, gamma, target format, and non-mipped target settings. */
 	bool BuildingSpriteRenderer::ConfigureShowFlagsAndTarget(bool finalColor)
 	{
+		if (!g_captureFieldOffsets.IsValid || !renderTarget_ || !captureComponent_)
+		{
+			return false;
+		}
 		static_assert(std::is_trivially_destructible_v<SDK::FEngineShowFlagsSetting>);
 		const wchar_t* flagNames[] = {L"Fog", L"Atmosphere", L"VolumetricFog", L"Cloud", L"MotionBlur", L"TemporalAA",
 			L"AntiAliasing", L"PostProcessing", L"Bloom", L"EyeAdaptation", L"Lighting", L"DirectLighting",
@@ -1964,10 +2071,17 @@ namespace Services::Map::Buildings::Capture
 		}
 		SDK::TArray<SDK::FEngineShowFlagsSetting> settings(flags, 16, 16);
 		captureComponent_->SetShowFlagSettings(settings);
-		renderTarget_->TargetGamma = finalColor ? 2.2f : 1.0f;
-		renderTarget_->bAutoGenerateMips = false;
-		renderTarget_->bSupportsUAV = false;
-		renderTarget_->ClearColor = SDK::FLinearColor(0, 0, 0, 1);
+		*MiniMap::MapRuntimeAccess::Field<float>(renderTarget_, g_captureFieldOffsets.Properties[
+			static_cast<std::size_t>(CaptureFieldOffsets::Property::TargetGamma)]) =
+			finalColor ? 2.2f : 1.0f;
+		const auto& autoMips = g_captureFieldOffsets.BitFields[
+			static_cast<std::size_t>(CaptureFieldOffsets::BitField::AutoGenerateMips)];
+		MiniMap::MapRuntimeAccess::SetBit(renderTarget_, autoMips.Offset, autoMips.Mask, false);
+		const auto& supportsUav = g_captureFieldOffsets.BitFields[
+			static_cast<std::size_t>(CaptureFieldOffsets::BitField::SupportsUAV)];
+		MiniMap::MapRuntimeAccess::SetBit(renderTarget_, supportsUav.Offset, supportsUav.Mask, false);
+		*MiniMap::MapRuntimeAccess::Field<SDK::FLinearColor>(renderTarget_, g_captureFieldOffsets.Properties[
+			static_cast<std::size_t>(CaptureFieldOffsets::Property::ClearColor)]) = SDK::FLinearColor(0, 0, 0, 1);
 		return true;
 	}
 }

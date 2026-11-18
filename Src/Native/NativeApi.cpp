@@ -42,6 +42,47 @@ namespace MiniMapNative
     }
 
 
+    bool PublishEnemyStateField(
+        int32_t offset,
+        uint32_t size) noexcept
+    {
+        if (!g_bindingsInitialized ||
+            !g_initialized ||
+            offset < 0 ||
+            size != sizeof(uint8_t) ||
+            g_nativeApi.mass.enemyStateFieldOffset != -1)
+        {
+            return false;
+        }
+
+        g_nativeApi.mass.enemyStateFieldOffset = offset;
+        return true;
+    }
+
+
+    bool PublishTextureSRGBField(
+        int32_t offset,
+        uint32_t size,
+        uint8_t mask) noexcept
+    {
+        if (!g_bindingsInitialized ||
+            !g_initialized ||
+            offset < 0 ||
+            size != sizeof(uint8_t) ||
+            mask == 0 ||
+            (mask & static_cast<uint8_t>(mask - 1)) != 0 ||
+            g_nativeApi.texture.srgbFieldOffset != -1 ||
+            g_nativeApi.texture.srgbFieldMask != 0)
+        {
+            return false;
+        }
+
+        g_nativeApi.texture.srgbFieldOffset = offset;
+        g_nativeApi.texture.srgbFieldMask = mask;
+        return true;
+    }
+
+
     bool IsMemoryRangeReadable(uintptr_t p,size_t bytes,size_t alignment)
     {
         // EXPENSIVE: Calls VirtualQuery directly.
