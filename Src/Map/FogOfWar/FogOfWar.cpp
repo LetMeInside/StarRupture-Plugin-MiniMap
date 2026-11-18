@@ -318,35 +318,6 @@ namespace
     }
 
 
-    bool TryGetLocalPlayerAndComponent(
-        SDK::ACrCharacterPlayerBase*& outPlayer,
-        SDK::UCrPlayerMapMenuDataComponent*& outComponent)
-    {
-        outPlayer = nullptr;
-        outComponent = nullptr;
-
-        SDK::ACrCharacterPlayerBase* player = nullptr;
-        if (!MiniMapMap::TryGetPhysicalCharacter(player)) return false;
-
-        SDK::UCrPlayerMapMenuDataComponent* component =
-            player->PlayerMapMenuDataComponent;
-
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return false;
-
-        outPlayer =
-            player;
-
-        outComponent =
-            component;
-
-        return true;
-    }
-
-
     bool ValidateRawArray(
         const RawTArray& array,
         int32_t expectedNum)
@@ -1144,7 +1115,7 @@ namespace
         SDK::UCrPlayerMapMenuDataComponent* component =
             nullptr;
 
-        if (!TryGetLocalPlayerAndComponent(
+        if (!MiniMapMap::TryGetPlayerMapDataComponent(
             player,
             component))
         {

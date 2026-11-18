@@ -20,12 +20,14 @@
 #include "Services/RuntimeEvents.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 
+#include "SDK/CoreUObject_classes.hpp"
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Chimera_structs.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/AuItems_classes.hpp"
 #include "SDK/MassEntity_structs.hpp"
+#include "plugin_map.h"
 
 #include <algorithm>
 #include <array>
@@ -46,6 +48,21 @@
 
 namespace
 {
+    PluginField<SDK::FAuSimpleItem> g_storageItemValueField = SR_FIELD(
+        SDK::FAuSimpleItem, FCrStorageItem, Item, PLUGIN_FIELD_FLAG_NONE);
+    PluginField<SDK::FGuid> g_abandonBaseGuidField = SR_FIELD(
+        SDK::FGuid, FCrAbandonBaseData, AbandonBasePOIId, PLUGIN_FIELD_FLAG_NONE);
+    PluginField<SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>> g_abandonBaseStatusesField = SR_FIELD(
+        SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>, FCrAbandonBaseData,
+        StoryItemsCollectedStatus, PLUGIN_FIELD_FLAG_NONE);
+    PluginField<SDK::FGuid> g_collectedStatusGuidField = SR_FIELD(
+        SDK::FGuid, FCrAbandonBaseDataCollectedStatus, Item, PLUGIN_FIELD_FLAG_NONE);
+    PluginField<uint8_t> g_collectedStatusValueField = SR_FIELD(
+        uint8_t, FCrAbandonBaseDataCollectedStatus, Status, PLUGIN_FIELD_FLAG_NONE);
+    PluginFieldSpec g_storageItemSize = SR_SIZE(FCrStorageItem);
+    PluginFieldSpec g_abandonBaseSize = SR_SIZE(FCrAbandonBaseData);
+    PluginFieldSpec g_collectedStatusSize = SR_SIZE(FCrAbandonBaseDataCollectedStatus);
+
     MiniMap::Services::Registration g_tickRegistration{};
     constexpr float kPollIntervalSeconds = 3.0f;
     constexpr float kOrdinaryContainerDotRadiusPixels = 2.5f;
@@ -233,19 +250,6 @@ namespace
     // The cache is the sole owner of each immutable acquisition. Records and
     // render snapshots copy only the non-owning neutral identity.
     std::unordered_map<uint8_t, CachedFoundableIcon> g_iconCache;
-
-    SDK::UCrPlayerMapMenuDataComponent* GetLocalMapDataComponent()
-    {
-        SDK::ACrCharacterPlayerBase* player = nullptr;
-        if (!MiniMapMap::TryGetPhysicalCharacter(player)) return nullptr;
-        auto* component = player->PlayerMapMenuDataComponent;
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return nullptr;
-        return component;
-    }
 
     bool LoadIconFromBulkData(
         SDK::UTexture2D* texture,
@@ -615,6 +619,29 @@ namespace
         return true;
     }
 
+    template<class T>
+    bool ValidSpan(const T* data, int32_t count, int32_t capacity, size_t elementSize = sizeof(T))
+    {
+        if (count < 0 || capacity < count || elementSize == 0 || (count && !data))
+            return false;
+
+        const size_t maxSize = (std::numeric_limits<size_t>::max)();
+        if (size_t(count) > maxSize / elementSize)
+            return false;
+
+        const size_t spanBytes = size_t(count) * elementSize;
+        return reinterpret_cast<uintptr_t>(data) <= UINTPTR_MAX - spanBytes;
+    }
+
+    template<class T>
+    bool ReadArray(const SDK::TArray<T>& array, const T*& data, int32_t& count,
+        size_t elementSize = sizeof(T))
+    {
+        data = array.GetDataPtr();
+        count = array.Num();
+        return ValidSpan(data, count, array.Max(), elementSize);
+    }
+
     bool InventoryHasItems(const void* inventoryFragment)
     {
         if (inventoryFragment == nullptr)
@@ -623,16 +650,20 @@ namespace
         }
 
         const auto& inventory = static_cast<const SDK::FCrInventoryFragment*>(inventoryFragment)->MainInventoryContainer.Items;
-        const int32_t count = inventory.Num();
-
-        if (count <= 0)
+        const SDK::FCrStorageItem* data = nullptr;
+        int32_t count = 0;
+        if (!ReadArray(inventory, data, count, g_storageItemSize.resolvedSize) || count <= 0)
         {
             return false;
         }
 
         for (int32_t index = 0; index < count; ++index)
         {
-            const int32_t itemCount = inventory[index].Item.Count;
+            const uint8_t* element = PluginMap::ElementAt(data, count, index, g_storageItemSize);
+            const SDK::FAuSimpleItem* item = g_storageItemValueField.In(element);
+            if (!item)
+                return false;
+            const int32_t itemCount = item->Count;
 
             if (itemCount > 0)
             {
@@ -651,18 +682,24 @@ namespace
         bool hasOrdinaryItem = false;
         const auto inspect = [&](const SDK::FCrItemsStorageContainer& container)
         {
-            const int32_t count = container.Items.Num();
+            const SDK::FCrStorageItem* data = nullptr;
+            int32_t count = 0;
+            if (!ReadArray(container.Items, data, count, g_storageItemSize.resolvedSize))
+                return false;
             for (int32_t index = 0; index < count; ++index)
             {
-                const auto& item = container.Items[index].Item;
-                if (item.ItemDataBase == nullptr ||
-                    std::memcmp(&item.ItemId.Handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
-                    item.Count <= 0)
+                const uint8_t* element = PluginMap::ElementAt(data, count, index, g_storageItemSize);
+                const SDK::FAuSimpleItem* item = g_storageItemValueField.In(element);
+                if (!item)
+                    return false;
+                if (item->ItemDataBase == nullptr ||
+                    std::memcmp(&item->ItemId.Handle, &zeroGuid, sizeof(zeroGuid)) == 0 ||
+                    item->Count <= 0)
                 {
                     continue;
                 }
 
-                if (item.ItemDataBase->UIItemType == SDK::EUIItemType::BlueprintItem)
+                if (item->ItemDataBase->UIItemType == SDK::EUIItemType::BlueprintItem)
                 {
                     return true;
                 }
@@ -819,21 +856,6 @@ namespace
         bool ValidGuid(const Guid& guid)
         {
             return (guid[0] | guid[1] | guid[2] | guid[3]) != 0;
-        }
-
-        template<class T>
-        bool ValidSpan(const T* data, int32_t count, int32_t capacity)
-        {
-            return count >= 0 && capacity >= count &&
-                (count == 0 || (data != nullptr && size_t(count) <= (std::numeric_limits<size_t>::max)() / sizeof(T)));
-        }
-
-        template<class T>
-        bool ReadArray(const SDK::TArray<T>& array, const T*& data, int32_t& count)
-        {
-            data = array.GetDataPtr();
-            count = array.Num();
-            return ValidSpan(data, count, array.Max());
         }
 
         // All metadata and actor pointers below are borrowed only inside one
@@ -1031,12 +1053,20 @@ namespace
 
             const SDK::FCrAbandonBaseData* bases = nullptr;
             int32_t baseCount = 0;
-            if (!ReadArray(replicator->AbandonBaseDataContainer.AbandonBaseData, bases, baseCount)) return false;
+            if (!ReadArray(replicator->AbandonBaseDataContainer.AbandonBaseData, bases, baseCount,
+                g_abandonBaseSize.resolvedSize)) return false;
             std::unordered_set<Guid, GuidHash> replicatedBases;
             std::unordered_set<Guid, GuidHash> ambiguousReplicatedBases;
             for (int32_t index = 0; index < baseCount; ++index)
             {
-                const auto base = CopyGuid(bases[index].AbandonBasePOIId);
+                const uint8_t* baseElement = PluginMap::ElementAt(bases, baseCount, index,
+                    g_abandonBaseSize);
+                const SDK::FGuid* baseGuid = g_abandonBaseGuidField.In(baseElement);
+                const SDK::TArray<SDK::FCrAbandonBaseDataCollectedStatus>* storyStatuses =
+                    g_abandonBaseStatusesField.In(baseElement);
+                if (!baseGuid || !storyStatuses)
+                    return false;
+                const auto base = CopyGuid(*baseGuid);
                 if (!ValidGuid(base)) continue;
                 if (!replicatedBases.insert(base).second)
                 {
@@ -1045,16 +1075,22 @@ namespace
                 }
                 const SDK::FCrAbandonBaseDataCollectedStatus* statuses = nullptr;
                 int32_t count = 0;
-                if (!ReadArray(bases[index].StoryItemsCollectedStatus, statuses, count)) continue;
+                if (!ReadArray(*storyStatuses, statuses, count, g_collectedStatusSize.resolvedSize)) continue;
                 for (int32_t item = 0; item < count; ++item)
                 {
-                    const auto guid = CopyGuid(statuses[item].Item);
+                    const uint8_t* statusElement = PluginMap::ElementAt(statuses, count, item,
+                        g_collectedStatusSize);
+                    const SDK::FGuid* guidValue = g_collectedStatusGuidField.In(statusElement);
+                    const uint8_t* statusValue = g_collectedStatusValueField.In(statusElement);
+                    if (!guidValue || !statusValue)
+                        return false;
+                    const auto guid = CopyGuid(*guidValue);
                     if (!ValidGuid(guid)) continue;
                     const auto found = progress.find(guid);
                     if (found == progress.end() || found->second.Base != base) continue;
                     // Read the representation first; malformed bool bytes are UNKNOWN.
                     uint8_t status = 2;
-                    std::memcpy(&status, &statuses[item].Status, sizeof(status));
+                    std::memcpy(&status, statusValue, sizeof(status));
                     auto& entry = found->second;
                     ++entry.Records;
                     entry.Status = entry.Records == 1 && status <= 1 ? status : 2;
@@ -1169,7 +1205,9 @@ namespace
             return false;
         }
 
-        SDK::UCrPlayerMapMenuDataComponent* mapData = GetLocalMapDataComponent();
+        SDK::ACrCharacterPlayerBase* player = nullptr;
+        SDK::UCrPlayerMapMenuDataComponent* mapData = nullptr;
+        MiniMapMap::TryGetPlayerMapDataComponent(player, mapData);
         if (mapData != nullptr && g_devSettings == nullptr)
             g_devSettings = MiniMapNative::FindMapMenuDevSettingsCDO(false);
 
@@ -1344,6 +1382,21 @@ namespace
 
 namespace MiniMapFoundables
 {
+    void SetStorageItemContract(int32_t valueOffset, uint32_t elementSize)
+    {
+        g_storageItemValueField.offset = valueOffset;
+        g_storageItemSize.resolvedSize = elementSize;
+    }
+
+    void SetStoryArrayContracts(const ArrayElementContracts& contracts)
+    {
+        g_abandonBaseGuidField.offset = contracts.AbandonBaseGuid;
+        g_abandonBaseStatusesField.offset = contracts.AbandonBaseStatuses;
+        g_abandonBaseSize.resolvedSize = contracts.AbandonBaseSize;
+        g_collectedStatusGuidField.offset = contracts.CollectedStatusGuid;
+        g_collectedStatusValueField.offset = contracts.CollectedStatusValue;
+        g_collectedStatusSize.resolvedSize = contracts.CollectedStatusSize;
+    }
     bool Initialize(IPluginSelf* self)
     {
         if (g_initialized)

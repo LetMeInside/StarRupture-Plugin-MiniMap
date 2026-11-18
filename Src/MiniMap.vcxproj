@@ -203,6 +203,7 @@
     <ClInclude Include="Map\PointsOfInterest\PointsOfInterest.h" />
     <ClInclude Include="Input\MouseWheel.h" />
     <ClInclude Include="Native\NativeApi.h" />
+    <ClInclude Include="Adapters\AlienX\version_map.generated.h" />
     <ClInclude Include="Native\MassLifecycle.h" />
     <ClInclude Include="Native\TexturePublication.h" />
     <ClInclude Include="Native\ResidentMetadata.h" />

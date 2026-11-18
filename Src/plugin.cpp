@@ -18,6 +18,7 @@
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
 #include "SDK/ChimeraUI_classes.hpp"
+#include "plugin_map.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
@@ -1354,7 +1355,7 @@ namespace MiniMap
 #endif
         // Runtime reload does not replay lifecycle events. Attach through the same
         // guarded handlers, accepting the existing loading-screen edge case.
-        SDK::UWorld* currentWorld = SDK::UWorld::GetWorld();
+        SDK::UWorld* currentWorld = PluginSdkRuntime::GetWorld();
         if (currentWorld && currentWorld->GetName() == "ChimeraMain")
         {
             OnWorldBeginPlay(currentWorld);

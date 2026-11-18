@@ -1,6 +1,12 @@
 #include "RequiredScanner.h"
 #include "Compatibility.h"
 
+#if defined(MODLOADER_CLIENT_BUILD)
+#include "SDK.hpp"
+#include "version_map.generated.h"
+#include "plugin_version_map.h"
+#endif
+
 #include <limits>
 #include <string>
 
@@ -64,6 +70,10 @@ namespace MiniMap::Adapters::AlienX
 
         // Main executable and required flags come from REQUEST_INIT. The host
         // owns uniqueness, transform/kind validation and detailed failure reports.
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (scan.versionMapKey)
+            PluginVersionMap::Attach(request);
+#endif
         const auto address = Scanner.Resolve(&Self, &request);
         if (!address)
         {

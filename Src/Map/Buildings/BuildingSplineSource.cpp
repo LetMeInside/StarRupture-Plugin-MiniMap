@@ -2,12 +2,16 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSplineSource.h"
 #include "Native/NativeApi.h"
+#include "plugin_interface.h"
 #include <SDK/AuActorPlacement_structs.hpp>
+#include <SDK/CoreUObject_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
 #include <SDK/Engine_structs.hpp>
+#include <plugin_map.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -128,6 +132,26 @@ namespace MiniMap::BuildingAcquisition
     using Facts = BuildingAcquiredFacts;
     using Status = Facts::Status;
 
+    namespace
+    {
+        PluginField<uint8_t> g_splinePointIndexField = SR_FIELD(uint8_t,
+            FAuAPSplinePointData, Index, PLUGIN_FIELD_FLAG_NONE);
+        PluginField<SDK::FVector_NetQuantize> g_splinePointPositionField = SR_FIELD(
+            SDK::FVector_NetQuantize, FAuAPSplinePointData, Position, PLUGIN_FIELD_FLAG_NONE);
+        PluginField<SDK::FVector_NetQuantize10> g_splinePointTangentField = SR_FIELD(
+            SDK::FVector_NetQuantize10, FAuAPSplinePointData, Tangent, PLUGIN_FIELD_FLAG_NONE);
+        PluginFieldSpec g_splinePointSize = SR_SIZE(FAuAPSplinePointData);
+    }
+
+    void BuildingSplineSource::SetPointArrayContract(int32_t indexOffset, int32_t positionOffset,
+        int32_t tangentOffset, uint32_t elementSize)
+    {
+        g_splinePointIndexField.offset = indexOffset;
+        g_splinePointPositionField.offset = positionOffset;
+        g_splinePointTangentField.offset = tangentOffset;
+        g_splinePointSize.resolvedSize = elementSize;
+    }
+
     /** Implements typed value copies and temporary payload lifetime only. */
     struct BuildingSplineSource::Copier
     {
@@ -171,6 +195,22 @@ namespace MiniMap::BuildingAcquisition
                 (!values.Num() || values.GetDataPtr());
         }
 
+        /** Validates a runtime-sized array span before dynamic-stride traversal. */
+        template<class Array> static bool ValidArray(const Array& values, size_t elementSize)
+        {
+            const int32_t count = values.Num();
+            const auto* data = values.GetDataPtr();
+            if (count < 0 || values.Max() < count || elementSize == 0 || (count && !data))
+                return false;
+
+            const size_t maxSize = (std::numeric_limits<size_t>::max)();
+            if (size_t(count) > maxSize / elementSize)
+                return false;
+
+            const size_t spanBytes = size_t(count) * elementSize;
+            return reinterpret_cast<uintptr_t>(data) <= UINTPTR_MAX - spanBytes;
+        }
+
         /** Copies the common fragment/payload source exactly once per supplied source. */
         static bool CopyData(const SDK::FAuAPSplineData& source, Facts::SplineData& output)
         {
@@ -182,12 +222,18 @@ namespace MiniMap::BuildingAcquisition
             output.RecordedLength = source.SplineRealLength;
             bool valid = Finite(output.LocationWS) && Finite(output.RotationDegreesWS) &&
                 Finite(output.RecordedLength);
-            if (!ValidArray(source.SplineData))
+            if (!ValidArray(source.SplineData, g_splinePointSize.resolvedSize))
                 return false;
             output.Points.reserve(source.SplineData.Num());
-            for (const auto& point : source.SplineData)
+            for (int32_t index = 0; index < source.SplineData.Num(); ++index)
             {
-                Facts::SplinePoint copy{point.Index, Value(point.Position), Value(point.Tangent)};
+                const uint8_t* point = PluginMap::ElementAt(source.SplineData, index, g_splinePointSize);
+                const uint8_t* pointIndex = g_splinePointIndexField.In(point);
+                const SDK::FVector_NetQuantize* position = g_splinePointPositionField.In(point);
+                const SDK::FVector_NetQuantize10* tangent = g_splinePointTangentField.In(point);
+                if (!pointIndex || !position || !tangent)
+                    return false;
+                Facts::SplinePoint copy{*pointIndex, Value(*position), Value(*tangent)};
                 valid = Finite(copy.Position) && Finite(copy.Tangent) && valid;
                 output.Points.push_back(std::move(copy));
             }

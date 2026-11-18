@@ -8,6 +8,9 @@
 #include "NativeHooks.h"
 #include "Viewport.h"
 #include "Textures.h"
+#include "Map/Map.h"
+#include "Map/Foundables/Foundables.h"
+#include "Map/Buildings/BuildingSplineSource.h"
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
@@ -69,6 +72,7 @@ namespace
     bool g_poiStoryFieldsResolved = false;
     bool g_playerTextureFieldsResolved = false;
     bool g_captureFieldsResolved = false;
+    MiniMapMap::PlayerFieldOffsets g_playerFieldOffsets{};
 
     PluginFieldSpec g_fowDataField{
         "UCrPlayerMapMenuDataComponent::FOWData",
@@ -218,6 +222,13 @@ namespace
             return allResolved;
         }
 
+        /** Verifies a resolved member lies inside its runtime-sized array element. */
+        static bool MemberFitsSize(const PluginFieldSpec& member, const PluginFieldSpec& size)
+        {
+            return member.offset >= 0 && member.resolvedSize != 0 && size.resolvedSize != 0 &&
+                uint64_t(member.offset) + member.resolvedSize <= size.resolvedSize;
+        }
+
         /** Resolves the game-state path to the abandoned-base replication data. */
         static bool ResolveReplicatorFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
@@ -243,23 +254,41 @@ namespace
         {
             static PluginFieldSpec fields[] = {
                 { "FCrAbandonBaseData::AbandonBasePOIId", "FCrAbandonBaseData",
-                    "AbandonBasePOIId", PLUGIN_FIELD_CHECK,
+                    "AbandonBasePOIId", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrAbandonBaseData::AbandonBasePOIId)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseData, AbandonBasePOIId)) },
                 { "FCrAbandonBaseData::StoryItemsCollectedStatus", "FCrAbandonBaseData",
-                    "StoryItemsCollectedStatus", PLUGIN_FIELD_CHECK,
+                    "StoryItemsCollectedStatus", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrAbandonBaseData::StoryItemsCollectedStatus)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseData, StoryItemsCollectedStatus)) },
                 { "FCrAbandonBaseDataCollectedStatus::Item", "FCrAbandonBaseDataCollectedStatus",
-                    "Item", PLUGIN_FIELD_CHECK,
+                    "Item", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrAbandonBaseDataCollectedStatus::Item)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Item)) },
                 { "FCrAbandonBaseDataCollectedStatus::Status", "FCrAbandonBaseDataCollectedStatus",
-                    "Status", PLUGIN_FIELD_CHECK,
+                    "Status", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrAbandonBaseDataCollectedStatus::Status)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataCollectedStatus, Status)) }
             };
-            return ResolveFields(scanner, self, fields, std::size(fields));
+            static PluginFieldSpec sizes[] = {
+                SR_SIZE(FCrAbandonBaseData),
+                SR_SIZE(FCrAbandonBaseDataCollectedStatus)
+            };
+            const bool fieldsResolved = ResolveFields(scanner, self, fields, std::size(fields));
+            const bool sizesResolved = ResolveFields(scanner, self, sizes, std::size(sizes));
+            if (!fieldsResolved || !sizesResolved ||
+                !MemberFitsSize(fields[0], sizes[0]) || !MemberFitsSize(fields[1], sizes[0]) ||
+                !MemberFitsSize(fields[2], sizes[1]) || !MemberFitsSize(fields[3], sizes[1]))
+                return false;
+            MiniMapFoundables::ArrayElementContracts contracts;
+            contracts.AbandonBaseGuid = fields[0].offset;
+            contracts.AbandonBaseStatuses = fields[1].offset;
+            contracts.AbandonBaseSize = sizes[0].resolvedSize;
+            contracts.CollectedStatusGuid = fields[2].offset;
+            contracts.CollectedStatusValue = fields[3].offset;
+            contracts.CollectedStatusSize = sizes[1].resolvedSize;
+            MiniMapFoundables::SetStoryArrayContracts(contracts);
+            return true;
         }
 
         /** Resolves the directly consumed POI marker fields. */
@@ -342,9 +371,19 @@ namespace
                 { "UStruct::SuperStruct", "UStruct", "SuperStruct",
                     PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
                     sizeof(decltype(SDK::UStruct::SuperStruct)),
-                    static_cast<int32_t>(offsetof(SDK::UStruct, SuperStruct)) }
+                    static_cast<int32_t>(offsetof(SDK::UStruct, SuperStruct)) },
+                { "UObject::Index", "UObject", "Index",
+                    PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
+                    sizeof(decltype(SDK::UObject::Index)),
+                    static_cast<int32_t>(offsetof(SDK::UObject, Index)) }
             };
-            return ResolveFields(scanner, self, fields, std::size(fields));
+            if (!ResolveFields(scanner, self, fields, std::size(fields)))
+                return false;
+            g_playerFieldOffsets.ActorRootComponent = fields[0].offset;
+            g_playerFieldOffsets.LevelOwningWorld = fields[1].offset;
+            g_playerFieldOffsets.ObjectOuter = fields[3].offset;
+            g_playerFieldOffsets.ObjectIndex = fields[5].offset;
+            return true;
         }
 
         /** Resolves and validates the reflected actor-destruction bitfield. */
@@ -369,6 +408,8 @@ namespace
                     "resolved destruction bit does not match CL-127004 offset 0x5D, extent 1, and mask 0x02");
                 return false;
             }
+            g_playerFieldOffsets.ActorBeingDestroyed = g_actorBeingDestroyedField.offset;
+            g_playerFieldOffsets.ActorBeingDestroyedMask = g_actorBeingDestroyedField.boolMask;
             return true;
         }
     };
@@ -428,7 +469,19 @@ namespace
                 fields[index].resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, fields[index]) && allResolved;
             }
-            return allResolved;
+            if (!allResolved)
+                return false;
+
+            g_playerFieldOffsets.PlayerMainCharacter = fields[0].offset;
+            g_playerFieldOffsets.CharacterDead = fields[1].offset;
+            g_playerFieldOffsets.BuildingDrone = fields[2].offset;
+            g_playerFieldOffsets.DroneOwnerPlayer = fields[3].offset;
+            g_playerFieldOffsets.IsLocalPlayerController = fields[4].offset;
+            g_playerFieldOffsets.ControllerPawn = fields[5].offset;
+            g_playerFieldOffsets.PawnController = fields[6].offset;
+            g_playerFieldOffsets.CharacterStatus = fields[7].offset;
+            MiniMapMap::PlayerFieldAccessors::SetOffsets(g_playerFieldOffsets);
+            return true;
         }
 
         /** Requires the mapped UTexture bitfield to match the compiled CL-127004 ABI. */
@@ -908,6 +961,13 @@ namespace
     /** Resolves required Client Mass field layouts during the active scanner session. */
     class ClientBuildingMassFieldContract
     {
+        /** Verifies a resolved member lies inside its runtime-sized array element. */
+        static bool MemberFitsSize(const PluginFieldSpec& member, const PluginFieldSpec& size)
+        {
+            return member.offset >= 0 && member.resolvedSize != 0 && size.resolvedSize != 0 &&
+                uint64_t(member.offset) + member.resolvedSize <= size.resolvedSize;
+        }
+
         /** Resolves an exact field group while the loader scanner session is active. */
         static bool ResolveFields(
             IPluginHookScanner* scanner,
@@ -941,20 +1001,29 @@ namespace
                 { "FAuAPSplineData::SplineRealLength", "FAuAPSplineData", "SplineRealLength",
                     PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineData::SplineRealLength)),
                     static_cast<int32_t>(offsetof(SDK::FAuAPSplineData, SplineRealLength)) },
-                { "FAuAPSplinePointData::Index", "FAuAPSplinePointData", "Index", PLUGIN_FIELD_CHECK,
+                { "FAuAPSplinePointData::Index", "FAuAPSplinePointData", "Index", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FAuAPSplinePointData::Index)),
                     static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Index)) },
-                { "FAuAPSplinePointData::Position", "FAuAPSplinePointData", "Position", PLUGIN_FIELD_CHECK,
+                { "FAuAPSplinePointData::Position", "FAuAPSplinePointData", "Position", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FAuAPSplinePointData::Position)),
                     static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Position)) },
-                { "FAuAPSplinePointData::Tangent", "FAuAPSplinePointData", "Tangent", PLUGIN_FIELD_CHECK,
+                { "FAuAPSplinePointData::Tangent", "FAuAPSplinePointData", "Tangent", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FAuAPSplinePointData::Tangent)),
                     static_cast<int32_t>(offsetof(SDK::FAuAPSplinePointData, Tangent)) },
                 { "FAuAPSplineActorPayloadData::Data", "FAuAPSplineActorPayloadData", "Data",
                     PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FAuAPSplineActorPayloadData::Data)),
                     static_cast<int32_t>(offsetof(SDK::FAuAPSplineActorPayloadData, Data)) }
             };
-            return ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+            static PluginFieldSpec sizes[] = { SR_SIZE(FAuAPSplinePointData) };
+            const bool fieldsResolved = ResolveFields(scanner, self, fields, sizeof(fields) / sizeof(fields[0]));
+            const bool sizesResolved = ResolveFields(scanner, self, sizes, sizeof(sizes) / sizeof(sizes[0]));
+            if (!fieldsResolved || !sizesResolved ||
+                !MemberFitsSize(fields[4], sizes[0]) || !MemberFitsSize(fields[5], sizes[0]) ||
+                !MemberFitsSize(fields[6], sizes[0]))
+                return false;
+            MiniMap::BuildingAcquisition::BuildingSplineSource::SetPointArrayContract(
+                fields[4].offset, fields[5].offset, fields[6].offset, sizes[0].resolvedSize);
+            return true;
         }
 
         /** Requires exact outer spline channel and version layouts. */
@@ -1131,7 +1200,7 @@ namespace
                 { "FCrItemsStorageContainer::Items", "FCrItemsStorageContainer", "Items",
                     PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FCrItemsStorageContainer::Items)),
                     static_cast<int32_t>(offsetof(SDK::FCrItemsStorageContainer, Items)) },
-                { "FCrStorageItem::Item", "FCrStorageItem", "Item", PLUGIN_FIELD_CHECK,
+                { "FCrStorageItem::Item", "FCrStorageItem", "Item", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FAuSimpleItem),
                     static_cast<int32_t>(offsetof(SDK::FCrStorageItem, Item)) },
                 { "FAuSimpleItem::ItemId", "FAuSimpleItem", "ItemId", PLUGIN_FIELD_CHECK,
@@ -1153,6 +1222,10 @@ namespace
                     sizeof(decltype(SDK::FCrMassFoundableParameters::FoundableType)),
                     static_cast<int32_t>(offsetof(SDK::FCrMassFoundableParameters, FoundableType)) }
             };
+            static PluginFieldSpec sizes[] = {
+                SR_SIZE(FCrStorageItem),
+                SR_SIZE_CHECK(FAuSimpleItem)
+            };
 
             bool allResolved = true;
             for (PluginFieldSpec& field : fields)
@@ -1161,7 +1234,17 @@ namespace
                 field.resolvedSize = 0;
                 allResolved = PluginMap::ResolveField(scanner, self, field) && allResolved;
             }
-            return allResolved;
+            bool allSizesResolved = true;
+            for (PluginFieldSpec& size : sizes)
+            {
+                size.offset = -1;
+                size.resolvedSize = 0;
+                allSizesResolved = PluginMap::ResolveField(scanner, self, size) && allSizesResolved;
+            }
+            if (!allResolved || !allSizesResolved || !MemberFitsSize(fields[3], sizes[0]))
+                return false;
+            MiniMapFoundables::SetStorageItemContract(fields[3].offset, sizes[0].resolvedSize);
+            return true;
         }
 
     public:
@@ -1335,19 +1418,12 @@ namespace
                     sizeof(SDK::FSlateBrush), alignof(SDK::FSlateBrush));
         }
 
-        /** Requires resident layouts for the abandoned-base container and its typed array records. */
+        /** Requires the compiled outer container that still holds the abandoned-base array. */
         static bool CheckPoiStoryTypes(const IPluginSelf* self)
         {
             return CheckType(self, "ScriptStruct Chimera.CrAbandonBaseDataContainer",
                     "FCrAbandonBaseDataContainer", sizeof(SDK::FCrAbandonBaseDataContainer),
-                    alignof(SDK::FCrAbandonBaseDataContainer)) &&
-                CheckType(self, "ScriptStruct Chimera.CrAbandonBaseData",
-                    "FCrAbandonBaseData", sizeof(SDK::FCrAbandonBaseData),
-                    alignof(SDK::FCrAbandonBaseData)) &&
-                CheckType(self, "ScriptStruct Chimera.CrAbandonBaseDataCollectedStatus",
-                    "FCrAbandonBaseDataCollectedStatus",
-                    sizeof(SDK::FCrAbandonBaseDataCollectedStatus),
-                    alignof(SDK::FCrAbandonBaseDataCollectedStatus));
+                    alignof(SDK::FCrAbandonBaseDataContainer));
         }
 
         /** Requires resident layouts for capture settings passed through the typed SDK path. */
@@ -1579,6 +1655,11 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
     g_poiStoryFieldsResolved = false;
     g_playerTextureFieldsResolved = false;
     g_captureFieldsResolved = false;
+    g_playerFieldOffsets = {};
+    MiniMapMap::PlayerFieldAccessors::SetOffsets({});
+    MiniMap::BuildingAcquisition::BuildingSplineSource::SetPointArrayContract(-1, -1, -1, 0);
+    MiniMapFoundables::SetStorageItemContract(-1, 0);
+    MiniMapFoundables::SetStoryArrayContracts({});
 #endif
     g_self = self;
     struct ScanLogScope { ~ScanLogScope() noexcept { g_self = nullptr; } } scope;
@@ -1673,6 +1754,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             MiniMapNative::Shutdown();
             return;
         }
+        g_playerFieldOffsets.PlayerMapDataComponent = g_playerMapDataComponentField.offset;
         g_playerMapDataComponentFieldResolved = true;
 
         if (!ClientTerrainFieldContract::Resolve(scanner, self))

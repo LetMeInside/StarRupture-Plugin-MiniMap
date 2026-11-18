@@ -199,21 +199,6 @@ namespace
         g_iconCache;
 
 
-    SDK::UCrPlayerMapMenuDataComponent*
-    GetLocalMapDataComponent()
-    {
-        SDK::ACrCharacterPlayerBase* player = nullptr;
-        if (!MiniMapMap::TryGetPhysicalCharacter(player)) return nullptr;
-
-        auto* component = player->PlayerMapMenuDataComponent;
-        const auto* native = MiniMapNative::Get();
-        if (!native || !MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(component),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), sizeof(*component)) ||
-            component->Outer != player) return nullptr;
-        return component;
-    }
-
 
     bool LoadIconFromBulkData(
         SDK::UTexture2D* texture,
@@ -808,8 +793,9 @@ namespace
             return;
         }
 
-        SDK::UCrPlayerMapMenuDataComponent* mapData =
-            GetLocalMapDataComponent();
+        SDK::ACrCharacterPlayerBase* player = nullptr;
+        SDK::UCrPlayerMapMenuDataComponent* mapData = nullptr;
+        MiniMapMap::TryGetPlayerMapDataComponent(player, mapData);
 
         if (mapData ==
             nullptr)

@@ -2,6 +2,7 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingAcquiredFacts.h"
+#include <cstdint>
 
 namespace SDK { struct FAuSplineConnectionFragment; struct FAuAPPayloadDataHandle; }
 
@@ -11,6 +12,9 @@ namespace MiniMap::BuildingAcquisition
     class BuildingSplineSource final
     {
     public:
+        /** Publishes point field offsets and the reflected runtime element stride. */
+        static void SetPointArrayContract(int32_t indexOffset, int32_t positionOffset,
+            int32_t tangentOffset, uint32_t elementSize);
         /** Copies a Mass fragment before any payload getter can reenter lifecycle code. */
         static BuildingAcquiredFacts::Spline CopyFragment(const SDK::FAuSplineConnectionFragment& fragment);
         /** Copies a temporary payload into existing owned facts; caller supplies a scoped handle copy.

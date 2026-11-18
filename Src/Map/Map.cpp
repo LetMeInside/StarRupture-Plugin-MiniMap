@@ -6,10 +6,14 @@
 #include "SDK/Chimera_structs.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
+#include "plugin_interface.h"
+#include <plugin_map.h>
 #include "../Native/NativeApi.h"
+#include "../Native/DefinitionAcquisitionCore.h"
 #include "../plugin_helpers.h"
 #include "../DiagnosticExports.h"
 #include <cstddef>
+#include <cstring>
 #include <cmath>
 #include <atomic>
 #include <type_traits>
@@ -51,29 +55,40 @@ namespace
     SDK::UWorld* g_world = nullptr;
     std::atomic<bool> g_gameplayReady{false};
     std::atomic<uint64_t> g_worldGeneration{0};
-
-    bool ValidObject(const SDK::UObject* object, size_t extent)
-    {
-        const auto* native = MiniMapNative::Get();
-        return native && MiniMapNative::ValidateObjectIdentity(
-            reinterpret_cast<uintptr_t>(object),
-            reinterpret_cast<uintptr_t>(native->asset.objectArray), extent);
-    }
+    PluginField<SDK::ACrCharacterPlayerBase*> g_playerMainCharacterField{};
+    PluginField<bool> g_characterDeadField{};
+    PluginField<SDK::ACrCharacterDroneBase*> g_buildingDroneField{};
+    PluginField<SDK::ACrCharacterPlayerBase*> g_droneOwnerPlayerField{};
+    PluginField<bool> g_isLocalPlayerControllerField{};
+    PluginField<SDK::APawn*> g_controllerPawnField{};
+    PluginField<SDK::AController*> g_pawnControllerField{};
+    PluginField<SDK::EPlayerCharacterStatus> g_characterStatusField{};
+    PluginField<SDK::UCrPlayerMapMenuDataComponent*> g_playerMapDataComponentField{};
+    PluginField<int32_t> g_objectIndexField{};
+    PluginField<SDK::UObject*> g_objectOuterField{};
+    PluginField<SDK::USceneComponent*> g_actorRootComponentField{};
+    PluginBitField g_actorBeingDestroyedField{};
+    PluginField<SDK::UWorld*> g_levelOwningWorldField{};
 
     template<class T> bool IsObject(const SDK::UObject* object)
     {
-        if (!ValidObject(object, sizeof(T)) || !ValidObject(object->Class, sizeof(SDK::UClass))) return false;
+        if (!MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(object) ||
+            !MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(object->Class)) return false;
         auto* type = T::StaticClass();
-        return ValidObject(type, sizeof(SDK::UClass)) && object->IsA(type);
+        return MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(type) && object->IsA(type);
     }
 
     bool InWorld(const SDK::AActor* actor)
     {
-        if (!ValidObject(actor, sizeof(SDK::AActor)) || actor->bActorIsBeingDestroyed) return false;
-        // Actors are owned by a level; use its current SDK world association.
-        auto* level = actor->Outer;
-        return IsObject<SDK::ULevel>(level) &&
-            static_cast<const SDK::ULevel*>(level)->OwningWorld == g_world;
+        if (!MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(actor) ||
+            g_actorBeingDestroyedField.offset < 0 ||
+            g_actorBeingDestroyedField.boolMask == 0 ||
+            g_actorBeingDestroyedField.Get(actor)) return false;
+        SDK::UObject* const* outer = g_objectOuterField.In(actor);
+        if (!outer || !IsObject<SDK::ULevel>(*outer)) return false;
+        const auto* level = static_cast<const SDK::ULevel*>(*outer);
+        SDK::UWorld* const* owningWorld = g_levelOwningWorldField.In(level);
+        return owningWorld && *owningWorld == g_world;
     }
 
     struct LocalPlayer
@@ -88,19 +103,31 @@ namespace
         out = {};
         const auto* native = MiniMapNative::Get();
         if (!g_world || !native || !native->player.isGameThread || !native->player.isGameThread() ||
-            !native->player.getFirstPlayerController || !ValidObject(g_world, sizeof(SDK::UWorld))) return false;
+            !native->player.getFirstPlayerController ||
+            !MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(g_world)) return false;
         auto* controller = native->player.getFirstPlayerController(g_world);
-        if (!IsObject<SDK::ACrPlayerControllerBase>(controller) || !InWorld(controller) ||
-            !controller->bIsLocalPlayerController) return false;
+        if (!IsObject<SDK::ACrPlayerControllerBase>(controller) || !InWorld(controller)) return false;
+        const bool* isLocalPlayerController = g_isLocalPlayerControllerField.In(controller);
+        if (!isLocalPlayerController || !*isLocalPlayerController) return false;
         auto* pc = static_cast<SDK::ACrPlayerControllerBase*>(controller);
-        auto* character = pc->PlayerMainCharacter;
-        if (!IsObject<SDK::ACrCharacterPlayerBase>(character) || !InWorld(character) || character->bDead) return false;
-        auto* pawn = pc->Pawn;
-        if (!IsObject<SDK::APawn>(pawn) || !InWorld(pawn) || pawn->Controller != pc) return false;
+        SDK::ACrCharacterPlayerBase* const* mainCharacterField = g_playerMainCharacterField.In(pc);
+        if (!mainCharacterField) return false;
+        auto* character = *mainCharacterField;
+        if (!IsObject<SDK::ACrCharacterPlayerBase>(character) || !InWorld(character)) return false;
+        const bool* characterDead = g_characterDeadField.In(character);
+        if (!characterDead || *characterDead) return false;
+        SDK::APawn* const* controllerPawn = g_controllerPawnField.In(pc);
+        if (!controllerPawn) return false;
+        auto* pawn = *controllerPawn;
+        if (!IsObject<SDK::APawn>(pawn) || !InWorld(pawn)) return false;
+        SDK::AController* const* pawnController = g_pawnControllerField.In(pawn);
+        if (!pawnController || *pawnController != pc) return false;
         if (pawn != character)
         {
-            if (!IsObject<SDK::ACrCharacterDroneBase>(pawn) ||
-                static_cast<SDK::ACrCharacterDroneBase*>(pawn)->OwnerPlayer != character) return false;
+            if (!IsObject<SDK::ACrCharacterDroneBase>(pawn)) return false;
+            auto* drone = static_cast<SDK::ACrCharacterDroneBase*>(pawn);
+            SDK::ACrCharacterPlayerBase* const* droneOwner = g_droneOwnerPlayerField.In(drone);
+            if (!droneOwner || *droneOwner != character) return false;
         }
         out = {pc, character, pawn};
         return true;
@@ -109,9 +136,13 @@ namespace
     bool ReadPosition(const SDK::AActor* actor, MiniMapMap::PlayerPose& pose)
     {
         const auto* native = MiniMapNative::Get();
-        auto* root = actor->RootComponent;
-        if (!native || !native->player.getComponentLocation ||
-            !IsObject<SDK::USceneComponent>(root) || root->Outer != actor) return false;
+        if (!native || !native->player.getComponentLocation) return false;
+        // Both callers validate the actor before this resolved field access.
+        SDK::USceneComponent* const* rootField = g_actorRootComponentField.In(actor);
+        if (!rootField || !IsObject<SDK::USceneComponent>(*rootField)) return false;
+        auto* root = *rootField;
+        SDK::UObject* const* rootOuter = g_objectOuterField.In(root);
+        if (!rootOuter || *rootOuter != actor) return false;
         SDK::FVector location{};
         native->player.getComponentLocation(root, &location);
         if (!std::isfinite(location.X) || !std::isfinite(location.Y) || !std::isfinite(location.Z)) return false;
@@ -135,12 +166,70 @@ namespace
         // Existing SDK reflection access, with an explicit failure check rather
         // than the generated wrapper's unchecked cached UFunction dereference.
         auto* function = actor->Class->GetFunction("Actor", "K2_GetActorRotation");
-        if (!ValidObject(function, sizeof(SDK::UFunction))) return false;
+        if (!MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(function)) return false;
         SDK::Params::Actor_K2_GetActorRotation parameters{};
         actor->ProcessEvent(function, &parameters);
         yaw = parameters.ReturnValue.Yaw;
         return std::isfinite(yaw);
     }
+
+    /** Stateless helper that applies drone tracking after validating its live associations. */
+    class BuildingDroneTracking final
+    {
+    public:
+        /**
+         * Updates the sample when the selected building drone is fully validated.
+         * @param player The already validated local controller, character, and pawn.
+         * @param followBuildDrone Whether settings permit selecting the controlled drone.
+         * @param sample The character sample updated only when the drone pose is usable.
+         * @return False when a required resolved field or the character heading cannot be read.
+         */
+        static bool TryApply(
+            const LocalPlayer& player,
+            bool followBuildDrone,
+            MiniMapMap::PresentationSample& sample)
+        {
+            SDK::ACrCharacterDroneBase* const* buildingDrone =
+                g_buildingDroneField.In(player.Character);
+            if (!buildingDrone)
+                return false;
+
+            auto* drone = *buildingDrone;
+            const SDK::EPlayerCharacterStatus* status =
+                g_characterStatusField.In(player.Character);
+            if (!status)
+                return false;
+
+            if (!followBuildDrone || *status != SDK::EPlayerCharacterStatus::BuildingDrone ||
+                !IsObject<SDK::ACrCharacterDroneBase>(drone) || !InWorld(drone))
+                return true;
+
+            SDK::ACrCharacterPlayerBase* const* owner = g_droneOwnerPlayerField.In(drone);
+            if (!owner)
+                return false;
+
+            if (*owner != player.Character ||
+                (player.Pawn != player.Character && player.Pawn != drone))
+                return true;
+
+            const int32_t* trackingObjectIndex = g_objectIndexField.In(drone);
+            if (!trackingObjectIndex)
+                return false;
+
+            MiniMapMap::PlayerPose dronePose{};
+            if (!ReadPosition(drone, dronePose))
+                return true;
+
+            dronePose.ControlYawDegrees = sample.Character.ControlYawDegrees;
+            if (!ReadWorldYaw(player.Character, sample.CharacterWorldYawDegrees))
+                return false;
+
+            sample.Tracking = dronePose;
+            sample.TrackingObjectIndex = *trackingObjectIndex;
+            sample.DroneActive = true;
+            return true;
+        }
+    };
 }
 
 namespace MiniMapMap
@@ -160,6 +249,95 @@ namespace MiniMapMap
     void SetGameplayReady(bool ready) { g_gameplayReady.store(ready, std::memory_order_release); }
     uint64_t GetWorldGeneration() { return g_worldGeneration.load(std::memory_order_acquire); }
 
+    bool PlayerFieldAccessors::IsObjectRegistered(const SDK::UObject* object)
+    {
+        // The object is borrowed synchronously from the active world, a live
+        // UObject member, or the SDK class registry before its index is read.
+        const auto* native = MiniMapNative::Get();
+        if (!object || !native || !native->asset.objectArray)
+            return false;
+
+        const int32_t* objectIndex = g_objectIndexField.In(object);
+        return objectIndex && *objectIndex >= 0 &&
+            MatchesObjectArrayEntry(object, *objectIndex, native->asset.objectArray);
+    }
+
+    bool PlayerFieldAccessors::MatchesObjectArrayEntry(
+        const SDK::UObject* object,
+        int32_t objectIndex,
+        const void* objectArrayData)
+    {
+        if (!object || !objectArrayData || objectIndex < 0)
+            return false;
+
+        const uintptr_t objectArray = reinterpret_cast<uintptr_t>(objectArrayData);
+        const uintptr_t objectPointer = reinterpret_cast<uintptr_t>(object);
+        if (objectArray > UINTPTR_MAX - 0x30 || objectPointer > UINTPTR_MAX - 0x10)
+            return false;
+
+        int32_t maxElements = 0;
+        int32_t numElements = 0;
+        int32_t maxChunks = 0;
+        int32_t numChunks = 0;
+        std::memcpy(&maxElements, reinterpret_cast<const void*>(objectArray + 0x20), sizeof(maxElements));
+        std::memcpy(&numElements, reinterpret_cast<const void*>(objectArray + 0x24), sizeof(numElements));
+        std::memcpy(&maxChunks, reinterpret_cast<const void*>(objectArray + 0x28), sizeof(maxChunks));
+        std::memcpy(&numChunks, reinterpret_cast<const void*>(objectArray + 0x2C), sizeof(numChunks));
+        if (numElements < 0 || maxElements < numElements || maxElements > 64 * 1024 * 1024 ||
+            objectIndex >= numElements || numChunks < 0 || maxChunks < numChunks || maxChunks > 4096 ||
+            int64_t(numElements) > int64_t(numChunks) * 65536 ||
+            int64_t(maxElements) > int64_t(maxChunks) * 65536)
+            return false;
+
+        const size_t chunkIndex = uint32_t(objectIndex) >> 16;
+        if (chunkIndex >= size_t(numChunks))
+            return false;
+
+        uintptr_t chunkTable = 0;
+        std::memcpy(&chunkTable, reinterpret_cast<const void*>(objectArray + 0x10), sizeof(chunkTable));
+        if (!chunkTable || chunkTable > UINTPTR_MAX - ((chunkIndex + 1) * sizeof(uintptr_t)))
+            return false;
+
+        uintptr_t chunk = 0;
+        std::memcpy(&chunk, reinterpret_cast<const void*>(chunkTable + chunkIndex * sizeof(uintptr_t)),
+            sizeof(chunk));
+        const size_t itemOffset = size_t(uint32_t(objectIndex) & 65535) * 0x18;
+        if (!chunk || chunk > UINTPTR_MAX - itemOffset - 0x10)
+            return false;
+
+        uintptr_t registeredObject = 0;
+        uint32_t internalFlags = 0;
+        std::memcpy(&registeredObject, reinterpret_cast<const void*>(chunk + itemOffset), sizeof(registeredObject));
+        std::memcpy(&internalFlags, reinterpret_cast<const void*>(chunk + itemOffset + 8), sizeof(internalFlags));
+        if (registeredObject != objectPointer)
+            return false;
+
+        uint32_t objectFlags = 0;
+        std::memcpy(&objectFlags, reinterpret_cast<const void*>(objectPointer + 8), sizeof(objectFlags));
+        return !(internalFlags & MiniMapDefinitionAcquisition::UnusableObjectItemFlags) &&
+            !(objectFlags & 0x1b400);
+    }
+
+    void PlayerFieldAccessors::SetOffsets(const PlayerFieldOffsets& offsets)
+    {
+        g_playerMainCharacterField.offset = offsets.PlayerMainCharacter;
+        g_characterDeadField.offset = offsets.CharacterDead;
+        g_buildingDroneField.offset = offsets.BuildingDrone;
+        g_droneOwnerPlayerField.offset = offsets.DroneOwnerPlayer;
+        g_isLocalPlayerControllerField.offset = offsets.IsLocalPlayerController;
+        g_controllerPawnField.offset = offsets.ControllerPawn;
+        g_pawnControllerField.offset = offsets.PawnController;
+        g_characterStatusField.offset = offsets.CharacterStatus;
+        g_playerMapDataComponentField.offset = offsets.PlayerMapDataComponent;
+        g_objectIndexField.offset = offsets.ObjectIndex;
+        g_objectOuterField.offset = offsets.ObjectOuter;
+        g_actorRootComponentField.offset = offsets.ActorRootComponent;
+        g_actorBeingDestroyedField.offset = offsets.ActorBeingDestroyed;
+        g_actorBeingDestroyedField.boolMask = offsets.ActorBeingDestroyedMask;
+        g_actorBeingDestroyedField.resolvedSize = offsets.ActorBeingDestroyed >= 0 ? 1 : 0;
+        g_levelOwningWorldField.offset = offsets.LevelOwningWorld;
+    }
+
     bool TryGetPresentationSample(PresentationSample& outSample)
     {
         const auto settings = MiniMapConfig::GetTrackingSettings();
@@ -173,9 +351,14 @@ namespace MiniMapMap
         sample.TrackingRevision = settings.Revision;
         sample.InForgottenEngine = native->player.isPlayerInForgottenEngine(player.Character);
         sample.Tracking = sample.Character;
-        sample.TrackingObjectIndex = player.Character->Index;
+        const int32_t* trackingObjectIndex = g_objectIndexField.In(player.Character);
+        if (!trackingObjectIndex) return false;
+        sample.TrackingObjectIndex = *trackingObjectIndex;
+        const SDK::EPlayerCharacterStatus* characterStatus =
+            g_characterStatusField.In(player.Character);
+        if (!characterStatus) return false;
         if (!settings.FollowBuildDrone && (player.Pawn != player.Character ||
-            player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone))
+            *characterStatus == SDK::EPlayerCharacterStatus::BuildingDrone))
         {
             // Drone control rotation belongs to its view. Keep physical tracking
             // on the character's world heading, even during drone retirement.
@@ -184,23 +367,7 @@ namespace MiniMapMap
         }
         // Only a complete current association can select the drone. Missing or
         // retiring drone state uses the valid physical character, never history.
-        auto* drone = player.Character->BuildingDrone;
-        if (settings.FollowBuildDrone && player.Character->Status == SDK::EPlayerCharacterStatus::BuildingDrone &&
-            IsObject<SDK::ACrCharacterDroneBase>(drone) && InWorld(drone) &&
-            drone->OwnerPlayer == player.Character &&
-            (player.Pawn == player.Character || player.Pawn == drone))
-        {
-            PlayerPose dronePose{};
-            if (ReadPosition(drone, dronePose))
-            {
-                // Reuse the validated controller yaw sampled before drone selection.
-                dronePose.ControlYawDegrees = sample.Character.ControlYawDegrees;
-                if (!ReadWorldYaw(player.Character, sample.CharacterWorldYawDegrees)) return false;
-                sample.Tracking = dronePose;
-                sample.TrackingObjectIndex = drone->Index;
-                sample.DroneActive = true;
-            }
-        }
+        if (!BuildingDroneTracking::TryApply(player, settings.FollowBuildDrone, sample)) return false;
         sample.LocalVisibilityOrigin = {sample.Tracking.WorldX, sample.Tracking.WorldY, sample.Tracking.WorldZ};
         sample.Valid = sample.WorldGeneration == GetWorldGeneration();
         if (!sample.Valid) return false;
@@ -214,6 +381,35 @@ namespace MiniMapMap
         LocalPlayer player;
         if (!ResolveLocalPlayer(player)) return false;
         outCharacter = player.Character;
+        return true;
+    }
+
+    bool TryGetPlayerMapDataComponent(
+        SDK::ACrCharacterPlayerBase*& outPlayer,
+        SDK::UCrPlayerMapMenuDataComponent*& outComponent)
+    {
+        outPlayer = nullptr;
+        outComponent = nullptr;
+
+        LocalPlayer player;
+        if (!ResolveLocalPlayer(player))
+            return false;
+
+        SDK::UCrPlayerMapMenuDataComponent* const* componentField =
+            g_playerMapDataComponentField.In(player.Character);
+        if (!componentField)
+            return false;
+
+        auto* component = *componentField;
+        if (!IsObject<SDK::UCrPlayerMapMenuDataComponent>(component))
+            return false;
+
+        SDK::UObject* const* owner = g_objectOuterField.In(component);
+        if (!owner || *owner != player.Character)
+            return false;
+
+        outPlayer = player.Character;
+        outComponent = component;
         return true;
     }
 
