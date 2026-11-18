@@ -414,13 +414,11 @@ namespace Services::Map::Buildings::Cache
 		{
 			return MiniMap::Services::UploadState::Unavailable;
 		}
-#if defined(MINIMAP_EXPERIMENTAL)
 		EnsureSolidWhiteTexture();
 		if (ownershipUncertain_)
 		{
 			return MiniMap::Services::UploadState::Unavailable;
 		}
-#endif
 		if (!atlasDirty_)
 		{
 			return MiniMap::Services::UploadState::Complete;

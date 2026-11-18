@@ -6,8 +6,7 @@
 #include "SDK/Chimera_structs.hpp"
 #include "SDK/Engine_classes.hpp"
 #include "SDK/Engine_parameters.hpp"
-#include "plugin_interface.h"
-#include <plugin_map.h>
+#include "Map/RuntimeFieldAccess.h"
 #include "../Native/NativeApi.h"
 #include "../Native/DefinitionAcquisitionCore.h"
 #include "../plugin_helpers.h"
@@ -55,20 +54,21 @@ namespace
     SDK::UWorld* g_world = nullptr;
     std::atomic<bool> g_gameplayReady{false};
     std::atomic<uint64_t> g_worldGeneration{0};
-    PluginField<SDK::ACrCharacterPlayerBase*> g_playerMainCharacterField{};
-    PluginField<bool> g_characterDeadField{};
-    PluginField<SDK::ACrCharacterDroneBase*> g_buildingDroneField{};
-    PluginField<SDK::ACrCharacterPlayerBase*> g_droneOwnerPlayerField{};
-    PluginField<bool> g_isLocalPlayerControllerField{};
-    PluginField<SDK::APawn*> g_controllerPawnField{};
-    PluginField<SDK::AController*> g_pawnControllerField{};
-    PluginField<SDK::EPlayerCharacterStatus> g_characterStatusField{};
-    PluginField<SDK::UCrPlayerMapMenuDataComponent*> g_playerMapDataComponentField{};
-    PluginField<int32_t> g_objectIndexField{};
-    PluginField<SDK::UObject*> g_objectOuterField{};
-    PluginField<SDK::USceneComponent*> g_actorRootComponentField{};
-    PluginBitField g_actorBeingDestroyedField{};
-    PluginField<SDK::UWorld*> g_levelOwningWorldField{};
+    int32_t g_playerMainCharacterOffset = -1;
+    int32_t g_characterDeadOffset = -1;
+    int32_t g_buildingDroneOffset = -1;
+    int32_t g_droneOwnerPlayerOffset = -1;
+    int32_t g_isLocalPlayerControllerOffset = -1;
+    int32_t g_controllerPawnOffset = -1;
+    int32_t g_pawnControllerOffset = -1;
+    int32_t g_characterStatusOffset = -1;
+    int32_t g_playerMapDataComponentOffset = -1;
+    int32_t g_objectIndexOffset = -1;
+    int32_t g_objectOuterOffset = -1;
+    int32_t g_actorRootComponentOffset = -1;
+    int32_t g_actorBeingDestroyedOffset = -1;
+    uint8_t g_actorBeingDestroyedMask = 0;
+    int32_t g_levelOwningWorldOffset = -1;
 
     template<class T> bool IsObject(const SDK::UObject* object)
     {
@@ -81,13 +81,16 @@ namespace
     bool InWorld(const SDK::AActor* actor)
     {
         if (!MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(actor) ||
-            g_actorBeingDestroyedField.offset < 0 ||
-            g_actorBeingDestroyedField.boolMask == 0 ||
-            g_actorBeingDestroyedField.Get(actor)) return false;
-        SDK::UObject* const* outer = g_objectOuterField.In(actor);
+            g_actorBeingDestroyedOffset < 0 ||
+            g_actorBeingDestroyedMask == 0 ||
+            MiniMap::MapRuntimeAccess::GetBit(
+                actor, g_actorBeingDestroyedOffset, g_actorBeingDestroyedMask)) return false;
+        SDK::UObject* const* outer = MiniMap::MapRuntimeAccess::Field<SDK::UObject*>(
+            actor, g_objectOuterOffset);
         if (!outer || !IsObject<SDK::ULevel>(*outer)) return false;
         const auto* level = static_cast<const SDK::ULevel*>(*outer);
-        SDK::UWorld* const* owningWorld = g_levelOwningWorldField.In(level);
+        SDK::UWorld* const* owningWorld = MiniMap::MapRuntimeAccess::Field<SDK::UWorld*>(
+            level, g_levelOwningWorldOffset);
         return owningWorld && *owningWorld == g_world;
     }
 
@@ -107,26 +110,34 @@ namespace
             !MiniMapMap::PlayerFieldAccessors::IsObjectRegistered(g_world)) return false;
         auto* controller = native->player.getFirstPlayerController(g_world);
         if (!IsObject<SDK::ACrPlayerControllerBase>(controller) || !InWorld(controller)) return false;
-        const bool* isLocalPlayerController = g_isLocalPlayerControllerField.In(controller);
+        const bool* isLocalPlayerController = MiniMap::MapRuntimeAccess::Field<bool>(
+            controller, g_isLocalPlayerControllerOffset);
         if (!isLocalPlayerController || !*isLocalPlayerController) return false;
         auto* pc = static_cast<SDK::ACrPlayerControllerBase*>(controller);
-        SDK::ACrCharacterPlayerBase* const* mainCharacterField = g_playerMainCharacterField.In(pc);
+        SDK::ACrCharacterPlayerBase* const* mainCharacterField =
+            MiniMap::MapRuntimeAccess::Field<SDK::ACrCharacterPlayerBase*>(
+                pc, g_playerMainCharacterOffset);
         if (!mainCharacterField) return false;
         auto* character = *mainCharacterField;
         if (!IsObject<SDK::ACrCharacterPlayerBase>(character) || !InWorld(character)) return false;
-        const bool* characterDead = g_characterDeadField.In(character);
+        const bool* characterDead = MiniMap::MapRuntimeAccess::Field<bool>(
+            character, g_characterDeadOffset);
         if (!characterDead || *characterDead) return false;
-        SDK::APawn* const* controllerPawn = g_controllerPawnField.In(pc);
+        SDK::APawn* const* controllerPawn = MiniMap::MapRuntimeAccess::Field<SDK::APawn*>(
+            pc, g_controllerPawnOffset);
         if (!controllerPawn) return false;
         auto* pawn = *controllerPawn;
         if (!IsObject<SDK::APawn>(pawn) || !InWorld(pawn)) return false;
-        SDK::AController* const* pawnController = g_pawnControllerField.In(pawn);
+        SDK::AController* const* pawnController = MiniMap::MapRuntimeAccess::Field<SDK::AController*>(
+            pawn, g_pawnControllerOffset);
         if (!pawnController || *pawnController != pc) return false;
         if (pawn != character)
         {
             if (!IsObject<SDK::ACrCharacterDroneBase>(pawn)) return false;
             auto* drone = static_cast<SDK::ACrCharacterDroneBase*>(pawn);
-            SDK::ACrCharacterPlayerBase* const* droneOwner = g_droneOwnerPlayerField.In(drone);
+            SDK::ACrCharacterPlayerBase* const* droneOwner =
+                MiniMap::MapRuntimeAccess::Field<SDK::ACrCharacterPlayerBase*>(
+                    drone, g_droneOwnerPlayerOffset);
             if (!droneOwner || *droneOwner != character) return false;
         }
         out = {pc, character, pawn};
@@ -138,10 +149,12 @@ namespace
         const auto* native = MiniMapNative::Get();
         if (!native || !native->player.getComponentLocation) return false;
         // Both callers validate the actor before this resolved field access.
-        SDK::USceneComponent* const* rootField = g_actorRootComponentField.In(actor);
+        SDK::USceneComponent* const* rootField = MiniMap::MapRuntimeAccess::Field<SDK::USceneComponent*>(
+            actor, g_actorRootComponentOffset);
         if (!rootField || !IsObject<SDK::USceneComponent>(*rootField)) return false;
         auto* root = *rootField;
-        SDK::UObject* const* rootOuter = g_objectOuterField.In(root);
+        SDK::UObject* const* rootOuter = MiniMap::MapRuntimeAccess::Field<SDK::UObject*>(
+            root, g_objectOuterOffset);
         if (!rootOuter || *rootOuter != actor) return false;
         SDK::FVector location{};
         native->player.getComponentLocation(root, &location);
@@ -190,13 +203,15 @@ namespace
             MiniMapMap::PresentationSample& sample)
         {
             SDK::ACrCharacterDroneBase* const* buildingDrone =
-                g_buildingDroneField.In(player.Character);
+                MiniMap::MapRuntimeAccess::Field<SDK::ACrCharacterDroneBase*>(
+                    player.Character, g_buildingDroneOffset);
             if (!buildingDrone)
                 return false;
 
             auto* drone = *buildingDrone;
             const SDK::EPlayerCharacterStatus* status =
-                g_characterStatusField.In(player.Character);
+                MiniMap::MapRuntimeAccess::Field<SDK::EPlayerCharacterStatus>(
+                    player.Character, g_characterStatusOffset);
             if (!status)
                 return false;
 
@@ -204,7 +219,9 @@ namespace
                 !IsObject<SDK::ACrCharacterDroneBase>(drone) || !InWorld(drone))
                 return true;
 
-            SDK::ACrCharacterPlayerBase* const* owner = g_droneOwnerPlayerField.In(drone);
+            SDK::ACrCharacterPlayerBase* const* owner =
+                MiniMap::MapRuntimeAccess::Field<SDK::ACrCharacterPlayerBase*>(
+                    drone, g_droneOwnerPlayerOffset);
             if (!owner)
                 return false;
 
@@ -212,7 +229,8 @@ namespace
                 (player.Pawn != player.Character && player.Pawn != drone))
                 return true;
 
-            const int32_t* trackingObjectIndex = g_objectIndexField.In(drone);
+            const int32_t* trackingObjectIndex = MiniMap::MapRuntimeAccess::Field<int32_t>(
+                drone, g_objectIndexOffset);
             if (!trackingObjectIndex)
                 return false;
 
@@ -257,7 +275,8 @@ namespace MiniMapMap
         if (!object || !native || !native->asset.objectArray)
             return false;
 
-        const int32_t* objectIndex = g_objectIndexField.In(object);
+        const int32_t* objectIndex = MiniMap::MapRuntimeAccess::Field<int32_t>(
+            object, g_objectIndexOffset);
         return objectIndex && *objectIndex >= 0 &&
             MatchesObjectArrayEntry(object, *objectIndex, native->asset.objectArray);
     }
@@ -320,22 +339,21 @@ namespace MiniMapMap
 
     void PlayerFieldAccessors::SetOffsets(const PlayerFieldOffsets& offsets)
     {
-        g_playerMainCharacterField.offset = offsets.PlayerMainCharacter;
-        g_characterDeadField.offset = offsets.CharacterDead;
-        g_buildingDroneField.offset = offsets.BuildingDrone;
-        g_droneOwnerPlayerField.offset = offsets.DroneOwnerPlayer;
-        g_isLocalPlayerControllerField.offset = offsets.IsLocalPlayerController;
-        g_controllerPawnField.offset = offsets.ControllerPawn;
-        g_pawnControllerField.offset = offsets.PawnController;
-        g_characterStatusField.offset = offsets.CharacterStatus;
-        g_playerMapDataComponentField.offset = offsets.PlayerMapDataComponent;
-        g_objectIndexField.offset = offsets.ObjectIndex;
-        g_objectOuterField.offset = offsets.ObjectOuter;
-        g_actorRootComponentField.offset = offsets.ActorRootComponent;
-        g_actorBeingDestroyedField.offset = offsets.ActorBeingDestroyed;
-        g_actorBeingDestroyedField.boolMask = offsets.ActorBeingDestroyedMask;
-        g_actorBeingDestroyedField.resolvedSize = offsets.ActorBeingDestroyed >= 0 ? 1 : 0;
-        g_levelOwningWorldField.offset = offsets.LevelOwningWorld;
+        g_playerMainCharacterOffset = offsets.PlayerMainCharacter;
+        g_characterDeadOffset = offsets.CharacterDead;
+        g_buildingDroneOffset = offsets.BuildingDrone;
+        g_droneOwnerPlayerOffset = offsets.DroneOwnerPlayer;
+        g_isLocalPlayerControllerOffset = offsets.IsLocalPlayerController;
+        g_controllerPawnOffset = offsets.ControllerPawn;
+        g_pawnControllerOffset = offsets.PawnController;
+        g_characterStatusOffset = offsets.CharacterStatus;
+        g_playerMapDataComponentOffset = offsets.PlayerMapDataComponent;
+        g_objectIndexOffset = offsets.ObjectIndex;
+        g_objectOuterOffset = offsets.ObjectOuter;
+        g_actorRootComponentOffset = offsets.ActorRootComponent;
+        g_actorBeingDestroyedOffset = offsets.ActorBeingDestroyed;
+        g_actorBeingDestroyedMask = offsets.ActorBeingDestroyedMask;
+        g_levelOwningWorldOffset = offsets.LevelOwningWorld;
     }
 
     bool TryGetPresentationSample(PresentationSample& outSample)
@@ -351,11 +369,13 @@ namespace MiniMapMap
         sample.TrackingRevision = settings.Revision;
         sample.InForgottenEngine = native->player.isPlayerInForgottenEngine(player.Character);
         sample.Tracking = sample.Character;
-        const int32_t* trackingObjectIndex = g_objectIndexField.In(player.Character);
+        const int32_t* trackingObjectIndex = MiniMap::MapRuntimeAccess::Field<int32_t>(
+            player.Character, g_objectIndexOffset);
         if (!trackingObjectIndex) return false;
         sample.TrackingObjectIndex = *trackingObjectIndex;
         const SDK::EPlayerCharacterStatus* characterStatus =
-            g_characterStatusField.In(player.Character);
+            MiniMap::MapRuntimeAccess::Field<SDK::EPlayerCharacterStatus>(
+                player.Character, g_characterStatusOffset);
         if (!characterStatus) return false;
         if (!settings.FollowBuildDrone && (player.Pawn != player.Character ||
             *characterStatus == SDK::EPlayerCharacterStatus::BuildingDrone))
@@ -396,7 +416,8 @@ namespace MiniMapMap
             return false;
 
         SDK::UCrPlayerMapMenuDataComponent* const* componentField =
-            g_playerMapDataComponentField.In(player.Character);
+            MiniMap::MapRuntimeAccess::Field<SDK::UCrPlayerMapMenuDataComponent*>(
+                player.Character, g_playerMapDataComponentOffset);
         if (!componentField)
             return false;
 
@@ -404,7 +425,8 @@ namespace MiniMapMap
         if (!IsObject<SDK::UCrPlayerMapMenuDataComponent>(component))
             return false;
 
-        SDK::UObject* const* owner = g_objectOuterField.In(component);
+        SDK::UObject* const* owner = MiniMap::MapRuntimeAccess::Field<SDK::UObject*>(
+            component, g_objectOuterOffset);
         if (!owner || *owner != player.Character)
             return false;
 

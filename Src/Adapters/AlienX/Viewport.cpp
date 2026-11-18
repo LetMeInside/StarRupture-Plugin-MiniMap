@@ -5,9 +5,7 @@
 #include "Services/Log.h"
 #include <limits>
 #include <stdexcept>
-#if defined(MINIMAP_EXPERIMENTAL)
 #include <vector>
-#endif
 
 namespace
 {
@@ -18,9 +16,7 @@ namespace
     {
         IModLoaderImGui& Ui;
         std::array<std::size_t, 2> Clips{};
-#if defined(MINIMAP_EXPERIMENTAL)
         std::vector<PluginDrawVertex> TexturedTriangleVertices;
-#endif
         PluginDrawList List(S::DrawLayer layer) const
         { return layer == S::DrawLayer::Window ? Ui.GetWindowDrawList() : Ui.GetForegroundDrawList(); }
     public:
@@ -34,10 +30,8 @@ namespace
                 !Ui.DL_AddRectFilled || !Ui.DL_AddRect || !Ui.DL_AddCircleFilled ||
                 !Ui.DL_AddTriangle || !Ui.DL_AddTriangleFilled || !Ui.DL_AddText)
                 throw std::runtime_error("MiniMap: incomplete host canvas");
-#if defined(MINIMAP_EXPERIMENTAL)
             if (!Ui.DL_AddTexturedTriangles)
                 throw std::runtime_error("MiniMap: bulk textured-triangle callback unavailable");
-#endif
         }
         ~Canvas() override
         {
@@ -73,7 +67,6 @@ namespace
         {
             MiniMap::Adapters::AlienX::GetTextures().ImageQuad(Ui, List(l), t, p, u, c);
         }
-#if defined(MINIMAP_EXPERIMENTAL)
         bool TexturedTriangles(S::DrawLayer l, S::Texture t,
             std::span<const S::TexturedTriangleVertex> vertices,
             std::span<const std::uint16_t> indices) override
@@ -93,7 +86,6 @@ namespace
                 indices.data(), static_cast<std::uint32_t>(indices.size()));
             return result == PluginDrawResult_Ok;
         }
-#endif
         void FilledRect(S::DrawLayer l, S::Vec2 a, S::Vec2 b, S::Color c, float r) override
         { Ui.DL_AddRectFilled(List(l), a.x,a.y,b.x,b.y,c,r,PluginDrawFlags_RoundCornersAll); }
         void Rect(S::DrawLayer l, S::Vec2 a, S::Vec2 b, S::Color c, float r, float thickness) override

@@ -12,7 +12,6 @@ namespace MiniMap::Services
     struct Vec2 { float x, y; };
     using Quad = std::array<Vec2, 4>;
     using Color = std::uint32_t; // 0xAABBGGRR
-#if defined(MINIMAP_EXPERIMENTAL)
     /** Portable canvas vertex for one synchronous bulk textured-triangle submission. */
     struct TexturedTriangleVertex
     {
@@ -22,7 +21,6 @@ namespace MiniMap::Services
         float v;
         Color color;
     };
-#endif
     enum class DrawLayer { Window, Foreground };
     // Borrowed only for the synchronous RenderFn invocation. Never retain it.
     class ICanvas
@@ -39,26 +37,15 @@ namespace MiniMap::Services
         virtual void Image(DrawLayer, Texture, Vec2 min, Vec2 max, Vec2 uvMin, Vec2 uvMax, Color tint) = 0;
         virtual void ImageQuad(DrawLayer, Texture, const Quad& positions, const Quad& uv, Color tint) = 0;
         /**
-         * Submits one textured triangle using only the portable image-quad operation.
-         * @param layer Canvas draw list that receives the primitive.
+         * Submits indexed textured triangles synchronously; true means the host recorded the full batch.
+         * @param layer Canvas draw list that receives the batch.
          * @param texture Borrowed texture identity valid for the synchronous canvas call.
-         * @param positions Three canvas-space points in prepared triangle order.
-         * @param uv Three matching normalized texture coordinates.
-         * @param tint Straight RGBA tint in the existing 0xAABBGGRR format.
+         * @param vertices Batch-local positions, normalized UVs and straight RGBA tints.
+         * @param indices Batch-local 16-bit vertex indices in triangle order.
          */
-        virtual void TexturedTriangle(DrawLayer layer, Texture texture,
-            const std::array<Vec2, 3>& positions, const std::array<Vec2, 3>& uv, Color tint)
-        {
-            const Quad quadPositions{positions[0], positions[1], positions[2], positions[2]};
-            const Quad quadUv{uv[0], uv[1], uv[2], uv[2]};
-            ImageQuad(layer, texture, quadPositions, quadUv, tint);
-        }
-#if defined(MINIMAP_EXPERIMENTAL)
-        /** Submits one batch-local indexed triangle list synchronously; true means accepted by the host. */
         virtual bool TexturedTriangles(DrawLayer layer, Texture texture,
             std::span<const TexturedTriangleVertex> vertices,
             std::span<const std::uint16_t> indices) = 0;
-#endif
         virtual void FilledRect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding) = 0;
         virtual void Rect(DrawLayer, Vec2 min, Vec2 max, Color, float rounding, float thickness) = 0;
         virtual void FilledCircle(DrawLayer, Vec2 center, float radius, Color, int segments) = 0;

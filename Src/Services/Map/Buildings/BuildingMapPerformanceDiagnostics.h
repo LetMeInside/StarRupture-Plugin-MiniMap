@@ -2,7 +2,7 @@
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
-// Set to 0 in Client Debug Experimental to omit per-insertion ordinary batch capacity observations.
+// Set to 0 to omit per-insertion ordinary batch capacity observations.
 #define MINIMAP_ORDINARY_BATCH_CAPACITY_DIAGNOSTICS 0
 // Set to 0 in Client Debug builds to omit ordinary sprite range and batch sampling.
 #define MINIMAP_ORDINARY_RANGE_SAMPLING_DIAGNOSTICS 0
@@ -843,11 +843,9 @@ namespace Services::Map::Buildings
 			texture.LedgerWaitSample.Describe().data(), texture.LedgerHoldSample.Describe().data(),
 			texture.BackendSample.Describe().data(), admissionEstimate);
 		ReportDrawPass(*log, "ordinary", work.Ordinary);
-#if defined(MINIMAP_EXPERIMENTAL)
 		MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
 			"MiniMap: BuildingMap perf_draw_ordinary allBulkCanvasSubmissionsWallMs=%s",
 			work.Ordinary.OrdinaryCanvasSubmission.Describe().data());
-#endif
 		ReportDrawPass(*log, "spline", work.Spline);
 		ReportDrawPass(*log, "overlay", work.Overlay);
 	}

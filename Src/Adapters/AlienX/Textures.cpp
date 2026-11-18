@@ -436,7 +436,6 @@ namespace MiniMap::Adapters::AlienX
         }
 #endif
     }
-#if defined(MINIMAP_EXPERIMENTAL)
     PluginDrawResult Textures::TexturedTriangles(IModLoaderImGui& ui, PluginDrawList list,
         S::Texture token, const PluginDrawVertex* vertices, std::uint32_t vertexCount,
         const PluginDrawIndex* indices, std::uint32_t indexCount)
@@ -493,6 +492,5 @@ namespace MiniMap::Adapters::AlienX
 #endif
         return result;
     }
-#endif
 }
 #endif

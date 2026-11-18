@@ -189,7 +189,7 @@ namespace
             PLUGIN_FIELD_BITFIELD | PLUGIN_FIELD_CHECK, 1, -1 }
     };
 
-    /** Requires exact reflected layouts for POI, story-record, category, and actor fields. */
+    /** Resolves reflected POI, story-record, category, and actor fields and validates required extents. */
     class ClientPoiStoryFieldContract
     {
     public:
@@ -216,7 +216,7 @@ namespace
         }
 
     private:
-        /** Resolves a fixed group of fields with exact compiled offset and extent requirements. */
+        /** Resolves a fixed group of fields through the active loader scanner session. */
         static bool ResolveFields(
             IPluginHookScanner* scanner,
             const IPluginSelf* self,
@@ -245,15 +245,15 @@ namespace
         {
             static PluginFieldSpec fields[] = {
                 { "ACrGameStateBase::AbandonBaseInfoReplicator", "ACrGameStateBase",
-                    "AbandonBaseInfoReplicator", PLUGIN_FIELD_CHECK,
+                    "AbandonBaseInfoReplicator", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrGameStateBase::AbandonBaseInfoReplicator)),
                     static_cast<int32_t>(offsetof(SDK::ACrGameStateBase, AbandonBaseInfoReplicator)) },
                 { "ACrAbandonBaseInfoReplicator::AbandonBaseDataContainer",
-                    "ACrAbandonBaseInfoReplicator", "AbandonBaseDataContainer", PLUGIN_FIELD_CHECK,
+                    "ACrAbandonBaseInfoReplicator", "AbandonBaseDataContainer", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrAbandonBaseInfoReplicator::AbandonBaseDataContainer)),
                     static_cast<int32_t>(offsetof(SDK::ACrAbandonBaseInfoReplicator, AbandonBaseDataContainer)) },
                 { "FCrAbandonBaseDataContainer::AbandonBaseData", "FCrAbandonBaseDataContainer",
-                    "AbandonBaseData", PLUGIN_FIELD_CHECK,
+                    "AbandonBaseData", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrAbandonBaseDataContainer::AbandonBaseData)),
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataContainer, AbandonBaseData)) }
             };
@@ -315,18 +315,18 @@ namespace
         {
             static PluginFieldSpec fields[] = {
                 { "ACrPointOfInterestMarkerActor::PointOfInterestState", "ACrPointOfInterestMarkerActor",
-                    "PointOfInterestState", PLUGIN_FIELD_CHECK,
+                    "PointOfInterestState", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)),
                     static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestState)) },
                 { "ACrPointOfInterestMarkerActor::PointOfInterestType", "ACrPointOfInterestMarkerActor",
-                    "PointOfInterestType", PLUGIN_FIELD_CHECK,
+                    "PointOfInterestType", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)),
                     static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, PointOfInterestType)) },
                 { "ACrPointOfInterestMarkerActor::Guid", "ACrPointOfInterestMarkerActor", "Guid",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::Guid)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::Guid)),
                     static_cast<int32_t>(offsetof(SDK::ACrPointOfInterestMarkerActor, Guid)) },
                 { "ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned",
-                    "ACrPointOfInterestMarkerActor", "AbandonBaseStoryItemsAssigned", PLUGIN_FIELD_CHECK,
+                    "ACrPointOfInterestMarkerActor", "AbandonBaseStoryItemsAssigned", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrPointOfInterestMarkerActor::AbandonBaseStoryItemsAssigned)),
                     static_cast<int32_t>(offsetof(
                         SDK::ACrPointOfInterestMarkerActor, AbandonBaseStoryItemsAssigned)) }
@@ -345,31 +345,31 @@ namespace
         static bool ResolveCategoryFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
             static PluginFieldSpec fields[] = {
-                { "ACrDatapadBase::Guid", "ACrDatapadBase", "Guid", PLUGIN_FIELD_CHECK,
+                { "ACrDatapadBase::Guid", "ACrDatapadBase", "Guid", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrDatapadBase::Guid)),
                     static_cast<int32_t>(offsetof(SDK::ACrDatapadBase, Guid)) },
-                { "ACrAudiologBase::Guid", "ACrAudiologBase", "Guid", PLUGIN_FIELD_CHECK,
+                { "ACrAudiologBase::Guid", "ACrAudiologBase", "Guid", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::ACrAudiologBase::Guid)),
                     static_cast<int32_t>(offsetof(SDK::ACrAudiologBase, Guid)) },
                 { "UCrMapMenuCategoryData::Icon", "UCrMapMenuCategoryData", "Icon",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuCategoryData::Icon)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::UCrMapMenuCategoryData::Icon)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, Icon)) },
                 { "UCrMapMenuCategoryData::CategoryBlocked", "UCrMapMenuCategoryData",
-                    "CategoryBlocked", PLUGIN_FIELD_CHECK,
+                    "CategoryBlocked", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuCategoryData::CategoryBlocked)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, CategoryBlocked)) },
                 { "UCrMapMenuCategoryData::LegendFilter", "UCrMapMenuCategoryData", "LegendFilter",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuCategoryData::LegendFilter)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::UCrMapMenuCategoryData::LegendFilter)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, LegendFilter)) },
                 { "UCrMapMenuCategoryData::CanBeHiddenByFogOfWar", "UCrMapMenuCategoryData",
-                    "CanBeHiddenByFogOfWar", PLUGIN_FIELD_CHECK,
+                    "CanBeHiddenByFogOfWar", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuCategoryData, CanBeHiddenByFogOfWar)) },
                 { "UCrMapMenuPOIData::UnknownIcon", "UCrMapMenuPOIData", "UnknownIcon",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::UCrMapMenuPOIData::UnknownIcon)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::UCrMapMenuPOIData::UnknownIcon)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuPOIData, UnknownIcon)) },
                 { "UCrMapMenuPOIData::AbandonBaseCompletedIcon", "UCrMapMenuPOIData",
-                    "AbandonBaseCompletedIcon", PLUGIN_FIELD_CHECK,
+                    "AbandonBaseCompletedIcon", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::UCrMapMenuPOIData::AbandonBaseCompletedIcon)),
                     static_cast<int32_t>(offsetof(SDK::UCrMapMenuPOIData, AbandonBaseCompletedIcon)) }
             };
@@ -1240,40 +1240,40 @@ namespace
             return allResolved;
         }
 
-        /** Requires exact reflected offsets and extents for fields read by Foundables. */
+        /** Resolves Foundables fields and validates the storage-item extent contract. */
         static bool ResolveFoundablesFields(IPluginHookScanner* scanner, const IPluginSelf* self)
         {
             static PluginFieldSpec fields[] = {
                 { "FCrInventoryFragment::InputInventoryContainer", "FCrInventoryFragment",
-                    "InputInventoryContainer", PLUGIN_FIELD_CHECK,
+                    "InputInventoryContainer", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FCrItemsStorageContainer),
                     static_cast<int32_t>(offsetof(SDK::FCrInventoryFragment, InputInventoryContainer)) },
                 { "FCrInventoryFragment::MainInventoryContainer", "FCrInventoryFragment",
-                    "MainInventoryContainer", PLUGIN_FIELD_CHECK,
+                    "MainInventoryContainer", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FCrItemsStorageContainer),
                     static_cast<int32_t>(offsetof(SDK::FCrInventoryFragment, MainInventoryContainer)) },
                 { "FCrItemsStorageContainer::Items", "FCrItemsStorageContainer", "Items",
-                    PLUGIN_FIELD_CHECK, sizeof(decltype(SDK::FCrItemsStorageContainer::Items)),
+                    PLUGIN_FIELD_FLAG_NONE, sizeof(decltype(SDK::FCrItemsStorageContainer::Items)),
                     static_cast<int32_t>(offsetof(SDK::FCrItemsStorageContainer, Items)) },
                 { "FCrStorageItem::Item", "FCrStorageItem", "Item", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FAuSimpleItem),
                     static_cast<int32_t>(offsetof(SDK::FCrStorageItem, Item)) },
-                { "FAuSimpleItem::ItemId", "FAuSimpleItem", "ItemId", PLUGIN_FIELD_CHECK,
+                { "FAuSimpleItem::ItemId", "FAuSimpleItem", "ItemId", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FAuItemId),
                     static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, ItemId)) },
-                { "FAuSimpleItem::ItemDataBase", "FAuSimpleItem", "ItemDataBase", PLUGIN_FIELD_CHECK,
+                { "FAuSimpleItem::ItemDataBase", "FAuSimpleItem", "ItemDataBase", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::UAuItemDataBase*),
                     static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, ItemDataBase)) },
-                { "FAuSimpleItem::Count", "FAuSimpleItem", "Count", PLUGIN_FIELD_CHECK,
+                { "FAuSimpleItem::Count", "FAuSimpleItem", "Count", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FAuSimpleItem::Count)),
                     static_cast<int32_t>(offsetof(SDK::FAuSimpleItem, Count)) },
-                { "FAuItemId::Handle", "FAuItemId", "Handle", PLUGIN_FIELD_CHECK,
+                { "FAuItemId::Handle", "FAuItemId", "Handle", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::FGuid), static_cast<int32_t>(offsetof(SDK::FAuItemId, Handle)) },
-                { "UAuItemDataBase::UIItemType", "UAuItemDataBase", "UIItemType", PLUGIN_FIELD_CHECK,
+                { "UAuItemDataBase::UIItemType", "UAuItemDataBase", "UIItemType", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(SDK::EUIItemType),
                     static_cast<int32_t>(offsetof(SDK::UAuItemDataBase, UIItemType)) },
                 { "FCrMassFoundableParameters::FoundableType", "FCrMassFoundableParameters",
-                    "FoundableType", PLUGIN_FIELD_CHECK,
+                    "FoundableType", PLUGIN_FIELD_FLAG_NONE,
                     sizeof(decltype(SDK::FCrMassFoundableParameters::FoundableType)),
                     static_cast<int32_t>(offsetof(SDK::FCrMassFoundableParameters, FoundableType)) }
             };

@@ -1,13 +1,12 @@
 // Copies native spline channels and payload data without deriving any render geometry.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingSplineSource.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "Native/NativeApi.h"
-#include "plugin_interface.h"
 #include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/CoreUObject_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
 #include <SDK/Engine_structs.hpp>
-#include <plugin_map.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -134,22 +133,19 @@ namespace MiniMap::BuildingAcquisition
 
     namespace
     {
-        PluginField<uint8_t> g_splinePointIndexField = SR_FIELD(uint8_t,
-            FAuAPSplinePointData, Index, PLUGIN_FIELD_FLAG_NONE);
-        PluginField<SDK::FVector_NetQuantize> g_splinePointPositionField = SR_FIELD(
-            SDK::FVector_NetQuantize, FAuAPSplinePointData, Position, PLUGIN_FIELD_FLAG_NONE);
-        PluginField<SDK::FVector_NetQuantize10> g_splinePointTangentField = SR_FIELD(
-            SDK::FVector_NetQuantize10, FAuAPSplinePointData, Tangent, PLUGIN_FIELD_FLAG_NONE);
-        PluginFieldSpec g_splinePointSize = SR_SIZE(FAuAPSplinePointData);
+        int32_t g_splinePointIndexOffset = -1;
+        int32_t g_splinePointPositionOffset = -1;
+        int32_t g_splinePointTangentOffset = -1;
+        uint32_t g_splinePointStride = 0;
     }
 
     void BuildingSplineSource::SetPointArrayContract(int32_t indexOffset, int32_t positionOffset,
         int32_t tangentOffset, uint32_t elementSize)
     {
-        g_splinePointIndexField.offset = indexOffset;
-        g_splinePointPositionField.offset = positionOffset;
-        g_splinePointTangentField.offset = tangentOffset;
-        g_splinePointSize.resolvedSize = elementSize;
+        g_splinePointIndexOffset = indexOffset;
+        g_splinePointPositionOffset = positionOffset;
+        g_splinePointTangentOffset = tangentOffset;
+        g_splinePointStride = elementSize;
     }
 
     /** Implements typed value copies and temporary payload lifetime only. */
@@ -222,15 +218,19 @@ namespace MiniMap::BuildingAcquisition
             output.RecordedLength = source.SplineRealLength;
             bool valid = Finite(output.LocationWS) && Finite(output.RotationDegreesWS) &&
                 Finite(output.RecordedLength);
-            if (!ValidArray(source.SplineData, g_splinePointSize.resolvedSize))
+            if (!ValidArray(source.SplineData, g_splinePointStride))
                 return false;
             output.Points.reserve(source.SplineData.Num());
             for (int32_t index = 0; index < source.SplineData.Num(); ++index)
             {
-                const uint8_t* point = PluginMap::ElementAt(source.SplineData, index, g_splinePointSize);
-                const uint8_t* pointIndex = g_splinePointIndexField.In(point);
-                const SDK::FVector_NetQuantize* position = g_splinePointPositionField.In(point);
-                const SDK::FVector_NetQuantize10* tangent = g_splinePointTangentField.In(point);
+                const uint8_t* point = MiniMap::MapRuntimeAccess::ElementAt(
+                    source.SplineData.GetDataPtr(), source.SplineData.Num(), index, g_splinePointStride);
+                const uint8_t* pointIndex = MiniMap::MapRuntimeAccess::Field<uint8_t>(
+                    point, g_splinePointIndexOffset);
+                const SDK::FVector_NetQuantize* position = MiniMap::MapRuntimeAccess::Field<
+                    SDK::FVector_NetQuantize>(point, g_splinePointPositionOffset);
+                const SDK::FVector_NetQuantize10* tangent = MiniMap::MapRuntimeAccess::Field<
+                    SDK::FVector_NetQuantize10>(point, g_splinePointTangentOffset);
                 if (!pointIndex || !position || !tangent)
                     return false;
                 Facts::SplinePoint copy{*pointIndex, Value(*position), Value(*tangent)};

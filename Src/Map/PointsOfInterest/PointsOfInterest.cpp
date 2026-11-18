@@ -11,6 +11,7 @@
 #include "Map/Map.h"
 #include "Map/MapTransform.h"
 #include "Map/MarkerIconSizing.h"
+#include "Map/RuntimeFieldAccess.h"
 
 #include "Native/NativeApi.h"
 #include "Native/TextureAccess.h"
@@ -19,7 +20,6 @@
 #include "Services/RuntimeEvents.h"
 #include "Native/MapMenuDevSettingsLookup.h"
 #include "plugin_interface.h"
-#include "plugin_map.h"
 
 #include "SDK/Chimera_classes.hpp"
 #include "SDK/Chimera_structs.hpp"
@@ -79,6 +79,9 @@ static_assert(std::is_same_v<
 
 namespace
 {
+    using MiniMap::MapRuntimeAccess::ElementAt;
+    using MiniMap::MapRuntimeAccess::Field;
+
     MiniMap::Services::Registration g_tickRegistration{};
     constexpr float kSnapshotIntervalSeconds =
         0.5f;
@@ -104,23 +107,19 @@ namespace
     constexpr int32_t kMaximumReasonableAbandonBaseRecords =
         4096;
 
-    PluginField<SDK::AGameStateBase*> g_worldGameStateField{};
-    PluginField<SDK::ACrAbandonBaseInfoReplicator*> g_abandonBaseReplicatorField{};
-    PluginField<SDK::FCrAbandonBaseDataContainer> g_abandonBaseContainerField{};
-    PluginField<SDK::TArray<SDK::FCrAbandonBaseData>> g_abandonBaseArrayField{};
-    PluginField<decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)>
-        g_markerStateField{};
-    PluginField<decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)>
-        g_markerTypeField{};
-    PluginField<SDK::FGuid> g_markerGuidField{};
-    PluginField<SDK::FSlateBrush> g_categoryIconField{};
-    PluginField<decltype(SDK::UCrMapMenuCategoryData::LegendFilter)>
-        g_categoryLegendFilterField{};
-    PluginField<decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)>
-        g_categoryCanBeHiddenByFogField{};
-    PluginField<SDK::FSlateBrush> g_poiUnknownIconField{};
-    PluginField<SDK::FSlateBrush> g_poiAbandonBaseCompletedIconField{};
-    PluginField<SDK::USceneComponent*> g_actorRootComponentField{};
+    int32_t g_worldGameStateOffset = -1;
+    int32_t g_abandonBaseReplicatorOffset = -1;
+    int32_t g_abandonBaseContainerOffset = -1;
+    int32_t g_abandonBaseArrayOffset = -1;
+    int32_t g_markerStateOffset = -1;
+    int32_t g_markerTypeOffset = -1;
+    int32_t g_markerGuidOffset = -1;
+    int32_t g_categoryIconOffset = -1;
+    int32_t g_categoryLegendFilterOffset = -1;
+    int32_t g_categoryCanBeHiddenByFogOffset = -1;
+    int32_t g_poiUnknownIconOffset = -1;
+    int32_t g_poiAbandonBaseCompletedIconOffset = -1;
+    int32_t g_actorRootComponentOffset = -1;
 
 
     struct NativeActorClassStorage
@@ -376,7 +375,8 @@ namespace
          * either pointer across polls.
          */
         SDK::AGameStateBase** baseGameStateField =
-            g_worldGameStateField.In(world);
+            Field<SDK::AGameStateBase*>(
+                world, g_worldGameStateOffset);
 
         if (baseGameStateField == nullptr ||
             *baseGameStateField == nullptr)
@@ -389,7 +389,8 @@ namespace
                 *baseGameStateField);
 
         SDK::ACrAbandonBaseInfoReplicator** replicatorField =
-            g_abandonBaseReplicatorField.In(gameState);
+            Field<SDK::ACrAbandonBaseInfoReplicator*>(
+                gameState, g_abandonBaseReplicatorOffset);
 
         if (replicatorField == nullptr ||
             *replicatorField == nullptr)
@@ -400,14 +401,16 @@ namespace
         SDK::ACrAbandonBaseInfoReplicator* replicator =
             *replicatorField;
         const SDK::FCrAbandonBaseDataContainer* container =
-            g_abandonBaseContainerField.In(replicator);
+            Field<SDK::FCrAbandonBaseDataContainer>(
+                replicator, g_abandonBaseContainerOffset);
         if (container == nullptr)
         {
             return nullptr;
         }
 
         const SDK::TArray<SDK::FCrAbandonBaseData>* entriesField =
-            g_abandonBaseArrayField.In(container);
+            Field<SDK::TArray<SDK::FCrAbandonBaseData>>(
+                container, g_abandonBaseArrayOffset);
         if (entriesField == nullptr)
         {
             return nullptr;
@@ -470,27 +473,22 @@ namespace
             return nullptr;
         }
 
-        PluginFieldSpec elementSize{};
-        elementSize.resolvedSize = stride;
-        PluginField<SDK::FGuid> abandonBaseGuid{};
-        abandonBaseGuid.offset = idOffset;
-        abandonBaseGuid.resolvedSize = idSize;
-
         for (int32_t index = 0;
             index < count;
             ++index)
         {
-            const uint8_t* record = PluginMap::ElementAt(
+            const uint8_t* record = ElementAt(
                 data,
                 count,
                 index,
-                elementSize);
+                stride);
             if (record == nullptr)
             {
                 return nullptr;
             }
 
-            const SDK::FGuid* id = abandonBaseGuid.In(record);
+            const SDK::FGuid* id = Field<SDK::FGuid>(
+                record, idOffset);
             if (id == nullptr)
             {
                 return nullptr;
@@ -583,15 +581,17 @@ namespace
         }
 
         const SDK::FSlateBrush* brush =
-            g_categoryIconField.In(category);
+            Field<SDK::FSlateBrush>(category, g_categoryIconOffset);
 
         if (variant == IconVariant::Unknown)
         {
-            brush = g_poiUnknownIconField.In(category);
+            brush = Field<SDK::FSlateBrush>(
+                category, g_poiUnknownIconOffset);
         }
         else if (variant == IconVariant::Completed)
         {
-            brush = g_poiAbandonBaseCompletedIconField.In(category);
+            brush = Field<SDK::FSlateBrush>(
+                category, g_poiAbandonBaseCompletedIconOffset);
         }
 
         if (brush == nullptr)
@@ -732,9 +732,14 @@ namespace
         }
 
         const auto* marker = static_cast<const SDK::ACrPointOfInterestMarkerActor*>(actor);
-        const auto* stateField = g_markerStateField.In(marker);
-        const auto* typeField = g_markerTypeField.In(marker);
-        const auto* guidField = g_markerGuidField.In(marker);
+        const auto* stateField = Field<
+            decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestState)>(
+                marker, g_markerStateOffset);
+        const auto* typeField = Field<
+            decltype(SDK::ACrPointOfInterestMarkerActor::PointOfInterestType)>(
+                marker, g_markerTypeOffset);
+        const auto* guidField = Field<SDK::FGuid>(
+            marker, g_markerGuidOffset);
         if (stateField == nullptr || typeField == nullptr || guidField == nullptr)
         {
             return false;
@@ -781,7 +786,9 @@ namespace
         if (!unknown)
         {
             const auto* legendFilter =
-                g_categoryLegendFilterField.In(category);
+                Field<
+                    decltype(SDK::UCrMapMenuCategoryData::LegendFilter)>(
+                        category, g_categoryLegendFilterOffset);
             if (legendFilter == nullptr)
             {
                 return false;
@@ -851,7 +858,8 @@ namespace
         }
 
         SDK::USceneComponent** rootField =
-            g_actorRootComponentField.In(actor);
+            Field<SDK::USceneComponent*>(
+                actor, g_actorRootComponentOffset);
 
         if (rootField == nullptr ||
             *rootField == nullptr)
@@ -873,7 +881,9 @@ namespace
         // state and must use the current feather at draw time, not a poll-time
         // native-mask-only exclusion.
         const auto* canBeHiddenByFog =
-            g_categoryCanBeHiddenByFogField.In(category);
+            Field<
+                decltype(SDK::UCrMapMenuCategoryData::CanBeHiddenByFogOfWar)>(
+                    category, g_categoryCanBeHiddenByFogOffset);
         if (canBeHiddenByFog == nullptr)
         {
             return false;
@@ -1044,19 +1054,19 @@ namespace MiniMapPointsOfInterest
 {
     void SetFieldOffsets(const FieldOffsets& offsets)
     {
-        g_worldGameStateField.offset = offsets.WorldGameState;
-        g_abandonBaseReplicatorField.offset = offsets.GameStateAbandonBaseInfoReplicator;
-        g_abandonBaseContainerField.offset = offsets.ReplicatorAbandonBaseDataContainer;
-        g_abandonBaseArrayField.offset = offsets.AbandonBaseContainerData;
-        g_markerStateField.offset = offsets.MarkerState;
-        g_markerTypeField.offset = offsets.MarkerType;
-        g_markerGuidField.offset = offsets.MarkerGuid;
-        g_categoryIconField.offset = offsets.CategoryIcon;
-        g_categoryLegendFilterField.offset = offsets.CategoryLegendFilter;
-        g_categoryCanBeHiddenByFogField.offset = offsets.CategoryCanBeHiddenByFog;
-        g_poiUnknownIconField.offset = offsets.PoiUnknownIcon;
-        g_poiAbandonBaseCompletedIconField.offset = offsets.PoiAbandonBaseCompletedIcon;
-        g_actorRootComponentField.offset = offsets.ActorRootComponent;
+        g_worldGameStateOffset = offsets.WorldGameState;
+        g_abandonBaseReplicatorOffset = offsets.GameStateAbandonBaseInfoReplicator;
+        g_abandonBaseContainerOffset = offsets.ReplicatorAbandonBaseDataContainer;
+        g_abandonBaseArrayOffset = offsets.AbandonBaseContainerData;
+        g_markerStateOffset = offsets.MarkerState;
+        g_markerTypeOffset = offsets.MarkerType;
+        g_markerGuidOffset = offsets.MarkerGuid;
+        g_categoryIconOffset = offsets.CategoryIcon;
+        g_categoryLegendFilterOffset = offsets.CategoryLegendFilter;
+        g_categoryCanBeHiddenByFogOffset = offsets.CategoryCanBeHiddenByFog;
+        g_poiUnknownIconOffset = offsets.PoiUnknownIcon;
+        g_poiAbandonBaseCompletedIconOffset = offsets.PoiAbandonBaseCompletedIcon;
+        g_actorRootComponentOffset = offsets.ActorRootComponent;
     }
 
     bool Initialize(

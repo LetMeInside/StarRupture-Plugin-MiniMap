@@ -225,32 +225,6 @@ namespace Services::Map::Buildings
 			MiniMap::Services::TextureSize atlasSize,
 			const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections,
 			bool overlayLast) const;
-		/** Maps processed-image UVs through one bound content rectangle before submission. */
-		void DrawSpriteTriangle(
-			MiniMap::Services::ICanvas& canvas,
-			MiniMap::Services::DrawLayer layer,
-			const CanvasTransform& transform,
-			MiniMap::Services::Texture texture,
-			MiniMap::Services::TextureSize atlasSize,
-			const BuildingMapSectionPresentation::SpriteBinding& binding,
-			const BuildingMapSectionPresentation::SpriteTriangle& triangle
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
-#endif
-			) const;
-		/** Projects an ordinary triangle using its binding's preconverted UV operands and submits it individually. */
-		void DrawOrdinarySpriteTriangle(
-			MiniMap::Services::ICanvas& canvas,
-			MiniMap::Services::DrawLayer layer,
-			const CanvasTransform& transform,
-			MiniMap::Services::Texture texture,
-			const SpriteUvOperands& uvOperands,
-			const BuildingMapSectionPresentation::SpriteTriangle& triangle
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, BuildingMapPerformanceDiagnostics::DrawPass* sampledPass
-#endif
-			) const;
-#if defined(MINIMAP_EXPERIMENTAL)
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Records vertex vector growth and high-water marks after one existing insertion. */
 		static void RecordVertexBatchInsertion(
@@ -292,7 +266,6 @@ namespace Services::Map::Buildings
 #endif
 #endif
 			) const;
-#endif
 		/** Rejects invalid clip bounds before preparing spline draw work. */
 		static bool IsValidSplineClip(const CanvasTransform& transform) noexcept;
 		/** Draws prepared spline ranges in Section and triangle order. */
@@ -300,10 +273,8 @@ namespace Services::Map::Buildings
 			MiniMap::Services::ICanvas& canvas,
 			MiniMap::Services::DrawLayer layer,
 			const CanvasTransform& transform,
-#if defined(MINIMAP_EXPERIMENTAL)
 			MiniMap::Services::Texture splineWhiteTexture,
 			const std::shared_ptr<const void>& splineWhiteTextureLease,
-#endif
 			const std::vector<std::shared_ptr<const BuildingMapSectionPresentation>>& sections) const;
 		/** Draws one Section while sharing spline batching state with adjacent Sections. */
 		void DrawSplineSection(
@@ -311,14 +282,12 @@ namespace Services::Map::Buildings
 			MiniMap::Services::DrawLayer layer,
 			const CanvasTransform& transform,
 			const BuildingMapSectionPresentation& section
-#if defined(MINIMAP_EXPERIMENTAL)
 			, MiniMap::Services::Texture splineWhiteTexture,
 			const std::shared_ptr<const void>& splineWhiteTextureLease,
 			MiniMap::Services::Texture& activeTexture,
 			bool& hasActiveTexture,
 			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
 			std::vector<std::uint16_t>& indices
-#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			, BuildingMapPerformanceDiagnostics::DrawPass* pass
 #endif
@@ -333,7 +302,6 @@ namespace Services::Map::Buildings
 			, BuildingMapPerformanceDiagnostics::DrawPass* pass
 #endif
 			) const;
-#if defined(MINIMAP_EXPERIMENTAL)
 		/** Clears and retains the existing bounded render-thread spline batch scratch. */
 		static void PrepareSplineBatchScratch(
 			std::vector<MiniMap::Services::TexturedTriangleVertex>& vertices,
@@ -415,18 +383,6 @@ namespace Services::Map::Buildings
 			, BuildingMapPerformanceDiagnostics::DrawPass* pass
 #endif
 			) const;
-#else
-		/** Preserves the non-experimental FilledTriangle submission and its diagnostics. */
-		void DrawFilledSplineTriangle(
-			MiniMap::Services::ICanvas& canvas,
-			MiniMap::Services::DrawLayer layer,
-			const CanvasTransform& transform,
-			const BuildingMapSectionPresentation::SplineTriangle& triangle
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, BuildingMapPerformanceDiagnostics::DrawPass* pass
-#endif
-			) const;
-#endif
 		/** Clears renderer snapshots before service invalidation or viewport closure. */
 		void ClearPresentationSnapshot() noexcept;
 

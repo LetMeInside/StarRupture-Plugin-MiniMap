@@ -79,13 +79,11 @@ namespace Services::Map::Buildings
 			std::size_t FirstTriangle = 0;
 			std::size_t TriangleCount = 0;
 			Visuals::SplineTextureBindingSlot BindingSlot = Visuals::SplineTextureBindingSlot::Invalid;
-#if defined(MINIMAP_EXPERIMENTAL)
 			SplineWorldBounds Bounds;
 			std::vector<SplineTriangleGroup> Groups;
 
 			/** Extends the last group or opens one for this newly copied triangle and Section offset. */
 			void IncludeCopiedTriangle(std::size_t triangleIndex, const SplineTriangle& triangle);
-#endif
 		};
 
 		/** Shares unchanged world geometry when only atlas content bindings change. */
