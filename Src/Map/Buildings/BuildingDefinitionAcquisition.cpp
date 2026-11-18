@@ -2,6 +2,7 @@
 // It converts profile FRotator values to the established neutral quaternion convention.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingDefinitionAcquisition.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -41,11 +42,9 @@ static_assert(sizeof(SDK::FString) == 0x10);
 static_assert(alignof(SDK::FString) == 0x08);
 static_assert(sizeof(SDK::FAuAPMassSpawnedEntityType) == 0x38);
 static_assert(alignof(SDK::FAuAPMassSpawnedEntityType) == 0x08);
-static_assert(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfig) == 0x00);
 static_assert(sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfig)) == 0x28);
 static_assert(std::is_same_v<decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfig),
     SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>>);
-static_assert(offsetof(SDK::FAuAPMassSpawnedEntityType, EntityConfigPtr) == 0x30);
 static_assert(sizeof(decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfigPtr)) == 0x08);
 static_assert(std::is_same_v<decltype(SDK::FAuAPMassSpawnedEntityType::EntityConfigPtr),
     SDK::UMassEntityConfigAsset*>);
@@ -57,28 +56,21 @@ static_assert(sizeof(decltype(SDK::FMassEntityConfig::Traits)) == 0x10);
 static_assert(std::is_same_v<decltype(SDK::FMassEntityConfig::Parent), SDK::UMassEntityConfigAsset*>);
 static_assert(std::is_same_v<decltype(SDK::FMassEntityConfig::Traits),
     SDK::TArray<SDK::UMassEntityTraitBase*>>);
-static_assert(offsetof(SDK::UAuActorPlacementData, ActorClass) == 0x38);
 static_assert(sizeof(decltype(SDK::UAuActorPlacementData::ActorClass)) == 0x28);
-static_assert(offsetof(SDK::UAuActorPlacementData, EntityType) == 0x120);
 static_assert(sizeof(decltype(SDK::UAuActorPlacementData::EntityType)) == 0x38);
-static_assert(offsetof(SDK::UAuActorPlacementData, BuildingID) == 0x170);
 static_assert(sizeof(decltype(SDK::UAuActorPlacementData::BuildingID)) == 0x04);
 static_assert(std::is_same_v<decltype(SDK::UAuActorPlacementData::ActorClass),
     SDK::TSoftClassPtr<SDK::UClass>>);
 static_assert(std::is_same_v<decltype(SDK::UAuActorPlacementData::BuildingID), SDK::ECrBuildingID>);
 static_assert(std::is_same_v<std::underlying_type_t<SDK::ECrBuildingID>, uint32_t>);
-static_assert(offsetof(SDK::UCrBuildingData, Tags) == 0x3B0);
 static_assert(sizeof(decltype(SDK::UCrBuildingData::Tags)) == 0x10);
 static_assert(std::is_same_v<decltype(SDK::UCrBuildingData::Tags), SDK::TArray<SDK::FName>>);
 static_assert(offsetof(SDK::UMassEntityConfigAsset, Config) == 0x30);
 static_assert(sizeof(decltype(SDK::UMassEntityConfigAsset::Config)) == 0x30);
-static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait, HighResTemplateActor) == 0xD0);
-static_assert(offsetof(SDK::UCrMassRepVisCosmeticsTrait, LowResTemplateActor) == 0xD8);
 static_assert(offsetof(SDK::UMassVisualizationTrait, HighResTemplateActor) == 0xD0);
 static_assert(offsetof(SDK::UMassVisualizationTrait, LowResTemplateActor) == 0xD8);
 static_assert(offsetof(SDK::UBlueprintGeneratedClass, ComponentTemplates) == 0x220);
 static_assert(sizeof(decltype(SDK::UBlueprintGeneratedClass::ComponentTemplates)) == 0x10);
-static_assert(offsetof(SDK::ACrModularRampWalkway, SplineMesh) == 0x6F8);
 static_assert(offsetof(SDK::UStaticMeshComponent, StaticMesh) == 0x588);
 static_assert(offsetof(SDK::UStaticMesh, ExtendedBounds) == 0x240);
 static_assert(offsetof(SDK::USceneComponent, RelativeLocation) == 0x140);
@@ -146,9 +138,16 @@ namespace MiniMap::BuildingAcquisition
     using Facts = BuildingAcquiredFacts;
     using Status = Facts::Status;
 
+    namespace
+    {
+        RuntimeFieldOffsets g_runtimeFieldOffsets{-1, -1, -1, -1, -1, -1, -1, -1, -1};
+        bool g_runtimeFieldOffsetsPublished = false;
+    }
+
     /** Roots conversion metadata independently; a Copy call retains it across reentry. */
     struct BuildingDefinitionAcquisition::Metadata
     {
+        RuntimeFieldOffsets Fields;
         std::vector<SDK::UObject*> Roots;
         SDK::UObject* Library = nullptr;
         SDK::UClass* BuildingData = nullptr;
@@ -343,12 +342,14 @@ namespace MiniMap::BuildingAcquisition
             if (!cdo || !cdo->IsA(Walkway))
                 return true;
             const auto* walkway = static_cast<const SDK::ACrModularRampWalkway*>(cdo);
+            auto* splineMesh = *MapRuntimeAccess::Field<SDK::UStaticMesh*>(
+                walkway, Fields.WalkwaySplineMesh);
             ProfileCandidate candidate;
             candidate.Order = {rank, 0, type == Walkway ? 0 : 1, type->Index, 0, 0, 0, 0, 0,
                 cdo->Index, 0, static_cast<std::int64_t>(candidates.size())};
-            if (!CopyBounds(walkway->SplineMesh, candidate.Values))
+            if (!CopyBounds(splineMesh, candidate.Values))
             {
-                candidate.Values.Status = walkway->SplineMesh
+                candidate.Values.Status = splineMesh
                     ? ::Services::Map::Buildings::SplineProfileAlternativeStatus::InvalidBounds
                     : ::Services::Map::Buildings::SplineProfileAlternativeStatus::MissingMesh;
             }
@@ -419,9 +420,10 @@ namespace MiniMap::BuildingAcquisition
                     SDK::UClass* low = nullptr;
                     if (trait->IsA(CosmeticTrait))
                     {
-                        const auto* visual = static_cast<const SDK::UCrMassRepVisCosmeticsTrait*>(trait);
-                        high = visual->HighResTemplateActor;
-                        low = visual->LowResTemplateActor;
+                        high = *MapRuntimeAccess::Field<SDK::UClass*>(
+                            trait, Fields.HighResTemplateActor);
+                        low = *MapRuntimeAccess::Field<SDK::UClass*>(
+                            trait, Fields.LowResTemplateActor);
                     }
                     else if (trait->IsA(VisualizationTrait))
                     {
@@ -474,9 +476,15 @@ namespace MiniMap::BuildingAcquisition
                 const DefinitionOwner& definition) const
         {
             const auto& placement = *definition.Root;
-            auto configReference = placement.EntityType.EntityConfig;
-            auto authoredReference = placement.ActorClass;
-            auto* config = placement.EntityType.EntityConfigPtr;
+            const auto* entityType = MapRuntimeAccess::Field<std::uint8_t>(
+                &placement, Fields.EntityType);
+            auto configReference = *MapRuntimeAccess::Field<
+                SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>>(
+                    entityType, Fields.EntityConfig);
+            auto authoredReference = *MapRuntimeAccess::Field<
+                SDK::TSoftClassPtr<SDK::UClass>>(&placement, Fields.ActorClass);
+            auto* config = *MapRuntimeAccess::Field<SDK::UMassEntityConfigAsset*>(
+                entityType, Fields.EntityConfigPtr);
             TemporaryRoots roots;
             if (!config && configReference.ObjectID.AssetPath.PackageName.ComparisonIndex != 0)
             {
@@ -566,7 +574,8 @@ namespace MiniMap::BuildingAcquisition
             output.InteriorStatus = Status::Ready;
             if (!placement.IsA(BuildingData))
                 return;
-            const auto& tags = static_cast<const SDK::UCrBuildingData&>(placement).Tags;
+            const auto& tags = *MapRuntimeAccess::Field<SDK::TArray<SDK::FName>>(
+                &placement, Fields.Tags);
             if (tags.Num() < 0 || tags.Max() < tags.Num() || (tags.Num() && !tags.GetDataPtr()))
             {
                 output.InteriorStatus = Status::Invalid;
@@ -583,12 +592,18 @@ namespace MiniMap::BuildingAcquisition
             auto result = std::make_shared<Facts::Definition>();
             const auto& placement = *definition.Root;
             result->ObjectIndex = placement.Index;
-            result->BuildingId = static_cast<std::uint32_t>(placement.BuildingID);
+            result->BuildingId = static_cast<std::uint32_t>(
+                *MapRuntimeAccess::Field<SDK::ECrBuildingID>(&placement, Fields.BuildingId));
             CopyInterior(placement, *result);
+            const auto* entityType = MapRuntimeAccess::Field<std::uint8_t>(
+                &placement, Fields.EntityType);
             SDK::Params::KismetSystemLibrary_Conv_SoftClassReferenceToString classParameters{};
             SDK::Params::KismetSystemLibrary_Conv_SoftObjectReferenceToString configParameters{};
-            classParameters.SoftClassReference = placement.ActorClass;
-            static_cast<SDK::FSoftObjectPtr&>(configParameters.SoftObjectReference) = placement.EntityType.EntityConfig;
+            classParameters.SoftClassReference = *MapRuntimeAccess::Field<
+                SDK::TSoftClassPtr<SDK::UClass>>(&placement, Fields.ActorClass);
+            static_cast<SDK::FSoftObjectPtr&>(configParameters.SoftObjectReference) =
+                *MapRuntimeAccess::Field<SDK::TSoftObjectPtr<SDK::UMassEntityConfigAsset>>(
+                    entityType, Fields.EntityConfig);
             result->ClassStatus = Convert(ClassConversion, classParameters, result->CanonicalClassPath);
             result->ConfigReferenceStatus = Convert(ObjectConversion, configParameters, result->EntityConfigPath);
             return result;
@@ -613,16 +628,51 @@ namespace MiniMap::BuildingAcquisition
         assert(!metadata_);
     }
 
+    /** Clears offsets so a failed or new scanner admission cannot reuse stale metadata. */
+    void BuildingDefinitionAcquisition::ResetRuntimeFieldOffsets() noexcept
+    {
+        g_runtimeFieldOffsets = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
+        g_runtimeFieldOffsetsPublished = false;
+    }
+
+    /** Publishes the complete field set once after the adapter validates its runtime extents. */
+    bool BuildingDefinitionAcquisition::PublishRuntimeFieldOffsets(
+        const RuntimeFieldOffsets& offsets) noexcept
+    {
+        if (g_runtimeFieldOffsetsPublished ||
+            offsets.BuildingId < 0 || offsets.ActorClass < 0 || offsets.EntityType < 0 ||
+            offsets.EntityConfig < 0 || offsets.EntityConfigPtr < 0 || offsets.Tags < 0 ||
+            offsets.HighResTemplateActor < 0 || offsets.LowResTemplateActor < 0 ||
+            offsets.WalkwaySplineMesh < 0)
+            return false;
+        g_runtimeFieldOffsets = offsets;
+        g_runtimeFieldOffsetsPublished = true;
+        return true;
+    }
+
+    /** Returns only a complete admitted offset set to acquisition metadata initialization. */
+    bool BuildingDefinitionAcquisition::CopyRuntimeFieldOffsets(RuntimeFieldOffsets& output) noexcept
+    {
+        if (!g_runtimeFieldOffsetsPublished)
+            return false;
+        output = g_runtimeFieldOffsets;
+        return true;
+    }
+
     /** Builds a temporary root owner and commits it only after successful initialization. */
     bool BuildingDefinitionAcquisition::Initialize()
     {
         if (metadata_)
             return true;
+        RuntimeFieldOffsets fields;
+        if (!CopyRuntimeFieldOffsets(fields))
+            return false;
         const auto* native = MiniMapNative::Get();
         auto* objects = Services::TryObjects();
         if (!native || !native->player.isGameThread() || !objects || !objects->Ready())
             return false;
         auto candidate = std::make_shared<Metadata>();
+        candidate->Fields = fields;
         if (!candidate->Initialize())
             return false;
         metadata_ = std::move(candidate);

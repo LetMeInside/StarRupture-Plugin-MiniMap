@@ -16,15 +16,11 @@
 
 static_assert(sizeof(SDK::FAuAPSplineData) == 0x50);
 static_assert(alignof(SDK::FAuAPSplineData) == 8);
-static_assert(offsetof(SDK::FAuAPSplineData, SplineData) == 0x08);
 static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineData)) == 0x10);
 static_assert(std::is_same_v<decltype(SDK::FAuAPSplineData::SplineData),
     SDK::TArray<SDK::FAuAPSplinePointData>>);
-static_assert(offsetof(SDK::FAuAPSplineData, SplineLocationWS) == 0x18);
 static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineLocationWS)) == 0x18);
-static_assert(offsetof(SDK::FAuAPSplineData, SplineRotationWS) == 0x30);
 static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineRotationWS)) == 0x18);
-static_assert(offsetof(SDK::FAuAPSplineData, SplineRealLength) == 0x48);
 static_assert(sizeof(decltype(SDK::FAuAPSplineData::SplineRealLength)) == sizeof(float));
 static_assert(sizeof(SDK::FAuAPSplinePointData) == 0x40);
 static_assert(alignof(SDK::FAuAPSplinePointData) == 8);
@@ -133,10 +129,40 @@ namespace MiniMap::BuildingAcquisition
 
     namespace
     {
+        RuntimeFieldContract g_runtimeFieldContract{};
+        bool g_runtimeFieldContractPublished = false;
         int32_t g_splinePointIndexOffset = -1;
         int32_t g_splinePointPositionOffset = -1;
         int32_t g_splinePointTangentOffset = -1;
         uint32_t g_splinePointStride = 0;
+    }
+
+    void BuildingSplineSource::ResetRuntimeFieldContract() noexcept
+    {
+        g_runtimeFieldContract = {};
+        g_runtimeFieldContractPublished = false;
+    }
+
+    bool BuildingSplineSource::PublishRuntimeFieldContract(const RuntimeFieldContract& contract) noexcept
+    {
+        if (g_runtimeFieldContractPublished || contract.ActorPlacementPayload < 0 ||
+            contract.SplineFragmentData < 0 || contract.SplineFragmentCurves < 0 ||
+            contract.SplineFragmentCurvesInitialized < 0 ||
+            contract.BuildingParametersPlacementData < 0 || contract.SplineDataPoints < 0 ||
+            contract.SplineDataLocation < 0 || contract.SplineDataRotation < 0 ||
+            contract.SplineDataRealLength < 0)
+            return false;
+        g_runtimeFieldContract = contract;
+        g_runtimeFieldContractPublished = true;
+        return true;
+    }
+
+    bool BuildingSplineSource::CopyRuntimeFieldContract(RuntimeFieldContract& output) noexcept
+    {
+        if (!g_runtimeFieldContractPublished)
+            return false;
+        output = g_runtimeFieldContract;
+        return true;
     }
 
     void BuildingSplineSource::SetPointArrayContract(int32_t indexOffset, int32_t positionOffset,
@@ -208,23 +234,33 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Copies the common fragment/payload source exactly once per supplied source. */
-        static bool CopyData(const SDK::FAuAPSplineData& source, Facts::SplineData& output)
+        static bool CopyData(
+            const SDK::FAuAPSplineData& source,
+            const RuntimeFieldContract& contract,
+            Facts::SplineData& output)
         {
-            output.NativePointCount = source.SplineData.Num();
+            const auto* points = MiniMap::MapRuntimeAccess::Field<
+                SDK::TArray<SDK::FAuAPSplinePointData>>(&source, contract.SplineDataPoints);
+            const auto* location = MiniMap::MapRuntimeAccess::Field<
+                SDK::FVector>(&source, contract.SplineDataLocation);
+            const auto* rotation = MiniMap::MapRuntimeAccess::Field<
+                SDK::FRotator>(&source, contract.SplineDataRotation);
+            const auto* realLength = MiniMap::MapRuntimeAccess::Field<float>(
+                &source, contract.SplineDataRealLength);
+            output.NativePointCount = points->Num();
             output.ValueStatus = Status::Invalid;
-            output.LocationWS = Value(source.SplineLocationWS);
-            output.RotationDegreesWS = {source.SplineRotationWS.Pitch,
-                source.SplineRotationWS.Yaw, source.SplineRotationWS.Roll};
-            output.RecordedLength = source.SplineRealLength;
+            output.LocationWS = Value(*location);
+            output.RotationDegreesWS = {rotation->Pitch, rotation->Yaw, rotation->Roll};
+            output.RecordedLength = *realLength;
             bool valid = Finite(output.LocationWS) && Finite(output.RotationDegreesWS) &&
                 Finite(output.RecordedLength);
-            if (!ValidArray(source.SplineData, g_splinePointStride))
+            if (!ValidArray(*points, g_splinePointStride))
                 return false;
-            output.Points.reserve(source.SplineData.Num());
-            for (int32_t index = 0; index < source.SplineData.Num(); ++index)
+            output.Points.reserve(points->Num());
+            for (int32_t index = 0; index < points->Num(); ++index)
             {
                 const uint8_t* point = MiniMap::MapRuntimeAccess::ElementAt(
-                    source.SplineData.GetDataPtr(), source.SplineData.Num(), index, g_splinePointStride);
+                    points->GetDataPtr(), points->Num(), index, g_splinePointStride);
                 const uint8_t* pointIndex = MiniMap::MapRuntimeAccess::Field<uint8_t>(
                     point, g_splinePointIndexOffset);
                 const SDK::FVector_NetQuantize* position = MiniMap::MapRuntimeAccess::Field<
@@ -289,18 +325,26 @@ namespace MiniMap::BuildingAcquisition
     };
 
     /** Freezes all native channels before returning; no native array is retained. */
-    Facts::Spline BuildingSplineSource::CopyFragment(const SDK::FAuSplineConnectionFragment& fragment)
+    Facts::Spline BuildingSplineSource::CopyFragment(
+        const SDK::FAuSplineConnectionFragment& fragment,
+        const RuntimeFieldContract& contract)
     {
+        const auto* fragmentData = MiniMap::MapRuntimeAccess::Field<SDK::FAuAPSplineData>(
+            &fragment, contract.SplineFragmentData);
+        const auto* splineCurves = MiniMap::MapRuntimeAccess::Field<SDK::FSplineCurves>(
+            &fragment, contract.SplineFragmentCurves);
+        const auto* curvesInitialized = MiniMap::MapRuntimeAccess::Field<bool>(
+            &fragment, contract.SplineFragmentCurvesInitialized);
         Facts::Spline result;
-        result.CurvesInitialized = fragment.bSplineCurvesInitialized;
-        result.CurveVersion = fragment.SplineCurves.Version;
+        result.CurvesInitialized = *curvesInitialized;
+        result.CurveVersion = splineCurves->Version;
         result.Provenance = result.CurvesInitialized ? Facts::SplineProvenance::InitializedCurves :
             Facts::SplineProvenance::FragmentPoints;
-        bool valid = Copier::CopyData(fragment.Data, result.FragmentData);
-        valid = Copier::CopyCurve(fragment.SplineCurves.Position, result.Position) && valid;
-        valid = Copier::CopyCurve(fragment.SplineCurves.Rotation, result.Rotation) && valid;
-        valid = Copier::CopyCurve(fragment.SplineCurves.Scale, result.Scale) && valid;
-        valid = Copier::CopyCurve(fragment.SplineCurves.ReparamTable, result.Reparameterization) && valid;
+        bool valid = Copier::CopyData(*fragmentData, contract, result.FragmentData);
+        valid = Copier::CopyCurve(splineCurves->Position, result.Position) && valid;
+        valid = Copier::CopyCurve(splineCurves->Rotation, result.Rotation) && valid;
+        valid = Copier::CopyCurve(splineCurves->Scale, result.Scale) && valid;
+        valid = Copier::CopyCurve(splineCurves->ReparamTable, result.Reparameterization) && valid;
         const bool hasSource = result.CurvesInitialized ? result.Position.Points.size() >= 2 :
             result.FragmentData.Points.size() >= 2;
         result.SourceStatus = !valid ? Status::Invalid : (hasSource ? Status::Ready : Status::Missing);
@@ -315,7 +359,10 @@ namespace MiniMap::BuildingAcquisition
     }
 
     /** Uses the existing Win64 hidden return buffer getter and non-deleting destructor ABI. */
-    void BuildingSplineSource::CopyFallback(const SDK::FAuAPPayloadDataHandle& handle, Facts::Spline& facts)
+    void BuildingSplineSource::CopyFallback(
+        const SDK::FAuAPPayloadDataHandle& handle,
+        const RuntimeFieldContract& contract,
+        Facts::Spline& facts)
     {
         static_assert(sizeof(SDK::FAuAPSplineActorPayloadData) == 0xE8);
         static_assert(alignof(SDK::FAuAPSplineActorPayloadData) == 8);
@@ -332,7 +379,7 @@ namespace MiniMap::BuildingAcquisition
         }
         const Copier::PayloadOwner payload(native->splinePayload, handle);
         facts.PayloadData.emplace();
-        const bool valid = Copier::CopyData(payload.Constructed->Data, *facts.PayloadData);
+        const bool valid = Copier::CopyData(payload.Constructed->Data, contract, *facts.PayloadData);
         facts.Provenance = Facts::SplineProvenance::Payload;
         facts.SourceStatus = !valid ? Status::Invalid :
             (facts.PayloadData->Points.size() >= 2 ? Status::Ready : Status::Missing);

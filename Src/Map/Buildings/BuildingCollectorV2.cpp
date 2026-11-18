@@ -12,6 +12,7 @@
 #include "Services/Map/Buildings/BuildingCandidatePublication.h"
 #include "BuildingDefinitionAcquisition.h"
 #include "BuildingSplineSource.h"
+#include "Map/RuntimeFieldAccess.h"
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -93,19 +94,14 @@ namespace MiniMap::BuildingAcquisition
     static_assert(sizeof(decltype(SDK::FTransform::Scale3D)) == 0x18);
     static_assert(sizeof(SDK::FAuSplineConnectionFragment) == 0xE0);
     static_assert(alignof(SDK::FAuSplineConnectionFragment) == 0x08);
-    static_assert(offsetof(SDK::FAuSplineConnectionFragment, Data) == 0x00);
     static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::Data)) == 0x50);
-    static_assert(offsetof(SDK::FAuSplineConnectionFragment, SplineCurves) == 0x70);
     static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::SplineCurves)) == 0x68);
-    static_assert(offsetof(SDK::FAuSplineConnectionFragment, bSplineCurvesInitialized) == 0xD8);
     static_assert(sizeof(decltype(SDK::FAuSplineConnectionFragment::bSplineCurvesInitialized)) == 0x01);
     static_assert(sizeof(SDK::FAuAPMassFragment) == 0x50);
     static_assert(alignof(SDK::FAuAPMassFragment) == 0x08);
-    static_assert(offsetof(SDK::FAuAPMassFragment, Payload) == 0x00);
     static_assert(sizeof(decltype(SDK::FAuAPMassFragment::Payload)) == 0x20);
     static_assert(sizeof(SDK::FCrBuildingParameters) == 0x18);
     static_assert(alignof(SDK::FCrBuildingParameters) == 0x08);
-    static_assert(offsetof(SDK::FCrBuildingParameters, PlacementData) == 0x00);
     static_assert(sizeof(decltype(SDK::FCrBuildingParameters::PlacementData)) == 0x08);
     static_assert(sizeof(SDK::FAuAPPayloadDataHandle) == 0x20);
     static_assert(alignof(SDK::FAuAPPayloadDataHandle) == 0x08);
@@ -1070,6 +1066,7 @@ namespace MiniMap::BuildingAcquisition
             std::shared_ptr<const ::Services::Map::Buildings::BuildingCandidatePublication>> RetainedSectionPublications;
         std::unordered_map<SDK::UAuActorPlacementData*, std::shared_ptr<DefinitionOwner>> Definitions;
         std::shared_ptr<Metadata> Types;
+        RuntimeFieldContract RuntimeFields{};
         BuildingDefinitionAcquisition DefinitionAcquisition;
         // StarRupture's established UE 5.6.1 query ABI, Section 22: size 0x350, align 0x10.
         alignas(16) std::array<std::byte, 0x350> Query{};
@@ -1569,23 +1566,26 @@ namespace MiniMap::BuildingAcquisition
             occurrence.Data.HasSpline = views.HasSplineConnections;
             if (occurrence.Data.HasSpline)
             {
-                Facts::Spline spline = BuildingSplineSource::CopyFragment(views.SplineConnections[index]);
+                Facts::Spline spline = BuildingSplineSource::CopyFragment(
+                    views.SplineConnections[index], RuntimeFields);
                 occurrence.Data.SplineStatus = spline.SourceStatus;
                 occurrence.Data.SplineFacts = std::make_shared<const Facts::Spline>(std::move(spline));
                 if (BuildingSplineSource::NeedsFallback(*occurrence.Data.SplineFacts) && views.HasActorPlacement)
                 {
                     occurrence.Payload = std::make_unique<PayloadHandleOwner>(
-                        native, views.ActorPlacement[index].Payload);
+                        native, *MapRuntimeAccess::Field<SDK::FAuAPPayloadDataHandle>(
+                            &views.ActorPlacement[index], RuntimeFields.ActorPlacementPayload));
                 }
             }
             else
             {
                 occurrence.Data.SplineStatus = Status::Ready;
             }
-            if (views.BuildingParameters && views.BuildingParameters->PlacementData)
+            SDK::UAuActorPlacementData* placement = GetPlacementData(views.BuildingParameters);
+            if (placement)
             {
                 occurrence.Placement = DefinitionAcquisition.Retain(
-                    views.BuildingParameters->PlacementData);
+                    placement);
             }
             return std::move(occurrence);
         }
@@ -1599,9 +1599,7 @@ namespace MiniMap::BuildingAcquisition
             const Entry& retained,
             OwnedScanOccurrence& output)
         {
-            auto* placement = views.BuildingParameters != nullptr
-                ? views.BuildingParameters->PlacementData
-                : nullptr;
+            auto* placement = GetPlacementData(views.BuildingParameters);
             if (!retained.Data.Complete || retained.Data.HasSpline || placement == nullptr ||
                 retained.Data.DefinitionFacts == nullptr)
             {
@@ -1631,6 +1629,17 @@ namespace MiniMap::BuildingAcquisition
             output.Placement = definition->second;
             output.ReusedRetainedFacts = true;
             return true;
+        }
+
+        /** Reads the shared placement pointer through its admitted runtime member offset. */
+        SDK::UAuActorPlacementData* GetPlacementData(
+            const SDK::FCrBuildingParameters* parameters) const noexcept
+        {
+            if (!parameters)
+                return nullptr;
+            const auto* placement = MapRuntimeAccess::Field<SDK::UAuActorPlacementData*>(
+                parameters, RuntimeFields.BuildingParametersPlacementData);
+            return *placement;
         }
 
         /** Copies admitted chunk occurrences into owned storage and rejects duplicate identities. */
@@ -1699,7 +1708,8 @@ namespace MiniMap::BuildingAcquisition
                 BuildingSplineSource::NeedsFallback(*result.SplineFacts))
             {
                 Facts::Spline spline = *result.SplineFacts;
-                BuildingSplineSource::CopyFallback(*occurrence.Payload->Get(), spline);
+                BuildingSplineSource::CopyFallback(
+                    *occurrence.Payload->Get(), RuntimeFields, spline);
                 result.SplineStatus = spline.SourceStatus;
                 result.SplineFacts = std::make_shared<const Facts::Spline>(std::move(spline));
                 if (!IsContextCurrent(native, context))
@@ -3910,6 +3920,8 @@ namespace MiniMap::BuildingAcquisition
             return true;
         auto types = std::make_shared<State::Metadata>();
         if (!types->Initialize() || !state_->DefinitionAcquisition.Initialize())
+            return false;
+        if (!BuildingSplineSource::CopyRuntimeFieldContract(state_->RuntimeFields))
             return false;
         state_->Types = std::move(types);
         return true;

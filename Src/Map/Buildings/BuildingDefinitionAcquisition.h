@@ -2,16 +2,38 @@
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "BuildingAcquiredFacts.h"
+#include <cstdint>
 #include <memory>
 
 namespace SDK { class UAuActorPlacementData; }
 
 namespace MiniMap::BuildingAcquisition
 {
+    /** Validated Client offsets for StarRupture-owned definition properties. */
+    struct RuntimeFieldOffsets
+    {
+        int32_t BuildingId;
+        int32_t ActorClass;
+        int32_t EntityType;
+        int32_t EntityConfig;
+        int32_t EntityConfigPtr;
+        int32_t Tags;
+        int32_t HighResTemplateActor;
+        int32_t LowResTemplateActor;
+        int32_t WalkwaySplineMesh;
+    };
+
     /** Copies core definition and authored profile facts using the collector's sole definition cache. */
     class BuildingDefinitionAcquisition final
     {
     public:
+        /** Clears adapter-published offsets before a new scanner admission attempt. */
+        static void ResetRuntimeFieldOffsets() noexcept;
+        /** Publishes one complete validated offset set after Client scanner admission. */
+        static bool PublishRuntimeFieldOffsets(const RuntimeFieldOffsets& offsets) noexcept;
+        /** Copies the current admitted offsets for one acquisition metadata instance. */
+        static bool CopyRuntimeFieldOffsets(RuntimeFieldOffsets& output) noexcept;
+
         /** A rooted placement cached by the collector; local strong owners survive reentry.
          * Must be released on the game thread before native API shutdown.
          */
