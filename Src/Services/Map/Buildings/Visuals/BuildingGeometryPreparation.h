@@ -35,6 +35,22 @@ namespace Services::Map::Buildings::Visuals
 			Status CurrentStatus = Status::Pending;
 			std::size_t WorkUnitsConsumed = 0;
 		};
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Holds aggregate BVH experiment measurements for one Section preparation attempt. */
+		struct BvhExperimentDiagnostics
+		{
+			std::size_t LeafCapacity = 8;
+			std::size_t OccluderCount = 0;
+			bool IndexAttempted = false;
+			double FullIndexMs = 0.0;
+			double BvhConstructionMs = 0.0;
+			double CumulativeClipSurfaceMs = 0.0;
+			std::uint64_t CellQueries = 0;
+			std::uint64_t NodesVisited = 0;
+			std::uint64_t LeafItemAabbTests = 0;
+			std::uint64_t CandidateOrdinalsReturned = 0;
+		};
+	#endif
 
 		/** Retains phase cursors and outcomes only; scene spans and geometry remain externally owned. */
 		class PreparationCursor final
@@ -53,6 +69,11 @@ namespace Services::Map::Buildings::Visuals
 			const SectionFailureDetails& FailureDetails() const noexcept
 			{
 				return Failure;
+			}
+			/** Borrows BVH experiment totals until this cursor is reset. */
+			const BvhExperimentDiagnostics& BvhDiagnostics() const noexcept
+			{
+				return bvhDiagnostics_;
 			}
 #endif
 
@@ -83,6 +104,7 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsResult Results;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			SectionFailureDetails Failure;
+			BvhExperimentDiagnostics bvhDiagnostics_;
 #endif
 		};
 
@@ -203,6 +225,12 @@ namespace Services::Map::Buildings::Visuals
 			BuildingVisualsContext& scratch,
 			PreparedBuildingGeometry& output,
 			PreparationCursor& cursor);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Copies final query counters from the Section-owned numerical workspace into its cursor. */
+		static void CaptureBvhQueryCounters(
+			BuildingVisualsContext& scratch,
+			PreparationCursor& cursor) noexcept;
+#endif
 		/** Validates Section-owned sprite occurrences and unique spline inputs. */
 		static bool ValidateContributionOwnership(
 			const BuildingRenderSceneInput& scene,

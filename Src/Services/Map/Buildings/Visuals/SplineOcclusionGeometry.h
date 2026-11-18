@@ -18,8 +18,22 @@
 #include <stdexcept>
 #include <vector>
 
+// Uncomment to set the leaf capacity in Debug Experimental builds to 8 (default), 16, or 32.
+// #define MINIMAP_EXPERIMENTAL_BVH_LEAF_CAPACITY 8
+
 namespace Services::Map::Buildings::Visuals
 {
+	#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Aggregates BVH query work for one Section preparation attempt without allocating. */
+	struct SplineOcclusionQueryCounters
+	{
+		std::uint64_t CellQueries = 0;
+		std::uint64_t NodesVisited = 0;
+		std::uint64_t LeafItemAabbTests = 0;
+		std::uint64_t CandidateOrdinalsReturned = 0;
+	};
+	#endif
+
 	/** Names the canonical position component shared with prepared spline surfaces. */
 	using SplineOcclusionPoint3D = std::array<double, 3>;
 
@@ -142,6 +156,8 @@ namespace Services::Map::Buildings::Visuals
 		// Per-surface counts are published only when the entire clip succeeds.
 		std::size_t RemovedTriangles = 0;
 		std::size_t FragmentTriangles = 0;
+		SplineOcclusionQueryCounters QueryActivity;
+		bool IsCollectingQueryActivity = false;
 #endif
 
 	public:
@@ -165,6 +181,26 @@ namespace Services::Map::Buildings::Visuals
 		{
 			return Visible;
 		}
+	#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Clears query counts and begins collection for one Section geometry preparation attempt. */
+		void BeginQueryActivityCollection() noexcept
+		{
+			QueryActivity = {};
+			IsCollectingQueryActivity = true;
+		}
+
+		/** Stops query-count collection when the owning Section preparation becomes terminal. */
+		void EndQueryActivityCollection() noexcept
+		{
+			IsCollectingQueryActivity = false;
+		}
+
+		/** Returns aggregate query counts owned by this Section's numerical workspace. */
+		const SplineOcclusionQueryCounters& GetQueryActivity() const noexcept
+		{
+			return QueryActivity;
+		}
+	#endif
 	};
 
 	/** Builds deterministic occluder BVHs and clips caller-prepared XYZ/UV triangles against sprite prisms. */
@@ -197,6 +233,21 @@ namespace Services::Map::Buildings::Visuals
 		};
 
 	public:
+		/**
+		 * Compile-time maximum occluders in one BVH leaf. Development diagnostic builds may select
+		 * 8, 16, or 32 with MINIMAP_EXPERIMENTAL_BVH_LEAF_CAPACITY; all other builds use 8.
+		 */
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS && \
+	defined(_DEBUG) && !defined(NDEBUG) && \
+	defined(MINIMAP_EXPERIMENTAL_BVH_LEAF_CAPACITY)
+		static constexpr std::size_t BvhLeafCapacity =
+			MINIMAP_EXPERIMENTAL_BVH_LEAF_CAPACITY;
+		static_assert(BvhLeafCapacity == 8 || BvhLeafCapacity == 16 || BvhLeafCapacity == 32,
+			"MINIMAP_EXPERIMENTAL_BVH_LEAF_CAPACITY must be 8, 16, or 32");
+#else
+		static constexpr std::size_t BvhLeafCapacity = 8;
+#endif
+
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		/** Holds independent elapsed times for the three existing index preparation stages. */
 		struct PreparationStageTimings
@@ -527,7 +578,7 @@ namespace Services::Map::Buildings::Visuals
 			return a.TopHeight < b.TopHeight;
 		}
 
-		/** Builds a balanced median BVH with alternating axes and eight-item leaves. */
+		/** Builds a balanced median BVH with alternating axes and the selected leaf capacity. */
 		static void BuildBvh(SplineOcclusionIndex& index)
 		{
 			index.Ordinals.clear();
@@ -557,9 +608,13 @@ namespace Services::Map::Buildings::Visuals
 		 */
 		static std::size_t RequiredBvhNodeCount(std::size_t count)
 		{
+			if (count == 0)
+			{
+				return 0;
+			}
 			const auto maximum = (std::numeric_limits<std::size_t>::max)();
 			std::size_t partitionCount = 1;
-			while (count / partitionCount + (count % partitionCount != 0) > 9)
+			while (count / partitionCount + (count % partitionCount != 0) > BvhLeafCapacity + 1)
 			{
 				if (partitionCount > maximum / 2)
 				{
@@ -570,13 +625,21 @@ namespace Services::Map::Buildings::Visuals
 			const auto basePartitionSize = count / partitionCount;
 			const auto largerPartitionCount = count % partitionCount;
 			auto leafCount = partitionCount;
-			if (basePartitionSize == 8)
+			if (basePartitionSize == BvhLeafCapacity)
 			{
+				if (largerPartitionCount > maximum - leafCount)
+				{
+					throw std::length_error("occlusion BVH leaf count overflow");
+				}
 				leafCount += largerPartitionCount;
 			}
-			else if (basePartitionSize == 9)
+			else if (basePartitionSize == BvhLeafCapacity + 1)
 			{
-				leafCount += partitionCount;
+				if (partitionCount > maximum / 2)
+				{
+					throw std::length_error("occlusion BVH leaf count overflow");
+				}
+				leafCount = partitionCount * 2;
 			}
 			if (leafCount > maximum / 2 + 1)
 			{
@@ -595,7 +658,7 @@ namespace Services::Map::Buildings::Visuals
 		{
 			const auto node = index.Nodes.size();
 			index.Nodes.push_back({{}, begin, end, 0, 0});
-			if (end - begin <= 8)
+			if (end - begin <= BvhLeafCapacity)
 			{
 				index.Nodes[node].Bounds = UnionBounds(index, begin, end);
 				return node;
@@ -756,6 +819,12 @@ namespace Services::Map::Buildings::Visuals
 			SplineOcclusionWorkspace& workspace)
 		{
 			const auto cellBounds = CalculateVertexBounds(vertices.subspan(cell.FirstVertex, cell.VertexCount));
+#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (workspace.IsCollectingQueryActivity)
+			{
+				++workspace.QueryActivity.CellQueries;
+			}
+#endif
 			QueryCandidates(cellBounds, index, workspace);
 			return ClipCellWithCandidates(vertices, indices, cell, index, workspace);
 		}
@@ -881,7 +950,7 @@ namespace Services::Map::Buildings::Visuals
 		{
 			workspace.Candidates.clear();
 			if (!index.Nodes.empty())
-				QueryNode(0, bounds, index, workspace.Candidates);
+				QueryNode(0, bounds, index, workspace);
 			std::sort(workspace.Candidates.begin(), workspace.Candidates.end());
 		}
 
@@ -890,8 +959,14 @@ namespace Services::Map::Buildings::Visuals
 			std::size_t nodeIndex,
 			const Bounds2D& bounds,
 			const SplineOcclusionIndex& index,
-			std::vector<std::size_t>& candidates)
+			SplineOcclusionWorkspace& workspace)
 		{
+		#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (workspace.IsCollectingQueryActivity)
+			{
+				++workspace.QueryActivity.NodesVisited;
+			}
+		#endif
 			const auto& node = index.Nodes[nodeIndex];
 			if (Disjoint(bounds, node.Bounds))
 			{
@@ -899,16 +974,28 @@ namespace Services::Map::Buildings::Visuals
 			}
 			if (node.Left != 0)
 			{
-				QueryNode(node.Left, bounds, index, candidates);
-				QueryNode(node.Right, bounds, index, candidates);
+				QueryNode(node.Left, bounds, index, workspace);
+				QueryNode(node.Right, bounds, index, workspace);
 				return;
 			}
 			for (std::size_t ordinalIndex = node.Begin; ordinalIndex < node.End; ++ordinalIndex)
 			{
+			#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				if (workspace.IsCollectingQueryActivity)
+				{
+					++workspace.QueryActivity.LeafItemAabbTests;
+				}
+			#endif
 				const auto ordinal = index.Ordinals[ordinalIndex];
 				if (!Disjoint(bounds, index.Occluders[ordinal].Bounds))
 				{
-					candidates.push_back(ordinal);
+					workspace.Candidates.push_back(ordinal);
+				#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					if (workspace.IsCollectingQueryActivity)
+					{
+						++workspace.QueryActivity.CandidateOrdinalsReturned;
+					}
+				#endif
 				}
 			}
 		}

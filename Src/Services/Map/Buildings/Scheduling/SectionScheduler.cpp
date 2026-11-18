@@ -1249,6 +1249,37 @@ namespace Services::Map::Buildings::Scheduling
 		return false;
 	}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Reports one terminal Section attempt without retaining or allocating diagnostic history. */
+	void SectionScheduler::ReportBvhExperimentDiagnostics(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		std::uint64_t publicationHash,
+		Visuals::BuildingGeometryPreparation::Status status,
+		const Visuals::BuildingGeometryPreparation::PreparationCursor& cursor)
+	{
+		const auto& diagnostics = cursor.BvhDiagnostics();
+		if (MiniMap::Services::ILog* log = MiniMap::Services::TryLog())
+		{
+			MiniMap::Services::Logf(
+				*log,
+				MiniMap::Services::Level::Info,
+				"MiniMap: BuildingMap bvh_experiment grid=(%lld,%lld) publicationHash=0x%016llx "
+				"status=%u occluders=%llu leafCapacity=%llu indexAttempted=%u fullIndexMs=%.3f "
+				"bvhMs=%.3f cumulativeClipSurfaceMs=%.3f cellQueries=%llu nodesVisited=%llu "
+				"leafItemAabbTests=%llu candidateOrdinalsReturned=%llu",
+				static_cast<long long>(section.GetGridX()), static_cast<long long>(section.GetGridY()),
+				static_cast<unsigned long long>(publicationHash), static_cast<unsigned>(status),
+				static_cast<unsigned long long>(diagnostics.OccluderCount),
+				static_cast<unsigned long long>(diagnostics.LeafCapacity),
+				static_cast<unsigned>(diagnostics.IndexAttempted), diagnostics.FullIndexMs,
+				diagnostics.BvhConstructionMs, diagnostics.CumulativeClipSurfaceMs,
+				static_cast<unsigned long long>(diagnostics.CellQueries),
+				static_cast<unsigned long long>(diagnostics.NodesVisited),
+				static_cast<unsigned long long>(diagnostics.LeafItemAabbTests),
+				static_cast<unsigned long long>(diagnostics.CandidateOrdinalsReturned));
+		}
+	}
+#endif
 	/** Advances the Section-owned geometry cursor and atomically promotes only a complete replacement. */
 	bool SectionScheduler::AdvanceSectionJobGeometry(
 		::Services::Map::Buildings::BuildingMapSection& section,
@@ -1298,6 +1329,10 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return false;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ReportBvhExperimentDiagnostics(section, job.publicationOwner->ContentHash(),
+			step.CurrentStatus, job.GeometryCursor);
+#endif
 		if (step.CurrentStatus != Visuals::BuildingGeometryPreparation::Status::Complete &&
 			step.CurrentStatus != Visuals::BuildingGeometryPreparation::Status::CompleteWithOmissions)
 		{

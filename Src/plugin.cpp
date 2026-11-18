@@ -541,6 +541,7 @@ static void OnTextureServiceTick(
                 case Operation::SectionClipping: return "section_clipping";
                 case Operation::DrawLayoutConversion: return "draw_layout_conversion";
                 case Operation::RetentionCommit: return "retention_commit";
+                case Operation::OccluderInputSeeding: return "occluder_input_seeding";
                 default: return "none";
                 }
             };

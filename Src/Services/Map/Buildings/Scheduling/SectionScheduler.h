@@ -619,6 +619,14 @@ namespace Services::Map::Buildings::Scheduling
 			SectionJob& job,
 			std::chrono::steady_clock::time_point deadline,
 			SectionJobAdvanceResult& result);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Reports one terminal Section attempt's accumulated BVH experiment measurements. */
+		static void ReportBvhExperimentDiagnostics(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			std::uint64_t publicationHash,
+			Visuals::BuildingGeometryPreparation::Status status,
+			const Visuals::BuildingGeometryPreparation::PreparationCursor& cursor);
+#endif
 		/** Resumes occurrence preparation or reuses the established retained scene.
 		 * @param section Exact service-owned Section described by the publication.
 		 * @param job Selected retained job whose scene state may be rebuilt or reused.

@@ -48,6 +48,7 @@ namespace Services::Map::Buildings::Visuals
 		Results = {};
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		Failure = {};
+		bvhDiagnostics_ = {};
 #endif
 	}
 
@@ -64,6 +65,22 @@ namespace Services::Map::Buildings::Visuals
 		return TerminalStatus;
 	}
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Stops query counting and copies one attempt's workspace counters into its cursor. */
+	void BuildingGeometryPreparation::CaptureBvhQueryCounters(
+		BuildingVisualsContext& scratch,
+		PreparationCursor& cursor) noexcept
+	{
+		auto& workspace = scratch.occlusionWorkspace_;
+		workspace.EndQueryActivityCollection();
+		const auto& counters = workspace.GetQueryActivity();
+		cursor.bvhDiagnostics_.CellQueries = counters.CellQueries;
+		cursor.bvhDiagnostics_.NodesVisited = counters.NodesVisited;
+		cursor.bvhDiagnostics_.LeafItemAabbTests = counters.LeafItemAabbTests;
+		cursor.bvhDiagnostics_.CandidateOrdinalsReturned = counters.CandidateOrdinalsReturned;
+	}
+#endif
+
 	/** Advances one numerical unit at a time and retains completed geometry across deadline yields. */
 	BuildingGeometryPreparation::StepResult BuildingGeometryPreparation::Advance(
 		const BuildingRenderSceneInput& scene,
@@ -77,9 +94,20 @@ namespace Services::Map::Buildings::Visuals
 		{
 			return {cursor.TerminalStatus, 0};
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (!cursor.Initialized)
+		{
+			cursor.bvhDiagnostics_ = {};
+			cursor.bvhDiagnostics_.LeafCapacity = SplineOcclusionGeometry::BvhLeafCapacity;
+			scratch.occlusionWorkspace_.BeginQueryActivityCollection();
+		}
+#endif
 		if (!IsValidSectionRegion(sectionRegion) ||
 			(cursor.HasSectionRegion && !MatchesSectionRegion(cursor.SectionRegion, sectionRegion)))
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			CaptureBvhQueryCounters(scratch, cursor);
+#endif
 			return Terminate(cursor, Status::InvalidInputs, 0);
 		}
 		if (!cursor.HasSectionRegion)
@@ -92,6 +120,9 @@ namespace Services::Map::Buildings::Visuals
 		{
 			if (!cursor.Initialized && !Initialize(scene, scratch, output, cursor))
 			{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+				CaptureBvhQueryCounters(scratch, cursor);
+#endif
 				return Terminate(cursor, Status::InvalidInputs, 0);
 			}
 			while (std::chrono::steady_clock::now() < deadline)
@@ -101,10 +132,20 @@ namespace Services::Map::Buildings::Visuals
 				workUnitsConsumed += stepWorkUnits;
 				if (status == Status::Complete)
 				{
-					return Complete(output, cursor, workUnitsConsumed);
+					const StepResult result = Complete(output, cursor, workUnitsConsumed);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					if (result.CurrentStatus != Status::Pending)
+					{
+						CaptureBvhQueryCounters(scratch, cursor);
+					}
+#endif
+					return result;
 				}
 				if (status != Status::Pending)
 				{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+					CaptureBvhQueryCounters(scratch, cursor);
+#endif
 					return Terminate(cursor, status, workUnitsConsumed);
 				}
 			}
@@ -115,6 +156,9 @@ namespace Services::Map::Buildings::Visuals
 			RECORD_GEOMETRY_FAILURE(cursor.Initialized ? "geometry preparation" : "geometry initialization",
 				"exception in geometry operation", -1, -1, 0, 0, -1,
 				static_cast<int>(cursor.CurrentPhase));
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			CaptureBvhQueryCounters(scratch, cursor);
+#endif
 			return Terminate(cursor, Status::NumericalFailure, workUnitsConsumed);
 		}
 	}
@@ -139,8 +183,10 @@ namespace Services::Map::Buildings::Visuals
 				-1, -1, scratch.occluders_.size());
 			const std::size_t occluderCount = scratch.occluders_.size();
 			SplineOcclusionGeometry::PreparationStageTimings stageTimings;
+			cursor.bvhDiagnostics_.IndexAttempted = true;
 			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareSectionOcclusionIndex(
 				scratch, &stageTimings);
+			cursor.bvhDiagnostics_.BvhConstructionMs = stageTimings.BvhConstructionMs;
 			if (stageTimings.CopyOccludersMeasured)
 			{
 				BuildingMapPerformanceDiagnostics::RecordPreparationOperation(
@@ -159,6 +205,7 @@ namespace Services::Map::Buildings::Visuals
 					BuildingMapPerformanceDiagnostics::PreparationOperation::OcclusionBvhConstruction,
 					stageTimings.BvhConstructionMs, -1, -1, occluderCount);
 			}
+			cursor.bvhDiagnostics_.FullIndexMs = taggedOcclusionIndex.Finish();
 		#else
 			cursor.Results.OcclusionPreparationStatus = BuildingVisuals::PrepareSectionOcclusionIndex(scratch);
 		#endif
@@ -232,6 +279,9 @@ namespace Services::Map::Buildings::Visuals
 			RECORD_GEOMETRY_FAILURE("geometry initialization", "SeedPreparedOccluders failed");
 			return false;
 		}
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		cursor.bvhDiagnostics_.OccluderCount = scratch.occluders_.size();
+	#endif
 		cursor.CurrentPhase = scene.Splines.empty()
 			? PreparationCursor::Phase::Complete
 			: PreparationCursor::Phase::OcclusionIndex;
@@ -760,6 +810,11 @@ namespace Services::Map::Buildings::Visuals
 		const PreparedBuildingGeometry& output,
 		BuildingVisualsContext& scratch)
 	{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapPerformanceDiagnostics::TaggedTimer taggedSeeding(
+			BuildingMapPerformanceDiagnostics::PreparationOperation::OccluderInputSeeding,
+			-1, -1, output.spriteOccurrenceLocationsByOrdinal_.size());
+#endif
 		for (std::size_t ordinal = 0; ordinal < output.spriteOccurrenceLocationsByOrdinal_.size(); ++ordinal)
 		{
 			bool isOverlayLast = false;
@@ -779,6 +834,10 @@ namespace Services::Map::Buildings::Visuals
 			}
 			scratch.occluders_.push_back(occluder);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		taggedSeeding.SetWorkloadCounts(
+			output.spriteOccurrenceLocationsByOrdinal_.size(), scratch.occluders_.size());
+#endif
 		return true;
 	}
 
@@ -1217,6 +1276,9 @@ namespace Services::Map::Buildings::Visuals
 			scratch.preparedSurface_.Cells,
 			scratch.occlusionIndex_,
 			scratch.occlusionWorkspace_);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		cursor.bvhDiagnostics_.CumulativeClipSurfaceMs += taggedOcclusion.Finish();
+#endif
 		}
 		if (outcome.OcclusionStatus != SplineOcclusionStatus::Complete)
 		{

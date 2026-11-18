@@ -49,7 +49,8 @@ namespace Services::Map::Buildings
 			TriangleConversion,
 			SectionClipping,
 			DrawLayoutConversion,
-			RetentionCommit
+			RetentionCommit,
+			OccluderInputSeeding
 		};
 
 		/** Bounded maximum record; negative ordinals and indices mean not applicable. */
@@ -72,7 +73,7 @@ namespace Services::Map::Buildings
 		struct PreparationVisitAttribution
 		{
 			TaggedOperationMaximum Slowest;
-			std::array<TaggedOperationMaximum, 19> OperationMaximums{};
+			std::array<TaggedOperationMaximum, 20> OperationMaximums{};
 		};
 
 		/** Binds one stack-owned record and immutable visit identity for synchronous preparation. */
@@ -118,7 +119,7 @@ namespace Services::Map::Buildings
 				splineOrdinal, surfaceIndex, workloadPrimary, workloadSecondary);
 		}
  
-		/** Times one existing operation and records its visit maximum on destruction. */
+		/** Times one existing operation and records its visit maximum when finished or destroyed. */
 		class TaggedTimer final
 		{
 		public:
@@ -134,15 +135,21 @@ namespace Services::Map::Buildings
 				workloadPrimary_ = workloadPrimary;
 				workloadSecondary_ = workloadSecondary;
 			}
-			/** Records the existing operation boundary once if a visit is active. */
-			~TaggedTimer() noexcept
+			/** Records the existing operation boundary once and returns its elapsed milliseconds. */
+			double Finish() noexcept
 			{
-				if (active_)
+				if (!active_)
 				{
-					RecordPreparationOperation(operation_, Milliseconds(Clock::now() - started_), splineOrdinal_,
-						surfaceIndex_, workloadPrimary_, workloadSecondary_);
+					return 0.0;
 				}
+				const double elapsedMs = Milliseconds(Clock::now() - started_);
+				active_ = false;
+				RecordPreparationOperation(operation_, elapsedMs, splineOrdinal_, surfaceIndex_,
+					workloadPrimary_, workloadSecondary_);
+				return elapsedMs;
 			}
+			/** Records the existing operation boundary once if its owner has not finished it. */
+			~TaggedTimer() noexcept { (void)Finish(); }
 			TaggedTimer(const TaggedTimer&) = delete;
 			TaggedTimer& operator=(const TaggedTimer&) = delete;
 		private:
