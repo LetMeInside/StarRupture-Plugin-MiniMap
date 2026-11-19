@@ -163,7 +163,8 @@ jobs:
           $ignoreRules = @(
             '**',
             '!/Engine/Source/Programs/Shared/UnrealEngine.csproj.props',
-            '!/Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets'
+            '!/Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets',
+            '!/Engine/Source/Programs/Shared/EpicGames.UBA/Library.props'
           )
           [System.IO.File]::WriteAllText(
             $ignorePath,
@@ -173,7 +174,8 @@ jobs:
 
           $expectedPaths = @(
             'Engine/Source/Programs/Shared/UnrealEngine.csproj.props',
-            'Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets'
+            'Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets',
+            'Engine/Source/Programs/Shared/EpicGames.UBA/Library.props'
           )
 
           $dryRunOutput = @(& $gitDependencies "--root=$ueRoot" '--dry-run' '--no-cache' 2>&1)
@@ -202,11 +204,11 @@ jobs:
           $sortedExpectedPaths = @($expectedPaths | Sort-Object -CaseSensitive)
           $plannedSummary = @($plannedActions | ForEach-Object { "$($_.Action) $($_.Path)" }) -join '; '
           if (
-            $plannedActions.Count -ne 2 -or
+            $plannedActions.Count -ne $expectedPaths.Count -or
             @($plannedActions | Where-Object { $_.Action -cne 'Add' }).Count -ne 0 -or
             (@($actualPaths) -join "`n") -cne (@($sortedExpectedPaths) -join "`n")
           ) {
-            throw "GitDependencies dry-run did not unambiguously select exactly the two required files. Planned actions: $plannedSummary"
+            throw "GitDependencies dry-run did not unambiguously select exactly the expected files. Planned actions: $plannedSummary"
           }
 
           $checkoutVolume = [System.IO.Path]::GetPathRoot($ueRoot)
