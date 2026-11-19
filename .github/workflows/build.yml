@@ -83,6 +83,7 @@ jobs:
             Engine/Platforms
             Engine/Plugins
             Engine/Source
+            Engine/Shaders
           sparse-checkout-cone-mode: true
           lfs: false
           submodules: false
