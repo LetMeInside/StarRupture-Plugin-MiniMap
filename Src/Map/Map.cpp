@@ -309,17 +309,25 @@ namespace MiniMapMap
         if (!chunkTable || chunkTable > UINTPTR_MAX - ((chunkIndex + 1) * sizeof(uintptr_t)))
             return false;
 
+        const uintptr_t chunkEntry = chunkTable + chunkIndex * sizeof(uintptr_t);
+        if (!MiniMapNative::IsMemoryRangeReadable(
+            chunkEntry, sizeof(uintptr_t), alignof(uintptr_t)))
+            return false;
+
         uintptr_t chunk = 0;
-        std::memcpy(&chunk, reinterpret_cast<const void*>(chunkTable + chunkIndex * sizeof(uintptr_t)),
-            sizeof(chunk));
+        std::memcpy(&chunk, reinterpret_cast<const void*>(chunkEntry), sizeof(chunk));
         const size_t itemOffset = size_t(uint32_t(objectIndex) & 65535) * 0x18;
-        if (!chunk || chunk > UINTPTR_MAX - itemOffset - 0x10)
+        if (!chunk || chunk > UINTPTR_MAX - itemOffset - 0x18)
+            return false;
+
+        const uintptr_t item = chunk + itemOffset;
+        if (!MiniMapNative::IsMemoryRangeReadable(item, 0x18, alignof(uintptr_t)))
             return false;
 
         uintptr_t registeredObject = 0;
         uint32_t internalFlags = 0;
-        std::memcpy(&registeredObject, reinterpret_cast<const void*>(chunk + itemOffset), sizeof(registeredObject));
-        std::memcpy(&internalFlags, reinterpret_cast<const void*>(chunk + itemOffset + 8), sizeof(internalFlags));
+        std::memcpy(&registeredObject, reinterpret_cast<const void*>(item), sizeof(registeredObject));
+        std::memcpy(&internalFlags, reinterpret_cast<const void*>(item + 8), sizeof(internalFlags));
         if (registeredObject != objectPointer)
             return false;
 
