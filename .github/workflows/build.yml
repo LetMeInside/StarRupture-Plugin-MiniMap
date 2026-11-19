@@ -167,7 +167,9 @@ jobs:
             '!/Engine/Source/Programs/Shared/EpicGames.UBA/Library.props',
             '!/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/win/redist/oo2core_9_win64.dll',
             '!/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/win/redist/oo2core_9_win32.dll',
-            '!/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/winuwp/redist/oo2core_9_winuwparm64.dll'
+            '!/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/winuwp/redist/oo2core_9_winuwparm64.dll',
+            '!/Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto',
+            '!/Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc_messages.proto'
           )
           [System.IO.File]::WriteAllText(
             $ignorePath,
@@ -181,7 +183,9 @@ jobs:
             'Engine/Source/Programs/Shared/EpicGames.UBA/Library.props',
             'Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/win/redist/oo2core_9_win64.dll',
             'Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/win/redist/oo2core_9_win32.dll',
-            'Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/winuwp/redist/oo2core_9_winuwparm64.dll'
+            'Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/winuwp/redist/oo2core_9_winuwparm64.dll',
+            'Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto',
+            'Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc_messages.proto'
           )
 
           $dryRunOutput = @(& $gitDependencies "--root=$ueRoot" '--dry-run' '--no-cache' 2>&1)
