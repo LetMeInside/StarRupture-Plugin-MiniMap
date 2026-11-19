@@ -84,6 +84,7 @@ jobs:
             Engine/Plugins
             Engine/Source
             Engine/Shaders
+            Engine/Programs/UnrealHeaderTool/Config
           sparse-checkout-cone-mode: true
           lfs: false
           submodules: false
@@ -266,8 +267,24 @@ jobs:
           Push-Location $ueRoot
           try {
             & $buildScript '-Mode=UnrealHeaderTool' '-Target=UnrealGame Win64 Shipping'
-            if ($LASTEXITCODE -ne 0) {
-              throw "UnrealHeaderTool development mode failed with exit code $LASTEXITCODE."
+            $uhtExitCode = $LASTEXITCODE
+            if ($uhtExitCode -ne 0) {
+              $uhtLogPath = Join-Path $ueRoot 'Engine/Programs/UnrealHeaderTool/Saved/Logs/UnrealHeaderTool.log'
+              if (Test-Path -LiteralPath $uhtLogPath -PathType Leaf) {
+                Write-Host "UnrealHeaderTool diagnostic log: $uhtLogPath"
+                try {
+                  $uhtLogContents = Get-Content -LiteralPath $uhtLogPath -Raw -ErrorAction Stop
+                  Write-Host $uhtLogContents
+                }
+                catch {
+                  Write-Warning "Could not read UnrealHeaderTool diagnostic log: $($_.Exception.Message)"
+                }
+              }
+              else {
+                Write-Warning "UnrealHeaderTool diagnostic log was not found: $uhtLogPath"
+              }
+
+              throw "UnrealHeaderTool development mode failed with exit code $uhtExitCode."
             }
           }
           finally {
