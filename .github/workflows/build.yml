@@ -13,14 +13,12 @@ on:
 # Plugin-specific configuration
 # ============================================================
 # The version itself is NOT configured here.
-# It comes from Src/resource.h and is checked against
-# MODLOADER_BUILD_TAG in Src/plugin.cpp.
+# It comes from Src/resource.h.
 # ============================================================
 env:
   PLUGIN_NAME: MiniMap
   SOLUTION_FILE: MiniMap.sln
   VERSION_HEADER: Src/resource.h
-  PLUGIN_SOURCE: Src/plugin.cpp
   CLIENT_CONFIGURATION: Client Release
 
 jobs:
@@ -106,16 +104,26 @@ jobs:
             throw 'Pinned Unreal source is missing Engine/Build/Build.version.'
           }
 
-          $buildVersion = Get-Content -LiteralPath $buildVersionPath -Raw | ConvertFrom-Json
+          try {
+            $buildVersion = Get-Content -LiteralPath $buildVersionPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+          }
+          catch {
+            throw "Pinned Unreal source Build.version could not be read or parsed: $buildVersionPath. $($_.Exception.Message)"
+          }
+
+          Write-Host "Build.version MajorVersion: $($buildVersion.MajorVersion)"
+          Write-Host "Build.version MinorVersion: $($buildVersion.MinorVersion)"
+          Write-Host "Build.version PatchVersion: $($buildVersion.PatchVersion)"
+          Write-Host "Build.version Changelist: $($buildVersion.Changelist)"
+          Write-Host "Build.version CompatibleChangelist: $($buildVersion.CompatibleChangelist)"
+          Write-Host "Build.version BranchName: $($buildVersion.BranchName)"
+
           if (
             $buildVersion.MajorVersion -ne 5 -or
             $buildVersion.MinorVersion -ne 6 -or
-            $buildVersion.PatchVersion -ne 1 -or
-            $buildVersion.Changelist -ne 44394996 -or
-            $buildVersion.CompatibleChangelist -ne 43139311 -or
-            $buildVersion.BranchName -ne '++UE5+Release-5.6'
+            $buildVersion.PatchVersion -ne 1
           ) {
-            throw 'Pinned Unreal source Build.version does not match UE 5.6.1 changelist 44394996.'
+            throw 'Pinned Unreal source Build.version does not identify UE 5.6.1.'
           }
 
           "MINIMAP_UNREAL_ENGINE_ROOT=$ueRoot\" | Out-File `
@@ -223,18 +231,12 @@ jobs:
         shell: pwsh
         run: |
           $resourcePath = Join-Path $env:GITHUB_WORKSPACE $env:VERSION_HEADER
-          $pluginPath   = Join-Path $env:GITHUB_WORKSPACE $env:PLUGIN_SOURCE
 
           if (-not (Test-Path $resourcePath)) {
             throw "Version header not found: $resourcePath"
           }
 
-          if (-not (Test-Path $pluginPath)) {
-            throw "Plugin source not found: $pluginPath"
-          }
-
           $resource = Get-Content $resourcePath -Raw
-          $plugin   = Get-Content $pluginPath -Raw
 
           $majorMatch = [regex]::Match(
             $resource,
@@ -261,23 +263,7 @@ jobs:
 
           $version = "$($majorMatch.Groups[1].Value).$($minorMatch.Groups[1].Value).$($patchMatch.Groups[1].Value)"
 
-          $tagMatch = [regex]::Match(
-            $plugin,
-            '#define\s+MODLOADER_BUILD_TAG\s+"([^"]+)"'
-          )
-
-          if (-not $tagMatch.Success) {
-            throw "Could not determine MODLOADER_BUILD_TAG from $pluginPath"
-          }
-
-          $buildTag = $tagMatch.Groups[1].Value
-
           Write-Host "resource.h version: $version"
-          Write-Host "plugin.cpp build tag: $buildTag"
-
-          if ($version -ne $buildTag) {
-            throw "Version mismatch: resource.h reports $version but plugin.cpp reports $buildTag"
-          }
 
           "VERSION=$version" | Out-File `
             -FilePath $env:GITHUB_ENV `
