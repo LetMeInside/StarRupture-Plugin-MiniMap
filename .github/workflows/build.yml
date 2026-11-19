@@ -150,6 +150,93 @@ jobs:
           $output = Join-Path $env:GITHUB_WORKSPACE 'Src/Generated/Unreal/RHIGPUReadbackCompat.h'
           python $generator --unreal-root $env:MINIMAP_UNREAL_ENGINE_ROOT --output $output
 
+      - name: Install required Unreal shared build files
+        shell: pwsh
+        run: |
+          $ueRoot = [System.IO.Path]::GetFullPath($env:MINIMAP_UNREAL_ENGINE_ROOT)
+          $gitDependencies = Join-Path $ueRoot 'Engine/Binaries/DotNET/GitDependencies/win-x64/GitDependencies.exe'
+          if (-not (Test-Path -LiteralPath $gitDependencies -PathType Leaf)) {
+            throw "Pinned GitDependencies executable is missing: $gitDependencies"
+          }
+
+          $ignorePath = Join-Path $ueRoot '.gitdepsignore'
+          $ignoreRules = @(
+            '**',
+            '!/Engine/Source/Programs/Shared/UnrealEngine.csproj.props',
+            '!/Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets'
+          )
+          [System.IO.File]::WriteAllText(
+            $ignorePath,
+            (($ignoreRules -join "`n") + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $expectedPaths = @(
+            'Engine/Source/Programs/Shared/UnrealEngine.csproj.props',
+            'Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets'
+          )
+
+          $dryRunOutput = @(& $gitDependencies "--root=$ueRoot" '--dry-run' '--no-cache' 2>&1)
+          $dryRunExitCode = $LASTEXITCODE
+          foreach ($line in $dryRunOutput) {
+            Write-Host "$line"
+          }
+
+          if ($dryRunExitCode -ne 0) {
+            throw "GitDependencies dry-run failed with exit code $dryRunExitCode."
+          }
+
+          $plannedActions = @(
+            foreach ($line in $dryRunOutput) {
+              $match = [regex]::Match("$line", '^(Add|Update|Remove) (.+)$')
+              if ($match.Success) {
+                [pscustomobject]@{
+                  Action = $match.Groups[1].Value
+                  Path = $match.Groups[2].Value
+                }
+              }
+            }
+          )
+
+          $actualPaths = @($plannedActions | ForEach-Object { $_.Path } | Sort-Object -CaseSensitive)
+          $sortedExpectedPaths = @($expectedPaths | Sort-Object -CaseSensitive)
+          $plannedSummary = @($plannedActions | ForEach-Object { "$($_.Action) $($_.Path)" }) -join '; '
+          if (
+            $plannedActions.Count -ne 2 -or
+            @($plannedActions | Where-Object { $_.Action -cne 'Add' }).Count -ne 0 -or
+            (@($actualPaths) -join "`n") -cne (@($sortedExpectedPaths) -join "`n")
+          ) {
+            throw "GitDependencies dry-run did not unambiguously select exactly the two required files. Planned actions: $plannedSummary"
+          }
+
+          $checkoutVolume = [System.IO.Path]::GetPathRoot($ueRoot)
+          $availableBytes = ([System.IO.DriveInfo]::new($checkoutVolume)).AvailableFreeSpace
+          $minimumFreeBytes = 4GB
+          Write-Host "Available space on Unreal checkout volume $checkoutVolume`: $availableBytes bytes"
+          if ($availableBytes -lt $minimumFreeBytes) {
+            throw "Insufficient free space for bounded GitDependencies installation: require at least $minimumFreeBytes bytes."
+          }
+
+          & $gitDependencies "--root=$ueRoot" '--no-cache'
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -ne 0) {
+            throw "GitDependencies installation failed with exit code $installExitCode."
+          }
+
+          foreach ($relativePath in $expectedPaths) {
+            $dependencyPath = Join-Path $ueRoot $relativePath
+            if (-not (Test-Path -LiteralPath $dependencyPath -PathType Leaf)) {
+              throw "GitDependencies did not install required file: $dependencyPath"
+            }
+
+            $dependency = Get-Item -LiteralPath $dependencyPath
+            if ($dependency.Length -eq 0) {
+              throw "GitDependencies installed an empty file: $dependencyPath"
+            }
+
+            Write-Host "$($dependency.FullName) - $($dependency.Length) bytes"
+          }
+
       - name: Generate Unreal MassEntity headers
         shell: pwsh
         run: |
