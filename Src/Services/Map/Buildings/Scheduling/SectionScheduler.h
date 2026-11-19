@@ -382,6 +382,77 @@ namespace Services::Map::Buildings::Scheduling
 			std::optional<SectionScenePreparationResult::Readiness> SceneReadiness;
 			std::optional<SectionImageCommitResult> FinishedAttempt;
 		};
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Retains scalar spline-stage evidence for one selected Section publication. */
+		struct SplineDiagnosticMetrics
+		{
+			std::size_t SourceOccurrenceCount = 0;
+			std::size_t SourceSplineOccurrenceCount = 0;
+			std::size_t VisitedSplineOccurrenceCount = 0;
+			std::size_t CompositionAttemptCount = 0;
+			std::size_t CompositionSuccessCount = 0;
+			std::size_t CompositionUnavailableCount = 0;
+			std::size_t CompositionPendingCount = 0;
+			std::size_t CompositionRejectedCount = 0;
+			std::size_t ComposedSurfaceCount = 0;
+			std::size_t SplineInputCount = 0;
+			std::uint64_t BlockingOrdinal = 0;
+			SectionScenePreparationResult::Readiness Readiness =
+				SectionScenePreparationResult::Readiness::InvalidPublication;
+			SplineRenderInputPreparationResult::Status LastCompositionStatus =
+				SplineRenderInputPreparationResult::Status::NotAttempted;
+			KnownSpritePreparationResult::OccurrenceOutcome::Status LastOccurrenceStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed;
+			BuildingCandidateSourceKind BlockingKind = BuildingCandidateSourceKind::Unknown;
+			KnownSpritePreparationResult::OccurrenceOutcome::Status BlockingStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed;
+			bool HasBlockingOccurrence = false;
+			bool AllOccurrencesVisited = false;
+			bool SceneFinalizationAttempted = false;
+			std::uint8_t ReportedNumericalStageMask = 0;
+		};
+
+		/** Deduplicates reports at resource, scene, numerical and GPU publication transitions. */
+		struct SplineDiagnosticReportKey
+		{
+			SectionScenePreparationResult::Readiness Readiness =
+				SectionScenePreparationResult::Readiness::InvalidPublication;
+			KnownSpritePreparationResult::OccurrenceOutcome::Status BlockingStatus =
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed;
+			BuildingCandidateSourceKind BlockingKind = BuildingCandidateSourceKind::Unknown;
+			Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage NumericalStage =
+				Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage::NotStarted;
+			bool WaitingForResources = false;
+			bool HasBlockingOccurrence = false;
+			bool AllOccurrencesVisited = false;
+			bool AnySplineVisited = false;
+			bool AnyCompositionSucceeded = false;
+			bool AnyCompositionUnavailable = false;
+			bool AnyCompositionPending = false;
+			bool AnyCompositionRejected = false;
+			bool SceneFinalizationAttempted = false;
+			bool RetainedSceneExists = false;
+			bool HasRetainedSplineTriangles = false;
+			bool HasPublishedSplineTriangles = false;
+			bool GpuAssemblyActive = false;
+			bool GeometryComplete = false;
+
+			bool operator==(const SplineDiagnosticReportKey&) const = default;
+		};
+
+		/** Borrows only scalar counts and cursor state needed for one bounded diagnostic line. */
+		struct SplineDiagnosticReportSnapshot
+		{
+			SplineDiagnosticReportKey Key;
+			Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot Numerical;
+			std::size_t RetainedSurfaceCount = 0;
+			std::size_t RetainedTriangleCount = 0;
+			std::size_t PublishedTriangleCount = 0;
+			std::size_t AssemblyTriangleCount = 0;
+			bool PublishedForSource = false;
+			bool AssemblyForSource = false;
+		};
+#endif
 
 		/** Stores immutable service configuration and creates acquisition resources without I/O.
 		 * @param sectionSizeMapUnits Width and height of the service's square cell in map units.
@@ -420,6 +491,43 @@ namespace Services::Map::Buildings::Scheduling
 			std::span<const SplinePolicy> splinePolicies,
 			const SectionPreparationVisit& visit,
 			bool renderSectionImages);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Emits one scalar summary when this Section publication crosses a diagnostic milestone. */
+		void ReportSplineProgressDiagnostics(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			SectionJob& job,
+			SectionJobAdvanceResult::State state);
+		/** Captures existing scalar scheduler, scene, cursor and GPU publication state without scans. */
+		SplineDiagnosticReportSnapshot CaptureSplineDiagnosticReportSnapshot(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			const SectionJob& job,
+			SectionJobAdvanceResult::State state) const noexcept;
+		/** Selects only wait changes and coarse scene, numerical, and publication milestones. */
+		static bool ShouldReportSplineDiagnosticSnapshot(
+			const SplineDiagnosticReportSnapshot& snapshot,
+			const SplineDiagnosticReportKey& previous,
+			bool hasPrevious,
+			bool firstReportForNumericalStage,
+			SectionJobAdvanceResult::State state) noexcept;
+		/** Formats and emits one bounded scalar snapshot using existing diagnostic logging. */
+		void LogSplineDiagnosticSnapshot(
+			const ::Services::Map::Buildings::BuildingMapSection& section,
+			const SectionJob& job,
+			const SplineDiagnosticReportSnapshot& snapshot,
+			SectionJobAdvanceResult::State state) const;
+		/** Returns a stable log label for the existing source-readiness enum. */
+		static const char* ReadinessName(SectionScenePreparationResult::Readiness readiness) noexcept;
+		/** Returns a stable log label for the existing candidate source-kind enum. */
+		static const char* SourceKindName(BuildingCandidateSourceKind kind) noexcept;
+		/** Returns a stable log label for the existing occurrence outcome enum. */
+		static const char* OccurrenceStatusName(
+			KnownSpritePreparationResult::OccurrenceOutcome::Status status) noexcept;
+		/** Returns a stable log label for the existing spline composition enum. */
+		static const char* CompositionStatusName(SplineRenderInputPreparationResult::Status status) noexcept;
+		/** Returns a stable log label for the existing numerical spline cursor stage. */
+		static const char* NumericalSplineStageName(
+			Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage stage) noexcept;
+#endif
 
 		/** Starts gameplay scheduling against the persistent BuildingScheduler renderer.
 		 * @return True when BuildingScheduler enters gameplay-active scheduling state.
@@ -984,6 +1092,10 @@ namespace Services::Map::Buildings::Scheduling
 			std::optional<std::size_t> SpriteRetryTail;
 			std::optional<SectionScenePreparationResult::Readiness> TerminalReadiness;
 			bool Initialized = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			std::size_t SourceOccurrenceCount = 0;
+			std::size_t SourceSplineOccurrenceCount = 0;
+#endif
 		};
 
 		/** Holds every resumable rendering field for one Section-owned unfinished generation. */
@@ -1001,6 +1113,11 @@ namespace Services::Map::Buildings::Scheduling
 			bool GeometryComplete = false;
 			bool GeometryFailed = false;
 			std::unique_ptr<Rendering::SectionRendering::IncrementalOperation> NumericalOperation;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			SplineDiagnosticMetrics SplineDiagnostics;
+			SplineDiagnosticReportKey LastSplineDiagnosticReport;
+			bool HasSplineDiagnosticReport = false;
+#endif
 		};
 
 		const double sectionSizeMapUnits_;

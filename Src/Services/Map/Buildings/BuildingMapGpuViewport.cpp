@@ -360,6 +360,9 @@ namespace Services::Map::Buildings
 		assembly->Geometry = std::make_shared<BuildingMapSectionPresentation::Geometry>();
 		assembly->SourceScene = &geometry;
 		assembly->SourceContentHash = geometry.SourceContentHash();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		assembly->Presentation->DiagnosticSourceContentHash = assembly->SourceContentHash;
+#endif
 		assembly->OrdinaryOccurrenceCount = geometry.OrdinarySprites().size();
 		assembly->OverlayOccurrenceCount = geometry.OverlayLastSprites().size();
 		assembly->SurfaceCount = geometry.SplineSurfaces().size();
@@ -443,7 +446,7 @@ namespace Services::Map::Buildings
 	}
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-	/** Reports drawable appearance or a sealed replacement that reduces published triangle counts. */
+	/** Reports first appearance, first spline publication, or a sealed replacement that loses triangles. */
 	void BuildingMapGpuViewport::ReportSectionGeometrySeal(
 		const BuildingMapSection& section,
 		const BuildingMapSectionPresentation::Geometry& geometry,
@@ -452,17 +455,30 @@ namespace Services::Map::Buildings
 		const auto previousGeometry = section.gpuPresentation_ != nullptr
 			? section.gpuPresentation_->PreparedGeometry : nullptr;
 		const bool firstOrReappearance = previousGeometry == nullptr;
+		const bool newSourcePresentation = section.gpuPresentation_ == nullptr ||
+			section.gpuPresentation_->DiagnosticSourceContentHash != sourceContentHash;
+		const bool firstSplineAppearance = !geometry.SplineTriangles.empty() &&
+			(previousGeometry == nullptr || newSourcePresentation || previousGeometry->SplineTriangles.empty());
 		const bool lostTriangles = previousGeometry != nullptr &&
 			(geometry.OrdinaryTriangles.size() < previousGeometry->OrdinaryTriangles.size() ||
 				geometry.SplineTriangles.size() < previousGeometry->SplineTriangles.size() ||
 				geometry.OverlayTriangles.size() < previousGeometry->OverlayTriangles.size());
-		if (!firstOrReappearance && !lostTriangles)
+		if (!firstOrReappearance && !firstSplineAppearance && !lostTriangles)
 		{
 			return;
 		}
 		if (auto* log = MiniMap::Services::TryLog())
 		{
-			if (firstOrReappearance)
+			if (firstSplineAppearance)
+			{
+				MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+					"MiniMap: BuildingMapSplineTrace event=geometry-published grid=(%lld,%lld) "
+					"sourceHash=0x%016llx retainedAndPublishedSplineTriangles=%llu",
+					static_cast<long long>(section.gridX_), static_cast<long long>(section.gridY_),
+					static_cast<unsigned long long>(sourceContentHash),
+					static_cast<unsigned long long>(geometry.SplineTriangles.size()));
+			}
+			else if (firstOrReappearance)
 			{
 				MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
 					"MiniMap: BuildingMapPresentationTrace event=geometry-appearance grid=(%lld,%lld) "

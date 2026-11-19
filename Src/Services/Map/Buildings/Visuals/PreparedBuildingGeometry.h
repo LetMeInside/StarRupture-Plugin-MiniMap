@@ -139,6 +139,14 @@ namespace Services::Map::Buildings::Visuals
 			std::size_t* vectorIndex = nullptr) const noexcept;
 		/** Borrows the clipped spline surfaces in established contributor order. */
 		const std::vector<SplineSurface>& SplineSurfaces() const noexcept;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Returns the retained spline draw-triangle count without scanning surfaces. */
+		std::size_t DiagnosticSplineTriangleCount() const noexcept;
+		/** Returns source occurrence cardinality captured during scheduler initialization. */
+		std::size_t DiagnosticSourceOccurrenceCount() const noexcept;
+		/** Returns spline source cardinality captured during scheduler initialization. */
+		std::size_t DiagnosticSourceSplineOccurrenceCount() const noexcept;
+#endif
 		/** Borrows terminal no-drawable spline ordinals accepted as scene omissions. */
 		const std::vector<std::uint64_t>& TerminalSplineOmissionOrdinals() const noexcept;
 		/** Reports the representative reason retained for this generation's terminal spline omissions. */
@@ -174,6 +182,11 @@ namespace Services::Map::Buildings::Visuals
 		std::size_t failedContributionCount_ = 0;
 		std::size_t terminalOmissionCount_ = 0;
 		std::size_t drawableGpuTriangleCount_ = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::size_t drawableSplineTriangleCount_ = 0;
+		std::size_t diagnosticSourceOccurrenceCount_ = 0;
+		std::size_t diagnosticSourceSplineOccurrenceCount_ = 0;
+#endif
 		std::uint64_t sourceContentHash_ = 0;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		std::uint64_t diagnosticGeneration_ = 0;

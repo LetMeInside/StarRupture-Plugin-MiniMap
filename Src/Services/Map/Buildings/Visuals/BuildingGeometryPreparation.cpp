@@ -66,6 +66,37 @@ namespace Services::Map::Buildings::Visuals
 	}
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Returns scalar spline cursor state without traversing prepared inputs or geometry. */
+	BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot
+		BuildingGeometryPreparation::PreparationCursor::GetDiagnosticSnapshot() const noexcept
+	{
+		DiagnosticSnapshot snapshot;
+		snapshot.SplineIndex = SplineIndex;
+		snapshot.SurfaceIndex = SplineSurfaceIndex;
+		snapshot.SamplingPrepared = SplineSamplingPrepared;
+		if (!Initialized)
+		{
+			snapshot.Stage = DiagnosticSnapshot::SplineStage::NotStarted;
+		}
+		else if (CurrentPhase == Phase::OcclusionIndex)
+		{
+			snapshot.Stage = DiagnosticSnapshot::SplineStage::OcclusionIndex;
+		}
+		else if (CurrentPhase == Phase::Splines && !SplineSamplingPrepared)
+		{
+			snapshot.Stage = DiagnosticSnapshot::SplineStage::SplineSampling;
+		}
+		else if (CurrentPhase == Phase::Splines)
+		{
+			snapshot.Stage = DiagnosticSnapshot::SplineStage::SplineSurfaces;
+		}
+		else
+		{
+			snapshot.Stage = DiagnosticSnapshot::SplineStage::Complete;
+		}
+		return snapshot;
+	}
+
 	/** Stops query counting and copies one attempt's workspace counters into its cursor. */
 	void BuildingGeometryPreparation::CaptureBvhQueryCounters(
 		BuildingVisualsContext& scratch,
@@ -1422,6 +1453,9 @@ namespace Services::Map::Buildings::Visuals
 				surface.SolidTriangles.size() + surface.TexturedTriangles.size();
 #endif
 			output.drawableGpuTriangleCount_ += surface.DrawSplineTriangles.size();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			output.drawableSplineTriangleCount_ += surface.DrawSplineTriangles.size();
+#endif
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			const bool selectedAlternative = surface.SelectedAlternative;
 #endif

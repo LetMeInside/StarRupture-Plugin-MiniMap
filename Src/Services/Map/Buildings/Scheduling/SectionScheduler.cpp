@@ -257,6 +257,9 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		if (TryReuseCompletedSceneWithoutResources(section, job))
 		{
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			job.SplineDiagnostics.Readiness = Readiness::CompleteSceneInputs;
+		#endif
 			return Readiness::CompleteSceneInputs;
 		}
 		if (!InitializeSectionPreparationProgress(section, job, job.publicationOwner))
@@ -279,6 +282,19 @@ namespace Services::Map::Buildings::Scheduling
 			return Readiness::UnresolvedInputs;
 		}
 		const Readiness readiness = GetSectionPreparationReadiness(job);
+	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.SplineDiagnostics.Readiness = readiness;
+		job.SplineDiagnostics.HasBlockingOccurrence = false;
+		if (job.Preparation.FirstUnresolvedOrdinal < job.Preparation.SpritePreparation.OccurrenceOutcomes.size())
+		{
+			const auto& blocker = job.Preparation.SpritePreparation.OccurrenceOutcomes[
+				job.Preparation.FirstUnresolvedOrdinal];
+			job.SplineDiagnostics.HasBlockingOccurrence = true;
+			job.SplineDiagnostics.BlockingOrdinal = blocker.PublicationOrdinal;
+			job.SplineDiagnostics.BlockingKind = blocker.SourceKind;
+			job.SplineDiagnostics.BlockingStatus = blocker.PreparationStatus;
+		}
+	#endif
 		if (readiness != Readiness::CompleteSceneInputs)
 		{
 			return readiness;
@@ -287,6 +303,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return readiness;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.SplineDiagnostics.SceneFinalizationAttempted = true;
+#endif
 		if (!FinalizeRetainedSectionScene(section, job, job.publicationOwner))
 		{
 			job.Preparation.TerminalReadiness = Readiness::InvalidPreparationInputs;
@@ -389,6 +408,8 @@ namespace Services::Map::Buildings::Scheduling
 		Performance::Timer ordering(&Performance::Game().OccurrenceOrder);
 		Performance::TaggedTimer taggedOrdering(Performance::PreparationOperation::OccurrenceOrdering,
 			-1, -1, sourceData.records.size(), preparation.InitialSpriteCount);
+		preparation.SourceOccurrenceCount = sourceData.records.size();
+		job.SplineDiagnostics.SourceOccurrenceCount = sourceData.records.size();
 #endif
 		if (section.HasCompletedSceneForContentHash(publication.ContentHash()))
 		{
@@ -404,11 +425,20 @@ namespace Services::Map::Buildings::Scheduling
 			preparation.OccurrenceOrder = completed.spritePainterOrder_;
 			preparation.InitialSpriteCount = completed.spritePainterCount_;
 			preparation.ValidSpriteCount = completed.validSpritePainterCount_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			preparation.SourceSplineOccurrenceCount = completed.DiagnosticSourceSplineOccurrenceCount();
+			job.SplineDiagnostics.SourceOccurrenceCount = completed.DiagnosticSourceOccurrenceCount();
+			job.SplineDiagnostics.SourceSplineOccurrenceCount = completed.DiagnosticSourceSplineOccurrenceCount();
+#endif
 			job.GeometryComplete = true;
 		}
 		else
 		{
 			preparation.OccurrenceOrder.resize(sourceData.records.size());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			preparation.SourceSplineOccurrenceCount = 0;
+			job.SplineDiagnostics.SourceSplineOccurrenceCount = 0;
+#endif
 			std::size_t remainingBegin = preparation.OccurrenceOrder.size();
 			for (std::size_t ordinal = 0; ordinal < sourceData.records.size(); ++ordinal)
 			{
@@ -418,6 +448,13 @@ namespace Services::Map::Buildings::Scheduling
 				}
 				else
 				{
+					if (sourceData.records[ordinal].kind == BuildingCandidateSourceKind::Spline)
+					{
+					#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+						++preparation.SourceSplineOccurrenceCount;
+						++job.SplineDiagnostics.SourceSplineOccurrenceCount;
+#endif
+					}
 					preparation.OccurrenceOrder[--remainingBegin] = ordinal;
 				}
 			}
@@ -428,6 +465,10 @@ namespace Services::Map::Buildings::Scheduling
 				preparation.InitialSpriteCount);
 			auto* preparedGeometry = section.BeginPreparingScene(
 				publication.ContentHash(), candidateData.occurrences.size());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			preparedGeometry->diagnosticSourceOccurrenceCount_ = preparation.SourceOccurrenceCount;
+			preparedGeometry->diagnosticSourceSplineOccurrenceCount_ = preparation.SourceSplineOccurrenceCount;
+#endif
 			preparedGeometry->spritePainterOrder_ = preparation.OccurrenceOrder;
 			preparedGeometry->validSpritePainterCount_ = preparation.ValidSpriteCount;
 			preparedGeometry->spritePainterCount_ = preparation.InitialSpriteCount;
@@ -532,6 +573,10 @@ namespace Services::Map::Buildings::Scheduling
 				sourceData.records[ordinal], ordinal, splinePolicies);
 			RetainTerminalSpriteOmission(section, job, ordinal);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.SplineDiagnostics.AllOccurrencesVisited =
+			preparation.NextOccurrenceIndex >= preparation.OccurrenceOrder.size();
+#endif
 		if (visit.InitialSpritesOnly || preparation.NextOccurrenceIndex < end)
 		{
 			return true;
@@ -602,6 +647,10 @@ namespace Services::Map::Buildings::Scheduling
 			Performance::Timer indivisible(&Performance::Game().Indivisible);
 #endif
 			progress.SplinePreparations.emplace_back();
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			++job.SplineDiagnostics.VisitedSplineOccurrenceCount;
+			++job.SplineDiagnostics.CompositionAttemptCount;
+		#endif
 			PrepareSplineOccurrence(
 				job.publicationOwner,
 				ordinal,
@@ -609,6 +658,30 @@ namespace Services::Map::Buildings::Scheduling
 				splinePolicies,
 				outcome,
 				progress.SplinePreparations.back());
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			const auto& composition = progress.SplinePreparations.back();
+			job.SplineDiagnostics.LastCompositionStatus = composition.PreparationStatus;
+			job.SplineDiagnostics.LastOccurrenceStatus = outcome.PreparationStatus;
+			if (composition.PreparationStatus == SplineRenderInputPreparationResult::Status::Composed)
+			{
+				++job.SplineDiagnostics.CompositionSuccessCount;
+				job.SplineDiagnostics.ComposedSurfaceCount += composition.SurfaceInputs.size();
+			}
+			else if (outcome.PreparationStatus ==
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::TemporarilyUnavailableSource)
+			{
+				++job.SplineDiagnostics.CompositionUnavailableCount;
+			}
+			else if (outcome.PreparationStatus ==
+				KnownSpritePreparationResult::OccurrenceOutcome::Status::PendingNativeSourceAcquisition)
+			{
+				++job.SplineDiagnostics.CompositionPendingCount;
+			}
+			else
+			{
+				++job.SplineDiagnostics.CompositionRejectedCount;
+			}
+#endif
 		}
 		else if (source.kind == BuildingCandidateSourceKind::Sprite)
 		{
@@ -872,6 +945,9 @@ namespace Services::Map::Buildings::Scheduling
 		{
 			return false;
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.SplineDiagnostics.SplineInputCount = retained->RenderSceneInput.Splines.size();
+#endif
 		job.retainedScene = std::move(retained);
 		job.Preparation = {};
 		return true;
@@ -1184,6 +1260,11 @@ namespace Services::Map::Buildings::Scheduling
 		job.GeometryComplete = false;
 		job.GeometryFailed = false;
 		job.AttemptEvidence.reset();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		job.SplineDiagnostics = {};
+		job.LastSplineDiagnosticReport = {};
+		job.HasSplineDiagnosticReport = false;
+#endif
 	}
 
 	/** Transfers one finished attempt to the caller and clears its retained progress. */
@@ -1199,6 +1280,9 @@ namespace Services::Map::Buildings::Scheduling
 #endif
 		result.FinishedAttempt = std::move(job.AttemptEvidence);
 		result.CurrentState = SectionJobAdvanceResult::State::AttemptFinished;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		ReportSplineProgressDiagnostics(section, job, result.CurrentState);
+#endif
 		ResetSectionJobProgress(job, section);
 	}
 
@@ -1687,14 +1771,294 @@ namespace Services::Map::Buildings::Scheduling
 		if (!PrepareSectionJobAttempt(
 			section, job, splinePolicies, visit, renderSectionImages, result))
 		{
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			if (result.CurrentState != SectionJobAdvanceResult::State::AttemptFinished)
+			{
+				ReportSplineProgressDiagnostics(section, job, result.CurrentState);
+			}
+#endif
 			return result;
 		}
 		if (AdvanceSectionJobNumerical(section, job, visit.Deadline, result))
 		{
 			CommitSectionJobImage(section, job, visit.Deadline, result);
 		}
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		if (result.CurrentState != SectionJobAdvanceResult::State::AttemptFinished)
+		{
+			ReportSplineProgressDiagnostics(section, job, result.CurrentState);
+		}
+#endif
 		return result;
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Returns a stable log label for the existing source-readiness enum. */
+	const char* SectionScheduler::ReadinessName(SectionScenePreparationResult::Readiness readiness) noexcept
+	{
+		using Readiness = SectionScenePreparationResult::Readiness;
+		switch (readiness)
+		{
+		case Readiness::InvalidPublication: return "invalid_publication";
+		case Readiness::InvalidSection: return "invalid_section";
+		case Readiness::InvalidPreparationInputs: return "invalid_preparation_inputs";
+		case Readiness::PendingNativeSourceAcquisition: return "pending_native_source";
+		case Readiness::PendingSpriteAcquisition: return "pending_sprite";
+		case Readiness::TemporarilyUnavailableResources: return "temporarily_unavailable_resources";
+		case Readiness::UnresolvedInputs: return "unresolved_inputs";
+		case Readiness::CompleteSceneInputs: return "complete_scene_inputs";
+		default: return "unknown_readiness";
+		}
+	}
+
+	/** Returns a stable log label for the existing candidate source-kind enum. */
+	const char* SectionScheduler::SourceKindName(BuildingCandidateSourceKind kind) noexcept
+	{
+		switch (kind)
+		{
+		case BuildingCandidateSourceKind::Unknown: return "unknown";
+		case BuildingCandidateSourceKind::Sprite: return "sprite";
+		case BuildingCandidateSourceKind::Spline: return "spline";
+		default: return "invalid_kind";
+		}
+	}
+
+	/** Returns a stable log label for the existing occurrence outcome enum. */
+	const char* SectionScheduler::OccurrenceStatusName(
+		KnownSpritePreparationResult::OccurrenceOutcome::Status status) noexcept
+	{
+		using Status = KnownSpritePreparationResult::OccurrenceOutcome::Status;
+		switch (status)
+		{
+		case Status::NotProcessed: return "not_processed";
+		case Status::UnknownSource: return "unknown_source";
+		case Status::PendingNativeSourceAcquisition: return "pending_native_source";
+		case Status::TemporarilyUnavailableSource: return "temporarily_unavailable_source";
+		case Status::TerminalSourceFailure: return "terminal_source_failure";
+		case Status::PendingSpriteAcquisition: return "pending_sprite";
+		case Status::TerminalSpriteCaptureFailure: return "terminal_sprite_capture_failure";
+		case Status::TerminalSpriteGeometryFailure: return "terminal_sprite_geometry_failure";
+		case Status::TemporarilyUnavailableSprite: return "temporarily_unavailable_sprite";
+		case Status::InvalidSpriteRequirement: return "invalid_sprite_requirement";
+		case Status::MissingSpritePlacement: return "missing_sprite_placement";
+		case Status::UnresolvedSpriteGeometry: return "unresolved_sprite_geometry";
+		case Status::UnknownSpritePass: return "unknown_sprite_pass";
+		case Status::UnresolvedInputs: return "unresolved_inputs";
+		case Status::ReadySprite: return "ready_sprite";
+		case Status::ReadySpline: return "ready_spline";
+		default: return "unknown_occurrence_status";
+		}
+	}
+
+	/** Returns a stable log label for the existing spline composition enum. */
+	const char* SectionScheduler::CompositionStatusName(SplineRenderInputPreparationResult::Status status) noexcept
+	{
+		using Status = SplineRenderInputPreparationResult::Status;
+		switch (status)
+		{
+		case Status::NotAttempted: return "not_attempted";
+		case Status::Composed: return "composed";
+		case Status::InvalidOccurrence: return "invalid_occurrence";
+		case Status::NotSpline: return "not_spline";
+		case Status::SourceNotComplete: return "source_not_complete";
+		case Status::ProfilesNotComplete: return "profiles_not_complete";
+		case Status::CurveNotEligible: return "curve_not_eligible";
+		case Status::RootTransformUnavailable: return "root_transform_unavailable";
+		case Status::PolicyUnresolved: return "policy_unresolved";
+		case Status::PolicyIndexMismatch: return "policy_index_mismatch";
+		case Status::InvalidPolicy: return "invalid_policy";
+		case Status::InvalidSamplingDensity: return "invalid_sampling_density";
+		case Status::NoPreparedSurface: return "no_prepared_surface";
+		default: return "unknown_composition_status";
+		}
+	}
+
+	/** Returns a stable log label for the existing numerical spline cursor stage. */
+	const char* SectionScheduler::NumericalSplineStageName(
+		Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage stage) noexcept
+	{
+		using Stage = Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage;
+		switch (stage)
+		{
+		case Stage::NotStarted: return "not_started";
+		case Stage::OcclusionIndex: return "occlusion_index";
+		case Stage::SplineSampling: return "spline_sampling";
+		case Stage::SplineSurfaces: return "spline_surfaces";
+		case Stage::Complete: return "complete";
+		default: return "unknown_stage";
+		}
+	}
+
+	/** Captures existing scalar scheduler, scene, cursor and GPU publication state without scans. */
+	SectionScheduler::SplineDiagnosticReportSnapshot SectionScheduler::CaptureSplineDiagnosticReportSnapshot(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		const SectionJob& job,
+		SectionJobAdvanceResult::State state) const noexcept
+	{
+		SplineDiagnosticReportSnapshot snapshot;
+		const auto& metrics = job.SplineDiagnostics;
+		snapshot.Numerical = job.GeometryCursor.GetDiagnosticSnapshot();
+		const auto* preparedScene = section.preparingScene_ != nullptr &&
+			section.preparingScene_->SourceContentHash() == job.publicationOwner->ContentHash()
+			? section.preparingScene_.get()
+			: section.completedScene_ != nullptr &&
+				section.completedScene_->SourceContentHash() == job.publicationOwner->ContentHash()
+				? section.completedScene_.get() : nullptr;
+		if (preparedScene != nullptr)
+		{
+			snapshot.RetainedSurfaceCount = preparedScene->SplineSurfaces().size();
+			snapshot.RetainedTriangleCount = preparedScene->DiagnosticSplineTriangleCount();
+		}
+		const auto* presentation = section.gpuPresentation_.get();
+		snapshot.PublishedForSource = presentation != nullptr &&
+			presentation->DiagnosticSourceContentHash == job.publicationOwner->ContentHash() &&
+			presentation->PreparedGeometry != nullptr;
+		if (snapshot.PublishedForSource)
+		{
+			snapshot.PublishedTriangleCount = presentation->PreparedGeometry->SplineTriangles.size();
+		}
+		const auto* assembly = section.gpuGeometryAssembly_.get();
+		snapshot.AssemblyForSource = assembly != nullptr &&
+			assembly->SourceContentHash == job.publicationOwner->ContentHash();
+		if (snapshot.AssemblyForSource && assembly->Geometry != nullptr)
+		{
+			snapshot.AssemblyTriangleCount = assembly->Geometry->SplineTriangles.size();
+		}
+		auto& key = snapshot.Key;
+		key.WaitingForResources = state == SectionJobAdvanceResult::State::WaitingForResources;
+		key.Readiness = metrics.Readiness;
+		key.HasBlockingOccurrence = key.WaitingForResources && metrics.HasBlockingOccurrence;
+		key.BlockingKind = key.HasBlockingOccurrence ? metrics.BlockingKind : BuildingCandidateSourceKind::Unknown;
+		key.BlockingStatus = key.HasBlockingOccurrence ? metrics.BlockingStatus
+			: KnownSpritePreparationResult::OccurrenceOutcome::Status::NotProcessed;
+		key.AllOccurrencesVisited = metrics.AllOccurrencesVisited;
+		key.AnySplineVisited = metrics.VisitedSplineOccurrenceCount != 0;
+		key.AnyCompositionSucceeded = metrics.CompositionSuccessCount != 0;
+		key.AnyCompositionUnavailable = metrics.CompositionUnavailableCount != 0;
+		key.AnyCompositionPending = metrics.CompositionPendingCount != 0;
+		key.AnyCompositionRejected = metrics.CompositionRejectedCount != 0;
+		key.SceneFinalizationAttempted = metrics.SceneFinalizationAttempted;
+		key.RetainedSceneExists = job.retainedScene != nullptr;
+		key.NumericalStage = snapshot.Numerical.Stage;
+		key.HasRetainedSplineTriangles = snapshot.RetainedTriangleCount != 0;
+		key.HasPublishedSplineTriangles = snapshot.PublishedTriangleCount != 0;
+		key.GpuAssemblyActive = snapshot.AssemblyForSource;
+		key.GeometryComplete = job.GeometryComplete;
+		return snapshot;
+	}
+
+	/** Selects only wait changes and coarse scene, numerical, and publication milestones. */
+	bool SectionScheduler::ShouldReportSplineDiagnosticSnapshot(
+		const SplineDiagnosticReportSnapshot& snapshot,
+		const SplineDiagnosticReportKey& previous,
+		bool hasPrevious,
+		bool firstReportForNumericalStage,
+		SectionJobAdvanceResult::State state) noexcept
+	{
+		const auto& key = snapshot.Key;
+		const bool keyChanged = !hasPrevious || !(key == previous);
+		if (key.WaitingForResources)
+		{
+			return keyChanged;
+		}
+		if (!hasPrevious)
+		{
+			return key.SceneFinalizationAttempted || key.RetainedSceneExists ||
+				key.NumericalStage !=
+					Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage::NotStarted ||
+				state == SectionJobAdvanceResult::State::TerminalFailure;
+		}
+		const auto notStarted =
+			Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage::NotStarted;
+		return (key.SceneFinalizationAttempted && !previous.SceneFinalizationAttempted) ||
+			(previous.WaitingForResources && !key.WaitingForResources) ||
+			(key.RetainedSceneExists && !previous.RetainedSceneExists) ||
+			(key.NumericalStage != notStarted && firstReportForNumericalStage) ||
+			(key.GpuAssemblyActive && !previous.GpuAssemblyActive) ||
+			(key.HasRetainedSplineTriangles && !previous.HasRetainedSplineTriangles) ||
+			(key.HasPublishedSplineTriangles && !previous.HasPublishedSplineTriangles) ||
+			(key.GeometryComplete && !previous.GeometryComplete) ||
+			(state == SectionJobAdvanceResult::State::TerminalFailure && keyChanged);
+	}
+
+	/** Formats and emits one bounded scalar snapshot using existing diagnostic logging. */
+	void SectionScheduler::LogSplineDiagnosticSnapshot(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		const SectionJob& job,
+		const SplineDiagnosticReportSnapshot& snapshot,
+		SectionJobAdvanceResult::State state) const
+	{
+		const auto& metrics = job.SplineDiagnostics;
+		const auto& key = snapshot.Key;
+		const char* event = key.WaitingForResources ? "resource_wait" :
+			key.HasPublishedSplineTriangles ? "spline_geometry_published" :
+			key.HasRetainedSplineTriangles ? "spline_geometry_retained" :
+			key.GeometryComplete ? "geometry_complete" :
+			key.RetainedSceneExists ? "retained_scene_ready" : "preparation_progress";
+		const char* stateName = state == SectionJobAdvanceResult::State::WaitingForResources ? "waiting_for_resources" :
+			state == SectionJobAdvanceResult::State::TerminalFailure ? "terminal_failure" :
+			state == SectionJobAdvanceResult::State::RestartRequired ? "restart_required" :
+			state == SectionJobAdvanceResult::State::AttemptFinished ? "attempt_finished" : "pending";
+		MiniMap::Services::ILog* log = MiniMap::Services::TryLog();
+		if (log == nullptr)
+		{
+			return;
+		}
+		const auto& numerical = snapshot.Numerical;
+		MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+			"MiniMap: BuildingMapSplineTrace event=%s state=%s grid=(%lld,%lld) sourceHash=0x%016llx "
+			"source={occurrences:%llu splines:%llu visitedSplines:%llu allVisited:%u} "
+			"composition={attempts:%llu composed:%llu unavailable:%llu pending:%llu rejected:%llu surfaces:%llu last:%s/%s} "
+			"readiness={waiting:%u reason:%s blockerKind:%s blockerOrdinal:%llu blockerStatus:%s} "
+			"scene={finalizationAttempted:%u retained:%u} "
+			"numerical={begun:%u stage:%s splineInputs:%llu splineIndex:%llu surfaceIndex:%llu samplingPrepared:%u "
+			"retainedSurfaces:%llu retainedSplineTriangles:%llu} "
+			"gpu={assemblyForHash:%u assemblySplineTriangles:%llu publishedForHash:%u publishedSplineTriangles:%llu}",
+			event, stateName, static_cast<long long>(section.GetGridX()), static_cast<long long>(section.GetGridY()),
+			static_cast<unsigned long long>(job.publicationOwner->ContentHash()),
+			static_cast<unsigned long long>(metrics.SourceOccurrenceCount), static_cast<unsigned long long>(metrics.SourceSplineOccurrenceCount),
+			static_cast<unsigned long long>(metrics.VisitedSplineOccurrenceCount), static_cast<unsigned>(metrics.AllOccurrencesVisited),
+			static_cast<unsigned long long>(metrics.CompositionAttemptCount), static_cast<unsigned long long>(metrics.CompositionSuccessCount),
+			static_cast<unsigned long long>(metrics.CompositionUnavailableCount), static_cast<unsigned long long>(metrics.CompositionPendingCount),
+			static_cast<unsigned long long>(metrics.CompositionRejectedCount), static_cast<unsigned long long>(metrics.ComposedSurfaceCount),
+			CompositionStatusName(metrics.LastCompositionStatus), OccurrenceStatusName(metrics.LastOccurrenceStatus),
+			static_cast<unsigned>(key.WaitingForResources), ReadinessName(metrics.Readiness),
+			key.HasBlockingOccurrence ? SourceKindName(metrics.BlockingKind) : "none",
+			static_cast<unsigned long long>(key.HasBlockingOccurrence ? metrics.BlockingOrdinal : 0),
+			key.HasBlockingOccurrence ? OccurrenceStatusName(metrics.BlockingStatus) : "none",
+			static_cast<unsigned>(metrics.SceneFinalizationAttempted), static_cast<unsigned>(job.retainedScene != nullptr),
+			static_cast<unsigned>(numerical.Stage != Visuals::BuildingGeometryPreparation::PreparationCursor::DiagnosticSnapshot::SplineStage::NotStarted),
+			NumericalSplineStageName(numerical.Stage), static_cast<unsigned long long>(metrics.SplineInputCount),
+			static_cast<unsigned long long>(numerical.SplineIndex), static_cast<unsigned long long>(numerical.SurfaceIndex),
+			static_cast<unsigned>(numerical.SamplingPrepared), static_cast<unsigned long long>(snapshot.RetainedSurfaceCount),
+			static_cast<unsigned long long>(snapshot.RetainedTriangleCount), static_cast<unsigned>(snapshot.AssemblyForSource),
+			static_cast<unsigned long long>(snapshot.AssemblyTriangleCount), static_cast<unsigned>(snapshot.PublishedForSource),
+			static_cast<unsigned long long>(snapshot.PublishedTriangleCount));
+	}
+
+	/** Emits one scalar summary when this Section publication crosses a diagnostic milestone. */
+	void SectionScheduler::ReportSplineProgressDiagnostics(
+		const ::Services::Map::Buildings::BuildingMapSection& section,
+		SectionJob& job,
+		SectionJobAdvanceResult::State state)
+	{
+		const auto snapshot = CaptureSplineDiagnosticReportSnapshot(section, job, state);
+		const auto stageIndex = static_cast<std::uint8_t>(snapshot.Key.NumericalStage);
+		const std::uint8_t stageBit = stageIndex < 8 ? static_cast<std::uint8_t>(1u << stageIndex) : 0;
+		const bool firstReportForNumericalStage = stageBit != 0 &&
+			(job.SplineDiagnostics.ReportedNumericalStageMask & stageBit) == 0;
+		if (!ShouldReportSplineDiagnosticSnapshot(
+			snapshot, job.LastSplineDiagnosticReport, job.HasSplineDiagnosticReport,
+			firstReportForNumericalStage, state))
+		{
+			return;
+		}
+		LogSplineDiagnosticSnapshot(section, job, snapshot, state);
+		job.SplineDiagnostics.ReportedNumericalStageMask |= stageBit;
+		job.LastSplineDiagnosticReport = snapshot.Key;
+		job.HasSplineDiagnosticReport = true;
+	}
+#endif
 
 	/** Starts gameplay scheduling against the renderer created with service configuration. */
 	bool SectionScheduler::BeginCaptureGameWorldSession()

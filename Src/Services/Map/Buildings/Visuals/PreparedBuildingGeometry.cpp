@@ -23,6 +23,11 @@ namespace Services::Map::Buildings::Visuals
 		terminalOmissionCount_ = 0;
 		terminalSplineOmissionReason_ = BuildingSplineOmissionReason::NoDrawableAlternative;
 		drawableGpuTriangleCount_ = 0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		drawableSplineTriangleCount_ = 0;
+		diagnosticSourceOccurrenceCount_ = 0;
+		diagnosticSourceSplineOccurrenceCount_ = 0;
+#endif
 		complete_ = false;
 	}
 
@@ -231,6 +236,26 @@ namespace Services::Map::Buildings::Visuals
 	{
 		return splineSurfaces_;
 	}
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Returns the retained spline draw-triangle count without scanning surfaces. */
+	std::size_t PreparedBuildingGeometry::DiagnosticSplineTriangleCount() const noexcept
+	{
+		return drawableSplineTriangleCount_;
+	}
+
+	/** Returns source occurrence cardinality captured during scheduler initialization. */
+	std::size_t PreparedBuildingGeometry::DiagnosticSourceOccurrenceCount() const noexcept
+	{
+		return diagnosticSourceOccurrenceCount_;
+	}
+
+	/** Returns spline source cardinality captured during scheduler initialization. */
+	std::size_t PreparedBuildingGeometry::DiagnosticSourceSplineOccurrenceCount() const noexcept
+	{
+		return diagnosticSourceSplineOccurrenceCount_;
+	}
+#endif
 
 	/** Returns source ordinals accepted as terminal no-drawable spline omissions. */
 	const std::vector<std::uint64_t>& PreparedBuildingGeometry::TerminalSplineOmissionOrdinals() const noexcept

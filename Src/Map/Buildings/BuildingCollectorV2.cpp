@@ -18,12 +18,14 @@
 #include "Services/Runtime.h"
 #include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
+#include <SDK/CoreUObject_classes.hpp>
 #include <SDK/CoreUObject_structs.hpp>
 #include <SDK/MassEntity_structs.hpp>
 #include "Native/ReadbackUEConfiguration.h"
 #include <MassExecutionContext.h>
 #include <MassArchetypeTypes.h>
 #include <algorithm>
+#include <array>
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
 #include <array>
@@ -38,6 +40,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
@@ -51,6 +54,22 @@ namespace MiniMap::BuildingAcquisition
     using Native = MiniMapNative::NativeApi;
     using EntityId = MiniMapNative::MassEntityHandle;
     using DefinitionOwner = BuildingDefinitionAcquisition::DefinitionOwner;
+    using SplineEnumNameValue = SDK::TPair<SDK::FName, std::int64_t>;
+
+    /** Mirrors the confirmed native three-field TArray header for compile-time layout checks. */
+    struct SplineEnumArrayLayout
+    {
+        void* Data;
+        std::int32_t Num;
+        std::int32_t Max;
+    };
+
+    /** Owns one copied enum name/value pair without SDK container constructors. */
+    struct SplineEnumNameValueCopy
+    {
+        SDK::FName Name;
+        std::int64_t Value;
+    };
 
     static_assert(sizeof(SDK::FMassEntityQuery) == 0x350,
         "BuildingCollectorV2 fixed query storage must match the generated Client SDK query size");
@@ -104,6 +123,27 @@ namespace MiniMap::BuildingAcquisition
     static_assert(alignof(SDK::FCrBuildingParameters) == 0x08);
     static_assert(sizeof(decltype(SDK::FCrBuildingParameters::PlacementData)) == 0x08);
     static_assert(sizeof(SDK::FAuAPPayloadDataHandle) == 0x20);
+    static_assert(sizeof(SDK::UObject) == 0x28);
+    static_assert(offsetof(SDK::UObject, Class) == 0x10);
+    static_assert(offsetof(SDK::UStruct, Size) == 0x58);
+    static_assert(sizeof(SDK::UEnum) == 0x68);
+    static_assert(offsetof(SDK::UEnum, Names) == 0x40);
+    static_assert(sizeof(decltype(SDK::UEnum::Names)) == 0x10);
+    static_assert(sizeof(SplineEnumArrayLayout) == sizeof(decltype(SDK::UEnum::Names)));
+    static_assert(offsetof(SplineEnumArrayLayout, Data) == 0x00);
+    static_assert(offsetof(SplineEnumArrayLayout, Num) == 0x08);
+    static_assert(offsetof(SplineEnumArrayLayout, Max) == 0x0C);
+    static_assert(sizeof(SplineEnumNameValue) == 0x10);
+    static_assert(offsetof(SplineEnumNameValue, First) == 0x00);
+    static_assert(offsetof(SplineEnumNameValue, Second) == 0x08);
+    static_assert(sizeof(SplineEnumNameValueCopy) == sizeof(SplineEnumNameValue));
+    static_assert(offsetof(SplineEnumNameValueCopy, Name) == 0x00);
+    static_assert(offsetof(SplineEnumNameValueCopy, Value) == 0x08);
+    static_assert(std::is_trivially_copyable_v<SDK::FName>);
+    static_assert(std::is_trivially_copyable_v<SplineEnumNameValueCopy>);
+    static_assert(sizeof(SDK::FName) == 0x08);
+    static_assert(offsetof(SDK::FName, ComparisonIndex) == 0x00);
+    static_assert(offsetof(SDK::FName, Number) == 0x04);
     static_assert(alignof(SDK::FAuAPPayloadDataHandle) == 0x08);
     static_assert(offsetof(SDK::FAuAPPayloadDataHandle, Type) == 0x10);
     static_assert(offsetof(SDK::FAuAPPayloadDataHandle, Revision) == 0x18);
@@ -898,7 +938,47 @@ namespace MiniMap::BuildingAcquisition
         Measurements Diagnostics;
 #endif
 
+        static constexpr std::size_t MaxSplineEnumEntries = 1024;
+        static constexpr std::uint32_t MaxSupportedSplineBuildingId = 4095;
+        static constexpr std::array<std::pair<std::string_view, SplinePolicyId>, 25> SupportedSplineNames = {{
+            {"ECrBuildingID::DroneRailT1", SplinePolicyId::DroneRail},
+            {"ECrBuildingID::DroneRailT2", SplinePolicyId::DroneRail},
+            {"ECrBuildingID::DroneRailT3", SplinePolicyId::DroneRail},
+            {"ECrBuildingID::DroneRailT4", SplinePolicyId::DroneRail},
+            {"ECrBuildingID::DroneRailT5", SplinePolicyId::DroneRail},
+            {"ECrBuildingID::Zipline", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_250", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_320", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_390", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_460", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_530", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_600", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_250", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_320", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_390", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_460", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_530", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Zipline_2x2_600", SplinePolicyId::Zipline},
+            {"ECrBuildingID::ZipLine_OLD", SplinePolicyId::Zipline},
+            {"ECrBuildingID::ZiplineSupport", SplinePolicyId::Zipline},
+            {"ECrBuildingID::ZiplineSupport_2x2", SplinePolicyId::Zipline},
+            {"ECrBuildingID::ZipRail", SplinePolicyId::Zipline},
+            {"ECrBuildingID::Walkway", SplinePolicyId::Walkway},
+            {"ECrBuildingID::RailingWalkway", SplinePolicyId::Walkway}
+        }};
+
+        /** Emits one initialization diagnostic when the service logger is available. */
+        template<class... Args>
+        static void LogSplinePolicy(Services::Level level, const char* format, Args... args) noexcept
+        {
+            if (auto* log = Services::TryLog())
+                Services::Logf(*log, level, format, args...);
+        }
+
         const std::chrono::milliseconds RetryInterval;
+        std::vector<SplinePolicyId> SplinePolicyByBuildingId;
+        bool SplinePolicyInitializationAttempted = false;
 
         /** Stores the immutable scan interval and rejects nonpositive values once. */
         explicit State(double sectionSizeMapUnits, std::chrono::milliseconds retryInterval)
@@ -910,6 +990,224 @@ namespace MiniMap::BuildingAcquisition
             {
                 throw std::invalid_argument("BuildingCollectorV2 requires positive finite Section size and retry interval.");
             }
+        }
+
+        /** Resolves the running build's supported enum names once before collection begins. */
+        void InitializeSplinePolicyTable()
+        {
+            SplinePolicyInitializationAttempted = true;
+            try
+            {
+                const auto entries = FindSplineEnumEntries();
+                if (!entries.empty())
+                    BuildSplinePolicyTable(entries);
+            }
+            catch (...)
+            {
+                SplinePolicyByBuildingId.clear();
+                Services::LogMessage(Services::Level::Error,
+                    "MiniMap: Spline policy initialization failed while reading ECrBuildingID.");
+            }
+        }
+
+        /** Resolves and validates the resident enum object before copying its bounded name array. */
+        std::vector<SplineEnumNameValueCopy> FindSplineEnumEntries()
+        {
+            auto* enumObject = FindSplineEnumObject();
+            if (!enumObject)
+                return {};
+            return ReadSplineEnumEntries(enumObject);
+        }
+
+        /** Finds the exact enum object and checks its runtime UObject class and native size. */
+        SDK::UObject* FindSplineEnumObject()
+        {
+            auto* objects = Services::TryObjects();
+            auto* enumClass = SDK::UEnum::StaticClass();
+            if (!objects || !objects->Ready() || !enumClass)
+            {
+                Services::LogMessage(Services::Level::Error,
+                    "MiniMap: Spline policy initialization failed: UEnum lookup is unavailable.");
+                return {};
+            }
+
+            const auto resident = objects->FindResident(
+                enumClass, nullptr, L"/Script/AuActorPlacement.ECrBuildingID", true);
+            auto* enumObject = resident.value ? *resident.value : nullptr;
+            SDK::UClass* runtimeClass = nullptr;
+            std::int32_t runtimeClassSize = 0;
+            if (!enumObject ||
+                !MiniMapNative::ReadMemory(reinterpret_cast<std::uintptr_t>(enumObject) +
+                    offsetof(SDK::UObject, Class), &runtimeClass, sizeof(runtimeClass)) ||
+                runtimeClass != enumClass ||
+                !MiniMapNative::ReadMemory(reinterpret_cast<std::uintptr_t>(runtimeClass) +
+                    offsetof(SDK::UStruct, Size), &runtimeClassSize, sizeof(runtimeClassSize)) ||
+                runtimeClassSize != sizeof(SDK::UEnum))
+            {
+                Services::LogMessage(Services::Level::Error,
+                    "MiniMap: Spline policy initialization failed: ECrBuildingID identity or UEnum size is incompatible.");
+                return nullptr;
+            }
+
+            return enumObject;
+        }
+
+        /** Copies a bounded, readable Names array into collector-owned temporary entries. */
+        std::vector<SplineEnumNameValueCopy> ReadSplineEnumEntries(SDK::UObject* enumObject)
+        {
+            SplineEnumArrayLayout names{};
+            if (!MiniMapNative::ReadMemory(reinterpret_cast<std::uintptr_t>(enumObject) +
+                offsetof(SDK::UEnum, Names), &names, sizeof(names)))
+            {
+                Services::LogMessage(Services::Level::Error,
+                    "MiniMap: Spline policy initialization could not read ECrBuildingID Names metadata.");
+                return {};
+            }
+            const auto count = names.Num;
+            if (count <= 0 || static_cast<std::size_t>(count) > MaxSplineEnumEntries ||
+                names.Max < count || names.Max < 0 || !names.Data)
+            {
+                LogSplinePolicy(Services::Level::Error,
+                    "MiniMap: Spline policy initialization rejected ECrBuildingID Names metadata (num=%d max=%d).",
+                    count, names.Max);
+                return {};
+            }
+
+            std::vector<SplineEnumNameValueCopy> result(static_cast<std::size_t>(count));
+            const auto byteCount = result.size() * sizeof(result.front());
+            if (!MiniMapNative::IsMemoryRangeReadable(reinterpret_cast<std::uintptr_t>(names.Data),
+                    byteCount, alignof(SplineEnumNameValueCopy)) ||
+                !MiniMapNative::ReadMemory(reinterpret_cast<std::uintptr_t>(names.Data),
+                result.data(), byteCount))
+            {
+                Services::LogMessage(Services::Level::Error,
+                    "MiniMap: Spline policy initialization could not read ECrBuildingID Names entries.");
+                return {};
+            }
+            return result;
+        }
+
+        /** Builds a private table and publishes it only after enum entries validate. */
+        void BuildSplinePolicyTable(
+            const std::vector<SplineEnumNameValueCopy>& entries)
+        {
+            std::vector<SplinePolicyId> staged(MaxSupportedSplineBuildingId + 1, SplinePolicyId::Unknown);
+            std::array<bool, SupportedSplineNames.size()> found{};
+            std::uint32_t highestMappedId = 0;
+            bool hasMappedId = false;
+            for (std::size_t entryIndex = 0; entryIndex < entries.size(); ++entryIndex)
+            {
+                if (!StageSplineEnumEntry(entries[entryIndex], static_cast<std::int32_t>(entryIndex), staged, found,
+                    highestMappedId, hasMappedId))
+                    return;
+            }
+            ReportMissingSplineNames(found);
+            if (hasMappedId)
+                staged.resize(static_cast<std::size_t>(highestMappedId) + 1);
+            else
+                staged.clear();
+            SplinePolicyByBuildingId = std::move(staged);
+        }
+
+        /** Stages one enum entry and rejects malformed or conflicting supported identities. */
+        bool StageSplineEnumEntry(
+            const SplineEnumNameValueCopy& entry,
+            std::int32_t entryIndex,
+            std::vector<SplinePolicyId>& staged,
+            std::array<bool, SupportedSplineNames.size()>& found,
+            std::uint32_t& highestMappedId,
+            bool& hasMappedId)
+        {
+            if (entry.Name.ComparisonIndex < 0)
+            {
+                LogSplinePolicy(Services::Level::Error,
+                    "MiniMap: Spline policy rejected invalid FName identity at enum index %d.", entryIndex);
+                return false;
+            }
+            const std::string name = entry.Name.GetRawString();
+            if (name.empty())
+            {
+                LogSplinePolicy(Services::Level::Error,
+                    "MiniMap: Spline policy rejected an empty ECrBuildingID name at index %d.", entryIndex);
+                return false;
+            }
+
+            const auto supportedIndex = FindSupportedSplineName(name);
+            return StageSupportedSplineValue(name, supportedIndex, entry.Value, staged, found,
+                highestMappedId, hasMappedId);
+        }
+
+        /** Applies a supported name/value pair after rejecting invalid bounds and ambiguity. */
+        bool StageSupportedSplineValue(
+            const std::string& name,
+            std::size_t supportedIndex,
+            std::int64_t value,
+            std::vector<SplinePolicyId>& staged,
+            std::array<bool, SupportedSplineNames.size()>& found,
+            std::uint32_t& highestMappedId,
+            bool& hasMappedId)
+        {
+            if (value < 0 || static_cast<std::uint64_t>(value) > MaxSupportedSplineBuildingId)
+            {
+                LogSplinePolicy(Services::Level::Warn,
+                    "MiniMap: Spline policy ignored ECrBuildingID name=%s value=%lld outside supported bounds.",
+                    name.c_str(), static_cast<long long>(value));
+                return true;
+            }
+            if (supportedIndex == SupportedSplineNames.size())
+                return true;
+            if (found[supportedIndex])
+            {
+                LogSplinePolicy(Services::Level::Error,
+                    "MiniMap: Spline policy rejected duplicate enumerator name=%s.", name.c_str());
+                return false;
+            }
+
+            found[supportedIndex] = true;
+            const auto buildingId = static_cast<std::uint32_t>(value);
+            const auto policy = SupportedSplineNames[supportedIndex].second;
+            if (staged[buildingId] != SplinePolicyId::Unknown && staged[buildingId] != policy)
+            {
+                LogSplinePolicy(Services::Level::Error,
+                    "MiniMap: Spline policy rejected conflicting policies for BuildingId=%u.", buildingId);
+                return false;
+            }
+            staged[buildingId] = policy;
+            highestMappedId = (std::max)(highestMappedId, buildingId);
+            hasMappedId = true;
+            return true;
+        }
+
+        /** Finds one exact supported symbolic identity without case folding or substring matching. */
+        static std::size_t FindSupportedSplineName(std::string_view name) noexcept
+        {
+            for (std::size_t index = 0; index < SupportedSplineNames.size(); ++index)
+                if (name == SupportedSplineNames[index].first)
+                    return index;
+            return SupportedSplineNames.size();
+        }
+
+        /** Reports every expected supported name that was absent from the valid enum. */
+        static void ReportMissingSplineNames(const std::array<bool, SupportedSplineNames.size()>& found)
+        {
+            for (std::size_t index = 0; index < SupportedSplineNames.size(); ++index)
+            {
+                if (!found[index])
+                {
+                    LogSplinePolicy(Services::Level::Warn,
+                        "MiniMap: Spline policy name missing from ECrBuildingID: %.*s.",
+                        static_cast<int>(SupportedSplineNames[index].first.size()),
+                        SupportedSplineNames[index].first.data());
+                }
+            }
+        }
+
+        /** Returns Unknown when initialization failed or a runtime ID is not represented. */
+        SplinePolicyId PolicyForBuildingId(std::uint32_t buildingId) const noexcept
+        {
+            if (!SplinePolicyInitializationAttempted || buildingId >= SplinePolicyByBuildingId.size())
+                return SplinePolicyId::Unknown;
+            return SplinePolicyByBuildingId[buildingId];
         }
 
         /** Metadata roots belong exclusively to this collector instance. */
@@ -2426,23 +2724,13 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Preserves the exact legacy drone-rail definition family without profile acquisition. */
-        static bool IsDroneRailDefinitionId(std::uint32_t buildingId)
+        bool IsDroneRailDefinitionId(std::uint32_t buildingId) const noexcept
         {
-            switch (static_cast<SDK::ECrBuildingID>(buildingId))
-            {
-            case SDK::ECrBuildingID::DroneRailT1:
-            case SDK::ECrBuildingID::DroneRailT2:
-            case SDK::ECrBuildingID::DroneRailT3:
-            case SDK::ECrBuildingID::DroneRailT4:
-            case SDK::ECrBuildingID::DroneRailT5:
-                return true;
-            default:
-                return false;
-            }
+            return PolicyForBuildingId(buildingId) == SplinePolicyId::DroneRail;
         }
 
         /** Requires applicable definition profiles before an occurrence leaves pending acquisition. */
-        static bool AreRequiredSplineProfilesResolved(
+        bool AreRequiredSplineProfilesResolved(
             const std::shared_ptr<const Facts::Definition>& definition, bool hasSpline)
         {
             if (!hasSpline)
@@ -2530,25 +2818,15 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Recognizes only the established StarRupture drone-rail BuildingID values. */
-        static bool IsDroneRail(const Facts::Building& building)
+        bool IsDroneRail(const Facts::Building& building) const noexcept
         {
             if (!building.DefinitionFacts)
                 return false;
-            switch (static_cast<SDK::ECrBuildingID>(building.DefinitionFacts->BuildingId))
-            {
-            case SDK::ECrBuildingID::DroneRailT1:
-            case SDK::ECrBuildingID::DroneRailT2:
-            case SDK::ECrBuildingID::DroneRailT3:
-            case SDK::ECrBuildingID::DroneRailT4:
-            case SDK::ECrBuildingID::DroneRailT5:
-                return true;
-            default:
-                return false;
-            }
+            return IsDroneRailDefinitionId(building.DefinitionFacts->BuildingId);
         }
 
         /** Classifies only spline occurrences with a ready acquired definition ID. */
-        static SplinePolicyId ClassifySplinePolicyId(const Facts::Building& building)
+        SplinePolicyId ClassifySplinePolicyId(const Facts::Building& building) const noexcept
         {
             if (building.SplineClassificationStatus != Status::Ready || !building.HasSpline ||
                 !building.DefinitionFacts ||
@@ -2557,39 +2835,7 @@ namespace MiniMap::BuildingAcquisition
                 return SplinePolicyId::Unknown;
             }
 
-            switch (static_cast<SDK::ECrBuildingID>(building.DefinitionFacts->BuildingId))
-            {
-            case SDK::ECrBuildingID::DroneRailT1:
-            case SDK::ECrBuildingID::DroneRailT2:
-            case SDK::ECrBuildingID::DroneRailT3:
-            case SDK::ECrBuildingID::DroneRailT4:
-            case SDK::ECrBuildingID::DroneRailT5:
-                return SplinePolicyId::DroneRail;
-            case SDK::ECrBuildingID::Zipline:
-            case SDK::ECrBuildingID::Zipline_250:
-            case SDK::ECrBuildingID::Zipline_320:
-            case SDK::ECrBuildingID::Zipline_390:
-            case SDK::ECrBuildingID::Zipline_460:
-            case SDK::ECrBuildingID::Zipline_530:
-            case SDK::ECrBuildingID::Zipline_600:
-            case SDK::ECrBuildingID::Zipline_2x2:
-            case SDK::ECrBuildingID::Zipline_2x2_250:
-            case SDK::ECrBuildingID::Zipline_2x2_320:
-            case SDK::ECrBuildingID::Zipline_2x2_390:
-            case SDK::ECrBuildingID::Zipline_2x2_460:
-            case SDK::ECrBuildingID::Zipline_2x2_530:
-            case SDK::ECrBuildingID::Zipline_2x2_600:
-            case SDK::ECrBuildingID::ZipLine_OLD:
-            case SDK::ECrBuildingID::ZiplineSupport:
-            case SDK::ECrBuildingID::ZiplineSupport_2x2:
-            case SDK::ECrBuildingID::ZipRail:
-                return SplinePolicyId::Zipline;
-            case SDK::ECrBuildingID::Walkway:
-            case SDK::ECrBuildingID::RailingWalkway:
-                return SplinePolicyId::Walkway;
-            default:
-                return SplinePolicyId::Unknown;
-            }
+            return PolicyForBuildingId(building.DefinitionFacts->BuildingId);
         }
 
         /** Combines required source facts while retaining the strongest unresolved evidence. */
@@ -2727,8 +2973,8 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Copies known neutral source facts while preserving classification and acquisition gaps. */
-        static ::Services::Map::Buildings::BuildingCandidateSourceRecord BuildCandidateSourceRecord(
-            const Facts::Building& building)
+        ::Services::Map::Buildings::BuildingCandidateSourceRecord BuildCandidateSourceRecord(
+            const Facts::Building& building) const
         {
             using SourceKind = ::Services::Map::Buildings::BuildingCandidateSourceKind;
             using SourceStatus = ::Services::Map::Buildings::BuildingCandidateSourceStatus;
@@ -3548,7 +3794,7 @@ namespace MiniMap::BuildingAcquisition
         }
 
         /** Converts one admitted occurrence and reuses its committed contribution before distribution. */
-        static void AppendRequestedContributor(
+        void AppendRequestedContributor(
             const Entry& entry,
             const CandidateOccurrence& occurrence,
             const std::vector<std::size_t>& matchingSections,
@@ -3557,11 +3803,11 @@ namespace MiniMap::BuildingAcquisition
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             , SectionPublicationBuildMetrics& metrics
 #endif
-        )
+        ) const
         {
             const Facts::Building& building = entry.Data;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            CandidateSourceRecord source = [&building, &metrics]()
+            CandidateSourceRecord source = [this, &building, &metrics]()
             {
                 SampledPublicationPhaseTimer timer(metrics.SourceConversion);
                 return BuildCandidateSourceRecord(building);
@@ -3916,6 +4162,8 @@ namespace MiniMap::BuildingAcquisition
         auto* objects = Services::TryObjects();
         if (!native || !native->player.isGameThread() || !objects || !objects->Ready())
             return false;
+        if (!state_->SplinePolicyInitializationAttempted)
+            state_->InitializeSplinePolicyTable();
         if (state_->Types)
             return true;
         auto types = std::make_shared<State::Metadata>();

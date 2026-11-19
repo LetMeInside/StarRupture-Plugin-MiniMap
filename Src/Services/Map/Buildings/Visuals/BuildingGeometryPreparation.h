@@ -58,6 +58,27 @@ namespace Services::Map::Buildings::Visuals
 			friend class BuildingGeometryPreparation;
 
 		public:
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			/** Scalar cursor state for bounded Section spline-progress reporting. */
+			struct DiagnosticSnapshot
+			{
+				enum class SplineStage : std::uint8_t
+				{
+					NotStarted,
+					OcclusionIndex,
+					SplineSampling,
+					SplineSurfaces,
+					Complete
+				};
+
+				SplineStage Stage = SplineStage::NotStarted;
+				std::size_t SplineIndex = 0;
+				std::size_t SurfaceIndex = 0;
+				bool SamplingPrepared = false;
+			};
+			/** Returns scalar spline cursor state without traversing prepared inputs or geometry. */
+			DiagnosticSnapshot GetDiagnosticSnapshot() const noexcept;
+		#endif
 		/** Resets only a fresh or terminal cursor for a new Section-owned output scene. */
 			void Reset() noexcept;
 			/** Borrows positional numerical outcomes until this cursor is reset. */

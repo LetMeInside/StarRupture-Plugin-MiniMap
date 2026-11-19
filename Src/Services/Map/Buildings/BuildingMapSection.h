@@ -108,6 +108,9 @@ namespace Services::Map::Buildings
 		std::shared_ptr<const Geometry> PreparedGeometry;
 		std::vector<SpriteBinding> OrdinaryBindings;
 		std::vector<SpriteBinding> OverlayBindings;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		std::uint64_t DiagnosticSourceContentHash = 0;
+#endif
 	};
 
 	/**

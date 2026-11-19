@@ -499,7 +499,7 @@ namespace
                     PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
                     sizeof(decltype(SDK::UStruct::SuperStruct)),
                     static_cast<int32_t>(offsetof(SDK::UStruct, SuperStruct)) },
-                { "UObject::Index", "UObject", "Index",
+                { "UObject::InternalIndex", "UObject", "InternalIndex",
                     PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK,
                     sizeof(decltype(SDK::UObject::Index)),
                     static_cast<int32_t>(offsetof(SDK::UObject, Index)) }
