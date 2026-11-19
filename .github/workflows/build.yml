@@ -69,7 +69,7 @@ jobs:
       - name: Enable Git long paths
         shell: pwsh
         run: git config --global core.longpaths true
-        
+
       - name: Checkout pinned Unreal Engine source
         id: unreal-source
         uses: actions/checkout@v4
