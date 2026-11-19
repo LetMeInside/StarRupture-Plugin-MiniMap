@@ -25,12 +25,18 @@ jobs:
   build:
     name: Build Client
     runs-on: windows-latest
-    if: ${{ github.ref == 'refs/heads/develop' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
     environment: epic-ue-source
     permissions:
       contents: write
 
     steps:
+      - name: Reject publication outside main
+        if: ${{ inputs.publish && github.ref != 'refs/heads/main' }}
+        shell: pwsh
+        run: |
+          throw "Publication is only allowed from main. Run this workflow on main with publish=true, or use publish=false for a develop build."
+
       - name: Checkout plugin
         uses: actions/checkout@v4
 
@@ -675,7 +681,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -700,7 +706,7 @@ jobs:
       # Upload Client package to Nexus Mods
       # --------------------------------------------------------
       - name: Upload Client build to Nexus Mods
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
         uses: Nexus-Mods/upload-action@main
         with:
           api_key: ${{ secrets.NEXUS_APIKEY }}
