@@ -261,6 +261,7 @@ namespace
             MiniMapTerrainSource::SetFieldOffsets(terrainOffsets);
             g_poiFieldOffsets.WorldGameState = fields[12].offset;
             g_foundablesFieldOffsets.WorldGameState = fields[12].offset;
+            g_foundablesFieldOffsets.GameStateClassSize = classSizes[4].resolvedSize;
             return true;
         }
     };
@@ -290,7 +291,7 @@ namespace
             MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
         {
             bool allResolved = true;
-            allResolved = ResolveReplicatorFields(scanner, self) && allResolved;
+            allResolved = ResolveReplicatorFields(scanner, self, requiredScanner) && allResolved;
             allResolved = ResolveStoryRecordFields(scanner, self) && allResolved;
             allResolved = ResolvePoiActorFields(scanner, self) && allResolved;
             allResolved = ResolveCategoryFields(scanner, self) && allResolved;
@@ -331,7 +332,10 @@ namespace
         }
 
         /** Resolves the game-state path to the abandoned-base replication data. */
-        static bool ResolveReplicatorFields(IPluginHookScanner* scanner, const IPluginSelf* self)
+        static bool ResolveReplicatorFields(
+            IPluginHookScanner* scanner,
+            const IPluginSelf* self,
+            MiniMap::Adapters::AlienX::RequiredScanner& requiredScanner)
         {
             static PluginFieldSpec fields[] = {
                 { "ACrGameStateBase::AbandonBaseInfoReplicator", "ACrGameStateBase",
@@ -348,6 +352,19 @@ namespace
                     static_cast<int32_t>(offsetof(SDK::FCrAbandonBaseDataContainer, AbandonBaseData)) }
             };
             const bool resolved = ResolveFields(scanner, self, fields, std::size(fields));
+            const uint64_t fieldEnd = static_cast<uint64_t>(fields[0].offset) + fields[0].resolvedSize;
+            const bool gameStateFieldFits = resolved && fields[0].offset >= 0 &&
+                fields[0].resolvedSize == sizeof(SDK::ACrAbandonBaseInfoReplicator*) &&
+                fields[0].offset % alignof(SDK::ACrAbandonBaseInfoReplicator*) == 0 &&
+                g_foundablesFieldOffsets.GameStateClassSize != 0 &&
+                fieldEnd <= g_foundablesFieldOffsets.GameStateClassSize;
+            if (!gameStateFieldFits)
+            {
+                requiredScanner.Fail(
+                    "ACrGameStateBase::AbandonBaseInfoReplicator",
+                    "resolved GameState member does not fit its runtime class extent");
+                return false;
+            }
             g_poiFieldOffsets.GameStateAbandonBaseInfoReplicator = fields[0].offset;
             g_poiFieldOffsets.ReplicatorAbandonBaseDataContainer = fields[1].offset;
             g_poiFieldOffsets.AbandonBaseContainerData = fields[2].offset;

@@ -72,6 +72,7 @@ namespace
     int32_t g_categoryLegendFilterOffset = -1;
     int32_t g_worldGameStateOffset = -1;
     int32_t g_gameStateAbandonBaseReplicatorOffset = -1;
+    uint32_t g_gameStateClassSize = 0;
     int32_t g_replicatorAbandonBaseContainerOffset = -1;
     int32_t g_abandonBaseContainerDataOffset = -1;
     int32_t g_poiMarkerTypeOffset = -1;
@@ -1071,7 +1072,23 @@ namespace
                 World = FindNative(L"/Script/Engine.World", sizeof(SDK::UWorld));
                 Level = FindNative(L"/Script/Engine.Level", sizeof(SDK::ULevel));
                 Scene = FindNative(L"/Script/Engine.SceneComponent", sizeof(SDK::USceneComponent));
-                GameState = FindNative(L"/Script/Chimera.CrGameStateBase", sizeof(SDK::ACrGameStateBase));
+                const uint64_t gameStateFieldEnd =
+                    static_cast<uint64_t>(g_gameStateAbandonBaseReplicatorOffset) +
+                    sizeof(SDK::ACrAbandonBaseInfoReplicator*);
+                if (g_gameStateAbandonBaseReplicatorOffset < 0 ||
+                    g_gameStateAbandonBaseReplicatorOffset %
+                        alignof(SDK::ACrAbandonBaseInfoReplicator*) != 0 ||
+                    g_gameStateClassSize == 0 || gameStateFieldEnd > g_gameStateClassSize)
+                {
+                    return false;
+                }
+                GameState = FindClass(
+                    L"/Script/Chimera.CrGameStateBase", g_gameStateClassSize);
+                if (GameState && (GameState->Class != Core ||
+                    static_cast<uint32_t>(GameState->Size) != g_gameStateClassSize))
+                {
+                    GameState = nullptr;
+                }
                 Replicator = FindNative(L"/Script/Chimera.CrAbandonBaseInfoReplicator", sizeof(SDK::ACrAbandonBaseInfoReplicator));
                 POI = FindNative(L"/Script/Chimera.CrPointOfInterestMarkerActor", sizeof(SDK::ACrPointOfInterestMarkerActor));
                 Blueprint = FindNative(L"/Script/Engine.BlueprintGeneratedClass", sizeof(SDK::UBlueprintGeneratedClass));
@@ -1155,7 +1172,12 @@ namespace
             if (!world || !types.Derives(world->Class, types.World)) return false;
             scope.World = world;
             auto* baseGameState = *Field<SDK::AGameStateBase*>(world, g_worldGameStateOffset);
-            if (!types.Actor(baseGameState, types.GameState, sizeof(SDK::ACrGameStateBase), world)) return false;
+            if (!types.Actor(baseGameState, types.GameState, sizeof(SDK::ACrGameStateBase), world) ||
+                baseGameState->Class->Size < 0 ||
+                static_cast<uint32_t>(baseGameState->Class->Size) < g_gameStateClassSize)
+            {
+                return false;
+            }
             auto* gameState = static_cast<SDK::ACrGameStateBase*>(baseGameState);
             scope.GameState = gameState;
             auto* replicator = *Field<SDK::ACrAbandonBaseInfoReplicator*>(
@@ -1568,6 +1590,7 @@ namespace MiniMapFoundables
         g_worldGameStateOffset = offsets.WorldGameState;
         g_gameStateAbandonBaseReplicatorOffset =
             offsets.GameStateAbandonBaseInfoReplicator;
+        g_gameStateClassSize = offsets.GameStateClassSize;
         g_replicatorAbandonBaseContainerOffset =
             offsets.ReplicatorAbandonBaseDataContainer;
         g_abandonBaseContainerDataOffset = offsets.AbandonBaseContainerData;

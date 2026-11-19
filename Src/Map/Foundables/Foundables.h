@@ -38,6 +38,7 @@ namespace MiniMapFoundables
         int32_t CategoryLegendFilter = -1;
         int32_t WorldGameState = -1;
         int32_t GameStateAbandonBaseInfoReplicator = -1;
+        uint32_t GameStateClassSize = 0;
         int32_t ReplicatorAbandonBaseDataContainer = -1;
         int32_t AbandonBaseContainerData = -1;
         int32_t PoiMarkerType = -1;

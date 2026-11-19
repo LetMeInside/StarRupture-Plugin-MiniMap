@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DiagnosticExports.h"
 #include "plugin_helpers.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
@@ -34,6 +35,7 @@ namespace MiniMapNative
         }
         const auto count = matches.value->total;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         if (diagnostics)
         {
             LOG_INFO("MiniMap: found %zu CrMapMenuDevSettings CDO(s)", count);
@@ -49,6 +51,7 @@ namespace MiniMapNative
                     records[i].className.c_str());
             }
         }
+#endif
 
         if (count != 1 || records[0].object == nullptr)
         {
