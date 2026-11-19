@@ -27,7 +27,7 @@ The current source route is:
 ```text
 TerrainSource::TryResolveSourceTile(world position)
   -> cached CrMapMenuDevSettings CDO (Objects service class-default lookup)
-  -> NativeApi.asset.loadSynchronous(&CDO->TerrainData)
+  -> resolved TerrainData field -> NativeApi.asset.loadSynchronous
   -> UCrMapMenuTerrainData fields and TerrainSegmentsData
   -> world position -> (grid X,Y) and local (U,V)
   -> matching FCrTerrainSegmentData
@@ -58,13 +58,13 @@ The desired condition ladder is intentionally strict:
 
 Current `Src/Native/MapMenuDevSettingsLookup.h` calls `Services::TryObjects()->ClassDefaults("CrMapMenuDevSettings", records)`, accepts exactly one result with non-null object, and casts it to `SDK::UCrMapMenuDevSettings*`. This is not a raw object-array scan in `TerrainSource`. If lookup is unavailable, not ready, ambiguous, or empty, it logs and fails; it does not guess a settings object.
 
-`TerrainSource::LoadTerrainData` passes the address of `g_devSettings->TerrainData` to `NativeApi.asset.loadSynchronous` as `void*`. The typed current function pointer is `SDK::UObject* (*)(void*)`; the source casts the returned pointer to `UCrMapMenuTerrainData*` after null checking. On Microsoft x64, the code uses the platform's ordinary x64 function ABI; the typedef has no explicit `__fastcall` annotation. This is the current binding declaration, not independent proof of a particular executable's native ABI.
+`TerrainSource::LoadTerrainData` obtains the soft field through `MapRuntimeAccess::Field` with the Bootstrap-resolved `DevSettingsTerrainData` offset and passes its address to `NativeApi.asset.loadSynchronous`. The typed function returns `SDK::UObject*`; the caller checks null before casting to terrain data. Compile-time assertions still require the consumed soft-pointer representation. Runtime offset resolution is not independent proof of every native loading/ownership precondition.
 
-The current settings field and segment members are accessed through generated SDK types. This restoration did not inspect a matching SDK declaration excerpt, PDB, or native call site that verifies the `TerrainData` member offset, `FSoftObjectPtr` internal layout, concrete `LoadSynchronous` native target/RVA, or reference-count/GC ownership after return. Those remain **UNKNOWN**. Do not interpret a successful synchronous load as a guarantee that the texture's CPU BulkData is available. The selected historical reports provide source-path descriptions, but not primary native call-body evidence for those details.
+Terrain settings/segment members use Bootstrap-resolved offsets and a runtime segment stride, with typed access in `RuntimeFieldAccess.h`. SDK declarations still define the consumed value shapes and static assertions; they are not assumed to fix every runtime field location. [Compatibility and Version Resolution](../ModLoader/Compatibility-and-Version-Resolution.md) explains the CL-127004 to CL-130045 boundary. A successful synchronous load is not a CPU BulkData availability guarantee.
 
 ## Native terrain loading
 
-Current source obtains the active world from `MiniMapMap`, reads `world->GameState`, casts to `ACrGameStateBase`, then reads `MapMenuDataReplicationHelper->CurrentRadiationLevelReplicated`. Null at any step fails the source resolution. The terrain data supplies `MapTerrainTopLeftPivotPoint`, `MapTerrainSegmentSize`, and an array of `TerrainSegmentsData`; each segment supplies grid index and ordinary/Radiation2 brushes.
+Current source obtains the active world from `MiniMapMap`, reads its GameState and replication helper through resolved offsets, then reads the resolved radiation-level field. Null or unavailable dependencies fail resolution. Terrain pivot, segment size, segment array, grid index and brush fields also use the published access contract; array traversal uses its runtime segment stride.
 
 The grid mapping implemented in `TerrainSource::TryResolveSourceTile` is, with world coordinates in Unreal centimeters and segment sizes converted to centimeters:
 
@@ -110,7 +110,7 @@ Current `Src/Native/TextureAccess.cpp` uses a private, manually described layout
 | VTData / CPUCopy | `+0x28` / `+0x30` | Opaque pointers copied to output. |
 | Mip BulkData storage | mip `+0x20`, size fields at `+0x48` | Mip local layout size `0x50`; `SizeX/Y/Z` are 16-bit at +0x48/+0x4A/+0x4C. |
 
-These are **CONFIRMED current helper assumptions and compile-time assertions**, not newly verified matching game-build structure layouts. The local helper also reads an sRGB flag byte at UTexture offset `0x106`, mask `0x01`. It requires non-null texture, platform-data return, mip pointer container, selected mip pointer and native function pointers. `QueryMipData` bounds the mip index against reported MipCount, then calls native size and disk-capability getters. Terrain caller separately requires source metadata 2048×2048, pixel format 5, no `VTData`, positive mip count, mip pointers, mip-zero dimensions equal platform dimensions, nonzero `SizeZ`, non-null BulkData and exact byte size.
+These are **CONFIRMED current helper assumptions and compile-time assertions**, not newly verified matching game-build structure layouts. The local helper reads sRGB through the offset and mask validated by Bootstrap and stored in `NativeApi.texture`; it does not fix the runtime bit at the old SDK location. It requires non-null texture, platform-data return, mip pointer container, selected mip pointer and native function pointers. `QueryMipData` bounds the mip index against reported MipCount, then calls native size and disk-capability getters. Terrain caller separately requires source metadata 2048×2048, pixel format 5, no `VTData`, positive mip count, mip pointers, mip-zero dimensions equal platform dimensions, nonzero `SizeZ`, non-null BulkData and exact byte size.
 
 Current evidence does **not** show that a valid platform pointer guarantees resident bytes; platform, mip, and BulkData addresses are borrowed. The caller copies bytes before later decode, but [Rendering and Asset Capture](Rendering-and-Asset-Capture.md) discusses the broader distinction between asset metadata readiness and CPU storage lifetime. This document does not duplicate its general render-data findings.
 
@@ -164,7 +164,7 @@ This establishes the MiniMap conversion routine, not a separate native confirmat
 
 ## Terrain tiles, bounds and projection
 
-Source layout and presentation layout are separate concepts. The game source records segments by grid index and defines a top-left pivot plus per-segment world size. The present code proves a coordinate-to-grid lookup and per-tile UV/chunk math, but not a complete finite terrain arrangement. The code obtains segment count dynamically from `TerrainSegmentsData.Num()`; no fixed world-wide tile count, guaranteed rectangular arrangement, tile overlap/gutter, or edge-clipping contract was established in selected evidence.
+Source layout and presentation layout are separate concepts. The game source records segments by grid index and defines a top-left pivot plus per-segment world size. The present code proves a coordinate-to-grid lookup and per-tile UV/chunk math, but not a complete finite terrain arrangement. The code obtains segment count dynamically. `TryGetWorldDimensions` validates authored records and computes coverage dimensions from their grid extents and segment size; `TryGetWorldOrigin` copies the authored pivot. This is not proof of a fully occupied rectangle, edge continuity, tile gutters or a fixed global tile count.
 
 For a terrain segment, current source maps world X to `gridY`/local U and world Y to `gridX`/local V (the grid axes are transposed by the game's existing representation). Within a tile, local UV maps to `chunkX=floor(U*8)`, `chunkY=floor(V*8)`. Global presentation chunk coordinates in `Terrain.cpp` are derived as `globalChunkX = gridY*8 + localU*8` and `globalChunkY = gridX*8 + localV*8`; reverse mapping uses mathematical floor division and positive modulo so negative world grid values map to nonnegative local chunk indices.
 
@@ -230,19 +230,19 @@ No recovered evidence justifies restoring a widget-display dependency, source-po
 
 - Keep the current architecture distinction between selection metadata, borrowed engine pointers, owned compressed bytes, decoded RGBA, and loader-owned GPU texture handles.
 - Source reconciliation shows the cache identity limit clearly: current disk/header and resident key can collide across ordinary/Radiation2 source changes if radiation/grid/chunk and metadata coincide. This is a description of current semantics, not authorization to change format or renderer.
-- Any later terrain cache work needs separate authorization and a contract for asset/source identity, bytes and versioning; this restoration does not prescribe or implement one. Do not treat file names or the root CacheInfo digest as content fingerprints.
+- File names and the root CacheInfo digest are not content fingerprints; source identity, byte identity and cache authorization remain distinct.
 - Native bindings remain mandatory and centralized through Fingerprints → ResolvedAddresses → NativeApi → typed API → consumer. The inspected source adds no evidence for optional scans or hard-coded addresses.
 - Core pixel and cache processing uses owned CPU data and explicit plugin-side identity. Native source resolution and native texture bindings remain StarRupture-specific.
 
 ## Unresolved questions and negative findings
 
 - Matching native executable identity, PDB symbols, RVAs and concrete signatures for LoadSynchronous, brush extraction, wait, platform-data getter, BulkData methods and FMemory::Free: **UNKNOWN** in the selected native evidence. Current source has mandatory fingerprints and typed declarations, but this restoration did not inspect a retained relevant native body/callsite artifact.
-- `UCrMapMenuDevSettings::TerrainData` exact member offset and internal `FSoftObjectPtr` representation/ownership: **UNKNOWN**.
+- `TerrainData` runtime offset is resolved and validated by Bootstrap; full native `FSoftObjectPtr` loading/ownership semantics remain **UNKNOWN** from the retained historical evidence.
 - Whether map-menu widget display is needed to initialize particular brushes: **UNKNOWN**; current consumer doesn't require a widget instance.
 - Native wait semantics, whether it blocks and for what readiness state, whether the booleans request flush/streaming behavior, and any timeout: **UNKNOWN** beyond the report-backed source/runtime interpretation.
 - `GetCopy` error contract, disk-load prerequisites, allocation edge cases, thread contract, and atomicity of pixel snapshot: **UNKNOWN**. Current code uses non-null output as the success indicator and the paired native free.
 - Valid-but-empty/unavailable CPU data after apparently completed streaming: no verified terrain-specific example inspected; **UNKNOWN**.
-- Full native terrain segment count/arrangement, exact outer bounds, neighboring edge continuity, gutters/overlap, image orientation and mirroring: **UNKNOWN**.
+- Authored coverage dimensions/origin are read by current source; full occupied arrangement, neighboring edge continuity, gutters/overlap, image orientation and mirroring remain **UNKNOWN** from retained native evidence.
 - Exact game-build or asset revision invalidation for terrain pixels: **UNKNOWN**; current root digest is VERSIONINFO-resource based and per-file header has no asset ID or source byte digest.
 - Current-runtime effect of cache mismatch, interrupted clear, disk permission issue, corrupted-but-correct-size payload, and source-variant transition: **UNKNOWN**; source branches only were inspected.
 - No selected evidence proves platform metadata pointer ownership or pointer validity past a streaming/GC/world boundary.
@@ -261,5 +261,6 @@ The following repository-relative source paths identify current MiniMap implemen
 - `Src/Map/Terrain/TerrainCache.cpp`, `Src/Map/Terrain/TerrainCache.h` — v1 format, file path/header validation/read/write/clear.
 - `Src/CacheIdentity.h`, `Src/plugin.cpp` — root CacheInfo, VERSIONINFO digest/revision authorization, startup/exit clear coordination.
 - `Src/Map/MapTransform.h` — MiniMap world-to-screen formula.
+- [Bootstrap](../../Src/Adapters/AlienX/Bootstrap.cpp), [RuntimeFieldAccess](../../Src/Map/RuntimeFieldAccess.h) — Runtime-resolved offsets, bit masks, extents and element-stride access.
 
 For related lifetime and publication boundaries, see [Texture Publication](../ModLoader/Texture-Publication.md), [Loading and World Transitions](../Lifecycle/Loading-and-World-Transitions.md), and [Rendering and Asset Capture](Rendering-and-Asset-Capture.md).

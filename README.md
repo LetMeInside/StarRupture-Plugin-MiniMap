@@ -6,7 +6,7 @@ MiniMap adds a persistent, resizable HUD map so you can keep track of the surrou
 
 > **Beta**
 >
-> MiniMap is already fully usable, but it is still under active development. Additional features and configuration options are planned for later releases.
+> MiniMap is under active development. The technical documentation describes the current source implementation; historical observations are identified separately.
 
 ## Features
 
@@ -15,6 +15,7 @@ MiniMap adds a persistent, resizable HUD map so you can keep track of the surrou
 - Player position marker.
 - Compass indicators.
 - Native Fog of War support using the game's exploration data.
+- Building sprites and spline infrastructure rendered over terrain.
 - Landmark markers, including caves, antennas, obelisks, abandoned bases, Forgotten Engine, and other native landmark POIs.
 - Completed Abandoned Base marker support.
 - Drone markers.
@@ -50,8 +51,10 @@ MiniMap reads live game state. It does not modify your save file.
 ## Requirements
 
 - **StarRupture**
-- **AlienX StarRupture Mod Loader 1.22.0 or newer**
-- Plugin interface **v70 or newer**
+- **AlienX StarRupture Mod Loader 1.25.0 or newer**
+- Plugin interface **v78 or newer** for bulk textured-triangle rendering
+
+Game-build compatibility uses ModLoader's version-map resolution and MiniMap's runtime contract validation. The original Game SDK targets CL-127004; Update 3 is CL-130045. Compiled SDK layouts alone do not establish compatibility with the running game. See [Compatibility and Version Resolution](Docs/ModLoader/Compatibility-and-Version-Resolution.md).
 
 MiniMap is a **client-side plugin**.
 
@@ -61,18 +64,6 @@ MiniMap is a **client-side plugin**.
 2. Install MiniMap using the normal Mod Loader/Nexus Mods plugin installation method.
 3. Start StarRupture and load a world.
 4. Press **F4** if you want to hide or show the minimap.
-
-## Current Beta Limitations
-
-The current beta focuses on the core minimap experience.
-
-Planned work includes:
-
-- nearby hostile alien indicators;
-- additional configuration options;
-- further UI and usability refinements.
-
-Alien Attack Vector support has also been investigated, but is not currently included.
 
 ## Safety and Save Compatibility
 
@@ -92,7 +83,7 @@ The plugin reads runtime game state and renders a HUD overlay.
 
 Source code:
 
-https://github.com/LetMeInside/StarRupture-Plugin-MiniMap
+[MiniMap repository](https://github.com/LetMeInside/StarRupture-Plugin-MiniMap)
 
 MiniMap is developed against the AlienX StarRupture Plugin SDK and uses a mixture of generated SDK access and narrowly resolved native functions where the generated SDK does not expose the required runtime behaviour.
 

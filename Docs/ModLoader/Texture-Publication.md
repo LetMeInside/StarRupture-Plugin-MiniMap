@@ -6,14 +6,14 @@ This reference documents the interface-70 texture contract, bounded historical o
 
 The preferred atlas investigation records **StarRupture CL-127004, AlienX Mod Loader v1.22.0, interface 70**, dated 2026-10-19. Its loader implementation evidence came from a local source checkout whose exact identity with the installed DLL was not proven. Public API signatures and interface-70 behavior are attributed to the [AlienX StarRupture Plugin SDK interface header](https://github.com/AlienXAXS/StarRupture-Plugin-SDK/blob/main/include/plugin_interface.h). The main URL is mutable and does not identify the historical local checkout or installed DLL; implementation observations remain separately qualified below. A separate terrain upload observation dated 2026-10-26 does not record a game build or loader version; its local loader checkout was not proven identical to the installed DLL and it lists a supplied GTX 1650 SUPER without measured device/driver characterization. The cold-capture observation records a 2026-10-19 log interval but does not identify game build or loader version. Do not transfer the preferred investigation’s version tags to those observations.
 
-A bounded inspection of the public SDK interface header confirms interface min/max/current **70** and the texture function signatures below. This verifies the checked-in SDK declaration, not the installed loader binary, game build, or runtime behavior. No game or loader binaries were inspected.
+The texture contract below originated at interface 70. Current MiniMap requires ModLoader 1.25.0 or newer, providing plugin interface 78 or newer, because it uses bulk textured triangles introduced at interface 78. See [Compatibility and Version Resolution](Compatibility-and-Version-Resolution.md). No installed loader binary was inspected for this update.
 
 ## Executive technical summary
 
 - Interface 70 offers named image loads from file, encoded memory, raw RGBA, and `SDK::UTexture2D`; it returns an opaque `PluginTextureHandle`. It has `FreeTexture`, dimension/capacity queries, and ImGui image/draw-list functions. It exposes no texture update, region upload, external-resource registration, upload ticket, or completion-poll operation. A same-name live load shares the first registered pixels instead of replacing them.
 - The SDK says all `Load*` calls block until the GPU copy completes and must run in a game-thread callback outside the ImGui render callback. This establishes a blocking API boundary, not permanent latency or proof that a frame has presented the image when the call returns.
 - In interface 70, each successful load is a reference balanced by one `FreeTexture`. `FreeTexture` immediately withdraws the handle from drawing and defers resource/descriptor release until GPU frames that could use it complete. The header does not establish plugin DLL-unload safety or callback quiescence.
-- MiniMap still uses the relevant AlienX calls, but manages complete atlas revisions: CPU candidate, synchronous `LoadFromRGBA`, dimension validation, atomic texture/UV publication, then old-owner release. This is consumer-level whole-texture replacement, not an AlienX in-place update.
+- MiniMap uses `ITextures` and its AlienX adapter. `SpriteSourceManager` publishes a complete atlas replacement with matching metadata after validating upload success and dimensions. Snapshot leases retain prior texture owners during CPU submission; explicit backend release and GPU retirement remain separate.
 - An AlienX `PluginTextureHandle` is an opaque ImGui identity, not an Unreal `UTexture2D` or UMG/Slate brush. `LoadFromUTexture2D` copies an engine texture into a separate loader-owned resource; it does not convert a loader handle into an engine resource.
 
 ## Verified AlienX texture APIs
@@ -51,7 +51,7 @@ The historical CPU-side evidence is a per-call timing scope around `LoadFromRGBA
 
 There is no public in-place whole-texture or subregion update operation. Reusing a live name shares its existing image; changed pixels with that name do not replace it. A unique name can acquire another loader-owned texture, but replacement and retirement sequencing belong to the caller. `LoadFromUTexture2D` is a blocking copy into loader ownership, not a changing view of its source.
 
-MiniMap uses **consumer-managed replacement**: form a full CPU atlas candidate, load it under a unique name, validate returned dimensions, atomically switch the published texture and matching UV/status entries, then release the old owner. The historical account documents this pattern. Current `Src/Map/Buildings/BuildingAtlas.cpp` still performs it; `Src/Map/Buildings/BuildingAtlasAlienX.cpp` generates a GUID-plus-serial name and calls `LoadFromRGBA`. This is not an AlienX update feature.
+MiniMap uses **consumer-managed replacement**. [SpriteSourceManager](../../Src/Services/Map/Buildings/Cache/SpriteSourceManager.cpp) incrementally packs a persistent CPU atlas, then uploads a complete replacement through [ITextures](../../Src/Services/Textures.h). It adopts the validated texture, dimensions and matching sprite registry as one publication. Failed upload preserves the prior valid publication. Atlas publication batching is separate from Section geometry publication; historical per-sprite atlas measurements below do not describe current batching.
 
 ## Resource ownership and lifetime
 
@@ -94,8 +94,8 @@ The historical atlas model found 44 blocking calls for each modeled strategy. Sm
 These findings describe the current boundary between MiniMap services and the AlienX-specific texture implementation:
 
 - **AlienX adapter:** using this v70 API requires `Load*` on the documented game-thread callback and outside the ImGui render callback. A worker/UI call cannot make this API asynchronous.
-- **MiniMap consumers:** atlas pixels, texture identity and matching UV/status metadata form one revision. Keep the prior valid publication until the candidate is loaded and validated; failure/cancellation must not publish a partial candidate. Current source demonstrates this consumer requirement.
-- **Ownership/lifetime:** track each successful reference and release it exactly once; keep a published handle alive while draw data can use it and let the loader perform its own v70 retirement. Keep CPU image ownership, API input lifetime, published identity, recorded UI draw data and GPU retirement distinct. These boundaries keep loader-specific resource rules out of MiniMap's general rendering logic.
+- **MiniMap consumers:** texture identity, dimensions, drawing revision and sprite rectangles belong together. GPU snapshots retain that tuple and its lease. Atlas-only changes rebind existing world geometry without preparing another scene.
+- **Ownership/lifetime:** `Texture` is a non-owning identity; `OwnedTexture` is an explicit receipt whose destructor does not invoke the backend. Upload/release distinguish unavailable and uncertain ownership from success. Owners retire explicitly after snapshot leases expire; recorded GPU work follows backend retirement. Uncertain operations are not blindly retried. CPU pixels, receipts, snapshots and native capture resources remain separate.
 
 ## Known limitations and unresolved questions
 
@@ -109,7 +109,7 @@ These findings describe the current boundary between MiniMap services and the Al
 ## Historical corrections and superseded conclusions
 
 - An earlier investigation considered conditional loader-internal optimization or batching ideas. Later evidence did not establish those ideas as implemented functionality or demonstrate a speedup. The separate terrain upload observations and unchecked-error-path limitations remain historical context with their provenance qualifications.
-- A historical MiniMap source account describes earlier source state. Its candidate/UV atomicity and old-owner-after-commit concepts remain relevant; its stage narrative and old paths are not current specifications. Current atlas source was inspected for the live mechanism.
+- A historical MiniMap source account describes earlier source state. Its candidate/UV atomicity and old-owner-after-commit concepts remain relevant; its stage narrative and old paths are not current specifications. The current source manager and immutable snapshot path replace the retired `BuildingAtlas` implementation.
 - A separate cold-capture analysis does not isolate `LoadFromRGBA` internals or prove upload alone caused a freeze. Event brackets and cumulative callback maxima are not promoted into upload timings.
 - The preferred atlas observation's “no verified nonblocking path” conclusion applies to inspected public interface 70, not every later AlienX API.
 
@@ -120,6 +120,6 @@ The public SDK header supports the interface declarations and documented v70 con
 | Reference | Use and boundary |
 |---|---|
 | [AlienX StarRupture Plugin SDK interface header](https://github.com/AlienXAXS/StarRupture-Plugin-SDK/blob/main/include/plugin_interface.h) | Public declarations and interface-70 contract; mutable branch, not installed-binary identity or licensing evidence. |
-| `Src/Map/Buildings/BuildingAtlasAlienX.cpp`, `Src/Map/Buildings/BuildingAtlasAlienX.h` | Current adapter create/release/submit path, unique names and explicit ownership state. |
-| `Src/Map/Buildings/BuildingAtlas.cpp`, `Src/Map/Buildings/BuildingAtlasCore.cpp`, `Src/Map/Buildings/BuildingScheduler.cpp` | Current whole-texture candidate publication, lifecycle serialization, packing and service batch. |
+| [AlienX Textures](../../Src/Adapters/AlienX/Textures.cpp), [ITextures](../../Src/Services/Textures.h) | Adapter loads/releases, receipt ledger and ownership outcomes. |
+| [SpriteSourceManager](../../Src/Services/Map/Buildings/Cache/SpriteSourceManager.cpp), [BuildingMapGpuViewport](../../Src/Services/Map/Buildings/BuildingMapGpuViewport.cpp) | Atlas packing, replacement, leases and revision-matched bindings. |
 | [Rendering and Asset Capture](../Engine/Rendering-and-Asset-Capture.md) | Separate capture/readback resource ownership; not an AlienX texture bridge. |

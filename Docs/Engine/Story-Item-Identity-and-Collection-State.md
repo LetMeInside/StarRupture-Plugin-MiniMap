@@ -8,6 +8,12 @@ The reports are dated 28 October 2026. Their game version/build label is **UNKNO
 
 All asset, native, and runtime-state conclusions below are **REPORT-BACKED** by the original reports. Their cited raw cooked package decoding and offline native inspection were not re-run for this restoration. The archive contained the three reports, but no separate raw package extracts or native disassembly artifacts. No runtime Mass query or gameplay verification was performed.
 
+## Current MiniMap acquisition
+
+[Foundables](../../Src/Map/Foundables/Foundables.cpp) reads replicated Abandoned Base story progress and associates assigned GUIDs with supported live story actors. Collection status remains distinct from datapad read entries and audiolog playback state. Missing/invalid runtime data is not proof that every item was collected. The examples below remain historical, not a complete current actor inventory.
+
+Bootstrap supplies runtime-resolved world/GameState/replicator offsets and story-array element contracts. Foundables validates the native GameState class against the **resolved runtime extent**, including replicator field bounds, rather than requiring equality with the compiled SDK base size. See [Compatibility and Version Resolution](../ModLoader/Compatibility-and-Version-Resolution.md) for Update 3 and [Loading and World Transitions](../Lifecycle/Loading-and-World-Transitions.md) for lifetime rules.
+
 ## Executive technical summary
 
 The historical reports establish three actor families in an inspected `AB_S_12` Abandoned Base: a wall-mounted computer, two ordinary Personal datapads, and one interactive ground audiolog. A POI story-assignment list associates their distinct actor GUIDs with Mission Logs progress. The actor instance, its full Blueprint class identity, its story-item GUID, collection status, read-entry state, playback state, world position, and any runtime Mass entity are different identity/state domains.
@@ -42,7 +48,7 @@ The identified placed computer is cell actor export 10 in `ChimeraMain` generate
 
 In `ChimeraMain.umap`, POI export 806 (`BP_PointOfInterestMarker_C_UAID_00090FFE0001B60902`, discovered-name key `AB_S_12`) includes that exact GUID in `AbandonBaseStoryItemsAssigned`. The report records the placed actor root at approximately `(X=-234855.499604, Y=-33478.765609, Z=3556.167357)` Unreal units. Its visible meshes attach to the actor's `DefaultSceneRoot`, and the inspected component/template offsets were effectively coincident with the root. The report therefore identifies the validated actor root's world position as the appropriate spatial anchor for this instance.
 
-That anchor is not a persistent location identifier. The serialized coordinates describe one placed example, not a universal position or offset. Use of a root location in a future context would still require a valid current actor/component and world transform; the story GUID does not encode coordinates.
+That anchor is not a persistent location identifier. The serialized coordinates describe one placed example, not a universal position or offset. Use of a root location requires a valid current actor/component and world transform; the story GUID does not encode coordinates.
 
 The report-backed interaction path says inherited `ACrDatapadBase::NativeOnInteract` reports the actor GUID to the Abandon Base subsystem. Story status is separate from reading both content rows: the computer's collection transition does not wait for all messages to be read. Base story status is saved through the Abandoned Base save-data path; entry-read state uses GameState save data (details below).
 
@@ -135,7 +141,7 @@ A separate historical registry investigation records a **NO-GO** for using histo
 - **UNKNOWN:** behavior for uninspected datapad subclasses, other bases, repeated audiolog interactions, or actors outside the recorded placed examples.
 - **UNKNOWN:** whether a playback-started state is ever reset/replayed or corresponds to playback completion; the reports do not establish that contract.
 
-## Evidence basis and internal reference
+## Evidence basis and related reference
 
 The actor classes, GUIDs, placed examples, state/save paths, and registry limitations in this reference are **REPORT-BACKED** and bounded to the examined game version and examples. The raw cooked packages and selected native excerpts were not retained for independent reinspection. The historical reports did not inspect a live Mass population; no runtime query or Mass-proxy conclusion is claimed. Version stability and uninspected subclasses remain unknown as stated above.
 

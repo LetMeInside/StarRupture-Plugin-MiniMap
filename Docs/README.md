@@ -16,12 +16,17 @@ These references cover StarRupture engine interfaces, MiniMap rendering and reso
 
 ## ModLoader
 
+- [Compatibility and Version Resolution](ModLoader/Compatibility-and-Version-Resolution.md) — Loader requirements, SDK and runtime build boundaries, version-map resolution, and Foundables GameState validation.
 - [Texture Publication](ModLoader/Texture-Publication.md) — AlienX interface-70 texture APIs, ownership, atlas publication, upload timing, and retirement semantics.
 
-## External building-map API
+## Architecture
 
-MiniMap exposes `MiniMap_GetBuildingComplexApi` (BCT1) for external building-map consumers. The former `MiniMap_GetBuildingSessionApi` canvas-rendering wrapper has been removed. MiniMap's own minimap renderer, shared capture and sprite-cache systems, and BCT1 composition/publication remain independent of external consumers.
+- [Map Service Architecture](Architecture/Map-Service-Architecture.md) — Current building acquisition, immutable Section publications, scheduling, GPU presentation, numerical images, and ownership in the MiniMap building layer.
+
+The Map service interfaces described here are internal C++ source contracts used by MiniMap. They are not an exported plugin ABI.
 
 ## Evidence and version boundaries
+
+The Engine and Lifecycle references preserve historical native findings alongside current implementation notes. The architecture and compatibility references describe the active service boundaries; historical collector, atlas and rendering details are labelled separately.
 
 The references combine historical native/PDB/SDK research, historical runtime observations, current-source descriptions, explicitly identified inferences, and unresolved questions. Findings are version-bound: historical executable RVAs, native layouts, and implementation observations are not universally portable contracts. Current-source descriptions do not substitute for runtime compatibility testing.
