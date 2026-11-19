@@ -2168,6 +2168,9 @@ namespace
         PLUGIN_INTERFACE_VERSION,
         MINIMAP_EXPORTS_TARGET,
         PLUGIN_GAME_BUILT_CL,
+#if defined(MODLOADER_CLIENT_BUILD)
+        PLUGIN_MAP_MIGRATED |
+#endif
         PluginLoadSetting(PluginReload::MENU) |
             PluginUnloadSetting(PluginReload::MENU)
     };
