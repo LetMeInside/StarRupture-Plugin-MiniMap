@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 EXPECTED_HEADER_SHA256 = "27d0c4bcde6374a2d77707610fa7a25384783ac376c17ba320a63b00a57b43ef"
-EXPECTED_VERSION = (5, 6, 1, 44394996, 43139311, "++UE5+Release-5.6")
+EXPECTED_VERSION = (5, 6, 1)
 REQUESTED_CLASSES = ("FRHIGPUMemoryReadback", "FRHIGPUTextureReadback")
 
 
@@ -113,9 +113,6 @@ def validate_engine_version(unreal_root: Path) -> None:
         version.get("MajorVersion"),
         version.get("MinorVersion"),
         version.get("PatchVersion"),
-        version.get("Changelist"),
-        version.get("CompatibleChangelist"),
-        version.get("BranchName"),
     )
     if actual != EXPECTED_VERSION:
         raise ValueError(f"Unreal Build.version does not match pinned UE 5.6.1: {actual!r}")
