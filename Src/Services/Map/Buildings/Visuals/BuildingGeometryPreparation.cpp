@@ -915,18 +915,20 @@ namespace Services::Map::Buildings::Visuals
 				RecordInvalidSplineInput(splineIndex, spline.SectionLocalOrdinal, output, cursor);
 				return Status::InvalidInputs;
 			}
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			{
-				BuildingMapPerformanceDiagnostics::TaggedTimer taggedSampling(
-					BuildingMapPerformanceDiagnostics::PreparationOperation::SplineSampling,
-					static_cast<std::int64_t>(spline.SectionLocalOrdinal), -1, spline.Segments.size());
-				SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy,
-					scratch.preparedSplines_[splineIndex]);
-				taggedSampling.SetWorkloadCounts(
-					scratch.preparedSplines_[splineIndex].AcceptedIntervals,
-					scratch.preparedSplines_[splineIndex].Samples.size());
-			}
-#endif
+		{
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			BuildingMapPerformanceDiagnostics::TaggedTimer taggedSampling(
+				BuildingMapPerformanceDiagnostics::PreparationOperation::SplineSampling,
+				static_cast<std::int64_t>(spline.SectionLocalOrdinal), -1, spline.Segments.size());
+		#endif
+			SplineGeometry::Prepare(spline.Segments, spline.SamplingPolicy,
+				scratch.preparedSplines_[splineIndex]);
+		#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+			taggedSampling.SetWorkloadCounts(
+				scratch.preparedSplines_[splineIndex].AcceptedIntervals,
+				scratch.preparedSplines_[splineIndex].Samples.size());
+		#endif
+		}
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			BuildingMapPerformanceDiagnostics::Game().SplineSamplingIntervals +=
 				scratch.preparedSplines_[splineIndex].AcceptedIntervals;
