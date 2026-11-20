@@ -23,6 +23,7 @@
 
 namespace Services::Map::Buildings::Visuals
 {
+	class BuildingGeometryPreparation;
 	#if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
 	/** Aggregates BVH query work for one Section preparation attempt without allocating. */
 	struct SplineOcclusionQueryCounters
@@ -67,6 +68,9 @@ namespace Services::Map::Buildings::Visuals
 	{
 		friend class SplineOcclusionGeometry;
 		friend class SplineOcclusionPlanner;
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		friend class BuildingGeometryPreparation;
+#endif
 
 		/** Stores a conservative world-XY broad-phase box. */
 		struct Bounds2D
@@ -125,6 +129,12 @@ namespace Services::Map::Buildings::Visuals
 	{
 		friend class SplineOcclusionGeometry;
 		friend class SplineOcclusionPlanner;
+#if defined(MINIMAP_GEOMETRY_TESTS)
+		friend class SplineOcclusionGeometryTestAccess;
+#endif
+#if defined(_DEBUG) && defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		friend class BuildingGeometryPreparation;
+#endif
 
 		/** Identifies a polygon in the flat reusable clipping vertex buffer. */
 		struct PolygonRange
@@ -207,6 +217,9 @@ namespace Services::Map::Buildings::Visuals
 	class SplineOcclusionGeometry final
 	{
 		friend class SplineOcclusionPlanner;
+#if defined(MINIMAP_GEOMETRY_TESTS)
+		friend class SplineOcclusionGeometryTestAccess;
+#endif
 
 		using Point2D = std::array<double, 2>;
 		using Point3D = SplineOcclusionPoint3D;
@@ -334,8 +347,9 @@ namespace Services::Map::Buildings::Visuals
 			{
 				std::size_t nextVertex = 0;
 				std::size_t nextIndex = 0;
-				for (const auto& cell : cells)
+				for (std::size_t cellIndex = 0; cellIndex < cells.size(); ++cellIndex)
 				{
+					const auto& cell = cells[cellIndex];
 					ValidateCellRanges(vertices, indices, cell, nextVertex, nextIndex);
 					ValidateCellIndices(indices, cell);
 					if (!ClipCell(vertices, indices, cell, index, workspace))
@@ -1208,8 +1222,14 @@ namespace Services::Map::Buildings::Visuals
 				return true;
 			}
 			long double parameter = 0.0L;
-			if (!TryGetIntersectionParameter(firstDistance, secondDistance, parameter)) return false;
-			if (!InterpolateIntersectionVertex(first, second, parameter, output)) return false;
+			if (!TryGetIntersectionParameter(firstDistance, secondDistance, parameter))
+			{
+				return false;
+			}
+			if (!InterpolateIntersectionVertex(first, second, parameter, output))
+			{
+				return false;
+			}
 			if (plane.IsHeight) output.Position[2] = plane.TopHeight;
 			return true;
 		}
@@ -1322,6 +1342,11 @@ namespace Services::Map::Buildings::Visuals
 			{
 				const long double area = TriangleTurn(polygon[0].Position, polygon[index].Position,
 					polygon[index + 1].Position);
+				if (area < 0.0L && IsClippingDegenerate(
+					polygon[0], polygon[index], polygon[index + 1]))
+				{
+					continue;
+				}
 				Require(std::isfinite(area) && area >= 0.0L, SplineOcclusionStatus::NumericalFailure);
 				nonzero |= area > 0.0L;
 			}
@@ -1339,6 +1364,10 @@ namespace Services::Map::Buildings::Visuals
 					const auto& second = workspace.CurrentVertices[range.Begin + index];
 					const auto& third = workspace.CurrentVertices[range.Begin + index + 1];
 					const long double area = TriangleTurn(first.Position, second.Position, third.Position);
+					if (area < 0.0L && IsClippingDegenerate(first, second, third))
+					{
+						continue;
+					}
 					Require(std::isfinite(area) && area >= 0.0L, SplineOcclusionStatus::NumericalFailure);
 					if (area > 0.0L)
 					{
@@ -1355,6 +1384,67 @@ namespace Services::Map::Buildings::Visuals
 				}
 			}
 			return true;
+		}
+
+		/** Recognizes a clipped fragment collapsed to one representable XY step. */
+		static bool IsClippingDegenerate(
+			const SupportedVertex& first,
+			const SupportedVertex& second,
+			const SupportedVertex& third) noexcept
+		{
+			if (!IsClippingGenerated(first) && !IsClippingGenerated(second) &&
+				!IsClippingGenerated(third))
+			{
+				return false;
+			}
+			for (std::size_t axis = 0; axis < 2; ++axis)
+			{
+				const double minimum = (std::min)({first.Position[axis], second.Position[axis],
+					third.Position[axis]});
+				const double maximum = (std::max)({first.Position[axis], second.Position[axis],
+					third.Position[axis]});
+				const double extent = maximum - minimum;
+				const double spacing = (std::max)({CoordinateSpacing(first.Position[axis]),
+					CoordinateSpacing(second.Position[axis]), CoordinateSpacing(third.Position[axis])});
+				if (std::isfinite(extent) && extent <= spacing)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/** Distinguishes clipping intersections from exact original vertices through edge provenance. */
+		static bool IsClippingGenerated(const SupportedVertex& vertex) noexcept
+		{
+			for (std::size_t support = 0; support < vertex.SupportCount; ++support)
+			{
+				for (std::size_t endpoint = 0; endpoint < 2; ++endpoint)
+				{
+					if (vertex.Position == vertex.Supports[support][endpoint].Position)
+					{
+						return false;
+					}
+				}
+			}
+			return true;
+		}
+
+		/** Returns the larger adjacent double spacing, ignoring an infinite outer neighbor. */
+		static double CoordinateSpacing(double coordinate) noexcept
+		{
+			const double previous = std::nextafter(coordinate, -INFINITY);
+			const double next = std::nextafter(coordinate, INFINITY);
+			double spacing = 0.0;
+			if (std::isfinite(previous))
+			{
+				spacing = (std::max)(spacing, coordinate - previous);
+			}
+			if (std::isfinite(next))
+			{
+				spacing = (std::max)(spacing, next - coordinate);
+			}
+			return spacing;
 		}
 
 		/** Calculates the signed plane distance for either an XY quad side or a top-Z plane. */
