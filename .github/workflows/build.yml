@@ -462,7 +462,6 @@ jobs:
           msbuild $solution `
             /p:Configuration="$env:CLIENT_CONFIGURATION" `
             /p:Platform=x64 `
-            /p:ModLoaderBuildTag="$env:VERSION" `
             /p:StarRupturePluginSDKRoot="$env:GITHUB_WORKSPACE\plugin-sdk\" `
             /p:MiniMapUnrealEngineRoot="$env:MINIMAP_UNREAL_ENGINE_ROOT" `
             /m `

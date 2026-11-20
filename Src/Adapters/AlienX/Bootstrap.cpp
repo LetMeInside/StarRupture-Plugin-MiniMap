@@ -19,6 +19,7 @@
 #include "Services/RuntimeBinding.h"
 #include "plugin.h"
 #include "plugin_helpers.h"
+#include "resource.h"
 
 #include <array>
 #include <cstddef>
@@ -45,10 +46,6 @@
 #include "SDK/MassEntity_structs.hpp"
 #include "plugin_map.h"
 #include "Native/NativeApi.h"
-#endif
-
-#ifndef MODLOADER_BUILD_TAG
-#define MODLOADER_BUILD_TAG "1.2.0"
 #endif
 
 namespace
@@ -2179,7 +2176,7 @@ namespace
 
     PluginInfo g_pluginInfo = {
         "MiniMap",
-        MODLOADER_BUILD_TAG,
+        MINIMAP_VERSION_STRING,
         "Kian369",
         "A configurable on-screen minimap for StarRupture",
         PLUGIN_INTERFACE_VERSION,
