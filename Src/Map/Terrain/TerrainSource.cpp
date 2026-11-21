@@ -288,7 +288,6 @@ namespace MiniMapTerrainSource
     {
         g_devSettings = nullptr;
         g_pluginSelfAvailable = false;
-        g_fieldOffsets = {};
     }
 
 

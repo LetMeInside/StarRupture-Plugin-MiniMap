@@ -31,7 +31,7 @@ MiniMap adds a persistent, resizable HUD map so you can keep track of the surrou
 MiniMap works automatically after loading into a world.
 
 - Press **F4** to show or hide the minimap.
-- Hold **Left Ctrl** and use the **mouse wheel** to zoom in or out.
+- Hold **Left Alt** and use the **mouse wheel** to zoom in or out.
 - Move or resize the minimap through the Mod Loader UI as you would any other plugin window.
 
 No save conversion, setup process, or manual map initialization is required.

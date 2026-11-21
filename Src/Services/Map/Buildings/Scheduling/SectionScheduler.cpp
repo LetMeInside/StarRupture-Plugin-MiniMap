@@ -1,4 +1,4 @@
-﻿#if defined(MODLOADER_CLIENT_BUILD)
+#if defined(MODLOADER_CLIENT_BUILD)
 
 // Owns acquisition resources and advances sprite-first Section geometry and optional image work.
 #include "SectionScheduler.h"

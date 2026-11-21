@@ -72,6 +72,7 @@ static constexpr uint32_t kBlockingMenuCorporateTerminal = 1u << 3;
 static constexpr uint32_t kBlockingMenuDevelopmentStation = 1u << 4;
 static constexpr uint32_t kBlockingMenuEquipmentUpgradeStation = 1u << 5;
 static constexpr uint32_t kBlockingMenuPauseMenu = 1u << 6;
+static constexpr uint32_t kBlockingMenuCharacterSelection = 1u << 7;
 
 static uint32_t GetBlockingMenuBit(
     SDK::UCommonActivatableWidget* widget
@@ -128,6 +129,13 @@ static uint32_t GetBlockingMenuBit(
         menuName = "pause menu";
 #endif
         return kBlockingMenuPauseMenu;
+    }
+    if (widget->IsA(SDK::UCrUW_CharacterSelectionMenu::StaticClass()))
+    {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        menuName = "character selection";
+#endif
+        return kBlockingMenuCharacterSelection;
     }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

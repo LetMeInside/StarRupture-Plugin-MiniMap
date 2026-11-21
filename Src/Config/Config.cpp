@@ -48,7 +48,7 @@ namespace
 #endif
         {"Zoom", "ZoomWithMouseWheel", S::SettingKind::Boolean, "true",
          "Zoom with Mouse Wheel: vertical wheel zoom while the activation modifier is held and the widget is visible."},
-        {"Zoom", "MouseWheelKey", S::SettingKind::KeyBinding, "LeftControl",
+        {"Zoom", "MouseWheelKey", S::SettingKind::KeyBinding, "LeftAlt",
          "Mouse Wheel Activation Key: one sided Left/Right Control, Shift or Alt; no other keys or combinations."},
         {"Zoom", "ZoomInKey", S::SettingKind::KeyBinding, "",
          "Zoom In: one configured step per press during visible gameplay; independent of wheel enable."},
@@ -548,7 +548,7 @@ namespace MiniMapConfig
         }
         // InitializeFromSchema replaces explicit empty required bindings with
         // defaults. Preserve validation evidence through public API reads first;
-        // otherwise an invalid empty value would silently register F4/LeftControl.
+        // otherwise an invalid empty value would silently register F4/LeftAlt.
         // Missing keys still return their normal schema defaults. Nothing is
         // published and no consumers are registered by this preflight.
         auto toggleBeforeSchema = config->ReadRaw({"General", "ToggleMiniMap"}, kEntries[Toggle].defaultText);

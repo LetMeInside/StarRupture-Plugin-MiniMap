@@ -21,8 +21,8 @@ namespace MiniMapConfig
         bool ShowBuildingSectionGrid = true;
 #endif
         bool ZoomWithMouseWheel = true;
-        Keybind MouseWheelKey = {'L', 'e', 'f', 't', 'C', 'o', 'n', 't', 'r', 'o', 'l', '\0'};
-        uint32_t WheelModifier = 1; // Services::WheelModifier::LeftControl; unchanged default bit.
+        Keybind MouseWheelKey = {'L', 'e', 'f', 't', 'A', 'l', 't', '\0'};
+        uint32_t WheelModifier = 16; // Services::WheelModifier::LeftAlt.
         Keybind ZoomInKey = {};
         Keybind ZoomOutKey = {};
         double ZoomStepFactor = 1.25;
