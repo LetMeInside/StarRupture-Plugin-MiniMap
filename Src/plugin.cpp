@@ -14,6 +14,7 @@
 #include "Native/NativeApi.h"
 #include "Native/MassLifecycle.h"
 #include "Native/TexturePublication.h"
+#include "Services/Map/Buildings/BuildingMapServiceABI.h"
 #include "UI/MiniMapUI.h"
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
@@ -879,13 +880,17 @@ static void OnTextureServiceTick(
 static bool StopBuildingMapGameplaySession()
 {
     MiniMapUI::EndBuildingLayerSession();
+    const bool externalViewportStopComplete =
+        ::Services::Map::Buildings::BuildingMapServiceABI::EndGameSession();
+    if (!externalViewportStopComplete)
+        LOG_ERROR("MiniMap: external Building Map viewport cleanup remains incomplete");
     const bool serviceStopComplete =
         g_buildingMapService == nullptr || g_buildingMapService->StopGameSession();
     if (g_buildingSpriteRenderer != nullptr)
     {
         g_buildingSpriteRenderer->ProcessLifecycle();
     }
-    return serviceStopComplete &&
+    return externalViewportStopComplete && serviceStopComplete &&
         (g_buildingSpriteRenderer == nullptr || g_buildingSpriteRenderer->IsStopComplete());
 }
 
@@ -1374,6 +1379,7 @@ namespace MiniMap
 
         buildingMapServiceInitGuard.Keep = true;
         massLifecycleHookInitGuard.Keep = true;
+        ::Services::Map::Buildings::BuildingMapServiceABI::BindService(*g_buildingMapService);
 
 #endif
 
@@ -1395,6 +1401,8 @@ namespace MiniMap
         bool buildingMapStopComplete = false;
         g_worldEnding=true;
         SetServicesAdmitted(false);
+        if (!::Services::Map::Buildings::BuildingMapServiceABI::Shutdown())
+            LOG_ERROR("MiniMap: external Building Map resources retained after cleanup failure");
         MiniMapMassLifecycle::MassLifecycle::Shutdown();
         MiniMapUI::StopInput();
         minimapCallbacksQuiescent = MiniMapUI::Shutdown();

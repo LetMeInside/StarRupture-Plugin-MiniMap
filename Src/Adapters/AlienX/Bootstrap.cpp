@@ -2184,9 +2184,13 @@ namespace
         PLUGIN_GAME_BUILT_CL,
 #if defined(MODLOADER_CLIENT_BUILD)
         PLUGIN_MAP_MIGRATED |
-#endif
+        // Cross-plugin ABI tables remain callable until process shutdown only.
+        PluginLoadSetting(PluginReload::RESTART) |
+            PluginUnloadSetting(PluginReload::RESTART)
+#else
         PluginLoadSetting(PluginReload::MENU) |
             PluginUnloadSetting(PluginReload::MENU)
+#endif
     };
 
     void ReleaseRuntime() noexcept
