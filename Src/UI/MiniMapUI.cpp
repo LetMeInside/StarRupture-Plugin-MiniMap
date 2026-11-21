@@ -371,7 +371,7 @@ namespace MiniMapUI
         }
         const auto settings = MiniMapConfig::GetRenderSettings();
         layer->SetRenderDroneRails(settings.Buildings.RenderDroneRails);
-        BM124D_RUN("BuildingLayer::Update", layer->Update(x1, y1, x2, y2));
+        BM124D_RUN("BuildingLayer::Update", layer->Update(x1, y1, x2 - x1, y2 - y1));
     }
 
     bool EndBuildingLayerSession()

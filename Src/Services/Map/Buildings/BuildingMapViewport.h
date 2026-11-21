@@ -46,13 +46,13 @@ namespace Services::Map::Buildings
 		 * CalculateGridRange's exception behavior. True means the update operation ran,
 		 * regardless of Section image changes or remaining work.
 		 *
-		 * @param x1 Upper-left map X coordinate; inclusive.
-		 * @param y1 Upper-left map Y coordinate; inclusive.
-		 * @param x2 Lower-right map X coordinate; exclusive.
-		 * @param y2 Lower-right map Y coordinate; exclusive.
+		 * @param xMapUnits Upper-left map X coordinate; inclusive.
+		 * @param yMapUnits Upper-left map Y coordinate; inclusive.
+		 * @param widthMapUnits Positive rectangle width.
+		 * @param heightMapUnits Positive rectangle height.
 		 * @return True when the rectangle was accepted and its update operation executed.
 		 */
-		bool Update(double x1, double y1, double x2, double y2);
+		bool Update(double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits);
 
 		/** Requests a Section-hash recheck for a changed collector-side rendering policy. */
 		void RequestSectionHashRecheck();

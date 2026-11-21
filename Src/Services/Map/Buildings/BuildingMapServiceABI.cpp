@@ -267,9 +267,13 @@ namespace Services::Map::Buildings
         }
     }
 
-    /** Executes exactly one existing Update, even when all four coordinates are unchanged. */
+    /** Executes exactly one existing Update, even when the rectangle is unchanged. */
     BuildingMapABIResult BUILDING_MAP_ABI_CALL BuildingMapServiceABI::UpdateViewport(
-        BuildingMapViewportHandle viewport, double x1, double y1, double x2, double y2) noexcept
+        BuildingMapViewportHandle viewport,
+        double xMapUnits,
+        double yMapUnits,
+        double widthMapUnits,
+        double heightMapUnits) noexcept
     {
         const auto result = CheckSession();
         if (result != BUILDING_MAP_ABI_OK)
@@ -279,7 +283,10 @@ namespace Services::Map::Buildings
             return BUILDING_MAP_ABI_INVALID_HANDLE;
         try
         {
-            return state.Viewport->Update(x1, y1, x2, y2) ? BUILDING_MAP_ABI_OK : BUILDING_MAP_ABI_FAILED;
+            return state.Viewport->Update(
+                xMapUnits, yMapUnits, widthMapUnits, heightMapUnits)
+                ? BUILDING_MAP_ABI_OK
+                : BUILDING_MAP_ABI_FAILED;
         }
         catch (...)
         {

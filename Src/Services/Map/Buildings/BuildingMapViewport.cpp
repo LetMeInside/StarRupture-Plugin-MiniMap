@@ -66,28 +66,24 @@ namespace Services::Map::Buildings
 	}
 
 	/** Reconciles this rectangle, advances its collector, and advances shared scheduling. */
-	bool BuildingMapViewport::Update(double x1, double y1, double x2, double y2)
+	bool BuildingMapViewport::Update(
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
 	{
 		if (service_ == nullptr || buildingCollector_ == nullptr)
 		{
 			return false;
 		}
-		const double widthMapUnits = x2 - x1;
-		const double heightMapUnits = y2 - y1;
-		if (!std::isfinite(widthMapUnits) || !std::isfinite(heightMapUnits) ||
-			widthMapUnits <= 0.0 || heightMapUnits <= 0.0 ||
-			x1 + widthMapUnits != x2 || y1 + heightMapUnits != y2)
-		{
-			throw std::invalid_argument("Viewport corners must define finite, positive, representable dimensions.");
-		}
 		const GridRange nextRange = CalculateGridRange(
-			x1,
-			y1,
+			xMapUnits,
+			yMapUnits,
 			widthMapUnits,
 			heightMapUnits,
 			service_->GetSectionSizeMapUnits());
 		const GridRange previousRange = gridRange_;
-		const bool schedulingGeometryChanged = x1 != xMapUnits_ || y1 != yMapUnits_ ||
+		const bool schedulingGeometryChanged = xMapUnits != xMapUnits_ || yMapUnits != yMapUnits_ ||
 			widthMapUnits != widthMapUnits_ || heightMapUnits != heightMapUnits_;
 		if (nextRange.firstX != gridRange_.firstX || nextRange.firstY != gridRange_.firstY ||
 			nextRange.endX != gridRange_.endX || nextRange.endY != gridRange_.endY)
@@ -102,8 +98,8 @@ namespace Services::Map::Buildings
 				return false;
 			}
 		}
-		xMapUnits_ = x1;
-		yMapUnits_ = y1;
+		xMapUnits_ = xMapUnits;
+		yMapUnits_ = yMapUnits;
 		widthMapUnits_ = widthMapUnits;
 		heightMapUnits_ = heightMapUnits;
 		gridRange_ = nextRange;

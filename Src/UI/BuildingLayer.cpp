@@ -103,7 +103,11 @@ namespace MiniMapUI
 		return true;
 	}
 
-	bool BuildingLayer::Update(double x1, double y1, double x2, double y2)
+	bool BuildingLayer::Update(
+		double xMapUnits,
+		double yMapUnits,
+		double widthMapUnits,
+		double heightMapUnits)
 	{
 	#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
@@ -116,7 +120,7 @@ namespace MiniMapUI
 		{
 			return false;
 		}
-		if (!viewport->Update(x1, y1, x2, y2))
+		if (!viewport->Update(xMapUnits, yMapUnits, widthMapUnits, heightMapUnits))
 		{
 			return false;
 		}

@@ -104,9 +104,12 @@ typedef struct BuildingMapServiceABITable
     BuildingMapABIResult (BUILDING_MAP_ABI_CALL *OpenViewport)(
         BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits,
         double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport);
-    /** Forwards Update(x1,y1,x2,y2), including advancement for unchanged bounds. */
+    /** Forwards the same upper-left-origin, half-open x/y/width/height rectangle as OpenViewport,
+     * unchanged, including collector and scheduling advancement for unchanged bounds.
+     */
     BuildingMapABIResult (BUILDING_MAP_ABI_CALL *UpdateViewport)(
-        BuildingMapViewportHandle viewport, double x1, double y1, double x2, double y2);
+        BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits,
+        double widthMapUnits, double heightMapUnits);
     /** Reads one local cell. Null buffer with zero capacity queries current metadata only.
      * A present image returns BUFFER_TOO_SMALL until capacity >= ByteCount; no partial copy.
      * OK copies current RGBA8 into caller storage, which remains caller-owned after return.
@@ -180,8 +183,8 @@ namespace Services::Map::Buildings
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL DisposeCollector(BuildingMapCollectorHandle collector) noexcept;
         /** Opens a normal CPU-image viewport with unchanged service parameters. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL OpenViewport(BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport) noexcept;
-        /** Forwards corner parameters exactly, preserving collector/scheduler advancement. */
-        static BuildingMapABIResult BUILDING_MAP_ABI_CALL UpdateViewport(BuildingMapViewportHandle viewport, double x1, double y1, double x2, double y2) noexcept;
+        /** Forwards an upper-left-origin half-open x/y/width/height rectangle unchanged and preserves collector/scheduler advancement. */
+        static BuildingMapABIResult BUILDING_MAP_ABI_CALL UpdateViewport(BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits) noexcept;
         /** Borrows a completed image only during this synchronous caller-buffer copy. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL CopySectionImage(BuildingMapViewportHandle viewport, uint64_t localX, uint64_t localY, BuildingMapABISectionImage* image, uint8_t* buffer, uint64_t capacity) noexcept;
         /** Reads exact current cell metadata and copies optional pixels without retaining a view. */

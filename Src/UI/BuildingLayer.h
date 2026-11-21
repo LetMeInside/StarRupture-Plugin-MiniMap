@@ -77,8 +77,14 @@ namespace MiniMapUI
 		/** Initializes collector resources and opens the sole GPU viewport. */
 		bool OpenViewport(double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits);
 
-		/** Updates viewport demand and advances the service scheduling path once. */
-		bool Update(double x1, double y1, double x2, double y2);
+		/** Updates viewport demand and advances scheduling once.
+		 * @param xMapUnits Upper-left map X coordinate.
+		 * @param yMapUnits Upper-left map Y coordinate.
+		 * @param widthMapUnits Positive rectangle width.
+		 * @param heightMapUnits Positive rectangle height.
+		 * @return True when the viewport update and scheduling operation ran.
+		 */
+		bool Update(double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits);
 
 		/** Applies the existing game-specific rail collection policy. */
 		void SetRenderDroneRails(bool enabled);
