@@ -1,0 +1,147 @@
+#Requires -Version 7.0
+# Regenerates MiniMap's empty Client map with the latest authoritative generator.
+# Requires PowerShell 7, Node.js, and HTTPS access to public GitHub repositories.
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)]
+    [string]$PluginSDKRoot,
+    [string]$WorkDirectory = (Join-Path $PSScriptRoot '../../Research')
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# Read revision metadata without invoking Git or changing the selected checkout.
+function Get-CheckoutRevision([string]$Root) {
+    $gitDirectory = Join-Path $Root '.git'
+    if (Test-Path -LiteralPath $gitDirectory -PathType Leaf) {
+        $gitLink = [IO.File]::ReadAllText($gitDirectory).Trim()
+        if ($gitLink -notmatch '^gitdir: (.+)$') { return 'unavailable' }
+        $gitDirectory = [IO.Path]::GetFullPath((Join-Path $Root $Matches[1]))
+    }
+    $headPath = Join-Path $gitDirectory 'HEAD'
+    if (-not (Test-Path -LiteralPath $headPath)) { return 'unavailable' }
+    $head = [IO.File]::ReadAllText($headPath).Trim()
+    if ($head -match '^[0-9a-f]{40}$') { return $head }
+    if ($head -notmatch '^ref: (refs/.+)$') { return 'unavailable' }
+    $reference = $Matches[1]
+    $referencePath = Join-Path $gitDirectory $reference
+    if (Test-Path -LiteralPath $referencePath) {
+        return [IO.File]::ReadAllText($referencePath).Trim()
+    }
+    $packedPath = Join-Path $gitDirectory 'packed-refs'
+    if (Test-Path -LiteralPath $packedPath) {
+        foreach ($line in [IO.File]::ReadAllLines($packedPath)) {
+            if ($line -match ('^([0-9a-f]{40}) ' + [regex]::Escape($reference) + '$')) {
+                return $Matches[1]
+            }
+        }
+    }
+    return 'unavailable'
+}
+
+$temporaryDirectory = $null
+try {
+    $sdkRoot = (Resolve-Path -LiteralPath $PluginSDKRoot).Path
+    $clientDirectory = Join-Path $sdkRoot 'StarRupture SDK/Client'
+    $markerPath = Join-Path $clientDirectory 'build_cl.txt'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        throw "Selected Client SDK is missing build_cl.txt: $markerPath"
+    }
+    $gameCL = [IO.File]::ReadAllText($markerPath).Trim()
+    $numericCL = 0u
+    if ($gameCL -notmatch '^[1-9][0-9]*$' -or
+        -not [uint32]::TryParse($gameCL, [ref]$numericCL)) {
+        throw "Client build_cl.txt must contain a positive 32-bit decimal CL: $markerPath"
+    }
+    Write-Host "Selected Client SDK: $clientDirectory"
+    Write-Host "Client game CL: $gameCL"
+    Write-Host "Plugin SDK revision: $(Get-CheckoutRevision $sdkRoot)"
+    Write-Host "Game-SDK revision: $(Get-CheckoutRevision (Join-Path $sdkRoot 'StarRupture SDK'))"
+    $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+
+    # Resolve the default branch on every run. The SHA selects a coherent download
+    # of that latest revision; it is never a configured or retained version pin.
+    $api = 'https://api.github.com/repos/msantoro12/starrupture-ci'
+    $headers = @{ 'User-Agent' = 'MiniMap-VersionMap'; Accept = 'application/vnd.github+json' }
+    $repository = Invoke-RestMethod -Uri $api -Headers $headers
+    $branch = [Uri]::EscapeDataString($repository.default_branch)
+    $commit = Invoke-RestMethod -Uri "$api/commits/$branch" -Headers $headers
+    $revision = [string]$commit.sha
+    if ($revision -notmatch '^[0-9a-f]{40}$') { throw 'GitHub returned an invalid generator revision.' }
+    Write-Host "Generator revision: $revision"
+
+    $workRoot = [IO.Path]::GetFullPath($WorkDirectory)
+    [IO.Directory]::CreateDirectory($workRoot) | Out-Null
+    $temporaryDirectory = Join-Path $workRoot ('version-map-' + [guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
+    $archive = Join-Path $temporaryDirectory 'generator.zip'
+    Invoke-WebRequest -Uri "$api/zipball/$revision" -Headers $headers -OutFile $archive
+    $expanded = Join-Path $temporaryDirectory 'generator'
+    Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+    $roots = @(Get-ChildItem -LiteralPath $expanded -Directory)
+    if ($roots.Count -ne 1) { throw 'Generator archive must contain one repository root.' }
+    $generator = Join-Path $roots[0].FullName 'ci/version-map.mjs'
+    $temporaryHeader = Join-Path $temporaryDirectory 'version_map.generated.h'
+    Write-Host "node `"$generator`" init `"$temporaryHeader`" --flavour plugin --built-cl $gameCL"
+    & $node $generator init $temporaryHeader --flavour plugin --built-cl $gameCL
+    if ($LASTEXITCODE -ne 0) { throw "Generator init failed with exit code $LASTEXITCODE." }
+    Write-Host "node `"$generator`" check `"$temporaryHeader`""
+    & $node $generator check $temporaryHeader
+    if ($LASTEXITCODE -ne 0) { throw "Generator format validation failed with exit code $LASTEXITCODE." }
+
+    # Independent checks deliberately fail closed if the upstream format changes.
+    $content = [IO.File]::ReadAllText($temporaryHeader)
+    if ($content -notmatch '(?m)^// Generated by starrupture-ci ci/version-map\.mjs\. Do not edit by hand\.$' -or
+        $content -notmatch '(?m)^#include "plugin_interface\.h"$' -or
+        $content -notmatch '(?m)^namespace VersionMap\s*$' -or
+        $content -notmatch '(?m)^inline constexpr uint32_t kFormatVersion = 2;$' -or
+        [regex]::Matches($content, '(?m)^inline constexpr uint32_t kBuiltCL = ([0-9]+);$').Count -ne 1 -or
+        $content -notmatch "(?m)^inline constexpr uint32_t kBuiltCL = $gameCL;`$") {
+        throw 'Generated output is not the expected format-2 plugin map for the selected Client CL.'
+    }
+    $collections = [ordered]@{
+        kBuilds = 'Build'; kFunctionRows = 'PluginScanCandidate';
+        kFieldRows = 'PluginFieldCandidate'; kFunctions = 'Index'; kFields = 'Index'
+    }
+    foreach ($name in $collections.Keys) {
+        $declaration = '(?m)^inline constexpr std::array<' + $collections[$name] + ', 0> ' + $name + ' = \{\};$'
+        if ([regex]::Matches($content, $declaration).Count -ne 1) {
+            throw "Generated map must have an empty $name collection; historical rows are not allowed."
+        }
+    }
+    if ([regex]::Matches($content, 'std::array<').Count -ne $collections.Count) {
+        throw 'Generated map has unexpected candidate collections.'
+    }
+
+    $destination = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../Src/Adapters/AlienX/version_map.generated.h'))
+    $newBytes = [IO.File]::ReadAllBytes($temporaryHeader)
+    if ((Test-Path -LiteralPath $destination) -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($newBytes)) {
+        Write-Host 'Generated header changed: no (identical bytes; file not rewritten)'
+    }
+    else {
+        # File.Replace is atomic and requires the same volume; failure leaves the
+        # existing destination intact. Never delete the destination first.
+        if (Test-Path -LiteralPath $destination) {
+            [IO.File]::Replace($temporaryHeader, $destination, [System.Management.Automation.Language.NullString]::Value)
+        }
+        else {
+            [IO.File]::Move($temporaryHeader, $destination)
+        }
+        Write-Host 'Generated header changed: yes'
+    }
+}
+catch {
+    Write-Error "MiniMap version-map regeneration failed: $($_.Exception.Message)" -ErrorAction Continue
+    exit 1
+}
+finally {
+    if ($temporaryDirectory -and (Test-Path -LiteralPath $temporaryDirectory)) {
+        $resolvedTemporary = [IO.Path]::GetFullPath($temporaryDirectory)
+        if ([IO.Path]::GetDirectoryName($resolvedTemporary) -eq $workRoot -and
+            [IO.Path]::GetFileName($resolvedTemporary) -match '^version-map-[0-9a-f]{32}$') {
+            Remove-Item -LiteralPath $resolvedTemporary -Recurse -Force
+        }
+    }
+}
