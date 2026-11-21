@@ -19,13 +19,6 @@
   <PropertyGroup Condition="'$(PluginGameBuiltCL)' == '' And Exists('$(MiniMapGameSDKIdentityHeader)')">
     <PluginGameBuiltCL>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MiniMapGameSDKIdentityHeader)')), '(?m)^// [0-9]+\.[0-9]+\.[0-9]+-([0-9]+)\+\+\+').Groups[1].Value)</PluginGameBuiltCL>
   </PropertyGroup>
-  <Import Project="$(StarRupturePluginSDKRoot)PluginGameBuild.props" />
-  <PropertyGroup>
-    <MiniMapGameBuildCLIsValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(StarRuptureGameBuiltCL)', '^[1-9][0-9]*$'))</MiniMapGameBuildCLIsValid>
-  </PropertyGroup>
-  <Target Name="ValidateMiniMapGameBuildIdentity" BeforeTargets="PrepareForBuild">
-    <Error Condition="'$(MiniMapGameBuildCLIsValid)' != 'True'" Text="MiniMap requires a positive decimal StarRupture game-build CL. Provide PluginGameBuiltCL or valid SDK.hpp/build_cl.txt metadata for the selected Game-SDK." />
-  </Target>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
@@ -38,6 +31,13 @@
     <StarRuptureSDKSourceDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKSourceDir>
     <StarRuptureSDKConfigDir>$(StarRupturePluginSDKRoot)StarRupture SDK\Server\;$(StarRupturePluginSDKRoot)StarRupture SDK\Server\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
+  <Import Project="$(StarRupturePluginSDKRoot)PluginGameBuild.props" />
+  <PropertyGroup>
+    <MiniMapGameBuildCLIsValid>$([System.Text.RegularExpressions.Regex]::IsMatch('$(StarRuptureGameBuiltCL)', '^[1-9][0-9]*$'))</MiniMapGameBuildCLIsValid>
+  </PropertyGroup>
+  <Target Name="ValidateMiniMapGameBuildIdentity" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(MiniMapGameBuildCLIsValid)' != 'True'" Text="MiniMap requires a positive decimal StarRupture game-build CL. Provide PluginGameBuiltCL or valid SDK.hpp/build_cl.txt metadata for the selected Game-SDK." />
+  </Target>
   <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">
     <ClCompile><PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>

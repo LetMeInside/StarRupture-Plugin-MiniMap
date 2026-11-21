@@ -1246,13 +1246,13 @@ namespace MiniMapFingerprints
 
         // Warm the exact type cache used by GetValue during NativeApi initialization.
         // The fixed name-string LEA displacement distinguishes this generated
-        // StaticStruct body in CL-127004; no absolute runtime address is embedded.
+        // StaticStruct body in verified CL-130045; older builds use loader-map rows.
         RequiredScan splinePayloadTypeRequest{};
         splinePayloadTypeRequest.name = "MiniMap::SplinePayload::StaticStruct";
         splinePayloadTypeRequest.versionMapKey = "FAuAPSplineActorPayloadData::StaticStruct";
         splinePayloadTypeRequest.idaPattern =
             "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 75 ?? E8 ?? ?? ?? ?? "
-            "48 8B D0 4C 8D 05 41 FF B5 05 48 8D 0D ?? ?? ?? ?? "
+            "48 8B D0 4C 8D 05 21 F9 C0 05 48 8D 0D ?? ?? ?? ?? "
             "E8 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 83 C4 28 C3";
         splinePayloadTypeRequest.kind = AddressKind::FunctionEntry;
 
@@ -1674,14 +1674,9 @@ namespace MiniMapFingerprints
 
         inventoryStaticStructRequest.idaPattern =
             "E8 ?? ?? ?? ?? "
-            "4C 8B C0 48 8B D3 48 8B CF "
+            "4C 8B C0 48 8B D3 48 8B CE "
             "E8 ?? ?? ?? ?? "
-            "48 85 C0 74 ?? "
-            "48 8B 7C 24 48 "
-            "48 8D 88 20 01 00 00 "
-            "48 8B 57 30 "
-            "E8 ?? ?? ?? ?? "
-            "85 C0 7E ?? 8B 5F 38";
+            "8B B7";
 
         inventoryStaticStructRequest.followRel32At = 0x00;
 
@@ -1957,7 +1952,7 @@ namespace MiniMapFingerprints
             RequiredScan request{};
             request.name = "MiniMap::RetirementBegin";
             request.versionMapKey = "FRenderCommandFence::BeginFence";
-            request.idaPattern = "40 55 53 56 48 8D 6C 24 B9 48 81 EC 00 01 00 00 48 8B 05 39 49 6C 0A 48 33 C4 48 89 45 27 80 3D D3 6D 98 0A 00 8B DA 89 55 9F 48 8B F1 48 89 4D 87 0F 84 3F 08 00 00 E8 14 70 84 FD 84 C0 75 26";
+            request.idaPattern = "40 55 53 56 48 8D 6C 24 B9 48 81 EC 00 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 27 80 3D ?? ?? ?? ?? 00 8B DA 89 55 9F 48 8B F1 48 89 4D 87 0F 84 3F 08 00 00 E8 ?? ?? ?? ?? 84 C0 75 26";
             request.kind = AddressKind::FunctionEntry;
 
             request.resultOffset = 0;
@@ -1968,7 +1963,7 @@ namespace MiniMapFingerprints
             RequiredScan request{};
             request.name = "MiniMap::RetirementPoll";
             request.versionMapKey = "FRenderCommandFence::IsFenceComplete";
-            request.idaPattern = "40 53 48 83 EC 30 80 3D 3B 1B 97 0A 00 48 8B D9 0F 84 8A 00 00 00 E8 85 1D 83 FD 84 C0 75 30 FF 15 EB 7B 4D 0A 84 C0 75 26 4C 8D 0D B4 10 3F 07 41 B8 5C 04 00 00 48 8D 15 E3 88 AC 07 48 8D 0D";
+            request.idaPattern = "40 53 48 83 EC 30 80 3D ?? ?? ?? ?? 00 48 8B D9 0F 84 8A 00 00 00 E8 ?? ?? ?? ?? 84 C0 75 30 FF 15 ?? ?? ?? ?? 84 C0 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 5C 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D";
             request.kind = AddressKind::FunctionEntry;
 
             request.resultOffset = 0;
@@ -2298,11 +2293,11 @@ namespace MiniMapFingerprints
         // Keep local fallback signatures for both notification functions. The
         // map's global function entries and these signatures must agree.
         if (!foundation("MiniMap::BuildingComplex::OnCreateBuildingEntity",
-            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 D0 CA 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 B0 F6 00 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
             addresses.buildingOnCreate, AddressKind::FunctionEntry, std::nullopt,
             "UCrBuildingStabilitySubsystem::OnCreateBuildingEntity")) return false;
         if (!foundation("MiniMap::BuildingComplex::OnDestroyBuildingEntity",
-            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 80 D4 01 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 54 24 40 48 8B CB E8 ?? ?? ?? ?? 48 8B CF 48 8B 10 E8 90 FD 00 00 48 8B 5C 24 30 48 83 C4 20 5F C3",
             addresses.buildingOnDestroy, AddressKind::FunctionEntry, std::nullopt,
             "UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity")) return false;
         if (!foundation("MiniMap::BuildingComplex::CreateTransient",

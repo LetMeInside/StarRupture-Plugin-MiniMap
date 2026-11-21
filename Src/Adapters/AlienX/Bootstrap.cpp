@@ -86,7 +86,7 @@ namespace
         "FOWData",
         PLUGIN_FIELD_NATIVE,
         sizeof(SDK::TArray<uint8_t>),
-        -1
+        0x100 // CL-130045 PDB: native FOWData container, absent from generated SDK properties.
     };
 
     PluginFieldSpec g_fowDataClassSize = SR_SIZE(UCrPlayerMapMenuDataComponent);
@@ -1849,7 +1849,7 @@ namespace
                     static_cast<int32_t>(offsetof(SDK::FTransform, Scale3D)) },
                 { "FMassEnemyStateFragment::State", "FMassEnemyStateFragment", "State",
                     PLUGIN_FIELD_NATIVE,
-                    sizeof(SDK::EMassEnemyInitializationState), -1 }
+                    sizeof(SDK::EMassEnemyInitializationState), 0x01 } // CL-130045 PDB/native SetState byte access.
             };
 
             bool allResolved = true;
@@ -2184,9 +2184,13 @@ namespace
         PLUGIN_GAME_BUILT_CL,
 #if defined(MODLOADER_CLIENT_BUILD)
         PLUGIN_MAP_MIGRATED |
-#endif
+        // Cross-plugin ABI tables remain callable until process shutdown only.
+        PluginLoadSetting(PluginReload::RESTART) |
+            PluginUnloadSetting(PluginReload::RESTART)
+#else
         PluginLoadSetting(PluginReload::MENU) |
             PluginUnloadSetting(PluginReload::MENU)
+#endif
     };
 
     void ReleaseRuntime() noexcept

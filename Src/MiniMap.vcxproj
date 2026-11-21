@@ -104,6 +104,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="BuildingMapLoadingTrace.h" />
+    <ClInclude Include="Services\Map\Buildings\BuildingMapServiceABI.h" />
     <ClInclude Include="Map\Buildings\BuildingSpatialAdmission.h" />
     <ClInclude Include="Map\RuntimeFieldAccess.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapPerformanceDiagnostics.h" />
@@ -315,6 +316,7 @@
     <ClCompile Include="UI\BuildingLayer.cpp" />
     <ClCompile Include="UI\MiniMapUI.cpp" />
     <ClCompile Include="plugin.cpp" />
+    <ClCompile Include="Services\Map\Buildings\BuildingMapServiceABI.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />
