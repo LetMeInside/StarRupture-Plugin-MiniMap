@@ -3,7 +3,6 @@
 #include "BuildingMapServiceABI.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
-#include "Map/Buildings/BuildingCollectorV2.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
@@ -86,9 +85,7 @@ namespace Services::Map::Buildings
         }
         if (state.Collector != nullptr)
         {
-            // Only CreateCollector constructs this provider-local implementation.
-            auto& collector = static_cast<::MiniMap::BuildingAcquisition::BuildingCollectorV2&>(*state.Collector);
-            collector.ShutdownResources();
+            state.Collector->Shutdown();
             state.Collector.reset();
         }
     }
@@ -200,11 +197,9 @@ namespace Services::Map::Buildings
             return BUILDING_MAP_ABI_FAILED;
         try
         {
-            state.Collector = std::make_unique<::MiniMap::BuildingAcquisition::BuildingCollectorV2>(state.Service->GetSectionSizeMapUnits());
-            auto& collector = static_cast<::MiniMap::BuildingAcquisition::BuildingCollectorV2&>(*state.Collector);
-            if (!collector.InitializeResources())
+            state.Collector = state.Service->CreateCollector();
+            if (state.Collector == nullptr)
             {
-                ReleaseResources();
                 return BUILDING_MAP_ABI_UNAVAILABLE;
             }
             state.CollectorHandle = state.NextHandle++;

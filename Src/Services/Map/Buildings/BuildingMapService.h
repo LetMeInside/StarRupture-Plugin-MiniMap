@@ -30,6 +30,7 @@ namespace Services::Map::Buildings
 	}
 
 	class BuildingMapSection;
+	class BuildingMapServiceABI;
 	class BuildingMapViewport;
 	class BuildingMapGpuViewport;
 	namespace Visuals
@@ -59,6 +60,9 @@ namespace Services::Map::Buildings
 	class BuildingMapService final
 	{
 	public:
+		/** Creates a collector for the configured Section size and returns base-interface ownership. */
+		using CollectorFactory = std::unique_ptr<IBuildingCollector> (*)(double sectionSizeMapUnits);
+
 		/** Creates a service whose settings define the shared grid and whose cache root contains its sprite files.
 		 * Throws std::invalid_argument unless section size and sprite capture density are finite and positive,
 		 * resolution is positive, and the MiniMap cache root is nonempty and absolute.
@@ -72,13 +76,15 @@ namespace Services::Map::Buildings
 		 * @param spriteCaptureDensityPixelsPerMapUnit Sprite capture pixels per map unit, independent of Section image resolution.
 		 * @param cacheRoot Absolute application-wide MiniMap/Cache directory.
 		 * @param splinePolicies Direct-indexed policies with reserved entry zero.
+		 * @param collectorFactory Plugin-supplied creator for game-specific collector implementations.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
 			double spriteCaptureDensityPixelsPerMapUnit,
 			std::filesystem::path cacheRoot,
-			std::span<const SplinePolicy> splinePolicies);
+			std::span<const SplinePolicy> splinePolicies,
+			CollectorFactory collectorFactory);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
@@ -183,6 +189,7 @@ namespace Services::Map::Buildings
 			double heightMapUnits);
 
 	private:
+		friend class BuildingMapServiceABI;
 		friend class BuildingMapViewport;
 		friend class BuildingMapGpuViewport;
 		friend class Scheduling::SectionSchedulingCoordinator;
@@ -190,6 +197,8 @@ namespace Services::Map::Buildings
 		using SectionPublicationMap = std::map<
 			SectionCoordinate,
 			std::shared_ptr<const BuildingCandidatePublication>>;
+		/** Invokes the plugin-supplied factory with this service's configured Section size. */
+		std::unique_ptr<IBuildingCollector> CreateCollector() const;
 
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		BuildingMapSection* FindSectionAt(std::int64_t gridX, std::int64_t gridY);
@@ -421,6 +430,7 @@ namespace Services::Map::Buildings
 		const double spriteCaptureDensityPixelsPerMapUnit_;
 		Coordination::FrameBudgetController frameBudgetController_;
 		const std::vector<SplinePolicy> splinePolicies_;
+		const CollectorFactory collectorFactory_;
 		double mapWidthMapUnits_ = 0.0;
 		double mapHeightMapUnits_ = 0.0;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;

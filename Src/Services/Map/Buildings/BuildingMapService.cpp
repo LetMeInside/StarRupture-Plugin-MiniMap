@@ -29,17 +29,23 @@ namespace Services::Map::Buildings
 		std::uint32_t sectionResolutionPixels,
 		double spriteCaptureDensityPixelsPerMapUnit,
 		std::filesystem::path cacheRoot,
-		std::span<const SplinePolicy> splinePolicies)
+		std::span<const SplinePolicy> splinePolicies,
+		CollectorFactory collectorFactory)
 		: sectionSizeMapUnits_(sectionSizeMapUnits)
 		, sectionResolutionPixels_(sectionResolutionPixels)
 		, spriteCaptureDensityPixelsPerMapUnit_(spriteCaptureDensityPixelsPerMapUnit)
 		, splinePolicies_(splinePolicies.begin(), splinePolicies.end())
+		, collectorFactory_(collectorFactory)
 	{
 		if (!std::isfinite(sectionSizeMapUnits_) || sectionSizeMapUnits_ <= 0.0 ||
 			sectionResolutionPixels_ == 0 ||
 			!std::isfinite(spriteCaptureDensityPixelsPerMapUnit_) || spriteCaptureDensityPixelsPerMapUnit_ <= 0.0)
 		{
 			throw std::invalid_argument("Building Map settings require finite positive section size and sprite capture density, and positive resolution.");
+		}
+		if (collectorFactory_ == nullptr)
+		{
+			throw std::invalid_argument("Building Map requires a collector factory.");
 		}
 		if (cacheRoot.empty())
 		{
@@ -59,6 +65,12 @@ namespace Services::Map::Buildings
 			spriteCaptureDensityPixelsPerMapUnit_,
 			std::move(buildingsCacheDirectory),
 			spriteSourceManager_.get()));
+	}
+
+	/** Creates one caller-owned collector through the plugin-supplied factory. */
+	std::unique_ptr<IBuildingCollector> BuildingMapService::CreateCollector() const
+	{
+		return collectorFactory_(sectionSizeMapUnits_);
 	}
 
 	/** Delegates explicit cache invalidation through the owned scheduler hierarchy. */

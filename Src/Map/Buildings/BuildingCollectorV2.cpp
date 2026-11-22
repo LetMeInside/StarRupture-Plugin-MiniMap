@@ -16,6 +16,7 @@
 #include "Native/NativeApi.h"
 #include "Services/Objects.h"
 #include "Services/Runtime.h"
+#include <SDK/AuActorPlacement_classes.hpp>
 #include <SDK/AuActorPlacement_structs.hpp>
 #include <SDK/Chimera_classes.hpp>
 #include <SDK/CoreUObject_classes.hpp>
@@ -1844,6 +1845,12 @@ namespace MiniMap::BuildingAcquisition
             const double resolvedReach = ResolveBuildingReach(parameters);
             if (!context.HasRegion || !IsRegionallyAdmitted(context, x, y, resolvedReach))
                 return std::nullopt;
+            SDK::UAuActorPlacementData* placement = GetPlacementData(parameters);
+            if (!IncludeDroneRails && placement != nullptr &&
+                PolicyForBuildingId(static_cast<std::uint32_t>(placement->BuildingID)) == SplinePolicyId::DroneRail)
+            {
+                return std::nullopt;
+            }
             if (!views.HasSplineConnections)
             {
                 const auto retained = Entities.find(Key(id));
@@ -1879,7 +1886,6 @@ namespace MiniMap::BuildingAcquisition
             {
                 occurrence.Data.SplineStatus = Status::Ready;
             }
-            SDK::UAuActorPlacementData* placement = GetPlacementData(views.BuildingParameters);
             if (placement)
             {
                 occurrence.Placement = DefinitionAcquisition.Retain(
@@ -4175,6 +4181,12 @@ namespace MiniMap::BuildingAcquisition
         return true;
     }
 
+    /** Releases native resources before the collector is destroyed. */
+    void BuildingCollectorV2::Shutdown()
+    {
+        ShutdownResources();
+    }
+
     /** Accepts the exact half-open rectangle used by this collector's regional admission request. */
     bool BuildingCollectorV2::SetAcquisitionRegion(const Facts::Region& region) noexcept
     {
@@ -4203,6 +4215,7 @@ namespace MiniMap::BuildingAcquisition
         state_->IncludeDroneRails = enabled;
         state_->RetainedSectionPublications.clear();
         state_->FullFootprintRebuildPending = true;
+        state_->ImmediateScanRequired = true;
     }
 
     /** Reads the stored hash for the currently committed regional dataset. */

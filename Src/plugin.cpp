@@ -15,6 +15,7 @@
 #include "Native/MassLifecycle.h"
 #include "Native/TexturePublication.h"
 #include "Services/Map/Buildings/BuildingMapServiceABI.h"
+#include "Map/Buildings/BuildingCollectorV2.h"
 #include "UI/MiniMapUI.h"
 #include "Input/MouseWheel.h"
 #include "SDK/CommonUI_classes.hpp"
@@ -1135,7 +1136,30 @@ namespace MiniMap
             sectionResolutionPixels,
 			spriteCaptureDensityPixelsPerMapUnit,
             cacheRoot,
-            splinePolicies));
+            splinePolicies,
+            +[](double collectorSectionSizeMapUnits)
+                -> std::unique_ptr<::Services::Map::Buildings::IBuildingCollector>
+            {
+                auto collector = std::make_unique<
+                    ::MiniMap::BuildingAcquisition::BuildingCollectorV2>(collectorSectionSizeMapUnits);
+                collector->SetRenderDroneRails(false);
+                bool initialized = false;
+                try
+                {
+                    initialized = collector->InitializeResources();
+                }
+                catch (...)
+                {
+                    collector->Shutdown();
+                    throw;
+                }
+                if (!initialized)
+                {
+                    collector->Shutdown();
+                    return {};
+                }
+                return collector;
+            }));
         g_buildingSpriteRenderer = g_buildingMapService->GetCapturerLifecycleTarget();
         if (g_buildingSpriteRenderer == nullptr || !g_buildingSpriteRenderer->RequestInitialization())
         {
