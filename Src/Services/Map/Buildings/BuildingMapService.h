@@ -270,21 +270,23 @@ namespace Services::Map::Buildings
 		);
 
 		/**
-		 * Sends the exact map-space rectangle covered by a half-open Section grid range.
+		 * Validates and reconciles a half-open Section grid range, optionally submitting its exact rectangle.
 		 * No game-specific acquisition padding is added; the collector owns discovery policy.
 		 * @param viewportHandle Registered viewport whose collector receives the request.
 		 * @param firstGridX Inclusive first grid column.
 		 * @param firstGridY Inclusive first grid row.
 		 * @param endGridX Exclusive end grid column.
 		 * @param endGridY Exclusive end grid row.
-		 * @return True when the exact rectangle is representable and the collector accepts it.
+		 * @param acquireBuildings Whether to submit the rectangle to this viewport's collector.
+		 * @return True when validation, any required collector submission, and demand reconciliation succeed.
 		 */
 		bool UpdateViewportGridRange(
 			std::uint64_t viewportHandle,
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool acquireBuildings);
 		/** Refreshes priorities in a viewport's prior and current ranges after geometry changes.
 		 * @param viewportHandle Registered viewport whose accepted geometry changed.
 		 * @param previousFirstGridX Inclusive first prior Section column.
@@ -325,6 +327,17 @@ namespace Services::Map::Buildings
 		/** Requests applicable sources in order and preserves equivalent pending publication owners. */
 		void AcquireSectionPublicationBatches(
 			const std::set<SectionCoordinate>& coordinates,
+			std::uint64_t recheckedViewportHandle,
+			bool clearRecheckWhenCovered);
+		/** Visits eligible viewport collectors in registration order, skipping fully satisfied CPU sources.
+		 * @param coordinates Section coordinates needing publications.
+		 * @param selectedCoordinates Accumulates cells supplied by the first valid source.
+		 * @param recheckedViewportHandle Viewport whose successful source recheck may complete.
+		 * @param clearRecheckWhenCovered Whether successful complete coverage clears that recheck.
+		 */
+		void AcquireSectionPublicationSources(
+			const std::set<SectionCoordinate>& coordinates,
+			std::set<SectionCoordinate>& selectedCoordinates,
 			std::uint64_t recheckedViewportHandle,
 			bool clearRecheckWhenCovered);
 		/** Acquires and validates one viewport's ordered Section publication batch. */
@@ -422,8 +435,30 @@ namespace Services::Map::Buildings
 		 */
 		bool IsSectionWithinAnyViewportResidencyRange(std::int64_t gridX, std::int64_t gridY) const;
 
-		/** Releases completed images outside all active viewport residency ranges without erasing Sections. */
+		/** Retires preparation outside residency and retains images only for registered CPU consumers. */
 		void ReconcileSectionImageResidency();
+		/** Checks registered CPU consumers, excluding a closing handle when supplied. */
+		bool HasCpuImageViewport(std::uint64_t excludedHandle = 0) const;
+		/** Returns whether an image-demanding viewport's target half-open range has every completed image.
+		 * Borrows existing Sections only; GPU overlap does not affect collector admission.
+		 * @param viewport Viewport whose immutable CPU-image demand is checked.
+		 * @param firstGridX Inclusive first target column.
+		 * @param firstGridY Inclusive first target row.
+		 * @param endGridX Exclusive target column end.
+		 * @param endGridY Exclusive target row end.
+		 */
+		bool IsCpuViewportImageSatisfied(
+			const BuildingMapViewport& viewport,
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::int64_t endGridX,
+			std::int64_t endGridY) const;
+		/** Tests stored image satisfaction without suppressing GPU source demand. */
+		bool IsCpuOnlySnapshotSatisfied(const SectionCoordinate& coordinate) const;
+		/** Removes obsolete CPU-only work; returns true for a retained snapshot. */
+		bool ReleaseCpuSnapshotWork(const SectionCoordinate& coordinate);
+		/** Releases Section image allocations and image-only continuations, preserving geometry. */
+		void ReleaseCpuImages();
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;

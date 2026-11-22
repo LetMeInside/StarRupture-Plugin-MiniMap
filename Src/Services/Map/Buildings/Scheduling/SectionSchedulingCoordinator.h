@@ -539,6 +539,9 @@ namespace Services::Map::Buildings::Scheduling
 		bool IsDemanded(const SectionCoordinate& coordinate) const noexcept;
 		/** Reports whether at least one demanding viewport requests numerical images. */
 		bool HasImageDemand(const SectionCoordinate& coordinate) const noexcept;
+		/** Releases only image continuation allocations in an existing Section; preserves geometry work. */
+		void ReleaseSectionImageContinuation(
+			::Services::Map::Buildings::BuildingMapSection& section) noexcept;
 
 		/** Removes completed waiting work and its Section-owned state after a successful commit.
 		 * Aggregate demand remains intact.

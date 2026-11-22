@@ -349,6 +349,9 @@ namespace Services::Map::Buildings::Scheduling
 
 	private:
 		friend class SectionSchedulingCoordinator;
+		/** Releases numerical image state in the supplied Section without resetting geometry or sources. */
+		void ReleaseSectionImageContinuation(
+			::Services::Map::Buildings::BuildingMapSection& section) noexcept;
 		struct SectionJob;
 		struct RetainedSectionScene;
 		/** Carries the coordinator's current allowance and initial-sprite stopping boundary. */

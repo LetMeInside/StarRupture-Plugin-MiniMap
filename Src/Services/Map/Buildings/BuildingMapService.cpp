@@ -343,7 +343,7 @@ namespace Services::Map::Buildings
 		return true;
 	}
 
-	/** Selects changed viewport cells or waiting cells without a selected publication. */
+	/** Selects changed or waiting cells, removing CPU-only snapshot work before publication acquisition. */
 	std::set<BuildingMapService::SectionCoordinate> BuildingMapService::GetSectionRequestCoordinates(
 		const BuildingMapViewport& viewport,
 		bool compareViewportDemand)
@@ -352,8 +352,14 @@ namespace Services::Map::Buildings
 		if (compareViewportDemand)
 		{
 			AddViewportGridCoordinates(viewport, coordinates);
-			for (const SectionCoordinate& coordinate : coordinates)
+			for (auto entry = coordinates.begin(); entry != coordinates.end();)
 			{
+				const SectionCoordinate coordinate = *entry++;
+				if (ReleaseCpuSnapshotWork(coordinate))
+				{
+					coordinates.erase(coordinate);
+					continue;
+				}
 				sectionSchedulingCoordinator_->RequestSectionWork(
 					Scheduling::SectionSchedulingCoordinator::SectionCoordinate{
 						coordinate.first,
@@ -367,6 +373,10 @@ namespace Services::Map::Buildings
 		{
 			const auto grid = (entry++)->Coordinate;
 			const SectionCoordinate coordinate{grid.GridX, grid.GridY};
+			if (ReleaseCpuSnapshotWork(coordinate))
+			{
+				continue;
+			}
 			const auto selected = pendingSectionPublications_.find(coordinate);
 			if (selected == pendingSectionPublications_.end())
 			{
@@ -433,20 +443,18 @@ namespace Services::Map::Buildings
 			return;
 		}
 		std::set<SectionCoordinate> selectedCoordinates;
-		for (const auto& viewportEntry : viewportsByHandle_)
+		AcquireSectionPublicationSources(
+			coordinates, selectedCoordinates, recheckedViewportHandle, clearRecheckWhenCovered);
+		// A skipped CPU source can complete its recheck after later GPU sources supply overlapping cells.
+		if (clearRecheckWhenCovered)
 		{
-			BuildingMapViewport* viewport = viewportEntry.second;
-			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
-				viewport->viewportHandle_ != viewportEntry.first)
+			const BuildingMapViewport& viewport = *viewportsByHandle_.at(recheckedViewportHandle);
+			const auto& range = viewport.gridRange_;
+			if (IsCpuViewportImageSatisfied(viewport, range.firstX, range.firstY, range.endX, range.endY) &&
+				AreAllViewportSectionsSelected(viewport, selectedCoordinates))
 			{
-				continue;
+				sectionHashRechecksRequested_.erase(recheckedViewportHandle);
 			}
-			AcquireViewportSectionPublicationBatch(
-				viewportEntry.first,
-				*viewport,
-				coordinates,
-				selectedCoordinates,
-				clearRecheckWhenCovered && viewportEntry.first == recheckedViewportHandle);
 		}
 		for (const SectionCoordinate& coordinate : coordinates)
 		{
@@ -464,6 +472,35 @@ namespace Services::Map::Buildings
 				sectionSchedulingCoordinator_->RecordSelectedPublication(
 					*this, {coordinate.first, coordinate.second}, nullptr, selectionChanged);
 			}
+		}
+	}
+
+	/** Selects eligible collector sources without using paused CPU coverage; preserves first-valid-source ordering. */
+	void BuildingMapService::AcquireSectionPublicationSources(
+		const std::set<SectionCoordinate>& coordinates,
+		std::set<SectionCoordinate>& selectedCoordinates,
+		std::uint64_t recheckedViewportHandle,
+		bool clearRecheckWhenCovered)
+	{
+		for (const auto& viewportEntry : viewportsByHandle_)
+		{
+			BuildingMapViewport* viewport = viewportEntry.second;
+			if (viewport == nullptr || viewport->service_ != this || viewport->buildingCollector_ == nullptr ||
+				viewport->viewportHandle_ != viewportEntry.first)
+			{
+				continue;
+			}
+			const auto& range = viewport->gridRange_;
+			if (IsCpuViewportImageSatisfied(*viewport, range.firstX, range.firstY, range.endX, range.endY))
+			{
+				continue;
+			}
+			AcquireViewportSectionPublicationBatch(
+				viewportEntry.first,
+				*viewport,
+				coordinates,
+				selectedCoordinates,
+				clearRecheckWhenCovered && viewportEntry.first == recheckedViewportHandle);
 		}
 	}
 
@@ -661,11 +698,18 @@ namespace Services::Map::Buildings
 	}
 #endif
 
-	/** Clears a publication only after both its image commitment and complete scene are current. */
+	/** Releases satisfied CPU snapshots or current scene/image commitments without inventing hashes. */
 	void BuildingMapService::ReleasePendingPublicationsAlreadyApplied()
 	{
 		for (auto pending = pendingSectionPublications_.begin(); pending != pendingSectionPublications_.end();)
 		{
+			if (IsCpuOnlySnapshotSatisfied(pending->first))
+			{
+				const SectionCoordinate coordinate = pending->first;
+				++pending;
+				ReleaseCpuSnapshotWork(coordinate);
+				continue;
+			}
 			const auto applied = appliedSectionHashes_.find(pending->first);
 			const BuildingMapSection* section = FindSectionAt(pending->first.first, pending->first.second);
 			const std::uint64_t sourceContentHash = pending->second->ContentHash();
@@ -793,7 +837,9 @@ namespace Services::Map::Buildings
 		{
 			for (std::int64_t gridX = viewport.gridRange_.firstX; gridX < viewport.gridRange_.endX; ++gridX)
 			{
-				if (selectedCoordinates.find(SectionCoordinate{gridX, gridY}) == selectedCoordinates.end())
+				const SectionCoordinate coordinate{gridX, gridY};
+				if (selectedCoordinates.find(coordinate) == selectedCoordinates.end() &&
+					!IsCpuOnlySnapshotSatisfied(coordinate))
 				{
 					return false;
 				}
@@ -862,9 +908,85 @@ namespace Services::Map::Buildings
 		return false;
 	}
 
-	/** Retires out-of-envelope preparation and invalidates completed images outside existing residency. */
+	/** Checks registered image consumers, optionally excluding the handle currently closing. */
+	bool BuildingMapService::HasCpuImageViewport(std::uint64_t excludedHandle) const
+	{
+		for (const auto& entry : viewportsByHandle_)
+		{
+			if (entry.first != excludedHandle && entry.second != nullptr && entry.second->RenderSectionImages())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Checks existing Section image ownership for the target range without creating Sections or consulting sources. */
+	bool BuildingMapService::IsCpuViewportImageSatisfied(
+		const BuildingMapViewport& viewport,
+		std::int64_t firstGridX,
+		std::int64_t firstGridY,
+		std::int64_t endGridX,
+		std::int64_t endGridY) const
+	{
+		if (!viewport.RenderSectionImages())
+		{
+			return false;
+		}
+		for (std::int64_t gridY = firstGridY; gridY < endGridY; ++gridY)
+		{
+			for (std::int64_t gridX = firstGridX; gridX < endGridX; ++gridX)
+			{
+				const BuildingMapSection* section = FindSectionAt(gridX, gridY);
+				if (section == nullptr || !section->HasCompletedImage())
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** Recognizes stored pixels as sufficient only when no GPU consumer needs source selection. */
+	bool BuildingMapService::IsCpuOnlySnapshotSatisfied(const SectionCoordinate& coordinate) const
+	{
+		const BuildingMapSection* section = FindSectionAt(coordinate.first, coordinate.second);
+		return section != nullptr && section->HasCompletedImage() && !HasGpuViewportDemand(coordinate);
+	}
+
+	/** Removes obsolete CPU-only selection and job work without recording a new image commitment. */
+	bool BuildingMapService::ReleaseCpuSnapshotWork(const SectionCoordinate& coordinate)
+	{
+		if (!IsCpuOnlySnapshotSatisfied(coordinate))
+		{
+			return false;
+		}
+		pendingSectionPublications_.erase(coordinate);
+		sectionSchedulingCoordinator_->RecordSectionCompleted(*this, {coordinate.first, coordinate.second});
+		return true;
+	}
+
+	/** Releases all committed and unfinished CPU image allocations before throwable close bookkeeping. */
+	void BuildingMapService::ReleaseCpuImages()
+	{
+		for (const auto& entry : sections_)
+		{
+			if (entry.second != nullptr)
+			{
+				entry.second->InvalidateCompletedImage();
+				if (sectionSchedulingCoordinator_ != nullptr)
+				{
+					sectionSchedulingCoordinator_->ReleaseSectionImageContinuation(*entry.second);
+				}
+			}
+		}
+		appliedSectionHashes_.clear();
+	}
+
+	/** Retires preparation at the existing envelope while images follow CPU viewport lifetime. */
 	void BuildingMapService::ReconcileSectionImageResidency()
 	{
+		const bool retainImages = HasCpuImageViewport();
 		for (auto appliedHash = appliedSectionHashes_.begin(); appliedHash != appliedSectionHashes_.end();)
 		{
 			if (!IsSectionWithinAnyViewportResidencyRange(appliedHash->first.first, appliedHash->first.second))
@@ -886,10 +1008,10 @@ namespace Services::Map::Buildings
 			if (!IsSectionWithinAnyViewportResidencyRange(sectionEntry.first.first, sectionEntry.first.second))
 			{
 				section->ResetRenderingState("residency-removal", false);
-				if (section->HasCompletedImage())
-				{
-					section->InvalidateCompletedImage();
-				}
+			}
+			if (!retainImages && section->HasCompletedImage())
+			{
+				section->InvalidateCompletedImage();
 			}
 		}
 	}
@@ -961,7 +1083,8 @@ namespace Services::Map::Buildings
 			viewport.gridRange_.firstX,
 			viewport.gridRange_.firstY,
 			viewport.gridRange_.endX,
-			viewport.gridRange_.endY))
+			viewport.gridRange_.endY,
+			true))
 		{
 			viewportsByHandle_.erase(viewportHandle);
 			viewport.InvalidateService();
@@ -1447,6 +1570,10 @@ namespace Services::Map::Buildings
 		{
 			return;
 		}
+		if (viewport->second->RenderSectionImages() && !HasCpuImageViewport(viewportHandle))
+		{
+			ReleaseCpuImages();
+		}
 		if (sectionSchedulingCoordinator_ != nullptr)
 		{
 			const auto& gridRange = viewport->second->gridRange_;
@@ -1515,13 +1642,14 @@ namespace Services::Map::Buildings
 		}
 	}
 
-	/** Requests the exact tile-aligned rectangle covered by the supplied half-open grid range. */
+	/** Validates the exact grid rectangle, submits it only for acquisition, and preserves demand rollback order. */
 	bool BuildingMapService::UpdateViewportGridRange(
 		std::uint64_t viewportHandle,
 		std::int64_t firstGridX,
 		std::int64_t firstGridY,
 		std::int64_t endGridX,
-		std::int64_t endGridY)
+		std::int64_t endGridY,
+		bool acquireBuildings)
 	{
 		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
 		if (viewportEntry == viewportsByHandle_.end() || viewportEntry->second->buildingCollector_ == nullptr)
@@ -1548,7 +1676,7 @@ namespace Services::Map::Buildings
 			top,
 			width,
 			height};
-		if (!viewportEntry->second->buildingCollector_->SetAcquisitionRegion(collectionRegion))
+		if (acquireBuildings && !viewportEntry->second->buildingCollector_->SetAcquisitionRegion(collectionRegion))
 		{
 			return false;
 		}

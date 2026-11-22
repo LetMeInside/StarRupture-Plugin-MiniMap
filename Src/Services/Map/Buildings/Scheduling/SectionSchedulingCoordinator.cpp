@@ -630,7 +630,7 @@ namespace Services::Map::Buildings::Scheduling
 			publicationOwner,
 			section,
 			initialSpritesOnly,
-			HasImageDemand(coordinate));
+			HasImageDemand(coordinate) && !section.HasCompletedImage());
 		result.HasUnattemptedSprites = SectionScheduler::NeedsInitialSpriteVisit(&section, *publicationOwner);
 		PublishGpuPresentationChange(buildingMapService, section);
 		return result;
@@ -1187,6 +1187,16 @@ namespace Services::Map::Buildings::Scheduling
 	{
 		const auto demandCount = demandCounts_.find(coordinate);
 		return demandCount != demandCounts_.end() && demandCount->second.ViewportCount > 0;
+	}
+
+	/** Drops only CPU image continuation storage in the supplied Section, retaining shared GPU work. */
+	void SectionSchedulingCoordinator::ReleaseSectionImageContinuation(
+		::Services::Map::Buildings::BuildingMapSection& section) noexcept
+	{
+		if (sectionScheduler_ != nullptr)
+		{
+			sectionScheduler_->ReleaseSectionImageContinuation(section);
+		}
 	}
 
 	/** Checks aggregate image demand independently from total Section demand. */

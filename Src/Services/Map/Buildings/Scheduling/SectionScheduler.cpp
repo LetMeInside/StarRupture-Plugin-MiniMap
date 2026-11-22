@@ -1243,6 +1243,23 @@ namespace Services::Map::Buildings::Scheduling
 			(!progress.Initialized || progress.NextOccurrenceIndex < progress.InitialSpriteCount);
 	}
 
+	/** Destroys image-only continuation allocations and evidence while preserving geometry progress. */
+	void SectionScheduler::ReleaseSectionImageContinuation(
+		::Services::Map::Buildings::BuildingMapSection& section) noexcept
+	{
+		if (section.renderingState_ == nullptr)
+		{
+			return;
+		}
+		auto& job = *static_cast<SectionJob*>(section.renderingState_.get());
+		job.NumericalOperation.reset();
+		std::vector<std::uint8_t>().swap(job.CompletedImage);
+		job.CompletedImageReady = false;
+		job.CompletedImageTransparent = false;
+		job.TerminalSplineOmissions = {};
+		job.AttemptEvidence.reset();
+	}
+
 	/** Releases operation state before the prepared scene while retaining its publication owner. */
 	void SectionScheduler::ResetSectionJobProgress(
 		SectionJob& job,

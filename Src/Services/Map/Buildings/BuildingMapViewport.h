@@ -39,8 +39,10 @@ namespace Services::Map::Buildings
 		virtual ~BuildingMapViewport();
 
 		/**
-		 * Accepts an upper-left-origin half-open rectangle, advances this viewport's
-		 * collector once, and advances the shared service scheduler once. A closed or
+		 * Accepts an upper-left-origin half-open rectangle and advances shared service
+		 * scheduling once. Advances this viewport's collector once when acquisition is
+		 * needed, including unchanged bounds. Fully cached CPU-image ranges skip collector
+		 * acquisition while continuing service scheduling. A closed or
 		 * invalidated viewport returns false without using its former associations.
 		 * Invalid or unrepresentable dimensions and unsupported grid coordinates retain
 		 * CalculateGridRange's exception behavior. True means the update operation ran,
@@ -126,6 +128,8 @@ namespace Services::Map::Buildings
 
 	private:
 		friend class BuildingMapGpuViewport;
+		/** Advances the non-owning collector once after its current exact region is accepted. */
+		void AdvanceCollector();
 
 		/** Validates bounds and converts them to a half-open grid range using the service cell size.
 		 *

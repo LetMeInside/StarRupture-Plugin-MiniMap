@@ -105,7 +105,8 @@ typedef struct BuildingMapServiceABITable
         BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits,
         double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport);
     /** Forwards the same upper-left-origin, half-open x/y/width/height rectangle as OpenViewport,
-     * unchanged, including collector and scheduling advancement for unchanged bounds.
+     * unchanged. Service scheduling continues for unchanged bounds. Collector acquisition
+     * advances when needed, even for unchanged bounds; fully cached CPU-image ranges skip it.
      */
     BuildingMapABIResult (BUILDING_MAP_ABI_CALL *UpdateViewport)(
         BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits,
@@ -183,7 +184,7 @@ namespace Services::Map::Buildings
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL DisposeCollector(BuildingMapCollectorHandle collector) noexcept;
         /** Opens a normal CPU-image viewport with unchanged service parameters. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL OpenViewport(BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport) noexcept;
-        /** Forwards an upper-left-origin half-open x/y/width/height rectangle unchanged and preserves collector/scheduler advancement. */
+        /** Forwards the rectangle unchanged; scheduling continues, with collector advancement only when acquisition is needed, including unchanged bounds. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL UpdateViewport(BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits) noexcept;
         /** Borrows a completed image only during this synchronous caller-buffer copy. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL CopySectionImage(BuildingMapViewportHandle viewport, uint64_t localX, uint64_t localY, BuildingMapABISectionImage* image, uint8_t* buffer, uint64_t capacity) noexcept;
