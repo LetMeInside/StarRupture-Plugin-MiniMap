@@ -52,9 +52,15 @@ namespace Services::Map::Buildings
 		 * @param yMapUnits Upper-left map Y coordinate; inclusive.
 		 * @param widthMapUnits Positive rectangle width.
 		 * @param heightMapUnits Positive rectangle height.
+		 * @param interactiveScheduling Selects the elevated coordinator allowance for this call only.
 		 * @return True when the rectangle was accepted and its update operation executed.
 		 */
-		bool Update(double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits);
+		bool Update(
+			double xMapUnits,
+			double yMapUnits,
+			double widthMapUnits,
+			double heightMapUnits,
+			bool interactiveScheduling);
 
 		/** Requests a Section-hash recheck for a changed collector-side rendering policy. */
 		void RequestSectionHashRecheck();

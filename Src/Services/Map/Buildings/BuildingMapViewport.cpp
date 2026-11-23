@@ -70,7 +70,8 @@ namespace Services::Map::Buildings
 		double xMapUnits,
 		double yMapUnits,
 		double widthMapUnits,
-		double heightMapUnits)
+		double heightMapUnits,
+		bool interactiveScheduling)
 	{
 		if (service_ == nullptr || buildingCollector_ == nullptr)
 		{
@@ -106,7 +107,8 @@ namespace Services::Map::Buildings
 		{
 			AdvanceCollector();
 		}
-		if (!BM124D_RUN("AdvanceViewportScheduling", service_->AdvanceViewportScheduling(viewportHandle_)))
+		if (!BM124D_RUN("AdvanceViewportScheduling",
+			service_->AdvanceViewportScheduling(viewportHandle_, interactiveScheduling)))
 		{
 			return false;
 		}

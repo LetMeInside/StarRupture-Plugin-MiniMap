@@ -309,8 +309,11 @@ namespace Services::Map::Buildings
 			std::int64_t gridX,
 			std::int64_t gridY) const noexcept;
 
-		/** Observes one live viewport's acquisition hash and advances shared Section scheduling once. */
-		bool AdvanceViewportScheduling(std::uint64_t viewportHandle);
+		/** Observes one live viewport and forwards its call-scoped scheduling preference.
+		 * @param viewportHandle Registered viewport whose acquisition hash and demand are observed.
+		 * @param interactiveScheduling Whether this update temporarily selects the interactive allowance.
+		 */
+		bool AdvanceViewportScheduling(std::uint64_t viewportHandle, bool interactiveScheduling);
 		/** Queues a one-shot Section hash comparison after a collector policy change. */
 		void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle);
 

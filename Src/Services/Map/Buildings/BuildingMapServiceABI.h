@@ -21,6 +21,11 @@ typedef uint32_t BuildingMapABIResult;
 #define BUILDING_MAP_ABI_NO_IMAGE 8u
 #define BUILDING_MAP_ABI_WRONG_THREAD 9u
 
+/** Fixed-width preference for the coordinator allowance used during one viewport update. */
+typedef uint32_t BuildingMapABISchedulingPreference;
+#define BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_DEFAULT 0u
+#define BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_INTERACTIVE 1u
+
 /** Provider-local IBuildingCollector identity; zero is invalid and values are never reused. */
 typedef uint64_t BuildingMapCollectorHandle;
 /** Provider-local ordinary BuildingMapViewport identity; zero is invalid. */
@@ -118,12 +123,14 @@ typedef struct BuildingMapServiceABITable
         BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits,
         double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport);
     /** Forwards the same upper-left-origin, half-open x/y/width/height rectangle as OpenViewport,
-     * unchanged. Service scheduling continues for unchanged bounds. Collector acquisition
-     * advances when needed, even for unchanged bounds; fully cached CPU-image ranges skip it.
+     * unchanged, with a call-scoped scheduling preference. Service scheduling continues for
+     * unchanged bounds. Collector acquisition advances when needed, even for unchanged bounds;
+     * fully cached CPU-image ranges skip it. Unsupported preference values return INVALID_ARGUMENT.
      */
     BuildingMapABIResult (BUILDING_MAP_ABI_CALL *UpdateViewport)(
         BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits,
-        double widthMapUnits, double heightMapUnits);
+        double widthMapUnits, double heightMapUnits,
+        BuildingMapABISchedulingPreference schedulingPreference);
     /** Reads one local cell. Null buffer with zero capacity queries current metadata only.
      * A present image returns BUFFER_TOO_SMALL until capacity >= ByteCount; no partial copy.
      * OK copies current RGBA8 into caller storage, which remains caller-owned after return.
@@ -197,8 +204,14 @@ namespace Services::Map::Buildings
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL DisposeCollector(BuildingMapCollectorHandle collector) noexcept;
         /** Opens a normal CPU-image viewport with unchanged service parameters. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL OpenViewport(BuildingMapCollectorHandle collector, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits, BuildingMapViewportHandle* viewport) noexcept;
-        /** Forwards the rectangle unchanged; scheduling continues, with collector advancement only when acquisition is needed, including unchanged bounds. */
-        static BuildingMapABIResult BUILDING_MAP_ABI_CALL UpdateViewport(BuildingMapViewportHandle viewport, double xMapUnits, double yMapUnits, double widthMapUnits, double heightMapUnits) noexcept;
+        /** Forwards the rectangle and validated call-scoped scheduling preference unchanged. */
+        static BuildingMapABIResult BUILDING_MAP_ABI_CALL UpdateViewport(
+            BuildingMapViewportHandle viewport,
+            double xMapUnits,
+            double yMapUnits,
+            double widthMapUnits,
+            double heightMapUnits,
+            BuildingMapABISchedulingPreference schedulingPreference) noexcept;
         /** Borrows a completed image only during this synchronous caller-buffer copy. */
         static BuildingMapABIResult BUILDING_MAP_ABI_CALL CopySectionImage(BuildingMapViewportHandle viewport, uint64_t localX, uint64_t localY, BuildingMapABISectionImage* image, uint8_t* buffer, uint64_t capacity) noexcept;
         /** Reads exact current cell metadata and copies optional pixels without retaining a view. */

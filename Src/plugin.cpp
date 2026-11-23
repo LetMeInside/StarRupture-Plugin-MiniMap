@@ -435,7 +435,7 @@ static void OnTextureServiceTick(
                     ? 0.0
                     : duration.TotalMs / static_cast<double>(duration.Samples);
             };
-            LOG_INFO("MiniMap: BuildingMap scheduler intervalMs=%.1f calls:%llu advancement={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} spriteAcquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} budget={exhaustions:%llu overruns:%llu overrunMs:{total:%.3f max:%.3f}} waiting={sourceMisses:%llu ineligible:%llu}",
+            LOG_INFO("MiniMap: BuildingMap scheduler intervalMs=%.1f calls:%llu advancement={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} spriteAcquisition={n:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f cumulativeExecutionVsCallAllowance={interactiveCalls:%llu crossings:%llu overrunEvents:%llu overrunMs:{total:%.3f max:%.3f}} waiting={sourceMisses:%llu ineligible:%llu}",
                 diagnostics.IntervalMs,
                 static_cast<unsigned long long>(diagnostics.AdvancementCalls),
                 static_cast<unsigned long long>(diagnostics.CoordinatorAdvancement.Samples),
@@ -446,10 +446,11 @@ static void OnTextureServiceTick(
                 diagnostics.SpriteAcquisitionAdvancement.TotalMs,
                 meanMs(diagnostics.SpriteAcquisitionAdvancement),
                 diagnostics.SpriteAcquisitionAdvancement.MaxMs,
-                static_cast<unsigned long long>(diagnostics.BudgetExhaustionEvents),
-                static_cast<unsigned long long>(diagnostics.BudgetOverrunEvents),
-                diagnostics.BudgetOverrunTotalMs,
-                diagnostics.MaximumBudgetOverrunMs,
+                static_cast<unsigned long long>(diagnostics.InteractiveAllowanceCalls),
+                static_cast<unsigned long long>(diagnostics.CumulativeAllowanceCrossingEvents),
+                static_cast<unsigned long long>(diagnostics.CumulativeExecutionOverrunEvents),
+                diagnostics.CumulativeExecutionOverrunMs,
+                diagnostics.MaximumCumulativeExecutionOverrunMs,
                 static_cast<unsigned long long>(diagnostics.SourceSelectionMisses),
                 static_cast<unsigned long long>(diagnostics.NoLongerEligibleCoordinates));
             LOG_INFO("MiniMap: BuildingMap section_slices intervalMs=%.1f elapsed:cpuWall nestedInCoordinator=true slices={attempted:%llu totalMs:%.3f meanMs:%.3f maxMs:%.3f} workUnits:%llu states={pending:%llu waitingForResources:%llu restartRequired:%llu attemptFinished:%llu} commits={image:%llu empty:%llu} failedTerminalAttempts:%llu commitStatus={invalidIncomplete:%llu numericalFailed:%llu committed:%llu committedEmpty:%llu} terminalReadiness={invalidPublication:%llu invalidSection:%llu invalidPreparation:%llu pendingNative:%llu pendingSprite:%llu unavailable:%llu unresolved:%llu complete:%llu} numericalStatus={complete:%llu completeWithOmissions:%llu invalidDestination:%llu incompleteDrawing:%llu destinationUnavailable:%llu destinationRejected:%llu finalizationFailed:%llu} removed:%llu notifications:%llu",

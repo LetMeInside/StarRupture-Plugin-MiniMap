@@ -106,10 +106,16 @@ namespace Services::Map::Buildings::Scheduling
 		std::uint64_t SuccessfulImageCommits = 0;
 		std::uint64_t SuccessfulEmptyCommits = 0;
 		std::uint64_t FailedTerminalAttempts = 0;
-		std::uint64_t BudgetExhaustionEvents = 0;
-		std::uint64_t BudgetOverrunEvents = 0;
-		double BudgetOverrunTotalMs = 0.0;
-		double MaximumBudgetOverrunMs = 0.0;
+		/** Counts advancements that cross their selected allowance in cumulative coordinator time. */
+		std::uint64_t CumulativeAllowanceCrossingEvents = 0;
+		/** Counts advancements that increase cumulative execution beyond their selected allowance. */
+		std::uint64_t CumulativeExecutionOverrunEvents = 0;
+		/** Adds newly accumulated execution above the allowance selected for each advancement. */
+		double CumulativeExecutionOverrunMs = 0.0;
+		/** Largest cumulative execution overrun measured against an advancement's selected allowance. */
+		double MaximumCumulativeExecutionOverrunMs = 0.0;
+		/** Counts calls selecting the larger interactive nominal allowance. */
+		std::uint64_t InteractiveAllowanceCalls = 0;
 		std::uint64_t NoLongerEligibleCoordinates = 0;
 		std::uint64_t SourceSelectionMisses = 0;
 		std::array<std::uint64_t, 4> CommitStatusCounts{};
@@ -324,14 +330,35 @@ namespace Services::Map::Buildings::Scheduling
 		/** Advances sprite acquisition once and shares the service's current tick allowance across waiting Sections.
 		 * @param buildingMapService Service-owned Section/source and frame-budget provider.
 		 * @param publications Service-owned selected publications, copied into local owners before job advancement.
+		 * @param interactiveScheduling Temporarily selects the larger deadline from the same tick anchor.
 		 */
 		void AdvanceWaitingSections(
 			::Services::Map::Buildings::BuildingMapService& buildingMapService,
-			const SectionPublicationBatch& publications);
+			const SectionPublicationBatch& publications,
+			bool interactiveScheduling);
 		/** Starts a fresh allowance only when the service-owned tick identity advances. */
 		void InitializeTickBudget(
 			const ::Services::Map::Buildings::BuildingMapService& buildingMapService,
 			std::chrono::steady_clock::time_point allowanceStarted);
+		/** Selects one nominal deadline from the retained first-advancement tick anchor. */
+		void ApplyTickSchedulingPreference(bool interactiveScheduling) noexcept;
+		/** Restores the ordinary deadline when one coordinator advancement scope ends. */
+		class ScopedTickSchedulingPreference final
+		{
+		public:
+			/** Applies the selected allowance until this coordinator-call scope exits. */
+			ScopedTickSchedulingPreference(
+				SectionSchedulingCoordinator& coordinator,
+				bool interactiveScheduling) noexcept;
+			/** Restores the ordinary deadline without changing consumed time. */
+			~ScopedTickSchedulingPreference() noexcept;
+
+			ScopedTickSchedulingPreference(const ScopedTickSchedulingPreference&) = delete;
+			ScopedTickSchedulingPreference& operator=(const ScopedTickSchedulingPreference&) = delete;
+
+		private:
+			SectionSchedulingCoordinator& coordinator_;
+		};
 		/** Advances the single existing sprite-acquisition path once for this coordinator call. */
 		void AdvanceSpriteAcquisitionOnce();
 
@@ -410,7 +437,7 @@ namespace Services::Map::Buildings::Scheduling
 		double FinalizeTickBudget(
 			std::chrono::steady_clock::time_point advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, bool budgetWasAlreadyExhausted
+			, bool cumulativeAllowanceAlreadyReached
 #endif
 			);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -571,6 +598,14 @@ namespace Services::Map::Buildings::Scheduling
 		DeferredWaitingSections deferredWaitingSections_;
 		std::uint64_t budgetTickSequence_ = 0;
 		double nominalTickBudgetMs_ = 0.0;
+		double interactiveTickBudgetMs_ = 0.0;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		/** Current call's nominal allowance for cumulative execution diagnostics, not a deadline. */
+		double diagnosticAllowanceMs_ = 0.0;
+#endif
+		std::chrono::steady_clock::time_point tickAnchor_{};
+		std::chrono::steady_clock::time_point ordinaryTickDeadline_{};
+		std::chrono::steady_clock::time_point interactiveTickDeadline_{};
 		std::chrono::steady_clock::time_point tickDeadline_{};
 		std::optional<std::chrono::steady_clock::time_point> lastGpuGeometryPublicationOpportunity_;
 		double consumedSchedulingMs_ = 0.0;

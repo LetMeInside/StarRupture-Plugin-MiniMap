@@ -268,7 +268,8 @@ namespace Services::Map::Buildings
         double xMapUnits,
         double yMapUnits,
         double widthMapUnits,
-        double heightMapUnits) noexcept
+        double heightMapUnits,
+        BuildingMapABISchedulingPreference schedulingPreference) noexcept
     {
         const auto result = CheckSession();
         if (result != BUILDING_MAP_ABI_OK)
@@ -276,10 +277,14 @@ namespace Services::Map::Buildings
         auto& state = GetState();
         if (viewport == 0 || viewport != state.ViewportHandle)
             return BUILDING_MAP_ABI_INVALID_HANDLE;
+        if (schedulingPreference != BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_DEFAULT &&
+            schedulingPreference != BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_INTERACTIVE)
+            return BUILDING_MAP_ABI_INVALID_ARGUMENT;
         try
         {
             return state.Viewport->Update(
-                xMapUnits, yMapUnits, widthMapUnits, heightMapUnits)
+                xMapUnits, yMapUnits, widthMapUnits, heightMapUnits,
+                schedulingPreference == BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_INTERACTIVE)
                 ? BUILDING_MAP_ABI_OK
                 : BUILDING_MAP_ABI_FAILED;
         }

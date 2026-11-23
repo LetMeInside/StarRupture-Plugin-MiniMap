@@ -76,6 +76,12 @@ namespace Services::Map::Buildings::Coordination
 		return nominalBudgetMs_;
 	}
 
+	/** Applies the interactive fraction and cap to the unchanged corrected estimate. */
+	double FrameBudgetController::InteractiveNominalBudgetMs() const noexcept
+	{
+		return (std::min)(15.0, 0.30 * smoothedCorrectedTickMs_);
+	}
+
 	/** Returns this controller owner's monotonically advancing notification count. */
 	std::uint64_t FrameBudgetController::TickSequence() const noexcept
 	{

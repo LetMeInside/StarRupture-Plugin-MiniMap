@@ -361,13 +361,19 @@ namespace Services::Map::Buildings::Scheduling
 	/** Advances acquisition first, then alternates Section and GPU work precedence under one deadline. */
 	void SectionSchedulingCoordinator::AdvanceWaitingSections(
 		::Services::Map::Buildings::BuildingMapService& buildingMapService,
-		const SectionPublicationBatch& publications)
+		const SectionPublicationBatch& publications,
+		bool interactiveScheduling)
 	{
 		const auto advancementStarted = std::chrono::steady_clock::now();
 		InitializeTickBudget(buildingMapService, advancementStarted);
+		[[maybe_unused]] const ScopedTickSchedulingPreference preferenceScope(*this, interactiveScheduling);
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		++diagnostics_.AdvancementCalls;
-		const bool budgetWasAlreadyExhausted = consumedSchedulingMs_ >= nominalTickBudgetMs_;
+		if (interactiveScheduling && interactiveTickBudgetMs_ > nominalTickBudgetMs_)
+		{
+			++diagnostics_.InteractiveAllowanceCalls;
+		}
+		const bool cumulativeAllowanceAlreadyReached = consumedSchedulingMs_ >= diagnosticAllowanceMs_;
 #endif
 		AdvanceSpriteAcquisitionOnce();
 		const auto now = std::chrono::steady_clock::now();
@@ -392,7 +398,7 @@ namespace Services::Map::Buildings::Scheduling
 		}
 		const double measuredSchedulingMs = FinalizeTickBudget(advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-			, budgetWasAlreadyExhausted
+			, cumulativeAllowanceAlreadyReached
 #endif
 			);
 		buildingMapService.frameBudgetController_.RecordSchedulingExecutionTime(measuredSchedulingMs);
@@ -411,11 +417,44 @@ namespace Services::Map::Buildings::Scheduling
 		budgetTickAvailable_ = true;
 		budgetTickSequence_ = tickSequence;
 		nominalTickBudgetMs_ = buildingMapService.frameBudgetController_.NominalBudgetMs();
+		interactiveTickBudgetMs_ = buildingMapService.frameBudgetController_.InteractiveNominalBudgetMs();
 		consumedSchedulingMs_ = 0.0;
-		tickDeadline_ = allowanceStarted +
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnosticAllowanceMs_ = nominalTickBudgetMs_;
+#endif
+		tickAnchor_ = allowanceStarted;
+		ordinaryTickDeadline_ = tickAnchor_ +
 			std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 				std::chrono::duration<double, std::milli>(nominalTickBudgetMs_));
+		interactiveTickDeadline_ = tickAnchor_ +
+			std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+				std::chrono::duration<double, std::milli>(interactiveTickBudgetMs_));
+		tickDeadline_ = ordinaryTickDeadline_;
 		PromoteEligibleSections();
+	}
+
+	/** Selects the call's deadline and diagnostics threshold without replenishing this tick. */
+	void SectionSchedulingCoordinator::ApplyTickSchedulingPreference(bool interactiveScheduling) noexcept
+	{
+		tickDeadline_ = interactiveScheduling ? interactiveTickDeadline_ : ordinaryTickDeadline_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		diagnosticAllowanceMs_ = interactiveScheduling ? interactiveTickBudgetMs_ : nominalTickBudgetMs_;
+#endif
+	}
+
+	/** Applies the requested effective deadline for one coordinator call. */
+	SectionSchedulingCoordinator::ScopedTickSchedulingPreference::ScopedTickSchedulingPreference(
+		SectionSchedulingCoordinator& coordinator,
+		bool interactiveScheduling) noexcept
+		: coordinator_(coordinator)
+	{
+		coordinator_.ApplyTickSchedulingPreference(interactiveScheduling);
+	}
+
+	/** Restores the default deadline on normal, early, and exceptional scope exit. */
+	SectionSchedulingCoordinator::ScopedTickSchedulingPreference::~ScopedTickSchedulingPreference() noexcept
+	{
+		coordinator_.ApplyTickSchedulingPreference(false);
 	}
 
 	/** Advances acquisition once per coordinator call while the shared tick deadline remains. */
@@ -543,36 +582,36 @@ namespace Services::Map::Buildings::Scheduling
 		return std::chrono::steady_clock::now() < tickDeadline_;
 	}
 
-	/** Commits one call's actual duration into shared per-tick consumption and records bounded Debug evidence. */
+	/** Records one call's actual duration and compares cumulative time with this call's allowance. */
 	double SectionSchedulingCoordinator::FinalizeTickBudget(
 		std::chrono::steady_clock::time_point advancementStarted
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		, bool budgetWasAlreadyExhausted
+		, bool cumulativeAllowanceAlreadyReached
 #endif
 		)
 	{
 		const double completedAdvancementMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - advancementStarted).count();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const double previousOverrunMs = consumedSchedulingMs_ > nominalTickBudgetMs_
-			? consumedSchedulingMs_ - nominalTickBudgetMs_
+		const double previousOverrunMs = consumedSchedulingMs_ > diagnosticAllowanceMs_
+			? consumedSchedulingMs_ - diagnosticAllowanceMs_
 			: 0.0;
 #endif
 		consumedSchedulingMs_ += completedAdvancementMs;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-		const double currentOverrunMs = consumedSchedulingMs_ > nominalTickBudgetMs_
-			? consumedSchedulingMs_ - nominalTickBudgetMs_
+		const double currentOverrunMs = consumedSchedulingMs_ > diagnosticAllowanceMs_
+			? consumedSchedulingMs_ - diagnosticAllowanceMs_
 			: 0.0;
-		if (!budgetWasAlreadyExhausted && consumedSchedulingMs_ >= nominalTickBudgetMs_)
+		if (!cumulativeAllowanceAlreadyReached && consumedSchedulingMs_ >= diagnosticAllowanceMs_)
 		{
-			++diagnostics_.BudgetExhaustionEvents;
+			++diagnostics_.CumulativeAllowanceCrossingEvents;
 		}
 		if (currentOverrunMs > previousOverrunMs)
 		{
-			++diagnostics_.BudgetOverrunEvents;
-			diagnostics_.BudgetOverrunTotalMs += currentOverrunMs - previousOverrunMs;
-			diagnostics_.MaximumBudgetOverrunMs = (std::max)(
-				diagnostics_.MaximumBudgetOverrunMs,
+			++diagnostics_.CumulativeExecutionOverrunEvents;
+			diagnostics_.CumulativeExecutionOverrunMs += currentOverrunMs - previousOverrunMs;
+			diagnostics_.MaximumCumulativeExecutionOverrunMs = (std::max)(
+				diagnostics_.MaximumCumulativeExecutionOverrunMs,
 				currentOverrunMs);
 		}
 		diagnostics_.CoordinatorAdvancement.Add(completedAdvancementMs);

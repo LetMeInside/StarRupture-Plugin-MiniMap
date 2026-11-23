@@ -188,7 +188,7 @@ namespace Services::Map::Buildings
 				MiniMap::Services::Logf(
 					*log,
 					MiniMap::Services::Level::Info,
-					"MiniMap: BuildingMap tick_budget intervalMs=%.1f ticks=%llu intervals={valid:%llu rejected:%llu meanMs:%.3f maxMs:%.3f} engineDeltaMeanSec=%.6f smoothedTickMs=%.3f observedTPS=%.2f tickCorrectionMs={raw:%.3f corrected:%.3f schedulingRemoved:%.3f correctedSmoothed:%.3f} nominalBudgetMs={mean:%.3f max:%.3f latest:%.3f} schedulingAdvancements={maxPerTick:%llu multipleTicks:%llu}",
+					"MiniMap: BuildingMap tick_budget intervalMs=%.1f ticks=%llu intervals={valid:%llu rejected:%llu meanMs:%.3f maxMs:%.3f} engineDeltaMeanSec=%.6f smoothedTickMs=%.3f observedTPS=%.2f tickCorrectionMs={raw:%.3f corrected:%.3f schedulingRemoved:%.3f correctedSmoothed:%.3f} ordinaryNominalBudgetMs={mean:%.3f max:%.3f latest:%.3f} schedulingAdvancements={maxPerTick:%llu multipleTicks:%llu}",
 					diagnostics.IntervalDurationMs,
 					static_cast<unsigned long long>(diagnostics.ProcessingTickCount),
 					static_cast<unsigned long long>(diagnostics.ValidObservedIntervalCount),
@@ -295,7 +295,9 @@ namespace Services::Map::Buildings
 	}
 
 	/** Observes acquisition content and supplies batched Section publications to one shared advancement. */
-	bool BuildingMapService::AdvanceViewportScheduling(std::uint64_t viewportHandle)
+	bool BuildingMapService::AdvanceViewportScheduling(
+		std::uint64_t viewportHandle,
+		bool interactiveScheduling)
 	{
 		const auto viewportEntry = viewportsByHandle_.find(viewportHandle);
 		if (viewportEntry == viewportsByHandle_.end())
@@ -332,7 +334,8 @@ namespace Services::Map::Buildings
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 			selection.Finish();
 #endif
-			sectionSchedulingCoordinator_->AdvanceWaitingSections(*this, pendingSectionPublications_);
+			sectionSchedulingCoordinator_->AdvanceWaitingSections(
+				*this, pendingSectionPublications_, interactiveScheduling);
 		}
 		if (spriteSourceManager_ != nullptr)
 		{
