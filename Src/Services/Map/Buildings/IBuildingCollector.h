@@ -31,10 +31,14 @@ namespace Services::Map::Buildings
 	public:
 		/** Supports destruction through the game-independent collector boundary. */
 		virtual ~IBuildingCollector() = default;
+		/** Releases implementation resources while required services remain available.
+		 * The owner must call this before destroying the collector.
+		 */
+		virtual void Shutdown() = 0;
 		/** Requests ordinary acquisition progress without supplying game-specific context.
 		 * The concrete collector chooses its acquisition frequency and internal policy.
 		 * This operation neither establishes nor terminates gameplay-session ownership;
-		 * native resource initialization and shutdown remain the concrete owner's responsibility.
+		 * native resource initialization remains the concrete owner's responsibility.
 		 */
 		virtual void Update() = 0;
 

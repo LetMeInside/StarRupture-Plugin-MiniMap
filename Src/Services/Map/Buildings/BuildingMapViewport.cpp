@@ -65,35 +65,30 @@ namespace Services::Map::Buildings
 		Close();
 	}
 
-	/** Reconciles this rectangle, advances its collector, and advances shared scheduling. */
+	/** Accepts the requested rectangle, acquires only for missing CPU images or GPU demand, and advances shared scheduling. */
 	bool BuildingMapViewport::Update(
 		double xMapUnits,
 		double yMapUnits,
 		double widthMapUnits,
-		double heightMapUnits)
+		double heightMapUnits,
+		bool interactiveScheduling)
 	{
 		if (service_ == nullptr || buildingCollector_ == nullptr)
 		{
 			return false;
 		}
 		const GridRange nextRange = CalculateGridRange(
-			xMapUnits,
-			yMapUnits,
-			widthMapUnits,
-			heightMapUnits,
-			service_->GetSectionSizeMapUnits());
+			xMapUnits, yMapUnits, widthMapUnits, heightMapUnits, service_->GetSectionSizeMapUnits());
+		const bool acquireBuildings = !service_->IsCpuViewportImageSatisfied(
+			*this, nextRange.firstX, nextRange.firstY, nextRange.endX, nextRange.endY);
 		const GridRange previousRange = gridRange_;
 		const bool schedulingGeometryChanged = xMapUnits != xMapUnits_ || yMapUnits != yMapUnits_ ||
 			widthMapUnits != widthMapUnits_ || heightMapUnits != heightMapUnits_;
-		if (nextRange.firstX != gridRange_.firstX || nextRange.firstY != gridRange_.firstY ||
+		if (acquireBuildings || nextRange.firstX != gridRange_.firstX || nextRange.firstY != gridRange_.firstY ||
 			nextRange.endX != gridRange_.endX || nextRange.endY != gridRange_.endY)
 		{
 			if (!service_->UpdateViewportGridRange(
-				viewportHandle_,
-				nextRange.firstX,
-				nextRange.firstY,
-				nextRange.endX,
-				nextRange.endY))
+				viewportHandle_, nextRange.firstX, nextRange.firstY, nextRange.endX, nextRange.endY, acquireBuildings))
 			{
 				return false;
 			}
@@ -106,12 +101,23 @@ namespace Services::Map::Buildings
 		if (schedulingGeometryChanged)
 		{
 			service_->UpdateViewportSchedulingPriority(
-				viewportHandle_,
-				previousRange.firstX,
-				previousRange.firstY,
-				previousRange.endX,
-				previousRange.endY);
+				viewportHandle_, previousRange.firstX, previousRange.firstY, previousRange.endX, previousRange.endY);
 		}
+		if (acquireBuildings)
+		{
+			AdvanceCollector();
+		}
+		if (!BM124D_RUN("AdvanceViewportScheduling",
+			service_->AdvanceViewportScheduling(viewportHandle_, interactiveScheduling)))
+		{
+			return false;
+		}
+		return true;
+	}
+
+	/** Advances the associated collector once through the existing diagnostic or ordinary path. */
+	void BuildingMapViewport::AdvanceCollector()
+	{
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 		{
 			BuildingMapPerformanceDiagnostics::Timer collector(&BuildingMapPerformanceDiagnostics::Game().CollectorUpdate);
@@ -120,11 +126,6 @@ namespace Services::Map::Buildings
 #else
 		BM124D_RUN("collector Update", buildingCollector_->Update());
 #endif
-		if (!BM124D_RUN("AdvanceViewportScheduling", service_->AdvanceViewportScheduling(viewportHandle_)))
-		{
-			return false;
-		}
-		return true;
 	}
 
 	/** Returns the current upper-left map X coordinate. */

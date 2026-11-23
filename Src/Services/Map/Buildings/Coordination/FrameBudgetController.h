@@ -61,6 +61,8 @@ namespace Services::Map::Buildings::Coordination
 		void RecordSchedulingExecutionTime(double executionMs) noexcept;
 		/** Returns the adaptive per-tick nominal allowance in milliseconds. */
 		double NominalBudgetMs() const noexcept;
+		/** Returns the interactive allowance from the same corrected smoothed tick estimate. */
+		double InteractiveNominalBudgetMs() const noexcept;
 		/** Returns the number of game-thread tick notifications observed by this owner. */
 		std::uint64_t TickSequence() const noexcept;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS

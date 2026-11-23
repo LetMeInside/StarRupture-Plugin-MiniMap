@@ -30,6 +30,7 @@ namespace Services::Map::Buildings
 	}
 
 	class BuildingMapSection;
+	class BuildingMapServiceABI;
 	class BuildingMapViewport;
 	class BuildingMapGpuViewport;
 	namespace Visuals
@@ -59,6 +60,9 @@ namespace Services::Map::Buildings
 	class BuildingMapService final
 	{
 	public:
+		/** Creates a collector for the configured Section size and returns base-interface ownership. */
+		using CollectorFactory = std::unique_ptr<IBuildingCollector> (*)(double sectionSizeMapUnits);
+
 		/** Creates a service whose settings define the shared grid and whose cache root contains its sprite files.
 		 * Throws std::invalid_argument unless section size and sprite capture density are finite and positive,
 		 * resolution is positive, and the MiniMap cache root is nonempty and absolute.
@@ -72,13 +76,15 @@ namespace Services::Map::Buildings
 		 * @param spriteCaptureDensityPixelsPerMapUnit Sprite capture pixels per map unit, independent of Section image resolution.
 		 * @param cacheRoot Absolute application-wide MiniMap/Cache directory.
 		 * @param splinePolicies Direct-indexed policies with reserved entry zero.
+		 * @param collectorFactory Plugin-supplied creator for game-specific collector implementations.
 		 */
 		BuildingMapService(
 			double sectionSizeMapUnits,
 			std::uint32_t sectionResolutionPixels,
 			double spriteCaptureDensityPixelsPerMapUnit,
 			std::filesystem::path cacheRoot,
-			std::span<const SplinePolicy> splinePolicies);
+			std::span<const SplinePolicy> splinePolicies,
+			CollectorFactory collectorFactory);
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
 		BuildingMapService(const BuildingMapService&) = delete;
 		/** Prevents copies from creating ambiguous ownership of sections and sessions. */
@@ -183,6 +189,7 @@ namespace Services::Map::Buildings
 			double heightMapUnits);
 
 	private:
+		friend class BuildingMapServiceABI;
 		friend class BuildingMapViewport;
 		friend class BuildingMapGpuViewport;
 		friend class Scheduling::SectionSchedulingCoordinator;
@@ -190,6 +197,8 @@ namespace Services::Map::Buildings
 		using SectionPublicationMap = std::map<
 			SectionCoordinate,
 			std::shared_ptr<const BuildingCandidatePublication>>;
+		/** Invokes the plugin-supplied factory with this service's configured Section size. */
+		std::unique_ptr<IBuildingCollector> CreateCollector() const;
 
 		/** Finds a service-owned section; columns increase rightward and rows downward. */
 		BuildingMapSection* FindSectionAt(std::int64_t gridX, std::int64_t gridY);
@@ -261,21 +270,23 @@ namespace Services::Map::Buildings
 		);
 
 		/**
-		 * Sends the exact map-space rectangle covered by a half-open Section grid range.
+		 * Validates and reconciles a half-open Section grid range, optionally submitting its exact rectangle.
 		 * No game-specific acquisition padding is added; the collector owns discovery policy.
 		 * @param viewportHandle Registered viewport whose collector receives the request.
 		 * @param firstGridX Inclusive first grid column.
 		 * @param firstGridY Inclusive first grid row.
 		 * @param endGridX Exclusive end grid column.
 		 * @param endGridY Exclusive end grid row.
-		 * @return True when the exact rectangle is representable and the collector accepts it.
+		 * @param acquireBuildings Whether to submit the rectangle to this viewport's collector.
+		 * @return True when validation, any required collector submission, and demand reconciliation succeed.
 		 */
 		bool UpdateViewportGridRange(
 			std::uint64_t viewportHandle,
 			std::int64_t firstGridX,
 			std::int64_t firstGridY,
 			std::int64_t endGridX,
-			std::int64_t endGridY);
+			std::int64_t endGridY,
+			bool acquireBuildings);
 		/** Refreshes priorities in a viewport's prior and current ranges after geometry changes.
 		 * @param viewportHandle Registered viewport whose accepted geometry changed.
 		 * @param previousFirstGridX Inclusive first prior Section column.
@@ -298,8 +309,11 @@ namespace Services::Map::Buildings
 			std::int64_t gridX,
 			std::int64_t gridY) const noexcept;
 
-		/** Observes one live viewport's acquisition hash and advances shared Section scheduling once. */
-		bool AdvanceViewportScheduling(std::uint64_t viewportHandle);
+		/** Observes one live viewport and forwards its call-scoped scheduling preference.
+		 * @param viewportHandle Registered viewport whose acquisition hash and demand are observed.
+		 * @param interactiveScheduling Whether this update temporarily selects the interactive allowance.
+		 */
+		bool AdvanceViewportScheduling(std::uint64_t viewportHandle, bool interactiveScheduling);
 		/** Queues a one-shot Section hash comparison after a collector policy change. */
 		void RequestViewportSectionHashRecheck(std::uint64_t viewportHandle);
 
@@ -316,6 +330,17 @@ namespace Services::Map::Buildings
 		/** Requests applicable sources in order and preserves equivalent pending publication owners. */
 		void AcquireSectionPublicationBatches(
 			const std::set<SectionCoordinate>& coordinates,
+			std::uint64_t recheckedViewportHandle,
+			bool clearRecheckWhenCovered);
+		/** Visits eligible viewport collectors in registration order, skipping fully satisfied CPU sources.
+		 * @param coordinates Section coordinates needing publications.
+		 * @param selectedCoordinates Accumulates cells supplied by the first valid source.
+		 * @param recheckedViewportHandle Viewport whose successful source recheck may complete.
+		 * @param clearRecheckWhenCovered Whether successful complete coverage clears that recheck.
+		 */
+		void AcquireSectionPublicationSources(
+			const std::set<SectionCoordinate>& coordinates,
+			std::set<SectionCoordinate>& selectedCoordinates,
 			std::uint64_t recheckedViewportHandle,
 			bool clearRecheckWhenCovered);
 		/** Acquires and validates one viewport's ordered Section publication batch. */
@@ -413,14 +438,37 @@ namespace Services::Map::Buildings
 		 */
 		bool IsSectionWithinAnyViewportResidencyRange(std::int64_t gridX, std::int64_t gridY) const;
 
-		/** Releases completed images outside all active viewport residency ranges without erasing Sections. */
+		/** Retires preparation outside residency and retains images only for registered CPU consumers. */
 		void ReconcileSectionImageResidency();
+		/** Checks registered CPU consumers, excluding a closing handle when supplied. */
+		bool HasCpuImageViewport(std::uint64_t excludedHandle = 0) const;
+		/** Returns whether an image-demanding viewport's target half-open range has every completed image.
+		 * Borrows existing Sections only; GPU overlap does not affect collector admission.
+		 * @param viewport Viewport whose immutable CPU-image demand is checked.
+		 * @param firstGridX Inclusive first target column.
+		 * @param firstGridY Inclusive first target row.
+		 * @param endGridX Exclusive target column end.
+		 * @param endGridY Exclusive target row end.
+		 */
+		bool IsCpuViewportImageSatisfied(
+			const BuildingMapViewport& viewport,
+			std::int64_t firstGridX,
+			std::int64_t firstGridY,
+			std::int64_t endGridX,
+			std::int64_t endGridY) const;
+		/** Tests stored image satisfaction without suppressing GPU source demand. */
+		bool IsCpuOnlySnapshotSatisfied(const SectionCoordinate& coordinate) const;
+		/** Removes obsolete CPU-only work; returns true for a retained snapshot. */
+		bool ReleaseCpuSnapshotWork(const SectionCoordinate& coordinate);
+		/** Releases Section image allocations and image-only continuations, preserving geometry. */
+		void ReleaseCpuImages();
 
 		const double sectionSizeMapUnits_;
 		const std::uint32_t sectionResolutionPixels_;
 		const double spriteCaptureDensityPixelsPerMapUnit_;
 		Coordination::FrameBudgetController frameBudgetController_;
 		const std::vector<SplinePolicy> splinePolicies_;
+		const CollectorFactory collectorFactory_;
 		double mapWidthMapUnits_ = 0.0;
 		double mapHeightMapUnits_ = 0.0;
 		std::map<std::pair<std::int64_t, std::int64_t>, std::unique_ptr<BuildingMapSection>> sections_;

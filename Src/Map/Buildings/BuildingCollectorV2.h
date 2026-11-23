@@ -37,6 +37,8 @@ namespace MiniMap::BuildingAcquisition
 
         /** Roots per-instance acquisition metadata on the game thread; retries missing metadata. */
         bool InitializeResources();
+        /** Releases native resources through the game-independent collector lifecycle. */
+        void Shutdown() override;
         /** Accepts an exact finite positive request without excluding any entity; false leaves it unchanged. */
         bool SetAcquisitionRegion(const BuildingAcquiredFacts::Region& region) noexcept;
         /** Sets the policy applied when requested Section publications are constructed.

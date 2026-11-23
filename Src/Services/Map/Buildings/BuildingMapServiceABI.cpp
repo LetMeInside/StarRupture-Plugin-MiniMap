@@ -3,7 +3,6 @@
 #include "BuildingMapServiceABI.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
-#include "Map/Buildings/BuildingCollectorV2.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
@@ -86,9 +85,7 @@ namespace Services::Map::Buildings
         }
         if (state.Collector != nullptr)
         {
-            // Only CreateCollector constructs this provider-local implementation.
-            auto& collector = static_cast<::MiniMap::BuildingAcquisition::BuildingCollectorV2&>(*state.Collector);
-            collector.ShutdownResources();
+            state.Collector->Shutdown();
             state.Collector.reset();
         }
     }
@@ -200,11 +197,9 @@ namespace Services::Map::Buildings
             return BUILDING_MAP_ABI_FAILED;
         try
         {
-            state.Collector = std::make_unique<::MiniMap::BuildingAcquisition::BuildingCollectorV2>(state.Service->GetSectionSizeMapUnits());
-            auto& collector = static_cast<::MiniMap::BuildingAcquisition::BuildingCollectorV2&>(*state.Collector);
-            if (!collector.InitializeResources())
+            state.Collector = state.Service->CreateCollector();
+            if (state.Collector == nullptr)
             {
-                ReleaseResources();
                 return BUILDING_MAP_ABI_UNAVAILABLE;
             }
             state.CollectorHandle = state.NextHandle++;
@@ -273,7 +268,8 @@ namespace Services::Map::Buildings
         double xMapUnits,
         double yMapUnits,
         double widthMapUnits,
-        double heightMapUnits) noexcept
+        double heightMapUnits,
+        BuildingMapABISchedulingPreference schedulingPreference) noexcept
     {
         const auto result = CheckSession();
         if (result != BUILDING_MAP_ABI_OK)
@@ -281,10 +277,14 @@ namespace Services::Map::Buildings
         auto& state = GetState();
         if (viewport == 0 || viewport != state.ViewportHandle)
             return BUILDING_MAP_ABI_INVALID_HANDLE;
+        if (schedulingPreference != BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_DEFAULT &&
+            schedulingPreference != BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_INTERACTIVE)
+            return BUILDING_MAP_ABI_INVALID_ARGUMENT;
         try
         {
             return state.Viewport->Update(
-                xMapUnits, yMapUnits, widthMapUnits, heightMapUnits)
+                xMapUnits, yMapUnits, widthMapUnits, heightMapUnits,
+                schedulingPreference == BUILDING_MAP_ABI_SCHEDULING_PREFERENCE_INTERACTIVE)
                 ? BUILDING_MAP_ABI_OK
                 : BUILDING_MAP_ABI_FAILED;
         }

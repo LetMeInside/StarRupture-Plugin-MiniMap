@@ -1,6 +1,8 @@
 // Owns Building Map acquisition and advances resumable rendering state held by each Section.
 #pragma once
 
+#include "DiagnosticExports.h"
+
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "BuildingScheduler.h"
 #endif
@@ -349,6 +351,9 @@ namespace Services::Map::Buildings::Scheduling
 
 	private:
 		friend class SectionSchedulingCoordinator;
+		/** Releases numerical image state in the supplied Section without resetting geometry or sources. */
+		void ReleaseSectionImageContinuation(
+			::Services::Map::Buildings::BuildingMapSection& section) noexcept;
 		struct SectionJob;
 		struct RetainedSectionScene;
 		/** Carries the coordinator's current allowance and initial-sprite stopping boundary. */
@@ -820,9 +825,10 @@ namespace Services::Map::Buildings::Scheduling
 		bool IsCompletedRenderComplete(
 			SectionImageCommitResult& commitResult) const;
 
-		/** Encodes borrowed completed pixels and overwrites the coordinate-named PNG. */
+		/** Exports one adopted completed image under a content-identified diagnostic name. */
 		void ExportCompletedSectionImage(
 			const ::Services::Map::Buildings::BuildingMapSection& section,
+			std::uint64_t sourceContentHash,
 			std::span<const std::uint8_t> rgba8Bytes) const noexcept;
 
 		/** Completes an empty Section after validated pre-render or post-render evidence.

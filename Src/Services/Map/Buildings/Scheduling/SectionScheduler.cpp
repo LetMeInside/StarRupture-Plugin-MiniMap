@@ -179,9 +179,11 @@ namespace Services::Map::Buildings::Scheduling
 		return true;
 	}
 
-	/** Exports one finalized image without changing its owner or pixel allocation. */
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+	/** Exports one adopted image once for its Section and source-content identity. */
 	void SectionScheduler::ExportCompletedSectionImage(
 		const ::Services::Map::Buildings::BuildingMapSection& section,
+		std::uint64_t sourceContentHash,
 		std::span<const std::uint8_t> rgba8Bytes) const noexcept
 	{
 		const std::int64_t gridX = section.GetGridX();
@@ -189,6 +191,13 @@ namespace Services::Map::Buildings::Scheduling
 		try
 		{
 			std::filesystem::create_directories(diagnosticsDirectory_);
+			const std::string fileName = "Section_" + std::to_string(gridX) + "_" +
+				std::to_string(gridY) + "_" + std::to_string(sourceContentHash) + ".png";
+			const std::filesystem::path outputPath = diagnosticsDirectory_ / fileName;
+			if (std::filesystem::exists(outputPath))
+			{
+				return;
+			}
 			std::vector<std::uint8_t> pngBytes;
 			const auto encoded = Cache::SpritePngCodec::Encode(
 				rgba8Bytes,
@@ -199,10 +208,8 @@ namespace Services::Map::Buildings::Scheduling
 			{
 				throw std::runtime_error("PNG encoding failed");
 			}
-			const std::string fileName = "Section_" + std::to_string(gridX) + "_" +
-				std::to_string(gridY) + ".png";
 			std::ofstream output(
-				diagnosticsDirectory_ / fileName,
+				outputPath,
 				std::ios::binary | std::ios::trunc);
 			output.write(
 				reinterpret_cast<const char*>(pngBytes.data()),
@@ -239,6 +246,7 @@ namespace Services::Map::Buildings::Scheduling
 			}
 		}
 	}
+#endif
 
 	/** Retains one complete source-composed scene and builds stable render spans after ownership settles. */
 	SectionScheduler::SectionScenePreparationResult::Readiness
@@ -1243,6 +1251,23 @@ namespace Services::Map::Buildings::Scheduling
 			(!progress.Initialized || progress.NextOccurrenceIndex < progress.InitialSpriteCount);
 	}
 
+	/** Destroys image-only continuation allocations and evidence while preserving geometry progress. */
+	void SectionScheduler::ReleaseSectionImageContinuation(
+		::Services::Map::Buildings::BuildingMapSection& section) noexcept
+	{
+		if (section.renderingState_ == nullptr)
+		{
+			return;
+		}
+		auto& job = *static_cast<SectionJob*>(section.renderingState_.get());
+		job.NumericalOperation.reset();
+		std::vector<std::uint8_t>().swap(job.CompletedImage);
+		job.CompletedImageReady = false;
+		job.CompletedImageTransparent = false;
+		job.TerminalSplineOmissions = {};
+		job.AttemptEvidence.reset();
+	}
+
 	/** Releases operation state before the prepared scene while retaining its publication owner. */
 	void SectionScheduler::ResetSectionJobProgress(
 		SectionJob& job,
@@ -1710,6 +1735,16 @@ namespace Services::Map::Buildings::Scheduling
 		evidence.Timing.ImageAdoptionMs +=
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - adoptionStarted).count();
 #endif
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+		BuildingMapSection::CompletedImageView completedImage;
+		if (section.TryBorrowCompletedImage(completedImage))
+		{
+			ExportCompletedSectionImage(
+				section,
+				job.publicationOwner->ContentHash(),
+				completedImage.Rgba8Bytes);
+		}
+#endif
 		++result.WorkUnitsConsumed;
 		evidence.TerminalSplineOmissions = job.TerminalSplineOmissions;
 		evidence.CommitStatus = SectionImageCommitResult::Status::Committed;
@@ -1741,9 +1776,6 @@ namespace Services::Map::Buildings::Scheduling
 				return false;
 			}
 			job.CompletedImageReady = true;
-			ExportCompletedSectionImage(
-				section,
-				std::span<const std::uint8_t>(job.CompletedImage));
 		}
 		if (job.CompletedImageTransparent)
 		{

@@ -120,7 +120,7 @@ namespace MiniMapUI
 		{
 			return false;
 		}
-		if (!viewport->Update(xMapUnits, yMapUnits, widthMapUnits, heightMapUnits))
+		if (!viewport->Update(xMapUnits, yMapUnits, widthMapUnits, heightMapUnits, false))
 		{
 			return false;
 		}
