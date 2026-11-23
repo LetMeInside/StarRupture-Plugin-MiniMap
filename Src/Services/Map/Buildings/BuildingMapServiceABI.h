@@ -69,14 +69,27 @@ typedef struct BuildingMapABISectionImage
  * their declared sizes. No function calls consumer code, retains a caller pointer,
  * advances work implicitly, or permits C++ exceptions across the boundary.
  *
- * Poll QueryState, then every visible local cell with CopySectionImage. Compare global
- * coordinates, availability, dimensions and copied bytes against the previously presented
- * content for exact presentation-change detection. Pointer equality and hashes are not
- * publication identities. Poll all current cells after open/update/range changes; remove
- * departed coordinates. There is no pending/empty/failure classification or latest-source
- * guarantee: only the completed image currently stored by the existing service is exposed.
- * No atomic multi-call snapshot is promised; each copy returns its current metadata/bytes.
- * Equal pixels need no presentation refresh even if storage was replaced. Intermediate
+ * Poll QueryState, then every visible local cell with CopySectionImage on every successful
+ * update. During a valid CPU viewport lifetime, once a global Section coordinate has a
+ * completed CPU image, its pixels, dimensions, row stride, byte count, world bounds and
+ * coordinate identity remain unchanged. The completed image cannot be replaced or removed
+ * during that lifetime, remains retained when it leaves the visible range, and is exposed
+ * unchanged if the coordinate returns. Previously absent images may complete later.
+ * NO_IMAGE means only that no completed image is currently available; it does not distinguish
+ * pending, transparent or otherwise unavailable content. This is not a guarantee that an
+ * image reflects later game-world changes. Closing or invalidating the viewport, ending the
+ * gameplay session, or shutting down the service ends the guarantee. Reopening starts a new
+ * identity scope even if provider storage survives. Images are synchronously copied into
+ * caller-owned buffers; no provider-owned pointer is exposed.
+ *
+ * Consumers must continue observing availability and metadata for every visible cell.
+ * After an image has been copied and retained within the same valid viewport lifetime,
+ * matching global coordinates and complete image metadata guarantee unchanged pixels, so a
+ * consumer may omit later pixel copies for that retained image. New or unretained images
+ * still require copying. This guarantee covers completed CPU image storage only; it does not
+ * constrain GPU scene preparation, texture publication or atlas resources. Pointer equality
+ * and hashes are not publication identities. There is no pending/empty/failure classification
+ * or latest-source guarantee. No atomic multi-call snapshot is promised. Intermediate
  * transitions between polls are not an event history and cannot be reconstructed.
  *
  * The provider uses restart-only reload policy. Consumers must stop calls before module

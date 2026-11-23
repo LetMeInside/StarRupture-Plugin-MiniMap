@@ -77,6 +77,14 @@ The sprite manager packs processed CPU payloads into a persistent RGBA atlas wit
 
 Capture/readback uses separate UObject, RHI, readback-job and fence ownership. Cancellation, copied pixels, scene retirement and private-world cleanup are separate transitions. UI texture leases and CPU publication generations cannot replace native retirement fences. See [Texture Publication](../ModLoader/Texture-Publication.md).
 
+## CPU viewport image lifetime
+
+The Building Map ABI copies completed CPU Section images into caller-owned buffers. For a valid CPU viewport lifetime, a completed image's pixels, dimensions, row stride, byte count, world bounds and global Section coordinate remain unchanged. The service retains completed images when their Sections leave the visible range, so returning to a completed coordinate exposes the same image. Sections that have no completed image may become available on a later poll; `NO_IMAGE` does not classify whether content is pending, transparent or otherwise unavailable.
+
+The service releases completed CPU images when the last CPU image viewport closes. Closing another CPU viewport or changing the visible range does not remove them while a CPU image viewport remains active. Gameplay-session termination, viewport invalidation and service shutdown end the image guarantee. Reopening a viewport starts a new consumer identity scope, regardless of whether provider storage happens to survive.
+
+This immutability applies only to completed CPU Section image storage. It does not constrain later game-world freshness, GPU scene preparation, texture publication or atlas resources; those retain their independent update and lifetime rules.
+
 ## Threading and failure contracts
 
 Service, viewport mutation, collector, sprite-manager and scheduling operations are serialized on the game thread. These objects do not provide a general concurrent mutation API. Render-thread Draw uses atomic immutable snapshot publication; `BuildingLayer` also takes a short mutex to acquire its shared viewport owner. This permits local snapshot borrowing, not concurrent mutation of the service.
