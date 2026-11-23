@@ -3048,10 +3048,10 @@ namespace MiniMap::BuildingAcquisition
             std::int64_t Y = 0;
         };
 
-        /** Stores requested Sections by row so sparse batches avoid scanning absent cells. */
+        /** Stores unique requested Section indices by row for sparse spatial matching. */
         struct RequestedSectionLookup
         {
-            std::map<std::int64_t, std::map<std::int64_t, std::vector<std::size_t>>> SectionsByRow;
+            std::map<std::int64_t, std::map<std::int64_t, std::size_t>> SectionsByRow;
             double SectionSize = 0.0;
             double MinimumX = 0.0;
             double MinimumY = 0.0;
@@ -3154,10 +3154,8 @@ namespace MiniMap::BuildingAcquisition
                 sectionBottom <= CommittedCoverage.Y + CommittedCoverage.Height;
         }
 
-        /** Validates common square size, acquisition containment and exact grid alignment. */
-        void BuildRequestedSectionLookup(
-            std::span<const CollectionRegion> sectionRegions,
-            RequestedSectionLookup& lookup) const
+        /** Validates every original request without allocating a spatial lookup. */
+        void ValidateRequestedSectionRegions(std::span<const CollectionRegion> sectionRegions) const
         {
             if (sectionRegions.empty())
             {
@@ -3167,12 +3165,41 @@ namespace MiniMap::BuildingAcquisition
             {
                 throw std::invalid_argument("Section request contains an invalid rectangle.");
             }
-            lookup.SectionSize = SectionSizeMapUnits;
-            if (sectionRegions.front().widthMapUnits != lookup.SectionSize ||
-                sectionRegions.front().heightMapUnits != lookup.SectionSize)
+            if (sectionRegions.front().widthMapUnits != SectionSizeMapUnits ||
+                sectionRegions.front().heightMapUnits != SectionSizeMapUnits)
             {
                 throw std::invalid_argument("Section requests must be square grid cells.");
             }
+            for (std::size_t index = 0; index < sectionRegions.size(); ++index)
+            {
+                const CollectionRegion& region = sectionRegions[index];
+                if (!IsValidSectionRegion(region) ||
+                    region.widthMapUnits != SectionSizeMapUnits ||
+                    region.heightMapUnits != SectionSizeMapUnits ||
+                    !IsSectionInsideAcquisition(region))
+                {
+                    throw std::invalid_argument(
+                        "Section batch has incompatible rectangles or exceeds acquired coverage.");
+                }
+                SectionCellCoordinate coordinate;
+                if (!TryGetSectionGridIndex(region.xMapUnits, SectionSizeMapUnits, coordinate.X) ||
+                    !TryGetSectionGridIndex(region.yMapUnits, SectionSizeMapUnits, coordinate.Y))
+                {
+                    throw std::invalid_argument("Section rectangle is not aligned to the service grid.");
+                }
+            }
+        }
+
+        /** Builds sparse row lookup leaves for an already unique batch of Sections. */
+        void BuildRequestedSectionLookup(
+            std::span<const CollectionRegion> sectionRegions,
+            RequestedSectionLookup& lookup) const
+        {
+            if (sectionRegions.empty())
+            {
+                return;
+            }
+            lookup.SectionSize = SectionSizeMapUnits;
             for (std::size_t index = 0; index < sectionRegions.size(); ++index)
             {
                 const CollectionRegion& region = sectionRegions[index];
@@ -3190,7 +3217,7 @@ namespace MiniMap::BuildingAcquisition
                 {
                     throw std::invalid_argument("Section rectangle is not aligned to the service grid.");
                 }
-                lookup.SectionsByRow[coordinate.Y][coordinate.X].push_back(index);
+                lookup.SectionsByRow[coordinate.Y][coordinate.X] = index;
                 UpdateRequestedSectionBounds(region, coordinate, lookup);
             }
         }
@@ -3363,13 +3390,11 @@ namespace MiniMap::BuildingAcquisition
                 auto section = row->second.lower_bound(range.FirstX);
                 while (section != row->second.end() && section->first <= range.LastX)
                 {
-                    for (std::size_t sectionIndex : section->second)
+                    const std::size_t sectionIndex = section->second;
+                    if (IsContributorForSection(sectionBounds[sectionIndex],
+                        occurrence.xMapUnits, occurrence.yMapUnits, building.ResolvedReach))
                     {
-                        if (IsContributorForSection(sectionBounds[sectionIndex],
-                            occurrence.xMapUnits, occurrence.yMapUnits, building.ResolvedReach))
-                        {
-                            matchingSections.push_back(sectionIndex);
-                        }
+                        matchingSections.push_back(sectionIndex);
                     }
                     ++section;
                 }
@@ -3425,6 +3450,7 @@ namespace MiniMap::BuildingAcquisition
         {
             std::vector<std::shared_ptr<const CandidatePublication>> publications;
             publications.reserve(sectionRegions.size());
+            std::vector<std::size_t> contributorOrder;
             for (std::size_t sectionIndex = 0; sectionIndex < sectionRegions.size(); ++sectionIndex)
             {
                 auto& contributors = contributorsBySection[sectionIndex];
@@ -3432,7 +3458,7 @@ namespace MiniMap::BuildingAcquisition
                 metrics.FinalOccurrences += contributors.size();
                 const auto indexSortStarted = Clock::now();
 #endif
-                std::vector<std::size_t> contributorOrder;
+                contributorOrder.clear();
                 contributorOrder.reserve(contributors.size());
                 for (std::size_t contributorIndex = 0; contributorIndex < contributors.size(); ++contributorIndex)
                 {
@@ -3487,8 +3513,7 @@ namespace MiniMap::BuildingAcquisition
                 throw ::Services::Map::Buildings::SectionPublicationUnavailable(
                     "No successful committed regional acquisition is available.");
             }
-            RequestedSectionLookup lookup;
-            BuildRequestedSectionLookup(sectionRegions, lookup);
+            ValidateRequestedSectionRegions(sectionRegions);
             std::map<PublicationKey, CollectionRegion> uniqueRegions;
             for (const CollectionRegion& region : sectionRegions)
             {
