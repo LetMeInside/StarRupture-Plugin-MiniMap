@@ -214,6 +214,11 @@
     <ClInclude Include="Native\TextureAccess.h" />
     <ClInclude Include="Map\Terrain\TerrainChunks.h" />
     <ClInclude Include="Map\Terrain\TerrainDiagnostics.h" />
+    <ClInclude Include="Map\Terrain\TerrainChunkAcquisition.h" />
+    <ClInclude Include="Map\Terrain\TerrainReconciliation.h" />
+    <ClInclude Include="Map\Terrain\TerrainReconciliationState.h" />
+    <ClInclude Include="Map\Terrain\RegisteredTerrainImage.h" />
+    <ClInclude Include="Map\Terrain\RegisteredTerrainSource.h" />
     <ClInclude Include="Map\Terrain\TerrainSource.h" />
     <ClInclude Include="Map\Terrain\TerrainCache.h" />
     <ClInclude Include="resource.h" />
@@ -307,9 +312,13 @@
     <ClCompile Include="Native\TexturePublication.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainReconciliation.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
     <ClCompile Include="Map\Terrain\TerrainChunks.cpp" />
     <ClCompile Include="Map\Terrain\TerrainDiagnostics.cpp" />
+    <ClCompile Include="ForgottenEngineDiagnostics.cpp" />
+    <ClCompile Include="Map\Terrain\TerrainChunkAcquisition.cpp" />
+    <ClCompile Include="Map\Terrain\RegisteredTerrainSource.cpp" />
     <ClCompile Include="Map\Terrain\TerrainSource.cpp" />
     <ClCompile Include="Map\Terrain\TerrainCache.cpp" />
     <ClCompile Include="UI\MapOverlays.cpp" />
@@ -323,6 +332,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="MiniMap.props" />
+    <None Include="Resources\ForgottenEngine\FloorCandidate_5074.png" />
+    <None Include="Resources\ForgottenEngine\FloorCandidate_6274.png" />
+    <None Include="Resources\ForgottenEngine\FloorCandidate_7474.png" />
   </ItemGroup>
   <Target Name="GenerateUnrealReadbackCompatibility" BeforeTargets="ClCompile" Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">
     <Error Condition="!Exists('$(MiniMapUnrealEngineRoot)Engine\Build\Build.version')" Text="MiniMapUnrealEngineRoot must identify a UE 5.6.1 source tree before client compilation." />

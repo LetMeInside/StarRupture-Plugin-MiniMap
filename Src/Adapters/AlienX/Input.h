@@ -10,7 +10,7 @@ namespace MiniMap::Adapters::AlienX
 {
     class Input final : public Services::IInput
     {
-        enum class Kind { Toggle, ZoomIn, ZoomOut, Diagnostic, Wheel };
+        enum class Kind { Toggle, ZoomIn, ZoomOut, Diagnostic, ForgottenEngineDiagnostic, Wheel };
         struct Entry
         {
             Services::Registration Token;
@@ -24,9 +24,9 @@ namespace MiniMap::Adapters::AlienX
             Services::RegistryRemoval Registry = Services::RegistryRemoval::NotRequested;
             Services::Error RemovalError = Services::Error::None;
         };
-        // These are the four actual key consumers, each with a distinct native
+        // These are the five actual key consumers, each with a distinct native
         // callback identity. Wheel userdata can identify its own stable record.
-        std::array<Entry*, 4> Keys{};
+        std::array<Entry*, 5> Keys{};
         Entry* Wheel = nullptr;
         std::list<Entry> Entries; // Closed records survive host callback snapshots.
         std::uint64_t NextToken = 1;
@@ -44,6 +44,8 @@ namespace MiniMap::Adapters::AlienX
             Services::ActionFn, void* user) override;
         Services::RegistrationReceipt<Services::Registration> BindDiagnostic(std::string_view,
             Services::ActionFn, void* user) override;
+        Services::RegistrationReceipt<Services::Registration> BindForgottenEngineDiagnostic(
+            std::string_view, Services::ActionFn, void* user);
         Services::RegistrationReceipt<Services::Registration> OnWheel(Services::WheelFn, void* user) override;
         Services::Removal Remove(Services::Registration) override;
     };

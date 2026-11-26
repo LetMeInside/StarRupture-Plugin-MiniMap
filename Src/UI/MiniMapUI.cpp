@@ -210,7 +210,12 @@ namespace
 
             MiniMapOverlays::Render(
                 ui,
-                transform, settings.ShowCoordinates, settings.CoordsInUEUnits, settings.ShowCompass, settings.Fog);
+                transform, false, settings.CoordsInUEUnits, settings.ShowCompass, settings.Fog);
+        }
+
+        if (settings.ShowCoordinates)
+        {
+            MiniMapOverlays::RenderCoordinates(ui, transform, settings.CoordsInUEUnits);
         }
 
         ui.Rect(drawList, {windowX, windowY}, {windowX + windowWidth, windowY + windowHeight}, borderColor, rounding, 1.0f);

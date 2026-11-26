@@ -37,6 +37,7 @@ namespace MiniMap::Adapters::AlienX
         case Kind::ZoomIn: return &KeyThunk<1>;
         case Kind::ZoomOut: return &KeyThunk<2>;
         case Kind::Diagnostic: return &KeyThunk<3>;
+        case Kind::ForgottenEngineDiagnostic: return &KeyThunk<4>;
         default: return nullptr;
         }
     }
@@ -54,6 +55,11 @@ namespace MiniMap::Adapters::AlienX
     S::RegistrationReceipt<S::Registration> Input::BindDiagnostic(std::string_view combo, S::ActionFn action, void* user)
     {
         return BindKey(Kind::Diagnostic, combo, action, user);
+    }
+    S::RegistrationReceipt<S::Registration> Input::BindForgottenEngineDiagnostic(
+        std::string_view combo, S::ActionFn action, void* user)
+    {
+        return BindKey(Kind::ForgottenEngineDiagnostic, combo, action, user);
     }
 
     S::RegistrationReceipt<S::Registration> Input::BindKey(Kind kind, std::string_view combo, S::ActionFn action, void* user)

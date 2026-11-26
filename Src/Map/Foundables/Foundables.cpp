@@ -11,6 +11,7 @@
 #include "Map/Map.h"
 #include "Map/MarkerIconSizing.h"
 #include "Map/RuntimeFieldAccess.h"
+#include "Map/Terrain/RegisteredTerrainSource.h"
 
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
@@ -226,6 +227,7 @@ namespace
         uint8_t Type = 0;
         double WorldX = 0.0;
         double WorldY = 0.0;
+        double WorldZ = 0.0;
         MiniMap::Services::Texture Icon{};
     };
 
@@ -274,6 +276,7 @@ namespace
     {
         double WorldX = 0.0;
         double WorldY = 0.0;
+        double WorldZ = 0.0;
         ContainerContents Classification = ContainerContents::Empty;
     };
     std::vector<ContainerDotRecord> g_massContainerDots;
@@ -875,7 +878,8 @@ namespace
     bool ReadWorldPosition(
         const void* transformFragment,
         double& worldX,
-        double& worldY)
+        double& worldY,
+        double& worldZ)
     {
         if (transformFragment == nullptr)
         {
@@ -898,6 +902,7 @@ namespace
 
         const auto* x = Field<decltype(SDK::FVector::X)>(translation, g_vectorXOffset);
         const auto* y = Field<decltype(SDK::FVector::Y)>(translation, g_vectorYOffset);
+        const auto* z = Field<decltype(SDK::FVector::Z)>(translation, g_vectorZOffset);
         if (x == nullptr || y == nullptr)
         {
             return false;
@@ -905,6 +910,7 @@ namespace
 
         worldX = *x;
         worldY = *y;
+        worldZ = z != nullptr ? *z : std::numeric_limits<double>::quiet_NaN();
 
         return true;
     }
@@ -1340,7 +1346,9 @@ namespace
                         : Field<SDK::FGuid>(actor, g_datapadGuidOffset)));
                     if (guid != currentGuid) continue;
                     Candidate candidate{{*Field<decltype(SDK::FVector::X)>(&location, g_vectorXOffset),
-                        *Field<decltype(SDK::FVector::Y)>(&location, g_vectorYOffset), ContainerContents::Ordinary}};
+                        *Field<decltype(SDK::FVector::Y)>(&location, g_vectorYOffset),
+                        *Field<decltype(SDK::FVector::Z)>(&location, g_vectorZOffset),
+                        ContainerContents::Ordinary}};
                     const auto inserted = candidates.emplace(guid, candidate);
                     // Conflicting actor ownership of one story is UNKNOWN, not a guessed position.
                     if (!inserted.second) inserted.first->second.Ambiguous = true;
@@ -1435,7 +1443,8 @@ namespace
             const void* transform = native->mass.getFragmentDataPtr(g_massManager, id, transformStruct);
             double worldX = 0.0;
             double worldY = 0.0;
-            if (!ReadWorldPosition(transform, worldX, worldY)) continue;
+            double worldZ = std::numeric_limits<double>::quiet_NaN();
+            if (!ReadWorldPosition(transform, worldX, worldY, worldZ)) continue;
 
             if (foundableType == kUndefinedType)
             {
@@ -1444,7 +1453,7 @@ namespace
                     const ContainerContents contents = ClassifyContainerContents(*inventory);
                     if (contents != ContainerContents::Empty)
                     {
-                        nextContainerDots.push_back({worldX, worldY, contents});
+                        nextContainerDots.push_back({worldX, worldY, worldZ, contents});
                     }
                 }
                 continue;
@@ -1465,6 +1474,7 @@ namespace
             record.Type = foundableType;
             record.WorldX = worldX;
             record.WorldY = worldY;
+            record.WorldZ = worldZ;
             record.Icon = typeState->Icon;
             nextRecords.push_back(record);
         }
@@ -1723,6 +1733,11 @@ namespace MiniMapFoundables
 
         std::vector<FoundableRecord> records;
         std::vector<ContainerDotRecord> containerDots;
+        const bool filterForgottenEngine = transform.InForgottenEngine;
+        const int selectedFloor = filterForgottenEngine
+            ? MiniMapTerrainSource::RegisteredTerrainSource::SelectedForgottenEngineFloor()
+            : -1;
+        if (filterForgottenEngine && selectedFloor < 0) return;
 
         {
             std::scoped_lock lock(g_snapshotMutex);
@@ -1751,6 +1766,9 @@ namespace MiniMapFoundables
         // Submit the existing icon snapshot first; container dots follow below.
         for (const FoundableRecord& record : records)
         {
+            if (filterForgottenEngine &&
+                MiniMapTerrainSource::RegisteredTerrainSource::ClassifyForgottenEngineFloor(
+                    record.WorldZ) != selectedFloor) continue;
             if (record.Icon.id == 0)
             {
                 continue;
@@ -1789,6 +1807,9 @@ namespace MiniMapFoundables
         {
             for (const ContainerDotRecord& dot : containerDots)
             {
+                if (filterForgottenEngine &&
+                    MiniMapTerrainSource::RegisteredTerrainSource::ClassifyForgottenEngineFloor(
+                        dot.WorldZ) != selectedFloor) continue;
                 if (dot.Classification != contents)
                 {
                     continue;

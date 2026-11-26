@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include "RegisteredTerrainImage.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -37,8 +38,11 @@ namespace MiniMapTerrainSource
     };
 
 
+    /** Resolution result shares immutable registered pixels and borrows native Texture only synchronously. */
     struct SourceTile
     {
+        // CPU storage is shared with the immutable image owner; native textures remain synchronous borrows.
+        std::optional<RegisteredTerrainImage> RegisteredImage;
         int GridX = 0;
         int GridY = 0;
 

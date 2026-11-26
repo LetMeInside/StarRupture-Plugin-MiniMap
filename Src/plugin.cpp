@@ -3,6 +3,7 @@
 #include "plugin.h"
 #include "plugin_helpers.h"
 #include "DiagnosticExports.h"
+#include "ForgottenEngineDiagnostics.h"
 #include "Config/Config.h"
 #include "Services/Runtime.h"
 #include "Services/RuntimeEvents.h"
@@ -1367,10 +1368,15 @@ namespace MiniMap
 #endif
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        if (!MiniMapTerrain::RegisterDiagnostics(pluginSelf))
+        const bool terrainDiagnosticsReady = MiniMapTerrain::RegisterDiagnostics(pluginSelf);
+        if (!terrainDiagnosticsReady)
         {
             LOG_ERROR(
                 "MiniMap: failed to register terrain diagnostics");
+        }
+        else if (!MiniMapForgottenEngineDiagnostics::RegisterDiagnostics(pluginSelf))
+        {
+            LOG_ERROR("MiniMap: failed to register Forgotten Engine coordinate diagnostics");
         }
 #endif
 
@@ -1468,6 +1474,7 @@ namespace MiniMap
         RemoveEventRegistration(g_afterEnd);
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        MiniMapForgottenEngineDiagnostics::UnregisterDiagnostics();
         MiniMapTerrain::UnregisterDiagnostics();
 #endif
         MiniMapAlienActors::Shutdown();

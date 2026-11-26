@@ -18,6 +18,12 @@ namespace MiniMapOverlays
         MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform, bool showCoordinates, bool coordsInUEUnits, bool showCompass,
         const MiniMapConfig::FogOfWarSettings& fog);
+
+    /** Draws the player's current coordinates without requiring the terrain or other overlays. */
+    void RenderCoordinates(
+        MiniMap::Services::ICanvas& ui,
+        const MiniMapMap::Transform& transform,
+        bool coordsInUEUnits);
 }
 
 #endif

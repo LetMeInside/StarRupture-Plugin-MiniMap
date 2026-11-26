@@ -391,6 +391,16 @@ namespace MiniMapOverlays
             drawList,
             transform, coordsInUEUnits);
     }
+
+    void RenderCoordinates(
+        MiniMap::Services::ICanvas& ui,
+        const MiniMapMap::Transform& transform,
+        bool coordsInUEUnits)
+    {
+        if (!transform.Valid) return;
+        DrawPlayerCoordinates(ui, MiniMap::Services::DrawLayer::Window,
+            transform, coordsInUEUnits);
+    }
 }
 
 #endif

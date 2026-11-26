@@ -1,7 +1,9 @@
+// Preserves the existing F8 native terrain diagnostic.
 #include "DiagnosticExports.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainDiagnostics.h"
+#include "ForgottenEngineDiagnostics.h"
 #include "Map/Map.h"
 #include "Map/RuntimeFieldAccess.h"
 #include "TerrainChunks.h"
@@ -1107,6 +1109,7 @@ namespace
         float deltaSeconds)
     {
         if(!MiniMapMap::GameplayReady())return;
+        MiniMapForgottenEngineDiagnostics::ConsumePendingSample();
         (void)deltaSeconds;
 
         const bool diagnosticRequested =

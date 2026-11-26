@@ -31,6 +31,7 @@ namespace MiniMapMap
         double LocalVisibilityWorldX = 0.0;
         double LocalVisibilityWorldY = 0.0;
         bool DroneActive = false;
+        bool InForgottenEngine = false;
         double MapRotationDegrees = 0.0;
 
         double SinMapRotation = 0.0;
@@ -242,6 +243,7 @@ namespace MiniMapMap
         outTransform.LocalVisibilityWorldX = sample.LocalVisibilityOrigin.WorldX;
         outTransform.LocalVisibilityWorldY = sample.LocalVisibilityOrigin.WorldY;
         outTransform.DroneActive = sample.DroneActive;
+        outTransform.InForgottenEngine = sample.InForgottenEngine;
 
         outTransform.MapRotationDegrees =
             mapRotationDegrees;

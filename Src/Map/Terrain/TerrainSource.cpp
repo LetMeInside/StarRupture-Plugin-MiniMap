@@ -2,6 +2,9 @@
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "TerrainSource.h"
+#include "RegisteredTerrainSource.h"
+#include "TerrainChunks.h"
+#include "Native/TextureAccess.h"
 #include "TerrainProfile.h"
 #include "Map/Map.h"
 #include "Map/RuntimeFieldAccess.h"
@@ -286,6 +289,7 @@ namespace MiniMapTerrainSource
 
     void Shutdown()
     {
+        RegisteredTerrainSource::Clear();
         g_devSettings = nullptr;
         g_pluginSelfAvailable = false;
     }
@@ -693,6 +697,9 @@ namespace MiniMapTerrainSource
 
         return true;
     }
+
+
+
 }
 
 #endif
