@@ -1,7 +1,8 @@
-// Reconciles registered and game-owned terrain through the shared resident renderer.
+// Preserves registered-image demand, acquisition and resident rendering; ordinary native terrain uses the service route.
 #include "TerrainReconciliation.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainReconciliationState.h"
+#include "NativeTerrainPresentation.h"
 #include "TerrainChunkAcquisition.h"
 #include "TerrainSource.h"
 #include "TerrainChunks.h"
@@ -77,20 +78,6 @@ namespace MiniMapTerrainSource
             left.GridY == right.GridY && left.ChunkX == right.ChunkX && left.ChunkY == right.ChunkY;
     }
 
-    int TerrainReconciliation::FloorDiv(int value, int divisor)
-    {
-        int quotient = value / divisor;
-        if (value % divisor < 0) --quotient;
-        return quotient;
-    }
-
-    int TerrainReconciliation::PositiveMod(int value, int divisor)
-    {
-        int remainder = value % divisor;
-        if (remainder < 0) remainder += divisor;
-        return remainder;
-    }
-
     bool TerrainReconciliation::ContainsIdentity(const std::vector<LoadedChunk>& chunks,
         const ChunkIdentity& identity)
     {
@@ -110,6 +97,7 @@ namespace MiniMapTerrainSource
     MiniMap::Services::Texture TerrainReconciliation::AcquireChunkTexture(const SourceTile& tile,
         const ChunkIdentity& identity, int globalChunkX, int globalChunkY)
     {
+        if (!tile.RegisteredImage) return {};
         ResidentChunk* resident = nullptr;
         {
             std::lock_guard lock(g_renderMutex);
@@ -220,79 +208,9 @@ namespace MiniMapTerrainSource
 #endif
         Work work;
         if (!Capture(work, sample, revision)) return false;
-        if (work.Image) AcquireRegistered(work);
-        else
-        {
-            if (!PrepareLegacy(work)) return false;
-            AcquireLegacy(work);
-        }
+        if (!work.Image) return false;
+        AcquireRegistered(work);
         return Publish(work);
-    }
-
-    bool TerrainReconciliation::PrepareLegacy(Work& work)
-    {
-        SourceTile tile;
-        if (!RegisteredTerrainSource::Resolve(work.PlayerLocation, tile) || tile.RegisteredImage ||
-            !Current(work)) return false;
-        work.PlayerChunkX = static_cast<double>(tile.GridY * MiniMapTerrainChunks::kChunksPerAxis) +
-            tile.LocalU * MiniMapTerrainChunks::kChunksPerAxis;
-        work.PlayerChunkY = static_cast<double>(tile.GridX * MiniMapTerrainChunks::kChunksPerAxis) +
-            tile.LocalV * MiniMapTerrainChunks::kChunksPerAxis;
-        const double halfWidth = work.Context.ViewportWidth * work.Context.MetersPerPixel /
-            MiniMapTerrainChunks::kChunkWorldSizeMeters * 0.5;
-        const double halfHeight = work.Context.ViewportHeight * work.Context.MetersPerPixel /
-            MiniMapTerrainChunks::kChunkWorldSizeMeters * 0.5;
-        const double radius = std::sqrt(halfWidth * halfWidth + halfHeight * halfHeight);
-        constexpr double epsilon = 1.0e-9;
-        work.Bounds = {static_cast<int>(std::floor(work.PlayerChunkX - radius)),
-            static_cast<int>(std::floor(work.PlayerChunkY - radius)),
-            static_cast<int>(std::floor(work.PlayerChunkX + radius - epsilon)),
-            static_cast<int>(std::floor(work.PlayerChunkY + radius - epsilon))};
-        return true;
-    }
-
-    void TerrainReconciliation::AcquireLegacy(Work& work)
-    {
-        const auto& bounds = work.Bounds;
-        const int countX = bounds[2] - bounds[0] + 1;
-        const int countY = bounds[3] - bounds[1] + 1;
-        if (countX > 0 && countY > 0) work.Next.reserve(static_cast<size_t>(countX * countY));
-        for (int y = bounds[1]; y <= bounds[3]; ++y)
-            for (int x = bounds[0]; x <= bounds[2]; ++x)
-            {
-                if (!Current(work)) return;
-                AcquireLegacyChunk(work, x, y);
-            }
-    }
-
-    void TerrainReconciliation::AcquireLegacyChunk(Work& work, int globalX, int globalY)
-    {
-        const int gridY = FloorDiv(globalX, MiniMapTerrainChunks::kChunksPerAxis);
-        const int gridX = FloorDiv(globalY, MiniMapTerrainChunks::kChunksPerAxis);
-        SDK::FVector position = work.PlayerLocation;
-        position.X += (globalX + 0.5 - work.PlayerChunkX) * kChunkWorldUnits;
-        position.Y += (globalY + 0.5 - work.PlayerChunkY) * kChunkWorldUnits;
-        SourceTile tile;
-        if (!RegisteredTerrainSource::Resolve(position, tile) || !Current(work) || tile.RegisteredImage ||
-            tile.GridX != gridX || tile.GridY != gridY) return;
-        ChunkIdentity identity;
-        identity.RadiationLevel = tile.RadiationLevel;
-        identity.GridX = gridX;
-        identity.GridY = gridY;
-        identity.ChunkX = PositiveMod(globalX, MiniMapTerrainChunks::kChunksPerAxis);
-        identity.ChunkY = PositiveMod(globalY, MiniMapTerrainChunks::kChunksPerAxis);
-        auto texture = FindExistingTexture(work.Residents, identity);
-        if (texture.id == 0) texture = AcquireChunkTexture(tile, identity, globalX, globalY);
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-        else MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Reuse);
-#endif
-        if (texture.id == 0) return;
-        LoadedChunk chunk;
-        chunk.Identity = identity;
-        chunk.Texture = texture;
-        chunk.GlobalChunkX = globalX;
-        chunk.GlobalChunkY = globalY;
-        work.Next.push_back(std::move(chunk));
     }
 
     void TerrainReconciliation::AcquireRegistered(Work& work)
@@ -421,10 +339,19 @@ namespace MiniMapTerrainSource
         return true;
     }
 
+    /** An exclusive native route has no active legacy registered descriptors, but still owes retirement. */
+    void TerrainReconciliation::RetireRegisteredChunks()
+    {
+        std::lock_guard lock(g_renderMutex);
+        ScheduleRetirement({});
+        RetireInactive();
+    }
+
     void TerrainReconciliation::WithdrawSelection()
     {
         std::lock_guard lock(g_renderMutex);
         g_loadedChunks.clear();
+        if (auto* native = NativeTerrainPresentation::Active()) native->Withdraw();
         g_presentation = {};
         ++g_presentationRevision;
         g_hasViewportAnchor = false;

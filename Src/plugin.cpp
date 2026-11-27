@@ -23,6 +23,7 @@
 #include "SDK/ChimeraUI_classes.hpp"
 #include "plugin_map.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
+#include "Services/Map/Terrain/TerrainService.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
 #include "Services/Map/Buildings/Scheduling/SectionSchedulingCoordinator.h"
@@ -39,6 +40,8 @@
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 namespace S = MiniMap::Services;
 static std::unique_ptr<Services::Map::Buildings::BuildingMapService> g_buildingMapService;
+// CPU-only cache owner remains alive through late exit clearing; it registers no providers or callbacks.
+static Services::Map::Terrain::TerrainService g_terrainService;
 static Services::Map::Buildings::Capture::BuildingSpriteRenderer* g_buildingSpriteRenderer = nullptr;
 static S::Hook g_commonUIActivatedHook{};
 static S::Hook g_commonUIDeactivatedHook{};
@@ -296,6 +299,8 @@ static bool InstallCommonUIHooks()
 #include "Map/AlienActors/AlienActors.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
+#include "Map/Terrain/NativeTerrainPresentation.h"
+#include <stdexcept>
 #include "Map/Terrain/TerrainSource.h"
 #include "Map/Terrain/TerrainCache.h"
 #include "CacheIdentity.h"
@@ -1122,6 +1127,15 @@ namespace MiniMap
             return false;
         }
         const std::filesystem::path cacheRoot = pluginDirectory / L"MiniMap" / L"Cache";
+        const ::Services::Map::Terrain::TerrainService::NativeCacheConfiguration terrainCacheConfiguration{
+            cacheRoot / L"Terrain", L"R", L"Terrain_", L"_", L".terrain"};
+        if (!g_terrainService.ConfigureNativeCache(terrainCacheConfiguration))
+        {
+            LOG_ERROR("MiniMap: terrain cache configuration could not be associated");
+            return false;
+        }
+        MiniMapTerrainCache::TerrainCache::BindService(g_terrainService);
+        MiniMapTerrainSource::NativeTerrainPresentation::BindService(g_terrainService);
 
         // These approved settings use native centimeters and the established direct-index policy table.
         constexpr double sectionSizeMapUnits = 12500.0;
@@ -1481,9 +1495,17 @@ namespace MiniMap
         MiniMapFoundables::Shutdown();
         MiniMapPointsOfInterest::Shutdown();
         MiniMapFogOfWar::Shutdown();
-        MiniMapTerrain::Shutdown();
+        const bool terrainTickQuiescent = MiniMapTerrain::Shutdown();
+        if (!MiniMapTerrainSource::NativeTerrainPresentation::StopActive(
+            minimapCallbacksQuiescent && terrainTickQuiescent))
+        {
+            LOG_ERROR("MiniMap: native terrain owner/runtime retained: callbacks or texture receipts unresolved");
+            throw std::runtime_error("Native terrain shutdown is incomplete; retain the issuing runtime.");
+        }
         MiniMapMap::Shutdown();
 
+        // Drain terrain IO and reject late callbacks independently of legacy root-cache admission.
+        g_terrainService.CloseNativeCache();
         MiniMapCacheIdentity::ClearOnExit();
         const bool buildingLayerShutdownComplete = minimapCallbacksQuiescent &&
             MiniMapUI::EndBuildingLayerSession();

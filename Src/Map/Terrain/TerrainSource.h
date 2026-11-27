@@ -52,6 +52,10 @@ namespace MiniMapTerrainSource
         int RadiationLevel = 0;
         Variant SelectedVariant = Variant::Ordinary;
 
+        // Copied native placement metadata; no UObject lifetime is attached to these values.
+        RegisteredTerrainImage::Point NativeWorldOrigin;
+        RegisteredTerrainImage::Point NativeWorldSize;
+
         SDK::UTexture2D* Texture = nullptr;
     };
 

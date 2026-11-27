@@ -14,7 +14,8 @@ namespace MiniMapConfig
 namespace MiniMapTerrain
 {
     bool Initialize(IPluginSelf* self);
-    void Shutdown();
+    /** Withdraws presentation and stops the terrain tick; false means callback removal is not quiescent. */
+    bool Shutdown();
     void InvalidatePresentation(); // Values only; safe for visibility callbacks.
     /** Reads the current valid terrain view and returns its rotated world-space AABB in native centimetres. */
     bool TryGetVisibleWorldBounds(double& x1, double& y1, double& x2, double& y2);

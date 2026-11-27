@@ -104,6 +104,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="BuildingMapLoadingTrace.h" />
+    <ClInclude Include="Services\Map\Terrain\ITerrainDataProvider.h" />
+    <ClInclude Include="Services\Map\Terrain\ITerrainSourceRetrieval.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainImage.h" />
+    <ClInclude Include="Services\Map\Terrain\Processing\TerrainBc1Codec.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainImageDelivery.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainViewport.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainService.h" />
+    <ClInclude Include="Services\Map\Terrain\Acquisition\TerrainImageAcquisition.h" />
+    <ClInclude Include="Services\Map\Terrain\Cache\TerrainFileCache.h" />
+    <ClInclude Include="Services\Map\Terrain\Cache\NativeTerrainCacheRecord.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapServiceABI.h" />
     <ClInclude Include="Map\Buildings\BuildingSpatialAdmission.h" />
     <ClInclude Include="Map\RuntimeFieldAccess.h" />
@@ -211,6 +221,7 @@
     <ClInclude Include="Native\ResidentMetadata.h" />
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain\Terrain.h" />
+    <ClInclude Include="Map\Terrain\NativeTerrainPresentation.h" />
     <ClInclude Include="Native\TextureAccess.h" />
     <ClInclude Include="Map\Terrain\TerrainChunks.h" />
     <ClInclude Include="Map\Terrain\TerrainDiagnostics.h" />
@@ -220,6 +231,8 @@
     <ClInclude Include="Map\Terrain\RegisteredTerrainImage.h" />
     <ClInclude Include="Map\Terrain\RegisteredTerrainSource.h" />
     <ClInclude Include="Map\Terrain\TerrainSource.h" />
+    <ClInclude Include="Map\Terrain\StarRuptureTerrainProvider.h" />
+    <ClInclude Include="Map\Terrain\StarRuptureTerrainCacheAssociation.h" />
     <ClInclude Include="Map\Terrain\TerrainCache.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="UI\MapOverlays.h" />
@@ -311,7 +324,14 @@
     <ClCompile Include="Native\MassLifecycle.cpp" />
     <ClCompile Include="Native\TexturePublication.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
+    <ClCompile Include="Services\Map\Terrain\TerrainService.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Acquisition\TerrainImageAcquisition.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Processing\TerrainBc1Codec.cpp" />
+    <ClCompile Include="Services\Map\Terrain\TerrainViewport.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Cache\TerrainFileCache.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Cache\NativeTerrainCacheRecord.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
+    <ClCompile Include="Map\Terrain\NativeTerrainPresentation.cpp" />
     <ClCompile Include="Map\Terrain\TerrainReconciliation.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
     <ClCompile Include="Map\Terrain\TerrainChunks.cpp" />
@@ -320,6 +340,8 @@
     <ClCompile Include="Map\Terrain\TerrainChunkAcquisition.cpp" />
     <ClCompile Include="Map\Terrain\RegisteredTerrainSource.cpp" />
     <ClCompile Include="Map\Terrain\TerrainSource.cpp" />
+    <ClCompile Include="Map\Terrain\StarRuptureTerrainProvider.cpp" />
+    <ClCompile Include="Map\Terrain\StarRuptureTerrainCacheAssociation.cpp" />
     <ClCompile Include="Map\Terrain\TerrainCache.cpp" />
     <ClCompile Include="UI\MapOverlays.cpp" />
     <ClCompile Include="UI\BuildingLayer.cpp" />

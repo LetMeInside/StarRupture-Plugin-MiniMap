@@ -74,14 +74,7 @@ namespace MiniMapTerrainSource
             if (!RegisteredTerrainSource::ResolveTexture(*tile.RegisteredImage, resolved)) return false;
             texture = resolved.Texture;
         }
-        const auto* native = MiniMapNative::Get();
-        if (!texture || !native || !native->texture.waitForPendingInitOrStreaming) return false;
-        {
-#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
-            MiniMapTerrainProfile::Scope profile(MiniMapTerrainProfile::Phase::Readiness);
-#endif
-            native->texture.waitForPendingInitOrStreaming(texture, true, true);
-        }
+        if (!WaitForTexture(texture)) return false;
         if (tile.RegisteredImage)
         {
             texture = nullptr;
@@ -91,6 +84,18 @@ namespace MiniMapTerrainSource
                 !RegisteredTerrainSource::ResolveTexture(*tile.RegisteredImage, resolved)) return false;
             texture = resolved.Texture;
         }
+        return true;
+    }
+
+    /** Retains the existing blocking readiness arguments and diagnostic scope for both source routes. */
+    bool TerrainChunkAcquisition::WaitForTexture(SDK::UTexture2D* texture)
+    {
+        const auto* native = MiniMapNative::Get();
+        if (!texture || !native || !native->texture.waitForPendingInitOrStreaming) return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        MiniMapTerrainProfile::Scope profile(MiniMapTerrainProfile::Phase::Readiness);
+#endif
+        native->texture.waitForPendingInitOrStreaming(texture, true, true);
         return true;
     }
 
@@ -108,12 +113,21 @@ namespace MiniMapTerrainSource
             image.HeightPixels == platform.SizeY && image.SRGB == platform.SRGB;
     }
 
+    /** Preserves legacy readiness then metadata ordering without copying registered-image owners. */
     bool TerrainChunkAcquisition::ReadMetadata(const SourceTile& tile,
         MiniMapNative::TextureAccess::PlatformData& platform,
         MiniMapNative::TextureAccess::MipData& mip)
     {
         SDK::UTexture2D* texture = nullptr;
         if (!ResolveReadyTexture(tile, texture)) return false;
+        return ReadReadyMetadata(tile, texture, platform, mip);
+    }
+
+    /** Reuses the active metadata validation without coupling native inspection to cache/upload work. */
+    bool TerrainChunkAcquisition::ReadReadyMetadata(const SourceTile& tile, SDK::UTexture2D* texture,
+        MiniMapNative::TextureAccess::PlatformData& platform,
+        MiniMapNative::TextureAccess::MipData& mip)
+    {
         {
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
             MiniMapTerrainProfile::Scope profile(MiniMapTerrainProfile::Phase::PlatformQuery);

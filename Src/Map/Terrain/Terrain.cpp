@@ -1,8 +1,9 @@
-// Owns terrain ticks, resident receipts and presentation; registered images share the same renderer.
+// Owns terrain tick admission and the shared map transform; native service and registered routes remain exclusive.
 #include "Services/Viewport.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "Terrain.h"
+#include "NativeTerrainPresentation.h"
 #include "Config/Config.h"
 #include "TerrainProfile.h"
 #include "Input/MouseWheel.h"
@@ -41,6 +42,7 @@ namespace
 {
     MiniMap::Services::Registration g_tickRegistration{};
     using MiniMapTerrainSource::TerrainReconciliation;
+    using MiniMapTerrainSource::NativeTerrainPresentation;
     using MiniMapTerrainSource::RegisteredTerrainSource;
     using MiniMapTerrainSource::RegisteredTerrainImage;
     using ChunkIdentity = TerrainReconciliation::ChunkIdentity;
@@ -95,6 +97,7 @@ namespace
         if (!MiniMapUI::IsVisible() || !MiniMapMap::GameplayReady() || !MiniMapMap::HasWorld())
         {
             MiniMapTerrain::InvalidatePresentation();
+            NativeTerrainPresentation::ProcessWithdrawals();
             MiniMapMouseWheel::ClearPendingZoom();
             return;
         }
@@ -103,6 +106,7 @@ namespace
         if (!MiniMapMap::TryGetPresentationSample(sample))
         {
             MiniMapTerrain::InvalidatePresentation();
+            NativeTerrainPresentation::ProcessWithdrawals();
             MiniMapMouseWheel::ClearPendingZoom();
             return;
         }
@@ -118,6 +122,7 @@ namespace
         if (sample.InForgottenEngine && !forgottenEngineFloorSelected)
         {
             MiniMapTerrain::InvalidatePresentation();
+            NativeTerrainPresentation::ProcessWithdrawals();
             MiniMapMouseWheel::ClearPendingZoom();
             return;
         }
@@ -139,7 +144,7 @@ namespace
 
         if (!UpdateFastViewportCenter(sample, revision)) return;
 
-        TerrainReconciliation::AdvanceDemand(sample, revision, deltaSeconds);
+        NativeTerrainPresentation::AdvanceTick(sample, revision, deltaSeconds);
     }
 }
 
@@ -202,6 +207,8 @@ namespace MiniMapTerrain
         g_presentation = {};
         g_coordinatePresentation = {};
         ++g_presentationRevision;
+        g_reconcileRequested.store(true, std::memory_order_release);
+        if (auto* native = NativeTerrainPresentation::Active()) native->Withdraw();
     }
 
     bool Initialize(
@@ -210,6 +217,7 @@ namespace MiniMapTerrain
         const double initialZoom = MiniMapConfig::InitialZoom(); // Before the render mutex.
         if (g_initialized)
         {
+            if (!NativeTerrainPresentation::PrepareSession()) return false;
             // A replacement world can be admitted before the previous world's
             // EndPlay. Reapply session zoom without restarting terrain acquisition.
             const auto generation = MiniMapMap::GetWorldGeneration();
@@ -306,6 +314,15 @@ namespace MiniMapTerrain
         }
 #endif
 
+        if (!NativeTerrainPresentation::PrepareSession())
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            MiniMapTerrainDiagnostics::Shutdown();
+#endif
+            MiniMapTerrainSource::Shutdown();
+            return false;
+        }
+
         if (!g_tickRegistered)
         {
             const auto tickReceipt = MiniMap::Services::TryRuntimeEvents()->OnTick(
@@ -338,11 +355,18 @@ namespace MiniMapTerrain
     }
 
 
-    void Shutdown()
+    bool Shutdown()
     {
         if (!g_initialized)
         {
-            return;
+            // Remove re-observes an already requested detach without resubmitting it.
+            if (g_tickRegistration.id) if (auto* events = MiniMap::Services::TryRuntimeEvents())
+            {
+                const auto removal = events->Remove(g_tickRegistration);
+                if (removal.registry == MiniMap::Services::RegistryRemoval::RequestReturned &&
+                    removal.core == MiniMap::Services::CoreDrain::Quiescent) g_tickRegistration = {};
+            }
+            return !g_tickRegistration.id;
         }
 
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
@@ -376,6 +400,7 @@ namespace MiniMapTerrain
             // retain resident ownership and unresolved debt. Dynamic retirement
             // remains the reconciliation policy; v70 manages GPU retirement.
             g_loadedChunks.clear();
+            if (auto* native = NativeTerrainPresentation::Active()) native->Withdraw();
             g_presentation = {};
             ++g_presentationRevision;
 
@@ -439,6 +464,8 @@ namespace MiniMapTerrain
 
         g_initialized =
             false;
+        if (!g_tickRegistration.id) NativeTerrainPresentation::StopActive(false);
+        return !g_tickRegistration.id;
     }
 
 
@@ -522,7 +549,11 @@ namespace MiniMapTerrain
         struct RenderGenerationGuard
         {
             // Advances progress on every exit while the render mutex remains held.
-            ~RenderGenerationGuard() { ++g_renderGeneration; }
+            ~RenderGenerationGuard()
+            {
+                ++g_renderGeneration;
+                if (auto* native = NativeTerrainPresentation::Active()) native->CompleteRenderFrame();
+            }
         };
         RenderGenerationGuard renderGenerationGuard;
         g_viewportPixelWidth = windowWidth;
@@ -538,15 +569,17 @@ namespace MiniMapTerrain
             MiniMapMap::BuildTransform(g_coordinatePresentation, coordinateRotation,
                 g_metersPerPixel, windowX, windowY, windowWidth, windowHeight, outTransform);
         }
-        if (!g_hasViewportAnchor || !MiniMapMap::GameplayReady() || !g_presentation.Valid ||
-            g_presentation.WorldGeneration != MiniMapMap::GetWorldGeneration() ||
-            g_presentation.TrackingRevision != settings.TrackingRevision) return false;
-        const double rotation = settings.RotatingMiniMap ? MiniMapMap::HeadingUpMapRotationDegrees(
-            g_presentation.Tracking.ControlYawDegrees) : 0.0;
-        if (!MiniMapMap::BuildTransform(g_presentation, rotation, g_metersPerPixel,
-            windowX, windowY, windowWidth, windowHeight, outTransform)) return false;
-        TerrainReconciliation::DrawLoadedChunks(ui, outTransform,
-            windowX, windowY, windowWidth, windowHeight);
+        if (!outTransform.Valid) return false;
+        if (g_registeredPresentation)
+        {
+            if (g_hasViewportAnchor && g_presentation.Valid &&
+                g_presentation.WorldGeneration == MiniMapMap::GetWorldGeneration() &&
+                g_presentation.TrackingRevision == settings.TrackingRevision)
+                TerrainReconciliation::DrawLoadedChunks(ui, outTransform,
+                    windowX, windowY, windowWidth, windowHeight);
+        }
+        else if (auto* native = NativeTerrainPresentation::Active())
+            native->Draw(ui, outTransform, windowX, windowY, windowWidth, windowHeight);
         return true;
     }
 }

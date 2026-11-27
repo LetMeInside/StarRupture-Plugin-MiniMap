@@ -15,6 +15,18 @@ namespace MiniMapTerrainSource
         /** Uploads one 256-square chunk from native BC1 or owned CPU pixels into the caller's receipt. */
         static MiniMap::Services::Texture Load(const SourceTile& tile, int x, int y,
             MiniMap::Services::OwnedTexture& owner, bool& uncertain, bool& cached);
+        /** Waits through the existing native readiness operation. Game-thread only; the caller must
+         * re-resolve its source/session after this potentially reentrant call before further native access.
+         * Texture is borrowed only for this operation; no cache, conversion or upload is performed.
+         */
+        static bool WaitForTexture(SDK::UTexture2D* texture);
+        /** Queries the existing BC1 platform/mip checks on an already-ready synchronous source borrow.
+         * Caller establishes native lifetime/readiness; returned native metadata must not escape that
+         * operation. This source-only helper does no waiting, cache IO, decoding or texture publication.
+         */
+        static bool ReadReadyMetadata(const SourceTile& tile, SDK::UTexture2D* texture,
+            MiniMapNative::TextureAccess::PlatformData& platform,
+            MiniMapNative::TextureAccess::MipData& mip);
     private:
         /** Waits for native readiness and re-resolves registered textures after reentrancy. */
         static bool ResolveReadyTexture(const SourceTile& tile, SDK::UTexture2D*& texture);

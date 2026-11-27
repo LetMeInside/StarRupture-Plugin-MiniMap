@@ -695,6 +695,11 @@ namespace MiniMapTerrainSource
         outSourceTile.Texture =
             sourceTexture;
 
+        outSourceTile.NativeWorldOrigin = {
+            static_cast<double>(pivot->X) + static_cast<double>(gridY) * worldTileWidth,
+            static_cast<double>(pivot->Y) + static_cast<double>(gridX) * worldTileHeight};
+        outSourceTile.NativeWorldSize = {worldTileWidth, worldTileHeight};
+
         return true;
     }
 

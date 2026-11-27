@@ -65,6 +65,8 @@ namespace MiniMapTerrainSource
 
         /** Reconciles demand and retires inactive owners, including empty registered demand. */
         static bool Reconcile(const MiniMapMap::PresentationSample& sample, uint64_t revision);
+        /** Continues the existing legacy registered receipt retirement while the native route is active. */
+        static void RetireRegisteredChunks();
         /** Immediately withdraws obsolete presentation after an internal selection change. */
         static void WithdrawSelection();
         /** Clears a stale session override, preserving world generation and zoom. */
@@ -94,9 +96,6 @@ namespace MiniMapTerrainSource
         static bool IsCurrent(const ReconciliationContext& context);
         /** Keeps registered and game-owned resident identities in separate key spaces. */
         static bool SameIdentity(const ChunkIdentity& left, const ChunkIdentity& right);
-        /** Maps negative global chunks using floor division and a positive local coordinate. */
-        static int FloorDiv(int value, int divisor);
-        static int PositiveMod(int value, int divisor);
         /** Finds reusable descriptor identities and their resident texture views. */
         static bool ContainsIdentity(const std::vector<LoadedChunk>& chunks, const ChunkIdentity& identity);
         static MiniMap::Services::Texture FindExistingTexture(
@@ -108,12 +107,6 @@ namespace MiniMapTerrainSource
         static bool Capture(Work& work, const MiniMapMap::PresentationSample& sample, uint64_t revision);
         /** Checks current admission under the render mutex between native acquisitions. */
         static bool Current(const Work& work);
-        /** Computes unchanged legacy grid demand from the current game tile. */
-        static bool PrepareLegacy(Work& work);
-        /** Acquires legacy chunks in their original Y/X order. */
-        static void AcquireLegacy(Work& work);
-        /** Resolves/acquires one legacy grid chunk using its original center calculation. */
-        static void AcquireLegacyChunk(Work& work, int globalX, int globalY);
         /** Derives registered image intersection without requiring the tracker inside coverage. */
         static void AcquireRegistered(Work& work);
         /** Acquires one registered chunk and publishes only descriptor-derived world corners. */
