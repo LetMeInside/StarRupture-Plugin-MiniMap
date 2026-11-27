@@ -127,6 +127,7 @@ namespace Services::Map::Terrain
         /** Copies desired cooked-content capture inputs; creates/owns no world, job or native resource.
          * Data layer paths describe desired activated inputs. Runtime support and clipping require
          * independent validation before a later capture executor may admit this definition.
+         * Complete source dimensions must be positive multiples of 256; this does not imply cache eligibility.
          */
         struct CaptureDefinition
         {

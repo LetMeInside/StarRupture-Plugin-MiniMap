@@ -37,7 +37,7 @@ namespace Services::Map::Terrain
             Failed
         };
 
-        /** Copies source identity/layout for a later validated retrieval; owns no native or cache resources. */
+        /** Copies source identity/layout for retrieval; complete source dimensions must be positive multiples of 256. */
         struct Inspection
         {
             Status State = Status::Unavailable;

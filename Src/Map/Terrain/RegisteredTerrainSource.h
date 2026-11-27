@@ -31,12 +31,6 @@ namespace MiniMapTerrainSource
          * Re-selecting the same descriptor leaves presentation and revision unchanged.
          */
         static bool Select(const RegisteredTerrainImage& image);
-        /** Selects an embedded candidate from FE admission and the physical character Z; clears it on exit. */
-        static bool SynchronizeForgottenEngine(bool inForgottenEngine, double characterWorldZ);
-        /** Classifies finite FE world Z into lower, middle, or upper candidate index; returns -1 for nonfinite Z. */
-        static int ClassifyForgottenEngineFloor(double worldZ);
-        /** Returns the selected FE candidate index, or -1 while selection is unavailable or changing. */
-        static int SelectedForgottenEngineFloor();
     private:
         /** Returns a lazily decoded shared image and permanently remembers invalid resources. */
         static bool LoadForgottenEngineImage(int floorIndex, RegisteredTerrainImage& image);

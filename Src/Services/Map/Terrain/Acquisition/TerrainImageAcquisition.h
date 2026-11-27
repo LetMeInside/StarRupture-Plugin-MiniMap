@@ -19,7 +19,7 @@ namespace Services::Map::Terrain::Acquisition
         const TerrainImageDelivery& GetDelivery() const noexcept;
         /** Reports whether another bounded phase is required, including temporarily unavailable inspection. */
         bool IsPending() const noexcept;
-        /** Executes one source/IO/CPU phase, checking service admission after external calls. */
+        /** Completes available work for one request; unavailable readiness yields and admission is checked throughout. */
         void Advance(TerrainService& service);
         /** Withdraws CPU ownership without native calls or allocation; also safe during external reentry. */
         void Withdraw() noexcept;
@@ -32,6 +32,8 @@ namespace Services::Map::Terrain::Acquisition
         enum class Phase { Describe, Inspect, AssociateCache, ReadCache, Retrieve, Store, Admit, ValidateDelivery, Done };
         /** Synchronous ingestion sink that admits exactly one validated owned BC1 image. */
         class SourceIngestion;
+        /** Dispatches one phase within one request advancement. */
+        void AdvancePhase(TerrainService& service);
         /** Describes the selected provider using physical and sample coordinates independently. */
         void Describe(TerrainService& service);
         /** Inspects before memory/disk reuse; validates packed BC1 metadata and the requested rectangle. */

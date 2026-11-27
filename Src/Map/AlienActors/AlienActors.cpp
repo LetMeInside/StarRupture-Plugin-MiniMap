@@ -75,6 +75,7 @@ namespace
         MiniMapNative::MassEntityHandle Id = {};
         double WorldX = 0.0;
         double WorldY = 0.0;
+        double WorldZ = 0.0;
     };
 
     bool g_initialized = false;
@@ -348,6 +349,7 @@ namespace
             record.Id = id;
             record.WorldX = transform->Transform.Translation.X;
             record.WorldY = transform->Transform.Translation.Y;
+            record.WorldZ = transform->Transform.Translation.Z;
             const double dx = record.WorldX - pose.WorldX;
             const double dy = record.WorldY - pose.WorldY;
             if (!std::isfinite(record.WorldX) || !std::isfinite(record.WorldY) ||
@@ -482,9 +484,11 @@ namespace MiniMapAlienActors
     }
 
     void Render(MiniMap::Services::ICanvas& ui, const MiniMapMap::Transform& transform,
-        const MiniMapConfig::FogOfWarSettings& fog)
+        const MiniMapConfig::FogOfWarSettings& fog,
+        const Services::Map::Terrain::TerrainService::SelectionCoverage* selection)
     {
-        if (!transform.Valid) return;
+        if (!transform.Valid || !selection ||
+            selection->Current.Context.Generation != MiniMapMap::GetWorldGeneration()) return;
         const auto drawList = MiniMap::Services::DrawLayer::Window;
         const float left = transform.CenterX - transform.Width * 0.5f;
         const float top = transform.CenterY - transform.Height * 0.5f;
@@ -505,6 +509,7 @@ namespace MiniMapAlienActors
         for (size_t index = 0; index < g_records.size(); ++index)
         {
             const auto& record = g_records[index];
+            if (!selection->ContainsMarker({record.WorldX, record.WorldY, record.WorldZ})) continue;
             const double dx = record.WorldX - transform.TrackingWorldX;
             const double dy = record.WorldY - transform.TrackingWorldY;
             const double distanceSquared = dx*dx + dy*dy;

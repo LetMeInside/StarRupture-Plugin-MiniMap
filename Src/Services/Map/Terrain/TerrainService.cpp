@@ -36,7 +36,8 @@ namespace Services::Map::Terrain
             GetProvider(selectedProvider_), physicalPosition_.value_or(ITerrainDataProvider::Position{}));
         const auto& context = state->parameters_.Context;
         if (!IsRequestCurrent(*state) || !state->parameters_.SamplePosition.IsFinite() ||
-            !context.RequestGeneration || !state->parameters_.WidthPixels || !state->parameters_.HeightPixels ||
+            !context.RequestGeneration || !TerrainImage::IsValidSourceDimensions(
+                state->parameters_.WidthPixels, state->parameters_.HeightPixels) ||
             state->parameters_.PixelX % 4u || state->parameters_.PixelY % 4u ||
             (lastRequestStamp_ && context.RequestGeneration <= lastRequestStamp_->RequestGeneration))
         {
@@ -91,7 +92,7 @@ namespace Services::Map::Terrain
         return request.GetDelivery();
     }
 
-    /** Runs at most one request phase per application-admitted call, without a timing allowance. */
+    /** Completes available work for one queued request, without a phase cap or timing allowance. */
     void TerrainService::AdvanceImageRequests()
     {
         if (advancingImages_ || pendingImageRequests_.empty()) return;
@@ -165,6 +166,7 @@ namespace Services::Map::Terrain
         bool sRgb, std::vector<std::uint8_t>&& blocks)
     {
         if (!identity.IsValid() || !registration.IsValid() ||
+            !TerrainImage::IsValidSourceDimensions(width, height) ||
             !Processing::TerrainBc1Codec::Validate(blocks, width, height)) return std::nullopt;
         return TerrainImage(std::move(identity), width, height, registration, sRgb, std::move(blocks));
     }
@@ -174,7 +176,8 @@ namespace Services::Map::Terrain
         std::uint32_t width, std::uint32_t height, TerrainImage::Registration registration,
         bool sRgb, std::span<const std::uint8_t> pixels, std::size_t rowStride)
     {
-        if (!identity.IsValid() || !registration.IsValid()) return std::nullopt;
+        if (!identity.IsValid() || !registration.IsValid() ||
+            !TerrainImage::IsValidSourceDimensions(width, height)) return std::nullopt;
         std::vector<std::uint8_t> blocks;
         if (!Processing::TerrainBc1Codec::EncodeRgb(pixels, width, height, rowStride, blocks))
             return std::nullopt;
@@ -187,7 +190,7 @@ namespace Services::Map::Terrain
     {
         if (x == 0 && y == 0 && width == image.GetWidthPixels() && height == image.GetHeightPixels())
             return image;
-        if (width == 0 || height == 0 || x >= image.GetWidthPixels() || y >= image.GetHeightPixels() ||
+        if (!TerrainImage::IsValidSourceDimensions(width, height) || x >= image.GetWidthPixels() || y >= image.GetHeightPixels() ||
             width > image.GetWidthPixels() - x || height > image.GetHeightPixels() - y || x % 4u || y % 4u)
             return std::nullopt;
         const auto& original = image.GetRegistration();
@@ -347,6 +350,36 @@ namespace Services::Map::Terrain
     {
         if (!session_ || !selectedProvider_.IsRegistered()) return std::nullopt;
         return Selection{*session_, selectedProvider_, selectedRegionId_, selectionRevision_};
+    }
+
+    /** Membership is not player selection: Default rejects any Alternate's retained marker positions. */
+    bool TerrainService::SelectionCoverage::ContainsMarker(ITerrainDataProvider::Position position) const noexcept
+    {
+        if (!Current.Provider.IsRegistered() || !position.IsFinite()) return false;
+        if (SelectedBounds) return SelectedBounds->Contains(position);
+        for (const auto& bounds : AlternateBounds)
+            if (bounds.Contains(position)) return false;
+        return true;
+    }
+
+    /** Uses only the immutable coverage copied at registration, including unavailable image sources. */
+    std::optional<TerrainService::SelectionCoverage> TerrainService::GetSelectionCoverage() const
+    {
+        const auto selection = GetSelection();
+        if (!selection) return std::nullopt;
+        SelectionCoverage observation;
+        observation.Current = *selection;
+        for (const auto& entry : entries_)
+        {
+            if (entry.Coverage.Role != ITerrainDataProvider::CoverageRole::Alternate) continue;
+            for (const auto& region : entry.Coverage.Regions)
+            {
+                observation.AlternateBounds.push_back(region.SelectionBounds);
+                if (Registration(entry.Identity) == selection->Provider && region.Id == selection->RegionId)
+                    observation.SelectedBounds = region.SelectionBounds;
+            }
+        }
+        return observation;
     }
 
     /** Locates an entry by its unique weak ownership identity, also rejecting foreign-service handles. */

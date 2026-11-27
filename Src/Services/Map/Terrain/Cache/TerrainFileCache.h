@@ -64,7 +64,9 @@ namespace Services::Map::Terrain::Cache
         const std::filesystem::path& GetRoot() const noexcept;
         /** Exclusively deletes this subtree, waiting for complete IO and preserving open/closed admission state. */
         bool Clear();
-        /** Holds instance exclusion through stream destruction; returns unavailable without changing output if closed. */
+        /** Holds IO exclusion through validated reading and failed-lookup directory repair.
+         * Successful reads need no directory creation check; closed admission leaves output unchanged.
+         */
         TerrainService::CacheResult TryLoadChunk(const TerrainCacheIdentity& key,
             int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
             const TerrainService::CacheTrace* trace) const;

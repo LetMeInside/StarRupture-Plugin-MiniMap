@@ -1,5 +1,5 @@
-// Adapts native chunk demand and application lifecycle to the generic terrain service and viewport.
-// Owns request handles only; TerrainViewport remains the sole owner of native-route texture receipts.
+// Adapts native and FE affine demand/lifecycle to one terrain service and viewport.
+// Owns request handles only; TerrainViewport remains the sole owner of active texture receipts.
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "Services/Map/Terrain/TerrainService.h"
@@ -18,6 +18,27 @@ namespace MiniMapTerrainSource
     class NativeTerrainPresentation final
     {
     public:
+        /** One overlay-pass read gate and transient service observation, never a selected-state cache.
+         * Prevents progression/session replacement while consumed, without holding a mutex across
+         * canvas/FoW calls. Reentrant visibility/world invalidation makes GetCoverage return null.
+         */
+        class SelectionObservation final
+        {
+        public:
+            /** Captures frozen coverage only when the active owner is current and not progressing. */
+            SelectionObservation();
+            /** Releases only the read gate; performs no acquisition, upload or retirement. */
+            ~SelectionObservation();
+            /** Prevents duplication of the authoritative read gate. */
+            SelectionObservation(const SelectionObservation&) = delete;
+            /** Prevents overwriting a live read gate. */
+            SelectionObservation& operator=(const SelectionObservation&) = delete;
+            /** Borrows this pass's observation if session/admission is still current, otherwise null. */
+            const Services::Map::Terrain::TerrainService::SelectionCoverage* GetCoverage() const;
+        private:
+            NativeTerrainPresentation* owner_ = nullptr;
+            std::optional<Services::Map::Terrain::TerrainService::SelectionCoverage> coverage_;
+        };
         /** Associates the existing application cache/acquisition service at quiescent plugin startup. */
         static void BindService(Services::Map::Terrain::TerrainService& service) noexcept;
         /** Reads the running build once per preparation and starts the current application world session.
@@ -50,7 +71,7 @@ namespace MiniMapTerrainSource
          * Caller holds the terrain render mutex. Performs no native operation.
          */
         void Withdraw() noexcept;
-        /** Draws only admitted native imagery using the supplied shared transform. Caller holds mutex. */
+        /** Draws only the selected service imagery using the supplied shared transform. Caller holds mutex. */
         void Draw(MiniMap::Services::ICanvas& canvas, const MiniMapMap::Transform& transform,
             float x, float y, float width, float height);
         /** Counts exactly one completed terrain callback, including empty/busy/FE frames. */
@@ -101,6 +122,18 @@ namespace MiniMapTerrainSource
         /** Uses physical character XYZ for generic provider selection and shared view admission. */
         bool UpdateSelection(const MiniMapMap::PresentationSample& sample,
             const MiniMapMap::Transform& transform, bool& reconcile);
+        /** Registers one externally configured FE1 provider with five approved provisional boxes. */
+        bool RegisterForgottenEngineProvider();
+        /** Reconciles affine FE demand without using tracker coordinates for physical selection. */
+        void ReconcileForgottenEngine(const MiniMapMap::PresentationSample& sample,
+            std::uint64_t revision, const MiniMapMap::Transform& transform);
+        /** Requests one complete 256-square canonical artwork tile. */
+        void RequestForgottenEngineChunk(const MiniMapMap::PresentationSample& sample,
+            int x, int y, std::int64_t order);
+        /** Withdraws undemanded service handles/slots without releasing their GPU receipts. */
+        void WithdrawUndemandedChunks();
+        /** Completes available work for one service request with diagnostics/exception reporting. */
+        void AdvanceAcquisition();
         /** Computes unchanged rotation-safe visible native bounds and reconciles the requested set. */
         void Reconcile(const MiniMapMap::PresentationSample& sample, std::uint64_t revision,
             const MiniMapMap::Transform& transform);
@@ -133,10 +166,12 @@ namespace MiniMapTerrainSource
         Services::Map::Terrain::TerrainViewport viewport_;
         Services::Map::Terrain::TerrainService::Session session_;
         Services::Map::Terrain::TerrainService::Registration registration_;
+        Services::Map::Terrain::TerrainService::Registration alternateRegistration_;
         std::optional<Services::Map::Terrain::TerrainService::Selection> selection_;
         std::list<ChunkRequest> requests_;
         std::uint64_t requestGeneration_ = 0;
         bool progressing_ = false;
+        bool observingSelection_ = false;
         bool withdrawRequested_ = true;
         bool clearRequestsPending_ = true;
     };

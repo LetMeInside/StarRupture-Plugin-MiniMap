@@ -15,6 +15,7 @@
 #include "Map/AlienActors/AlienActors.h"
 #include "Map/PointsOfInterest/PointsOfInterest.h"
 #include "Map/Terrain/Terrain.h"
+#include "Map/Terrain/NativeTerrainPresentation.h"
 #include "BuildingLayer.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
 
@@ -189,11 +190,13 @@ namespace
 
             MiniMapAlienActors::SetViewport(transform);
 
+            MiniMapTerrainSource::NativeTerrainPresentation::SelectionObservation selectionObservation;
+
             if (settings.Foundables.ShowLayer)
             {
                 MiniMapFoundables::Render(
                     ui,
-                    transform, settings.Foundables, settings.Fog);
+                    transform, settings.Foundables, settings.Fog, selectionObservation.GetCoverage());
             }
 
             if (settings.POI.ShowLayer)
@@ -205,7 +208,7 @@ namespace
 
             if (settings.ShowAlienActors)
             {
-                MiniMapAlienActors::Render(ui, transform, settings.Fog);
+                MiniMapAlienActors::Render(ui, transform, settings.Fog, selectionObservation.GetCoverage());
             }
 
             MiniMapOverlays::Render(

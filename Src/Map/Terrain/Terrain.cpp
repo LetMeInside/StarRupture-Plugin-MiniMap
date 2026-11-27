@@ -116,17 +116,6 @@ namespace
             g_coordinatePresentation = sample;
         }
 
-        const bool forgottenEngineFloorSelected =
-            RegisteredTerrainSource::SynchronizeForgottenEngine(
-                sample.InForgottenEngine, sample.Character.WorldZ);
-        if (sample.InForgottenEngine && !forgottenEngineFloorSelected)
-        {
-            MiniMapTerrain::InvalidatePresentation();
-            NativeTerrainPresentation::ProcessWithdrawals();
-            MiniMapMouseWheel::ClearPendingZoom();
-            return;
-        }
-
         uint64_t revision;
         {
             std::lock_guard lock(g_renderMutex);

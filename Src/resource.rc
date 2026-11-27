@@ -5,6 +5,9 @@
 IDR_FE_FLOOR_CANDIDATE_5074 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_5074.png"
 IDR_FE_FLOOR_CANDIDATE_6274 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_6274.png"
 IDR_FE_FLOOR_CANDIDATE_7474 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_7474.png"
+IDR_FE_FLOOR_BC1_5074 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_5074.bc1"
+IDR_FE_FLOOR_BC1_6274 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_6274.bc1"
+IDR_FE_FLOOR_BC1_7474 RCDATA "Resources\\ForgottenEngine\\FloorCandidate_7474.bc1"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION VERSION_MAJOR,VERSION_MINOR,VERSION_PATCH,0

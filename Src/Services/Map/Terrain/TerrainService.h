@@ -89,6 +89,22 @@ namespace Services::Map::Terrain
             std::uint64_t Revision = 0;
         };
 
+        /** Passive, call-scoped observation of the service's frozen registered coverage.
+         * Callers serialize capture/consumption against selection mutation and reject stale Context.
+         * SelectedBounds is present only for Alternate selection; no image readiness is implied.
+         */
+        struct SelectionCoverage
+        {
+            Selection Current;
+            std::optional<ITerrainDataProvider::Bounds> SelectedBounds;
+            std::vector<ITerrainDataProvider::Bounds> AlternateBounds;
+
+            /** Tests retained finite XYZ against the selected Alternate, or excludes all Alternates
+             * for Default. Uses only copied coverage, without querying/reselecting a provider.
+             */
+            bool ContainsMarker(ITerrainDataProvider::Position position) const noexcept;
+        };
+
         /** Creates an inert service; constructs no provider and registers no runtime callbacks. */
         TerrainService();
         /** Prevents duplicating registration identity/session ownership. */
@@ -117,7 +133,7 @@ namespace Services::Map::Terrain
             std::uint32_t width, std::uint32_t height, TerrainImage::Registration registration,
             bool sRgb, std::span<const std::uint8_t> pixels, std::size_t rowStride);
         /** Extracts an in-bounds logical rectangle with a 4-pixel-aligned origin, preserving registration.
-         * Width/height may be partial blocks; output covers exactly the requested extent, never padding.
+         * Width/height must be positive multiples of 256; output covers exactly that canonical extent.
          * Whole-image requests share immutable storage. Other requests copy blocks without recompression.
          * Unaligned/out-of-bounds/empty requests return no image; allocation exceptions propagate.
          */
@@ -233,10 +249,10 @@ namespace Services::Map::Terrain
          * Invalid/foreign handles are not modified. No files or GPU resources are removed.
          */
         TerrainImageDelivery WithdrawImageRequest(const ImageRequest& request);
-        /** Advances at most one request phase, on the application's admitted game-thread progression.
+        /** Completes available work for one request, on the application's admitted game-thread progression.
          * The application controls invocation frequency independently of Building Map Service timing.
          * No time allowance is imposed here. Synchronous native/provider and file operations are
-         * non-preemptible; one phase per call is not a hard execution-time guarantee.
+         * non-preemptible; no hard execution-time guarantee is made.
          * No callbacks/workers are installed. Reentrant invalidation is supported; recursive advance
          * is ignored. Exceptions mark current work Failed and propagate to the application.
          */
@@ -252,8 +268,9 @@ namespace Services::Map::Terrain
             CacheTrace Cache;
             void (*ReadResult)(void*, const CacheResult&) noexcept = nullptr;
             void (*Extraction)(void*, bool entering) noexcept = nullptr;
+            void (*Progress)(void*, bool cpuReady) noexcept = nullptr;
         };
-        /** Runs the same single phase with borrowed Debug observation; no scheduling policy changes. */
+        /** Runs the same request advancement with borrowed Debug observation; no scheduling policy changes. */
         void AdvanceImageRequests(const ImageRequestTrace& trace);
 #endif
 
@@ -286,6 +303,10 @@ namespace Services::Map::Terrain
 
         /** Returns current selection, or no value until a valid physical sample selects registered coverage. */
         std::optional<Selection> GetSelection() const;
+        /** Copies current identity and registered bounds, never calling a provider or progressing work.
+         * Requires the same serialized calling contract as GetSelection; null means no valid selection.
+         */
+        std::optional<SelectionCoverage> GetSelectionCoverage() const;
 
     private:
         friend class Acquisition::TerrainImageAcquisition;

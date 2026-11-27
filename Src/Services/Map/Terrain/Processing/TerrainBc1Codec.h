@@ -11,7 +11,7 @@ namespace Services::Map::Terrain::Processing
     class TerrainBc1Codec final
     {
     public:
-        /** Requires exact tightly packed BC1 size and the existing TerrainImage dimension limits. */
+        /** Requires exact packed BC1 size and memory limits; generic rectangles need not be canonical sources. */
         static bool Validate(std::span<const std::uint8_t> blocks,
             std::uint32_t width, std::uint32_t height) noexcept;
         /** Copies a block-aligned origin and logical extent contained in source; leaves output on rejection.

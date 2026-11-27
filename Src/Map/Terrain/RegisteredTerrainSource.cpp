@@ -1,4 +1,5 @@
-// Maintains registered terrain selection and lazily decodes embedded FE floor resources.
+// Maintains registered image selection and lazily decodes embedded FE floor resources.
+// Retains legacy image/resource and receipt compatibility; active FE selection belongs to TerrainService.
 #include "RegisteredTerrainSource.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainSource.h"
@@ -9,8 +10,6 @@
 #include "resource.h"
 #include "plugin_helpers.h"
 #include <array>
-#include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <span>
 #include <utility>
@@ -41,7 +40,6 @@ namespace MiniMapTerrainSource
                 "CandidateZ7474.529cm"}
         }};
 
-        std::atomic<int> g_selectedForgottenEngineFloor{-1};
         int g_embeddedResourceModuleAnchor = 0;
         std::optional<RegisteredTerrainImage> g_image;
         uint64_t g_selectionRevision = 0;
@@ -58,9 +56,9 @@ namespace MiniMapTerrainSource
         return g_selectionRevision;
     }
 
+    /** Drops the legacy descriptor before the existing presentation withdrawal; receipt ownership survives. */
     void RegisteredTerrainSource::Clear()
     {
-        g_selectedForgottenEngineFloor.store(-1, std::memory_order_release);
         if (!g_image)
         {
             return;
@@ -116,64 +114,17 @@ namespace MiniMapTerrainSource
         return tile.Texture != nullptr;
     }
 
+    /** Keeps identical valid selection unchanged and preserves legacy replacement/withdrawal ordering. */
     bool RegisteredTerrainSource::Select(const RegisteredTerrainImage& image)
     {
         if (!image.IsValid() || !MiniMapMap::GameplayReady()) return false;
         if (g_image && g_selectionWorld == MiniMapMap::GetWorldGeneration() &&
             g_image->ResidentIdentity() == image.ResidentIdentity()) return true;
-        g_selectedForgottenEngineFloor.store(-1, std::memory_order_release);
         g_image = image;
         g_selectionWorld = MiniMapMap::GetWorldGeneration();
         ++g_selectionRevision;
         TerrainReconciliation::WithdrawSelection();
         return true;
-    }
-
-    bool RegisteredTerrainSource::SynchronizeForgottenEngine(bool inForgottenEngine,
-        double characterWorldZ)
-    {
-        if (!inForgottenEngine)
-        {
-            if (SelectedForgottenEngineFloor() >= 0) Clear();
-            return false;
-        }
-        const int selectedFloor = SelectedForgottenEngineFloor();
-        const int floorIndex = ClassifyForgottenEngineFloor(characterWorldZ);
-        if (floorIndex < 0)
-        {
-            if (selectedFloor >= 0) Clear();
-            return false;
-        }
-        if (floorIndex == selectedFloor && g_image) return true;
-        g_selectedForgottenEngineFloor.store(-1, std::memory_order_release);
-        RegisteredTerrainImage image;
-        if (!LoadForgottenEngineImage(floorIndex, image) || !Select(image))
-        {
-            if (selectedFloor >= 0) Clear();
-            return false;
-        }
-        g_selectedForgottenEngineFloor.store(floorIndex, std::memory_order_release);
-        return true;
-    }
-
-    int RegisteredTerrainSource::ClassifyForgottenEngineFloor(double worldZ)
-    {
-        if (!std::isfinite(worldZ)) return -1;
-        const double lowerBoundary =
-            (g_embeddedFloors[0].ElevationCm + g_embeddedFloors[1].ElevationCm) * 0.5;
-        const double upperBoundary =
-            (g_embeddedFloors[1].ElevationCm + g_embeddedFloors[2].ElevationCm) * 0.5;
-        if (worldZ < lowerBoundary) return 0;
-        if (worldZ < upperBoundary) return 1;
-        return 2;
-    }
-
-    int RegisteredTerrainSource::SelectedForgottenEngineFloor()
-    {
-        const int selectedFloor =
-            g_selectedForgottenEngineFloor.load(std::memory_order_acquire);
-        if (selectedFloor < 0 || selectedFloor >= static_cast<int>(g_embeddedFloors.size())) return -1;
-        return selectedFloor;
     }
 
     bool RegisteredTerrainSource::LoadForgottenEngineImage(int floorIndex,

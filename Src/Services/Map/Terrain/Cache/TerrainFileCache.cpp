@@ -68,7 +68,9 @@ namespace Services::Map::Terrain::Cache
         return true;
     }
 
-    /** Keeps the old output semantics: closed admission leaves output untouched; admitted attempts clear it. */
+    /** Reads without recreating an existing directory; failed lookups repair/check the root under IO exclusion.
+     * Closed admission leaves output untouched; admitted attempts clear it and verify complete v2 identity.
+     */
     TerrainService::CacheResult TerrainFileCache::TryLoadChunk(const TerrainCacheIdentity& key,
         int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
         const TerrainService::CacheTrace* trace) const
@@ -85,13 +87,14 @@ namespace Services::Map::Terrain::Cache
             static_cast<std::uint32_t>(chunkX) >= key.Width / TerrainCacheIdentity::TileDimension ||
             static_cast<std::uint32_t>(chunkY) >= key.Height / TerrainCacheIdentity::TileDimension)
             return {Status::InvalidInput};
+        std::filesystem::path file;
+        if (!GetFilePath(configuration_.Root, key.Page, file)) return {Status::InvalidInput};
+        path.End();
+        const auto result = ReadFile(file, key, metadata, fileBytes, chunkX, chunkY, chunk, trace);
+        if (result.Status == Status::Hit) return result;
         std::filesystem::path directory;
         const Status status = GetDirectory(directory);
-        if (status != Status::Hit) return {status};
-        std::filesystem::path file;
-        if (!GetFilePath(directory, key.Page, file)) return {Status::InvalidInput};
-        path.End();
-        return ReadFile(file, key, metadata, fileBytes, chunkX, chunkY, chunk, trace);
+        return status == Status::Hit ? result : TerrainService::CacheResult{status};
     }
 
     /** Rejects malformed records without deleting, migrating or automatically rewriting them. */

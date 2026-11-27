@@ -1,5 +1,5 @@
 // Implements demand-driven BC1 source inspection, private page cache coordination and immutable delivery.
-// Each advancement executes one phase; native/provider calls remain synchronous and application-admitted.
+// Each advancement completes available work for one request; native/provider calls remain synchronous and application-admitted.
 #include "TerrainImageAcquisition.h"
 #include "../Processing/TerrainBc1Codec.h"
 #include <utility>
@@ -18,6 +18,7 @@ namespace Services::Map::Terrain::Acquisition
             std::span<const std::uint8_t> blocks) override
         {
             if (submitted_ || !SameInspection(source, expected_) ||
+                !TerrainImage::IsValidSourceDimensions(source.WidthPixels, source.HeightPixels) ||
                 !Processing::TerrainBc1Codec::Validate(blocks, source.WidthPixels, source.HeightPixels))
             {
                 invalid_ = true;
@@ -70,10 +71,27 @@ namespace Services::Map::Terrain::Acquisition
         return phase_ != Phase::Done && delivery_.State == TerrainImageDelivery::Availability::Pending;
     }
 
-    /** Dispatches exactly one bounded phase; no native/file-operation loop runs in an advancement. */
+    /** Completes immediately available work for one request; unavailable/backward transitions yield.
+     * Each successful transition moves forward through the finite acquisition graph. Synchronous
+     * provider and filesystem calls are non-preemptible; this is not an execution-time guarantee.
+     */
     void TerrainImageAcquisition::Advance(TerrainService& service)
     {
-        if (!service.IsRequestCurrent(*this)) return;
+        while (service.IsRequestCurrent(*this))
+        {
+            const auto previous = phase_;
+            AdvancePhase(service);
+            if (phase_ <= previous) return;
+        }
+    }
+
+    /** Dispatches one phase; the caller rechecks admission and yields on unavailable readiness. */
+    void TerrainImageAcquisition::AdvancePhase(TerrainService& service)
+    {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        if (service.imageRequestTrace_ && service.imageRequestTrace_->Progress)
+            service.imageRequestTrace_->Progress(service.imageRequestTrace_->Cache.Context, false);
+#endif
         switch (phase_)
         {
         case Phase::Describe:
@@ -150,6 +168,12 @@ namespace Services::Map::Terrain::Acquisition
             delivery_.Error = "Terrain source unavailable.";
             return;
         }
+        const auto* capture = std::get_if<ITerrainDataProvider::CaptureDefinition>(&description.Acquisition);
+        if (capture && !TerrainImage::IsValidSourceDimensions(capture->WidthPixels, capture->HeightPixels))
+        {
+            Fail("Terrain source dimensions must be positive multiples of 256 within image limits.");
+            return;
+        }
         const auto* retrieval = std::get_if<ITerrainDataProvider::RetrievalSource>(&description.Acquisition);
         if (!description.Source.IsValid() || !retrieval || !retrieval->Capability ||
             retrieval->Locator.Value.empty() || !retrieval->ImageRegistration.IsValid())
@@ -203,7 +227,8 @@ namespace Services::Map::Terrain::Acquisition
     {
         const auto& retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
         const auto size = TerrainImage::CalculateByteCount(inspection_.WidthPixels, inspection_.HeightPixels);
-        return size && inspection_.Source == description_.Source && inspection_.Page == description_.Page &&
+        return size && TerrainImage::IsValidSourceDimensions(inspection_.WidthPixels, inspection_.HeightPixels) &&
+            inspection_.Source == description_.Source && inspection_.Page == description_.Page &&
             inspection_.Locator.Value == retrieval.Locator.Value &&
             inspection_.Encoding == ITerrainSourceRetrieval::SourceEncoding::Bc1 &&
             inspection_.RowStrideBytes == ((static_cast<std::size_t>(inspection_.WidthPixels) + 3u) / 4u) * 8u &&
@@ -400,6 +425,10 @@ namespace Services::Map::Terrain::Acquisition
         delivery_.Image = std::move(image);
         delivery_.Error = std::move(cacheWarning_);
         delivery_.State = TerrainImageDelivery::Availability::Ready;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        if (service.imageRequestTrace_ && service.imageRequestTrace_->Progress)
+            service.imageRequestTrace_->Progress(service.imageRequestTrace_->Cache.Context, true);
+#endif
         phase_ = Phase::Done;
         ReleaseSource();
     }

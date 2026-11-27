@@ -2,6 +2,7 @@
 #include "Services/Viewport.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
+#include "Services/Map/Terrain/TerrainService.h"
 
 #include "Map/MapTransform.h"
 #include <cstdint>
@@ -84,7 +85,8 @@ namespace MiniMapFoundables
         MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FoundableRenderSettings& settings,
-        const MiniMapConfig::FogOfWarSettings& fog);
+        const MiniMapConfig::FogOfWarSettings& fog,
+        const Services::Map::Terrain::TerrainService::SelectionCoverage* selection);
 
     void Shutdown();
 }

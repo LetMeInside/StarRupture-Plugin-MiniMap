@@ -11,7 +11,6 @@
 #include "Map/Map.h"
 #include "Map/MarkerIconSizing.h"
 #include "Map/RuntimeFieldAccess.h"
-#include "Map/Terrain/RegisteredTerrainSource.h"
 
 #include "Native/NativeApi.h"
 #include "Native/ResidentMetadata.h"
@@ -1724,20 +1723,17 @@ namespace MiniMapFoundables
         MiniMap::Services::ICanvas& ui,
         const MiniMapMap::Transform& transform,
         const MiniMapConfig::FoundableRenderSettings& settings,
-        const MiniMapConfig::FogOfWarSettings& fog)
+        const MiniMapConfig::FogOfWarSettings& fog,
+        const Services::Map::Terrain::TerrainService::SelectionCoverage* selection)
     {
-        if (!transform.Valid)
+        if (!transform.Valid || !selection ||
+            selection->Current.Context.Generation != MiniMapMap::GetWorldGeneration())
         {
             return;
         }
 
         std::vector<FoundableRecord> records;
         std::vector<ContainerDotRecord> containerDots;
-        const bool filterForgottenEngine = transform.InForgottenEngine;
-        const int selectedFloor = filterForgottenEngine
-            ? MiniMapTerrainSource::RegisteredTerrainSource::SelectedForgottenEngineFloor()
-            : -1;
-        if (filterForgottenEngine && selectedFloor < 0) return;
 
         {
             std::scoped_lock lock(g_snapshotMutex);
@@ -1766,9 +1762,7 @@ namespace MiniMapFoundables
         // Submit the existing icon snapshot first; container dots follow below.
         for (const FoundableRecord& record : records)
         {
-            if (filterForgottenEngine &&
-                MiniMapTerrainSource::RegisteredTerrainSource::ClassifyForgottenEngineFloor(
-                    record.WorldZ) != selectedFloor) continue;
+            if (!selection->ContainsMarker({record.WorldX, record.WorldY, record.WorldZ})) continue;
             if (record.Icon.id == 0)
             {
                 continue;
@@ -1807,9 +1801,7 @@ namespace MiniMapFoundables
         {
             for (const ContainerDotRecord& dot : containerDots)
             {
-                if (filterForgottenEngine &&
-                    MiniMapTerrainSource::RegisteredTerrainSource::ClassifyForgottenEngineFloor(
-                        dot.WorldZ) != selectedFloor) continue;
+                if (!selection->ContainsMarker({dot.WorldX, dot.WorldY, dot.WorldZ})) continue;
                 if (dot.Classification != contents)
                 {
                     continue;

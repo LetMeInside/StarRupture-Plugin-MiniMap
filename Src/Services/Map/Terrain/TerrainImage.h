@@ -112,6 +112,7 @@ namespace Services::Map::Terrain
         {
             const auto requiredBytes = CalculateByteCount(widthPixels, heightPixels);
             if (!identity_.IsValid() || !registration_.IsValid() || !requiredBytes ||
+                !IsValidSourceDimensions(widthPixels, heightPixels) ||
                 compressedBytes.size() != *requiredBytes)
             {
                 throw std::invalid_argument("Terrain image requires valid identity, registration and exact BC1 storage.");
@@ -123,6 +124,13 @@ namespace Services::Map::Terrain
         TerrainImage(const TerrainImage&) = default;
         /** Replaces this value with another valid image, sharing its compressed allocation. */
         TerrainImage& operator=(const TerrainImage&) = default;
+
+        /** Requires complete canonical source/tile dimensions; cache persistence has narrower eligibility. */
+        static bool IsValidSourceDimensions(std::uint32_t width, std::uint32_t height) noexcept
+        {
+            return width > 0 && height > 0 && width % 256u == 0 && height % 256u == 0 &&
+                CalculateByteCount(width, height).has_value();
+        }
 
         /** Calculates exact packed BC1 length, rejecting invalid dimensions or memory-bound overflow. */
         static std::optional<std::size_t> CalculateByteCount(
