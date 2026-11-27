@@ -1,5 +1,5 @@
 // Coordinates selection, explicitly advanced source acquisition and immutable BC1 deliveries.
-// Delegates compatible cache IO and processing to existing owners; never accesses game-native objects or renders.
+// Delegates private page cache IO and processing to existing owners; never accesses game-native objects or renders.
 #include "TerrainService.h"
 #include "Acquisition/TerrainImageAcquisition.h"
 #include "Processing/TerrainBc1Codec.h"
@@ -119,6 +119,25 @@ namespace Services::Map::Terrain
         }
     }
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+    /** Borrows one observer through the unchanged advancement, restoring it on every exception path. */
+    void TerrainService::AdvanceImageRequests(const ImageRequestTrace& trace)
+    {
+        if (advancingImages_) return;
+        imageRequestTrace_ = &trace;
+        try
+        {
+            AdvanceImageRequests();
+        }
+        catch (...)
+        {
+            imageRequestTrace_ = nullptr;
+            throw;
+        }
+        imageRequestTrace_ = nullptr;
+    }
+#endif
+
     /** Uses existing selection and delivery identity; no second native-world or generation registry exists. */
     bool TerrainService::IsRequestCurrent(const Acquisition::TerrainImageAcquisition& request) const noexcept
     {
@@ -137,7 +156,7 @@ namespace Services::Map::Terrain
         for (const auto& request : imageRequests_) request->Withdraw();
         imageRequests_.clear();
         pendingImageRequests_.clear();
-        retainedNativeSource_ = {};
+        retainedSource_ = {};
     }
 
     /** Validates metadata and transfers existing blocks without decompression or recompression. */
@@ -186,12 +205,12 @@ namespace Services::Map::Terrain
 
 #if defined(MODLOADER_CLIENT_BUILD)
     /** Installs immutable application settings before any concurrent file operation. */
-    bool TerrainService::ConfigureNativeCache(const NativeCacheConfiguration& configuration)
+    bool TerrainService::ConfigureTerrainCache(const CacheConfiguration& configuration)
     {
         if (fileCache_)
         {
             if (!fileCache_->HasConfiguration(configuration)) return false;
-            fileCache_->Open();
+            fileCache_->Close();
             return true;
         }
         if (configuration.Root.empty() || !configuration.Root.is_absolute()) return false;
@@ -200,36 +219,42 @@ namespace Services::Map::Terrain
     }
 
     /** Reports the configured subtree without creating it. */
-    bool TerrainService::GetNativeCacheRoot(std::filesystem::path& root) const
+    bool TerrainService::GetTerrainCacheRoot(std::filesystem::path& root) const
     {
         if (!fileCache_) return false;
         root = fileCache_->GetRoot();
         return true;
     }
 
+    /** Opens only after root invalidation, without changing cache identity or configuration. */
+    void TerrainService::OpenTerrainCache()
+    {
+        if (fileCache_) fileCache_->Open();
+    }
+
     /** Closes the instance independently of application root-cache locks and metadata. */
-    void TerrainService::CloseNativeCache()
+    void TerrainService::CloseTerrainCache()
     {
         if (fileCache_) fileCache_->Close();
     }
 
     /** Delegates subtree clearing and concurrent IO exclusion to the cache owner. */
-    bool TerrainService::ClearNativeCache()
+    bool TerrainService::ClearTerrainCache()
     {
         return fileCache_ && fileCache_->Clear();
     }
 
-    /** Forwards a numeric key to the sole file IO owner; no native source access occurs here. */
-    TerrainService::NativeCacheResult TerrainService::TryLoadNativeChunk(const NativeCacheKey& key,
-        int chunkX, int chunkY, std::vector<std::uint8_t>& compressedChunk, const NativeCacheTrace* trace) const
+    /** Forwards complete generic page evidence to the sole file IO owner without source access. */
+    TerrainService::CacheResult TerrainService::TryLoadCacheTile(const Cache::TerrainCacheIdentity& key,
+        int chunkX, int chunkY, std::vector<std::uint8_t>& compressedChunk, const CacheTrace* trace) const
     {
         if (!fileCache_) return {};
         return fileCache_->TryLoadChunk(key, chunkX, chunkY, compressedChunk, trace);
     }
 
     /** Persists existing compressed source bytes without conversion or acquisition. */
-    TerrainService::NativeCacheResult TerrainService::StoreNativeSourceTile(const NativeCacheKey& key,
-        const std::uint8_t* sourceData, std::size_t sourceDataSize, const NativeCacheTrace* trace) const
+    TerrainService::CacheResult TerrainService::StoreCachePage(const Cache::TerrainCacheIdentity& key,
+        const std::uint8_t* sourceData, std::size_t sourceDataSize, const CacheTrace* trace) const
     {
         if (!fileCache_) return {};
         return fileCache_->StoreSourceTile(key, sourceData, sourceDataSize, trace);

@@ -1,3 +1,5 @@
+// Aggregates development-only terrain timing and counters, independently for native and registered/FE work.
+// Keeps the existing bounded interval/worst-batch reports; owns no acquisition or texture resources.
 #pragma once
 
 #include "DiagnosticExports.h"
@@ -16,6 +18,8 @@
 
 namespace MiniMapTerrainProfile
 {
+    /** Separates native incremental advancement from legacy registered/FE reconciliation statistics. */
+    enum class Route { Registered, Native };
     using Clock = std::chrono::steady_clock;
     static_assert(Clock::is_steady);
     enum class Phase : size_t
@@ -69,6 +73,7 @@ namespace MiniMapTerrainProfile
         size_t WorstGroup = 0;
     };
     inline State StateData{};
+    inline State NativeStateData{};
     inline thread_local Record* Current = nullptr;
     class Scope;
     inline thread_local Scope* Top = nullptr;
@@ -116,14 +121,27 @@ namespace MiniMapTerrainProfile
         bool Success = false;
         ~UploadResult() noexcept { Count(Success ? Counter::UploadOK : Counter::UploadFailure); }
     };
+    /** Resets both route aggregates at the existing terrain profile lifecycle boundary. */
     inline void Reset() noexcept
     {
-        const auto epoch = StateData.Epoch + 1;
-        StateData = {}; StateData.Epoch = epoch;
-        StateData.Running = true; StateData.Since = Clock::now();
+        for (auto* state : {&StateData, &NativeStateData})
+        {
+            const auto epoch = state->Epoch + 1;
+            *state = {};
+            state->Epoch = epoch;
+            state->Running = true;
+            state->Since = Clock::now();
+        }
     }
+    /** Invalidates outstanding profile batches without touching acquisition or texture ownership. */
     inline void Stop() noexcept
-    { StateData.Running = false; ++StateData.Epoch; }
+    {
+        for (auto* state : {&StateData, &NativeStateData})
+        {
+            state->Running = false;
+            ++state->Epoch;
+        }
+    }
 
     // Formatting uses bounded stack storage, only at the reporting boundary.
     struct Text
@@ -169,17 +187,19 @@ namespace MiniMapTerrainProfile
             MiniMap::Services::LogMessage(MiniMap::Services::Level::Info, Buffer);
         }
     };
-    inline void Report(Clock::time_point now) noexcept
+    /** Emits one route's existing ten-second bounded summary; phases are nested, never additive. */
+    inline void Report(Clock::time_point now, State& s, const char* route) noexcept
     {
-        auto& s = StateData;
         if (now - s.Since < std::chrono::seconds(10)) return;
         if (s.Meaningful)
         {
             const auto start = Clock::now();
-            constexpr const char* labels[] = { "first", "later", "noAttempt", "failedBatch" };
+            constexpr const char* registeredLabels[] = { "first", "later", "noAttempt", "failedBatch" };
+            constexpr const char* nativeLabels[] = { "firstUpload", "laterUpload", "noPublication", "failedOperation" };
+            const auto* labels = &s == &NativeStateData ? nativeLabels : registeredLabels;
             Text text;
-            text.Append("MiniMap: TerrainProfile: intervalMs=%.3f closed-batches ms phase=n/inclusiveTotal/inclusiveMax/exclusiveTotal R=n/total/max residual=total/max c=attempt/new/reuse/hit/miss/failure/uploadOK/uploadFail/retired parent-not-additive",
-                Milliseconds(now - s.Since));
+            text.Append("MiniMap: TerrainProfile: route=%s intervalMs=%.3f closed-batches ms phase=n/inclusiveTotal/inclusiveMax/exclusiveTotal R=n/total/max residual=total/max c=attempt/new/reuse/hit/miss/failure/uploadOK/uploadFail/retired parent-not-additive",
+                route, Milliseconds(now - s.Since));
             for (size_t i = 0; i < s.Groups.size(); ++i) text.AddRecord(labels[i], s.Groups[i]);
             text.Emit();
             // The first summary's logger time is included here; the second logger
@@ -187,15 +207,18 @@ namespace MiniMapTerrainProfile
             if (s.Worst.Reconcile.Calls)
             {
                 Text worst;
-                worst.Append("MiniMap: TerrainProfile: worst-acquisition reportPrepMs=%.3f (excludes-this-log)",
-                    Milliseconds(Clock::now() - start));
+                worst.Append("MiniMap: TerrainProfile: route=%s worst-acquisition reportPrepMs=%.3f (excludes-this-log)",
+                    route, Milliseconds(Clock::now() - start));
                 worst.AddRecord(labels[s.WorstGroup], s.Worst);
                 worst.Emit();
             }
         }
-        s.Groups = {}; s.Worst = {}; s.Meaningful = false;
+        s.Groups = {};
+        s.Worst = {};
+        s.Meaningful = false;
         s.Since = Clock::now(); // cadence excludes report emission; not acquisition time
     }
+    /** Owns one callback-local record; numeric aggregates remain separated by application route. */
     class Batch
     {
         Record Data{};
@@ -205,25 +228,41 @@ namespace MiniMapTerrainProfile
         uint64_t Epoch = 0;
         int Exceptions = 0;
         bool Active = false;
+        State* Destination = &StateData;
+        const char* RouteName = "registered";
+        bool Native = false;
     public:
-        Batch() noexcept
+        /** Opens one callback/reconciliation record in the existing route-specific bounded aggregate. */
+        explicit Batch(Route route = Route::Registered) noexcept
         {
-            if (StateData.Running)
+            Native = route == Route::Native;
+            Destination = Native ? &NativeStateData : &StateData;
+            RouteName = Native ? "native" : "registered";
+            if (Destination->Running)
             {
-                Active = true; Epoch = StateData.Epoch;
+                Active = true;
+                Epoch = Destination->Epoch;
                 Exceptions = std::uncaught_exceptions();
-                Previous = Current; PreviousTop = Top; Current = &Data; Top = nullptr;
+                Previous = Current;
+                PreviousTop = Top;
+                Current = &Data;
+                Top = nullptr;
                 Start = Clock::now();
             }
         }
+        /** Keeps active thread-local record addresses stable. */
         Batch(const Batch&) = delete;
+        /** Prevents replacing a record while nested scopes refer to it. */
         Batch& operator=(const Batch&) = delete;
+        /** Closes all local timings before reporting, preserving nested batches and lifecycle epochs. */
         ~Batch() noexcept
         {
             if (!Active) return;
+            auto& destination = *Destination;
             const auto end = Clock::now();
-            Current = Previous; Top = PreviousTop;
-            if (!StateData.Running || Epoch != StateData.Epoch) return;
+            Current = Previous;
+            Top = PreviousTop;
+            if (!destination.Running || Epoch != destination.Epoch) return;
             const double total = Milliseconds(end - Start);
             double accounted = 0;
             for (const auto& m : Data.Phases) accounted += m.Exclusive;
@@ -234,20 +273,40 @@ namespace MiniMapTerrainProfile
             const bool attempted = Data.Counts[size_t(Counter::Attempts)] != 0;
             const bool unwound = std::uncaught_exceptions() > Exceptions;
             Data.Unwound = unwound ? 1 : 0;
-            const size_t group = unwound ? 3 : (acquired ? (StateData.FirstSeen ? 1 : 0) : (attempted ? 3 : 2));
-            if (acquired && !unwound) StateData.FirstSeen = true;
+            const bool failed = unwound || (Native && (Data.Counts[size_t(Counter::Failure)] ||
+                Data.Counts[size_t(Counter::UploadFailure)]));
+            const size_t group = failed ? 3 : (acquired ? (destination.FirstSeen ? 1 : 0) : (attempted && !Native ? 3 : 2));
+            if (acquired && !unwound) destination.FirstSeen = true;
             if (!attempted && !unwound && Data.Counts[size_t(Counter::Reuse)]) Data.ResidentOnly = 1;
-            StateData.Groups[group].Merge(Data);
-            if (Data.Counts[size_t(Counter::Retired)]) StateData.Meaningful = true;
-            if (attempted)
-            {
-                StateData.Meaningful = true;
-                if (total > StateData.Worst.Reconcile.Total) { StateData.Worst = Data; StateData.WorstGroup = group; }
-            }
+            destination.Groups[group].Merge(Data);
+            RecordActivity(destination, attempted, total, group);
             // First local in ReconcileViewport, destroyed last: vectors and all
             // lock guards have already unwound. Never reports from a chunk loop.
-            if (!Previous) Report(end);
+            if (!Previous) Report(end, destination, RouteName);
         }
+    private:
+        /** Marks reportable activity and retains the slowest meaningful native advancement or legacy acquisition. */
+        void RecordActivity(State& destination, bool attempted, double total, size_t group) noexcept
+        {
+            if (Data.Counts[size_t(Counter::Retired)]) destination.Meaningful = true;
+            bool nativeActivity = false;
+            if (Native)
+            {
+                for (size_t index = 0; index < Data.Phases.size(); ++index)
+                    if (index != size_t(Phase::Retirement) && Data.Phases[index].Calls) nativeActivity = true;
+                for (const auto count : Data.Counts) if (count) nativeActivity = true;
+            }
+            if (attempted || nativeActivity)
+            {
+                destination.Meaningful = true;
+                if (total > destination.Worst.Reconcile.Total)
+                {
+                    destination.Worst = Data;
+                    destination.WorstGroup = group;
+                }
+            }
+        }
+
     };
 }
 #endif

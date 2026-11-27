@@ -8,6 +8,7 @@
 #include <vector>
 #include <filesystem>
 #include "Services/Map/Terrain/TerrainService.h"
+#include "TerrainSource.h"
 
 namespace MiniMapTerrainCache
 {
@@ -26,17 +27,14 @@ namespace MiniMapTerrainCache
 #endif
         friend bool GetCacheRoot(std::filesystem::path&);
         friend bool Clear();
-        friend bool TryLoadChunk(int, int, int, int, int, uint8_t, bool, int, int, std::vector<uint8_t>&);
-        friend bool StoreSourceTile(int, int, int, int, int, uint8_t, bool, const uint8_t*, size_t);
-        /** Translates legacy numeric fields without resolving any native source. */
-        static Service::NativeCacheKey MakeKey(int radiationLevel, int gridX, int gridY,
-            int sourceWidth, int sourceHeight, uint8_t pixelFormat, bool sRGB);
+        friend bool TryLoadChunk(const MiniMapTerrainSource::SourceTile&, int, int, uint8_t, bool, int, int, std::vector<uint8_t>&);
+        friend bool StoreSourceTile(const MiniMapTerrainSource::SourceTile&, int, int, uint8_t, bool, const uint8_t*, size_t);
         /** Preserves game-facing read diagnostics from neutral service results. */
-        static void ReportRead(const Service::NativeCacheResult& result,
-            const Service::NativeCacheKey& key, int chunkX, int chunkY);
+        static void ReportRead(const Service::CacheResult& result,
+            const MiniMapTerrainSource::SourceTile& tile, int chunkX, int chunkY);
         /** Logs validation failures without modifying or deleting invalid cache records. */
-        static void ReportReadFailure(Service::NativeCacheStatus status,
-            const Service::NativeCacheKey& key, int chunkX, int chunkY);
+        static void ReportReadFailure(Service::CacheStatus status,
+            const MiniMapTerrainSource::SourceTile& tile, int chunkX, int chunkY);
         static Service* service_;
     };
 
@@ -46,9 +44,7 @@ namespace MiniMapTerrainCache
     bool Clear();
     /** Retrieves compatible compressed bytes after the caller's existing native readiness checks. */
     bool TryLoadChunk(
-        int radiationLevel,
-        int gridX,
-        int gridY,
+        const MiniMapTerrainSource::SourceTile& tile,
         int sourceWidth,
         int sourceHeight,
         uint8_t pixelFormat,
@@ -59,9 +55,7 @@ namespace MiniMapTerrainCache
 
     /** Attempts compatible persistence without taking ownership of or modifying the source tile. */
     bool StoreSourceTile(
-        int radiationLevel,
-        int gridX,
-        int gridY,
+        const MiniMapTerrainSource::SourceTile& tile,
         int sourceWidth,
         int sourceHeight,
         uint8_t pixelFormat,

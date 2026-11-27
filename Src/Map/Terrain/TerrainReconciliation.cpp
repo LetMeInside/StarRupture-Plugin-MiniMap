@@ -342,7 +342,13 @@ namespace MiniMapTerrainSource
     /** An exclusive native route has no active legacy registered descriptors, but still owes retirement. */
     void TerrainReconciliation::RetireRegisteredChunks()
     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        std::optional<MiniMapTerrainProfile::Batch> profile;
+#endif
         std::lock_guard lock(g_renderMutex);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (!g_residentChunks.empty()) profile.emplace();
+#endif
         ScheduleRetirement({});
         RetireInactive();
     }

@@ -107,13 +107,15 @@
     <ClInclude Include="Services\Map\Terrain\ITerrainDataProvider.h" />
     <ClInclude Include="Services\Map\Terrain\ITerrainSourceRetrieval.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainImage.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainPageIdentity.h" />
     <ClInclude Include="Services\Map\Terrain\Processing\TerrainBc1Codec.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainImageDelivery.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainViewport.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainService.h" />
     <ClInclude Include="Services\Map\Terrain\Acquisition\TerrainImageAcquisition.h" />
     <ClInclude Include="Services\Map\Terrain\Cache\TerrainFileCache.h" />
-    <ClInclude Include="Services\Map\Terrain\Cache\NativeTerrainCacheRecord.h" />
+    <ClInclude Include="Services\Map\Terrain\Cache\TerrainCacheRecord.h" />
+    <ClInclude Include="Services\Map\Terrain\Cache\TerrainCacheIdentity.h" />
     <ClInclude Include="Services\Map\Buildings\BuildingMapServiceABI.h" />
     <ClInclude Include="Map\Buildings\BuildingSpatialAdmission.h" />
     <ClInclude Include="Map\RuntimeFieldAccess.h" />
@@ -329,7 +331,7 @@
     <ClCompile Include="Services\Map\Terrain\Processing\TerrainBc1Codec.cpp" />
     <ClCompile Include="Services\Map\Terrain\TerrainViewport.cpp" />
     <ClCompile Include="Services\Map\Terrain\Cache\TerrainFileCache.cpp" />
-    <ClCompile Include="Services\Map\Terrain\Cache\NativeTerrainCacheRecord.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Cache\TerrainCacheRecord.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
     <ClCompile Include="Map\Terrain\NativeTerrainPresentation.cpp" />
     <ClCompile Include="Map\Terrain\TerrainReconciliation.cpp" />

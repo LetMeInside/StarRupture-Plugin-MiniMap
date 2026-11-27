@@ -1,42 +1,33 @@
-// Implements only native cache-key translation; actual lookup/persistence stays in TerrainService.
+// Reuses provider-owned game identity conventions for legacy cache callers, without native-key mapping.
 #include "StarRuptureTerrainCacheAssociation.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainSource.h"
-#include <stdexcept>
-#include <utility>
+#include "Map/Map.h"
+#include "SDK/Engine_classes.hpp"
 
 namespace MiniMapTerrainSource
 {
-    /** Captures strong configuration/capability ownership without a borrowed callback context. */
-    Services::Map::Terrain::TerrainService::NativeCacheMapping
-        StarRuptureTerrainCacheAssociation::CreateMapping(std::shared_ptr<StarRuptureTerrainProvider> provider)
+    /** Rejects unavailable or registered sources; the generic service receives only copied opaque evidence. */
+    std::optional<Services::Map::Terrain::Cache::TerrainCacheIdentity>
+        StarRuptureTerrainCacheAssociation::DescribeSource(const SourceTile& tile,
+            int width, int height, std::uint8_t pixelFormat, bool sRgb)
     {
-        if (!provider) throw std::invalid_argument("Native terrain cache mapping requires a provider.");
-        return [provider = std::move(provider)](const auto& query, const auto& description, const auto& inspection)
-        {
-            return MapKey(*provider, query, description, inspection);
-        };
-    }
-
-    /** The provider's native BC1 inspection enforces format 5; no game enum enters the generic service. */
-    std::optional<Services::Map::Terrain::TerrainService::NativeCacheKey>
-        StarRuptureTerrainCacheAssociation::MapKey(const StarRuptureTerrainProvider& provider,
-            const Services::Map::Terrain::ITerrainDataProvider::SourceQuery& query,
-            const Services::Map::Terrain::ITerrainDataProvider::SourceDescription& description,
-            const Services::Map::Terrain::ITerrainSourceRetrieval::Inspection& inspection)
-    {
-        using Retrieval = Services::Map::Terrain::ITerrainSourceRetrieval;
-        if (query.WorldId != provider.configuration_.WorldId || !query.RegionId.empty() ||
-            inspection.State != Retrieval::Status::Available || inspection.Encoding != Retrieval::SourceEncoding::Bc1)
-            throw std::invalid_argument("Native cache mapping requires current inspected BC1 source evidence.");
-        SourceTile tile;
-        if (!StarRuptureTerrainProvider::ResolveSource(provider.configuration_, query.SamplePosition, tile) ||
-            description.Source != inspection.Source ||
-            StarRuptureTerrainProvider::GetIdentity(provider.configuration_, tile) != inspection.Source)
-            throw std::runtime_error("Native terrain source changed before cache association.");
-        return Services::Map::Terrain::TerrainService::NativeCacheKey{
-            tile.GridX, tile.GridY, tile.RadiationLevel, static_cast<std::int32_t>(inspection.WidthPixels),
-            static_cast<std::int32_t>(inspection.HeightPixels), 5, inspection.SRgb};
+        if (tile.RegisteredImage || !tile.Texture || width <= 0 || height <= 0 || pixelFormat != 5) return {};
+        const auto* world = MiniMapMap::GetWorld();
+        if (!world) return {};
+        StarRuptureTerrainProvider::Configuration configuration{world->GetName(),
+            MiniMapMap::GetWorldGeneration(), {}};
+        if (!StarRuptureTerrainProvider::IsCurrentSession(configuration)) return {};
+        configuration.ContentRevision = SDK::UKismetSystemLibrary::GetBuildVersion().ToString();
+        if (configuration.ContentRevision.empty()) return {};
+        auto source = StarRuptureTerrainProvider::GetIdentity(configuration, tile);
+        Services::Map::Terrain::Cache::TerrainCacheIdentity identity{source, source.SourceId,
+            static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+            Services::Map::Terrain::ITerrainSourceRetrieval::SourceEncoding::Bc1, sRgb,
+            StarRuptureTerrainProvider::GetRegistration(tile),
+            StarRuptureTerrainProvider::GetPageIdentity(configuration, tile)};
+        if (!identity.IsValid()) return {};
+        return identity;
     }
 }
 #endif

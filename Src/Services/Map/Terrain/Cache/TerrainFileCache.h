@@ -1,7 +1,8 @@
-// Owns native-compatible terrain cache paths, IO and synchronization for its configured subtree only.
+// Owns generic terrain page cache paths, IO and synchronization for its configured subtree only.
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "../TerrainService.h"
+#include "TerrainCacheIdentity.h"
 #include <filesystem>
 #include <mutex>
 
@@ -18,10 +19,17 @@ namespace Services::Map::Terrain::Cache
         {
         public:
             /** Borrows a call-local trace and starts the specified phase if a callback is supplied. */
-            Activity(const TerrainService::NativeCacheTrace* trace, TerrainService::NativeCacheActivity phase) noexcept
+            Activity(const TerrainService::CacheTrace* trace, TerrainService::CacheActivity phase) noexcept
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 : trace_(trace), phase_(phase)
+#endif
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (trace_ && trace_->Notify) trace_->Notify(trace_->Context, phase_, true);
+#else
+                (void)trace;
+                (void)phase;
+#endif
             }
             /** Prevents duplicate end notifications. */
             Activity(const Activity&) = delete;
@@ -32,18 +40,22 @@ namespace Services::Map::Terrain::Cache
             /** Ends this phase once, allowing the next diagnostic phase to start without overlap. */
             void End() noexcept
             {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 if (trace_ && trace_->Notify) trace_->Notify(trace_->Context, phase_, false);
                 trace_ = nullptr;
+#endif
             }
         private:
-            const TerrainService::NativeCacheTrace* trace_;
-            TerrainService::NativeCacheActivity phase_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            const TerrainService::CacheTrace* trace_;
+            TerrainService::CacheActivity phase_;
+#endif
         };
 
-        /** Copies caller naming/root without creating directories or modifying cache authorization. */
-        explicit TerrainFileCache(const TerrainService::NativeCacheConfiguration& configuration);
+        /** Copies the existing Terrain root without creating directories or modifying cache authorization. */
+        explicit TerrainFileCache(const TerrainService::CacheConfiguration& configuration);
         /** Tests whether a repeated startup association requests identical immutable settings. */
-        bool HasConfiguration(const TerrainService::NativeCacheConfiguration& configuration) const;
+        bool HasConfiguration(const TerrainService::CacheConfiguration& configuration) const;
         /** Reopens this instance at quiescent application startup; never checks root metadata. */
         void Open();
         /** Waits for active IO, then rejects further reads/writes; clearing remains available while closed. */
@@ -53,32 +65,33 @@ namespace Services::Map::Terrain::Cache
         /** Exclusively deletes this subtree, waiting for complete IO and preserving open/closed admission state. */
         bool Clear();
         /** Holds instance exclusion through stream destruction; returns unavailable without changing output if closed. */
-        TerrainService::NativeCacheResult TryLoadChunk(const TerrainService::NativeCacheKey& key,
+        TerrainService::CacheResult TryLoadChunk(const TerrainCacheIdentity& key,
             int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
-            const TerrainService::NativeCacheTrace* trace) const;
+            const TerrainService::CacheTrace* trace) const;
         /** Holds instance exclusion through temporary cleanup/publication; rejects writes if closed. */
-        TerrainService::NativeCacheResult StoreSourceTile(const TerrainService::NativeCacheKey& key,
-            const std::uint8_t* source, std::size_t size, const TerrainService::NativeCacheTrace* trace) const;
+        TerrainService::CacheResult StoreSourceTile(const TerrainCacheIdentity& key,
+            const std::uint8_t* source, std::size_t size, const TerrainService::CacheTrace* trace) const;
 
     private:
-        /** Creates only the compatibility directory under the configured subtree, including on lookup. */
-        TerrainService::NativeCacheStatus GetDirectory(std::int32_t sourceState,
-            std::filesystem::path& directory) const;
-        /** Applies literal caller naming to the two numeric tile indices. */
-        std::filesystem::path GetFilePath(const std::filesystem::path& directory,
-            const TerrainService::NativeCacheKey& key) const;
+        /** Creates only the configured Terrain root, including on lookup. */
+        TerrainService::CacheStatus GetDirectory(std::filesystem::path& directory) const;
+        /** Constructs a validated provider page filename directly inside the configured Terrain root. */
+        bool GetFilePath(const std::filesystem::path& directory,
+            const TerrainPageIdentity& page, std::filesystem::path& file) const;
         /** Performs existence/length/header/chunk checks while its caller holds instance exclusion. */
-        static TerrainService::NativeCacheResult ReadFile(const std::filesystem::path& file,
-            const TerrainService::NativeCacheKey& key, int chunkX, int chunkY,
-            std::vector<std::uint8_t>& chunk, const TerrainService::NativeCacheTrace* trace);
+        static TerrainService::CacheResult ReadFile(const std::filesystem::path& file,
+            const TerrainCacheIdentity& key, const std::vector<std::uint8_t>& metadata,
+            std::uint64_t fileBytes, int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
+            const TerrainService::CacheTrace* trace);
         /** Writes/closes/publishes a .tmp record and removes it on post-open failure. */
-        static TerrainService::NativeCacheResult WriteFile(const std::filesystem::path& file,
-            const TerrainService::NativeCacheKey& key, const std::uint8_t* source,
-            const TerrainService::NativeCacheTrace* trace);
+        static TerrainService::CacheResult WriteFile(const std::filesystem::path& file,
+            const TerrainCacheIdentity& key, const std::vector<std::uint8_t>& metadata,
+            const std::uint8_t* source,
+            const TerrainService::CacheTrace* trace);
 
-        const TerrainService::NativeCacheConfiguration configuration_;
+        const TerrainService::CacheConfiguration configuration_;
         mutable std::mutex fileMutex_;
-        bool closed_ = false; // Protected by fileMutex_; independent of application root metadata.
+        bool closed_ = true; // Protected by fileMutex_; independent of application root metadata.
     };
 }
 #endif

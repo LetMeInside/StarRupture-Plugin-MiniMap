@@ -3,6 +3,7 @@
 #pragma once
 
 #include "TerrainImage.h"
+#include "TerrainPageIdentity.h"
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -47,6 +48,7 @@ namespace Services::Map::Terrain
             std::uint32_t HeightPixels = 0;
             std::size_t RowStrideBytes = 0;
             bool SRgb = false;
+            TerrainPageIdentity Page;
         };
 
         /** Receives scoped source data for service-owned ingestion; implementations may not publish raw pixels. */

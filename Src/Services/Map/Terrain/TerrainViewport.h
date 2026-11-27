@@ -101,6 +101,51 @@ namespace Services::Map::Terrain
         /** Reports retained receipts, including the current presentation; safe to inspect without native work. */
         bool HasReceipts() const noexcept;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Optional call-local presentation diagnostics; no texture ownership is passed to observers.
+         * Callbacks must be noexcept and must not reenter. Released reports API result and whether
+         * receipt ownership was actually returned. Timing and aggregation remain caller-owned.
+         */
+        struct PresentationTrace
+        {
+            /** Identifies only operations that need separate elapsed-time observation. */
+            enum class Activity { Decode, Upload, Release };
+            void* Context = nullptr;
+            void (*Notify)(void*, Activity, bool entering) noexcept = nullptr;
+            void (*Released)(void*, MiniMap::Services::ReleaseState, bool returned) noexcept = nullptr;
+            /** Balances one synchronous notification across early returns and exceptions. */
+            class Scope final
+            {
+            public:
+                /** Borrows the trace only through the enclosing observed operation. */
+                Scope(const PresentationTrace* trace, Activity activity) noexcept
+                    : trace_(trace), activity_(activity)
+                {
+                    if (trace_ && trace_->Notify) trace_->Notify(trace_->Context, activity_, true);
+                }
+                /** Prevents duplicate end notifications through copied observation scopes. */
+                Scope(const Scope&) = delete;
+                /** Prevents replacing an active borrowed notification. */
+                Scope& operator=(const Scope&) = delete;
+                /** Closes the notification without performing any native work. */
+                ~Scope() { End(); }
+                /** Ends once, so the next phase never inherits this elapsed interval. */
+                void End() noexcept
+                {
+                    if (trace_ && trace_->Notify) trace_->Notify(trace_->Context, activity_, false);
+                    trace_ = nullptr;
+                }
+            private:
+                const PresentationTrace* trace_;
+                Activity activity_;
+            };
+        };
+        /** Observes one unchanged upload call; retains no callback/context beyond return. */
+        UploadResult Upload(const std::string& slotId, const PresentationTrace& trace);
+        /** Observes actual release attempts only, including their authoritative ownership outcomes. */
+        bool DrainRetirements(bool drawsDetached, const PresentationTrace& trace) noexcept;
+#endif
+
     private:
         /** Stable authoritative receipt slot. Retired/uncertain slots remain owned until explicit return. */
         struct Presentation
@@ -148,6 +193,9 @@ namespace Services::Map::Terrain
         /** Projects this image's logical corners through the shared viewport, rejecting overflow. */
         bool BuildQuad(const TerrainImage& image, MiniMap::Services::Quad& positions) const noexcept;
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        const PresentationTrace* presentationTrace_ = nullptr;
+#endif
         MiniMap::Services::ITextures& textures_;
         std::optional<TerrainImageDelivery::Stamp> demand_;
         View view_;

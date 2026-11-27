@@ -148,6 +148,7 @@ namespace Services::Map::Terrain
         {
             TerrainImage::Identity Source;
             std::variant<std::monostate, RetrievalSource, CaptureDefinition> Acquisition;
+            TerrainPageIdentity Page;
         };
 
         /** Releases provider-local metadata; no service jobs/cache or viewport resources are owned here. */

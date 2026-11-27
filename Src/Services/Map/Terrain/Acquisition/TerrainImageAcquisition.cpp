@@ -1,10 +1,7 @@
-// Implements demand-driven BC1 source inspection, compatible cache coordination and immutable delivery.
+// Implements demand-driven BC1 source inspection, private page cache coordination and immutable delivery.
 // Each advancement executes one phase; native/provider calls remain synchronous and application-admitted.
 #include "TerrainImageAcquisition.h"
 #include "../Processing/TerrainBc1Codec.h"
-#if defined(MODLOADER_CLIENT_BUILD)
-#include "../Cache/NativeTerrainCacheRecord.h"
-#endif
 #include <utility>
 
 namespace Services::Map::Terrain::Acquisition
@@ -98,7 +95,11 @@ namespace Services::Map::Terrain::Acquisition
             Store(service);
             break;
         case Phase::Admit:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+            AdmitObserved(service);
+#else
             Admit();
+#endif
             break;
         case Phase::ValidateDelivery:
             ValidateDelivery(service);
@@ -115,9 +116,6 @@ namespace Services::Map::Terrain::Acquisition
         description_.Acquisition = std::monostate{};
         sourceImage_.reset();
         preparedImage_.reset();
-#if defined(MODLOADER_CLIENT_BUILD)
-        parameters_.MapNativeCacheKey = {};
-#endif
     }
 
     /** Preserves the original stamp/region/source as withdrawal evidence, with no allocation or native cleanup. */
@@ -184,7 +182,7 @@ namespace Services::Map::Terrain::Acquisition
         return false;
     }
 
-    /** Native inspection always precedes disk lookup or retained-source reuse for this request. */
+    /** Source inspection always precedes disk lookup or retained-source reuse for this request. */
     void TerrainImageAcquisition::Inspect(TerrainService& service)
     {
         const auto retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
@@ -205,7 +203,7 @@ namespace Services::Map::Terrain::Acquisition
     {
         const auto& retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
         const auto size = TerrainImage::CalculateByteCount(inspection_.WidthPixels, inspection_.HeightPixels);
-        return size && inspection_.Source == description_.Source &&
+        return size && inspection_.Source == description_.Source && inspection_.Page == description_.Page &&
             inspection_.Locator.Value == retrieval.Locator.Value &&
             inspection_.Encoding == ITerrainSourceRetrieval::SourceEncoding::Bc1 &&
             inspection_.RowStrideBytes == ((static_cast<std::size_t>(inspection_.WidthPixels) + 3u) / 4u) * 8u &&
@@ -215,26 +213,16 @@ namespace Services::Map::Terrain::Acquisition
             GetRequestedRegistration().IsValid();
     }
 
-    /** Gives the application only copied source/inspection evidence, never cache ownership. */
+    /** Derives private cache evidence without another provider/native call; preserves this explicit phase. */
     void TerrainImageAcquisition::AssociateCache(TerrainService& service)
     {
-#if defined(MODLOADER_CLIENT_BUILD)
-        const auto mapping = parameters_.MapNativeCacheKey;
-        if (mapping)
-        {
-            const auto description = description_;
-            const auto inspection = inspection_;
-            const auto key = mapping(query_, description, inspection);
-            if (!service.IsRequestCurrent(*this)) return;
-            if (key && !IsValidCacheKey(*key))
-            {
-                Fail("Application cache association does not match inspected native BC1 layout.");
-                return;
-            }
-            cacheKey_ = key;
-        }
-#else
         (void)service;
+#if defined(MODLOADER_CLIENT_BUILD)
+        const auto& retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
+        Cache::TerrainCacheIdentity identity{inspection_.Source, inspection_.Locator.Value,
+            inspection_.WidthPixels, inspection_.HeightPixels, inspection_.Encoding,
+            inspection_.SRgb, retrieval.ImageRegistration, inspection_.Page};
+        if (identity.IsValid()) cacheKey_ = std::move(identity);
 #endif
         phase_ = Phase::ReadCache;
     }
@@ -246,10 +234,19 @@ namespace Services::Map::Terrain::Acquisition
         if (cacheKey_ && IsCacheChunk())
         {
             std::vector<std::uint8_t> blocks;
-            const auto result = service.TryLoadNativeChunk(*cacheKey_, parameters_.PixelX / 256u,
-                parameters_.PixelY / 256u, blocks);
+            const auto result = service.TryLoadCacheTile(*cacheKey_,
+                parameters_.PixelX / Cache::TerrainCacheIdentity::TileDimension,
+                parameters_.PixelY / Cache::TerrainCacheIdentity::TileDimension, blocks
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+                , service.imageRequestTrace_ ? &service.imageRequestTrace_->Cache : nullptr
+#endif
+            );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+            if (service.imageRequestTrace_ && service.imageRequestTrace_->ReadResult)
+                service.imageRequestTrace_->ReadResult(service.imageRequestTrace_->Cache.Context, result);
+#endif
             if (!service.IsRequestCurrent(*this)) return;
-            if (result.Status == TerrainService::NativeCacheStatus::Hit)
+            if (result.Status == TerrainService::CacheStatus::Hit)
             {
                 auto image = TerrainService::IngestBc1(description_.Source, parameters_.WidthPixels,
                     parameters_.HeightPixels, GetRequestedRegistration(), inspection_.SRgb, std::move(blocks));
@@ -275,16 +272,15 @@ namespace Services::Map::Terrain::Acquisition
         return left.State == right.State && left.Locator.Value == right.Locator.Value &&
             left.Source == right.Source && left.Encoding == right.Encoding &&
             left.WidthPixels == right.WidthPixels && left.HeightPixels == right.HeightPixels &&
-            left.RowStrideBytes == right.RowStrideBytes && left.SRgb == right.SRgb;
+            left.RowStrideBytes == right.RowStrideBytes && left.SRgb == right.SRgb && left.Page == right.Page;
     }
 
-    /** Shares only one completed native tile, tied to this selected registration and full source evidence. */
+    /** Reuses one full image only for the issuing registration and all inspected source/placement evidence. */
     bool TerrainImageAcquisition::CanReuseSource(const TerrainService& service) const noexcept
     {
-#if defined(MODLOADER_CLIENT_BUILD)
-        const auto& retained = service.retainedNativeSource_;
-        if (!cacheKey_ || retained.Provider != parameters_.Provider || retained.Key != cacheKey_ || !retained.Image)
-            return false;
+        const auto& retained = service.retainedSource_;
+        if (retained.Provider != parameters_.Provider || !retained.Image ||
+            !SameInspection(retained.Inspection, inspection_)) return false;
         const auto& image = *retained.Image;
         const auto& actual = image.GetRegistration();
         const auto& expected = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition).ImageRegistration;
@@ -293,10 +289,6 @@ namespace Services::Map::Terrain::Acquisition
             actual.Origin.X == expected.Origin.X && actual.Origin.Y == expected.Origin.Y &&
             actual.U.X == expected.U.X && actual.U.Y == expected.U.Y &&
             actual.V.X == expected.V.X && actual.V.Y == expected.V.Y;
-#else
-        (void)service;
-        return false;
-#endif
     }
 
     /** Copies borrowed native bytes into canonical immutable storage before Retrieve returns. */
@@ -304,7 +296,7 @@ namespace Services::Map::Terrain::Acquisition
     {
         if (CanReuseSource(service))
         {
-            sourceImage_ = service.retainedNativeSource_.Image;
+            sourceImage_ = service.retainedSource_.Image;
             phase_ = Phase::Admit;
             return;
         }
@@ -319,14 +311,11 @@ namespace Services::Map::Terrain::Acquisition
             Fail("Successful terrain retrieval did not supply exactly one valid BC1 image.");
             return;
         }
-#if defined(MODLOADER_CLIENT_BUILD)
-        if (cacheKey_)
-            service.retainedNativeSource_ = {parameters_.Provider, sourceImage_, cacheKey_};
-#endif
+        service.retainedSource_ = {parameters_.Provider, sourceImage_, inspection_};
         phase_ = Phase::Store;
     }
 
-    /** Existing cache ownership handles complete compatible persistence; usable data survives write failure. */
+    /** Service cache ownership handles complete page persistence; usable data survives write failure. */
     void TerrainImageAcquisition::Store(TerrainService& service)
     {
 #if defined(MODLOADER_CLIENT_BUILD)
@@ -334,9 +323,13 @@ namespace Services::Map::Terrain::Acquisition
         {
             const auto image = sourceImage_;
             const auto bytes = image->GetCompressedBytes();
-            const auto result = service.StoreNativeSourceTile(*cacheKey_, bytes.data(), bytes.size());
+            const auto result = service.StoreCachePage(*cacheKey_, bytes.data(), bytes.size()
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+                , service.imageRequestTrace_ ? &service.imageRequestTrace_->Cache : nullptr
+#endif
+            );
             if (!service.IsRequestCurrent(*this)) return;
-            if (result.Status != TerrainService::NativeCacheStatus::Stored)
+            if (result.Status != TerrainService::CacheStatus::Stored)
                 cacheWarning_ = "Terrain cache persistence did not complete; status " +
                     std::to_string(static_cast<int>(result.Status)) + ".";
         }
@@ -359,6 +352,25 @@ namespace Services::Map::Terrain::Acquisition
             phase_ = Phase::ValidateDelivery;
         }
     }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+    /** Observation spans this phase only; staged work in other callbacks is not charged again. */
+    void TerrainImageAcquisition::AdmitObserved(TerrainService& service)
+    {
+        const auto* trace = service.imageRequestTrace_;
+        if (trace && trace->Extraction) trace->Extraction(trace->Cache.Context, true);
+        try
+        {
+            Admit();
+        }
+        catch (...)
+        {
+            if (trace && trace->Extraction) trace->Extraction(trace->Cache.Context, false);
+            throw;
+        }
+        if (trace && trace->Extraction) trace->Extraction(trace->Cache.Context, false);
+    }
+#endif
 
     /** A cache hit or retrieval from an earlier callback cannot authorize publication of a changed source. */
     void TerrainImageAcquisition::ValidateDelivery(TerrainService& service)
@@ -405,20 +417,13 @@ namespace Services::Map::Terrain::Acquisition
     }
 
 #if defined(MODLOADER_CLIENT_BUILD)
-    /** Version-one numeric format/layout knowledge belongs to the compatible cache, not game interpretation. */
-    bool TerrainImageAcquisition::IsValidCacheKey(const TerrainService::NativeCacheKey& key) const noexcept
-    {
-        return key.SourceState >= 0 && key.SourceWidth == Cache::NativeTerrainCacheRecord::SourceDimension &&
-            key.SourceHeight == Cache::NativeTerrainCacheRecord::SourceDimension && key.PixelFormat == 5 &&
-            static_cast<std::uint32_t>(key.SourceWidth) == inspection_.WidthPixels &&
-            static_cast<std::uint32_t>(key.SourceHeight) == inspection_.HeightPixels && key.SRGB == inspection_.SRgb;
-    }
-
     /** A compatible record supplies one 256-square image at a chunk-aligned pixel origin. */
     bool TerrainImageAcquisition::IsCacheChunk() const noexcept
     {
-        return parameters_.WidthPixels == 256u && parameters_.HeightPixels == 256u &&
-            parameters_.PixelX % 256u == 0 && parameters_.PixelY % 256u == 0;
+        return parameters_.WidthPixels == Cache::TerrainCacheIdentity::TileDimension &&
+            parameters_.HeightPixels == Cache::TerrainCacheIdentity::TileDimension &&
+            parameters_.PixelX % Cache::TerrainCacheIdentity::TileDimension == 0 &&
+            parameters_.PixelY % Cache::TerrainCacheIdentity::TileDimension == 0;
     }
 #endif
 }

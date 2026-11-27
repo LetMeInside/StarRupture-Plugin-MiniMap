@@ -1,10 +1,11 @@
-// Implements the unregistered native default terrain provider and scoped BC1 source retrieval.
+// Implements the externally registered native default terrain provider and scoped BC1 source retrieval.
 // Reuses native resolution/readiness/metadata/copy APIs; no cache, image conversion or GPU work occurs here.
 #include "StarRuptureTerrainProvider.h"
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainSource.h"
 #include "TerrainChunkAcquisition.h"
 #include "TerrainChunks.h"
+#include "TerrainProfile.h"
 #include "Map/Map.h"
 #include "Native/NativeApi.h"
 #include "SDK/Engine_classes.hpp"
@@ -23,7 +24,8 @@ namespace MiniMapTerrainSource
         /** Copies the re-resolvable sample, identity and registration, retaining no native pointer. */
         SourceRetrieval(Configuration configuration, Position sample,
             Services::Map::Terrain::TerrainImage::Identity identity,
-            Services::Map::Terrain::TerrainImage::Registration registration);
+            Services::Map::Terrain::TerrainImage::Registration registration,
+            Services::Map::Terrain::TerrainPageIdentity page);
         /** Re-resolves source and validates native readiness/mip metadata before any future cache decision. */
         Inspection Inspect(const SourceLocator& source) override;
         /** Revalidates inspected identity/layout, borrows a paired native BC1 copy through ingestion only. */
@@ -44,6 +46,7 @@ namespace MiniMapTerrainSource
         const Position sample_;
         const Services::Map::Terrain::TerrainImage::Identity identity_;
         const Services::Map::Terrain::TerrainImage::Registration registration_;
+        const Services::Map::Terrain::TerrainPageIdentity page_;
     };
 
     /** Validates values only; no current-world observation occurs in construction. */
@@ -101,17 +104,28 @@ namespace MiniMapTerrainSource
             {tile.NativeWorldSize.X, 0.0}, {0.0, tile.NativeWorldSize.Y}};
     }
 
-    /** Keeps variants distinct in memory without changing the legacy cache key/schema. */
+    /** Encodes game-specific grid, radiation, brush and asset identity as opaque persistent source evidence. */
     Services::Map::Terrain::TerrainImage::Identity StarRuptureTerrainProvider::GetIdentity(
         const Configuration& configuration, const SourceTile& tile)
     {
         const auto assetName = tile.Texture->GetFullName();
-        const auto sourceId = configuration.WorldId + "/Terrain/" + std::to_string(tile.GridX) +
+        const auto sourceId = "StarRupture.NativeTerrain/" + configuration.WorldId + "/Terrain/" + std::to_string(tile.GridX) +
             "/" + std::to_string(tile.GridY);
         const auto revision = std::to_string(configuration.ContentRevision.size()) + ":" +
             configuration.ContentRevision + "/R" + std::to_string(tile.RadiationLevel) +
             "/V" + std::to_string(static_cast<int>(tile.SelectedVariant)) + "/" + assetName;
         return {sourceId, revision};
+    }
+
+    /** Keeps baseline world pages readable and separates every radiation/selected-brush pair from that baseline. */
+    Services::Map::Terrain::TerrainPageIdentity StarRuptureTerrainProvider::GetPageIdentity(
+        const Configuration& configuration, const SourceTile& tile)
+    {
+        auto collection = configuration.WorldId + "_World";
+        if (tile.RadiationLevel != 0 || tile.SelectedVariant != Variant::Ordinary)
+            collection += "_Radiation" + std::to_string(tile.RadiationLevel) + "_Brush" +
+                std::to_string(static_cast<int>(tile.SelectedVariant));
+        return {std::move(collection), tile.GridX, tile.GridY};
     }
 
     /** Returns generic source metadata and a strongly owned capability, never a durable native borrow. */
@@ -125,18 +139,20 @@ namespace MiniMapTerrainSource
         const auto registration = GetRegistration(tile);
         if (!registration.IsValid()) return {};
         auto identity = GetIdentity(configuration_, tile);
+        auto page = GetPageIdentity(configuration_, tile);
         auto capability = std::make_shared<SourceRetrieval>(configuration_, query.SamplePosition,
-            identity, registration);
+            identity, registration, page);
         RetrievalSource retrieval{{identity.SourceId}, std::move(capability), registration};
-        return {std::move(identity), std::move(retrieval)};
+        return {std::move(identity), std::move(retrieval), std::move(page)};
     }
 
     /** Stores immutable scalar/string evidence only; ownership is the returned shared capability. */
     StarRuptureTerrainProvider::SourceRetrieval::SourceRetrieval(Configuration configuration,
         Position sample, Services::Map::Terrain::TerrainImage::Identity identity,
-        Services::Map::Terrain::TerrainImage::Registration registration)
+        Services::Map::Terrain::TerrainImage::Registration registration,
+        Services::Map::Terrain::TerrainPageIdentity page)
         : configuration_(std::move(configuration)), sample_(sample), identity_(std::move(identity)),
-          registration_(registration)
+          registration_(registration), page_(std::move(page))
     {
     }
 
@@ -145,7 +161,8 @@ namespace MiniMapTerrainSource
         StarRuptureTerrainProvider::SourceRetrieval::ResolveReference(SourceTile& tile) const
     {
         if (!ResolveSource(configuration_, sample_, tile)) return Status::Unavailable;
-        if (GetIdentity(configuration_, tile) != identity_) return Status::SourceChanged;
+        if (GetIdentity(configuration_, tile) != identity_ ||
+            GetPageIdentity(configuration_, tile) != page_) return Status::SourceChanged;
         const auto registration = GetRegistration(tile);
         if (registration.Origin.X != registration_.Origin.X || registration.Origin.Y != registration_.Origin.Y ||
             registration.U.X != registration_.U.X || registration.U.Y != registration_.U.Y ||
@@ -162,6 +179,7 @@ namespace MiniMapTerrainSource
         Inspection result;
         result.Locator = source;
         result.Source = identity_;
+        result.Page = page_;
         mip = {};
         texture = nullptr;
         if (source.Value != identity_.SourceId)
@@ -216,7 +234,7 @@ namespace MiniMapTerrainSource
         return left.State == right.State && left.Locator.Value == right.Locator.Value &&
             left.Source == right.Source && left.Encoding == right.Encoding &&
             left.WidthPixels == right.WidthPixels && left.HeightPixels == right.HeightPixels &&
-            left.RowStrideBytes == right.RowStrideBytes && left.SRgb == right.SRgb;
+            left.RowStrideBytes == right.RowStrideBytes && left.SRgb == right.SRgb && left.Page == right.Page;
     }
 
     /** Rechecks source and current mip interpretation after potentially reentrant native copying. */
@@ -247,7 +265,14 @@ namespace MiniMapTerrainSource
         if (current.State != Status::Available) return current.State;
         if (!SameInspection(expectedSource, current)) return Status::SourceChanged;
         void* allocation = nullptr;
-        if (!MiniMapNative::TextureAccess::CopyBulkData(mip, &allocation, false) || !allocation)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        MiniMapTerrainProfile::Scope copying(MiniMapTerrainProfile::Phase::BulkCopy);
+#endif
+        const bool copied = MiniMapNative::TextureAccess::CopyBulkData(mip, &allocation, false);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        copying.End();
+#endif
+        if (!copied || !allocation)
             return Status::Unavailable;
         const std::unique_ptr<void, decltype(&MiniMapNative::TextureAccess::FreeBulkDataCopy)> copy(
             allocation, &MiniMapNative::TextureAccess::FreeBulkDataCopy);

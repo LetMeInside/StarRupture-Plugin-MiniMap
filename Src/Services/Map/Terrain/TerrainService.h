@@ -1,5 +1,5 @@
 // Owns externally supplied terrain registrations, validated coverage and physical-position selection.
-// Also owns explicitly advanced BC1 acquisition, compatible caching and immutable CPU delivery.
+// Also owns explicitly advanced BC1 acquisition, private page caching and immutable CPU delivery.
 #pragma once
 
 #include "ITerrainDataProvider.h"
@@ -19,7 +19,7 @@
 
 namespace Services::Map::Terrain
 {
-    namespace Cache { class TerrainFileCache; }
+    namespace Cache { class TerrainFileCache; struct TerrainCacheIdentity; }
     namespace Acquisition { class TerrainImageAcquisition; }
     /** Coordinates registrations and acquisition on one serialized calling thread, with application-scoped cache configuration.
      * Cache IO, clearing and close/drain use independent per-cache exclusion; configuration requires quiescent startup.
@@ -125,92 +125,66 @@ namespace Services::Map::Terrain
             std::uint32_t x, std::uint32_t y, std::uint32_t width, std::uint32_t height);
 
 #if defined(MODLOADER_CLIENT_BUILD)
-        /** Application-supplied absolute subtree and literal compatibility naming; no provider constructs paths.
+        /** Application-supplied absolute Terrain subtree; all record naming remains private to the service.
          * Application assigns this subtree to one service owner and routes subtree deletion through that owner.
          */
-        struct NativeCacheConfiguration
+        struct CacheConfiguration
         {
             std::filesystem::path Root;
-            std::wstring DirectoryPrefix;
-            std::wstring FilePrefix;
-            std::wstring IndexSeparator;
-            std::wstring Extension;
             /** Allows idempotent startup association without changing an active cache. */
-            bool operator==(const NativeCacheConfiguration&) const = default;
-        };
-
-        /** Opaque numeric source metadata, serialized in the original version-one order. */
-        struct NativeCacheKey
-        {
-            std::int32_t TileIndex0;
-            std::int32_t TileIndex1;
-            std::int32_t SourceState;
-            std::int32_t SourceWidth;
-            std::int32_t SourceHeight;
-            std::uint8_t PixelFormat;
-            bool SRGB;
-            /** Compares neutral compatibility scalars without changing serialized identity. */
-            bool operator==(const NativeCacheKey&) const = default;
+            bool operator==(const CacheConfiguration&) const = default;
         };
 
         /** Distinguishes ordinary misses/admission failures from existing file-validation failures. */
-        enum class NativeCacheStatus
+        enum class CacheStatus
         {
             Unavailable, InvalidInput, DirectoryFailure, Miss, ExistenceFailure,
             InvalidFileSize, OpenFailure, HeaderMismatch, ReadFailure, WriteFailure, Hit, Stored
         };
 
         /** Contains no image ownership or jobs; error preserves filesystem existence-query diagnostics. */
-        struct NativeCacheResult
+        struct CacheResult
         {
-            NativeCacheStatus Status = NativeCacheStatus::Unavailable;
+            CacheStatus Status = CacheStatus::Unavailable;
             std::error_code Error;
         };
 
         /** Synchronous optional diagnostic phases; observers never participate in cache policy or IO. */
-        enum class NativeCacheActivity { Load, Store, Path, Header, Read, Extraction };
+        enum class CacheActivity { Load, Store, Path, Header, Read, Extraction };
 
         /** Borrows call-local diagnostic state only until the cache method returns; callbacks must not reenter.
          * Notification must be noexcept. No pointer is retained by the service or private cache owner.
          */
-        struct NativeCacheTrace
+        struct CacheTrace
         {
             void* Context = nullptr;
-            void (*Notify)(void* context, NativeCacheActivity activity, bool entering) noexcept = nullptr;
+            void (*Notify)(void* context, CacheActivity activity, bool entering) noexcept = nullptr;
         };
 
         /** Associates one cache at quiescent application startup, before cache callbacks are admitted.
-         * Repeating identical settings reopens a closed cache; replacing settings is rejected.
+         * Repeating identical settings closes admission for startup validation; replacing settings is rejected.
          * Session changes do not clear files. No root identity/readiness is checked.
          */
-        bool ConfigureNativeCache(const NativeCacheConfiguration& configuration);
+        bool ConfigureTerrainCache(const CacheConfiguration& configuration);
         /** Copies configured root without IO; false before configuration. */
-        bool GetNativeCacheRoot(std::filesystem::path& root) const;
-        /** Drains active terrain IO and closes read/write admission until quiescent reconfiguration.
+        bool GetTerrainCacheRoot(std::filesystem::path& root) const;
+        /** Drains active terrain IO and closes read/write admission until explicit post-invalidation opening.
          * Application shutdown calls this before exit clearing; does not inspect root metadata or delete files.
          */
-        void CloseNativeCache();
+        void CloseTerrainCache();
+        /** Opens the configured cache only after application root identity/invalidation has succeeded. */
+        void OpenTerrainCache();
         /** Clears only the configured subtree under service-owned exclusion, waiting for active terrain IO.
          * Does not reopen a closed cache or consult application root-cache management.
          */
-        bool ClearNativeCache();
-        /** Reads one chunk under subtree exclusion; preserves output if this cache instance is closed. */
-        NativeCacheResult TryLoadNativeChunk(const NativeCacheKey& key, int chunkX, int chunkY,
-            std::vector<std::uint8_t>& compressedChunk, const NativeCacheTrace* trace = nullptr) const;
-        /** Stores one complete BC1 tile under subtree exclusion; failure leaves caller source bytes untouched. */
-        NativeCacheResult StoreNativeSourceTile(const NativeCacheKey& key,
+        bool ClearTerrainCache();
+        /** Reads one canonical tile under subtree exclusion; preserves output if this cache instance is closed. */
+        CacheResult TryLoadCacheTile(const Cache::TerrainCacheIdentity& key, int chunkX, int chunkY,
+            std::vector<std::uint8_t>& compressedChunk, const CacheTrace* trace = nullptr) const;
+        /** Stores one complete BC1 page under subtree exclusion; failure leaves caller source bytes untouched. */
+        CacheResult StoreCachePage(const Cache::TerrainCacheIdentity& key,
             const std::uint8_t* sourceData, std::size_t sourceDataSize,
-            const NativeCacheTrace* trace = nullptr) const;
-#endif
-
-#if defined(MODLOADER_CLIENT_BUILD)
-        /** Application-owned scalar translation, invoked only after successful source inspection.
-         * It may revalidate source metadata, but must not perform cache IO or reenter advancement.
-         * nullopt means no compatible cache association. Captures must own their dependencies.
-         */
-        using NativeCacheMapping = std::function<std::optional<NativeCacheKey>(
-            const ITerrainDataProvider::SourceQuery&, const ITerrainDataProvider::SourceDescription&,
-            const ITerrainSourceRetrieval::Inspection&)>;
+            const CacheTrace* trace = nullptr) const;
 #endif
 
         /** Identifies one demanded logical pixel rectangle in the externally selected source.
@@ -228,9 +202,6 @@ namespace Services::Map::Terrain
             std::uint32_t PixelY = 0;
             std::uint32_t WidthPixels = 0;
             std::uint32_t HeightPixels = 0;
-#if defined(MODLOADER_CLIENT_BUILD)
-            NativeCacheMapping MapNativeCacheKey;
-#endif
         };
 
         /** Shared observation handle for service-owned work, not a provider/native resource handle.
@@ -271,6 +242,21 @@ namespace Services::Map::Terrain
          */
         void AdvanceImageRequests();
 
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        /** Optional call-local CPU diagnostics. Callbacks are noexcept, observation-only and must not
+         * reenter the service. Cache.Context is shared by all callbacks. Nothing is retained after
+         * the observed advancement returns; no provider, plugin or timing implementation is required.
+         */
+        struct ImageRequestTrace
+        {
+            CacheTrace Cache;
+            void (*ReadResult)(void*, const CacheResult&) noexcept = nullptr;
+            void (*Extraction)(void*, bool entering) noexcept = nullptr;
+        };
+        /** Runs the same single phase with borrowed Debug observation; no scheduling policy changes. */
+        void AdvanceImageRequests(const ImageRequestTrace& trace);
+#endif
+
         /** Begins valid session, replacing prior registrations; repeating the current session is a no-op.
          * Returns false for invalid identity. No provider is constructed or registered automatically.
          */
@@ -303,19 +289,20 @@ namespace Services::Map::Terrain
 
     private:
         friend class Acquisition::TerrainImageAcquisition;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        const ImageRequestTrace* imageRequestTrace_ = nullptr;
+#endif
         /** Checks existing session, selected registration and delivery stamp before/after external operations. */
         bool IsRequestCurrent(const Acquisition::TerrainImageAcquisition& request) const noexcept;
-        /** Withdraws all CPU requests and the single retained native tile, with no IO/native calls. */
+        /** Withdraws all CPU requests and the single retained full-source image, with no IO/native calls. */
         void InvalidateImageRequests() noexcept;
 
         /** One bounded adjacent-request reuse slot; never an open-ended resident tile cache. */
-        struct RetainedNativeSource
+        struct RetainedSource
         {
             Registration Provider;
             std::shared_ptr<const TerrainImage> Image;
-#if defined(MODLOADER_CLIENT_BUILD)
-            std::optional<NativeCacheKey> Key;
-#endif
+            ITerrainSourceRetrieval::Inspection Inspection;
         };
         /** Owns one provider and the immutable copied coverage/identity used by the sole registry. */
         struct Entry
@@ -351,7 +338,7 @@ namespace Services::Map::Terrain
         std::list<std::shared_ptr<Acquisition::TerrainImageAcquisition>> imageRequests_;
         std::deque<std::shared_ptr<Acquisition::TerrainImageAcquisition>> pendingImageRequests_;
         std::optional<TerrainImageDelivery::Stamp> lastRequestStamp_;
-        RetainedNativeSource retainedNativeSource_;
+        RetainedSource retainedSource_;
         bool advancingImages_ = false;
 #if defined(MODLOADER_CLIENT_BUILD)
         std::unique_ptr<Cache::TerrainFileCache> fileCache_;

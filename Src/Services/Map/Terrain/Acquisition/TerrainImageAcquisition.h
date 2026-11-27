@@ -2,6 +2,7 @@
 // Provider/native borrows never enter this owner; all public results remain TerrainImageDelivery.
 #pragma once
 #include "../TerrainService.h"
+#include "../Cache/TerrainCacheIdentity.h"
 
 namespace Services::Map::Terrain::Acquisition
 {
@@ -35,16 +36,20 @@ namespace Services::Map::Terrain::Acquisition
         void Describe(TerrainService& service);
         /** Inspects before memory/disk reuse; validates packed BC1 metadata and the requested rectangle. */
         void Inspect(TerrainService& service);
-        /** Invokes optional application scalar mapping after successful inspection. */
+        /** Associates supported pages with complete generic inspected identity and affine placement. */
         void AssociateCache(TerrainService& service);
-        /** Reads only a compatible requested cache chunk; misses proceed to full-source retrieval. */
+        /** Reads only a requested canonical cache tile; misses proceed to full-source retrieval. */
         void ReadCache(TerrainService& service);
         /** Consumes one full-source retrieval synchronously, or shares the single validated reuse slot. */
         void Retrieve(TerrainService& service);
-        /** Attempts one complete eligible tile write; failure does not invalidate usable CPU data. */
+        /** Attempts one complete eligible page write; failure does not invalidate usable CPU data. */
         void Store(TerrainService& service);
         /** Uses canonical extraction/admission, preserving logical extent and affine registration. */
         void Admit();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        /** Balances optional extraction observation around the unchanged canonical admission operation. */
+        void AdmitObserved(TerrainService& service);
+#endif
         /** Re-inspects staged source evidence immediately before publication, without further file operations. */
         void ValidateDelivery(TerrainService& service);
         /** Publishes only still-current immutable data; releases all request-local source capabilities. */
@@ -63,11 +68,9 @@ namespace Services::Map::Terrain::Acquisition
         /** Matches immutable content, interpretation, placement and originating registration for bounded reuse. */
         bool CanReuseSource(const TerrainService& service) const noexcept;
 #if defined(MODLOADER_CLIENT_BUILD)
-        /** Checks the concrete version-one native cache layout against successfully inspected metadata. */
-        bool IsValidCacheKey(const TerrainService::NativeCacheKey& key) const noexcept;
-        /** Allows direct cache reads only for one exactly aligned compatibility chunk. */
+        /** Allows direct cache reads only for one exactly aligned canonical tile. */
         bool IsCacheChunk() const noexcept;
-        std::optional<TerrainService::NativeCacheKey> cacheKey_;
+        std::optional<Cache::TerrainCacheIdentity> cacheKey_;
 #endif
         TerrainService::ImageRequestParameters parameters_;
         std::shared_ptr<ITerrainDataProvider> provider_;

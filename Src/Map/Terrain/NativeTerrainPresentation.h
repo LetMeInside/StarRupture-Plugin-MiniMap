@@ -61,6 +61,12 @@ namespace MiniMapTerrainSource
         bool StopAndDrain(bool callbacksDetached);
 
     private:
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Stack-only adapter from generic observations into the existing TerrainProfile aggregate. */
+        class Diagnostics;
+        /** Observes actual Debug releases without adding a wrapper call in Client Release. */
+        bool DrainViewport(bool drawsDetached = false) noexcept;
+#endif
         /** Tracks one demanded chunk without duplicating canonical images or GPU ownership. */
         struct ChunkRequest
         {
@@ -70,6 +76,9 @@ namespace MiniMapTerrainSource
             bool DeliveryAccepted = false;
             bool UploadPending = false;
             bool FailureReported = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            bool ProfilePublished = false;
+#endif
         };
         /** Restores the progression gate on normal/exceptional return; never performs native cleanup. */
         class ProgressScope final
@@ -124,7 +133,6 @@ namespace MiniMapTerrainSource
         Services::Map::Terrain::TerrainViewport viewport_;
         Services::Map::Terrain::TerrainService::Session session_;
         Services::Map::Terrain::TerrainService::Registration registration_;
-        Services::Map::Terrain::TerrainService::NativeCacheMapping cacheMapping_;
         std::optional<Services::Map::Terrain::TerrainService::Selection> selection_;
         std::list<ChunkRequest> requests_;
         std::uint64_t requestGeneration_ = 0;

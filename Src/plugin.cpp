@@ -1127,9 +1127,9 @@ namespace MiniMap
             return false;
         }
         const std::filesystem::path cacheRoot = pluginDirectory / L"MiniMap" / L"Cache";
-        const ::Services::Map::Terrain::TerrainService::NativeCacheConfiguration terrainCacheConfiguration{
-            cacheRoot / L"Terrain", L"R", L"Terrain_", L"_", L".terrain"};
-        if (!g_terrainService.ConfigureNativeCache(terrainCacheConfiguration))
+        const ::Services::Map::Terrain::TerrainService::CacheConfiguration terrainCacheConfiguration{
+            cacheRoot / L"Terrain"};
+        if (!g_terrainService.ConfigureTerrainCache(terrainCacheConfiguration))
         {
             LOG_ERROR("MiniMap: terrain cache configuration could not be associated");
             return false;
@@ -1211,7 +1211,7 @@ namespace MiniMap
         }
 
         if (!MiniMapCacheIdentity::Initialize(cacheRoot,
-                &ClearPersistentCaches, &ClearBuildingsCache,
+                &ClearPersistentCaches, &ClearPersistentCaches,
                 cacheFailure, MiniMapConfig::ClearCache()))
         {
             LOG_ERROR("MiniMap: persistent cache initialization failed: %s",
@@ -1219,6 +1219,8 @@ namespace MiniMap
             RemoveCommonUIHooks();
             return false;
         }
+
+        g_terrainService.OpenTerrainCache();
 
         if (!MiniMapUI::Initialize(
             pluginSelf))
@@ -1505,7 +1507,7 @@ namespace MiniMap
         MiniMapMap::Shutdown();
 
         // Drain terrain IO and reject late callbacks independently of legacy root-cache admission.
-        g_terrainService.CloseNativeCache();
+        g_terrainService.CloseTerrainCache();
         MiniMapCacheIdentity::ClearOnExit();
         const bool buildingLayerShutdownComplete = minimapCallbacksQuiescent &&
             MiniMapUI::EndBuildingLayerSession();

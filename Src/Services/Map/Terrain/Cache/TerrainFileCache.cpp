@@ -1,20 +1,20 @@
 // Implements the single terrain cache IO owner; root identity and invalidation policy remain application-owned.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainFileCache.h"
-#include "NativeTerrainCacheRecord.h"
+#include "TerrainCacheRecord.h"
 #include <windows.h>
 #include <fstream>
 
 namespace Services::Map::Terrain::Cache
 {
-    /** Copies supplied naming values; construction performs no file IO. */
-    TerrainFileCache::TerrainFileCache(const TerrainService::NativeCacheConfiguration& configuration)
+    /** Copies the existing Terrain root; construction performs no file IO. */
+    TerrainFileCache::TerrainFileCache(const TerrainService::CacheConfiguration& configuration)
         : configuration_(configuration)
     {
     }
 
     /** Rejects configuration replacement while supporting repeated identical startup. */
-    bool TerrainFileCache::HasConfiguration(const TerrainService::NativeCacheConfiguration& configuration) const
+    bool TerrainFileCache::HasConfiguration(const TerrainService::CacheConfiguration& configuration) const
     {
         return configuration_ == configuration;
     }
@@ -49,93 +49,108 @@ namespace Services::Map::Terrain::Cache
     }
 
     /** Preserves lookup directory creation without consulting application root metadata or readiness. */
-    TerrainService::NativeCacheStatus TerrainFileCache::GetDirectory(std::int32_t sourceState,
-        std::filesystem::path& directory) const
+    TerrainService::CacheStatus TerrainFileCache::GetDirectory(std::filesystem::path& directory) const
     {
-        using Status = TerrainService::NativeCacheStatus;
-        directory = configuration_.Root / (configuration_.DirectoryPrefix + std::to_wstring(sourceState));
+        using Status = TerrainService::CacheStatus;
+        directory = configuration_.Root;
         std::error_code error;
         std::filesystem::create_directories(directory, error);
         return error ? Status::DirectoryFailure : Status::Hit;
     }
 
-    /** Reproduces application naming without interpreting indices or source state. */
-    std::filesystem::path TerrainFileCache::GetFilePath(const std::filesystem::path& directory,
-        const TerrainService::NativeCacheKey& key) const
+    /** Names one complete page directly under the existing Terrain root; never creates subdirectories. */
+    bool TerrainFileCache::GetFilePath(const std::filesystem::path& directory,
+        const TerrainPageIdentity& page, std::filesystem::path& file) const
     {
-        return directory / (configuration_.FilePrefix + std::to_wstring(key.TileIndex0) +
-            configuration_.IndexSeparator + std::to_wstring(key.TileIndex1) + configuration_.Extension);
+        std::wstring filename;
+        if (!TerrainCacheRecord::GetFilename(page, filename)) return false;
+        file = directory / filename;
+        return true;
     }
 
     /** Keeps the old output semantics: closed admission leaves output untouched; admitted attempts clear it. */
-    TerrainService::NativeCacheResult TerrainFileCache::TryLoadChunk(const TerrainService::NativeCacheKey& key,
+    TerrainService::CacheResult TerrainFileCache::TryLoadChunk(const TerrainCacheIdentity& key,
         int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
-        const TerrainService::NativeCacheTrace* trace) const
+        const TerrainService::CacheTrace* trace) const
     {
-        using Status = TerrainService::NativeCacheStatus;
+        using Status = TerrainService::CacheStatus;
         std::lock_guard lock(fileMutex_);
         if (closed_) return {};
-        Activity load(trace, TerrainService::NativeCacheActivity::Load);
-        Activity path(trace, TerrainService::NativeCacheActivity::Path);
+        Activity load(trace, TerrainService::CacheActivity::Load);
+        Activity path(trace, TerrainService::CacheActivity::Path);
         chunk.clear();
-        if (key.SourceState < 0 || chunkX < 0 || chunkX >= NativeTerrainCacheRecord::ChunksPerAxis ||
-            chunkY < 0 || chunkY >= NativeTerrainCacheRecord::ChunksPerAxis) return {Status::InvalidInput};
+        std::vector<std::uint8_t> metadata;
+        std::uint64_t fileBytes = 0;
+        if (!TerrainCacheRecord::Describe(key, metadata, fileBytes) || chunkX < 0 || chunkY < 0 ||
+            static_cast<std::uint32_t>(chunkX) >= key.Width / TerrainCacheIdentity::TileDimension ||
+            static_cast<std::uint32_t>(chunkY) >= key.Height / TerrainCacheIdentity::TileDimension)
+            return {Status::InvalidInput};
         std::filesystem::path directory;
-        const Status status = GetDirectory(key.SourceState, directory);
+        const Status status = GetDirectory(directory);
         if (status != Status::Hit) return {status};
-        const auto file = GetFilePath(directory, key);
+        std::filesystem::path file;
+        if (!GetFilePath(directory, key.Page, file)) return {Status::InvalidInput};
         path.End();
-        return ReadFile(file, key, chunkX, chunkY, chunk, trace);
+        return ReadFile(file, key, metadata, fileBytes, chunkX, chunkY, chunk, trace);
     }
 
     /** Rejects malformed records without deleting, migrating or automatically rewriting them. */
-    TerrainService::NativeCacheResult TerrainFileCache::ReadFile(const std::filesystem::path& file,
-        const TerrainService::NativeCacheKey& key, int chunkX, int chunkY,
-        std::vector<std::uint8_t>& chunk, const TerrainService::NativeCacheTrace* trace)
+    TerrainService::CacheResult TerrainFileCache::ReadFile(const std::filesystem::path& file,
+        const TerrainCacheIdentity& key, const std::vector<std::uint8_t>& metadata,
+        std::uint64_t fileBytes, int chunkX, int chunkY, std::vector<std::uint8_t>& chunk,
+        const TerrainService::CacheTrace* trace)
     {
-        using Status = TerrainService::NativeCacheStatus;
-        Activity header(trace, TerrainService::NativeCacheActivity::Header);
+        using Status = TerrainService::CacheStatus;
+        Activity header(trace, TerrainService::CacheActivity::Header);
         std::error_code error;
         if (!std::filesystem::exists(file, error) || error)
         {
             return {error ? Status::ExistenceFailure : Status::Miss, error};
         }
         const auto size = std::filesystem::file_size(file, error);
-        if (error || size != NativeTerrainCacheRecord::FileBytes) return {Status::InvalidFileSize};
+        if (error || size != fileBytes) return {Status::InvalidFileSize};
         std::ifstream stream(file, std::ios::binary);
         if (!stream) return {Status::OpenFailure};
-        if (!NativeTerrainCacheRecord::ReadHeader(stream, key)) return {Status::HeaderMismatch};
+        if (!TerrainCacheRecord::ReadMetadata(stream, metadata)) return {Status::HeaderMismatch};
         header.End();
-        Activity read(trace, TerrainService::NativeCacheActivity::Read);
-        if (!NativeTerrainCacheRecord::ReadChunk(stream, chunkX, chunkY, chunk)) return {Status::ReadFailure};
+        Activity read(trace, TerrainService::CacheActivity::Read);
+        if (!TerrainCacheRecord::ReadTile(stream, key, metadata.size(), chunkX, chunkY, chunk)) return {Status::ReadFailure};
         return {Status::Hit};
     }
 
     /** Validates complete source bytes before any directory creation, preserving the original write contract. */
-    TerrainService::NativeCacheResult TerrainFileCache::StoreSourceTile(const TerrainService::NativeCacheKey& key,
-        const std::uint8_t* source, std::size_t size, const TerrainService::NativeCacheTrace* trace) const
+    TerrainService::CacheResult TerrainFileCache::StoreSourceTile(const TerrainCacheIdentity& key,
+        const std::uint8_t* source, std::size_t size, const TerrainService::CacheTrace* trace) const
     {
-        using Status = TerrainService::NativeCacheStatus;
+        using Status = TerrainService::CacheStatus;
         std::lock_guard lock(fileMutex_);
         if (closed_) return {};
-        Activity store(trace, TerrainService::NativeCacheActivity::Store);
-        if (!NativeTerrainCacheRecord::CanStore(key, source, size)) return {Status::InvalidInput};
+        Activity store(trace, TerrainService::CacheActivity::Store);
+        std::vector<std::uint8_t> metadata;
+        std::uint64_t fileBytes = 0;
+        const auto expectedBytes = TerrainImage::CalculateByteCount(key.Width, key.Height);
+        if (!source || !expectedBytes || size != *expectedBytes ||
+            !TerrainCacheRecord::Describe(key, metadata, fileBytes)) return {Status::InvalidInput};
         std::filesystem::path directory;
-        const Status status = GetDirectory(key.SourceState, directory);
+        const Status status = GetDirectory(directory);
         if (status != Status::Hit) return {status};
-        return WriteFile(GetFilePath(directory, key), key, source, trace);
+        std::filesystem::path file;
+        if (!GetFilePath(directory, key.Page, file)) return {Status::InvalidInput};
+        return WriteFile(file, key, metadata, source, trace);
     }
 
     /** Preserves .tmp naming, close checking, Windows replacement flags and failure cleanup. */
-    TerrainService::NativeCacheResult TerrainFileCache::WriteFile(const std::filesystem::path& file,
-        const TerrainService::NativeCacheKey& key, const std::uint8_t* source,
-        const TerrainService::NativeCacheTrace* trace)
+    TerrainService::CacheResult TerrainFileCache::WriteFile(const std::filesystem::path& file,
+        const TerrainCacheIdentity& key, const std::vector<std::uint8_t>& metadata,
+        const std::uint8_t* source,
+        const TerrainService::CacheTrace* trace)
     {
-        using Status = TerrainService::NativeCacheStatus;
+        using Status = TerrainService::CacheStatus;
         const std::filesystem::path temporary = file.wstring() + L".tmp";
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) return {Status::OpenFailure};
-        const bool written = NativeTerrainCacheRecord::Write(stream, key, source, trace);
+        const bool written = TerrainCacheRecord::Write(stream, key, metadata,
+            {source, *TerrainImage::CalculateByteCount(key.Width, key.Height)}, trace);
         stream.close();
         if (written && stream && MoveFileExW(temporary.c_str(), file.c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return {Status::Stored};

@@ -160,9 +160,8 @@ namespace MiniMapTerrainSource
         MiniMapNative::TextureAccess::PlatformData platform;
         MiniMapNative::TextureAccess::MipData mip;
         if (!ReadMetadata(tile, platform, mip)) return false;
-        cached = !tile.RegisteredImage && MiniMapTerrainCache::TryLoadChunk(tile.RadiationLevel,
-            tile.GridX, tile.GridY, mip.SizeX, mip.SizeY, platform.PixelFormat, platform.SRGB,
-            x, y, compressed);
+        cached = !tile.RegisteredImage && MiniMapTerrainCache::TryLoadChunk(
+            tile, mip.SizeX, mip.SizeY, platform.PixelFormat, platform.SRGB, x, y, compressed);
         return cached || CopyChunk(tile, x, y, platform, mip, compressed);
     }
 
@@ -219,9 +218,8 @@ namespace MiniMapTerrainSource
         }
         const std::unique_ptr<void, decltype(&MiniMapNative::TextureAccess::FreeBulkDataCopy)> owner(
             copy, &MiniMapNative::TextureAccess::FreeBulkDataCopy);
-        if (!tile.RegisteredImage && !MiniMapTerrainCache::StoreSourceTile(tile.RadiationLevel,
-            tile.GridX, tile.GridY, mip.SizeX, mip.SizeY, platform.PixelFormat, platform.SRGB,
-            static_cast<const uint8_t*>(copy), static_cast<size_t>(mip.BulkSize)))
+        if (!tile.RegisteredImage && !MiniMapTerrainCache::StoreSourceTile(
+            tile, mip.SizeX, mip.SizeY, platform.PixelFormat, platform.SRGB, static_cast<const uint8_t*>(copy), static_cast<size_t>(mip.BulkSize)))
         {
             LOG_WARN("MiniMap: terrain: cache write failed for R%d grid=(%d, %d)",
                 tile.RadiationLevel, tile.GridX, tile.GridY);

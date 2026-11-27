@@ -1,4 +1,4 @@
-// Implements disconnected multi-image BC1 presentation using existing texture receipts and canvas contracts.
+// Implements generic multi-image BC1 presentation using existing texture receipts and canvas contracts.
 // CPU decoding is temporary; backend resource retirement remains entirely with the supplied ledger.
 #include "TerrainViewport.h"
 #include "Processing/TerrainBc1Codec.h"
@@ -152,8 +152,15 @@ namespace Services::Map::Terrain
         const auto regionId = slot->RegionId;
         std::vector<std::uint8_t> pixels;
         const auto& image = *slot->DesiredImage;
-        if (!Processing::TerrainBc1Codec::Decode(image.GetCompressedBytes(), image.GetWidthPixels(),
-            image.GetHeightPixels(), pixels, true))
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        PresentationTrace::Scope decoding(presentationTrace_, PresentationTrace::Activity::Decode);
+#endif
+        const bool decoded = Processing::TerrainBc1Codec::Decode(image.GetCompressedBytes(), image.GetWidthPixels(),
+            image.GetHeightPixels(), pixels, true);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        decoding.End();
+#endif
+        if (!decoded)
         {
             slot->UploadAttempted = true;
             return UploadResult::Rejected;
@@ -164,7 +171,13 @@ namespace Services::Map::Terrain
         slot->UploadAttempted = true;
         const MiniMap::Services::TextureSize size{image.GetWidthPixels(), image.GetHeightPixels()};
         nativeOperationInProgress_ = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        PresentationTrace::Scope uploading(presentationTrace_, PresentationTrace::Activity::Upload);
+#endif
         const auto result = textures_.UploadRGBA(pixels, size, {{}, size}, candidate.Owner);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        uploading.End();
+#endif
         nativeOperationInProgress_ = false;
         return FinishUpload(candidate, result, slot, context, regionId);
     }
@@ -295,7 +308,17 @@ namespace Services::Map::Terrain
                 ++entry;
                 continue;
             }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            PresentationTrace::Scope releasing(presentationTrace_, PresentationTrace::Activity::Release);
+#endif
             const auto result = textures_.Release(entry->Owner);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            releasing.End();
+            if (presentationTrace_ && presentationTrace_->Released)
+                presentationTrace_->Released(presentationTrace_->Context, result,
+                    (result == MiniMap::Services::ReleaseState::Returned ||
+                        result == MiniMap::Services::ReleaseState::Empty) && !entry->Owner.HasRecord());
+#endif
             if ((result == MiniMap::Services::ReleaseState::Returned ||
                 result == MiniMap::Services::ReleaseState::Empty) && !entry->Owner.HasRecord())
                 entry = presentations_.erase(entry);
@@ -308,6 +331,36 @@ namespace Services::Map::Terrain
         nativeOperationInProgress_ = false;
         return !HasReceipts();
     }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    /** Keeps observer lifetime outside the same upload/reentrancy contract used by ordinary callers. */
+    TerrainViewport::UploadResult TerrainViewport::Upload(const std::string& slotId, const PresentationTrace& trace)
+    {
+        if (nativeOperationInProgress_) return UploadResult::Busy;
+        presentationTrace_ = &trace;
+        try
+        {
+            const auto result = Upload(slotId);
+            presentationTrace_ = nullptr;
+            return result;
+        }
+        catch (...)
+        {
+            presentationTrace_ = nullptr;
+            throw;
+        }
+    }
+
+    /** Observes the same release loop without changing grace, receipt retention or uncertainty handling. */
+    bool TerrainViewport::DrainRetirements(bool drawsDetached, const PresentationTrace& trace) noexcept
+    {
+        if (nativeOperationInProgress_) return false;
+        presentationTrace_ = &trace;
+        const bool result = DrainRetirements(drawsDetached);
+        presentationTrace_ = nullptr;
+        return result;
+    }
+#endif
 
     /** Includes unresolved debt even after explicit withdrawal or backend draw-identity invalidation. */
     bool TerrainViewport::HasReceipts() const noexcept

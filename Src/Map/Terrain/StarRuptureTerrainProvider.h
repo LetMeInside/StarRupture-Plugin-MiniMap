@@ -56,6 +56,10 @@ namespace MiniMapTerrainSource
         static Services::Map::Terrain::TerrainImage::Identity GetIdentity(
             const Configuration& configuration, const SourceTile& tile);
 
+        /** Supplies a world collection and native GridX/GridY; variant qualifiers affect identity, never placement. */
+        static Services::Map::Terrain::TerrainPageIdentity GetPageIdentity(
+            const Configuration& configuration, const SourceTile& tile);
+
         const Configuration configuration_;
     };
 }
