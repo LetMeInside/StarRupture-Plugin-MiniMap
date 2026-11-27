@@ -119,6 +119,10 @@ The source code is available in the [MiniMap GitHub repository](https://github.c
 
 Copyright (c) 2026 Kian369 (LetMeInside on GitHub). All rights reserved.
 
+## Contributions
+
+Contributions are welcome subject to review. External copyrightable contributions require agreement to the [Contributor Assignment and License Agreement](CLA.md) and an appropriately executed written copyright assignment before merge. See [CONTRIBUTING.md](CONTRIBUTING.md) for the limited contribution permission, execution requirements and submission process.
+
 ## Technical Documentation
 
 Developers and players seeking technical details can read the [Technical Documentation](Docs/README.md), including [Compatibility and Version Resolution](Docs/ModLoader/Compatibility-and-Version-Resolution.md).
