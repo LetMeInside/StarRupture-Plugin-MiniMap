@@ -1,9 +1,12 @@
-// Owns externally supplied terrain registrations, validated coverage and physical-position selection.
-// Also owns explicitly advanced BC1 acquisition, private page caching and immutable CPU delivery.
+// Owns terrain registrations, physical selection, explicitly advanced BC1 acquisition and CPU image delivery.
+// Client builds also route opaque capture requests through the retained private streaming session.
 #pragma once
 
 #include "ITerrainDataProvider.h"
 #include "TerrainImageDelivery.h"
+#if defined(MODLOADER_CLIENT_BUILD)
+#include "Capture/PrivateStreamingSession.h"
+#endif
 #include <deque>
 #include <functional>
 #include <list>
@@ -11,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -115,7 +119,7 @@ namespace Services::Map::Terrain
         TerrainService(TerrainService&&) = delete;
         /** Prevents transferring registrations into another service's storage. */
         TerrainService& operator=(TerrainService&&) = delete;
-        /** Withdraws CPU requests and releases registrations/cache configuration; callers finish operations first. */
+        /** Requires private native shutdown, then withdraws CPU requests and releases registrations/cache configuration. */
         ~TerrainService();
 
         /** Admits exact packed BC1 without conversion; moves owned bytes only after metadata validation.
@@ -141,6 +145,34 @@ namespace Services::Map::Terrain
             std::uint32_t x, std::uint32_t y, std::uint32_t width, std::uint32_t height);
 
 #if defined(MODLOADER_CLIENT_BUILD)
+        /** Submits one internal region for the current gameplay generation through an admitted batch.
+         * Stable capture residency inputs are converted privately; no capture/image request is submitted.
+         * This service retains the native session independently of image requests.
+         * A rejected native submission can still require AdvancePrivateStreaming/ShutdownPrivateStreaming.
+         */
+        bool RequestPrivateStreaming(const ITerrainDataProvider::CaptureDefinition& definition, SDK::UWorld* gameplayWorld,
+            MiniMap::Services::INativeHooks& hooks);
+        /** Admits one image over compatible retained residency without exposing its private UWorld. */
+        bool RequestPrivateCapture(const ITerrainDataProvider::CaptureDefinition& definition);
+        /** Transfers completed immutable output after one cache attempt; cache failure does not discard the image. */
+        std::shared_ptr<const TerrainImage> TakePrivateCaptureImage();
+        /** Reports the last capture outcome independently of private native retirement progress. */
+        Capture::PrivateStreamingSession::CaptureResultStatus GetPrivateCaptureResultStatus() const noexcept;
+        /** Returns the retained terminal failure explanation for the last capture operation. */
+        std::string GetPrivateCaptureResultReason() const;
+        /** Advances existing streaming or capture work on the admitted game thread, without starting new work. */
+        void AdvancePrivateStreaming();
+        /** Withdraws native demand without discarding asynchronous ownership. */
+        void RetirePrivateStreaming();
+        /** Closes private partition registration before the enclosing gameplay partition unregisters. */
+        bool BeforeGameplayWorldEnd(SDK::UWorld* world);
+        /** Refuses shutdown while native resources, callbacks, fences or the admission hook retain ownership. */
+        bool ShutdownPrivateStreaming();
+        /** Exposes positive session state only; Ready does not claim final image/visual readiness. */
+        Capture::PrivateStreamingSession::Status GetPrivateStreamingStatus() const noexcept;
+        /** Exposes a logical failure/cancellation explanation separately from retirement state. */
+        std::string GetPrivateStreamingReason() const;
+
         /** Application-supplied absolute Terrain subtree; all record naming remains private to the service.
          * Application assigns this subtree to one service owner and routes subtree deletion through that owner.
          */
@@ -165,6 +197,39 @@ namespace Services::Map::Terrain
             std::error_code Error;
         };
 
+        /** Reports the exact persistence outcome for the most recently consumed private capture image. */
+        CacheResult GetPrivateCaptureCacheResult() const noexcept;
+
+        /** Reports logical capture-batch progress separately from private-world retirement status. */
+        enum class CaptureBatchStatus { Idle, Running, Completed, Failed, Cancelled };
+        /** Describes whether one exact capture output may become readable through the active batch. */
+        enum class CaptureOutputState { AwaitingBatchAdmission, Generating, CacheReady, Unavailable };
+        /** Copies batch progress; a completed image remains available if its persistence did not complete. */
+        struct CaptureBatchDelivery
+        {
+            CaptureBatchStatus Status = CaptureBatchStatus::Idle;
+            std::size_t CompletedImages = 0;
+            std::size_t TotalImages = 0;
+            std::size_t MissingCacheImages = 0;
+            std::size_t InvalidCacheRecords = 0;
+            CacheResult Cache;
+            std::string Error;
+            std::shared_ptr<const TerrainImage> UnpersistedImage;
+        };
+        /** Admits a finite cache-first collection; native context is used only if images are missing. */
+        bool RequestPrivateCaptureBatch(
+            const std::vector<ITerrainDataProvider::CaptureDefinition>& definitions,
+            SDK::UWorld* gameplayWorld, MiniMap::Services::INativeHooks& hooks);
+        /** Copies batch progress without advancing cache or native work. */
+        CaptureBatchDelivery GetPrivateCaptureBatchDelivery() const;
+        /** Reports when an exact definition can be read from cache or may still be generated by this session's batch. */
+        CaptureOutputState GetPrivateCaptureOutputState(
+            const ITerrainDataProvider::CaptureDefinition& definition) const noexcept;
+        /** Resolves pre-admission capture demand when the application cannot submit its one batch attempt. */
+        void RejectPrivateCaptureBatchAdmission(
+            const std::vector<ITerrainDataProvider::CaptureDefinition>& definitions,
+            std::string reason);
+
         /** Synchronous optional diagnostic phases; observers never participate in cache policy or IO. */
         enum class CacheActivity { Load, Store, Path, Header, Read, Extraction };
 
@@ -182,6 +247,10 @@ namespace Services::Map::Terrain
          * Session changes do not clear files. No root identity/readiness is checked.
          */
         bool ConfigureTerrainCache(const CacheConfiguration& configuration);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        /** Enables optional export after a validated capture completes; disabled by default. */
+        void ConfigureCaptureDiagnosticExport(bool enabled) noexcept;
+#endif
         /** Copies configured root without IO; false before configuration. */
         bool GetTerrainCacheRoot(std::filesystem::path& root) const;
         /** Drains active terrain IO and closes read/write admission until explicit post-invalidation opening.
@@ -349,6 +418,46 @@ namespace Services::Map::Terrain
         void AdvanceSelectionRevision();
         /** Clears metadata and registration ownership without calling provider acquisition/lifecycle methods. */
         void ClearSession() noexcept;
+#if defined(MODLOADER_CLIENT_BUILD)
+        /** Builds the existing page-cache identity from stable capture output metadata. */
+        bool CreateCaptureCacheIdentity(const ITerrainDataProvider::CaptureDefinition& definition,
+            Cache::TerrainCacheIdentity& identity) const;
+        /** Confirms every immutable image field against the definition admitted for that capture. */
+        bool MatchesCaptureDefinition(const TerrainImage& image,
+            const ITerrainDataProvider::CaptureDefinition& definition) const;
+        /** Persists only a complete matching canonical page and preserves its exact cache result. */
+        CacheResult PersistCaptureImage(const TerrainImage& image,
+            const ITerrainDataProvider::CaptureDefinition& definition);
+        /** Revalidates newly completed output and invokes optional diagnostics before cache-failure handling. */
+        bool ValidateCompletedCaptureImage(const TerrainImage& image,
+            const ITerrainDataProvider::CaptureDefinition& definition) const;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Exports validated immutable capture bytes and their canonical BC1 decode for diagnostics. */
+        void ExportCompletedCapture(const TerrainImage& image,
+            const ITerrainDataProvider::CaptureDefinition& definition) const noexcept;
+        /** Exports transient pre-BC1 and supersampled RGB for one newly completed image. */
+        void ExportPreCompressionCapture(const Capture::TerrainCaptureDiagnosticPixels& pixels,
+            const ITerrainDataProvider::CaptureDefinition& definition) const noexcept;
+        /** Builds the existing Diagnostics directory and safe page basename without touching the cache. */
+        bool GetCaptureDiagnosticPath(const ITerrainDataProvider::CaptureDefinition& definition,
+            std::filesystem::path& directory, std::wstring& baseName) const;
+        /** Writes one complete diagnostic file and logs open, write or close failure. */
+        static bool WriteCaptureDiagnosticFile(const std::filesystem::path& path,
+            std::span<const std::uint8_t> bytes, const std::string& sourceId,
+            const char* format) noexcept;
+        /** Converts borrowed packed RGB to opaque RGBA and saves it through the existing WIC PNG encoder. */
+        static bool WriteCaptureDiagnosticRgbPng(const std::filesystem::path& path,
+            std::span<const std::uint8_t> rgb, std::uint32_t width, std::uint32_t height,
+            const std::string& sourceId) noexcept;
+        /** Saves opaque RGBA through the existing WIC PNG encoder. */
+        static bool WriteCaptureDiagnosticRgbaPng(const std::filesystem::path& path,
+            std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height,
+            const std::string& sourceId) noexcept;
+        /** Decodes canonical BC1 and saves the exact opaque RGBA presentation as a PNG. */
+        static bool WriteCaptureDiagnosticPng(const std::filesystem::path& path,
+            const TerrainImage& image, const std::string& sourceId) noexcept;
+#endif
+#endif
 
         std::optional<Session> session_;
         std::vector<Entry> entries_;
@@ -362,7 +471,82 @@ namespace Services::Map::Terrain
         RetainedSource retainedSource_;
         bool advancingImages_ = false;
 #if defined(MODLOADER_CLIENT_BUILD)
+        /** Tracks the single finite cache-first capture collection through the existing session owner. */
+        enum class CaptureBatchPhase { Idle, AwaitingResidency, Capturing, AwaitingCaptureRetirement };
+        /** Owns definitions and indices only; retains at most one unpersisted completed result image. */
+        struct CaptureBatchState
+        {
+            CaptureBatchStatus Status = CaptureBatchStatus::Idle;
+            CaptureBatchPhase Phase = CaptureBatchPhase::Idle;
+            std::vector<ITerrainDataProvider::CaptureDefinition> Definitions;
+            std::vector<std::size_t> MissingDefinitionIndices;
+            std::size_t NextMissingIndex = 0;
+            std::size_t CompletedImages = 0;
+            std::size_t TotalImages = 0;
+            std::size_t MissingCacheImages = 0;
+            std::size_t InvalidCacheRecords = 0;
+            CacheResult Cache;
+            std::string Error;
+            std::shared_ptr<const TerrainImage> UnpersistedImage;
+            Session Context;
+            SDK::UWorld* GameplayWorld = nullptr;
+            bool OwnsStreamingSession = false;
+        };
+        /** Validates every output, page filename and shared residency contract before native work. */
+        bool ValidatePrivateCaptureBatch(
+            const std::vector<ITerrainDataProvider::CaptureDefinition>& definitions,
+            std::string& error) const;
+        /** Validates one capture's supported geometry, cache identity and existing filename contract. */
+        bool ValidatePrivateCaptureDefinition(
+            const ITerrainDataProvider::CaptureDefinition& definition,
+            Cache::TerrainCacheIdentity& identity, std::wstring& filename) const;
+        /** Compares page filenames in the existing Windows case-insensitive namespace. */
+        static bool SameCaptureCacheFilename(std::wstring left, std::wstring right);
+        /** Checks each cache tile and classifies missing/corrupt records separately from IO failures. */
+        CacheResult CheckPrivateCapturePage(const Cache::TerrainCacheIdentity& identity,
+            bool& complete, bool& invalidRecord) const;
+        /** Checks every validated output page before permitting any private-world submission. */
+        bool CheckPrivateCaptureBatchCache();
+        /** Logs the completed cache-first admission counts after every page was inspected. */
+        void LogPrivateCaptureBatchCacheSummary() const;
+        /** Completes the finite request without constructing or loading a private world. */
+        void CompletePrivateCaptureBatchFromCache();
+        /** Starts the sole private session only after a genuine cache miss has been found. */
+        bool SubmitPrivateCaptureResidency(
+            const ITerrainDataProvider::CaptureDefinition& definition,
+            SDK::UWorld* gameplayWorld, MiniMap::Services::INativeHooks& hooks);
+        /** Advances only the current batch using existing private-streaming status and retirement. */
+        void AdvancePrivateCaptureBatch();
+        /** Waits for positive retained-session readiness before submitting the next missing capture. */
+        void AdvanceCaptureBatchResidency();
+        /** Consumes a ready immutable image or records the existing capture failure. */
+        void AdvanceCaptureBatchImage();
+        /** Submits exactly the next missing image after positive residency and prior capture retirement. */
+        bool SubmitNextPrivateCapture();
+        /** Consumes one completed image, preserves a failed-write result, and waits for native retirement. */
+        void ConsumePrivateCaptureBatchImage();
+        /** Completes the collection after the last capture retires, or submits the next missing definition. */
+        void ContinuePrivateCaptureBatch();
+        /** Ends further submissions, preserving any prior persistent pages and native owner. */
+        void FailPrivateCaptureBatch(std::string reason, CacheResult cache = {},
+            std::shared_ptr<const TerrainImage> unpersistedImage = nullptr);
+        /** Withdraws batch progression while leaving native retirement to the existing session owner. */
+        void CancelPrivateCaptureBatch(std::string reason);
+        /** Compares only stable inputs that determine retained residency, excluding output metadata. */
+        static bool HasSameCaptureResidency(const ITerrainDataProvider::CaptureDefinition& left,
+            const ITerrainDataProvider::CaptureDefinition& right) noexcept;
+        /** Compares the complete pixel-affecting output and shared residency definitions. */
+        static bool HasSameCaptureOutput(const ITerrainDataProvider::CaptureDefinition& left,
+            const ITerrainDataProvider::CaptureDefinition& right) noexcept;
+        CaptureBatchState privateCaptureBatch_;
+        bool advancingCaptureBatch_ = false;
         std::unique_ptr<Cache::TerrainFileCache> fileCache_;
+        std::unique_ptr<Capture::PrivateStreamingSession> privateStreaming_;
+        std::optional<ITerrainDataProvider::CaptureDefinition> privateCaptureDefinition_;
+        CacheResult privateCaptureCacheResult_;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        bool exportCaptureDiagnostics_ = false;
+#endif
 #endif
     };
 }

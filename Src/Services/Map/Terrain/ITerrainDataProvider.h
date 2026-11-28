@@ -128,13 +128,24 @@ namespace Services::Map::Terrain
          * Data layer paths describe desired activated inputs. Runtime support and clipping require
          * independent validation before a later capture executor may admit this definition.
          * Complete source dimensions must be positive multiples of 256; this does not imply cache eligibility.
+         * Page follows TerrainPageIdentity's naming contract. Source and Page identify this output, not
+         * the shared residency set. The application supplies original persistent names and revisions;
+         * an executor resolves native names and chooses temporary private package names separately.
          */
         struct CaptureDefinition
         {
+            // Stable output identity is independent of coverage, shared cells and private instance names.
+            // Revision must change with cooked content or any capture/output configuration affecting pixels.
+            TerrainImage::Identity Source;
+            TerrainPageIdentity Page;
+            // Original cooked package paths and stable grid/layer names only; never FName indices.
             std::string OriginalWorldPackage;
             std::vector<std::string> CookedCellPackages;
             std::vector<std::string> TargetGrids;
+            // Original cooked object paths (package.asset), resolved in the private world's own layer manager.
             std::vector<std::string> ActivatedDataLayerAssets;
+            // Regional Activated demand with streaming and streaming-out enabled; layers are explicit inputs.
+            // Bounds describe residency demand, not exact cell membership or a capture clipping guarantee.
             Bounds StreamingBounds;
             Bounds CaptureBounds;
             TerrainImage::Registration ImageRegistration;

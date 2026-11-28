@@ -1,3 +1,4 @@
+// Resolves mandatory native dependencies into the shared address contract, including capture allocator overloads.
 #include "Fingerprints.h"
 
 #include "../plugin_helpers.h"
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Native pattern resolution.
@@ -2325,5 +2327,220 @@ namespace MiniMapFingerprints
             "UTexture::GetResource")) return false;
 #endif
         return !scanFailed;
+    }
+
+    /** Supplies stable feature keys; every key remains mandatory within this group. */
+    std::span<const char* const> Fingerprints::CaptureAdmissionKeys() noexcept
+    {
+        static constexpr const char* keys[] = {
+            "MiniMap::PrivateWorld::ShouldCreateSubsystem",
+            "MiniMap::PrivateWorld::IsGameWorld",
+            "MiniMap::PrivateWorld::IsPreviewWorld",
+            "MiniMap::PrivateWorld::FindWorldInPackage",
+            "MiniMap::PrivateWorld::DelegateAllocate",
+            "MiniMap::PrivateWorld::GenerateHandle",
+            "MiniMap::PrivateWorld::ReadersTls",
+            "MiniMap::PrivateWorld::DestructionTls",
+            "MiniMap::PrivateWorld::Reallocate",
+            "MiniMap::PrivateWorld::CheckFailure",
+            "MiniMap::PrivateWorld::InvalidArrayCount",
+            "MiniMap::PrivateWorld::MakePackagePath",
+            "MiniMap::PrivateWorld::LoadPackage",
+            "MiniMap::PrivateWorld::FlushRequest",
+            "MiniMap::PrivateWorld::LoadingSuspended",
+            "MiniMap::PrivateWorld::IsPartitionInitialized",
+            "MiniMap::PrivateWorld::UninitializePartition",
+            "MiniMap::PrivateWorld::EnumeratePartitions",
+            "MiniMap::PrivateWorld::ForceUnload",
+            "MiniMap::PrivateWorld::QuantizeSize",
+            "MiniMap::PrivateWorld::ResizeHeapAllocation",
+            "MiniMap::PrivateWorld::ResizeAlignedHeapAllocation",
+            "MiniMap::PrivateWorld::WorldTypePreloadMap",
+            "MiniMap::PrivateWorld::HashNameEntry",
+            "MiniMap::PrivateWorld::InvalidSetCount",
+            "MiniMap::PrivateWorld::UpdatePartition",
+            "MiniMap::PrivateWorld::UpdateLevels",
+            "MiniMap::PrivateWorld::SendEndOfFrame",
+            "MiniMap::PrivateWorld::VisibilityPending",
+            "MiniMap::PrivateWorld::CanStream",
+            "MiniMap::PrivateWorld::ServerStreamingEnabled",
+            "MiniMap::PrivateWorld::ServerStreamingOutEnabled",
+            "MiniMap::PrivateWorld::FlushVisibility",
+            "MiniMap::PrivateWorld::WaitRenderFence",
+            "MiniMap::PrivateWorld::HasEndOfFrameUpdates"
+        };
+        return keys;
+    }
+
+    /** Supplies the verified CL-130045 admission and checked-delegate entry windows. */
+    std::span<const char* const> Fingerprints::CaptureAdmissionPatterns() noexcept
+    {
+        static constexpr const char* patterns[] = {
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 48 85 D2 74 24 E8 ?? ?? ?? ?? 4C 8B 43 10 4C 8D 48 30 48 63 40 38 41 3B 40 38 7F 0D 48 8B D0 49 8B 40 30 4C 39 0C D0 74 26 33 DB 4C 8D 0D ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 44 8D 43 24 E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 48 8B 07 48 8B CF 0F B6 93 8A 01 00 00 48 8B 5C 24 30 48 83 C4 20 5F 48 FF A0 E8 02 00 00",
+            "0F B6 81 8A 01 00 00 3C 06 77 0D B9 6A 00 00 00 0F A3 C1 73 03 B0 01 C3 32 C0",
+            "0F B6 81 8A 01 00 00 2C 04 3C 01 0F 96 C0 C3",
+            "4C 8B DC 48 83 EC 48 33 D2 49 8D 43 10 49 89 43 18 45 33 C9 49 8D 43 18 49 89 53 10 49 89 43 F0 45 33 C0 48 8D 05 ?? ?? ?? ?? 89 54 24 20 49 8D 53 E8 49 89 43 E8 E8 ?? ?? ?? ?? 48 8B 44 24 58 48 83 C4 48 C3",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 8D 41 0F 99 83 E2 0F 03 C2 C1 F8 04 8B F8 39 43 08 74 16 41 B9 10 00 00 00 44 8B C0 33 D2 48 8B CB E8 ?? ?? ?? ?? 89 7B 08 48 8B 03 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            "B9 01 00 00 00 8B C1 F0 48 0F C1 05 ?? ?? ?? ?? 48 03 C1 75 0D F0 48 0F C1 0D ?? ?? ?? ?? 48 8D 41 01 C3",
+            "48 83 EC 28 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 B8 58 0A 00 00 48 8B 14 C8 B9 A8 0A 00 00 8B 04 11 A8 01 75 38 83 C8 01 48 89 5C 24 20 4A 8D 1C 02 89 04 11 33 C0 C7 43 4C 04 00 00 00 48 8D 0D ?? ?? ?? ?? 48 89 43 40 89 43 48 E8 ?? ?? ?? ?? 48 8B C3 48 8B 5C 24 20 48 83 C4 28 C3",
+            "48 83 EC 28 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 B8 B0 0A 00 00 48 8B 14 C8 B9 E0 0A 00 00 8B 04 11 A8 01 75 38 83 C8 01 48 89 5C 24 20 4A 8D 1C 02 89 04 11 33 C0 C7 43 2C 04 00 00 00 48 8D 0D ?? ?? ?? ?? 48 89 43 20 89 43 28 E8 ?? ?? ?? ?? 48 8B C3 48 8B 5C 24 20 48 83 C4 28 C3",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F1 41 8B D8 48 8B 0D ?? ?? ?? ?? 48 8B FA 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 44 8B CB 4C 8B C7 48 8B D6 48 8B 5C 24 30 48 8B 74 24 38 48 83 C4 20 5F 48 FF 60 38",
+            "4C 8B DC 49 89 5B 08 49 89 6B 10 49 89 73 18 49 89 7B 20 41 56 48 83 EC 50 80 3D ?? ?? ?? ?? 00 49 8B D9 4C 8B B4 24 80 00 00 00 41 8B F8 48 8B F2 48 8B E9 75 33 48 8B 44 24 58 45 8B C8 4D 89 73 E8 4C 8B C2 49 89 5B E0 48 8B D1 49 C7 43 D8 00 00 00 00 48 8D 0D ?? ?? ?? ?? 49 89 43 D0 C6 44 24 20 00",
+            "48 83 EC 28 4C 8B C1 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 66 0F 1F 44 00 00 EB FE CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 83 EC 28 4C 8B CA 44 8B C1 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 1F 00 EB FE CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 83 EC 28",
+            "4C 8B DC 49 89 4B 08 53 48 81 EC 60 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 50 02 00 00 48 8D 44 24 50 C6 44 24 48 00 48 89 44 24 30 49 8D 4B 08 48 8D 44 24 50 48 8B DA 48 89 44 24 38 48 8D 54 24 30 49 8D 43 E8 48 89 44 24 40 E8 ?? ?? ?? ?? 48 8B 44 24 30 33 D2 48 8B 4C 24 38 48 2B C8 48 89 44 24 20",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 81 EC 80 00 00 00 80 3D ?? ?? ?? ?? 00 45 8B F9 4D 8B F0 48 8B DA 48 8B E9 75 4B FF 15 ?? ?? ?? ?? 84 C0 75 41 48 8D 54 24 50 48 8B CD E8 ?? ?? ?? ?? 83 78 08 00 74 05 4C 8B 00 EB 07 4C 8D 05 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ??",
+            "48 83 EC 38 83 F9 FF 75 08 33 C0 89 44 24 28 EB 11 89 4C 24 40 48 8D 44 24 40 C7 44 24 28 01 00 00 00 48 89 44 24 20 48 8D 4C 24 20 0F 28 44 24 20 66 0F 7F 44 24 20 E8 ?? ?? ?? ?? 48 83 C4 38 C3",
+            "48 89 05 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? B9",
+            "83 B9 98 00 00 00 02 0F 94 C0 C3",
+            "40 53 48 83 EC 30 83 B9 98 00 00 00 02 48 8B D9 0F 85 00 02 00 00 48 83 79 40 00 48 89 7C 24 40 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 5B 03 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC 80 3D ?? ?? ?? ?? 05 72 54 E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 45 33 C0",
+            "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B 59 48 48 8B F2 48 63 41 50 48 8D 3C C3 48 3B DF 74 23 48 8B 03 48 8D 54 24 30 48 8B 4E 08 48 89 44 24 30 48 8B 06 FF D0 84 C0 74 09 48 83 C3 08 48 3B DF 75 DD 48 8B 5C 24 38 48 8B 74 24 40 48 83 C4 20 5F C3",
+            "44 0F B6 81 8E 01 00 00 41 0F B6 C0 C0 E8 06 24 01 3A D0 74 1C 41 80 E0 BF 0F B6 C2 C0 E0 06 44 0A C0 44 88 81 8E 01 00 00 84 D2 0F 85 5F 22 FF FF C3",
+            "44 8B C2 48 8B D1 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 04 48 8B C2 C3 48 8B 01 48 FF 60 60",
+            "40 53 48 83 EC 20 48 8B D9 48 8B 09 48 85 C9 75 05 45 85 C0 74 23 45 85 C0 78 24 49 8D 41 FF 48 3D FE FF FF 7F 77 18 49 63 D0 45 33 C0 49 0F AF D1 E8 ?? ?? ?? ?? 48 89 03 48 83 C4 20 5B C3",
+            "40 53 48 83 EC 20 48 8B D9 48 8B 09 48 85 C9 75 05 45 85 C0 74 25 45 85 C0 78 26 49 8D 41 FF 48 3D FE FF FF 7F 77 1A 49 63 D0 44 8B 44 24 50 49 0F AF D1 E8 ?? ?? ?? ?? 48 89 03 48 83 C4 20 5B C3",
+            "48 8B 15 ?? ?? ?? ?? 0F 1F 40 00 48 98 48 8D 0C 80 48 39 1C 8A",
+            "0F B7 C1 8B D1 8B C8 C1 EA 10 44 69 C2 01 00 08 00 C1 E1 10 44 03 C0 C1 E8 04 44 03 C1 41 03 C0 C3",
+            "48 83 EC 28 4C 8B C1 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 66 0F 1F 44 00 00 EB FE CC CC CC CC CC CC CC CC CC CC CC CC CC CC 48 83 EC 38 4C 89 44 24 20 4C 8B CA 44 8B C1 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? EB FE CC CC CC CC CC CC CC CC CC CC CC",
+            "48 83 EC 28 48 83 C1 C0 E8 ?? ?? ?? ?? 48 8B C8 33 D2 48 83 C4 28 E9 ?? ?? ?? ?? CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 20 C6 81 00 03 00 00 01 48 8B 59 48 48 63 41 50 48 8D 3C C3 48 3B DF 74 11 48 8B 0B E8 ?? ?? ?? ?? 48 83 C3 08 48 3B DF 75 EF 48 8B 5C 24 30 48 83 C4 20 5F C3 CC CC 48 8B C4 55",
+            "40 55 41 55 48 83 EC 68 0F B6 05 ?? ?? ?? ?? 4C 8B EA 88 84 24 80 00 00 00 48 8B E9 84 C0 74 21 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F B6 05 ?? ?? ?? ?? 88 84 24 80 00 00 00 0F 57 C0 C6 05 ?? ?? ?? ?? 01 80 BD 8B 01 00 00 00 F2 0F 11 05 ?? ?? ?? ?? F2 0F 11 05 ?? ?? ?? ??",
+            "48 89 5C 24 20 55 56 57 41 56 41 57 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 30 48 8B F1 48 8D 15 ?? ?? ?? ?? 48 8D 4D B0 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? 45 32 FF 8B 1D ?? ?? ?? ?? FF C1 83 EB 01 89 0D ?? ?? ?? ?? 78 7F 4C 63 F3 49 8B FE 48 C1 E7 04 90",
+            "40 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 74 48 89 5C 24 30 48 8D 9F 18 01 00 00 48 85 DB 75 35 4C 8D 0D ?? ?? ?? ?? 44 8D 43 1C 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 13 90 CC 48 8B CB FF 15 ?? ?? ?? ?? 8B BF 38 01 00 00 EB 1D 48 8B CB FF 15 ?? ?? ?? ??",
+            "40 53 48 83 EC 20 83 B9 98 00 00 00 02 48 8B D9 75 60 E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 8B 58 30 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 3F 48 8B CB E8 ?? ?? ?? ?? F6 80 8E 01 00 00 40 75 2E 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 19 F6 80 F8 00 00 00 01 75 18 48 8B 10 48 8B C8",
+            "40 53 48 83 EC 30 80 B9 16 01 00 00 00 48 8B D9 0F 85 94 00 00 00 48 89 74 24 40 48 8B 71 40 48 89 7C 24 48 40 32 FF 48 85 F6 75 0D E8 ?? ?? ?? ?? 48 8B F0 48 85 C0 74 4F 48 8B CE E8 ?? ?? ?? ?? 84 C0 74 43 0F B6 43 39 84 C0 75 2D 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 74 12 48 3B D8 74 0D 48 8B C8",
+            "40 53 48 83 EC 30 80 B9 18 01 00 00 00 48 8B D9 0F 85 96 00 00 00 48 89 74 24 40 48 8B 71 40 48 89 7C 24 48 48 85 F6 75 10 E8 ?? ?? ?? ?? 40 32 FF 48 8B F0 48 85 C0 74 51 48 8B CE 40 32 FF E8 ?? ?? ?? ?? 84 C0 74 42 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 36 40 38 7B 39 75 28 48 8B CE E8 ?? ?? ?? ??",
+            "48 89 5C 24 18 57 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 40 0F B6 81 B0 08 00 00 0F B6 DA 48 8B F9 3A D0 0F 84 1B 01 00 00 3C 01 0F 84 13 01 00 00 84 D2 0F 84 0B 01 00 00 80 FA 01 75 0F 3C 02 75 0B 88 91 B0 08 00 00 E9 ?? ?? ?? ?? 48 8B 49 30 48 89 74 24 68 48 85 C9 74 07",
+            "48 89 5C 24 08 57 48 83 EC 30 80 3D ?? ?? ?? ?? 00 0F B6 FA 48 8B D9 0F 84 9C 00 00 00 E8 ?? ?? ?? ?? 84 C0 75 30 FF 15 ?? ?? ?? ?? 84 C0 75 26 4C 8D 0D ?? ?? ?? ?? 41 B8 5C 04 00 00 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 02 90 CC E8 ?? ?? ?? ?? 48 8B 03",
+            "83 B9 38 03 00 00 00 7F 15 83 B9 28 03 00 00 00 7F 0C F6 81 8F 01 00 00 01 75 03 32 C0 C3 B0 01 C3"
+        };
+        return patterns;
+    }
+
+    /** Pairs every feature key with one destination in the existing resolved-address contract. */
+    std::span<const Fingerprints::AddressField> Fingerprints::CaptureAdmissionFields() noexcept
+    {
+        static constexpr AddressField fields[] = {
+            &ResolvedAddresses::captureShouldCreateSubsystem,
+            &ResolvedAddresses::captureIsGameWorld,
+            &ResolvedAddresses::captureIsPreviewWorld,
+            &ResolvedAddresses::captureFindWorldInPackage,
+            &ResolvedAddresses::captureDelegateAllocate,
+            &ResolvedAddresses::captureGenerateHandle,
+            &ResolvedAddresses::captureReadersTls,
+            &ResolvedAddresses::captureDestructionTls,
+            &ResolvedAddresses::captureReallocate,
+            &ResolvedAddresses::captureCheckFailure,
+            &ResolvedAddresses::captureInvalidArrayCount,
+            &ResolvedAddresses::captureMakePackagePath,
+            &ResolvedAddresses::captureLoadPackage,
+            &ResolvedAddresses::captureFlushRequest,
+            &ResolvedAddresses::captureLoadingSuspended,
+            &ResolvedAddresses::captureIsPartitionInitialized,
+            &ResolvedAddresses::captureUninitializePartition,
+            &ResolvedAddresses::captureEnumeratePartitions,
+            &ResolvedAddresses::captureForceUnload,
+            &ResolvedAddresses::captureQuantizeSize,
+            &ResolvedAddresses::captureResizeHeapAllocation,
+            &ResolvedAddresses::captureResizeAlignedHeapAllocation,
+            &ResolvedAddresses::captureWorldTypePreloadMap,
+            &ResolvedAddresses::captureHashNameEntry,
+            &ResolvedAddresses::captureInvalidSetCount,
+            &ResolvedAddresses::captureUpdatePartition,
+            &ResolvedAddresses::captureUpdateLevels,
+            &ResolvedAddresses::captureSendEndOfFrame,
+            &ResolvedAddresses::captureVisibilityPending,
+            &ResolvedAddresses::captureCanStream,
+            &ResolvedAddresses::captureServerStreamingEnabled,
+            &ResolvedAddresses::captureServerStreamingOutEnabled,
+            &ResolvedAddresses::captureFlushVisibility,
+            &ResolvedAddresses::captureWaitRenderFence,
+            &ResolvedAddresses::captureHasEndOfFrameUpdates
+        };
+        return fields;
+    }
+
+    /** Resolves the complete implemented capture prerequisite set before publishing any address. */
+    bool Fingerprints::ResolveCaptureAdmission(MiniMap::Services::IRequiredScanner& scanner,
+        ResolvedAddresses& addresses)
+    {
+        const auto fields = CaptureAdmissionFields();
+        for (const auto field : fields)
+            addresses.*field = 0;
+        const auto keys = CaptureAdmissionKeys();
+        const auto patterns = CaptureAdmissionPatterns();
+        if (keys.size() != fields.size() || patterns.size() != fields.size())
+            return false;
+        std::vector<uintptr_t> resolved(fields.size());
+        for (std::size_t index = 0; index < resolved.size(); ++index)
+        {
+            MiniMap::Services::RequiredScan request{};
+            const auto field = fields[index];
+            request.name = keys[index];
+            request.idaPattern = patterns[index];
+            // These callable leaves have exact PDB entries but no primary .pdata
+            // entry. ShouldCreateSubsystem keeps function-start validation for its hook target.
+            const bool codeAddress = field == &ResolvedAddresses::captureIsGameWorld ||
+                field == &ResolvedAddresses::captureIsPreviewWorld ||
+                field == &ResolvedAddresses::captureGenerateHandle ||
+                field == &ResolvedAddresses::captureIsPartitionInitialized ||
+                field == &ResolvedAddresses::captureForceUnload ||
+                field == &ResolvedAddresses::captureQuantizeSize ||
+                field == &ResolvedAddresses::captureHashNameEntry ||
+                field == &ResolvedAddresses::captureHasEndOfFrameUpdates ||
+                field == &ResolvedAddresses::captureLoadingSuspended ||
+                field == &ResolvedAddresses::captureWorldTypePreloadMap;
+            request.kind = codeAddress
+                ? MiniMap::Services::AddressKind::Code : MiniMap::Services::AddressKind::FunctionEntry;
+            const auto result = scanner.Resolve(request);
+            if (result.status.error != MiniMap::Services::Error::None ||
+                !result.value || !*result.value)
+                return false;
+            resolved[index] = fields[index] == &ResolvedAddresses::captureLoadingSuspended
+                ? DecodeLoadingSuspendedGlobal(*result.value) :
+                (fields[index] == &ResolvedAddresses::captureWorldTypePreloadMap
+                    ? DecodeWorldTypePreloadMap(*result.value) : *result.value);
+            if (!resolved[index])
+                return false;
+        }
+        for (std::size_t index = 0; index < resolved.size(); ++index)
+            addresses.*fields[index] = resolved[index];
+        return true;
+    }
+
+    /** Resolves the PostLoad RIP-relative map reference once during feature admission, never in ticks. */
+    uintptr_t Fingerprints::DecodeWorldTypePreloadMap(uintptr_t anchor)
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        std::array<unsigned char, 7> instruction{};
+        if (!MiniMapNative::ReadMemory(anchor, instruction.data(), instruction.size()) ||
+            instruction[0] != 0x48 || instruction[1] != 0x8B || instruction[2] != 0x15)
+            return 0;
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, instruction.data() + 3, sizeof(displacement));
+        const auto map = static_cast<uintptr_t>(static_cast<std::intptr_t>(anchor + 7) + displacement);
+        return MiniMapNative::IsMemoryRangeReadable(map, 80, alignof(void*)) ? map : 0;
+#else
+        (void)anchor;
+        return 0;
+#endif
+    }
+
+    /** Reads only the validated instruction displacement during initialization, never in gameplay ticks. */
+    uintptr_t Fingerprints::DecodeLoadingSuspendedGlobal(uintptr_t anchor)
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        std::array<unsigned char, 7> instruction{};
+        if (!MiniMapNative::ReadMemory(anchor, instruction.data(), instruction.size()) ||
+            instruction[0] != 0x48 || instruction[1] != 0x89 || instruction[2] != 0x05)
+            return 0;
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, instruction.data() + 3, sizeof(displacement));
+        const auto target = static_cast<uintptr_t>(static_cast<std::intptr_t>(anchor + 7) + displacement);
+        if (!MiniMapNative::IsMemoryRangeReadable(target, sizeof(void*), alignof(void*)))
+            return 0;
+        return target;
+#else
+        (void)anchor;
+        return 0;
+#endif
     }
 }

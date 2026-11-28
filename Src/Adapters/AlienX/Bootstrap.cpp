@@ -2318,6 +2318,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
                 scanner->ReportFailure(self, "MiniMap::NativeDependencies", "invalid required scanner callback arguments");
             return;
         }
+        MiniMap::Adapters::AlienX::RequiredScanner::DeclareCaptureAdmissionFeature(*self, *scanner);
         MiniMap::Adapters::AlienX::RequiredScanner requiredScanner(*self, *scanner);
         MiniMap::Adapters::AlienX::ResolveNativeDependencies(requiredScanner);
         if (requiredScanner.HasFailures())
@@ -2452,6 +2453,8 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(
             return;
         }
         g_captureFieldsResolved = true;
+        // Metadata-only prerequisite scans. No private world, request or detour is activated.
+        MiniMap::Adapters::AlienX::RequiredScanner::ResolveCaptureAdmissionFeature(*self, *scanner);
 #else
         (void)scanner; // Existing server/generic callback performs no native scans.
 #endif

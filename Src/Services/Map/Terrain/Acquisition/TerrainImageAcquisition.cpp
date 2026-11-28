@@ -2,6 +2,7 @@
 // Each advancement completes available work for one request; native/provider calls remain synchronous and application-admitted.
 #include "TerrainImageAcquisition.h"
 #include "../Processing/TerrainBc1Codec.h"
+#include <algorithm>
 #include <utility>
 
 namespace Services::Map::Terrain::Acquisition
@@ -103,6 +104,9 @@ namespace Services::Map::Terrain::Acquisition
         case Phase::AssociateCache:
             AssociateCache(service);
             break;
+        case Phase::WaitForCaptureBatch:
+            WaitForCaptureBatch(service);
+            break;
         case Phase::ReadCache:
             ReadCache(service);
             break;
@@ -174,11 +178,35 @@ namespace Services::Map::Terrain::Acquisition
             Fail("Terrain source dimensions must be positive multiples of 256 within image limits.");
             return;
         }
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (capture)
+        {
+            if (description.Source != capture->Source || description.Page != capture->Page ||
+                !capture->ImageRegistration.IsValid() ||
+                parameters_.PixelX >= capture->WidthPixels || parameters_.PixelY >= capture->HeightPixels ||
+                parameters_.WidthPixels > capture->WidthPixels - parameters_.PixelX ||
+                parameters_.HeightPixels > capture->HeightPixels - parameters_.PixelY ||
+                parameters_.PixelX % 4u || parameters_.PixelY % 4u)
+            {
+                Fail("Terrain capture definition does not match the admitted source or requested rectangle.");
+                return;
+            }
+            delivery_.Source = description.Source;
+            description_ = std::move(description);
+            provider_.reset();
+            phase_ = Phase::AssociateCache;
+            return;
+        }
+#endif
         const auto* retrieval = std::get_if<ITerrainDataProvider::RetrievalSource>(&description.Acquisition);
         if (!description.Source.IsValid() || !retrieval || !retrieval->Capability ||
             retrieval->Locator.Value.empty() || !retrieval->ImageRegistration.IsValid())
         {
+#if defined(MODLOADER_CLIENT_BUILD)
+            Fail("A valid BC1 retrieval source is required.");
+#else
             Fail("A valid BC1 retrieval source is required; capture acquisition is not implemented.");
+#endif
             return;
         }
         delivery_.Source = description.Source;
@@ -241,20 +269,34 @@ namespace Services::Map::Terrain::Acquisition
     /** Derives private cache evidence without another provider/native call; preserves this explicit phase. */
     void TerrainImageAcquisition::AssociateCache(TerrainService& service)
     {
-        (void)service;
 #if defined(MODLOADER_CLIENT_BUILD)
-        const auto& retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
-        Cache::TerrainCacheIdentity identity{inspection_.Source, inspection_.Locator.Value,
-            inspection_.WidthPixels, inspection_.HeightPixels, inspection_.Encoding,
-            inspection_.SRgb, retrieval.ImageRegistration, inspection_.Page};
-        if (identity.IsValid()) cacheKey_ = std::move(identity);
+        Cache::TerrainCacheIdentity identity;
+        if (const auto* capture = std::get_if<ITerrainDataProvider::CaptureDefinition>(&description_.Acquisition))
+        {
+            if (service.CreateCaptureCacheIdentity(*capture, identity)) cacheKey_ = std::move(identity);
+        }
+        else
+        {
+            const auto& retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
+            identity = {inspection_.Source, inspection_.Locator.Value,
+                inspection_.WidthPixels, inspection_.HeightPixels, inspection_.Encoding,
+                inspection_.SRgb, retrieval.ImageRegistration, inspection_.Page};
+            if (identity.IsValid()) cacheKey_ = std::move(identity);
+        }
+#else
+        (void)service;
 #endif
         phase_ = Phase::ReadCache;
     }
 
-    /** Cache hits are independent canonical chunks, never concatenated into a full-image block layout. */
+    /** Separates retrieval tile misses from capture page misses without starting capture work. */
     void TerrainImageAcquisition::ReadCache(TerrainService& service)
     {
+        if (const auto* capture = std::get_if<ITerrainDataProvider::CaptureDefinition>(&description_.Acquisition))
+        {
+            ReadCaptureCache(service, *capture);
+            return;
+        }
 #if defined(MODLOADER_CLIENT_BUILD)
         if (cacheKey_ && IsCacheChunk())
         {
@@ -288,6 +330,220 @@ namespace Services::Map::Terrain::Acquisition
         (void)service;
 #endif
         phase_ = Phase::Retrieve;
+    }
+
+    /** Reads every existing cache tile into one temporary canonical page, then extracts the demand. */
+    void TerrainImageAcquisition::ReadCaptureCache(TerrainService& service,
+        const ITerrainDataProvider::CaptureDefinition& definition)
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (IsCacheChunk())
+        {
+            ReadCaptureCacheChunk(service, definition);
+            return;
+        }
+        ReadCaptureCachePage(service, definition);
+#else
+        (void)service;
+        (void)definition;
+        ReportCaptureCacheUnavailable("Capture cache is unavailable in this build.");
+#endif
+    }
+
+#if defined(MODLOADER_CLIENT_BUILD)
+    /** Reads one existing cache tile and admits it with the capture's requested affine registration. */
+    void TerrainImageAcquisition::ReadCaptureCacheChunk(TerrainService& service,
+        const ITerrainDataProvider::CaptureDefinition& definition)
+    {
+        if (!cacheKey_)
+        {
+            ReportCaptureCacheUnavailable("Capture cache identity is incompatible with the existing page cache.");
+            return;
+        }
+        std::vector<std::uint8_t> blocks;
+        const auto result = service.TryLoadCacheTile(*cacheKey_,
+            parameters_.PixelX / Cache::TerrainCacheIdentity::TileDimension,
+            parameters_.PixelY / Cache::TerrainCacheIdentity::TileDimension, blocks
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+            , service.imageRequestTrace_ ? &service.imageRequestTrace_->Cache : nullptr
+#endif
+        );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        if (service.imageRequestTrace_ && service.imageRequestTrace_->ReadResult)
+            service.imageRequestTrace_->ReadResult(service.imageRequestTrace_->Cache.Context, result);
+#endif
+        if (!service.IsRequestCurrent(*this)) return;
+        if (result.Status != TerrainService::CacheStatus::Hit)
+        {
+            std::string reason;
+            if (result.Status == TerrainService::CacheStatus::Miss)
+                reason = "Capture cache miss.";
+            else
+                reason = "Capture cache read unavailable; status " +
+                    std::to_string(static_cast<int>(result.Status)) + ".";
+            WaitForCaptureOutputOrReportUnavailable(service, definition, std::move(reason));
+            return;
+        }
+        auto image = TerrainService::IngestBc1(definition.Source, parameters_.WidthPixels,
+            parameters_.HeightPixels, GetRequestedRegistration(), definition.SRgb, std::move(blocks));
+        if (!image)
+        {
+            Fail("Cached capture tile failed canonical BC1 admission.");
+            return;
+        }
+        preparedImage_ = std::make_shared<const TerrainImage>(*image);
+        phase_ = Phase::ValidateDelivery;
+    }
+
+    /** Reconstructs the existing page only for a demand that spans multiple cache tiles. */
+    void TerrainImageAcquisition::ReadCaptureCachePage(TerrainService& service,
+        const ITerrainDataProvider::CaptureDefinition& definition)
+    {
+        if (!cacheKey_)
+        {
+            ReportCaptureCacheUnavailable("Capture cache identity is incompatible with the existing page cache.");
+            return;
+        }
+        std::vector<std::uint8_t> page;
+        TerrainService::CacheResult result;
+        if (!LoadCaptureCacheTiles(service, definition, page, result))
+        {
+            if (!service.IsRequestCurrent(*this)) return;
+            std::string reason;
+            if (result.Status == TerrainService::CacheStatus::Miss)
+                reason = "Capture cache miss.";
+            else
+                reason = "Capture cache read unavailable; status " +
+                    std::to_string(static_cast<int>(result.Status)) + ".";
+            WaitForCaptureOutputOrReportUnavailable(service, definition, std::move(reason));
+            return;
+        }
+        auto fullImage = TerrainService::IngestBc1(definition.Source, definition.WidthPixels,
+            definition.HeightPixels, definition.ImageRegistration, definition.SRgb, std::move(page));
+        if (!fullImage)
+        {
+            Fail("Cached capture page failed canonical BC1 admission.");
+            return;
+        }
+        auto image = TerrainService::ExtractImage(*fullImage, parameters_.PixelX, parameters_.PixelY,
+            parameters_.WidthPixels, parameters_.HeightPixels);
+        if (!image)
+        {
+            Fail("Cached capture page failed canonical image extraction.");
+            return;
+        }
+        preparedImage_ = std::make_shared<const TerrainImage>(*image);
+        phase_ = Phase::ValidateDelivery;
+    }
+
+    /** Copies one complete cache page in Y-major/X-minor 256-square tile order. */
+    bool TerrainImageAcquisition::LoadCaptureCacheTiles(TerrainService& service,
+        const ITerrainDataProvider::CaptureDefinition& definition, std::vector<std::uint8_t>& page,
+        TerrainService::CacheResult& result)
+    {
+        const auto pageByteCount = TerrainImage::CalculateByteCount(definition.WidthPixels, definition.HeightPixels);
+        if (!pageByteCount)
+        {
+            result.Status = TerrainService::CacheStatus::InvalidInput;
+            return false;
+        }
+        page.resize(*pageByteCount);
+        const std::uint32_t tilesPerAxis = definition.WidthPixels / Cache::TerrainCacheIdentity::TileDimension;
+        const std::size_t pageRowBytes = (static_cast<std::size_t>(definition.WidthPixels) / 4u) * 8u;
+        const std::size_t tileRowBytes = (Cache::TerrainCacheIdentity::TileDimension / 4u) * 8u;
+        for (std::uint32_t tileY = 0; tileY < tilesPerAxis; ++tileY)
+        {
+            for (std::uint32_t tileX = 0; tileX < tilesPerAxis; ++tileX)
+            {
+                std::vector<std::uint8_t> tile;
+                result = service.TryLoadCacheTile(*cacheKey_, static_cast<int>(tileX),
+                    static_cast<int>(tileY), tile
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+                    , service.imageRequestTrace_ ? &service.imageRequestTrace_->Cache : nullptr
+#endif
+                );
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+                if (service.imageRequestTrace_ && service.imageRequestTrace_->ReadResult)
+                    service.imageRequestTrace_->ReadResult(service.imageRequestTrace_->Cache.Context, result);
+#endif
+                if (!service.IsRequestCurrent(*this)) return false;
+                if (result.Status != TerrainService::CacheStatus::Hit)
+                {
+                    return false;
+                }
+                for (std::size_t row = 0; row < Cache::TerrainCacheIdentity::TileDimension / 4u; ++row)
+                {
+                    const std::size_t destinationOffset =
+                        (static_cast<std::size_t>(tileY *
+                            (Cache::TerrainCacheIdentity::TileDimension / 4u)) + row) * pageRowBytes +
+                        tileX * tileRowBytes;
+                    const std::size_t sourceOffset = row * tileRowBytes;
+                    std::copy_n(tile.data() + sourceOffset, tileRowBytes, page.data() + destinationOffset);
+                }
+            }
+        }
+        return true;
+    }
+#endif
+
+    /** Ends capture image demand as an explicit unavailable cache-only request. */
+    void TerrainImageAcquisition::ReportCaptureCacheUnavailable(std::string reason)
+    {
+        delivery_.State = TerrainImageDelivery::Availability::Unavailable;
+        delivery_.Error = std::move(reason);
+        phase_ = Phase::Done;
+        ReleaseSource();
+    }
+
+    /** Keeps a miss pending only while this session's exact output is awaiting admission or generation. */
+    void TerrainImageAcquisition::WaitForCaptureOutputOrReportUnavailable(TerrainService& service,
+        const ITerrainDataProvider::CaptureDefinition& definition, std::string reason)
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        const auto state = service.GetPrivateCaptureOutputState(definition);
+        if (state == TerrainService::CaptureOutputState::AwaitingBatchAdmission ||
+            state == TerrainService::CaptureOutputState::Generating)
+        {
+            delivery_.Error = std::move(reason);
+            phase_ = Phase::WaitForCaptureBatch;
+            return;
+        }
+        ReportCaptureCacheUnavailable(std::move(reason));
+#else
+        (void)service;
+        (void)definition;
+        ReportCaptureCacheUnavailable(std::move(reason));
+#endif
+    }
+
+    /** Advances through the existing pending request queue without touching the filesystem. */
+    void TerrainImageAcquisition::WaitForCaptureBatch(TerrainService& service)
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        const auto* definition = std::get_if<ITerrainDataProvider::CaptureDefinition>(
+            &description_.Acquisition);
+        if (!definition)
+        {
+            Fail("Capture batch wait lost its capture definition.");
+            return;
+        }
+        const auto state = service.GetPrivateCaptureOutputState(*definition);
+        if (state == TerrainService::CaptureOutputState::AwaitingBatchAdmission ||
+            state == TerrainService::CaptureOutputState::Generating)
+            return;
+        if (state == TerrainService::CaptureOutputState::CacheReady)
+        {
+            delivery_.Error.clear();
+            phase_ = Phase::ReadCache;
+            return;
+        }
+        std::string reason = "Capture batch ended before the requested image became available.";
+        if (!delivery_.Error.empty()) reason = std::move(delivery_.Error);
+        ReportCaptureCacheUnavailable(std::move(reason));
+#else
+        (void)service;
+        ReportCaptureCacheUnavailable("Capture batch is unavailable in this build.");
+#endif
     }
 
     /** Exact metadata equality makes a sink submission evidence of the inspected source, not a new source. */
@@ -400,6 +656,30 @@ namespace Services::Map::Terrain::Acquisition
     /** A cache hit or retrieval from an earlier callback cannot authorize publication of a changed source. */
     void TerrainImageAcquisition::ValidateDelivery(TerrainService& service)
     {
+        if (const auto* capture = std::get_if<ITerrainDataProvider::CaptureDefinition>(&description_.Acquisition))
+        {
+            if (!service.IsRequestCurrent(*this)) return;
+            const auto& image = *preparedImage_;
+            const auto& registration = image.GetRegistration();
+            const auto expectedRegistration = GetRequestedRegistration();
+            if (image.GetIdentity() != capture->Source ||
+                image.GetWidthPixels() != parameters_.WidthPixels ||
+                image.GetHeightPixels() != parameters_.HeightPixels || image.IsSRgb() != capture->SRgb ||
+                registration.Origin.X != expectedRegistration.Origin.X ||
+                registration.Origin.Y != expectedRegistration.Origin.Y ||
+                registration.U.X != expectedRegistration.U.X ||
+                registration.U.Y != expectedRegistration.U.Y ||
+                registration.V.X != expectedRegistration.V.X ||
+                registration.V.Y != expectedRegistration.V.Y ||
+                !Processing::TerrainBc1Codec::Validate(image.GetCompressedBytes(),
+                    image.GetWidthPixels(), image.GetHeightPixels()))
+            {
+                Fail("Cached capture image no longer matches its admitted definition.");
+                return;
+            }
+            Publish(service, preparedImage_);
+            return;
+        }
         const auto retrieval = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition);
         const auto current = retrieval.Capability->Inspect(retrieval.Locator);
         if (!service.IsRequestCurrent(*this)) return;
@@ -436,9 +716,11 @@ namespace Services::Map::Terrain::Acquisition
     /** Affine subimage coverage is derived from logical pixels, excluding BC1 block padding. */
     TerrainImage::Registration TerrainImageAcquisition::GetRequestedRegistration() const noexcept
     {
-        const auto& original = std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition).ImageRegistration;
-        const double width = inspection_.WidthPixels;
-        const double height = inspection_.HeightPixels;
+        const auto* capture = std::get_if<ITerrainDataProvider::CaptureDefinition>(&description_.Acquisition);
+        const auto& original = capture ? capture->ImageRegistration :
+            std::get<ITerrainDataProvider::RetrievalSource>(description_.Acquisition).ImageRegistration;
+        const double width = capture ? capture->WidthPixels : inspection_.WidthPixels;
+        const double height = capture ? capture->HeightPixels : inspection_.HeightPixels;
         const double u = parameters_.WidthPixels / width;
         const double v = parameters_.HeightPixels / height;
         return {original.ImageToWorld(parameters_.PixelX / width, parameters_.PixelY / height),

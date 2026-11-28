@@ -1,0 +1,19 @@
+// Extends only the private streaming UE translation unit's checked/cooked configuration for Engine headers.
+#pragma once
+#include "PackageLoadUEConfiguration.h"
+#define INPUTCORE_API
+#define SLATECORE_API
+#define SOCKETS_API
+#define RHI_API
+#define PHYSICSCORE_API
+#define DEVELOPERSETTINGS_API
+#define RENDERCORE_API
+#define STATESTREAM_API
+#define CHAOS_API
+#define CHAOSCORE_API
+#define NETUTILS_API
+#define PHYSICSUTILITIES_API
+#define AUDIOMIXERCORE_API
+#define AUDIOEXTENSIONS_API
+#define AUDIOPLATFORMCONFIGURATION_API
+#define SIGNALPROCESSING_API

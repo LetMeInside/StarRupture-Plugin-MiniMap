@@ -1,8 +1,10 @@
+// Stores the single resolved native-address contract for common and capture prerequisites.
 #pragma once
 
 #include "../Services/RequiredScanner.h"
 
 #include <cstdint>
+#include <span>
 
 namespace MiniMapFingerprints
 {
@@ -115,9 +117,71 @@ namespace MiniMapFingerprints
         uintptr_t renderFenceDestroy = 0;
         uintptr_t renderFenceBegin = 0;
         uintptr_t renderFencePoll = 0;
+
+        // Published together by ResolveCaptureAdmission; excluded from common admission.
+        uintptr_t captureShouldCreateSubsystem = 0;
+        uintptr_t captureIsGameWorld = 0;
+        uintptr_t captureIsPreviewWorld = 0;
+        uintptr_t captureFindWorldInPackage = 0;
+        uintptr_t captureDelegateAllocate = 0;
+        uintptr_t captureGenerateHandle = 0;
+        uintptr_t captureReadersTls = 0;
+        uintptr_t captureDestructionTls = 0;
+        uintptr_t captureReallocate = 0;
+        uintptr_t captureQuantizeSize = 0;
+        uintptr_t captureResizeHeapAllocation = 0;
+        uintptr_t captureResizeAlignedHeapAllocation = 0;
+        uintptr_t captureUpdatePartition = 0;
+        uintptr_t captureUpdateLevels = 0;
+        uintptr_t captureSendEndOfFrame = 0;
+        uintptr_t captureVisibilityPending = 0;
+        uintptr_t captureCanStream = 0;
+        uintptr_t captureServerStreamingEnabled = 0;
+        uintptr_t captureServerStreamingOutEnabled = 0;
+        uintptr_t captureFlushVisibility = 0;
+        uintptr_t captureWaitRenderFence = 0;
+        uintptr_t captureWorldTypePreloadMap = 0;
+        uintptr_t captureHasEndOfFrameUpdates = 0;
+        uintptr_t captureHashNameEntry = 0;
+        uintptr_t captureInvalidSetCount = 0;
+        uintptr_t captureCheckFailure = 0;
+        uintptr_t captureInvalidArrayCount = 0;
+        uintptr_t captureMakePackagePath = 0;
+        uintptr_t captureLoadPackage = 0;
+        uintptr_t captureFlushRequest = 0;
+        uintptr_t captureLoadingSuspended = 0;
+        uintptr_t captureIsPartitionInitialized = 0;
+        uintptr_t captureUninitializePartition = 0;
+        uintptr_t captureEnumeratePartitions = 0;
+        uintptr_t captureForceUnload = 0;
     };
 
     bool Resolve(
         MiniMap::Services::IRequiredScanner& scanner,
         ResolvedAddresses& addresses);
+
+    /** Defines the independent mandatory admission-prerequisite group in the existing resolver.
+     * No scanner or executable-address ownership survives the borrowed load callback.
+     */
+    class Fingerprints final
+    {
+    public:
+        /** Borrows stable feature keys for every implemented admission prerequisite. */
+        static std::span<const char* const> CaptureAdmissionKeys() noexcept;
+
+        /** Resolves every prerequisite; publishes no partial group on failure. */
+        static bool ResolveCaptureAdmission(MiniMap::Services::IRequiredScanner& scanner,
+            ResolvedAddresses& addresses);
+
+    private:
+        using AddressField = uintptr_t ResolvedAddresses::*;
+        /** Borrows patterns paired with the feature's keys; all are mandatory. */
+        static std::span<const char* const> CaptureAdmissionPatterns() noexcept;
+        /** Borrows destinations for atomic publication of the resolved feature. */
+        static std::span<const AddressField> CaptureAdmissionFields() noexcept;
+        /** Decodes the verified startup MOV's RIP-relative function-pointer destination. */
+        static uintptr_t DecodeLoadingSuspendedGlobal(uintptr_t anchor);
+        /** Decodes the native PostLoad map-data load back to the genuine enclosing preload map. */
+        static uintptr_t DecodeWorldTypePreloadMap(uintptr_t anchor);
+    };
 }

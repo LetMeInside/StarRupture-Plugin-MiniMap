@@ -16,6 +16,7 @@ namespace MiniMapConfig
         bool CoordsInUEUnits = false;
         bool ShowCompass = true;
         bool ClearCache = false;
+        bool ExportTerrainCaptures = false;
 #if defined(_DEBUG)
         bool AtlasExport = false;
         bool ShowBuildingSectionGrid = true;
@@ -97,6 +98,8 @@ namespace MiniMapConfig
     bool VisibleAtStartup();
     bool ClearCache();
 #if defined(_DEBUG)
+    /** Returns whether newly completed terrain captures should be exported in Debug. */
+    bool ExportTerrainCapturesEnabled();
     /** Returns whether Debug atlas PNG exports are enabled for later publications. */
     bool AtlasExportEnabled();
 #endif

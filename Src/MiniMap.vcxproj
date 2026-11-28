@@ -105,6 +105,7 @@
   <ItemGroup>
     <ClInclude Include="BuildingMapLoadingTrace.h" />
     <ClInclude Include="Services\Map\Terrain\ITerrainDataProvider.h" />
+    <ClInclude Include="Services\Map\Terrain\TerrainCellImageProvider.h" />
     <ClInclude Include="Services\Map\Terrain\ITerrainSourceRetrieval.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainImage.h" />
     <ClInclude Include="Services\Map\Terrain\TerrainPageIdentity.h" />
@@ -204,6 +205,23 @@
     <ClInclude Include="Native\ReadbackUEConfiguration.h" />
     <ClInclude Include="Native\RHITextureAcquisition.h" />
     <ClInclude Include="Native\CaptureRetirementCore.h" />
+    <ClInclude Include="Native\CaptureAdmissionApi.h" />
+    <ClInclude Include="Native\PackageLoadApi.h" />
+    <ClInclude Include="Native\PackageLoadUEConfiguration.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PackageLoadOperation.h" />
+    <ClInclude Include="Native\PrivateStreamingUEConfiguration.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PreloadWorldTypeAssociation.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\LevelStreamingRequests.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PrivateStreamingLevels.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PrivateWorldNative.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\TerrainImageCapture.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\TerrainImageReadback.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PrivateStreamingSession.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\PrivateStreamingDefinition.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\WorldPartitionAdmissionHook.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\WorldPartitionUnregistration.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\WorldPartitionEnumeration.h" />
+    <ClInclude Include="Services\Map\Terrain\Capture\WorldPartitionAdmissionScope.h" />
     <ClInclude Include="Map\Map.h" />
     <ClInclude Include="Map\MapTransform.h" />
     <ClInclude Include="Map\FogOfWar\FogOfWar.h" />
@@ -224,6 +242,7 @@
     <ClInclude Include="Native\Fingerprints.h" />
     <ClInclude Include="Map\Terrain\Terrain.h" />
     <ClInclude Include="Map\Terrain\NativeTerrainPresentation.h" />
+    <ClInclude Include="Map\Terrain\ForgottenEngineCaptureConfiguration.h" />
     <ClInclude Include="Native\TextureAccess.h" />
     <ClInclude Include="Map\Terrain\TerrainChunks.h" />
     <ClInclude Include="Map\Terrain\TerrainDiagnostics.h" />
@@ -327,7 +346,40 @@
     <ClCompile Include="Native\MassLifecycle.cpp" />
     <ClCompile Include="Native\TexturePublication.cpp" />
     <ClCompile Include="Native\Fingerprints.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\WorldPartitionAdmissionScope.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\WorldPartitionAdmissionHook.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\WorldPartitionUnregistration.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\WorldPartitionEnumeration.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\PackageLoadOperation.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreUObject\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\PreloadWorldTypeAssociation.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental'">$(MiniMapUnrealEngineRoot)Engine\Source;$(MiniMapUnrealEngineRoot)Engine\Shaders\Shared;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreUObject\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\ApplicationCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreOnline\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Common\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\DeveloperSettings\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\PhysicsCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Slate\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\SlateCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Sockets\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\StateStream\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\MassEntity\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\Chaos\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\ChaosCore\Public;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreUObject\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\Engine\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\ApplicationCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreOnline\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\DeveloperSettings\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\InputCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\NetCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\PhysicsCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\RenderCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\SlateCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\StateStream\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\MassEntity\UHT;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\LevelStreamingRequests.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental'">$(MiniMapUnrealEngineRoot)Engine\Source;$(MiniMapUnrealEngineRoot)Engine\Shaders\Shared;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreUObject\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\ApplicationCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreOnline\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Common\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\DeveloperSettings\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\PhysicsCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Slate\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\SlateCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Sockets\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\StateStream\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\MassEntity\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\Chaos\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\ChaosCore\Public;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreUObject\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\Engine\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\ApplicationCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreOnline\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\DeveloperSettings\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\InputCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\NetCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\PhysicsCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\RenderCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\SlateCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\StateStream\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\MassEntity\UHT;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\PrivateStreamingLevels.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\PrivateWorldNative.cpp">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental'">$(MiniMapUnrealEngineRoot)Engine\Source;$(MiniMapUnrealEngineRoot)Engine\Shaders\Shared;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreUObject\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Engine\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\ApplicationCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\CoreOnline\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Net\Common\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\DeveloperSettings\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\InputCore\Classes;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\PhysicsCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Slate\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\SlateCore\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Sockets\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\StateStream\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\MassEntity\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\Chaos\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Experimental\ChaosCore\Public;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreUObject\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\Engine\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\ApplicationCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\CoreOnline\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\DeveloperSettings\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\InputCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\NetCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\PhysicsCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\RenderCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\SlateCore\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\StateStream\UHT;$(MiniMapUnrealEngineRoot)Engine\Intermediate\Build\Win64\UnrealGame\Inc\MassEntity\UHT;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="Services\Map\Terrain\Capture\PrivateStreamingSession.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\PrivateStreamingDefinition.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\TerrainImageCapture.cpp" />
+    <ClCompile Include="Services\Map\Terrain\Capture\TerrainImageReadback.cpp">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Debug Experimental' Or '$(Configuration)' == 'Client Release'">$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\Core\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RHI\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\TraceLog\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\AutoRTFM\Public;$(MiniMapUnrealEngineRoot)Engine\Source\Runtime\RenderCore\Public;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="Services\Map\Terrain\TerrainService.cpp" />
+    <ClCompile Include="Services\Map\Terrain\TerrainCellImageProvider.cpp" />
     <ClCompile Include="Services\Map\Terrain\Acquisition\TerrainImageAcquisition.cpp" />
     <ClCompile Include="Services\Map\Terrain\Processing\TerrainBc1Codec.cpp" />
     <ClCompile Include="Services\Map\Terrain\TerrainViewport.cpp" />
@@ -335,6 +387,7 @@
     <ClCompile Include="Services\Map\Terrain\Cache\TerrainCacheRecord.cpp" />
     <ClCompile Include="Map\Terrain\Terrain.cpp" />
     <ClCompile Include="Map\Terrain\NativeTerrainPresentation.cpp" />
+    <ClCompile Include="Map\Terrain\ForgottenEngineCaptureConfiguration.cpp" />
     <ClCompile Include="Map\Terrain\TerrainReconciliation.cpp" />
     <ClCompile Include="Native\TextureAccess.cpp" />
     <ClCompile Include="Map\Terrain\TerrainChunks.cpp" />

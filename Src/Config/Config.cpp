@@ -41,6 +41,8 @@ namespace
          "Clear Cache on Startup/Exit: clear MiniMap terrain/building caches at plugin startup and safe shutdown, not "
          "immediately on edit."},
 #if defined(_DEBUG)
+        {"Debug", "ExportTerrainCaptures", S::SettingKind::Boolean, "false",
+         "Export Terrain Captures: write newly completed canonical terrain capture images for diagnostics."},
         {"Debug", "AtlasExport", S::SettingKind::Boolean, "false",
          "Atlas Export: write a PNG after atlas publication; changes apply to later publications immediately."},
         {"Debug", "ShowBuildingSectionGrid", S::SettingKind::Boolean, "true",
@@ -97,6 +99,7 @@ namespace
         Compass,
         ClearCache,
 #if defined(_DEBUG)
+        ExportTerrainCaptures,
         AtlasExport,
         ShowBuildingSectionGrid,
 #endif
@@ -120,7 +123,7 @@ namespace
     };
     static_assert(FieldCount == std::size(kEntries));
 #if defined(_DEBUG)
-    static_assert(FieldCount == 26);
+    static_assert(FieldCount == 27);
 #else
     static_assert(FieldCount == 24);
 #endif
@@ -352,6 +355,9 @@ constexpr const char* kKeys[] = {
             s.ClearCache = v.Boolean;
             break;
 #if defined(_DEBUG)
+        case ExportTerrainCaptures:
+            s.ExportTerrainCaptures = v.Boolean;
+            break;
         case AtlasExport:
             s.AtlasExport = v.Boolean;
             break;
@@ -428,6 +434,19 @@ constexpr const char* kKeys[] = {
             if (!copied || !Parse(field, owned, parsed))
             {
 #if defined(_DEBUG)
+                if (field == ExportTerrainCaptures)
+                {
+                    {
+                        std::lock_guard lock(g_settingsMutex);
+                        if (!g_acceptChanges)
+                            return S::EditDecision::Rejected;
+                        g_settings.ExportTerrainCaptures = false;
+                    }
+                    LOG_WARN(
+                        "MiniMap: rejected config [Debug].ExportTerrainCaptures='%s'; disabling terrain capture exports until a valid value is selected",
+                        copied ? owned.data() : "<null/overlong>");
+                    return S::EditDecision::Rejected;
+                }
                 if (field == AtlasExport)
                 {
                     {
@@ -488,6 +507,11 @@ namespace MiniMapConfig
         return g_settings.ClearCache;
     }
 #if defined(_DEBUG)
+    bool ExportTerrainCapturesEnabled()
+    {
+        std::lock_guard lock(g_settingsMutex);
+        return g_settings.ExportTerrainCaptures;
+    }
     bool AtlasExportEnabled()
     {
         std::lock_guard lock(g_settingsMutex);
@@ -619,6 +643,7 @@ namespace MiniMapConfig
             std::lock_guard lock(g_settingsMutex);
             g_acceptChanges = false;
 #if defined(_DEBUG)
+            g_settings.ExportTerrainCaptures = false;
             g_settings.AtlasExport = false;
 #endif
         }

@@ -1,3 +1,4 @@
+// Implements native binding publication and preserves independent common binding failure semantics.
 #if defined(MODLOADER_CLIENT_BUILD)
 
 #include "NativeApi.h"
@@ -534,6 +535,80 @@ namespace MiniMapNative
         return true;
     }
 
+
+    /** Publishes a complete capture-admission prerequisite set only after common initialization. */
+    bool NativeApi::PublishCaptureAdmission(
+        const MiniMapFingerprints::ResolvedAddresses& addresses) noexcept
+    {
+        if (!g_bindingsInitialized || g_nativeApi.captureAdmission.IsComplete())
+            return false;
+        CaptureAdmissionApi candidate;
+        candidate.shouldCreateSubsystem = reinterpret_cast<CaptureAdmissionApi::ShouldCreateSubsystem*>(
+            addresses.captureShouldCreateSubsystem);
+        candidate.isGameWorld = reinterpret_cast<CaptureAdmissionApi::WorldPredicate*>(
+            addresses.captureIsGameWorld);
+        candidate.isPreviewWorld = reinterpret_cast<CaptureAdmissionApi::WorldPredicate*>(
+            addresses.captureIsPreviewWorld);
+        candidate.findWorldInPackage = reinterpret_cast<CaptureAdmissionApi::FindWorldInPackage*>(
+            addresses.captureFindWorldInPackage);
+        candidate.isPartitionInitialized = reinterpret_cast<CaptureAdmissionApi::PartitionPredicate*>(
+            addresses.captureIsPartitionInitialized);
+        candidate.uninitializePartition = reinterpret_cast<CaptureAdmissionApi::UninitializePartition*>(
+            addresses.captureUninitializePartition);
+        candidate.enumeratePartitions = reinterpret_cast<CaptureAdmissionApi::EnumeratePartitions*>(
+            addresses.captureEnumeratePartitions);
+        candidate.forceUnload = reinterpret_cast<CaptureAdmissionApi::ForceUnload*>(addresses.captureForceUnload);
+        candidate.updatePartition = reinterpret_cast<CaptureAdmissionApi::UpdatePartition*>(addresses.captureUpdatePartition);
+        candidate.updateLevels = reinterpret_cast<CaptureAdmissionApi::UpdateLevels*>(addresses.captureUpdateLevels);
+        candidate.sendEndOfFrame = reinterpret_cast<CaptureAdmissionApi::WorldAction*>(addresses.captureSendEndOfFrame);
+        candidate.flushVisibility = reinterpret_cast<CaptureAdmissionApi::FlushVisibility*>(addresses.captureFlushVisibility);
+        candidate.waitRenderFence = reinterpret_cast<CaptureAdmissionApi::WaitRenderFence*>(addresses.captureWaitRenderFence);
+        candidate.visibilityPending = reinterpret_cast<CaptureAdmissionApi::WorldPredicate*>(addresses.captureVisibilityPending);
+        candidate.hasEndOfFrameUpdates = reinterpret_cast<CaptureAdmissionApi::WorldPredicate*>(
+            addresses.captureHasEndOfFrameUpdates);
+        candidate.canStream = reinterpret_cast<CaptureAdmissionApi::PartitionPredicate*>(addresses.captureCanStream);
+        candidate.serverStreamingEnabled = reinterpret_cast<CaptureAdmissionApi::PartitionPredicate*>(addresses.captureServerStreamingEnabled);
+        candidate.serverStreamingOutEnabled = reinterpret_cast<CaptureAdmissionApi::PartitionPredicate*>(addresses.captureServerStreamingOutEnabled);
+        if (!candidate.IsComplete())
+            return false;
+        if (!PublishPackageLoad(addresses))
+            return false;
+        g_nativeApi.captureAdmission = candidate;
+        return true;
+    }
+
+    /** Publishes genuine checked-delegate dependencies without altering common failure semantics. */
+    bool NativeApi::PublishPackageLoad(
+        const MiniMapFingerprints::ResolvedAddresses& addresses) noexcept
+    {
+        if (!g_bindingsInitialized || g_nativeApi.packageLoad.IsComplete())
+            return false;
+        PackageLoadApi candidate;
+        candidate.allocate = reinterpret_cast<PackageLoadApi::Allocate*>(addresses.captureDelegateAllocate);
+        candidate.generateHandle = reinterpret_cast<PackageLoadApi::GenerateHandle*>(addresses.captureGenerateHandle);
+        candidate.readersTls = reinterpret_cast<PackageLoadApi::NativeTls*>(addresses.captureReadersTls);
+        candidate.destructionTls = reinterpret_cast<PackageLoadApi::NativeTls*>(addresses.captureDestructionTls);
+        candidate.reallocate = reinterpret_cast<PackageLoadApi::Reallocate*>(addresses.captureReallocate);
+        candidate.quantizeSize = reinterpret_cast<PackageLoadApi::QuantizeSize*>(addresses.captureQuantizeSize);
+        candidate.resizeHeapAllocation = reinterpret_cast<PackageLoadApi::ResizeHeapAllocation*>(
+            addresses.captureResizeHeapAllocation);
+        candidate.resizeAlignedHeapAllocation = reinterpret_cast<PackageLoadApi::ResizeAlignedHeapAllocation*>(
+            addresses.captureResizeAlignedHeapAllocation);
+        candidate.checkFailure = reinterpret_cast<PackageLoadApi::CheckFailure*>(addresses.captureCheckFailure);
+        candidate.invalidArrayCount = reinterpret_cast<PackageLoadApi::InvalidArrayCount*>(addresses.captureInvalidArrayCount);
+        candidate.invalidSetCount = reinterpret_cast<PackageLoadApi::InvalidArrayCount*>(addresses.captureInvalidSetCount);
+        candidate.hashNameEntry = reinterpret_cast<PackageLoadApi::HashNameEntry*>(addresses.captureHashNameEntry);
+        candidate.worldTypePreloadMap = reinterpret_cast<void*>(addresses.captureWorldTypePreloadMap);
+        candidate.makePath = reinterpret_cast<PackageLoadApi::MakePath*>(addresses.captureMakePackagePath);
+        candidate.load = addresses.captureLoadPackage;
+        candidate.flushRequest = reinterpret_cast<PackageLoadApi::FlushRequest*>(addresses.captureFlushRequest);
+        candidate.loadingSuspended = reinterpret_cast<PackageLoadApi::LoadingSuspended* const*>(
+            addresses.captureLoadingSuspended);
+        if (!candidate.IsComplete())
+            return false;
+        g_nativeApi.packageLoad = candidate;
+        return true;
+    }
 
     void Shutdown()
     {

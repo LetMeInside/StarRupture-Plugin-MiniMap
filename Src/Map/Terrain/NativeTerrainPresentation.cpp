@@ -7,7 +7,8 @@
 #include "TerrainChunks.h"
 #include "TerrainProfile.h"
 #include "TerrainReconciliationState.h"
-#include "ForgottenEngineTerrainProvider.h"
+#include "ForgottenEngineCaptureConfiguration.h"
+#include "Services/Map/Terrain/TerrainCellImageProvider.h"
 #include "UI/MiniMapUI.h"
 #include "Services/Runtime.h"
 #include "Native/NativeApi.h"
@@ -160,27 +161,73 @@ namespace MiniMapTerrainSource
     /** Application policy only: provisional FE1 XY margin and agreed interpolated five-level Z bands. */
     bool NativeTerrainPresentation::RegisterForgottenEngineProvider()
     {
-        using Provider = ForgottenEngineTerrainProvider;
-        using Candidate = Provider::Candidate;
-        Provider::Configuration configuration{session_.WorldId, session_.Generation,
-            "ForgottenEngine1", "Final4.StructuralGeometry.512.Canvas250m.v3", {}};
-        constexpr std::array ids{"FE1_LevelMinus2", "FE1_LevelMinus1", "FE1_Level0",
-            "FE1_LevelPlus1", "FE1_LevelPlus2"};
         constexpr std::array edges{3844.753, 5374.529, 5974.529, 6574.529, 7174.529, 9244.753};
-        const std::array<std::optional<Candidate>, 5> artwork{Candidate::CandidateZ5074, std::nullopt,
-            Candidate::CandidateZ6274, std::nullopt, Candidate::CandidateZ7474};
-        for (std::size_t index = 0; index < ids.size(); ++index)
-            configuration.Regions.push_back({{ids[index],
-                {{-185.340, 431508.500, edges[index]}, {22406.891, 449662.030, edges[index + 1]}}}, artwork[index]});
-        alternateRegistration_ = service_.RegisterProvider(std::make_shared<Provider>(std::move(configuration)));
-        return alternateRegistration_.IsRegistered();
+        if (forgottenCaptureDefinitions_.size() != alternateRegistrations_.size()) return false;
+        for (std::size_t index = 0; index < forgottenCaptureDefinitions_.size(); ++index)
+        {
+            const auto& definition = forgottenCaptureDefinitions_[index];
+            const auto separator = definition.Source.SourceId.find_last_of('/');
+            if (separator == std::string::npos || separator + 1 == definition.Source.SourceId.size())
+            {
+                ClearForgottenEngineProviders();
+                return false;
+            }
+            const auto regionId = definition.Source.SourceId.substr(separator + 1);
+            Services::Map::Terrain::ITerrainDataProvider::Coverage coverage{
+                definition.Source.SourceId, session_.WorldId,
+                Services::Map::Terrain::ITerrainDataProvider::CoverageRole::Alternate,
+                {{regionId, {{-185.340, 431508.500, edges[index]},
+                    {22406.891, 449662.030, edges[index + 1]}}}}};
+            auto provider = std::make_shared<Services::Map::Terrain::TerrainCellImageProvider>(
+                definition, coverage);
+            alternateRegistrations_[index] = service_.RegisterProvider(std::move(provider));
+            if (alternateRegistrations_[index].IsRegistered()) continue;
+            ClearForgottenEngineProviders();
+            return false;
+        }
+        return true;
+    }
+
+    /** Unregisters already admitted FE providers before returning from partial registration failure. */
+    void NativeTerrainPresentation::ClearForgottenEngineProviders()
+    {
+        for (auto& registration : alternateRegistrations_)
+        {
+            if (registration.IsRegistered()) service_.UnregisterProvider(registration);
+            registration = {};
+        }
+    }
+
+    /** Recognizes only the five registered FE provider identities for this presentation owner. */
+    bool NativeTerrainPresentation::IsForgottenEngineSelection(
+        const TerrainService::Registration& provider) const noexcept
+    {
+        for (const auto& registration : alternateRegistrations_)
+            if (provider == registration && registration.IsRegistered()) return true;
+        return false;
+    }
+
+    /** Finds the selected output without rebuilding any capture or cache identity. */
+    const Services::Map::Terrain::ITerrainDataProvider::CaptureDefinition*
+        NativeTerrainPresentation::FindForgottenEngineDefinition(const std::string& regionId) const noexcept
+    {
+        for (const auto& definition : forgottenCaptureDefinitions_)
+        {
+            const auto separator = definition.Source.SourceId.find_last_of('/');
+            if (separator != std::string::npos &&
+                definition.Source.SourceId.compare(separator + 1, std::string::npos, regionId) == 0)
+                return &definition;
+        }
+        return nullptr;
     }
 
     /** Uses the same conservative circumscribed-radius intersection as legacy registered imagery. */
     void NativeTerrainPresentation::ReconcileForgottenEngine(const MiniMapMap::PresentationSample& sample,
         std::uint64_t revision, const MiniMapMap::Transform& transform)
     {
-        const auto registration = ForgottenEngineTerrainProvider::GetRegistration();
+        const auto* definition = FindForgottenEngineDefinition(selection_->RegionId);
+        if (!definition) return;
+        const auto& registration = definition->ImageRegistration;
         const double halfWidth = transform.Width * transform.MetersPerPixel * 50.0;
         const double halfHeight = transform.Height * transform.MetersPerPixel * 50.0;
         const double radius = std::hypot(halfWidth, halfHeight);
@@ -205,10 +252,10 @@ namespace MiniMapTerrainSource
         for (auto& chunk : requests_) chunk.Demanded = false;
         std::int64_t order = 0;
         if (minimumU < maximumU && minimumV < maximumV)
-            for (int y = static_cast<int>(std::floor(minimumV * 512.0 / 256.0));
-                y < static_cast<int>(std::ceil(maximumV * 512.0 / 256.0)); ++y)
-                for (int x = static_cast<int>(std::floor(minimumU * 512.0 / 256.0));
-                    x < static_cast<int>(std::ceil(maximumU * 512.0 / 256.0)); ++x)
+            for (int y = static_cast<int>(std::floor(minimumV * definition->HeightPixels / 256.0));
+                y < static_cast<int>(std::ceil(maximumV * definition->HeightPixels / 256.0)); ++y)
+                for (int x = static_cast<int>(std::floor(minimumU * definition->WidthPixels / 256.0));
+                    x < static_cast<int>(std::ceil(maximumU * definition->WidthPixels / 256.0)); ++x)
                 {
                     if (!IsCurrent(sample, revision)) return;
                     RequestForgottenEngineChunk(sample, x, y, order++);
@@ -235,6 +282,17 @@ namespace MiniMapTerrainSource
 #endif
         entry->Demanded = true;
         auto delivery = entry->Request.GetDelivery();
+        if (delivery.Context.RequestGeneration &&
+            delivery.State == TerrainImageDelivery::Availability::Unavailable &&
+            IsForgottenEngineSelection(selection_->Provider))
+        {
+            if (!entry->DeliveryAccepted)
+            {
+                viewport_.WithdrawSlot(entry->SlotId);
+                entry->DeliveryAccepted = true;
+            }
+            return;
+        }
         if (!delivery.Context.RequestGeneration || delivery.State == TerrainImageDelivery::Availability::Failed)
         {
             TerrainService::ImageRequestParameters parameters;
@@ -355,14 +413,18 @@ namespace MiniMapTerrainSource
     {
         if (progressing_ || observingSelection_ || worldId.empty() || !generation || contentRevision.empty()) return false;
         const TerrainService::Session nextSession{std::move(worldId), generation};
-        if (nextSession == session_ && registration_.IsRegistered() && alternateRegistration_.IsRegistered()) return true;
+        if (nextSession == session_ && registration_.IsRegistered() &&
+            std::all_of(alternateRegistrations_.begin(), alternateRegistrations_.end(),
+                [](const auto& registration) { return registration.IsRegistered(); })) return true;
         viewport_.Withdraw();
         ClearRequests();
         if (session_.IsValid()) service_.StopSession(session_);
         selection_.reset();
         registration_ = {};
-        alternateRegistration_ = {};
+        alternateRegistrations_ = {};
+        forgottenCaptureDefinitions_.clear();
         session_ = nextSession;
+        forgottenCaptureDefinitions_ = ForgottenEngineCaptureConfiguration::CreateDefinitions();
         auto provider = std::make_shared<StarRuptureTerrainProvider>(
             StarRuptureTerrainProvider::Configuration{session_.WorldId, generation, std::move(contentRevision)});
         if (!service_.BeginSession(session_)) return false;
@@ -443,7 +505,8 @@ namespace MiniMapTerrainSource
         service_.UpdatePlayerPosition({session_,
             {sample.Character.WorldX, sample.Character.WorldY, sample.Character.WorldZ}});
         const auto selected = service_.GetSelection();
-        if (!selected || (selected->Provider != registration_ && selected->Provider != alternateRegistration_)) return false;
+        if (!selected || (selected->Provider != registration_ &&
+            !IsForgottenEngineSelection(selected->Provider))) return false;
         if (!selection_ || selected->Revision != selection_->Revision ||
             selected->Provider != selection_->Provider || selected->RegionId != selection_->RegionId)
         {
@@ -474,7 +537,8 @@ namespace MiniMapTerrainSource
         }
         if (reconcile)
         {
-            if (selection_->Provider == alternateRegistration_) ReconcileForgottenEngine(sample, revision, transform);
+            if (IsForgottenEngineSelection(selection_->Provider))
+                ReconcileForgottenEngine(sample, revision, transform);
             else Reconcile(sample, revision, transform);
         }
         if (!IsCurrent(sample, revision)) return;
@@ -681,6 +745,17 @@ namespace MiniMapTerrainSource
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
                 MiniMapTerrainProfile::Count(MiniMapTerrainProfile::Counter::Cancelled);
 #endif
+                if (selection_ && IsForgottenEngineSelection(selection_->Provider))
+                {
+                    if (!entry->DeliveryAccepted)
+                    {
+                        service_.WithdrawImageRequest(entry->Request);
+                        viewport_.WithdrawSlot(entry->SlotId);
+                        entry->DeliveryAccepted = true;
+                    }
+                    ++entry;
+                    continue;
+                }
                 service_.WithdrawImageRequest(entry->Request);
                 viewport_.WithdrawSlot(entry->SlotId);
                 entry = requests_.erase(entry);
@@ -807,7 +882,8 @@ namespace MiniMapTerrainSource
         if (session_.IsValid()) service_.StopSession(session_);
         registration_ = {};
         session_ = {};
-        alternateRegistration_ = {};
+        alternateRegistrations_ = {};
+        forgottenCaptureDefinitions_.clear();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         return DrainViewport(callbacksDetached);
 #else

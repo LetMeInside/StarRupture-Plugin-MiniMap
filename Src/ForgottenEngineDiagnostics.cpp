@@ -32,6 +32,7 @@ namespace
     constexpr const wchar_t* kForgottenEngineTag = L"Status.InForgottenEngine";
 }
 
+/** Registers the existing deliberate F9 coordinate-sample activation. */
 bool MiniMapForgottenEngineDiagnostics::RegisterDiagnostics(IPluginSelf* self)
 {
     if (g_sampleKey.id)
@@ -82,6 +83,7 @@ bool MiniMapForgottenEngineDiagnostics::RegisterSampleKey()
     return false;
 }
 
+/** Clears pending coordinate sampling before removing the diagnostic key. */
 void MiniMapForgottenEngineDiagnostics::UnregisterDiagnostics()
 {
     g_samplePending.store(false, std::memory_order_release);
@@ -102,6 +104,7 @@ void MiniMapForgottenEngineDiagnostics::OnSampleKeyPressed(void*)
     g_samplePending.store(true, std::memory_order_release);
 }
 
+/** Consumes a pending F9 coordinate sample on the existing game-thread diagnostic tick. */
 void MiniMapForgottenEngineDiagnostics::ConsumePendingSample()
 {
     if (g_samplePending.exchange(false, std::memory_order_acq_rel))

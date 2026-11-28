@@ -5,7 +5,9 @@
 #include "Services/Map/Terrain/TerrainService.h"
 #include "Services/Map/Terrain/TerrainViewport.h"
 #include "Map/MapTransform.h"
+#include <array>
 #include <list>
+#include <vector>
 
 namespace MiniMapTerrainSource
 {
@@ -124,6 +126,14 @@ namespace MiniMapTerrainSource
             const MiniMapMap::Transform& transform, bool& reconcile);
         /** Registers one externally configured FE1 provider with five approved provisional boxes. */
         bool RegisterForgottenEngineProvider();
+        /** Withdraws any partial FE registrations after a failed multi-provider admission. */
+        void ClearForgottenEngineProviders();
+        /** Tests whether the active service selection belongs to one of the five FE providers. */
+        bool IsForgottenEngineSelection(
+            const Services::Map::Terrain::TerrainService::Registration& provider) const noexcept;
+        /** Resolves the selected region through the retained authoritative definition set. */
+        const Services::Map::Terrain::ITerrainDataProvider::CaptureDefinition*
+            FindForgottenEngineDefinition(const std::string& regionId) const noexcept;
         /** Reconciles affine FE demand without using tracker coordinates for physical selection. */
         void ReconcileForgottenEngine(const MiniMapMap::PresentationSample& sample,
             std::uint64_t revision, const MiniMapMap::Transform& transform);
@@ -166,7 +176,9 @@ namespace MiniMapTerrainSource
         Services::Map::Terrain::TerrainViewport viewport_;
         Services::Map::Terrain::TerrainService::Session session_;
         Services::Map::Terrain::TerrainService::Registration registration_;
-        Services::Map::Terrain::TerrainService::Registration alternateRegistration_;
+        std::array<Services::Map::Terrain::TerrainService::Registration, 5> alternateRegistrations_{};
+        std::vector<Services::Map::Terrain::ITerrainDataProvider::CaptureDefinition>
+            forgottenCaptureDefinitions_;
         std::optional<Services::Map::Terrain::TerrainService::Selection> selection_;
         std::list<ChunkRequest> requests_;
         std::uint64_t requestGeneration_ = 0;

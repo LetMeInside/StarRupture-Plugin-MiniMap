@@ -1,3 +1,4 @@
+// Adapts the borrowed loader scan session, including isolated mandatory admission prerequisites.
 #pragma once
 
 #include "Services/RequiredScanner.h"
@@ -14,6 +15,7 @@ namespace MiniMap::Adapters::AlienX
         IPluginSelf& Self;
         IPluginHookScanner& Scanner;
         bool Failed = false;
+        static bool CaptureAdmissionFeatureEnabled;
 
     public:
         RequiredScanner(IPluginSelf& self, IPluginHookScanner& scanner) noexcept;
@@ -23,5 +25,15 @@ namespace MiniMap::Adapters::AlienX
         Services::Result<std::uintptr_t> Resolve(const Services::RequiredScan&) override;
         void Fail(std::string_view name, std::string_view reason) override;
         bool HasFailures();
+
+        /** Declares all admission-prerequisite keys before any scan; absence leaves them unscanned. */
+        static void DeclareCaptureAdmissionFeature(IPluginSelf& self,
+            IPluginHookScanner& scanner) noexcept;
+
+        /** Resolves/publishes this feature atomically using an isolated local failure latch.
+         * Feature misses do not reset common NativeApi or change common required-scan semantics.
+         */
+        static void ResolveCaptureAdmissionFeature(IPluginSelf& self,
+            IPluginHookScanner& scanner) noexcept;
     };
 }

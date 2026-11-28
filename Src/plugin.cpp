@@ -24,6 +24,7 @@
 #include "plugin_map.h"
 #include "Services/Map/Buildings/BuildingMapService.h"
 #include "Services/Map/Terrain/TerrainService.h"
+#include "Map/Terrain/ForgottenEngineCaptureConfiguration.h"
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
 #include "Services/Map/Buildings/BuildingMapPerformanceDiagnostics.h"
 #include "Services/Map/Buildings/Scheduling/SectionSchedulingCoordinator.h"
@@ -33,6 +34,7 @@
 #include "PluginPaths.h"
 #include <array>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #endif
 
@@ -40,7 +42,7 @@
 static MiniMapFingerprints::ResolvedAddresses g_resolvedAddresses = {};
 namespace S = MiniMap::Services;
 static std::unique_ptr<Services::Map::Buildings::BuildingMapService> g_buildingMapService;
-// CPU-only cache owner remains alive through late exit clearing; it registers no providers or callbacks.
+// Owns terrain cache and private streaming; gameplay admission submits the finite capture batch.
 static Services::Map::Terrain::TerrainService g_terrainService;
 static Services::Map::Buildings::Capture::BuildingSpriteRenderer* g_buildingSpriteRenderer = nullptr;
 static S::Hook g_commonUIActivatedHook{};
@@ -389,6 +391,7 @@ void MiniMap::Adapters::AlienX::ResolveNativeDependencies(
 
 // Admission belongs to an owned gameplay-world generation, not loading UI state.
 static uint64_t g_worldGeneration=0,g_preparedGeneration=0;
+static uint64_t g_forgottenCaptureGeneration=(std::numeric_limits<uint64_t>::max)();
 static bool g_worldEnding=false;
 static void SetServicesAdmitted(bool ready)
 {
@@ -403,6 +406,16 @@ static void OnTextureServiceTick(
     Services::Map::Buildings::Capture::BuildingSpriteRenderer* renderer,
     float deltaTime)
 {
+#if defined(MODLOADER_CLIENT_BUILD)
+    try
+    {
+        g_terrainService.AdvancePrivateStreaming();
+    }
+    catch (...)
+    {
+        // The service records terminal batch failures; keep retirement errors from aborting this shared tick.
+    }
+#endif
 #if defined(MODLOADER_CLIENT_BUILD) && MINIMAP_DEVELOPMENT_DIAGNOSTICS
     MiniMapMassLifecycle::MassLifecycle::ReportHookStatusIfDue();
 #endif
@@ -993,11 +1006,36 @@ static void OnExperienceLoadComplete()
     if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
     else MiniMapUI::Hide();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
+    if (g_forgottenCaptureGeneration != g_worldGeneration)
+    {
+        g_forgottenCaptureGeneration = g_worldGeneration;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
+        g_terrainService.ConfigureCaptureDiagnosticExport(
+            MiniMapConfig::ExportTerrainCapturesEnabled());
+#endif
+        try
+        {
+            if (!MiniMapTerrainSource::ForgottenEngineCaptureConfiguration::RequestBatch(
+                g_terrainService, MiniMapMap::GetWorld(), S::TryNativeHooks()))
+            {
+                LOG_ERROR("MiniMap: Forgotten Engine capture batch admission failed; gameplay remains admitted");
+            }
+        }
+        catch (...)
+        {
+            g_terrainService.RejectPrivateCaptureBatchAdmission(
+                {}, "Capture batch configuration threw before native admission.");
+            LOG_ERROR("MiniMap: Forgotten Engine capture batch admission threw; gameplay remains admitted");
+        }
+    }
 }
 
 static void OnBeforeWorldEndPlay(SDK::UWorld* world,const char*)
 {
-    if(!world||world!=MiniMapMap::GetWorld())return;
+    if (!world) return;
+    if (!g_terrainService.BeforeGameplayWorldEnd(world))
+        throw std::runtime_error("Private partition unregistration was not acknowledged before gameplay EndPlay.");
+    if (world != MiniMapMap::GetWorld()) return;
     g_worldEnding=true;
     SetServicesAdmitted(false);
     MiniMapMassLifecycle::MassLifecycle::EndWorld();
@@ -1446,6 +1484,8 @@ namespace MiniMap
 
         bool minimapCallbacksQuiescent = true;
         bool buildingMapStopComplete = false;
+        if (!g_terrainService.ShutdownPrivateStreaming())
+            throw std::runtime_error("Private streaming shutdown is incomplete; retain native bindings, events and plugin code.");
         g_worldEnding=true;
         SetServicesAdmitted(false);
         if (!::Services::Map::Buildings::BuildingMapServiceABI::Shutdown())

@@ -1,5 +1,10 @@
+// Uses the existing loader scanner and declared feature verdicts without optional scan flags.
 #include "RequiredScanner.h"
 #include "Compatibility.h"
+#if defined(MODLOADER_CLIENT_BUILD)
+#include "Native/Fingerprints.h"
+#include "Native/NativeApi.h"
+#endif
 
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "SDK.hpp"
@@ -12,6 +17,57 @@
 
 namespace MiniMap::Adapters::AlienX
 {
+    bool RequiredScanner::CaptureAdmissionFeatureEnabled = false;
+
+    /** Declares a loader-owned all-or-nothing verdict for the implemented admission primitives. */
+    void RequiredScanner::DeclareCaptureAdmissionFeature(IPluginSelf& self,
+        IPluginHookScanner& scanner) noexcept
+    {
+        CaptureAdmissionFeatureEnabled = false;
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (!scanner.DeclareFeature)
+            return;
+        try
+        {
+            const auto keys = MiniMapFingerprints::Fingerprints::CaptureAdmissionKeys();
+            PluginFeatureDesc feature = PLUGIN_FEATURE_DESC_INIT;
+            feature.id = "private-world-admission-prerequisites";
+            feature.title = "Private world admission prerequisites";
+            feature.keys = keys.data();
+            feature.keyCount = static_cast<uint32_t>(keys.size());
+            feature.enabled = &CaptureAdmissionFeatureEnabled;
+            if (!scanner.DeclareFeature(&self, &feature))
+                CaptureAdmissionFeatureEnabled = false;
+        }
+        catch (...)
+        {
+            CaptureAdmissionFeatureEnabled = false;
+        }
+#endif
+    }
+
+    /** Resolves only the declared feature; its local failure latch never poisons the common adapter. */
+    void RequiredScanner::ResolveCaptureAdmissionFeature(IPluginSelf& self,
+        IPluginHookScanner& scanner) noexcept
+    {
+#if defined(MODLOADER_CLIENT_BUILD)
+        if (!CaptureAdmissionFeatureEnabled)
+            return;
+        try
+        {
+            RequiredScanner featureScanner(self, scanner);
+            MiniMapFingerprints::ResolvedAddresses addresses;
+            if (!MiniMapFingerprints::Fingerprints::ResolveCaptureAdmission(featureScanner, addresses) ||
+                !MiniMapNative::NativeApi::PublishCaptureAdmission(addresses))
+                CaptureAdmissionFeatureEnabled = false;
+        }
+        catch (...)
+        {
+            CaptureAdmissionFeatureEnabled = false;
+        }
+#endif
+    }
+
     RequiredScanner::RequiredScanner(IPluginSelf& self, IPluginHookScanner& scanner) noexcept
         : Self(self), Scanner(scanner) {}
 

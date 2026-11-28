@@ -1,4 +1,8 @@
+// Publishes typed native interfaces; common and capture prerequisites have separate admission.
 #pragma once
+
+#include "CaptureAdmissionApi.h"
+#include "PackageLoadApi.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -551,8 +555,21 @@ namespace MiniMapNative
         SDK::UScriptStruct* payloadType = nullptr; // Engine static metadata, warmed only at initialization.
     };
 
+    /** Owns typed binding publication only; consumers independently own native resources and hooks. */
     struct NativeApi
     {
+        /** Publishes the entire admission-prerequisite group without resetting common bindings.
+         * Called only during the borrowed load-scanner callback, before any private operation.
+         */
+        static bool PublishCaptureAdmission(
+            const MiniMapFingerprints::ResolvedAddresses& addresses) noexcept;
+
+        /** Publishes checked-delegate dependencies as part of the same declared feature verdict. */
+        static bool PublishPackageLoad(
+            const MiniMapFingerprints::ResolvedAddresses& addresses) noexcept;
+
+        CaptureAdmissionApi captureAdmission;
+        PackageLoadApi packageLoad;
         CommonUIApi commonUI;
         MassLifecycleApi massLifecycle;
         AssetApi asset;

@@ -29,7 +29,7 @@ namespace Services::Map::Terrain::Acquisition
     private:
         friend class Services::Map::Terrain::TerrainService;
         /** Private sequencing only; these phases do not add public availability or native-job states. */
-        enum class Phase { Describe, Inspect, AssociateCache, ReadCache, Retrieve, Store, Admit, ValidateDelivery, Done };
+        enum class Phase { Describe, Inspect, AssociateCache, WaitForCaptureBatch, ReadCache, Retrieve, Store, Admit, ValidateDelivery, Done };
         /** Synchronous ingestion sink that admits exactly one validated owned BC1 image. */
         class SourceIngestion;
         /** Dispatches one phase within one request advancement. */
@@ -38,10 +38,32 @@ namespace Services::Map::Terrain::Acquisition
         void Describe(TerrainService& service);
         /** Inspects before memory/disk reuse; validates packed BC1 metadata and the requested rectangle. */
         void Inspect(TerrainService& service);
-        /** Associates supported pages with complete generic inspected identity and affine placement. */
+        /** Associates retrieval evidence or a stable capture definition with the existing page cache. */
         void AssociateCache(TerrainService& service);
-        /** Reads only a requested canonical cache tile; misses proceed to full-source retrieval. */
+        /** Reads retrieval chunks or capture pages; only retrieval misses may continue to retrieval. */
         void ReadCache(TerrainService& service);
+        /** Waits on existing batch state without rereading files while the exact output is pending. */
+        void WaitForCaptureBatch(TerrainService& service);
+        /** Uses direct tile lookup for aligned chunks and page extraction for wider requests. */
+        void ReadCaptureCache(TerrainService& service,
+            const ITerrainDataProvider::CaptureDefinition& definition);
+        /** Completes a cache-only capture request with a visible unavailable reason. */
+        void ReportCaptureCacheUnavailable(std::string reason);
+        /** Preserves capture demand only while admission is pending or this exact output is generating. */
+        void WaitForCaptureOutputOrReportUnavailable(TerrainService& service,
+            const ITerrainDataProvider::CaptureDefinition& definition, std::string reason);
+#if defined(MODLOADER_CLIENT_BUILD)
+        /** Loads one aligned 256-square request through the ordinary direct tile lookup path. */
+        void ReadCaptureCacheChunk(TerrainService& service,
+            const ITerrainDataProvider::CaptureDefinition& definition);
+        /** Loads the complete page only when request geometry spans more than one cache tile. */
+        void ReadCaptureCachePage(TerrainService& service,
+            const ITerrainDataProvider::CaptureDefinition& definition);
+        /** Copies every cache tile into tightly packed canonical page layout without decoding. */
+        bool LoadCaptureCacheTiles(TerrainService& service,
+            const ITerrainDataProvider::CaptureDefinition& definition,
+            std::vector<std::uint8_t>& page, TerrainService::CacheResult& result);
+#endif
         /** Consumes one full-source retrieval synchronously, or shares the single validated reuse slot. */
         void Retrieve(TerrainService& service);
         /** Attempts one complete eligible page write; failure does not invalidate usable CPU data. */
@@ -52,7 +74,7 @@ namespace Services::Map::Terrain::Acquisition
         /** Balances optional extraction observation around the unchanged canonical admission operation. */
         void AdmitObserved(TerrainService& service);
 #endif
-        /** Re-inspects staged source evidence immediately before publication, without further file operations. */
+        /** Revalidates source or capture evidence immediately before publication. */
         void ValidateDelivery(TerrainService& service);
         /** Publishes only still-current immutable data; releases all request-local source capabilities. */
         void Publish(TerrainService& service, std::shared_ptr<const TerrainImage> image);
