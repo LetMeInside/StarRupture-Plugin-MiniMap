@@ -3,11 +3,13 @@
 #pragma once
 
 #if defined(MODLOADER_CLIENT_BUILD)
+#include <cstdint>
 namespace SDK
 {
     class UObject;
     class UPackage;
     class UWorld;
+    class ULevel;
     class UWorldSubsystem;
     class UWorldPartition;
     class UWorldPartitionSubsystem;
@@ -34,6 +36,7 @@ namespace MiniMapNative
         using UpdatePartition = void(::IStreamingWorldSubsystemInterface*);
         using UpdateLevels = void(); // Transport only; the UE bridge restores the genuine TOptional signature.
         using WorldAction = void(SDK::UWorld*);
+        using RouteActorInitialize = void(SDK::ULevel*, std::int32_t);
         using FlushVisibility = void(); // Restored to the genuine enum signature in the UE-only bridge.
         using WaitRenderFence = void(const void*, bool);
 
@@ -48,6 +51,7 @@ namespace MiniMapNative
         UpdatePartition* updatePartition = nullptr;
         UpdateLevels* updateLevels = nullptr;
         WorldAction* sendEndOfFrame = nullptr;
+        RouteActorInitialize* routeActorInitialize = nullptr;
         FlushVisibility* flushVisibility = nullptr;
         WaitRenderFence* waitRenderFence = nullptr;
         WorldPredicate* visibilityPending = nullptr;
@@ -61,7 +65,7 @@ namespace MiniMapNative
         {
             return shouldCreateSubsystem && isGameWorld && isPreviewWorld && findWorldInPackage &&
                 isPartitionInitialized && uninitializePartition && enumeratePartitions && forceUnload &&
-                updatePartition && updateLevels && sendEndOfFrame && visibilityPending &&
+                updatePartition && updateLevels && sendEndOfFrame && routeActorInitialize && visibilityPending &&
                 canStream && serverStreamingEnabled && serverStreamingOutEnabled && flushVisibility && waitRenderFence &&
                 hasEndOfFrameUpdates;
         }

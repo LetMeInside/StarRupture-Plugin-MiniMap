@@ -2361,6 +2361,7 @@ namespace MiniMapFingerprints
             "MiniMap::PrivateWorld::UpdatePartition",
             "MiniMap::PrivateWorld::UpdateLevels",
             "MiniMap::PrivateWorld::SendEndOfFrame",
+            "MiniMap::PrivateWorld::routeActorInitialize",
             "MiniMap::PrivateWorld::VisibilityPending",
             "MiniMap::PrivateWorld::CanStream",
             "MiniMap::PrivateWorld::ServerStreamingEnabled",
@@ -2404,6 +2405,7 @@ namespace MiniMapFingerprints
             "48 83 EC 28 48 83 C1 C0 E8 ?? ?? ?? ?? 48 8B C8 33 D2 48 83 C4 28 E9 ?? ?? ?? ?? CC CC CC CC CC 48 89 5C 24 08 57 48 83 EC 20 C6 81 00 03 00 00 01 48 8B 59 48 48 63 41 50 48 8D 3C C3 48 3B DF 74 11 48 8B 0B E8 ?? ?? ?? ?? 48 83 C3 08 48 3B DF 75 EF 48 8B 5C 24 30 48 83 C4 20 5F C3 CC CC 48 8B C4 55",
             "40 55 41 55 48 83 EC 68 0F B6 05 ?? ?? ?? ?? 4C 8B EA 88 84 24 80 00 00 00 48 8B E9 84 C0 74 21 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F B6 05 ?? ?? ?? ?? 88 84 24 80 00 00 00 0F 57 C0 C6 05 ?? ?? ?? ?? 01 80 BD 8B 01 00 00 00 F2 0F 11 05 ?? ?? ?? ?? F2 0F 11 05 ?? ?? ?? ??",
             "48 89 5C 24 20 55 56 57 41 56 41 57 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 30 48 8B F1 48 8D 15 ?? ?? ?? ?? 48 8D 4D B0 E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? 45 32 FF 8B 1D ?? ?? ?? ?? FF C1 83 EB 01 89 0D ?? ?? ?? ?? 78 7F 4C 63 F3 49 8B FE 48 C1 E7 04 90",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 40 48 8D B1 E0 03 00 00 48 8B D9 0F B6 0E 8B EA 44 8B F2 85 C9 74 ??",
             "40 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 74 48 89 5C 24 30 48 8D 9F 18 01 00 00 48 85 DB 75 35 4C 8D 0D ?? ?? ?? ?? 44 8D 43 1C 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 13 90 CC 48 8B CB FF 15 ?? ?? ?? ?? 8B BF 38 01 00 00 EB 1D 48 8B CB FF 15 ?? ?? ?? ??",
             "40 53 48 83 EC 20 83 B9 98 00 00 00 02 48 8B D9 75 60 E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 8B 58 30 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 3F 48 8B CB E8 ?? ?? ?? ?? F6 80 8E 01 00 00 40 75 2E 48 8B CB E8 ?? ?? ?? ?? 48 85 C0 74 19 F6 80 F8 00 00 00 01 75 18 48 8B 10 48 8B C8",
             "40 53 48 83 EC 30 80 B9 16 01 00 00 00 48 8B D9 0F 85 94 00 00 00 48 89 74 24 40 48 8B 71 40 48 89 7C 24 48 40 32 FF 48 85 F6 75 0D E8 ?? ?? ?? ?? 48 8B F0 48 85 C0 74 4F 48 8B CE E8 ?? ?? ?? ?? 84 C0 74 43 0F B6 43 39 84 C0 75 2D 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 74 12 48 3B D8 74 0D 48 8B C8",
@@ -2447,6 +2449,7 @@ namespace MiniMapFingerprints
             &ResolvedAddresses::captureUpdatePartition,
             &ResolvedAddresses::captureUpdateLevels,
             &ResolvedAddresses::captureSendEndOfFrame,
+            &ResolvedAddresses::captureRouteActorInitialize,
             &ResolvedAddresses::captureVisibilityPending,
             &ResolvedAddresses::captureCanStream,
             &ResolvedAddresses::captureServerStreamingEnabled,
@@ -2488,6 +2491,7 @@ namespace MiniMapFingerprints
                 field == &ResolvedAddresses::captureHasEndOfFrameUpdates ||
                 field == &ResolvedAddresses::captureLoadingSuspended ||
                 field == &ResolvedAddresses::captureWorldTypePreloadMap;
+            // RouteActorInitialize is deliberately resolved as a function entry, not a code address.
             request.kind = codeAddress
                 ? MiniMap::Services::AddressKind::Code : MiniMap::Services::AddressKind::FunctionEntry;
             const auto result = scanner.Resolve(request);

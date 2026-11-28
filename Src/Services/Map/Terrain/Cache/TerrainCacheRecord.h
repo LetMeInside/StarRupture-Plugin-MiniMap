@@ -14,7 +14,7 @@ namespace Services::Map::Terrain::Cache
         /** Builds canonical metadata and checked lengths; false makes the page ineligible for persistence. */
         static bool Describe(const TerrainCacheIdentity& identity, std::vector<std::uint8_t>& metadata,
             std::uint64_t& fileBytes);
-        /** Validates provider page identity and constructs only CollectionKey_X_Y.terrain; false selects no path. */
+        /** Validates page naming and constructs its configured stem or CollectionKey_X_Y.terrain. */
         static bool GetFilename(const TerrainPageIdentity& page, std::wstring& filename);
         /** Compares every stored metadata byte to expected identity/layout before permitting a tile read. */
         static bool ReadMetadata(std::istream& stream, const std::vector<std::uint8_t>& expected);

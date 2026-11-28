@@ -206,12 +206,12 @@ namespace Services::Map::Terrain
             !Cache::TerrainCacheRecord::GetFilename(definition.Page, baseName))
             return false;
         const std::wstring terrainSuffix = L".terrain";
-        const std::wstring originSuffix = L"_0_0";
         if (baseName.size() < terrainSuffix.size())
             return false;
         baseName.resize(baseName.size() - terrainSuffix.size());
-        if (definition.Page.X == 0 && definition.Page.Y == 0)
+        if (definition.Page.FilenameStem.empty() && definition.Page.X == 0 && definition.Page.Y == 0)
         {
+            const std::wstring originSuffix = L"_0_0";
             if (baseName.size() < originSuffix.size())
                 return false;
             baseName.resize(baseName.size() - originSuffix.size());
@@ -943,6 +943,7 @@ namespace Services::Map::Terrain
         return left.Source.SourceId == right.Source.SourceId &&
             left.Source.ContentRevision == right.Source.ContentRevision && left.Page == right.Page &&
             HasSameCaptureResidency(left, right) &&
+            left.ExcludedStaticMeshAssets == right.ExcludedStaticMeshAssets &&
             leftCapture.Minimum.X == rightCapture.Minimum.X && leftCapture.Minimum.Y == rightCapture.Minimum.Y &&
             leftCapture.Minimum.Z == rightCapture.Minimum.Z && leftCapture.Maximum.X == rightCapture.Maximum.X &&
             leftCapture.Maximum.Y == rightCapture.Maximum.Y && leftCapture.Maximum.Z == rightCapture.Maximum.Z &&
@@ -1025,6 +1026,7 @@ namespace Services::Map::Terrain
         if (!privateStreaming_->TryShutdown())
             return false;
         privateStreaming_.reset();
+        privateCaptureBatch_.OwnsStreamingSession = false;
         return true;
     }
 

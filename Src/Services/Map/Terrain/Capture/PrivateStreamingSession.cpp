@@ -105,25 +105,14 @@ namespace Services::Map::Terrain::Capture
         }
     }
 
-    /** Uses the existing SDK lookup rather than writing a native package table or reusing an unrelated package. */
-    bool PrivateStreamingSession::IsDestinationUnused(const StreamingName& name)
-    {
-        return !SDK::UObject::FindObjectFast(SDK::FName(name.ComparisonIndex, name.Number).ToString());
-    }
-
     /** Installs the one scoped-admission hook, then submits the genuine asynchronous package instance request. */
     bool PrivateStreamingSession::Submit(PrivateStreamingDefinition definition, SDK::UWorld* gameplayWorld,
         std::uint64_t generation, const ITerrainDataProvider::CaptureDefinition& residencyDefinition,
         MiniMap::Services::INativeHooks& hooks)
     {
         if (status_ != Status::Inactive || !CanAdvance() || !gameplayWorld || !generation ||
-            !IsDefinitionValid(definition) || !IsDestinationUnused(definition.DestinationPackage))
+            !IsDefinitionValid(definition))
             return false;
-        for (const auto& cell : definition.RequiredCells)
-        {
-            if (!IsDestinationUnused(cell.PrivatePackage))
-                return false;
-        }
         auto originalWorldPackage = residencyDefinition.OriginalWorldPackage;
         auto cookedCellPackages = residencyDefinition.CookedCellPackages;
         auto targetGridNames = residencyDefinition.TargetGrids;
@@ -140,6 +129,9 @@ namespace Services::Map::Terrain::Capture
         gameplayWorld_ = gameplayWorld;
         generation_ = generation;
         status_ = Status::LoadingRoot;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReportProgress("loading_root_package");
+#endif
         return SubmitRoot();
     }
 
@@ -170,7 +162,8 @@ namespace Services::Map::Terrain::Capture
         bool accepted = false;
         try
         {
-            accepted = capture_->Submit(world_, definition, retainDiagnosticPixels);
+            const auto* streamingSourceActor = source_ ? static_cast<const SDK::AActor*>(source_->Outer) : nullptr;
+            accepted = capture_->Submit(world_, definition, retainDiagnosticPixels, streamingSourceActor);
         }
         catch (...)
         {
@@ -389,7 +382,10 @@ namespace Services::Map::Terrain::Capture
                 return false;
             initialized_ = true;
             unregistered_ = false;
-            api->world.initWorld(reinterpret_cast<std::uintptr_t>(world_), MiniMapNative::WorldInitializationValues{});
+            MiniMapNative::WorldInitializationValues initializationValues;
+            // Create the scene and native FX interface before any authored particle component registers.
+            initializationValues.Flags = 1u | (1u << 10);
+            api->world.initWorld(reinterpret_cast<std::uintptr_t>(world_), initializationValues);
         }
         if (!levels_.Observe(world_, owners_))
             return false;
@@ -605,13 +601,14 @@ namespace Services::Map::Terrain::Capture
         }
         if (status_ == Status::Retiring)
             return;
-        if (!InitializeWorld())
+        const bool initialized = InitializeWorld();
+        if (status_ == Status::Retiring)
+            return;
+        if (!initialized)
         {
             Fail("Private initialization, effective modes or Data Layer validation failed.");
             return;
         }
-        if (status_ == Status::Retiring)
-            return;
         auto* hlodClass = SDK::UWorldPartitionHLODRuntimeSubsystem::StaticClass();
         auto* hlodSubsystem = hlodClass ? SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(world_, hlodClass) : nullptr;
         if (!hlodSubsystem || hlodSubsystem->Class != hlodClass || hlodSubsystem->Outer != world_)
@@ -623,7 +620,12 @@ namespace Services::Map::Terrain::Capture
         if (!CreateSource())
             return;
         if (status_ != Status::Retiring)
+        {
             status_ = Status::Streaming;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("streaming_private_levels");
+#endif
+        }
     }
 
     /** Proves required package/level ownership and completed native registration without diagnostic actors. */
@@ -681,7 +683,96 @@ namespace Services::Map::Terrain::Capture
         return true;
     }
 
-    /** Services only the private partition policy and private level streaming, with retained snapshots on both sides. */
+    /** Routes actors in the activated levels of the private world after streaming has settled. */
+    bool PrivateStreamingSession::AdvanceResidentLevelActorInitialization()
+    {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (!actorInitializationStartedValid_)
+        {
+            actorInitializationStarted_ = std::chrono::steady_clock::now();
+            actorInitializationStartedValid_ = true;
+        }
+#endif
+        for (auto* level : world_->Levels)
+        {
+            if (!level || level->OwningWorld != world_ || !PrivateWorldNative::IsLevelReady(level))
+                continue;
+            if (!AdvanceLevelActorInitialization(level))
+                return false;
+        }
+        return true;
+    }
+
+    /** Skips native-complete levels and times actual calls for the activated level. */
+    bool PrivateStreamingSession::AdvanceLevelActorInitialization(SDK::ULevel* level)
+    {
+        if (PrivateWorldNative::IsActorInitializationComplete(level))
+            return status_ != Status::Retiring;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ++actorRoutingCalls_;
+        const auto routingStarted = std::chrono::steady_clock::now();
+#endif
+        const bool complete = PrivateWorldNative::RouteActorInitialization(level);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        actorRoutingDuration_ += std::chrono::steady_clock::now() - routingStarted;
+        if (status_ != Status::Retiring)
+            ReportProgress("native_actor_routing");
+#endif
+        return complete && status_ != Status::Retiring;
+    }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    /** Emits counts at phase changes and at most once per second while the same phase persists. */
+    void PrivateStreamingSession::ReportProgress(std::string_view phase)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (phase == lastProgressPhase_ && now - lastProgressReport_ < std::chrono::seconds(1))
+            return;
+        lastProgressPhase_ = phase;
+        lastProgressReport_ = now;
+        const double elapsedMs = actorInitializationStartedValid_
+            ? std::chrono::duration<double, std::milli>(now - actorInitializationStarted_).count() : 0.0;
+        if (auto* log = MiniMap::Services::TryLog())
+            MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                "MiniMap: private terrain progress generation=%llu phase=%.*s routeCalls=%llu nativeRoutingMs=%.2f elapsedSinceRoutingCheckMs=%.2f",
+                static_cast<unsigned long long>(generation_), static_cast<int>(phase.size()), phase.data(),
+                static_cast<unsigned long long>(actorRoutingCalls_),
+                std::chrono::duration<double, std::milli>(actorRoutingDuration_).count(), elapsedMs);
+    }
+
+    /** Adds actor and component initialization observations for one retained level. */
+    void PrivateStreamingSession::AccumulateActorInitializationDiagnostics(SDK::ULevel* level,
+        PrivateWorldNative::ActorInitializationDiagnostics& totals) const
+    {
+        const auto values = PrivateWorldNative::GetActorInitializationDiagnostics(level);
+        totals.ActorCount += values.ActorCount;
+        totals.InitializedActorCount += values.InitializedActorCount;
+        totals.ComponentCount += values.ComponentCount;
+        totals.InitializedComponentCount += values.InitializedComponentCount;
+    }
+
+    /** Emits one compact aggregate after required residency and native routing both complete. */
+    void PrivateStreamingSession::LogActorInitializationDiagnostics() const
+    {
+        PrivateWorldNative::ActorInitializationDiagnostics totals;
+        for (auto* level : world_->Levels)
+        {
+            if (level && level->OwningWorld == world_ && PrivateWorldNative::IsLevelReady(level))
+                AccumulateActorInitializationDiagnostics(level, totals);
+        }
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - actorInitializationStarted_).count();
+        if (auto* log = MiniMap::Services::TryLog())
+            MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                "MiniMap: native level initialization complete generation=%llu actors=%u/%u components=%u/%u routeCalls=%llu nativeRoutingMs=%.2f elapsedMs=%.2f",
+                static_cast<unsigned long long>(generation_), totals.InitializedActorCount, totals.ActorCount,
+                totals.InitializedComponentCount, totals.ComponentCount,
+                static_cast<unsigned long long>(actorRoutingCalls_),
+                std::chrono::duration<double, std::milli>(actorRoutingDuration_).count(), elapsed);
+    }
+#endif
+
+    /** Advances private streaming and actor routing, then submits a fence for a positively ready candidate. */
     void PrivateStreamingSession::AdvanceStreaming()
     {
         if (!levels_.Observe(world_, owners_))
@@ -707,12 +798,35 @@ namespace Services::Map::Terrain::Capture
             return;
         // This world is not engine-ticked: service deferred component work before testing render-state readiness.
         MiniMapNative::Get()->captureAdmission.sendEndOfFrame(world_);
-        if (status_ != Status::Retiring && HasRequiredCells())
+        if (status_ != Status::Retiring)
+            AdvanceResidencyReadiness();
+    }
+
+    /** Routes the settled private scene, then submits its deferred component work and fences it. */
+    void PrivateStreamingSession::AdvanceResidencyReadiness()
+    {
+        if (!HasRequiredCells())
         {
-            native_.BeginFence();
-            if (status_ != Status::Retiring)
-                status_ = Status::SubmittingDeferredWork;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("waiting_for_remaining_residency");
+#endif
+            return;
         }
+        if (status_ == Status::Retiring || !AdvanceResidentLevelActorInitialization())
+            return;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (!actorInitializationReported_)
+        {
+            LogActorInitializationDiagnostics();
+            actorInitializationReported_ = true;
+        }
+#endif
+        MiniMapNative::Get()->captureAdmission.sendEndOfFrame(world_);
+        if (status_ == Status::Retiring)
+            return;
+        native_.BeginFence();
+        if (status_ != Status::Retiring)
+            status_ = Status::SubmittingDeferredWork;
     }
 
     /** Serializes engine progression and leaves all ownership intact if an exception interrupts it. */
@@ -739,6 +853,9 @@ namespace Services::Map::Terrain::Capture
                     status_ = ready ? Status::Ready : Status::Streaming;
                     if (ready)
                     {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                        ReportProgress("capture_ready_residency");
+#endif
                         if (auto* log = MiniMap::Services::TryLog())
                             MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
                                 "MiniMap: private terrain residency ready generation=%llu",
@@ -763,7 +880,7 @@ namespace Services::Map::Terrain::Capture
     /** Separates logical cancellation from native unregistration, package completion and final cleanup. */
     void PrivateStreamingSession::RequestRetirement()
     {
-        if (status_ == Status::Inactive || status_ == Status::Retired)
+        if (retirementRequested_ || status_ == Status::Inactive || status_ == Status::Retired)
             return;
         retirementRequested_ = true;
         if (captureResultStatus_ == CaptureResultStatus::ImageAvailable)
@@ -776,6 +893,9 @@ namespace Services::Map::Terrain::Capture
         status_ = Status::Retiring;
         if (rootLoad_ && !advancing_)
             rootLoad_->Cancel();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReportProgress("retirement_requested");
+#endif
     }
 
     /** Records failure without discarding native work or claiming readiness/retirement. */
@@ -797,6 +917,9 @@ namespace Services::Map::Terrain::Capture
         if (!WorldPartitionUnregistration::Unregister(world_, source_, owners_))
             return false;
         unregistered_ = true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReportProgress("partition_unregistered");
+#endif
         if (!levels_.Observe(world_, owners_))
             return false;
         levels_.RequestUnload();
@@ -852,6 +975,9 @@ namespace Services::Map::Terrain::Capture
         MiniMapNative::Get()->world.cleanupWorld(reinterpret_cast<std::uintptr_t>(world_), true, true, 0);
         cleaned_ = true;
         native_.BeginFence();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReportProgress("world_cleanup_submitted");
+#endif
     }
 
     /** Stops the admission hook before releasing owners after all native requests and cleanup have retired. */
@@ -860,7 +986,12 @@ namespace Services::Map::Terrain::Capture
         if (capture_ || native_.HasFence() || !unregistered_ || (rootLoad_ && !rootLoad_->IsNativeRetired()))
             return;
         if (!hook_.Stop())
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("waiting_for_admission_hook_retirement");
+#endif
             return;
+        }
         if (initialized_)
             levels_.ClearAfterRetirement();
         rootLoad_.reset();
@@ -876,6 +1007,9 @@ namespace Services::Map::Terrain::Capture
         gameplayWorld_ = nullptr;
         initialized_ = false;
         status_ = Status::Retired;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ReportProgress("retired");
+#endif
         if (auto* log = MiniMap::Services::TryLog())
             MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
                 "MiniMap: private terrain world retirement acknowledged generation=%llu",
@@ -886,18 +1020,28 @@ namespace Services::Map::Terrain::Capture
     bool PrivateStreamingSession::TryShutdown()
     {
         if (advancing_)
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("shutdown_blocked_by_native_reentry");
+#endif
             return false;
+        }
         if ((status_ == Status::Inactive || status_ == Status::Retired) && !capture_)
             return hook_.Stop();
         if (!CanAdvance())
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("shutdown_blocked_by_native_context");
+#endif
             return false;
-        if (status_ != Status::Inactive && status_ != Status::Retired)
-            RequestRetirement();
+        }
+        RequestRetirement();
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (capture_)
+            ReportProgress("draining_capture");
+#endif
         if (!RetireCaptureSynchronously())
             return false;
-        if (status_ == Status::Inactive || status_ == Status::Retired)
-            return hook_.Stop();
-        RequestRetirement();
         if (!DrainOwnedRequests())
             return false;
         Advance();
@@ -913,24 +1057,20 @@ namespace Services::Map::Terrain::Capture
     /** Waits only at explicit shutdown and leaves every native owner alive when completion is not acknowledged. */
     bool PrivateStreamingSession::DrainOwnedRequests()
     {
-        if (capture_)
+        if (capture_ || !CanAdvance())
             return false;
         advancing_ = true;
         bool drained = false;
         try
         {
-            drained = CloseRegistration() &&
-                (!rootLoad_ || rootLoad_->WaitForNativeRetirement()) &&
-                (!initialized_ || (levels_.Observe(world_, owners_) && levels_.WaitForRequests()));
-            if (drained && initialized_ && !cleaned_)
+            drained = DrainStreamingRequests();
+            if (drained && native_.HasFence())
             {
-                levels_.RequestUnload();
-                PrivateWorldNative::FlushVisibility(world_);
-                drained = levels_.Observe(world_, owners_) && levels_.IsUnloaded() &&
-                    !MiniMapNative::Get()->captureAdmission.visibilityPending(world_);
-            }
-            if (drained)
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+                ReportProgress("draining_render_fence");
+#endif
                 drained = native_.WaitFence();
+            }
         }
         catch (...)
         {
@@ -940,6 +1080,35 @@ namespace Services::Map::Terrain::Capture
         }
         advancing_ = false;
         return drained;
+    }
+
+    /** Closes registration, retires owned requests and waits for visibility before allowing CleanupWorld. */
+    bool PrivateStreamingSession::DrainStreamingRequests()
+    {
+        if (!CloseRegistration())
+            return false;
+        if (rootLoad_ && !rootLoad_->IsNativeRetired())
+        {
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ReportProgress("draining_root_package");
+#endif
+            if (!rootLoad_->WaitForNativeRetirement())
+                return false;
+        }
+        if (!initialized_)
+            return true;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (!cleaned_)
+            ReportProgress("draining_cell_requests_and_visibility");
+#endif
+        if (!levels_.Observe(world_, owners_) || !levels_.WaitForRequests())
+            return false;
+        if (cleaned_)
+            return true;
+        levels_.RequestUnload();
+        PrivateWorldNative::FlushVisibility(world_);
+        return levels_.Observe(world_, owners_) && levels_.IsUnloaded() &&
+            !MiniMapNative::Get()->captureAdmission.visibilityPending(world_);
     }
 }
 #endif

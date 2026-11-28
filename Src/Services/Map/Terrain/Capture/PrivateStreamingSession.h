@@ -6,6 +6,10 @@
 #include "PrivateWorldNative.h"
 #include "WorldPartitionAdmissionHook.h"
 #include "TerrainImageCapture.h"
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+#include <chrono>
+#include <string_view>
+#endif
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -77,10 +81,10 @@ namespace Services::Map::Terrain::Capture
         bool SubmitRoot();
         /** Excludes reentrant shutdown while request-specific waits execute native callbacks. */
         bool DrainOwnedRequests();
+        /** Waits for owned package and visibility transitions before private world cleanup. */
+        bool DrainStreamingRequests();
         /** Validates external values before any hook/load/ownership is admitted. */
         static bool IsDefinitionValid(const PrivateStreamingDefinition& definition);
-        /** Rejects any existing named object before claiming an externally unique destination identity. */
-        static bool IsDestinationUnused(const StreamingName& name);
         /** Acquires a native object reference before any operation that may progress teardown. */
         void Retain(SDK::UObject* object);
         /** Consumes a fully retired root callback and validates a separate private graph. */
@@ -101,6 +105,21 @@ namespace Services::Map::Terrain::Capture
         void AdvanceRoot();
         /** Advances native policy/levels and checks positive required-cell and completed-registration evidence. */
         void AdvanceStreaming();
+        /** Routes registered actors and fences deferred work once the required residency is ready. */
+        void AdvanceResidencyReadiness();
+        /** Routes visible, registered private levels and reports native completion or interruption. */
+        bool AdvanceResidentLevelActorInitialization();
+        /** Advances one registered level and reports whether its native routing is complete. */
+        bool AdvanceLevelActorInitialization(SDK::ULevel* level);
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Logs the first complete routing census of the capture-ready candidate. */
+        void LogActorInitializationDiagnostics() const;
+        /** Reports phase changes promptly and throttles repeated observations of the same phase. */
+        void ReportProgress(std::string_view phase);
+        /** Adds one level's native counts to the caller's aggregate totals. */
+        void AccumulateActorInitializationDiagnostics(SDK::ULevel* level,
+            PrivateWorldNative::ActorInitializationDiagnostics& totals) const;
+#endif
         /** Requires all nonempty configured cells to be activated, privately owned and registered. */
         bool HasRequiredCells() const;
         /** Validates one loaded private cell package/world/level and completed native registration. */
@@ -155,6 +174,15 @@ namespace Services::Map::Terrain::Capture
         bool cleaned_ = false;
         bool advancing_ = false;
         bool retirementRequested_ = false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        std::chrono::steady_clock::time_point actorInitializationStarted_{};
+        std::chrono::steady_clock::time_point lastProgressReport_{};
+        std::string_view lastProgressPhase_; // Borrows static phase names.
+        std::uint64_t actorRoutingCalls_ = 0;
+        std::chrono::steady_clock::duration actorRoutingDuration_{};
+        bool actorInitializationStartedValid_ = false;
+        bool actorInitializationReported_ = false;
+#endif
     };
 }
 #endif

@@ -6,10 +6,8 @@
 #include "../Config/Config.h"
 #include "../UI/MiniMapUI.h"
 #include "../Map/Map.h"
-#include "../CacheIdentity.h"
 #include "../Services/Input.h"
 #include "../Services/Runtime.h"
-#include "../Services/RuntimeEvents.h"
 
 #include <atomic>
 #include <cstdint>
@@ -29,18 +27,6 @@ namespace
     std::atomic<int32_t> g_pendingRawWheelDelta = 0;
     bool g_registered = false;
     S::Registration g_wheelRegistration{};
-    S::Registration g_shutdownRegistration{};
-
-    void RemoveShutdownRegistration()
-    {
-        if (!g_shutdownRegistration.id) return;
-        if (auto* events = S::TryRuntimeEvents())
-        {
-            const auto removal = events->Remove(g_shutdownRegistration);
-            if (removal.registry == S::RegistryRemoval::RequestReturned && removal.core == S::CoreDrain::Quiescent)
-                g_shutdownRegistration = {};
-        }
-    }
 
     // Called only with g_inputMutex. These accessors read atomics, not Config.
     bool AcceptingZoom()
@@ -65,11 +51,6 @@ namespace
         return true;
     }
 
-    void OnEngineShutdown(void*)
-    {
-        MiniMapMouseWheel::Shutdown();
-        MiniMapCacheIdentity::ClearOnExit();
-    }
 }
 
 namespace MiniMapMouseWheel
@@ -81,10 +62,9 @@ namespace MiniMapMouseWheel
             return true;
         }
         if (self == nullptr || self->hooks == nullptr ||
-            S::TryInput() == nullptr || !MiniMap::Adapters::AlienX::WheelInputAvailable() ||
-            S::TryRuntimeEvents() == nullptr)
+            S::TryInput() == nullptr || !MiniMap::Adapters::AlienX::WheelInputAvailable())
         {
-            LOG_ERROR("MiniMap: v70 mouse-wheel input/shutdown interface unavailable");
+            LOG_ERROR("MiniMap: v70 mouse-wheel input interface unavailable");
             return false;
         }
 
@@ -98,13 +78,6 @@ namespace MiniMapMouseWheel
         const auto receipt = S::TryInput()->OnWheel(&OnMouseWheel, nullptr);
         g_wheelRegistration = receipt.token;
         if (receipt.acceptance == S::Acceptance::Rejected || receipt.acceptance == S::Acceptance::BackendUnknown)
-        {
-            Shutdown();
-            return false;
-        }
-        const auto shutdown = S::TryRuntimeEvents()->OnEngineShutdown(&OnEngineShutdown, nullptr);
-        if (shutdown.token.id) g_shutdownRegistration = shutdown.token;
-        if (shutdown.acceptance == S::Acceptance::Rejected || shutdown.acceptance == S::Acceptance::BackendUnknown)
         {
             Shutdown();
             return false;
@@ -130,7 +103,6 @@ namespace MiniMapMouseWheel
                 if (auto* input = S::TryInput()) input->Remove(g_wheelRegistration);
                 g_wheelRegistration = {};
             }
-            RemoveShutdownRegistration();
             return;
         }
 
@@ -139,7 +111,6 @@ namespace MiniMapMouseWheel
         // unregister is not an in-flight callback barrier or a DLL-unload fix.
         if (auto* input = S::TryInput()) input->Remove(g_wheelRegistration);
         g_wheelRegistration = {};
-        RemoveShutdownRegistration();
         g_registered = false;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         LOG_INFO("MiniMap: unregistered ModLoader mouse-wheel callback");

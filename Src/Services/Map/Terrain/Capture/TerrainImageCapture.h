@@ -1,15 +1,16 @@
-// Owns one native terrain capture/readback, temporary RGB and completed canonical BC1 output.
+// Owns one native terrain capture, its component selection, readback, temporary RGB and canonical BC1 output.
 // The initialized resident private world is borrowed; this operation never streams or retires it.
 #pragma once
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "../ITerrainDataProvider.h"
 #include "PrivateWorldNative.h"
 #include "TerrainImageReadback.h"
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
-namespace SDK { class UWorld; class AActor; class USceneCaptureComponent2D; class UTextureRenderTarget2D; }
+namespace SDK { class UWorld; class AActor; class UStaticMeshComponent; class USceneCaptureComponent2D; class UTextureRenderTarget2D; }
 namespace Services::Map::Terrain { class TerrainService; }
 
 namespace Services::Map::Terrain::Capture
@@ -27,7 +28,7 @@ namespace Services::Map::Terrain::Capture
     };
 #endif
 
-    /** One explicit game-thread capture, with no acquisition integration or automatic execution.
+    /** One explicit game-thread image operation with a warm-up capture and a final capture.
      * The session owner must keep the world initialized and resident until Retired, including cancellation.
      * Calls must be serialized and nonreentrant. Destruction requires Inactive or acknowledged Retired.
      * Projection depth clipping is requested; renderer culling/Nanite slab isolation is not proven.
@@ -36,7 +37,7 @@ namespace Services::Map::Terrain::Capture
     {
     public:
         /** Separates ordered submission completion from resource cleanup and logical cancellation. */
-        enum class Status { Inactive, Preparing, Submitted, ReadingBack, Ready, Retiring, Retired };
+        enum class Status { Inactive, Preparing, WarmingUp, Submitted, ReadingBack, Ready, Retiring, Retired };
         /** Creates inert ownership without native operations. */
         TerrainImageCapture();
         /** Prevents dropping outstanding native owners or fence storage. */
@@ -49,9 +50,10 @@ namespace Services::Map::Terrain::Capture
          * False may leave Retiring debt after a native setup failure; continue Advance until Retired.
          * Supports positive world-X image U and positive world-Y image V, matching CaptureBounds XY.
          * Rejects rotated, reflected, sheared or differently framed registration before native allocation.
+         * The session's streaming source actor is borrowed only to omit it from the component inventory.
          */
         bool Submit(SDK::UWorld* residentWorld, const ITerrainDataProvider::CaptureDefinition& definition,
-            bool retainDiagnosticPixels);
+            bool retainDiagnosticPixels, const SDK::AActor* streamingSourceActor);
         /** Advances capture, genuine GPU readback, BC1 encoding and cleanup without native waits/world ticks. */
         void Advance();
         /** Withdraws image/target eligibility immediately; Advance drains readback and ordered cleanup. */
@@ -90,16 +92,30 @@ namespace Services::Map::Terrain::Capture
         static double DecodeSrgbChannel(std::uint8_t encoded) noexcept;
         /** Encodes one linear-light value to its nearest 8-bit sRGB channel. */
         static std::uint8_t EncodeSrgbChannel(double linear) noexcept;
-        /** Creates and retains an actor, deferred capture component and native render target. */
+        /** Creates and retains an actor, capture component and native render target. */
         bool CreateResources();
-        /** Configures independent rendering, opaque target clear and one-shot final-color output. */
+        /** Uses one resident-world inventory for configured exclusions and development diagnostics. */
+        bool ApplyComponentConfiguration(const SDK::AActor* streamingSourceActor);
+        /** Returns borrowed components from valid resident-level actors, omitting the two infrastructure actors. */
+        std::vector<SDK::UActorComponent*> CollectResidentComponents(const SDK::AActor* streamingSourceActor) const;
+        /** Adds registered matching mesh components to the capture's weak hidden list. */
+        bool ApplyMeshExclusions(std::span<SDK::UActorComponent* const> components);
+        /** Compares the component's top-level mesh object path with the configured exact paths. */
+        bool MatchesExcludedMesh(const SDK::UStaticMeshComponent* component) const;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        /** Logs inventory size and authored local-light totals, registration and render-state readiness. */
+        void ObserveAuthoredLocalLightReadiness(std::span<SDK::UActorComponent* const> components) const;
+#endif
+        /** Configures independent rendering, opaque target clear and manual final-color output. */
         void ConfigureResources();
         /** Writes the explicit reversed-Z slab matrix and disables automatic plane/view adjustments. */
         void ConfigureProjection();
         /** Applies named view flags through the native setter without retaining SDK array storage. */
         void ConfigureBackground();
-        /** Submits the scene once or begins its native BGRA readback after the submission fence. */
+        /** Submits the warm-up or final scene, or begins BGRA readback after the final submission fence. */
         void AdvanceSubmission();
+        /** Records outstanding scene work and orders the submitted capture behind the native fence. */
+        void SubmitSceneCapture();
         /** Waits for actual GPU/callback retirement before encoding temporary RGB and publishing BC1. */
         void AdvanceReadback();
         /** Constructs validated immutable output using only the authoritative terrain encoder. */
@@ -127,6 +143,8 @@ namespace Services::Map::Terrain::Capture
         SDK::UTextureRenderTarget2D* target_ = nullptr;
         Status status_ = Status::Inactive;
         std::string reason_;
+        std::int64_t lastWarmupFrame_ = 0;
+        std::uint32_t warmupTicks_ = 0;
         bool registered_ = false;
         bool componentDestroyed_ = false;
         bool actorDestroyAttempted_ = false;
@@ -139,6 +157,7 @@ namespace Services::Map::Terrain::Capture
         TerrainCaptureDiagnosticPixels diagnosticPixels_;
 #endif
         static constexpr std::uint32_t kCaptureSupersamplingFactor = 2;
+        static constexpr std::uint32_t kCaptureWarmupTicks = 10;
     };
 }
 #endif

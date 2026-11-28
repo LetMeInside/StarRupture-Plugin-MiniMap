@@ -1,15 +1,17 @@
-// Submits one downward orthographic view into a borrowed private scene using existing native facilities.
+// Submits warm-up and final renders of one orthographic view into a borrowed private scene.
 // Native references and RHI-thread fences protect capture resources independently of world ownership.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "TerrainImageCapture.h"
 #include "../Processing/TerrainBc1Codec.h"
 #include "Native/NativeApi.h"
+#include "Services/Log.h"
 #include "SDK/Engine_classes.hpp"
 #include <algorithm>
 #include <cmath>
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace Services::Map::Terrain::Capture
@@ -91,7 +93,8 @@ namespace Services::Map::Terrain::Capture
 
     /** Rejects unsupported metadata before allocation; setup failure preserves explicit cleanup ownership. */
     bool TerrainImageCapture::Submit(SDK::UWorld* residentWorld,
-        const ITerrainDataProvider::CaptureDefinition& definition, bool retainDiagnosticPixels)
+        const ITerrainDataProvider::CaptureDefinition& definition, bool retainDiagnosticPixels,
+        const SDK::AActor* streamingSourceActor)
     {
         if (status_ != Status::Inactive)
             return false;
@@ -125,7 +128,7 @@ namespace Services::Map::Terrain::Capture
         advancing_ = true;
         try
         {
-            if (CreateResources())
+            if (CreateResources() && ApplyComponentConfiguration(streamingSourceActor))
             {
                 MiniMapNative::Get()->captureAdmission.sendEndOfFrame(world_);
                 native_.BeginFence();
@@ -199,6 +202,125 @@ namespace Services::Map::Terrain::Capture
         return actor_->RootComponent == component_ && component_->GetOwner() == actor_ &&
             actor_->Outer == world_->PersistentLevel;
     }
+
+    /** Applies the same mesh selection in every client and optionally reports this inventory. */
+    bool TerrainImageCapture::ApplyComponentConfiguration(const SDK::AActor* streamingSourceActor)
+    {
+#if !MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (definition_.ExcludedStaticMeshAssets.empty())
+            return true;
+#endif
+        const auto components = CollectResidentComponents(streamingSourceActor);
+        if (!ApplyMeshExclusions(components))
+            return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        ObserveAuthoredLocalLightReadiness(components);
+#endif
+        return true;
+    }
+
+    /** Borrows only owned components of live actors from levels belonging to this capture world. */
+    std::vector<SDK::UActorComponent*> TerrainImageCapture::CollectResidentComponents(
+        const SDK::AActor* streamingSourceActor) const
+    {
+        std::vector<SDK::UActorComponent*> components;
+        for (const auto* level : world_->Levels)
+        {
+            if (!level || level->OwningWorld != world_)
+                continue;
+            for (const auto* actor : level->Actors)
+            {
+                if (actor && actor != actor_ && actor != streamingSourceActor && actor->Outer == level &&
+                    SDK::UKismetSystemLibrary::IsValid(actor))
+                    PrivateWorldNative::AppendOwnedComponents(actor, components);
+            }
+        }
+        return components;
+    }
+
+    /** Adds registered matches to the capture-local weak list and reports match and insertion totals. */
+    bool TerrainImageCapture::ApplyMeshExclusions(std::span<SDK::UActorComponent* const> components)
+    {
+        if (definition_.ExcludedStaticMeshAssets.empty())
+            return true;
+        auto* staticMeshComponentClass = SDK::UStaticMeshComponent::StaticClass();
+        if (!staticMeshComponentClass)
+            return false;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        std::size_t matched = 0;
+        const auto hiddenBefore = component_->HiddenComponents.Num();
+#endif
+        for (auto* actorComponent : components)
+        {
+            if (!actorComponent->IsA(staticMeshComponentClass))
+                continue;
+            auto* staticMeshComponent = static_cast<SDK::UStaticMeshComponent*>(actorComponent);
+            if (!MatchesExcludedMesh(staticMeshComponent))
+                continue;
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+            ++matched;
+#endif
+            if (PrivateWorldNative::IsComponentRegistered(staticMeshComponent))
+                component_->HideComponent(staticMeshComponent);
+        }
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+        if (auto* log = MiniMap::Services::TryLog())
+            MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                "MiniMap: terrain capture %s mesh exclusions matched=%zu hidden=%d",
+                definition_.Page.CollectionKey.c_str(), matched, component_->HiddenComponents.Num() - hiddenBefore);
+#endif
+        return true;
+    }
+
+    /** Builds the cooked top-level object path from the mesh's owning package and raw object name. */
+    bool TerrainImageCapture::MatchesExcludedMesh(const SDK::UStaticMeshComponent* component) const
+    {
+        const auto* mesh = component->StaticMesh;
+        if (!mesh || !mesh->Outer || !mesh->Outer->IsA(SDK::UPackage::StaticClass()))
+            return false;
+        const auto objectPath = mesh->Outer->Name.GetRawString() + "." + mesh->Name.GetRawString();
+        const auto& excludedAssets = definition_.ExcludedStaticMeshAssets;
+        return std::find(excludedAssets.begin(), excludedAssets.end(), objectPath) != excludedAssets.end();
+    }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    /** Reports inventory coverage separately from light class matches and native component state. */
+    void TerrainImageCapture::ObserveAuthoredLocalLightReadiness(
+        std::span<SDK::UActorComponent* const> components) const
+    {
+        /** Holds the three component counts for one local light type in this inventory. */
+        struct LocalLightCounts
+        {
+            std::size_t Total = 0;
+            std::size_t Registered = 0;
+            std::size_t Ready = 0;
+        };
+        LocalLightCounts pointLights;
+        LocalLightCounts spotLights;
+        auto* pointLightClass = SDK::UPointLightComponent::StaticClass();
+        auto* spotLightClass = SDK::USpotLightComponent::StaticClass();
+        if (pointLightClass && spotLightClass)
+        {
+            for (const auto* actorComponent : components)
+            {
+                const bool isSpot = actorComponent->IsA(spotLightClass);
+                if (!isSpot && !actorComponent->IsA(pointLightClass))
+                    continue;
+                auto& lights = isSpot ? spotLights : pointLights;
+                ++lights.Total;
+                lights.Registered += PrivateWorldNative::IsComponentRegistered(actorComponent);
+                lights.Ready += PrivateWorldNative::IsComponentReady(actorComponent);
+            }
+        }
+        if (auto* log = MiniMap::Services::TryLog())
+            MiniMap::Services::Logf(*log, MiniMap::Services::Level::Info,
+                "MiniMap: terrain capture %s enumerated_components=%zu light_classes_resolved=%d "
+                "point_total=%zu point_registered=%zu point_ready=%zu spot_total=%zu spot_registered=%zu spot_ready=%zu",
+                definition_.Page.CollectionKey.c_str(), components.size(), pointLightClass && spotLightClass,
+                pointLights.Total, pointLights.Registered, pointLights.Ready,
+                spotLights.Total, spotLights.Registered, spotLights.Ready);
+    }
+#endif
 
     /** Disables continuous/main-view capture and initializes an opaque non-mipped display-color target. */
     void TerrainImageCapture::ConfigureResources()
@@ -288,6 +410,15 @@ namespace Services::Map::Terrain::Capture
         advancing_ = true;
         try
         {
+            if (status_ == Status::WarmingUp && warmupTicks_ < kCaptureWarmupTicks)
+            {
+                const auto frame = SDK::UKismetSystemLibrary::GetFrameCount();
+                if (frame != lastWarmupFrame_)
+                {
+                    lastWarmupFrame_ = frame;
+                    ++warmupTicks_;
+                }
+            }
             if (!native_.PollFence())
             {
                 advancing_ = false;
@@ -299,7 +430,7 @@ namespace Services::Map::Terrain::Capture
                 advancing_ = false;
                 return;
             }
-            if (status_ == Status::Preparing || status_ == Status::Submitted)
+            if (status_ == Status::Preparing || status_ == Status::WarmingUp || status_ == Status::Submitted)
                 AdvanceSubmission();
             else if (status_ == Status::ReadingBack)
                 AdvanceReadback();
@@ -312,7 +443,7 @@ namespace Services::Map::Terrain::Capture
         advancing_ = false;
     }
 
-    /** Submits one scene, then starts readback only after ordered capture submission has crossed its fence. */
+    /** Reuses the same scene and target for both submissions, then reads only the final image. */
     void TerrainImageCapture::AdvanceSubmission()
     {
         if (status_ == Status::Preparing)
@@ -323,10 +454,17 @@ namespace Services::Map::Terrain::Capture
                 RequestRetirement();
                 return;
             }
+            lastWarmupFrame_ = SDK::UKismetSystemLibrary::GetFrameCount();
+            status_ = Status::WarmingUp;
+            SubmitSceneCapture();
+            return;
+        }
+        if (status_ == Status::WarmingUp)
+        {
+            if (warmupTicks_ < kCaptureWarmupTicks)
+                return;
             status_ = Status::Submitted;
-            sceneCaptureAttempted_ = true;
-            component_->CaptureScene();
-            native_.BeginFence();
+            SubmitSceneCapture();
             return;
         }
         if (!readback_.Start(target_,
@@ -338,6 +476,14 @@ namespace Services::Map::Terrain::Capture
             return;
         }
         status_ = Status::ReadingBack;
+    }
+
+    /** Marks GPU retirement debt before either explicit submission can enqueue native work. */
+    void TerrainImageCapture::SubmitSceneCapture()
+    {
+        sceneCaptureAttempted_ = true;
+        component_->CaptureScene();
+        native_.BeginFence();
     }
 
     /** Never consumes RGB until GPU objects and their submitted native callables have retired. */

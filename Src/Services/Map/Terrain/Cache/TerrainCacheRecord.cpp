@@ -163,13 +163,16 @@ namespace Services::Map::Terrain::Cache
         return {digits.data(), result.ptr};
     }
 
-    /** Preserves provider casing in the filename; Windows aliases share the case-folded stored collection key. */
+    /** Preserves configured filename casing; Windows aliases share the case-folded stored collection key. */
     bool TerrainCacheRecord::GetFilename(const TerrainPageIdentity& page, std::wstring& filename)
     {
         filename.clear();
         if (!IsValidCollectionKey(page.CollectionKey)) return false;
-        const auto name = page.CollectionKey + "_" + FormatPageIndex(page.X) + "_" +
-            FormatPageIndex(page.Y) + ".terrain";
+        const auto stem = page.FilenameStem.empty() ?
+            page.CollectionKey + "_" + FormatPageIndex(page.X) + "_" + FormatPageIndex(page.Y) :
+            page.FilenameStem;
+        if (!IsValidCollectionKey(stem)) return false;
+        const auto name = stem + ".terrain";
         filename.assign(name.begin(), name.end());
         return true;
     }

@@ -561,6 +561,8 @@ namespace MiniMapNative
         candidate.updatePartition = reinterpret_cast<CaptureAdmissionApi::UpdatePartition*>(addresses.captureUpdatePartition);
         candidate.updateLevels = reinterpret_cast<CaptureAdmissionApi::UpdateLevels*>(addresses.captureUpdateLevels);
         candidate.sendEndOfFrame = reinterpret_cast<CaptureAdmissionApi::WorldAction*>(addresses.captureSendEndOfFrame);
+        candidate.routeActorInitialize = reinterpret_cast<CaptureAdmissionApi::RouteActorInitialize*>(
+            addresses.captureRouteActorInitialize);
         candidate.flushVisibility = reinterpret_cast<CaptureAdmissionApi::FlushVisibility*>(addresses.captureFlushVisibility);
         candidate.waitRenderFence = reinterpret_cast<CaptureAdmissionApi::WaitRenderFence*>(addresses.captureWaitRenderFence);
         candidate.visibilityPending = reinterpret_cast<CaptureAdmissionApi::WorldPredicate*>(addresses.captureVisibilityPending);

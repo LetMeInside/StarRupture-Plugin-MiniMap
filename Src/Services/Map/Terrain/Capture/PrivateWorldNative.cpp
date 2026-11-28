@@ -1,9 +1,10 @@
-// Uses genuine engine headers exclusively; the SDK-facing boundary contains only opaque object pointers.
+// Bridges private streaming, actor routing, diagnostics and render-fence ownership through genuine UE types.
 #if defined(MODLOADER_CLIENT_BUILD)
 #include "Native/PrivateStreamingUEConfiguration.h"
 #include "CoreMinimal.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "Components/WorldPartitionStreamingSourceComponent.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
@@ -73,11 +74,79 @@ namespace Services::Map::Terrain::Capture
         return nativeLevel && nativeLevel->bAreComponentsCurrentlyRegistered && nativeLevel->bIsVisible;
     }
 
+    /** Runs unrestricted native actor routing for an eligible level and reads its completion state. */
+    bool PrivateWorldNative::RouteActorInitialization(SDK::ULevel* level)
+    {
+        auto* nativeLevel = reinterpret_cast<ULevel*>(level);
+        if (!nativeLevel)
+            return false;
+        if (nativeLevel->IsFinishedRouteActorInitialization())
+            return true;
+        using Route = void(::ULevel*, std::int32_t);
+        const auto route = reinterpret_cast<Route*>(
+            MiniMapNative::Get()->captureAdmission.routeActorInitialize);
+        // UE treats a nonpositive count as full processing. BeginPlay remains gated by the owning world.
+        route(nativeLevel, 0);
+        return nativeLevel->IsFinishedRouteActorInitialization();
+    }
+
+    /** Reads only ULevel's native routing completion state. */
+    bool PrivateWorldNative::IsActorInitializationComplete(const SDK::ULevel* level)
+    {
+        const auto* nativeLevel = reinterpret_cast<const ULevel*>(level);
+        return nativeLevel && nativeLevel->IsFinishedRouteActorInitialization();
+    }
+
+#if MINIMAP_DEVELOPMENT_DIAGNOSTICS
+    /** Collects native initialized-state counts without activating or changing components. */
+    PrivateWorldNative::ActorInitializationDiagnostics
+        PrivateWorldNative::GetActorInitializationDiagnostics(const SDK::ULevel* level)
+    {
+        ActorInitializationDiagnostics diagnostics;
+        const auto* nativeLevel = reinterpret_cast<const ULevel*>(level);
+        if (!nativeLevel)
+            return diagnostics;
+        for (const auto& actorReference : nativeLevel->Actors)
+        {
+            const AActor* nativeActor = actorReference.Get();
+            if (!nativeActor)
+                continue;
+            ++diagnostics.ActorCount;
+            if (nativeActor->IsActorInitialized())
+                ++diagnostics.InitializedActorCount;
+            for (const auto* component : nativeActor->GetComponents())
+            {
+                if (!component)
+                    continue;
+                ++diagnostics.ComponentCount;
+                if (component->HasBeenInitialized())
+                    ++diagnostics.InitializedComponentCount;
+            }
+        }
+        return diagnostics;
+    }
+#endif
+
     /** Checks the native world state before direct component construction or registration. */
     bool PrivateWorldNative::CanCreateComponentInWorld(const SDK::UWorld* world)
     {
         const auto* nativeWorld = reinterpret_cast<const UWorld*>(world);
         return nativeWorld && !nativeWorld->bIsTearingDown;
+    }
+
+    /** Reads the genuine UE owned set and copies only its borrowed pointers into caller storage. */
+    void PrivateWorldNative::AppendOwnedComponents(const SDK::AActor* actor,
+        std::vector<SDK::UActorComponent*>& components)
+    {
+        // CL130045 client PDB: OwnedComponents at 560, InstanceComponents at 640.
+        static_assert(sizeof(AActor) == 680 && offsetof(AActor, BlueprintCreatedComponents) == 656);
+        static_assert(sizeof(TSet<UActorComponent*>) == 80 && sizeof(TSet<TObjectPtr<UActorComponent>>) == 80);
+        const auto* nativeActor = reinterpret_cast<const AActor*>(actor);
+        for (auto* nativeComponent : nativeActor->GetComponents())
+        {
+            if (nativeComponent)
+                components.push_back(reinterpret_cast<SDK::UActorComponent*>(nativeComponent));
+        }
     }
 
     /** Reads the genuine component registration state through the isolated Engine-header boundary. */

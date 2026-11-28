@@ -134,6 +134,7 @@ namespace MiniMapFingerprints
         uintptr_t captureUpdatePartition = 0;
         uintptr_t captureUpdateLevels = 0;
         uintptr_t captureSendEndOfFrame = 0;
+        uintptr_t captureRouteActorInitialize = 0;
         uintptr_t captureVisibilityPending = 0;
         uintptr_t captureCanStream = 0;
         uintptr_t captureServerStreamingEnabled = 0;

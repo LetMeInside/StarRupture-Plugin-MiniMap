@@ -153,6 +153,9 @@ namespace Services::Map::Terrain
             std::uint32_t HeightPixels = 0;
             bool SRgb = false;
             std::array<std::uint8_t, 3> OpaqueBackground{0, 0, 0};
+            // Exact case-sensitive top-level cooked static mesh object paths (/Mount/Package.Asset).
+            // Each match suppresses the whole component for this capture, including all its instances.
+            std::vector<std::string> ExcludedStaticMeshAssets;
         };
 
         /** Owns copied source metadata and exactly one acquisition kind; monostate means unavailable. */

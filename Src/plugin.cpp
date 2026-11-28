@@ -33,6 +33,7 @@
 #include "Services/Map/Buildings/Capture/BuildingSpriteRenderer.h"
 #include "PluginPaths.h"
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -48,6 +49,8 @@ static Services::Map::Buildings::Capture::BuildingSpriteRenderer* g_buildingSpri
 static S::Hook g_commonUIActivatedHook{};
 static S::Hook g_commonUIDeactivatedHook{};
 static S::Registration g_rendererTick{}, g_beforeEnd{}, g_afterEnd{}, g_gameplayBegan{}, g_experienceReady{};
+static S::Registration g_engineShutdown{};
+static std::atomic<bool> g_engineShutdownStarted{false};
 static bool AcceptEventRegistration(S::Registration& token, const S::RegistrationReceipt<S::Registration>& receipt)
 {
     if (receipt.token.id) token = receipt.token;
@@ -409,6 +412,9 @@ static void OnTextureServiceTick(
 #if defined(MODLOADER_CLIENT_BUILD)
     try
     {
+        // A tick after exit admission closes can still advance outstanding retirement.
+        if (g_engineShutdownStarted.load())
+            g_terrainService.RetirePrivateStreaming();
         g_terrainService.AdvancePrivateStreaming();
     }
     catch (...)
@@ -1006,7 +1012,7 @@ static void OnExperienceLoadComplete()
     if (MiniMapConfig::VisibleAtStartup()) MiniMapUI::Show();
     else MiniMapUI::Hide();
     LOG_INFO("MiniMap: experience complete; gameplay services admitted for generation %llu",static_cast<unsigned long long>(g_worldGeneration));
-    if (g_forgottenCaptureGeneration != g_worldGeneration)
+    if (!g_engineShutdownStarted.load() && g_forgottenCaptureGeneration != g_worldGeneration)
     {
         g_forgottenCaptureGeneration = g_worldGeneration;
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS && defined(MODLOADER_CLIENT_BUILD)
@@ -1272,6 +1278,35 @@ namespace MiniMap
             return false;
         }
 
+        // The adapter has one shutdown slot. Keep terrain, input and cache exit work under that notification.
+        if (!AcceptEventRegistration(g_engineShutdown, events->OnEngineShutdown(
+            [](void*)
+            {
+                g_engineShutdownStarted.store(true);
+                bool terrainRetired = false;
+                try
+                {
+                    const auto* api = MiniMapNative::Get();
+                    if (api && api->player.isGameThread && api->player.isGameThread())
+                        terrainRetired = g_terrainService.ShutdownPrivateStreaming();
+                    else
+                        LOG_ERROR("MiniMap: early private terrain shutdown requires native game-thread context");
+                    if (!terrainRetired)
+                        LOG_ERROR("MiniMap: early private terrain retirement incomplete; native ownership retained");
+                }
+                catch (...)
+                {
+                    LOG_ERROR("MiniMap: early private terrain retirement threw; native ownership retained");
+                }
+                MiniMapMouseWheel::Shutdown();
+                if (terrainRetired)
+                    MiniMapCacheIdentity::ClearOnExit();
+            }, nullptr)))
+        {
+            Shutdown();
+            return false;
+        }
+
         if (!AcceptEventRegistration(g_rendererTick, events->OnTick(
             [](void* user, float delta)
             {
@@ -1510,6 +1545,7 @@ namespace MiniMap
             g_buildingSpriteRenderer->ProcessLifecycle();
         }
         RemoveEventRegistration(g_rendererTick);
+        RemoveEventRegistration(g_engineShutdown);
         MiniMapCacheIdentity::Reset();
 #if MINIMAP_DEVELOPMENT_DIAGNOSTICS
         const uint32_t blockingMenuMask =

@@ -41,7 +41,7 @@ namespace MiniMapTerrainSource
         CaptureDefinition definition;
         definition.Source.SourceId = std::string("StarRupture.ForgottenEngineCapture/") + regionId;
         definition.Source.ContentRevision = kCaptureConfigurationRevision;
-        definition.Page = {std::string(regionId) + "_NativeCapture", 0, 0};
+        definition.Page = {regionId, 0, 0, regionId};
         definition.OriginalWorldPackage = kOriginalWorldPackage;
         definition.CookedCellPackages.assign(
             kRequiredCookedCellPackages.begin(), kRequiredCookedCellPackages.end());
@@ -59,16 +59,19 @@ namespace MiniMapTerrainSource
         return definition;
     }
 
-    /** Returns the five approved slabs in physical elevation order. */
+    /** Returns the five independently calibrated capture slabs in physical elevation order. */
     std::vector<Services::Map::Terrain::ITerrainDataProvider::CaptureDefinition>
         ForgottenEngineCaptureConfiguration::CreateDefinitions()
     {
+        auto level4 = CreateDefinition("ChimeraMain_ForgottenEngine1_Level4", 5468.0, 5820.0);
+        level4.ExcludedStaticMeshAssets = {
+            "/Game/Chimera/Buildings/ForgottenEngine/Interior/SM_FE_ceiling.SM_FE_ceiling"};
         return {
-            CreateDefinition("FE1_LevelMinus2", 4774.529, 5374.529),
-            CreateDefinition("FE1_LevelMinus1", 5374.529, 5974.529),
-            CreateDefinition("FE1_Level0", 5974.529, 6574.529),
-            CreateDefinition("FE1_LevelPlus1", 6574.529, 7174.529),
-            CreateDefinition("FE1_LevelPlus2", 7174.529, 7774.529)};
+            CreateDefinition("ChimeraMain_ForgottenEngine1_Level5", 4985.0, 5445.0),
+            level4,
+            CreateDefinition("ChimeraMain_ForgottenEngine1_Level3", 6185.0, 6640.0),
+            CreateDefinition("ChimeraMain_ForgottenEngine1_Level2", 6810.0, 7110.0),
+            CreateDefinition("ChimeraMain_ForgottenEngine1_Level1", 7468.0, 7740.0)};
     }
 
 #if defined(MODLOADER_CLIENT_BUILD)
